@@ -1112,11 +1112,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
         self.request_sint_notifications(vtl, pending_sints);
     }
-
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    fn switch_vtl(&mut self, source_vtl: GuestVtl, target_vtl: GuestVtl) {
-        T::switch_vtl_state(self, source_vtl, target_vtl);
-    }
 }
 
 fn signal_mnf(dev: &impl CpuIo, connection_id: u32) {

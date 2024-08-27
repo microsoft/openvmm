@@ -10,6 +10,8 @@ use super::synic::ProcessorSynic;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use hvdef::HvRegisterVpAssistPage;
+use hvdef::HvVpVtlControl;
+use hvdef::HvVtlEntryReason;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HV_REFERENCE_TSC_SEQUENCE_INVALID;
@@ -455,6 +457,26 @@ impl ProcessorVtlHv {
             }
             false
         }
+    }
+
+    /// Get the register values to restore on vtl return
+    pub fn return_registers(&self) -> Result<[u64; 2], GuestMemoryError> {
+        let gpa = (self.vp_assist_page.gpa_page_number() * HV_PAGE_SIZE)
+            + offset_of!(hvdef::HvVpAssistPage, vtl_control) as u64;
+
+        let v: HvVpVtlControl = self.guest_memory.read_plain(gpa)?;
+
+        Ok(v.registers)
+    }
+
+    /// Set the reason for the vtl return into the vp assist page
+    pub fn set_return_reason(&self, reason: HvVtlEntryReason) -> Result<(), GuestMemoryError> {
+        let gpa = (self.vp_assist_page.gpa_page_number() * HV_PAGE_SIZE)
+            + offset_of!(hvdef::HvVpAssistPage, vtl_control) as u64
+            + offset_of!(HvVpVtlControl, entry_reason) as u64;
+
+        let v = reason.0;
+        self.guest_memory.write_plain(gpa, &v)
     }
 }
 
