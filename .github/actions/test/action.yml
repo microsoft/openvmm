@@ -1,0 +1,8 @@
+name: Test action
+runs:
+  steps:
+    - name: echo true
+      run: |
+        echo true
+
+      shell: bash
