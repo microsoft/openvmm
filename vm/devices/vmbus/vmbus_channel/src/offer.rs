@@ -85,7 +85,7 @@ impl Offer {
         });
 
         let offer = Self {
-            guest_mem: result.guest_mem,
+            guest_mem: result.ring_mem,
             task,
             open_recv,
             gpadl_map,

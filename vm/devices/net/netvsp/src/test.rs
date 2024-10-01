@@ -103,6 +103,7 @@ impl ParentBus for MockVmbus {
     async fn add_child(&self, request: OfferInput) -> anyhow::Result<OfferResources> {
         *(self.child_info.lock().await) = Some(request);
         Ok(OfferResources {
+            ring_mem: self.memory.clone(),
             guest_mem: self.memory.clone(),
         })
     }

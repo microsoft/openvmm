@@ -118,6 +118,7 @@ impl<T: Any> IntoAny for T {
 /// Resources used by the device to communicate with the guest.
 #[derive(Debug, Default)]
 pub struct DeviceResources {
+    pub(crate) ring_memory: GuestMemory,
     /// Guest memory access.
     pub guest_memory: GuestMemory,
     /// A map providing access to GPADLs.
@@ -366,6 +367,7 @@ async fn offer_generic(
 
     let (subchannel_enable_send, subchannel_enable_recv) = mesh::channel();
     channel.install(DeviceResources {
+        ring_memory: offer_result.ring_mem,
         guest_memory: offer_result.guest_mem,
         gpadl_map: gpadl_map.clone().view(),
         channels: resources,

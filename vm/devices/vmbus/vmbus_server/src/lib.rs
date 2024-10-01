@@ -630,7 +630,7 @@ struct Channel {
     gpadls: Arc<GpadlMap>,
     guest_to_host_event: Arc<ChannelEvent>,
     guest_event_port: Box<dyn GuestEventPort>,
-    confidential: bool,
+    confidential_ring: bool,
 }
 
 enum ChannelState {
@@ -646,7 +646,7 @@ enum ChannelState {
 impl ServerTask {
     fn handle_offer(&mut self, mut info: OfferInfo) -> anyhow::Result<()> {
         let key = info.params.key();
-        let confidential = info.params.flags.confidential_channel();
+        let confidential = info.params.flags.confidential_ring_buffer();
 
         // Disable mnf if the synic doesn't support it or it's not enabled in this server.
         if info.params.use_mnf
@@ -677,7 +677,7 @@ impl ServerTask {
                 guest_to_host_event: Arc::new(ChannelEvent(info.event)),
                 guest_event_port,
                 seq: id,
-                confidential,
+                confidential_ring: confidential,
             },
         );
 
@@ -1262,7 +1262,7 @@ impl channels::Notifier for ServerTaskInner {
         let channel = self.channels.get(&offer_id).expect("should exist");
         let mut resp = req.respond();
         if let ChannelState::Open { open_params, .. } = &channel.state {
-            let mem = if channel.confidential && self.trusted_gm.is_some() {
+            let mem = if channel.confidential_ring && self.trusted_gm.is_some() {
                 self.trusted_gm.as_ref().unwrap()
             } else {
                 &self.gm
@@ -1461,13 +1461,24 @@ impl VmbusServerControl {
     /// Offers a channel to the vmbus server, where the flags and user_defined data are already set.
     /// This is used by the relay to forward the host's parameters.
     pub async fn offer_core(&self, offer_info: OfferInfo) -> anyhow::Result<OfferResources> {
-        let confidential = offer_info.params.flags.confidential_channel();
+        let flags = offer_info.params.flags;
         let (send, recv) = mesh::oneshot();
         self.send.send(OfferRequest::Offer(offer_info, send));
         recv.await.flatten()?;
+        let confidential_mem = if self.trusted_mem.is_some() {
+            self.trusted_mem.as_ref().unwrap()
+        } else {
+            &self.mem
+        };
+
         Ok(OfferResources {
-            guest_mem: if confidential && self.trusted_mem.is_some() {
-                self.trusted_mem.as_ref().unwrap().clone()
+            ring_mem: if flags.confidential_ring_buffer() {
+                confidential_mem.clone()
+            } else {
+                self.mem.clone()
+            },
+            guest_mem: if flags.confidential_external_memory() {
+                confidential_mem.clone()
             } else {
                 self.mem.clone()
             },
@@ -1724,6 +1735,7 @@ mod tests {
                     subchannel_index: 0,
                     use_mnf: false,
                     offer_order: None,
+                    allow_encrypted_memory: false,
                 },
             };
 
@@ -1908,11 +1920,11 @@ mod tests {
 
         // All offers added with add_child are confidential.
         let offer = env.get_response::<protocol::OfferChannel>().await;
-        assert!(offer.flags.confidential_channel());
+        assert!(offer.flags.confidential_ring_buffer());
 
         // The "relay" channel will not have its flags modified.
         let offer = env.get_response::<protocol::OfferChannel>().await;
-        assert!(!offer.flags.confidential_channel());
+        assert!(!offer.flags.confidential_ring_buffer());
 
         env.expect_response(protocol::MessageType::ALL_OFFERS_DELIVERED)
             .await;

@@ -570,8 +570,12 @@ impl From<OfferParams> for OfferParamsInternal {
     fn from(value: OfferParams) -> Self {
         let mut user_defined = UserDefinedData::new_zeroed();
 
-        // All non-relay channels are capable of being confidential.
-        let mut flags = OfferFlags::new().with_confidential_channel(true);
+        // All non-relay channels are capable of using a confidential ring buffer, but external
+        // memory is dependent on the device.
+        let mut flags = OfferFlags::new()
+            .with_confidential_ring_buffer(true)
+            .with_confidential_external_memory(value.allow_encrypted_memory);
+
         match value.channel_type {
             ChannelType::Device { pipe_packets } => {
                 if pipe_packets {
@@ -1613,7 +1617,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         }
 
         let key = offer.key();
-        let confidential = offer.flags.confidential_channel();
+        let confidential_ring_buffer = offer.flags.confidential_ring_buffer();
+        let confidential_external_memory = offer.flags.confidential_external_memory();
         let channel = Channel {
             info: None,
             offer,
@@ -1633,7 +1638,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             send_offer(self.notifier, channel, version);
         }
 
-        tracing::info!(?offer_id, %key, confidential, "new channel");
+        tracing::info!(?offer_id, %key, confidential_ring_buffer, confidential_external_memory, "new channel");
         Ok(offer_id)
     }
 
@@ -3359,7 +3364,8 @@ fn send_offer<N: Notifier>(notifier: &mut N, channel: &mut Channel, version: Ver
     let info = channel.info.as_ref().expect("assigned");
     let mut flags = channel.offer.flags;
     if !version.feature_flags.confidential_channels() {
-        flags.set_confidential_channel(false);
+        flags.set_confidential_ring_buffer(false);
+        flags.with_confidential_external_memory(false);
     }
 
     let msg = protocol::OfferChannel {
@@ -5216,7 +5222,7 @@ mod tests {
         );
 
         env.offer(1); // non-confidential
-        env.offer_with_flags(2, OfferFlags::new().with_confidential_channel(true));
+        env.offer_with_flags(2, OfferFlags::new().with_confidential_ring_buffer(true));
 
         // Untrusted messages are rejected when the connection is trusted.
         let error = env
@@ -5245,7 +5251,7 @@ mod tests {
         assert_eq!(offer.channel_id, ChannelId(2));
         assert_eq!(
             offer.flags,
-            OfferFlags::new().with_confidential_channel(true)
+            OfferFlags::new().with_confidential_ring_buffer(true)
         );
 
         env.notifier
@@ -5273,7 +5279,7 @@ mod tests {
             2,
             OfferFlags::new()
                 .with_named_pipe_mode(true)
-                .with_confidential_channel(true),
+                .with_confidential_ring_buffer(true),
         );
 
         env.send_message(in_msg_ex(

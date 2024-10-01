@@ -216,7 +216,7 @@ pub fn gpadl_channel(
     channel_idx: u16,
 ) -> Result<RawAsyncChannel<GpadlRingMem>, Error> {
     let (in_ring, out_ring) = make_rings(
-        &resources.guest_memory,
+        &resources.ring_memory,
         &resources.gpadl_map,
         &open_request.open_data,
     )?;
