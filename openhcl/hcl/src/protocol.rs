@@ -225,6 +225,7 @@ pub struct tdx_vp_state {
     pub msr_sfmask: u64,
     pub msr_xss: u64,
     pub cr2: u64,
+    pub msr_tsc_aux: u64,
 }
 
 #[repr(C)]
@@ -233,7 +234,7 @@ pub struct tdx_vp_context {
     pub exit_info: tdx_tdg_vp_enter_exit_info,
     pub pad1: [u8; 48],
     pub vp_state: tdx_vp_state,
-    pub pad2: [u8; 48],
+    pub pad2: [u8; 40],
     pub entry_rcx: x86defs::tdx::TdxVmFlags,
     pub gpr_list: x86defs::tdx::TdxL2EnterGuestState,
     pub pad3: [u8; 96],
