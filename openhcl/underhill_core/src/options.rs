@@ -33,6 +33,11 @@ pub struct Options {
     /// Enable handling of MNF in the Underhill vmbus server, instead of the host.
     pub vmbus_enable_mnf: Option<bool>,
 
+    /// (OPENHCL_VMBUS_FORCE_CONF_EXT_MEM=1)
+    /// Force the use of confidential external memory for all non-relay vmbus channels. Fo testing
+    /// purposes only.
+    pub vmbus_force_confidential_external_memory: bool,
+
     /// (OPENHCL_CMDLINE_APPEND=\<string\>)
     /// Command line to append to VTL0, only used with direct boot.
     pub cmdline_append: Option<String>,
@@ -149,6 +154,9 @@ impl Options {
         } else {
             None
         };
+        let vmbus_force_confidential_external_memory =
+            legacy_openhcl_env("OPENHCL_VMBUS_FORCE_CONF_EXT_MEM").is_some()
+                && parse_env_bool("UNDERHILL_VMBUS_FORCE_CONF_EXT_MEM");
         let cmdline_append =
             legacy_openhcl_env("OPENHCL_CMDLINE_APPEND").map(|x| x.to_string_lossy().into_owned());
         let force_load_vtl0_image = legacy_openhcl_env("OPENHCL_FORCE_LOAD_VTL0_IMAGE")
@@ -202,6 +210,7 @@ impl Options {
             pid,
             vmbus_max_version,
             vmbus_enable_mnf,
+            vmbus_force_confidential_external_memory,
             cmdline_append,
             vnc_port: vnc_port.unwrap_or(3),
             framebuffer_gpa_base,

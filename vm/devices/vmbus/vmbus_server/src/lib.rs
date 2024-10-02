@@ -112,6 +112,7 @@ pub struct VmbusServerBuilder<'a, T: Spawn> {
     max_version: Option<u32>,
     delay_max_version: bool,
     enable_mnf: bool,
+    force_confidential_external_memory: bool,
 }
 
 /// The server side of the connection between a vmbus server and a relay.
@@ -252,6 +253,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             max_version: None,
             delay_max_version: false,
             enable_mnf: false,
+            force_confidential_external_memory: false,
         }
     }
 
@@ -341,6 +343,13 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
         self
     }
 
+    /// Force all non-relay channels to use encrypted external memory. Used for testing purposes
+    /// only.
+    pub fn force_confidential_external_memory(mut self, force: bool) -> Self {
+        self.force_confidential_external_memory = force;
+        self
+    }
+
     /// Creates a new instance of the server.
     ///
     /// When the object is dropped, all channels will be closed and revoked
@@ -402,6 +411,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             trusted_mem: self.trusted_gm.clone(),
             send: offer_send,
             use_event: self.synic.prefer_os_events(),
+            force_confidential_external_memory: self.force_confidential_external_memory,
         });
 
         let mut server = channels::Server::new(self.vtl, connection_id, self.channel_id_offset);
@@ -1455,6 +1465,7 @@ pub struct VmbusServerControl {
     trusted_mem: Option<GuestMemory>,
     send: mesh::MpscSender<OfferRequest>,
     use_event: bool,
+    force_confidential_external_memory: bool,
 }
 
 impl VmbusServerControl {
@@ -1486,12 +1497,24 @@ impl VmbusServerControl {
     }
 
     async fn offer(&self, request: OfferInput) -> anyhow::Result<OfferResources> {
-        let offer_info = OfferInfo {
+        let mut offer_info = OfferInfo {
             params: request.params.into(),
             event: request.event,
             request_send: request.request_send,
             server_request_recv: request.server_request_recv,
         };
+
+        if self.force_confidential_external_memory {
+            tracing::warn!(
+                key = %offer_info.params.key(),
+                "forcing confidential external memory for channel"
+            );
+
+            offer_info
+                .params
+                .flags
+                .set_confidential_external_memory(true);
+        }
 
         self.offer_core(offer_info).await
     }
