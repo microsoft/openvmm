@@ -20,7 +20,7 @@ allow certain "files" to be encrypted as the scenario requires it.
 
 Github actions in the OpenVMM repo build VmgsTool binaries for Linux and Windows.
 You can easily pull the latest binaries: click on the latest run in 
-[OpenVMM CI](https://github.com/microsoft/HvLite/actions/workflows/openvmm-ci.yaml)
+[OpenVMM CI](https://github.com/microsoft/openvmm/actions/workflows/openvmm-ci.yaml)
 , and under "Artifacts" , you'll see them listed
 (there should be artifacts titled `*-vmgstool` with different flavors the binaries were built with).
 

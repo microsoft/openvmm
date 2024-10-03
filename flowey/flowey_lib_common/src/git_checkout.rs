@@ -14,7 +14,7 @@ pub enum RepoSource<C = VarNotClaimed> {
     /// resource at the pipeline level. See the docs for this type for more
     /// information.
     AdoResource(AdoResourcesRepositoryId),
-    /// (GitHub Only) Checkout a repo described by the given repository "{owner}/{name}" (e.g. "microsoft/HvLite") .
+    /// (GitHub Only) Checkout a repo described by the given repository "{owner}/{name}" (e.g. "microsoft/openvmm") .
     GithubRepo { owner: String, name: String },
     /// (GitHub Only) Checkout the repo containing the pipeline.
     GithubSelf,

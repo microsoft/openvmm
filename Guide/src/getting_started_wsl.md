@@ -45,7 +45,7 @@ WSL> curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 **access said clone from Linux. This will cause issues.**
 
 ```bash
-WSL> git clone https://github.com/microsoft/hvlite.git
+WSL> git clone https://github.com/microsoft/openvmm.git
 ```
 
 ## [WSL] Other dependencies

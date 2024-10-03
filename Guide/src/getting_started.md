@@ -51,7 +51,7 @@ If you haven't already installed `git`, you can download it
 [here](https://git-scm.com/downloads).
 
 ```powershell
-PS> git clone https://github.com/microsoft/hvlite.git
+PS> git clone https://github.com/microsoft/openvmm.git
 ```
 
 ## Next Steps

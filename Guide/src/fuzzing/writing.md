@@ -13,9 +13,9 @@ Some examples of in-tree fuzzers:
 * More complex device example: [ide/fuzz/fuzz_ide.rs][fuzz_ide_url]
 * Abstraction over unsafe example: [ide/fuzz/fuzz_scsi_buffer.rs][fuzz_scsi_buffer_url]
 
-[fuzz_battery_url]: https://github.com/microsoft/hvlite/blob/main/vm/devices/chipset/fuzz/fuzz_battery.rs
-[fuzz_ide_url]: https://github.com/microsoft/hvlite/blob/main/vm/devices/storage/ide/fuzz/fuzz_ide.rs
-[fuzz_scsi_buffer_url]: https://github.com/microsoft/hvlite/blob/main/vm/devices/storage/scsi_buffers/fuzz/fuzz_scsi_buffers.rs
+[fuzz_battery_url]: https://github.com/microsoft/openvmm/blob/main/vm/devices/chipset/fuzz/fuzz_battery.rs
+[fuzz_ide_url]: https://github.com/microsoft/openvmm/blob/main/vm/devices/storage/ide/fuzz/fuzz_ide.rs
+[fuzz_scsi_buffer_url]: https://github.com/microsoft/openvmm/blob/main/vm/devices/storage/scsi_buffers/fuzz/fuzz_scsi_buffers.rs
 
 Once you're ready to take a stab at writing your own fuzzer, spinning up a new
 fuzzer is as easy as running:

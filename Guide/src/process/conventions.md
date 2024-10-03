@@ -161,7 +161,7 @@ are some default lints that we've decided to disabled project wide, and other
 non-default lints which we've explicitly opted into.
 
 See
-[`.cargo/config.toml`](https://github.com/microsoft/hvlite?path=/.cargo/config.toml)
+[`.cargo/config.toml`](https://github.com/microsoft/openvmm?path=/.cargo/config.toml)
 for a list of globally enabled/disabled lints, along with justification as to
 why certain lints have been enabled/disabled.
 

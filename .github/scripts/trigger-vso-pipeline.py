@@ -35,7 +35,7 @@ def main(pipeline_id: str, token: str, commit: str, cancel: str, organization: s
 
             build = {
                       'definition': {'id': pipeline_id},
-                      'templateParameters': {'OssSubmoduleCommit': commit, 'OssSubmoduleRemote': 'https://github.com/microsoft/hvlite'}
+                      'templateParameters': {'OssSubmoduleCommit': commit}
                     }
             build = client.queue_build(build, project=project)
             print(f'Scheduled build: {build.id}. Url: {organization}/{project}/_build/results?buildId={build.id}&view=results', file=sys.stderr)

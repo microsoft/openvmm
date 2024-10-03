@@ -1,6 +1,6 @@
 # OpenVMM
 
-[![Build Status](https://github.com/microsoft/HvLite/actions/workflows/openvmm-ci.yaml/badge.svg?branch=main)](https://github.com/microsoft/HvLite/actions/workflows/openvmm-ci.yaml)
+[![Build Status](https://github.com/microsoft/openvmm/actions/workflows/openvmm-ci.yaml/badge.svg?branch=main)](https://github.com/microsoft/openvmm/actions/workflows/openvmm-ci.yaml)
 
 OpenVMM is a new VMM for Windows and Linux, written in Rust.
 
