@@ -8,7 +8,7 @@ from github import Auth
 @click.argument('target_branch', required=True)
 @click.option('--token', default=None)
 @click.option('--pull-request', default=None)
-@click.option('--team', default='hvlite-unsafe-approvers')
+@click.option('--team', default='openvmm-unsafe-approvers')
 def main(repo_path: str, target_branch: str, token: str, pull_request: str, team: str):
     def contains_unsafe(change) -> bool:
         if change.change_type not in ['A', 'M'] or not change.a_path.endswith('.rs'):
@@ -22,7 +22,7 @@ def main(repo_path: str, target_branch: str, token: str, pull_request: str, team
     changed_file_unsafe = [e.a_path for e in repo.commit(target_branch).diff(None) if contains_unsafe(e)]
 
     api = Github(auth=Auth.Token(token))
-    pull_request = api.get_repo('microsoft/hvlite').get_pull(int(pull_request))
+    pull_request = api.get_repo('microsoft/openvmm').get_pull(int(pull_request))
     if changed_file_unsafe:
         print(f'Unsafe review triggered by changes in: {",".join(changed_file_unsafe)}')
 
