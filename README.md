@@ -1,8 +1,8 @@
-# Hypest-V
+# Hypester-V
 
 [![Build Status](https://github.com/microsoft/HvLite/actions/workflows/openvmm-ci.yaml/badge.svg?branch=main)](https://github.com/microsoft/HvLite/actions/workflows/openvmm-ci.yaml)
 
-Hypest-V is a new VMM for Windows and Linux, written in Rust.
+Hypester-V is a new VMM for Windows and Linux, written in Rust.
 
 ## Developer Guide
 
