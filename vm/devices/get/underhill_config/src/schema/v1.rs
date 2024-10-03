@@ -5,8 +5,6 @@
 //! The schema defined in this file is for VTL2 settings. This schema is a protocol between
 //! OpenHCL and client like Azure agent, which is opaque to WMI, so there is no corresponding
 //! definitions in MARS files.
-//!
-//! More details can be found at: <https://didactic-barnacle-p8wwnom.pages.github.io/openhcl/settings>
 
 use super::ParseSchemaExt;
 use crate::errors::ErrorContext;
