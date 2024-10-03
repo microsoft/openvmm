@@ -1,8 +1,8 @@
-# OpenVMM
+# Hypest-V
 
 [![Build Status](https://github.com/microsoft/HvLite/actions/workflows/openvmm-ci.yaml/badge.svg?branch=main)](https://github.com/microsoft/HvLite/actions/workflows/openvmm-ci.yaml)
 
-OpenVMM is a new VMM for Windows and Linux, written in Rust.
+Hypest-V is a new VMM for Windows and Linux, written in Rust.
 
 ## Developer Guide
 
