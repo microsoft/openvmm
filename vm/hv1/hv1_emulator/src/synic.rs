@@ -22,6 +22,7 @@ use std::array;
 use std::sync::Arc;
 use virt::x86::MsrError;
 use vm_topology::processor::VpIndex;
+use vtl_array::VtlArray;
 use zerocopy::AsBytes;
 
 /// The virtual processor synthetic interrupt controller state.
@@ -92,7 +93,7 @@ impl SharedProcessorState {
 #[derive(Inspect)]
 pub struct GlobalSynic {
     #[inspect(iter_by_index)]
-    vps: Vec<Arc<RwLock<SharedProcessorState>>>,
+    vps: Vec<VtlArray<Arc<RwLock<SharedProcessorState>>, 2>>,
 }
 
 fn sint_interrupt(request: &mut dyn RequestInterrupt, sint: hvdef::HvSynicSint) {
@@ -185,7 +186,9 @@ impl GlobalSynic {
     /// Returns a new instance of the synthetic interrupt controller.
     pub fn new(max_vp_count: u32) -> Self {
         Self {
-            vps: (0..max_vp_count).map(|_| Default::default()).collect(),
+            vps: (0..max_vp_count)
+                .map(|_| VtlArray::from_fn(|_| Default::default()))
+                .collect(),
         }
     }
 
@@ -199,6 +202,7 @@ impl GlobalSynic {
         &self,
         guest_memory: &GuestMemory,
         vp: VpIndex,
+        vtl: Vtl,
         sint_index: u8,
         flag: u16,
         interrupt: &mut dyn RequestInterrupt,
@@ -206,7 +210,7 @@ impl GlobalSynic {
         let Some(vp) = self.vps.get(vp.index() as usize) else {
             return Ok(false);
         };
-        let vp = vp.read();
+        let vp = vp[vtl].read();
         let sint_index = sint_index as usize;
         let sint = vp.sint[sint_index];
         let flag = flag as usize;
@@ -248,29 +252,14 @@ impl GlobalSynic {
 
     /// Adds a virtual processor to the synthetic interrupt controller state.
     pub fn add_vp(&self, vp_index: VpIndex, vtl: Vtl) -> ProcessorSynic {
-        match vtl {
-            Vtl::Vtl0 => {
-                let shared = self.vps[vp_index.index() as usize].clone();
-                let old_shared =
-                    std::mem::replace(&mut *shared.write(), SharedProcessorState::AT_RESET);
-                assert!(!old_shared.online);
+        let shared = self.vps[vp_index.index() as usize][vtl].clone();
+        let old_shared = std::mem::replace(&mut *shared.write(), SharedProcessorState::AT_RESET);
+        assert!(!old_shared.online);
 
-                ProcessorSynic {
-                    sints: SintState::AT_RESET,
-                    timers: array::from_fn(|_| Timer::default()),
-                    shared,
-                }
-            }
-            Vtl::Vtl1 => {
-                // TODO CVM GUEST VSM, these values are just placeholders to prevent
-                // messing with VTL 0's state
-                ProcessorSynic {
-                    sints: SintState::AT_RESET,
-                    timers: array::from_fn(|_| Timer::default()),
-                    shared: Arc::new(RwLock::new(SharedProcessorState::AT_RESET)),
-                }
-            }
-            Vtl::Vtl2 => unreachable!(),
+        ProcessorSynic {
+            sints: SintState::AT_RESET,
+            timers: array::from_fn(|_| Timer::default()),
+            shared,
         }
     }
 }

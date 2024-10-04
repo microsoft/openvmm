@@ -877,6 +877,7 @@ impl vmcore::synic::GuestEventPort for UhEventPort {
                 match hv.synic.signal_event(
                     &partition.gm[vtl],
                     vp,
+                    vtl,
                     sint,
                     flag,
                     &mut partition.synic_interrupt(vp, vtl),
@@ -894,6 +895,7 @@ impl vmcore::synic::GuestEventPort for UhEventPort {
                                 .signal_event(
                                     &partition.gm[vtl],
                                     vp,
+                                    vtl,
                                     sint,
                                     flag,
                                     &mut partition.synic_interrupt(vp, vtl),
