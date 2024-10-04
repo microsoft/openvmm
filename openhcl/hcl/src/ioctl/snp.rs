@@ -45,9 +45,9 @@ pub enum SnpError {
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum SnpPageError {
-    #[error("pvalidate failed with error {0}")]
+    #[error("pvalidate failed")]
     Pvalidate(#[source] SnpError),
-    #[error("rmpadjust failed with error {0}")]
+    #[error("rmpadjust failed")]
     Rmpadjust(#[source] SnpError),
 }
 

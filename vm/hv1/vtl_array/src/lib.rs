@@ -42,6 +42,11 @@ impl<T, const N: usize> VtlArray<T, N> {
             data: core::array::from_fn(|i| f(Vtl::try_from(i as u8).unwrap())),
         }
     }
+
+    /// Returns the raw underlying array
+    pub fn into_array(self) -> [T; N] {
+        self.data
+    }
 }
 
 impl<T> From<[T; 1]> for VtlArray<T, 1> {
