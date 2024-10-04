@@ -401,7 +401,7 @@ mod grpc {
         ) -> Result<(), RequestError> {
             tracing::debug!(url = %req.uri(), "rpc request");
 
-            if req.method() != &http::Method::POST {
+            if req.method() != http::Method::POST {
                 Err(http::StatusCode::METHOD_NOT_ALLOWED)?
             }
             let content_type = req.headers().get("content-type");
@@ -475,7 +475,7 @@ mod grpc {
                         "grpc-status-details-bin",
                         base64::Engine::encode(
                             &base64::engine::general_purpose::STANDARD,
-                            &prost::Message::encode_to_vec(&status),
+                            prost::Message::encode_to_vec(&status),
                         )
                         .try_into()
                         .unwrap(),

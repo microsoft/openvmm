@@ -1402,9 +1402,9 @@ fn do_main() -> anyhow::Result<()> {
 
     if let Some(path) = opt.ttrpc.as_ref().or(opt.grpc.as_ref()) {
         block_on(async {
-            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(path);
             let listener =
-                unix_socket::UnixListener::bind(&path).context("failed to bind to socket")?;
+                unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
 
             let transport = if opt.ttrpc.is_some() {
                 ttrpc::RpcTransport::Ttrpc
