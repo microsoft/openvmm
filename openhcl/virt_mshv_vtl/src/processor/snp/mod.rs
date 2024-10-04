@@ -670,6 +670,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
             hv1_hypercall::HvFlushVirtualAddressSpace,
             hv1_hypercall::HvFlushVirtualAddressSpaceEx,
             hv1_hypercall::HvSetVpRegisters,
+            hv1_hypercall::HvModifyVtlProtectionMask,
         ],
     );
 
@@ -926,14 +927,15 @@ impl UhProcessor<'_, SnpBacked> {
     }
 
     async fn run_vp_snp(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let mut vmsa = self.runner.vmsa_mut(self.last_vtl());
+        let lower_vtl = self.last_vtl();
+        let mut vmsa = self.runner.vmsa_mut(lower_vtl);
         let last_interrupt_ctrl = vmsa.v_intr_cntrl();
 
         vmsa.v_intr_cntrl_mut().set_guest_busy(false);
 
         // TODO CVM GUEST VSM actually check and run vtl 1
         self.unlock_tlb_lock(Vtl::Vtl2);
-        let tlb_halt = self.should_halt_for_tlb_unlock(GuestVtl::Vtl0);
+        let tlb_halt = self.should_halt_for_tlb_unlock(lower_vtl);
 
         self.runner.set_halted(
             self.backing.lapics[GuestVtl::Vtl0].halted

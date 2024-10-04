@@ -1361,6 +1361,8 @@ impl VtlPartition {
                     vendor,
                     tsc_frequency,
                     ref_time,
+                    vtl0_hypercall_page_protector: None,
+                    vtl1_hypercall_page_protector: None,
                 }))
             }
         } else {

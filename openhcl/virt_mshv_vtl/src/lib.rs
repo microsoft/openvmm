@@ -44,6 +44,7 @@ use hcl::ioctl::Hcl;
 use hcl::ioctl::SetVsmPartitionConfigError;
 use hcl::GuestVtl;
 use hv1_emulator::hv::GlobalHv;
+use hv1_emulator::hv::VtlProtectHypercallOverlay;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_emulator::synic::GlobalSynic;
 use hv1_emulator::synic::SintProxied;
@@ -208,7 +209,7 @@ struct UhPartitionInner {
     untrusted_synic: Option<GlobalSynic>,
     guest_vsm: RwLock<GuestVsmState>,
     #[inspect(skip)]
-    isolated_memory_protector: Option<Box<dyn ProtectIsolatedMemory>>,
+    isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(skip)]
     shared_vis_pages_pool: Option<shared_pool_alloc::SharedPoolAllocator>,
@@ -296,6 +297,14 @@ enum GuestVsmState {
 impl GuestVsmState {
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     fn get_vtl1_mut(&mut self) -> Option<&mut GuestVsmVtl1State> {
+        match self {
+            GuestVsmState::Enabled { vtl1 } => Some(vtl1),
+            _ => None,
+        }
+    }
+
+    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    fn get_vtl1(&self) -> Option<&GuestVsmVtl1State> {
         match self {
             GuestVsmState::Enabled { vtl1 } => Some(vtl1),
             _ => None,
@@ -1081,7 +1090,7 @@ pub struct UhPartitionNewParams<'a> {
     /// Must be a power of two.
     pub vtom: Option<u64>,
     /// An object to call to change host visibility on guest memory.
-    pub isolated_memory_protector: Option<Box<dyn ProtectIsolatedMemory>>,
+    pub isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     /// Allocator for shared visibility pages.
     pub shared_vis_pages_pool: Option<shared_pool_alloc::SharedPoolAllocator>,
     /// Handle synic messages and events.
@@ -1101,6 +1110,7 @@ pub struct UhPartitionNewParams<'a> {
 pub trait ProtectIsolatedMemory: Send + Sync {
     /// Changes host visibility on guest memory.
     fn change_host_visibility(&self, shared: bool, gpns: &[u64]) -> HvRepResult;
+
     /// Queries host visibility on guest memory.
     fn query_host_visibility(
         &self,
@@ -1108,16 +1118,38 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         host_visibility: &mut [HostVisibilityType],
     ) -> HvRepResult;
 
-    /// Gets the default protections/permissions for a VTL.
-    fn default_vtl_protections(&self, vtl: GuestVtl) -> Option<HvMapGpaFlags>;
+    /// Gets the default protections/permissions for VTL 0.
+    fn default_vtl0_protections(&self) -> HvMapGpaFlags;
+
     /// Changes the default protections/permissions for a VTL. For VBS-isolated
     /// VMs, the protections apply to all vtls lower than the specified one. For
     /// hardware-isolated VMs, they apply just to the given vtl.
     fn change_default_vtl_protections(
         &self,
-        protections: HvMapGpaFlags,
         vtl: GuestVtl,
+        protections: HvMapGpaFlags,
     ) -> Result<(), HvError>;
+
+    /// Changes the vtl protections on a range of guest memory.
+    fn change_vtl_protections(
+        &self,
+        vtl: Vtl,
+        gpns: &[u64],
+        protections: HvMapGpaFlags,
+    ) -> HvRepResult;
+
+    /// Retrieves a protector for the hypercall code page overlay for a target
+    /// VTL.
+    fn hypercall_overlay_protector(
+        self: Arc<Self>,
+        vtl: Vtl,
+    ) -> Box<dyn VtlProtectHypercallOverlay>;
+
+    /// Changes the overlay for the hypercall code page for a target VTL.
+    fn change_hypercall_overlay(&self, vtl: Vtl, gpn: u64);
+
+    /// Disables the overlay for the hypercall code page for a target VTL.
+    fn disable_hypercall_overlay(&self, vtl: Vtl);
 }
 
 impl UhPartition {
@@ -1341,6 +1373,14 @@ impl UhPartition {
                 vendor: caps.vendor,
                 tsc_frequency,
                 ref_time,
+                vtl0_hypercall_page_protector: params
+                    .isolated_memory_protector
+                    .as_ref()
+                    .map(|p| p.clone().hypercall_overlay_protector(Vtl::Vtl0)),
+                vtl1_hypercall_page_protector: params
+                    .isolated_memory_protector
+                    .as_ref()
+                    .map(|p| p.clone().hypercall_overlay_protector(Vtl::Vtl1)),
             }))
         } else {
             None
@@ -1394,7 +1434,7 @@ impl UhPartition {
             hv,
             untrusted_synic,
             guest_vsm: RwLock::new(vsm_state),
-            isolated_memory_protector: params.isolated_memory_protector,
+            isolated_memory_protector: params.isolated_memory_protector.clone(),
             shared_vis_pages_pool: params.shared_vis_pages_pool,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,

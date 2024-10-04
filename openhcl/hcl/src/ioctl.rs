@@ -192,16 +192,20 @@ pub enum ApplyVtlProtectionsError {
         hv_error: HvError,
         vtl: HvInputVtl,
     },
-    #[error("{failed_operation} when protecting pages {range} for vtl {vtl:?}")]
+    #[error(
+        "{failed_operation} when protecting pages {range} with {permissions:x?} for vtl {vtl:?}"
+    )]
     Snp {
         failed_operation: snp::SnpPageError,
         range: MemoryRange,
+        permissions: x86defs::snp::SevRmpAdjust,
         vtl: HvInputVtl,
     },
-    #[error("tdcall failed with {error:?} when protecting pages {range} for vtl {vtl:?}")]
+    #[error("tdcall failed with {error:?} when protecting pages {range} with permissions {permissions:x?} for vtl {vtl:?}")]
     Tdx {
         error: TdCallResultCode,
         range: MemoryRange,
+        permissions: x86defs::tdx::TdgMemPageGpaAttr,
         vtl: HvInputVtl,
     },
     #[error("no valid protections for vtl {0:?}")]
@@ -3034,7 +3038,7 @@ impl Hcl {
 
         let query = mshv_rmpquery {
             start_pfn: gpa / HV_PAGE_SIZE,
-            page_count,
+            page_count,s
             terminate_on_failure: 0,
             ram: 0,
             padding: Default::default(),

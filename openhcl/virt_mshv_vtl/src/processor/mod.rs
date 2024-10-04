@@ -1372,6 +1372,92 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::ModifySparseGpaPageHostVisibility
     }
 }
 
+impl<T: CpuIo, B: Backing> hv1_hypercall::ModifyVtlProtectionMask
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn modify_vtl_protection_mask(
+        &mut self,
+        partition_id: u64,
+        map_flags: hvdef::HvMapGpaFlags,
+        target_vtl: Option<Vtl>,
+        gpa_pages: &[u64],
+    ) -> hvdef::HvRepResult {
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err((HvError::AccessDenied, 0));
+        }
+
+        if let Some(vtl) = target_vtl {
+            if vtl > self.vp.last_vtl() {
+                return Err((HvError::AccessDenied, 0));
+            }
+        }
+
+        let target_vtl = target_vtl.unwrap_or(self.vp.last_vtl());
+        if target_vtl == Vtl::Vtl0 {
+            return Err((HvError::InvalidParameter, 0));
+        }
+
+        // A VTL cannot change its own VTL permissions until it has enabled VTL protection and
+        // configured default permissions. Higher VTLs are not under this restriction (as they may
+        // need to apply default permissions before VTL protection is enabled).
+        if target_vtl == self.vp.last_vtl() {
+            if let Some(guest_vsm) = self.vp.partition.guest_vsm.read().get_vtl1() {
+                if !guest_vsm.enable_vtl_protection {
+                    return Err((HvError::AccessDenied, 0));
+                }
+            } else {
+                return Err((HvError::AccessDenied, 0));
+            }
+        }
+
+        if self.vp.partition.is_hardware_isolated() {
+            // VTL 1 mut be enabled already.
+            let mut guest_vsm_lock = self.vp.partition.guest_vsm.write();
+            let guest_vsm = guest_vsm_lock
+                .get_vtl1_mut()
+                .ok_or((HvError::InvalidVtlState, 0))?;
+            let guest_vsm_inner = guest_vsm.inner.get_hardware_cvm_mut().unwrap();
+
+            if !crate::validate_vtl_gpa_flags(
+                map_flags,
+                guest_vsm_inner.mbec_enabled,
+                guest_vsm_inner.shadow_supervisor_stack_enabled,
+            ) {
+                return Err((HvError::InvalidRegisterValue, 0));
+            }
+
+            // The contract for VSM is that the VTL protections describe what
+            // the lower VTLs are allowed to access. Hardware CVMs set the
+            // protections on the VTL itself. Therefore, for a hardware CVM,
+            // given that only VTL 1 can set the protections, the default
+            // permissions should be changed for VTL 0.
+            self.vp
+                .partition
+                .isolated_memory_protector
+                .as_ref()
+                .expect("has a memory protector")
+                .change_vtl_protections(Vtl::Vtl0, gpa_pages, map_flags)?;
+        } else {
+            // TODO VBS GUEST VSM: verify this logic is correct
+            // TODO VBS GUEST VSM: validation on map_flags, similar to default
+            // protections mask changes
+            // Can receive an intercept on adjust permissions, and for isolated
+            // VMs if the page is unaccepted
+            if self.vp.partition.isolation.is_some() {
+                return Err((HvError::OperationDenied, 0));
+            } else {
+                if !gpa_pages.is_empty() && !self.vp.partition.is_gpa_lower_vtl_ram(gpa_pages[0]) {
+                    return Err((HvError::OperationDenied, 0));
+                } else {
+                    panic!("Should not be handling this hypercall for guest ram");
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 impl<T: CpuIo, B: Backing> hv1_hypercall::QuerySparseGpaPageHostVisibility
     for UhHypercallHandler<'_, '_, T, B>
 {
