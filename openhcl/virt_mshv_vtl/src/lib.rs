@@ -1373,14 +1373,12 @@ impl UhPartition {
                 vendor: caps.vendor,
                 tsc_frequency,
                 ref_time,
-                vtl0_hypercall_page_protector: params
-                    .isolated_memory_protector
-                    .as_ref()
-                    .map(|p| p.clone().hypercall_overlay_protector(Vtl::Vtl0)),
-                vtl1_hypercall_page_protector: params
-                    .isolated_memory_protector
-                    .as_ref()
-                    .map(|p| p.clone().hypercall_overlay_protector(Vtl::Vtl1)),
+                hypercall_page_protectors: VtlArray::from_fn(|vtl| {
+                    params
+                        .isolated_memory_protector
+                        .as_ref()
+                        .map(|p| p.clone().hypercall_overlay_protector(vtl))
+                }),
             }))
         } else {
             None

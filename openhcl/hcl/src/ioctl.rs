@@ -189,6 +189,7 @@ pub enum ApplyVtlProtectionsError {
     Hypervisor {
         range: MemoryRange,
         output: HypercallOutput,
+        #[source]
         hv_error: HvError,
         vtl: HvInputVtl,
     },
@@ -196,6 +197,7 @@ pub enum ApplyVtlProtectionsError {
         "{failed_operation} when protecting pages {range} with {permissions:x?} for vtl {vtl:?}"
     )]
     Snp {
+        #[source]
         failed_operation: snp::SnpPageError,
         range: MemoryRange,
         permissions: x86defs::snp::SevRmpAdjust,
