@@ -221,7 +221,7 @@ impl RuntimeState {
 /// tuple of `(Option<T>, EfiStatus, Option<NvramError>)`, where the `EfiStatus`
 /// field should be unconditionally returned to the guest, while the
 /// `NvramError` type provides additional context as to what error occurred in
-/// HvLite (i.e: for logging purposes).
+/// OpenVMM (i.e: for logging purposes).
 #[derive(Debug, Inspect)]
 pub struct NvramSpecServices<S: InspectableNvramStorage> {
     storage: S,
@@ -644,14 +644,12 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                 };
 
                 // NOTE: The HCL and worker process implementations perform a
-                // case-insensitive comparisons here. While this "fixed"
-                // https://microsoftarchive.visualstudio.com/OS/_workitems/edit/9481039,
-                // a better fix would've been to make all comparisons case
-                // _sensitive_, rather than introducing bits of case
-                // _insensitivity_ around the nvram implementation. Hindsight is
-                // 20-20.
+                // case-insensitive comparisons here. A better fix would've
+                // been to make all comparisons case _sensitive_, rather than
+                // introducing bits of case _insensitivity_ around the nvram
+                // implementation. Hindsight is 20-20.
                 //
-                // In HvLite, we don't consider nvram variable names as strings
+                // In OpenVMM, we don't consider nvram variable names as strings
                 // with semantic meaning. Instead, they are akin to a
                 // bag-of-bytes that _just so happen_ to have a convenient debug
                 // representation when printed out at a UCS-2 string.
