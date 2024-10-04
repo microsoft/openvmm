@@ -175,7 +175,7 @@ impl FlowNode for Node {
 
                     xshell::cmd!(
                         sh,
-                        "python3 underhill/update-rootfs.py
+                        "python3 openhcl/update-rootfs.py
                             {bin_openhcl}
                             {initrd_path}
                             --arch {rootfs_py_arch}

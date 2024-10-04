@@ -79,9 +79,9 @@ pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
     // the whp/kvm crates are inherently arch-specific, as they contain
     // low-level bindings to a particular platform's virtualization APIs
     if path.starts_with("guest_test_uefi")
-        || path.starts_with("underhill/openhcl_boot")
-        || path.starts_with("underhill/minimal_rt")
-        || path.starts_with("underhill/sidecar")
+        || path.starts_with("openhcl/openhcl_boot")
+        || path.starts_with("openhcl/minimal_rt")
+        || path.starts_with("openhcl/sidecar")
         || path.starts_with("vm/whp")
         || path.starts_with("vm/kvm")
     {

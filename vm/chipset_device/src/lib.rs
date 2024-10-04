@@ -8,13 +8,11 @@
 /// (insofar as it exists on one or more system busses).
 //
 // DEVNOTE: In the past, `ChipsetDevice` included explicit bounds for things
-// like `Inspect` and `SaveRestore`, traits that all HvLite/Underhill devices
-// are expected to implement. While this works, it comes with a few drawbacks:
+// like `Inspect` and `SaveRestore`, traits that all OpenVMM devices are
+// expected to implement. While this works, it comes with a few drawbacks:
 // - It adds some heavy dependencies to an otherwise lightweight crate
 // - It adds substantial boilerplate when implementing "test" devices, as those
 //   traits need to be implemented + stubbed-out with `todo!()`s
-// - It makes it harder to reuse "core" device implementations outside
-//   HvLite/Underhill
 pub trait ChipsetDevice: 'static + Send /* see DEVNOTE before adding bounds */ {
     /// Optionally returns a trait object to send IO port intercepts to.
     #[inline(always)]

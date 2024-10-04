@@ -2,19 +2,19 @@
 
 [workspace]
 resolver = "2"
-default-members = ["hvlite/openvmm"]
+default-members = ["openvmm/openvmm"]
 members = [
   # openvmm
-  "hvlite/openvmm",
+  "openvmm/openvmm",
   # repo tooling
   "flowey/flowey_hvlite",
   "xtask",
-  # underhill
-  "underhill/ohcldiag-dev",
-  "underhill/openhcl_boot",
-  "underhill/openvmm_hcl",
-  "underhill/sidecar",
-  "underhill/vmfirmwareigvm_dll",
+  # openhcl
+  "openhcl/ohcldiag-dev",
+  "openhcl/openhcl_boot",
+  "openhcl/openvmm_hcl",
+  "openhcl/sidecar",
+  "openhcl/vmfirmwareigvm_dll",
   # VMM tests
   "vmm_tests/vmm_tests",
   # hyper-v
@@ -52,14 +52,14 @@ flowey_lib_common = { path = "flowey/flowey_lib_common" }
 flowey_lib_hvlite = { path = "flowey/flowey_lib_hvlite" }
 schema_ado_yaml = { path = "flowey/schema_ado_yaml" }
 
-hvlite_core = { path = "hvlite/hvlite_core" }
-hvlite_defs = { path = "hvlite/hvlite_defs" }
-hvlite_entry = { path = "hvlite/hvlite_entry" }
-hvlite_helpers = { path = "hvlite/hvlite_helpers" }
-hvlite_pcat_locator = { path = "hvlite/hvlite_pcat_locator" }
-openvmm_resources = { path = "hvlite/openvmm_resources" }
-hvlite_ttrpc_vmservice = { path = "hvlite/hvlite_ttrpc_vmservice" }
-membacking = { path = "hvlite/membacking" }
+hvlite_core = { path = "openvmm/hvlite_core" }
+hvlite_defs = { path = "openvmm/hvlite_defs" }
+hvlite_entry = { path = "openvmm/hvlite_entry" }
+hvlite_helpers = { path = "openvmm/hvlite_helpers" }
+hvlite_pcat_locator = { path = "openvmm/hvlite_pcat_locator" }
+openvmm_resources = { path = "openvmm/openvmm_resources" }
+hvlite_ttrpc_vmservice = { path = "openvmm/hvlite_ttrpc_vmservice" }
+membacking = { path = "openvmm/membacking" }
 
 petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact_resolver_openvmm_known_paths" }
 petri_artifacts_vmm_test = { path = "vmm_tests/petri_artifacts_vmm_test" }
@@ -134,31 +134,31 @@ win_import_lib = { path = "support/win_import_lib" }
 win1_support = { path = "support/win1_support" }
 zerocopy_helpers = { path = "support/zerocopy_helpers" }
 
-azure_profiler_proto = { path = "underhill/azure_profiler_proto" }
-bootloader_fdt_parser = { path = "underhill/bootloader_fdt_parser" }
-build_info = { path = "underhill/build_info" }
-diag_client = { path = "underhill/diag_client" }
-diag_proto = { path = "underhill/diag_proto" }
-diag_server = { path = "underhill/diag_server" }
-hcl = { path = "underhill/hcl" }
-host_fdt_parser = { path = "underhill/host_fdt_parser" }
-kmsg_defs = { path = "underhill/kmsg_defs" }
-minimal_rt = { path = "underhill/minimal_rt" }
-minimal_rt_build = { path = "underhill/minimal_rt_build" }
-sidecar_client = { path = "underhill/sidecar_client" }
-sidecar_defs = { path = "underhill/sidecar_defs" }
-shared_pool_alloc = { path = "underhill/shared_pool_alloc" }
-underhill_attestation = { path = "underhill/underhill_attestation" }
-underhill_confidentiality = { path = "underhill/underhill_confidentiality" }
-underhill_core = { path = "underhill/underhill_core" }
-underhill_crash = { path = "underhill/underhill_crash" }
-underhill_dump = { path = "underhill/underhill_dump" }
-underhill_entry = { path = "underhill/underhill_entry" }
-underhill_init = { path = "underhill/underhill_init" }
-underhill_mem = { path = "underhill/underhill_mem" }
-openvmm_hcl_resources = { path = "underhill/openvmm_hcl_resources" }
-underhill_threadpool = { path = "underhill/underhill_threadpool" }
-virt_underhill = { path = "underhill/virt_underhill" }
+azure_profiler_proto = { path = "openhcl/azure_profiler_proto" }
+bootloader_fdt_parser = { path = "openhcl/bootloader_fdt_parser" }
+build_info = { path = "openhcl/build_info" }
+diag_client = { path = "openhcl/diag_client" }
+diag_proto = { path = "openhcl/diag_proto" }
+diag_server = { path = "openhcl/diag_server" }
+hcl = { path = "openhcl/hcl" }
+host_fdt_parser = { path = "openhcl/host_fdt_parser" }
+kmsg_defs = { path = "openhcl/kmsg_defs" }
+minimal_rt = { path = "openhcl/minimal_rt" }
+minimal_rt_build = { path = "openhcl/minimal_rt_build" }
+sidecar_client = { path = "openhcl/sidecar_client" }
+sidecar_defs = { path = "openhcl/sidecar_defs" }
+shared_pool_alloc = { path = "openhcl/shared_pool_alloc" }
+underhill_attestation = { path = "openhcl/underhill_attestation" }
+underhill_confidentiality = { path = "openhcl/underhill_confidentiality" }
+underhill_core = { path = "openhcl/underhill_core" }
+underhill_crash = { path = "openhcl/underhill_crash" }
+underhill_dump = { path = "openhcl/underhill_dump" }
+underhill_entry = { path = "openhcl/underhill_entry" }
+underhill_init = { path = "openhcl/underhill_init" }
+underhill_mem = { path = "openhcl/underhill_mem" }
+openvmm_hcl_resources = { path = "openhcl/openvmm_hcl_resources" }
+underhill_threadpool = { path = "openhcl/underhill_threadpool" }
+virt_underhill = { path = "openhcl/virt_underhill" }
 
 aarch64defs = { path = "vm/aarch64/aarch64defs" }
 aarch64emu = { path = "vm/aarch64/aarch64emu" }
@@ -348,7 +348,7 @@ debug_worker_defs = { path = "workers/debug_worker_defs" }
 vnc_worker = { path = "workers/vnc_worker" }
 vnc_worker_defs = { path = "workers/vnc_worker_defs" }
 vnc = { path = "workers/vnc_worker/vnc" }
-profiler_worker = { path = "underhill/profiler_worker" }
+profiler_worker = { path = "openhcl/profiler_worker" }
 
 # crates.io
 anyhow = "1.0"

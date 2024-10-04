@@ -4,7 +4,7 @@
 //! [`ChipsetDevice`](chipset_device::ChipsetDevice) instances using
 //! `Arc<CloseableMutex<dyn ChipsetDevice>>` to communicate with the backing chipset.
 //!
-//! NOTE: this crate is no longer used by HvLite/Underhill, and only remains
+//! NOTE: this crate is no longer used by OpenVMM/OpenHCL, and only remains
 //! in-tree to support testing devices.
 
 #![warn(missing_docs)]

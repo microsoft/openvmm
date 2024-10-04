@@ -1,7 +1,7 @@
 // Copyright (C) Microsoft Corporation. All rights reserved.
 
-//! Glue code to hook-up HvLite/Underhill specific types/traits to the
-//! types/traits required by `vmotherboard`.
+//! Glue code to adapt OpenVMM-specific platform APIs to the types/traits
+//! required by `vmotherboard`.
 
 use crate::partition_unit::Halt;
 use crate::synic::SynicPorts;
