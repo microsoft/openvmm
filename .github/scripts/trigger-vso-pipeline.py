@@ -13,7 +13,8 @@ from msrest.authentication import BasicAuthentication
 @click.option('--organization', default='https://microsoft.visualstudio.com')
 @click.option('--project', default='HyperVCloud')
 @click.option('--debug', default=False, is_flag=True)
-def main(pipeline_id: str, token: str, commit: str, cancel: str, organization: str, project: str, debug: bool):
+@click.option('--title', default=None)
+def main(pipeline_id: str, token: str, commit: str, cancel: str, organization: str, project: str, debug: bool, title: str):
     try:
         client = Connection(base_url=organization, creds=BasicAuthentication('', token)).clients.get_build_client()
 
@@ -35,6 +36,7 @@ def main(pipeline_id: str, token: str, commit: str, cancel: str, organization: s
 
             build = {
                       'definition': {'id': pipeline_id},
+                      'buildNumber': title,
                       'templateParameters': {'OssSubmoduleCommit': commit}
                     }
             build = client.queue_build(build, project=project)
