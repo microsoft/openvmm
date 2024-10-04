@@ -1400,17 +1400,26 @@ fn do_main() -> anyhow::Result<()> {
         return console::relay_console(&path);
     }
 
-    if let Some(ttrpc) = opt.ttrpc {
+    if let Some(path) = opt.ttrpc.as_ref().or(opt.grpc.as_ref()) {
         block_on(async {
-            let _ = std::fs::remove_file(&ttrpc);
-            let listener = unix_socket::UnixListener::bind(&ttrpc)
-                .context("failed to bind to ttrpc socket")?;
+            let _ = std::fs::remove_file(&path);
+            let listener =
+                unix_socket::UnixListener::bind(&path).context("failed to bind to socket")?;
+
+            let transport = if opt.ttrpc.is_some() {
+                ttrpc::RpcTransport::Ttrpc
+            } else {
+                ttrpc::RpcTransport::Grpc
+            };
 
             // This is a local launch
-            let mut handle =
-                launch_local_worker::<TtrpcWorker>(ttrpc::Parameters { listener }).await?;
+            let mut handle = launch_local_worker::<TtrpcWorker>(ttrpc::Parameters {
+                listener,
+                transport,
+            })
+            .await?;
 
-            tracing::info!(path = %ttrpc.display(), "listening");
+            tracing::info!(%transport, path = %path.display(), "listening");
 
             // Signal the the parent process that the server is ready.
             pal::close_stdout().context("failed to close stdout")?;

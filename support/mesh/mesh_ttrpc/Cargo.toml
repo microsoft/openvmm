@@ -4,6 +4,9 @@
 name = "mesh_ttrpc"
 edition = "2021"
 
+[features]
+grpc = ["dep:base64", "dep:h2", "dep:tokio", "dep:http", "dep:urlencoding"]
+
 [dependencies]
 mesh = { workspace = true, features = ["prost"] }
 pal_async.workspace = true
@@ -19,6 +22,13 @@ thiserror.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
+
+# gRPC dependencies
+base64 = { workspace = true, optional = true }
+h2 = { workspace = true, optional = true, features = ["stream"] }
+tokio = { version = "1", optional = true }
+http = { workspace = true, optional = true }
+urlencoding = { workspace = true, optional = true }
 
 [dev-dependencies]
 env_logger.workspace = true

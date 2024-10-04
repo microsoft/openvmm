@@ -5,6 +5,8 @@ name = "hvlite_entry"
 edition = "2021"
 
 [features]
+default = ["ttrpc", "grpc"]
+
 # Enable locally compiling and statically linking a copy of OpenSSL.
 # The build process requires a C compiler, perl, and make.
 openssl-vendored = ["openssl/vendored"]
@@ -12,6 +14,9 @@ openssl-vendored = ["openssl/vendored"]
 encryption = ["vmotherboard/encryption"]
 
 unstable_whp = ["virt_whp/unstable_whp", "whp/unstable_whp"]
+
+grpc = ["mesh_ttrpc/grpc"]
+ttrpc = []
 
 [dependencies]
 chipset_resources.workspace = true

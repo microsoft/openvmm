@@ -336,6 +336,10 @@ flags:
     #[clap(long, value_name = "SOCKETPATH")]
     pub ttrpc: Option<PathBuf>,
 
+    /// run as a grpc server on the specified Unix socket
+    #[clap(long, value_name = "SOCKETPATH", conflicts_with("ttrpc"))]
+    pub grpc: Option<PathBuf>,
+
     /// do not launch child processes
     #[clap(long)]
     pub single_process: bool,

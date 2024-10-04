@@ -1,5 +1,7 @@
 // Copyright (C) Microsoft Corporation. All rights reserved.
 
+//! Worker for the prototype gRPC/ttrpc management endpoint.
+
 use self::vmservice::nic_config::Backend;
 use crate::serial_io::bind_serial;
 use crate::DEFAULT_MMIO_GAPS;
@@ -62,10 +64,35 @@ use vmm_core_defs::HaltReason;
 #[derive(mesh::MeshPayload)]
 pub struct Parameters {
     pub listener: UnixListener,
+    pub transport: RpcTransport,
+}
+
+#[derive(Copy, Clone, mesh::MeshPayload)]
+pub enum RpcTransport {
+    Ttrpc,
+    Grpc,
+}
+
+impl std::fmt::Display for RpcTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(match self {
+            RpcTransport::Ttrpc => "ttrpc",
+            RpcTransport::Grpc => "grpc",
+        })
+    }
+}
+
+#[derive(Copy, Clone)]
+enum ResolvedTransport {
+    #[cfg(feature = "ttrpc")]
+    Ttrpc,
+    #[cfg(feature = "grpc")]
+    Grpc,
 }
 
 pub struct TtrpcWorker {
     listener: UnixListener,
+    transport: ResolvedTransport,
 }
 
 pub const TTRPC_WORKER: WorkerId<Parameters> = WorkerId::new("TtrpcWorker");
@@ -78,6 +105,14 @@ impl Worker for TtrpcWorker {
     fn new(parameters: Self::Parameters) -> anyhow::Result<Self> {
         Ok(Self {
             listener: parameters.listener,
+            transport: match parameters.transport {
+                #[cfg(feature = "ttrpc")]
+                RpcTransport::Ttrpc => ResolvedTransport::Ttrpc,
+                #[cfg(feature = "grpc")]
+                RpcTransport::Grpc => ResolvedTransport::Grpc,
+                #[allow(unreachable_patterns)]
+                transport => bail!("unsupported transport {transport}"),
+            },
         })
     }
 
@@ -92,6 +127,7 @@ impl Worker for TtrpcWorker {
                 vm: None,
                 worker_handle: None,
                 rpc_wait_group: WaitGroup::new(),
+                transport: self.transport,
             };
             service.run(self.listener, recv).await?;
             Ok(())
@@ -111,11 +147,19 @@ impl VmService {
         server.add_service::<vmservice::Vm>(vm_service_send);
         server.add_service::<InspectService>(inspect_service_send);
 
+        let transport = self.transport;
         let (cancel_send, cancel_recv) = mesh::oneshot();
         let server_task = self.driver.spawn("ttrpc-server", {
             let driver = self.driver.clone();
             async move {
-                let r = server.run(&driver, listener, cancel_recv).await;
+                let r = match transport {
+                    #[cfg(feature = "ttrpc")]
+                    ResolvedTransport::Ttrpc => server.run(&driver, listener, cancel_recv).await,
+                    #[cfg(feature = "grpc")]
+                    ResolvedTransport::Grpc => {
+                        server.run_grpc(&driver, listener, cancel_recv).await
+                    }
+                };
                 match &r {
                     Ok(()) => tracing::debug!("ttrpc server shutting down"),
                     Err(err) => tracing::error!(
@@ -223,6 +267,7 @@ struct VmService {
     vm: Option<Arc<Vm>>,
     worker_handle: Option<mesh_worker::WorkerHandle>,
     rpc_wait_group: WaitGroup,
+    transport: ResolvedTransport,
 }
 
 fn grpc_error(err: anyhow::Error) -> Status {

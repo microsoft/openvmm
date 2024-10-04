@@ -22,6 +22,10 @@ static WORKSPACE_EXCEPTIONS: &[(&str, &[&str])] = &[
     //
     // disk_blob eventually will remove its tokio dependency.
     ("disk_blob", &["tokio"]),
+    // Allow mesh_ttrpc to use tokio, since h2 depends on it for the tokio IO
+    // trait definitions. Hopefully this can be resolved upstream once async IO
+    // trait "vocabulary types" move to a common crate.
+    ("mesh_ttrpc", &["tokio"]),
 ];
 
 impl Xtask for VerifyWorkspace {
