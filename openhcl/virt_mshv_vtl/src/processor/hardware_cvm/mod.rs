@@ -60,8 +60,6 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             }
         }
 
-        // TODO GUEST_VSM: per-VTL GlobalHvState
-
         self.vp.partition.hcl.enable_partition_vtl(
             target_vtl,
             // These flags are managed and enforced internally; CVMs can't rely
@@ -89,12 +87,12 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             .expect("exists for a cvm");
 
         // Grant VTL 1 access to lower VTL memory
-        tracing::info!("Granting VTL 1 access to lower VTL memory");
-        protector.change_default_vtl_protections(hvdef::HV_MAP_GPA_PERMISSIONS_ALL, Vtl::Vtl1)?;
+        tracing::debug!("Granting VTL 1 access to lower VTL memory");
+        protector.change_default_vtl_protections(Vtl::Vtl1, hvdef::HV_MAP_GPA_PERMISSIONS_ALL)?;
 
         tracing::debug!("Successfully granted vtl 1 access to lower vtl memory");
 
-        tracing::info!("enabled vtl 1 on the partition");
+        tracing::info!("Enabled vtl 1 on the partition");
 
         Ok(())
     }
@@ -205,7 +203,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         *target_vp.hv_start_enable_vtl_vp[vtl].lock() = Some(Box::new(*vp_context));
         target_vp.wake(vtl, WakeReason::HV_START_ENABLE_VP_VTL);
 
-        tracing::info!("enabled vtl 1 on vp {}", vp_index);
+        tracing::debug!("enabled vtl 1 on vp {}", vp_index);
 
         Ok(())
     }
@@ -472,16 +470,15 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             .as_ref()
             .expect("isolated memory protector must exist for a CVM");
 
-        // Don't allow changing existing protections once set.
-        if let Some(current_protections) = protector.default_vtl_protections(targeted_vtl) {
-            if value.enable_vtl_protection() != guest_vsm.enable_vtl_protection
-                && protections != current_protections
-            {
+        // Don't allow changing existing protections once vtl protection is enabled
+        if guest_vsm.enable_vtl_protection {
+            let current_protections = protector.default_vtl0_protections();
+            if protections != current_protections {
                 return Err(HvError::InvalidRegisterValue);
             }
         }
 
-        protector.change_default_vtl_protections(protections, targeted_vtl)?;
+        protector.change_default_vtl_protections(targeted_vtl, protections)?;
 
         // TODO GUEST VSM: actually use the enable_vtl_protection value
         guest_vsm.enable_vtl_protection = value.enable_vtl_protection();

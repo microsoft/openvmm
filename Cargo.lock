@@ -6773,6 +6773,7 @@ dependencies = [
  "futures",
  "guestmem",
  "hcl",
+ "hv1_emulator",
  "hvdef",
  "inspect",
  "memory_range",
@@ -6784,6 +6785,7 @@ dependencies = [
  "underhill_threadpool",
  "virt_mshv_vtl",
  "vm_topology",
+ "vtl_array",
  "x86defs",
 ]
 
