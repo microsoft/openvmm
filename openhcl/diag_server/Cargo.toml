@@ -11,7 +11,7 @@ azure_profiler_proto.workspace = true
 inspect_proto.workspace = true
 inspect = { workspace = true, features = ["defer"] }
 mesh = { workspace = true, features = ["socket2"] }
-mesh_ttrpc.workspace = true
+mesh_rpc.workspace = true
 pal.workspace = true
 unix_socket.workspace = true
 pal_async.workspace = true

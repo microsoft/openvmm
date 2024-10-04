@@ -35,7 +35,7 @@ hvlite_ttrpc_vmservice.workspace = true
 gdma_resources.workspace = true
 net_backend_resources.workspace = true
 
-mesh_ttrpc.workspace = true
+mesh_rpc.workspace = true
 test_with_tracing.workspace = true
 
 [build-dependencies]

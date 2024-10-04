@@ -20,7 +20,7 @@ members = [
   # hyper-v
   # fuzzing
   "support/inspect/fuzz",
-  "support/mesh/mesh_ttrpc/fuzz",
+  "support/mesh/mesh_rpc/fuzz",
   "support/sparse_mmap/fuzz",
   "support/ucs2/fuzz",
   "vm/devices/chipset/fuzz",
@@ -101,7 +101,7 @@ mesh_node = { path = "support/mesh/mesh_node" }
 mesh_process = { path = "support/mesh/mesh_process" }
 mesh_protobuf = { path = "support/mesh/mesh_protobuf" }
 mesh_remote = { path = "support/mesh/mesh_remote" }
-mesh_ttrpc = { path = "support/mesh/mesh_ttrpc" }
+mesh_rpc = { path = "support/mesh/mesh_rpc" }
 mesh_worker = { path = "support/mesh/mesh_worker" }
 mesh_tracing = { path = "support/mesh_tracing" }
 open_enum = { path = "support/open_enum" }

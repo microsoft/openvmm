@@ -62,7 +62,7 @@ fn test_ttrpc_interface() -> anyhow::Result<()> {
 
     let conn = UnixStream::connect(&socket_path)?;
     DefaultPool::run_with(|driver| async move {
-        let client = mesh_ttrpc::Client::new(&driver, conn);
+        let client = mesh_rpc::Client::new(&driver, conn);
         for i in 0..3 {
             let mut com1_path = std::env::temp_dir();
             com1_path.push(Guid::new_random().to_string());
@@ -127,7 +127,7 @@ fn test_ttrpc_interface() -> anyhow::Result<()> {
                     .unwrap()
                     .unwrap_err()
                     .code,
-                mesh_ttrpc::service::Code::DeadlineExceeded as i32
+                mesh_rpc::service::Code::DeadlineExceeded as i32
             );
 
             let waiter = client.start_call(vmservice::Vm::WaitVm, (), None);

@@ -35,8 +35,8 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh::CancelReason;
 use mesh::MeshPayload;
-use mesh_ttrpc::service::Code;
-use mesh_ttrpc::service::Status;
+use mesh_rpc::service::Code;
+use mesh_rpc::service::Status;
 use mesh_worker::RegisteredWorkers;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
@@ -141,7 +141,7 @@ impl VmService {
         listener: UnixListener,
         mut recv: mesh::Receiver<WorkerRpc<()>>,
     ) -> anyhow::Result<()> {
-        let mut server = mesh_ttrpc::Server::new();
+        let mut server = mesh_rpc::Server::new();
         let (vm_service_send, mut vm_service_recv) = mesh::channel();
         let (inspect_service_send, mut inspect_service_recv) = mesh::channel();
         server.add_service::<vmservice::Vm>(vm_service_send);

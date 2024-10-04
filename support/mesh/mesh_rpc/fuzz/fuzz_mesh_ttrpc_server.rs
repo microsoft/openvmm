@@ -20,7 +20,7 @@ fn do_fuzz(input: &[u8]) {
 
     let (_cancel_send, cancel) = mesh::oneshot();
     let (send, mut recv) = mesh::channel::<(CancelContext, S)>();
-    let mut server = mesh_ttrpc::Server::new();
+    let mut server = mesh_rpc::Server::new();
 
     server.add_service(send);
 

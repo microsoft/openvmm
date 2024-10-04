@@ -206,7 +206,7 @@ dependencies = [
  "inspect",
  "mesh",
  "mesh_build",
- "mesh_ttrpc",
+ "mesh_rpc",
  "prost",
  "prost-build",
 ]
@@ -969,7 +969,7 @@ dependencies = [
  "inspect",
  "inspect_proto",
  "mesh",
- "mesh_ttrpc",
+ "mesh_rpc",
  "pal_async",
  "socket2",
  "thiserror",
@@ -985,7 +985,7 @@ dependencies = [
  "inspect",
  "mesh",
  "mesh_build",
- "mesh_ttrpc",
+ "mesh_rpc",
  "prost",
  "prost-build",
 ]
@@ -1006,7 +1006,7 @@ dependencies = [
  "inspect_proto",
  "libc",
  "mesh",
- "mesh_ttrpc",
+ "mesh_rpc",
  "net_packet_capture",
  "pal",
  "pal_async",
@@ -1960,7 +1960,7 @@ dependencies = [
  "libfuzzer-sys",
  "mesh",
  "mesh_build",
- "mesh_ttrpc",
+ "mesh_rpc",
  "pal_async",
  "prost",
  "prost-build",
@@ -2728,7 +2728,7 @@ dependencies = [
  "mcr_resources",
  "mesh",
  "mesh_process",
- "mesh_ttrpc",
+ "mesh_rpc",
  "mesh_worker",
  "net_backend_resources",
  "netvsp_resources",
@@ -2813,7 +2813,7 @@ version = "0.0.0"
 dependencies = [
  "mesh",
  "mesh_build",
- "mesh_ttrpc",
+ "mesh_rpc",
  "prost",
  "prost-build",
 ]
@@ -3165,7 +3165,7 @@ dependencies = [
  "mesh",
  "mesh_build",
  "mesh_protobuf",
- "mesh_ttrpc",
+ "mesh_rpc",
  "prost",
  "prost-build",
 ]
@@ -3687,21 +3687,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mesh_tracing"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "futures",
- "guid",
- "inspect",
- "mesh",
- "pal_async",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "mesh_ttrpc"
+name = "mesh_rpc"
 version = "0.0.0"
 dependencies = [
  "anyhow",
@@ -3726,6 +3712,20 @@ dependencies = [
  "unix_socket",
  "urlencoding",
  "zerocopy",
+]
+
+[[package]]
+name = "mesh_tracing"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "guid",
+ "inspect",
+ "mesh",
+ "pal_async",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -7993,7 +7993,7 @@ dependencies = [
  "hvlite_defs",
  "hvlite_ttrpc_vmservice",
  "mesh",
- "mesh_ttrpc",
+ "mesh_rpc",
  "net_backend_resources",
  "nvme_resources",
  "pal_async",

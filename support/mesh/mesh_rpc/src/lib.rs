@@ -2,19 +2,18 @@
 
 //! gRPC-style client and server implementation.
 //!
-//! TODO: rename this crate
+//! This provides [gRPC](https://grpc.io/) and
+//! [ttrpc](https://github.com/containerd/ttrpc) servers and clients that
+//! interop well with mesh channels, allowing gRPC to be easily used with a
+//! mesh-based application.
 //!
 //! Currently, the server supports the gRPC and ttrpc protocols, while the
 //! client only supports the ttrpc protocol.
-//!
-//! ttrpc is a low-overhead, high-density local RPC interface used for
-//! containerd to communicate with its shims and plugins. It uses the same
-//! payload format as gRPC but a much simpler transport format.
 
 #![warn(missing_docs)]
 
 #[cfg(test)]
-extern crate self as mesh_ttrpc;
+extern crate self as mesh_rpc;
 
 mod client;
 mod message;

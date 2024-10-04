@@ -20,7 +20,7 @@ use inspect::ValueKind;
 use inspect_proto::InspectResponse2;
 use inspect_proto::UpdateResponse2;
 use kmsg_stream::KmsgStream;
-use mesh_ttrpc::service::Status;
+use mesh_rpc::service::Status;
 use pal_async::driver::Driver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
@@ -251,7 +251,7 @@ enum VmType {
 /// The diagnostics client.
 pub struct DiagClient {
     vm: VmType,
-    ttrpc: mesh_ttrpc::Client,
+    ttrpc: mesh_rpc::Client,
     driver: Box<dyn Driver>,
 }
 
@@ -345,7 +345,7 @@ impl DiagClient {
         let socket = hyperv::connect_vsock(&driver, vm_id, diag_proto::VSOCK_CONTROL_PORT).await?;
         Ok(Self {
             vm: VmType::HyperV(vm_id),
-            ttrpc: mesh_ttrpc::Client::new(&driver, socket),
+            ttrpc: mesh_rpc::Client::new(&driver, socket),
             driver: Box::new(driver),
         })
     }
@@ -358,7 +358,7 @@ impl DiagClient {
         let socket = unix_socket::UnixStream::connect(path).map_err(ConnectError::other)?;
         Ok(Self {
             vm: VmType::None,
-            ttrpc: mesh_ttrpc::Client::new(&driver, socket),
+            ttrpc: mesh_rpc::Client::new(&driver, socket),
             driver: Box::new(driver),
         })
     }
@@ -373,7 +373,7 @@ impl DiagClient {
             .into_inner();
         Ok(Self {
             vm: VmType::HybridVsock(path.into()),
-            ttrpc: mesh_ttrpc::Client::new(&driver, socket),
+            ttrpc: mesh_rpc::Client::new(&driver, socket),
             driver: Box::new(driver),
         })
     }
@@ -387,7 +387,7 @@ impl DiagClient {
     {
         Self {
             vm: VmType::None,
-            ttrpc: mesh_ttrpc::Client::new(&driver, conn),
+            ttrpc: mesh_rpc::Client::new(&driver, conn),
             driver: Box::new(driver),
         }
     }
@@ -573,7 +573,7 @@ impl DiagClient {
     ) -> mesh::OneshotReceiver<Result<U, Status>>
     where
         F: FnOnce(T, mesh::OneshotSender<Result<U, Status>>) -> R,
-        R: mesh_ttrpc::service::ServiceRpc,
+        R: mesh_rpc::service::ServiceRpc,
         U: mesh::MeshPayload,
     {
         self.ttrpc.start_call(rpc, input, timeout)

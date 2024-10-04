@@ -39,14 +39,14 @@ impl prost_build::ServiceGenerator for MeshServiceGenerator {
                 #(
                     #method_idents(
                         #request_types,
-                        ::mesh::OneshotSender<::core::result::Result<#response_types, ::mesh_ttrpc::service::Status>>,
+                        ::mesh::OneshotSender<::core::result::Result<#response_types, ::mesh_rpc::service::Status>>,
                     ),
                 )*
             }
 
             impl #ident {
                 #[allow(dead_code)]
-                pub fn fail(self, status: ::mesh_ttrpc::service::Status) {
+                pub fn fail(self, status: ::mesh_rpc::service::Status) {
                     match self {
                         #(
                             #ident::#method_idents(_, response) => response.send(Err(status)),
@@ -67,7 +67,7 @@ impl prost_build::ServiceGenerator for MeshServiceGenerator {
                             }
                         )*
                     };
-                    ::mesh_ttrpc::service::write_rpc_message(writer, method, port);
+                    ::mesh_rpc::service::write_rpc_message(writer, method, port);
                 }
 
                 fn compute_message_size(item: &mut #ident, mut sizer: ::mesh::payload::protobuf::MessageSizer<'_>) {
@@ -83,7 +83,7 @@ impl prost_build::ServiceGenerator for MeshServiceGenerator {
                             }
                         )*
                     };
-                    ::mesh_ttrpc::service::compute_size_rpc_message(sizer, method);
+                    ::mesh_rpc::service::compute_size_rpc_message(sizer, method);
                 }
             }
 
@@ -93,14 +93,14 @@ impl prost_build::ServiceGenerator for MeshServiceGenerator {
                     reader: ::mesh::payload::protobuf::MessageReader<'encoding, '_, ::mesh::resource::Resource>,
                 ) -> ::mesh::payload::Result<()> {
                     use ::mesh::payload::ResultExt;
-                    let (method, data, port) = ::mesh_ttrpc::service::read_rpc_message(reader).typed::<#ident>()?;
+                    let (method, data, port) = ::mesh_rpc::service::read_rpc_message(reader).typed::<#ident>()?;
                     item.set(match method {
                         #(
                             #method_names => {
                                 #ident::#method_idents(mesh::payload::decode(data)?, port.upcast())
                             }
                         )*
-                        _ => return Err(mesh::payload::Error::new(mesh_ttrpc::service::UnknownMethod(method.to_string())).typed::<#ident>()),
+                        _ => return Err(mesh::payload::Error::new(mesh_rpc::service::UnknownMethod(method.to_string())).typed::<#ident>()),
                     });
                     Ok(())
                 }
@@ -110,12 +110,12 @@ impl prost_build::ServiceGenerator for MeshServiceGenerator {
                 type Encoding = ::mesh::payload::encoding::MessageEncoding<mesh::payload::encoding::DerivedEncoding<Self>>;
             }
 
-            impl ::mesh_ttrpc::service::ServiceRpc for #ident {
+            impl ::mesh_rpc::service::ServiceRpc for #ident {
                 const NAME: &'static str = #name;
             }
 
             impl ::mesh::payload::Downcast<#ident> for #ident {}
-            impl ::mesh::payload::Downcast<#ident> for ::mesh_ttrpc::service::GenericRpc {}
+            impl ::mesh::payload::Downcast<#ident> for ::mesh_rpc::service::GenericRpc {}
         }
         .to_string();
     }

@@ -26,7 +26,7 @@ fn server(path: &str) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path).context("bind failed")?;
     tracing::info!(path, "listening");
-    let mut server = mesh_ttrpc::Server::new();
+    let mut server = mesh_rpc::Server::new();
     let (send, mut recv) = mesh::channel::<(mesh::CancelContext, items::Example)>();
     let (_s, stop_listening) = mesh::oneshot();
     server.add_service(send);

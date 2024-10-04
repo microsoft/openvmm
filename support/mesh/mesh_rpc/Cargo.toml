@@ -1,7 +1,7 @@
 # Copyright (C) Microsoft Corporation. All rights reserved.
 
 [package]
-name = "mesh_ttrpc"
+name = "mesh_rpc"
 edition = "2021"
 
 [features]

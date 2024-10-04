@@ -15,7 +15,7 @@ encryption = ["vmotherboard/encryption"]
 
 unstable_whp = ["virt_whp/unstable_whp", "whp/unstable_whp"]
 
-grpc = ["mesh_ttrpc/grpc"]
+grpc = ["mesh_rpc/grpc"]
 ttrpc = []
 
 [dependencies]
@@ -67,7 +67,7 @@ guid.workspace = true
 inspect.workspace = true
 inspect_proto.workspace = true
 mesh.workspace = true
-mesh_ttrpc.workspace = true
+mesh_rpc.workspace = true
 mesh_process.workspace = true
 mesh_worker.workspace = true
 pal.workspace = true

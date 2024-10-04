@@ -37,7 +37,7 @@ use inspect_proto::UpdateResponse2;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
 use mesh::CancelContext;
-use mesh_ttrpc::service::Status;
+use mesh_rpc::service::Status;
 use net_packet_capture::OperationData;
 use net_packet_capture::PacketCaptureOperation;
 use net_packet_capture::PacketCaptureParams;

@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 mesh.workspace = true
-mesh_ttrpc.workspace = true
+mesh_rpc.workspace = true
 unix_socket.workspace = true
 pal_async.workspace = true
 xtask_fuzz.workspace = true

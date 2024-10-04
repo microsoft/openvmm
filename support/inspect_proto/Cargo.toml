@@ -7,7 +7,7 @@ edition = "2021"
 [dependencies]
 inspect = { workspace = true, features = ["initiate"] }
 mesh.workspace = true
-mesh_ttrpc.workspace = true
+mesh_rpc.workspace = true
 
 prost.workspace = true
 

@@ -7,7 +7,7 @@
 
 // Crates used by generated code. Reference them explicitly to ensure that
 // automated tools do not remove them.
-use mesh_ttrpc as _;
+use mesh_rpc as _;
 use prost as _;
 
 include!(concat!(env!("OUT_DIR"), "/vmservice.rs"));

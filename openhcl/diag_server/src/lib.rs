@@ -15,8 +15,8 @@ use anyhow::Context;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use mesh::CancelReason;
-use mesh_ttrpc::service::Code;
-use mesh_ttrpc::service::Status;
+use mesh_rpc::service::Code;
+use mesh_rpc::service::Status;
 use pal_async::driver::Driver;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PollReadyExt;
@@ -41,7 +41,7 @@ pub struct DiagServer {
     // data listener
     data_listener: Socket,
     inner: Arc<Inner>,
-    server: mesh_ttrpc::Server,
+    server: mesh_rpc::Server,
 }
 
 impl DiagServer {
@@ -79,7 +79,7 @@ impl DiagServer {
         Self {
             control_listener,
             data_listener,
-            server: mesh_ttrpc::Server::new(),
+            server: mesh_rpc::Server::new(),
             inner: Arc::new(Inner {
                 connections: Mutex::new(DataConnections {
                     next_id: 1, // connection IDs start at 1, as 0 is an invalid ID.
