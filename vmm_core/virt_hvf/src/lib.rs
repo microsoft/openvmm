@@ -282,6 +282,7 @@ impl GuestEventPort for HvfEventPort {
                     let _ = partition.hv1.synic.signal_event(
                         &partition.guest_memory,
                         vp,
+                        Vtl::Vtl0,
                         sint,
                         flag,
                         &mut |vector, _auto_eoi| {
