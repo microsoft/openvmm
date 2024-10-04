@@ -8,6 +8,7 @@ use super::PartitionInfo;
 use crate::boot_logger::log;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::MAX_CPU_COUNT;
+use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
 use crate::single_threaded::off_stack;
@@ -321,7 +322,7 @@ impl PartitionInfo {
             return Ok(None);
         }
 
-        let mut dt_storage = off_stack!(ParsedDeviceTree<MAX_PARTITION_RAM_RANGES, MAX_CPU_COUNT, COMMAND_LINE_SIZE>, ParsedDeviceTree::new());
+        let mut dt_storage = off_stack!(ParsedDeviceTree<MAX_PARTITION_RAM_RANGES, MAX_CPU_COUNT, COMMAND_LINE_SIZE, MAX_ENTROPY_SIZE>, ParsedDeviceTree::new());
 
         let parsed = ParsedDeviceTree::parse(dt, &mut *dt_storage).map_err(DtError::DeviceTree)?;
 
@@ -448,6 +449,7 @@ impl PartitionInfo {
             com3_serial_available: com3_serial,
             gic,
             memory_allocation_mode: _,
+            entropy,
         } = storage;
 
         *vtl2_config_region = MemoryRange::new(
@@ -460,6 +462,7 @@ impl PartitionInfo {
         cpus.extend(parsed.cpus.iter().copied());
         *com3_serial = parsed.com3_serial;
         *gic = parsed.gic.clone();
+        *entropy = parsed.entropy.clone();
 
         Ok(Some(storage))
     }

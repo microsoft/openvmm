@@ -2416,6 +2416,10 @@ impl LoadedVmInner {
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
+                const ENTROPY_SIZE: usize = 64;
+                let mut entropy = [0u8; ENTROPY_SIZE];
+                getrandom::getrandom(&mut entropy).unwrap();
+
                 let params = crate::worker::vm_loaders::igvm::LoadIgvmParams {
                     igvm_file: self.igvm_file.as_ref().expect("should be already read"),
                     gm: &self.gm,
@@ -2433,6 +2437,7 @@ impl LoadedVmInner {
                     vtl2_only,
                     with_vmbus_redirect: self.vmbus_redirect,
                     com_serial,
+                    entropy: Some(&entropy),
                 };
                 super::vm_loaders::igvm::load_igvm(params)?
             }

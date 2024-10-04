@@ -82,58 +82,64 @@ impl<'a> FilesystemMount<'a> {
 }
 
 mod dev_random_ioctls {
+    pub const MAX_ENTROPY_SIZE: usize = 256;
     const RANDOM_IOC_MAGIC: u8 = b'R';
-    // RNDGETENTCNT _IOR( 'R', 0x00, int )
-    nix::ioctl_read!(rnd_get_entcnt_ioctl, RANDOM_IOC_MAGIC, 0x0, i32);
     #[repr(C)]
-    pub struct rnd_add_entropy {
+    pub struct RndAddEntropy {
         pub entropy_count: i32,
         pub buf_size: i32,
-        pub buf: [u8; 0x1000],
+        pub buf: [u8; MAX_ENTROPY_SIZE],
     }
     // RNDADDENTROPY _IOW( 'R', 0x03, int [2] )
     nix::ioctl_write_ptr_bad!(
         rnd_add_entropy_ioctl,
         nix::request_code_write!(RANDOM_IOC_MAGIC, 0x3, size_of::<std::os::raw::c_int>() * 2),
-        rnd_add_entropy
+        RndAddEntropy
     );
 }
 
-fn set_entropy() -> anyhow::Result<()> {
-    use dev_random_ioctls::rnd_add_entropy_ioctl;
-    use dev_random_ioctls::rnd_get_entcnt_ioctl;
+// Use host-generated entropy to speed up boot and improve entropy quality.
+//
+// This is especially useful onmachines without hardware random number
+// generation. When random numbers are requested from /dev/random, the
+// system blocks until it has gained enough entropy. This strategy cannot be
+// used by confidential VMs, however, since the host could manipulate the
+// entropy it provides to attack the guest.
+fn use_host_entropy() -> anyhow::Result<()> {
+    use dev_random_ioctls::MAX_ENTROPY_SIZE;
 
-    let mut entropy_cnt: i32 = 0;
-    let dev_random = fs_err::OpenOptions::new()
-        .write(true)
-        .open("/dev/random")
-        .with_context(|| ("failed to open dev random for setting entropy").to_string())?;
+    match fs_err::read("/proc/device-tree/openhcl/entropy/reg") {
+        Ok(host_entropy) => {
+            if host_entropy.len() > MAX_ENTROPY_SIZE {
+                log::warn!(
+                    "Truncating host-provided entropy (received {} bytes)",
+                    host_entropy.len()
+                );
+            }
+            let use_entropy_bytes = std::cmp::min(host_entropy.len(), MAX_ENTROPY_SIZE);
+            log::info!("Using {} bytes of entropy from the host", use_entropy_bytes);
 
-    // SAFETY: API called according to the documentation.
-    if let Err(e) = unsafe { rnd_get_entcnt_ioctl(dev_random.as_raw_fd(), &mut entropy_cnt) } {
-        log::warn!("Failed to get entropy count {}", e);
-    }
+            let mut entropy = dev_random_ioctls::RndAddEntropy {
+                entropy_count: (use_entropy_bytes * 8) as i32,
+                buf_size: use_entropy_bytes as i32,
+                buf: [0; MAX_ENTROPY_SIZE],
+            };
+            entropy.buf[..use_entropy_bytes].copy_from_slice(&host_entropy[..use_entropy_bytes]);
 
-    const ENTROPY_MIN_READY_BITS: i32 = 256;
-    if entropy_cnt >= ENTROPY_MIN_READY_BITS {
-        return Ok(());
-    }
+            let dev_random = fs_err::OpenOptions::new()
+                .write(true)
+                .open("/dev/random")
+                .with_context(|| ("failed to open dev random for setting entropy").to_string())?;
 
-    let time: u64 = timestamp();
-    let mut entropy = dev_random_ioctls::rnd_add_entropy {
-        entropy_count: 0x8000,
-        buf_size: 0x1000,
-        buf: [0u8; 0x1000],
-    };
-    let mut len = 0;
-    while len < entropy.buf.len() {
-        let copy_len = size_of::<u64>().min(entropy.buf[len..].len());
-        entropy.buf[len..len + copy_len].copy_from_slice(&time.to_le_bytes());
-        len += copy_len;
-    }
-    // SAFETY: API called according to the documentation.
-    if let Err(e) = unsafe { rnd_add_entropy_ioctl(dev_random.as_raw_fd(), &entropy) } {
-        log::warn!("Failed to set entropy {}", e);
+            // SAFETY: API called according to the documentation.
+            unsafe {
+                dev_random_ioctls::rnd_add_entropy_ioctl(dev_random.as_raw_fd(), &entropy)
+                    .context("rnd_add_entropy_ioctl")?;
+            }
+        }
+        Err(e) => {
+            log::warn!("Did not get entropy from the host: {e:#}");
+        }
     }
 
     Ok(())
@@ -178,14 +184,9 @@ fn setup(
         fs_err::write(path, data).with_context(|| format!("failed to write {data}"))?;
     }
 
-    // Add some initial entropy to /dev/random to support `crng`. Otherwise, the
-    // boot can slow down when random numbers are requested from /dev/random as that
-    // blocks on gaining enough entropy.
-    //
-    // Today our only source of entropy is the boot time, which is influenceable
-    // by the host. So we only do this if we are not running in a confidential VM.
+    // For non-confidential VMs, use the host-provided entropy if it is available.
     if !underhill_confidentiality::is_confidential_vm() {
-        set_entropy()?;
+        use_host_entropy().context("use host entropy")?;
     }
 
     for setup in &options.setup_script {

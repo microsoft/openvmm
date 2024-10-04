@@ -104,6 +104,12 @@ enum ErrorKind<'a> {
         expected: &'a str,
         actual: &'a str,
     },
+    Overflow {
+        node_name: &'a str,
+        prop_name: &'a str,
+        max: usize,
+        actual: usize,
+    },
     UnexpectedVmbusVtl {
         node_name: &'a str,
         vtl: u32,
@@ -171,6 +177,7 @@ impl<'a> Display for ErrorKind<'a> {
             }
             ErrorKind::PropInvalidU32 { node_name, prop_name, expected, actual } => f.write_fmt(format_args!("{node_name} had an invalid u32 value for {prop_name}: expected {expected}, actual {actual}")),
             ErrorKind::PropInvalidStr { node_name, prop_name, expected, actual } => f.write_fmt(format_args!("{node_name} had an invalid str value for {prop_name}: expected {expected}, actual {actual}")),
+            ErrorKind::Overflow { node_name, prop_name, max, actual } => f.write_fmt(format_args!("{node_name} had an invalid length for {prop_name}: expected <= {max}, actual {actual}")),
             ErrorKind::UnexpectedVmbusVtl { node_name, vtl } => f.write_fmt(format_args!("{node_name} has an unexpected vtl {vtl}")),
             ErrorKind::MultipleVmbusNode { node_name } => f.write_fmt(format_args!("{node_name} specifies a duplicate vmbus node")),
             ErrorKind::VmbusRangesChildParent { node_name, child_base, parent_base } => f.write_fmt(format_args!("vmbus {node_name} ranges child base {child_base} does not match parent {parent_base}")),
@@ -197,6 +204,7 @@ pub struct ParsedDeviceTree<
     const MAX_MEMORY_ENTRIES: usize,
     const MAX_CPU_ENTRIES: usize,
     const MAX_COMMAND_LINE_SIZE: usize,
+    const MAX_ENTROPY_SIZE: usize,
 > {
     /// Total size of the parsed device tree, in bytes.
     pub device_tree_size: usize,
@@ -226,6 +234,8 @@ pub struct ParsedDeviceTree<
     pub gic: Option<GicInfo>,
     /// The vtl2 memory allocation mode OpenHCL should use for memory.
     pub memory_allocation_mode: MemoryAllocationMode,
+    /// Entropy from the host to be used by the OpenHCL kernel
+    pub entropy: Option<ArrayVec<u8, MAX_ENTROPY_SIZE>>,
 }
 
 /// The memory allocation mode provided by the host. This determines how OpenHCL
@@ -285,7 +295,8 @@ impl<
         const MAX_MEMORY_ENTRIES: usize,
         const MAX_CPU_ENTRIES: usize,
         const MAX_COMMAND_LINE_SIZE: usize,
-    > ParsedDeviceTree<MAX_MEMORY_ENTRIES, MAX_CPU_ENTRIES, MAX_COMMAND_LINE_SIZE>
+        const ENTROPY_SIZE: usize,
+    > ParsedDeviceTree<MAX_MEMORY_ENTRIES, MAX_CPU_ENTRIES, MAX_COMMAND_LINE_SIZE, ENTROPY_SIZE>
 {
     /// Create an empty parsed device tree structure. This is used to construct
     /// a valid instance to pass into [`Self::parse`].
@@ -301,6 +312,7 @@ impl<
             com3_serial: false,
             gic: None,
             memory_allocation_mode: MemoryAllocationMode::Host,
+            entropy: None,
         }
     }
 
@@ -471,6 +483,39 @@ impl<
                         }
                         mode => {
                             return Err(ErrorKind::UnexpectedMemoryAllocationMode { mode });
+                        }
+                    }
+
+                    for openhcl_child in child.children() {
+                        let openhcl_child = openhcl_child.map_err(|error| ErrorKind::Node {
+                            parent_name: root.name,
+                            error,
+                        })?;
+
+                        #[allow(clippy::single_match)]
+                        match openhcl_child.name {
+                            "entropy" => {
+                                let entropy_reg_property = openhcl_child
+                                    .find_property("reg")
+                                    .map_err(ErrorKind::Prop)?
+                                    .ok_or(ErrorKind::PropMissing {
+                                        node_name: openhcl_child.name,
+                                        prop_name: "reg",
+                                    })?;
+                                storage.entropy =
+                                    Some(entropy_reg_property.data.try_into().map_err(|_| {
+                                        ErrorKind::Overflow {
+                                            node_name: "entropy",
+                                            prop_name: "reg",
+                                            max: ENTROPY_SIZE,
+                                            actual: entropy_reg_property.data.len(),
+                                        }
+                                    })?);
+                            }
+                            _ => {
+                                #[cfg(feature = "std")]
+                                tracing::warn!(?openhcl_child.name, "Unrecognized OpenHCL child node");
+                            }
                         }
                     }
                 }
@@ -658,6 +703,7 @@ impl<
             com3_serial: _,
             gic: _,
             memory_allocation_mode: _,
+            entropy: _,
         } = storage;
 
         *device_tree_size = parser.total_size;
@@ -1027,7 +1073,7 @@ mod tests {
     use fdt::builder::BuilderConfig;
     use fdt::builder::Nest;
 
-    type TestParsedDeviceTree = ParsedDeviceTree<32, 32, 1024>;
+    type TestParsedDeviceTree = ParsedDeviceTree<32, 32, 1024, 64>;
 
     fn new_vmbus_mmio(mmio: &[MemoryRange]) -> ArrayVec<MemoryRange, 2> {
         let mut vec = ArrayVec::new();

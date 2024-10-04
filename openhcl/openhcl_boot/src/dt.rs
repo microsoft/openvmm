@@ -576,6 +576,15 @@ pub fn write_dt(
             .end_node()?;
     }
 
+    // Pass through host-provided entropy to the init process for seeding
+    // the OpenHCL kernel random number generator
+    if let Some(entropy) = &partition_info.entropy {
+        openhcl_builder = openhcl_builder
+            .start_node("entropy")?
+            .add_prop_array(p_reg, &[entropy])?
+            .end_node()?;
+    }
+
     let root_builder = openhcl_builder.end_node()?;
 
     root_builder.end_node()?.build(partition_info.bsp_reg)?;

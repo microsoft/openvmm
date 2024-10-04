@@ -302,6 +302,7 @@ fn build_device_tree(
     command_line: &str,
     with_vmbus_redirect: bool,
     com_serial: Option<SerialInformation>,
+    entropy: Option<&[u8]>,
 ) -> Result<Vec<u8>, fdt::builder::Error> {
     let mut buf = vec![0; HV_PAGE_SIZE as usize * 256];
 
@@ -484,9 +485,16 @@ fn build_device_tree(
         }
     };
 
-    root = openhcl
-        .add_str(p_memory_allocation_mode, memory_allocation_mode)?
-        .end_node()?;
+    openhcl = openhcl.add_str(p_memory_allocation_mode, memory_allocation_mode)?;
+
+    if let Some(entropy) = entropy {
+        openhcl = openhcl
+            .start_node("entropy")?
+            .add_prop_array(p_reg, &[entropy])?
+            .end_node()?;
+    }
+
+    root = openhcl.end_node()?;
 
     let bytes_used = root
         .end_node()?
@@ -528,6 +536,8 @@ pub struct LoadIgvmParams<'a, T: ArchTopology> {
     pub with_vmbus_redirect: bool,
     /// Should a com device be configured.
     pub com_serial: Option<SerialInformation>,
+    /// Entropy
+    pub entropy: Option<&'a [u8]>,
 }
 
 pub fn load_igvm(
@@ -569,6 +579,7 @@ fn load_igvm_x86(
         vtl2_only,
         with_vmbus_redirect,
         com_serial,
+        entropy,
     } = params;
 
     let relocations_enabled = match vtl2_base_address {
@@ -943,6 +954,7 @@ fn load_igvm_x86(
                     &String::from_utf8_lossy(command_line.as_bytes()),
                     with_vmbus_redirect,
                     com_serial,
+                    entropy,
                 )
                 .map_err(Error::DeviceTree)?;
                 import_parameter(&mut parameter_areas, info, &dt)?;

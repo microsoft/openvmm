@@ -35,6 +35,9 @@ const MAX_VTL2_RAM_RANGES: usize = 64;
 /// The maximum number of ram ranges that can be read from the host.
 const MAX_PARTITION_RAM_RANGES: usize = 1024;
 
+/// Maximum size of the host-provided entropy
+pub const MAX_ENTROPY_SIZE: usize = 256;
+
 /// Information about the guest partition.
 #[derive(Debug)]
 pub struct PartitionInfo {
@@ -67,6 +70,8 @@ pub struct PartitionInfo {
     pub gic: Option<GicInfo>,
     /// Memory allocation mode that was performed.
     pub memory_allocation_mode: MemoryAllocationMode,
+    /// Entropy from the host to be used by the OpenHCL kernel
+    pub entropy: Option<ArrayVec<u8, MAX_ENTROPY_SIZE>>,
 }
 
 impl PartitionInfo {
@@ -91,6 +96,7 @@ impl PartitionInfo {
             com3_serial_available: false,
             gic: None,
             memory_allocation_mode: MemoryAllocationMode::Host,
+            entropy: None,
         }
     }
 
