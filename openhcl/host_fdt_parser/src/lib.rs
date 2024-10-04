@@ -104,7 +104,7 @@ enum ErrorKind<'a> {
         expected: &'a str,
         actual: &'a str,
     },
-    Overflow {
+    Capacity {
         node_name: &'a str,
         prop_name: &'a str,
         max: usize,
@@ -177,7 +177,7 @@ impl<'a> Display for ErrorKind<'a> {
             }
             ErrorKind::PropInvalidU32 { node_name, prop_name, expected, actual } => f.write_fmt(format_args!("{node_name} had an invalid u32 value for {prop_name}: expected {expected}, actual {actual}")),
             ErrorKind::PropInvalidStr { node_name, prop_name, expected, actual } => f.write_fmt(format_args!("{node_name} had an invalid str value for {prop_name}: expected {expected}, actual {actual}")),
-            ErrorKind::Overflow { node_name, prop_name, max, actual } => f.write_fmt(format_args!("{node_name} had an invalid length for {prop_name}: expected <= {max}, actual {actual}")),
+            ErrorKind::Capacity { node_name, prop_name, max, actual } => f.write_fmt(format_args!("{node_name} had an invalid length for {prop_name}: expected <= {max}, actual {actual}")),
             ErrorKind::UnexpectedVmbusVtl { node_name, vtl } => f.write_fmt(format_args!("{node_name} has an unexpected vtl {vtl}")),
             ErrorKind::MultipleVmbusNode { node_name } => f.write_fmt(format_args!("{node_name} specifies a duplicate vmbus node")),
             ErrorKind::VmbusRangesChildParent { node_name, child_base, parent_base } => f.write_fmt(format_args!("vmbus {node_name} ranges child base {child_base} does not match parent {parent_base}")),
@@ -295,8 +295,9 @@ impl<
         const MAX_MEMORY_ENTRIES: usize,
         const MAX_CPU_ENTRIES: usize,
         const MAX_COMMAND_LINE_SIZE: usize,
-        const ENTROPY_SIZE: usize,
-    > ParsedDeviceTree<MAX_MEMORY_ENTRIES, MAX_CPU_ENTRIES, MAX_COMMAND_LINE_SIZE, ENTROPY_SIZE>
+        const MAX_ENTROPY_SIZE: usize,
+    >
+    ParsedDeviceTree<MAX_MEMORY_ENTRIES, MAX_CPU_ENTRIES, MAX_COMMAND_LINE_SIZE, MAX_ENTROPY_SIZE>
 {
     /// Create an empty parsed device tree structure. This is used to construct
     /// a valid instance to pass into [`Self::parse`].
@@ -502,15 +503,16 @@ impl<
                                         node_name: openhcl_child.name,
                                         prop_name: "reg",
                                     })?;
-                                storage.entropy =
-                                    Some(entropy_reg_property.data.try_into().map_err(|_| {
-                                        ErrorKind::Overflow {
-                                            node_name: "entropy",
-                                            prop_name: "reg",
-                                            max: ENTROPY_SIZE,
-                                            actual: entropy_reg_property.data.len(),
-                                        }
-                                    })?);
+                                let mut entropy = ArrayVec::new();
+                                entropy
+                                    .try_extend_from_slice(entropy_reg_property.data)
+                                    .map_err(|_| ErrorKind::Capacity {
+                                        node_name: "entropy",
+                                        prop_name: "reg",
+                                        max: MAX_ENTROPY_SIZE,
+                                        actual: entropy_reg_property.data.len(),
+                                    })?;
+                                storage.entropy = Some(entropy);
                             }
                             _ => {
                                 #[cfg(feature = "std")]
