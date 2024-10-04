@@ -91,14 +91,13 @@ pub struct GlobalHvParams {
     /// The reference time system to use.
     pub ref_time: Box<dyn ReferenceTimeSource>,
     /// Manages VTL protections on the VTL0 hypercall overlay page
-    pub vtl0_hypercall_page_protector: Option<Box<dyn VtlProtectHypercallOverlay>>,
-    /// Manages VTL protections on the VTL1 hypercall overlay page
-    pub vtl1_hypercall_page_protector: Option<Box<dyn VtlProtectHypercallOverlay>>,
+    pub hypercall_page_protectors: VtlArray<Option<Box<dyn VtlProtectHypercallOverlay>>, 2>,
 }
 
 impl GlobalHv {
     /// Returns a new hypervisor emulator instance.
     pub fn new(params: GlobalHvParams) -> Self {
+        let [vtl0_protector, vtl1_protector] = params.hypercall_page_protectors.into_array();
         Self {
             partition_state: Arc::new(GlobalHvState {
                 vendor: params.vendor,
@@ -107,12 +106,8 @@ impl GlobalHv {
                 ref_time: params.ref_time,
             }),
             vtl_mutable_state: VtlArray::from([
-                Arc::new(Mutex::new(MutableHvState::new(
-                    params.vtl0_hypercall_page_protector,
-                ))),
-                Arc::new(Mutex::new(MutableHvState::new(
-                    params.vtl1_hypercall_page_protector,
-                ))),
+                Arc::new(Mutex::new(MutableHvState::new(vtl0_protector))),
+                Arc::new(Mutex::new(MutableHvState::new(vtl1_protector))),
             ]),
             synic: VtlArray::from_fn(|_| GlobalSynic::new(params.max_vp_count)),
         }
