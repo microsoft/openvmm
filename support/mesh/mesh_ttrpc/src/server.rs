@@ -303,11 +303,11 @@ mod grpc {
 
         async fn serve_grpc(
             &self,
-            stream: PolledSocket<impl AsSockRef + Read + Write + Unpin>,
+            stream: PolledSocket<impl AsSockRef + Read + Write>,
         ) -> anyhow::Result<()> {
             struct Wrap<T>(T);
 
-            impl<T: AsSockRef + Read + Unpin> tokio::io::AsyncRead for Wrap<PolledSocket<T>> {
+            impl<T: AsSockRef + Read> tokio::io::AsyncRead for Wrap<PolledSocket<T>> {
                 fn poll_read(
                     self: Pin<&mut Self>,
                     cx: &mut std::task::Context<'_>,
@@ -321,7 +321,7 @@ mod grpc {
                 }
             }
 
-            impl<T: AsSockRef + Write + Unpin> tokio::io::AsyncWrite for Wrap<PolledSocket<T>> {
+            impl<T: AsSockRef + Write> tokio::io::AsyncWrite for Wrap<PolledSocket<T>> {
                 fn poll_write(
                     self: Pin<&mut Self>,
                     cx: &mut std::task::Context<'_>,
