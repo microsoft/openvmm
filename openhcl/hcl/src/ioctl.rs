@@ -190,16 +190,20 @@ pub enum ApplyVtlProtectionsError {
         hv_error: HvError,
         vtl: HvInputVtl,
     },
-    #[error("{failed_operation} when protecting pages {range} for vtl {vtl:?}")]
+    #[error(
+        "{failed_operation} when protecting pages {range} with {permissions:x?} for vtl {vtl:?}"
+    )]
     Snp {
         failed_operation: snp::SnpPageError,
         range: MemoryRange,
+        permissions: x86defs::snp::SevRmpAdjust,
         vtl: HvInputVtl,
     },
-    #[error("tdcall failed with {error:?} when protecting pages {range} for vtl {vtl:?}")]
+    #[error("tdcall failed with {error:?} when protecting pages {range} with permissions {permissions:x?} for vtl {vtl:?}")]
     Tdx {
         error: TdCallResultCode,
         range: MemoryRange,
+        permissions: x86defs::tdx::TdgMemPageGpaAttr,
         vtl: HvInputVtl,
     },
     #[error("no valid protections for vtl {0:?}")]
@@ -3011,45 +3015,6 @@ impl Hcl {
         };
 
         status.result()
-    }
-
-    /// Gets the permissions for a vtl.
-    /// Currently unused, but available for debugging purposes
-    #[cfg(debug_assertions)]
-    pub fn rmp_query(&self, gpa: u64, vtl: Vtl) -> x86defs::snp::SevRmpAdjust {
-        use x86defs::snp::SevRmpAdjust;
-
-        let page_count = 1u64;
-        let flags = [u64::from(SevRmpAdjust::new().with_target_vmpl(match vtl {
-            Vtl::Vtl0 => 2,
-            Vtl::Vtl1 => 1,
-            Vtl::Vtl2 => unreachable!(),
-        }))];
-        let page_size = [0u64];
-        let pages_processed = 0;
-
-        debug_assert!(flags.len() == page_count as usize);
-        debug_assert!(page_size.len() == page_count as usize);
-
-        let query = mshv_rmpquery {
-            start_pfn: gpa / HV_PAGE_SIZE,
-            page_count,
-            terminate_on_failure: 0,
-            ram: 0,
-            padding: Default::default(),
-            flags: flags.as_ptr().cast_mut(),
-            page_size: page_size.as_ptr().cast_mut(),
-            pages_processed: core::ptr::from_ref(&pages_processed).cast_mut(),
-        };
-
-        // SAFETY: the input query is the correct type for this ioctl
-        unsafe {
-            hcl_rmpquery_pages(self.mshv_vtl.file.as_raw_fd(), &query)
-                .expect("should always succeed");
-        }
-        debug_assert!(pages_processed <= page_count);
-
-        SevRmpAdjust::from(flags[0])
     }
 
     /// Issues an INVLPGB instruction.

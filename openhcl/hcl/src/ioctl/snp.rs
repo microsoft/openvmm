@@ -4,8 +4,10 @@
 
 use super::hcl_pvalidate_pages;
 use super::hcl_rmpadjust_pages;
+use super::hcl_rmpquery_pages;
 use super::mshv_pvalidate;
 use super::mshv_rmpadjust;
+use super::mshv_rmpquery;
 use super::HclVp;
 use super::MshvVtl;
 use super::NoRunner;
@@ -43,10 +45,10 @@ pub enum SnpError {
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum SnpPageError {
-    #[error("pvalidate failed")]
-    Pvalidate(SnpError),
-    #[error("rmpadjust failed")]
-    Rmpadjust(SnpError),
+    #[error("pvalidate failed with error {0}")]
+    Pvalidate(#[source] SnpError),
+    #[error("rmpadjust failed with error {0}")]
+    Rmpadjust(#[source] SnpError),
 }
 
 impl MshvVtl {
@@ -126,6 +128,42 @@ impl MshvVtl {
         }
 
         Ok(())
+    }
+
+    /// Gets the current vtl permissions for a page.
+    pub fn rmpquery_page(&self, gpa: u64, vtl: Vtl) -> SevRmpAdjust {
+        let page_count = 1u64;
+        let mut flags = [u64::from(SevRmpAdjust::new().with_target_vmpl(match vtl {
+            Vtl::Vtl0 => 2,
+            Vtl::Vtl1 => 1,
+            Vtl::Vtl2 => unreachable!(),
+        })); 1];
+
+        let mut page_size = [0; 1];
+        let mut pages_processed = 0u64;
+
+        debug_assert!(flags.len() == page_count as usize);
+        debug_assert!(page_size.len() == page_count as usize);
+
+        let query = mshv_rmpquery {
+            start_pfn: gpa / HV_PAGE_SIZE,
+            page_count,
+            terminate_on_failure: 0,
+            ram: 0,
+            padding: Default::default(),
+            flags: flags.as_mut_ptr(),
+            page_size: page_size.as_mut_ptr(),
+            pages_processed: &mut pages_processed,
+        };
+
+        // SAFETY: the input query is the correct type for this ioctl
+        unsafe {
+            hcl_rmpquery_pages(self.file.as_raw_fd(), &query).expect("should always succeed");
+        }
+
+        assert!(pages_processed <= page_count);
+
+        SevRmpAdjust::from(flags[0])
     }
 }
 
