@@ -207,9 +207,10 @@ mod private {
             stop: &mut StopVp<'_>,
         ) -> impl Future<Output = Result<(), VpHaltReason<UhRunVpError>>>;
 
-        /// Returns true if the VP is ready to run, false if it is halted.
+        /// Returns true if the VP is ready to run the given VTL, false if it is halted.
         fn poll_apic(
             this: &mut UhProcessor<'_, Self>,
+            vtl: Vtl,
             scan_irr: bool,
         ) -> Result<bool, UhRunVpError>;
 
@@ -616,7 +617,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
             Ordering::Relaxed,
         );
 
-        let mut scan_irr = true;
+        let mut first_scan_irr = true;
 
         loop {
             // Process VP activity and wait for the VP to be ready.
@@ -639,22 +640,28 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 }
 
                 // Process wakes.
-                if self.inner.wake_reasons.load(Ordering::Relaxed) != 0 {
-                    scan_irr = self.handle_wake().map_err(VpHaltReason::Hypervisor)?;
+                let scan_irr = if self.inner.wake_reasons.load(Ordering::Relaxed) != 0 {
+                    self.handle_wake().map_err(VpHaltReason::Hypervisor)?
+                } else {
+                    [false, false].into()
+                };
+
+                if self.untrusted_synic.is_some() {
+                    self.update_synic(Vtl::Vtl0, true);
                 }
 
+                // TODO CVM GUEST VSM: Split ready into two to track per-vtl
+                let mut ready = false;
                 for vtl in [Vtl::Vtl1, Vtl::Vtl0] {
                     // Process interrupts.
                     if self.hv(vtl).is_some() {
                         self.update_synic(vtl, false);
                     }
-                }
-                if self.untrusted_synic.is_some() {
-                    self.update_synic(Vtl::Vtl0, true);
-                }
 
-                let ready = T::poll_apic(self, scan_irr).map_err(VpHaltReason::Hypervisor)?;
-                scan_irr = false;
+                    ready |= T::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
+                        .map_err(VpHaltReason::Hypervisor)?;
+                }
+                first_scan_irr = false;
 
                 // Arm the timer.
                 if let Some(timeout) = self.vmtime.get_timeout() {
@@ -696,8 +703,10 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
     fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
         if self.inner.wake_reasons.load(Ordering::Relaxed) != 0 {
             let scan_irr = self.handle_wake()?;
-            if scan_irr {
-                T::poll_apic(self, true)?;
+            for vtl in [Vtl::Vtl1, Vtl::Vtl0] {
+                if scan_irr[vtl] {
+                    T::poll_apic(self, vtl, true)?;
+                }
             }
         }
         Ok(())
@@ -778,7 +787,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     /// Returns true if the interrupt controller has work to do.
-    fn handle_wake(&mut self) -> Result<bool, UhRunVpError> {
+    fn handle_wake(&mut self) -> Result<VtlArray<bool, 2>, UhRunVpError> {
         let wake_reasons_raw = self.inner.wake_reasons.swap(0, Ordering::SeqCst);
         let wake_reasons_vtl: [WakeReason; 2] = zerocopy::transmute!(wake_reasons_raw);
         for (vtl, wake_reasons) in [
@@ -843,7 +852,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                         // Should not have already initialized the hv emulator for this vtl
                         assert!(self.hv(vtl).is_none());
 
-                        // TODO GUEST_VSM construct VTL 1 lapics
                         self.hv[vtl] = Some(
                             self.partition
                                 .hv
@@ -864,7 +872,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             }
         }
 
-        Ok(wake_reasons_vtl[0].intcon())
+        Ok(wake_reasons_vtl.map(|w| w.intcon()).into())
     }
 
     fn request_sint_notifications(&mut self, vtl: Vtl, sints: u16) {

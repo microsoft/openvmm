@@ -601,7 +601,7 @@ impl BackingPrivate for TdxBacked {
         let mut lapic =
             params.partition.lapic.as_ref().unwrap()[Vtl::Vtl0].add_apic(params.vp_info);
 
-        // Initialize APIC base to match the current VM state.
+        // Initialize APIC base to match the reset VM state.
         let apic_base = vp::Apic::at_reset(&params.partition.caps, params.vp_info).apic_base;
         lapic.set_apic_base(apic_base).unwrap();
 
@@ -725,7 +725,12 @@ impl BackingPrivate for TdxBacked {
         this.run_vp_tdx(dev).await
     }
 
-    fn poll_apic(this: &mut UhProcessor<'_, Self>, scan_irr: bool) -> Result<bool, UhRunVpError> {
+    // TODO TDX GUEST VSM
+    fn poll_apic(
+        this: &mut UhProcessor<'_, Self>,
+        _vtl: Vtl,
+        scan_irr: bool,
+    ) -> Result<bool, UhRunVpError> {
         if !this.try_poll_apic(scan_irr)? {
             tracing::info!("disabling APIC offload due to auto EOI");
             let page = zerocopy::transmute_mut!(this.runner.tdx_apic_page_mut());

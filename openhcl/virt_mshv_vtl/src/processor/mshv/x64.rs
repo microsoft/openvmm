@@ -60,6 +60,7 @@ use virt_support_x86emu::emulate::EmuCheckVtlAccessError;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::EmulatorSupport;
+use vtl_array::VtlArray;
 use vtl_array::VtlSet;
 use x86defs::xsave::Fxsave;
 use x86defs::xsave::XsaveHeader;
@@ -74,7 +75,11 @@ use zerocopy::FromZeroes;
 #[derive(InspectMut)]
 pub struct HypervisorBackedX86 {
     /// Underhill APIC state
-    pub(super) lapic: Option<apic::UhApicState>,
+    pub(super) lapics: Option<VtlArray<apic::UhApicState, 2>>,
+    // TODO WHP GUEST VSM: To be completely correct here, when emulating the APICs
+    // we would need two sets of deliverability notifications too. However currently
+    // we don't support VTL 1 on WHP, and on the hypervisor we don't emulate the APIC,
+    // so this can wait.
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
     deliverability_notifications: HvDeliverabilityNotificationsRegister,
     /// Next set of deliverability notifications. See register definition for details.
@@ -124,21 +129,27 @@ impl BackingPrivate for HypervisorBackedX86 {
             reserved: [0; 384],
         };
 
-        let lapic = params.partition.lapic.as_ref().map(|arr| {
-            let lapic_set = &arr[Vtl::Vtl0];
+        let lapics = params.partition.lapic.as_ref().map(|arr| {
             // Initialize APIC base to match the current VM state.
             let apic_base = params
                 .runner
                 .get_vp_register(HvX64RegisterName::ApicBase)
                 .unwrap()
                 .as_u64();
-            let mut lapic = lapic_set.add_apic(params.vp_info);
-            lapic.set_apic_base(apic_base).unwrap();
-            apic::UhApicState::new(lapic, &params.vp_info.base)
+            let mut lapic0 = arr[Vtl::Vtl0].add_apic(params.vp_info);
+            lapic0.set_apic_base(apic_base).unwrap();
+            let mut lapic1 = arr[Vtl::Vtl1].add_apic(params.vp_info);
+            lapic1.set_apic_base(apic_base).unwrap();
+
+            [
+                apic::UhApicState::new(lapic0, Vtl::Vtl0, &params.vp_info.base),
+                apic::UhApicState::new(lapic1, Vtl::Vtl1, &params.vp_info.base),
+            ]
+            .into()
         });
 
         Ok(Self {
-            lapic,
+            lapics,
             deliverability_notifications: Default::default(),
             next_deliverability_notifications: Default::default(),
             stats: Default::default(),
@@ -275,8 +286,12 @@ impl BackingPrivate for HypervisorBackedX86 {
         Ok(())
     }
 
-    fn poll_apic(this: &mut UhProcessor<'_, Self>, scan_irr: bool) -> Result<bool, UhRunVpError> {
-        this.poll_apic(scan_irr)
+    fn poll_apic(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: Vtl,
+        scan_irr: bool,
+    ) -> Result<bool, UhRunVpError> {
+        this.poll_apic(vtl, scan_irr)
     }
 
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
@@ -591,14 +606,21 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             hvdef::HvX64MsrInterceptMessage::ref_from_prefix(self.runner.exit_message().payload())
                 .unwrap();
         let rip = next_rip(&message.header);
+        let last_vtl = self.last_vtl();
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "msr");
 
         let msr = message.msr_number;
         match message.header.intercept_access_type {
             HvInterceptAccessType::READ => {
-                let r = if let Some(lapic) = &mut self.backing.lapic {
-                    lapic.msr_read(self.partition, &mut self.runner, &self.vmtime, dev, msr)
+                let r = if let Some(lapics) = &mut self.backing.lapics {
+                    lapics[last_vtl].msr_read(
+                        self.partition,
+                        &mut self.runner,
+                        &self.vmtime,
+                        dev,
+                        msr,
+                    )
                 } else {
                     Err(MsrError::Unknown)
                 };
@@ -622,8 +644,8 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             }
             HvInterceptAccessType::WRITE => {
                 let value = (message.rax & 0xffff_ffff) | (message.rdx << 32);
-                let r = if let Some(lapic) = &mut self.backing.lapic {
-                    lapic.msr_write(
+                let r = if let Some(lapic) = &mut self.backing.lapics {
+                    lapic[last_vtl].msr_write(
                         self.partition,
                         &mut self.runner,
                         &self.vmtime,
@@ -687,7 +709,8 @@ impl UhProcessor<'_, HypervisorBackedX86> {
     }
 
     fn handle_halt(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
-        self.backing.lapic.as_mut().unwrap().halt();
+        let last_vtl = self.last_vtl();
+        self.backing.lapics.as_mut().unwrap()[last_vtl].halt();
         Ok(())
     }
 
@@ -1116,15 +1139,17 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn lapic_base_address(&self) -> Option<u64> {
+        let last_vtl = self.vp.last_vtl();
         self.vp
             .backing
-            .lapic
+            .lapics
             .as_ref()
-            .and_then(|lapic| lapic.base_address())
+            .and_then(|lapic| lapic[last_vtl].base_address())
     }
 
     fn lapic_read(&mut self, address: u64, data: &mut [u8]) {
-        self.vp.backing.lapic.as_mut().unwrap().mmio_read(
+        let last_vtl = self.vp.last_vtl();
+        self.vp.backing.lapics.as_mut().unwrap()[last_vtl].mmio_read(
             self.vp.partition,
             &mut self.vp.runner,
             &self.vp.vmtime,
@@ -1135,7 +1160,8 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn lapic_write(&mut self, address: u64, data: &[u8]) {
-        self.vp.backing.lapic.as_mut().unwrap().mmio_write(
+        let last_vtl = self.vp.last_vtl();
+        self.vp.backing.lapics.as_mut().unwrap()[last_vtl].mmio_write(
             self.vp.partition,
             &mut self.vp.runner,
             &self.vp.vmtime,

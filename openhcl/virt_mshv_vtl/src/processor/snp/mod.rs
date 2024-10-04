@@ -54,6 +54,7 @@ use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::vmtime::VmTimeAccess;
+use vtl_array::VtlArray;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::snp::SevEventInjectInfo;
 use x86defs::snp::SevExitCode;
@@ -71,21 +72,27 @@ use zerocopy::FromZeroes;
 /// A backing for SNP partitions.
 #[derive(InspectMut)]
 pub struct SnpBacked {
-    lapic: LocalApic,
+    lapics: VtlArray<SnpApicState, 2>,
+    // TODO CVM GUEST VSM Do we need two sets of any other fields in here?
     /// PFNs used for overlays.
     #[inspect(iter_by_index)]
     direct_overlays_pfns: [u64; UhDirectOverlay::Count as usize],
     #[inspect(skip)]
     #[allow(dead_code)] // Allocation handle for direct overlays held until drop
     direct_overlay_pfns_handle: shared_pool_alloc::SharedPoolHandle,
-    halted: bool,
-    startup_suspend: bool,
     #[inspect(hex)]
     hv_sint_notifications: u16,
     general_stats: GeneralStats,
     exit_stats: ExitStats,
     tsc_aux_virtualized: bool,
     shared: Arc<SnpBackedShared>,
+}
+
+#[derive(Inspect)]
+pub struct SnpApicState {
+    lapic: LocalApic,
+    halted: bool,
+    startup_suspend: bool,
 }
 
 #[derive(Inspect, Default)]
@@ -179,12 +186,15 @@ impl BackingPrivate for SnpBacked {
             .map_err(Error::AllocateSharedVisOverlay)?;
         let pfns = pfns_handle.base_pfn()..pfns_handle.base_pfn() + pfns_handle.size_pages();
 
-        let mut lapic =
+        let mut lapic0 =
             params.partition.lapic.as_ref().unwrap()[Vtl::Vtl0].add_apic(params.vp_info);
+        let mut lapic1 =
+            params.partition.lapic.as_ref().unwrap()[Vtl::Vtl1].add_apic(params.vp_info);
 
-        // Initialize APIC base to match the current VM state.
+        // Initialize APIC base to match the reset VM state.
         let apic_base = vp::Apic::at_reset(&params.partition.caps, params.vp_info).apic_base;
-        lapic.set_apic_base(apic_base).unwrap();
+        lapic0.set_apic_base(apic_base).unwrap();
+        lapic1.set_apic_base(apic_base).unwrap();
 
         let overlays: Vec<_> = pfns.collect();
 
@@ -204,12 +214,24 @@ impl BackingPrivate for SnpBacked {
             unreachable!()
         };
 
+        let lapics = [
+            SnpApicState {
+                lapic: lapic0,
+                halted: false,
+                startup_suspend: !params.vp_info.base.is_bsp(),
+            },
+            SnpApicState {
+                lapic: lapic1,
+                halted: false,
+                startup_suspend: false,
+            },
+        ]
+        .into();
+
         Ok(Self {
-            lapic,
+            lapics,
             direct_overlays_pfns: overlays.try_into().unwrap(),
             direct_overlay_pfns_handle: pfns_handle,
-            halted: false,
-            startup_suspend: !params.vp_info.base.is_bsp(),
             hv_sint_notifications: 0,
             general_stats: Default::default(),
             exit_stats: Default::default(),
@@ -312,19 +334,22 @@ impl BackingPrivate for SnpBacked {
         this.run_vp_snp(dev).await
     }
 
-    fn poll_apic(this: &mut UhProcessor<'_, Self>, scan_irr: bool) -> Result<bool, UhRunVpError> {
+    fn poll_apic(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: Vtl,
+        scan_irr: bool,
+    ) -> Result<bool, UhRunVpError> {
         // Check for interrupt requests from the host.
-        if let Some(irr) = this.runner.proxy_irr() {
-            // TODO SNP: filter proxy IRRs.
-            this.backing.lapic.request_fixed_interrupts(irr);
+        // TODO SNP GUEST VSM supporting VTL 1 proxy irrs requires kernel changes
+        if vtl == Vtl::Vtl0 {
+            if let Some(irr) = this.runner.proxy_irr() {
+                // TODO SNP: filter proxy IRRs.
+                this.backing.lapics[vtl].lapic.request_fixed_interrupts(irr);
+            }
         }
 
-        let last_vtl = this.last_vtl();
         // Clear any pending interrupt.
-        this.runner
-            .vmsa_mut(last_vtl)
-            .v_intr_cntrl_mut()
-            .set_irq(false);
+        this.runner.vmsa_mut(vtl).v_intr_cntrl_mut().set_irq(false);
 
         let ApicWork {
             init,
@@ -332,14 +357,16 @@ impl BackingPrivate for SnpBacked {
             sipi,
             nmi,
             interrupt,
-        } = this.backing.lapic.scan(&mut this.vmtime, scan_irr);
+        } = this.backing.lapics[vtl]
+            .lapic
+            .scan(&mut this.vmtime, scan_irr);
 
         if nmi {
-            this.handle_nmi();
+            this.handle_nmi(vtl);
         }
 
         if let Some(vector) = interrupt {
-            this.handle_interrupt(vector);
+            this.handle_interrupt(vtl, vector);
         }
 
         if extint {
@@ -347,11 +374,11 @@ impl BackingPrivate for SnpBacked {
         }
 
         if init {
-            this.handle_init()?;
+            this.handle_init(vtl)?;
         }
 
         if let Some(vector) = sipi {
-            this.handle_sipi(vector)?;
+            this.handle_sipi(vtl, vector)?;
         }
 
         // Return ready even if halted. `run_vp` will wait in the kernel when
@@ -547,6 +574,7 @@ struct SnpApicClient<'a, T> {
     vmsa: VmsaWrapper<'a, &'a mut SevVmsa>,
     dev: &'a T,
     vmtime: &'a VmTimeAccess,
+    vtl: Vtl,
 }
 
 impl<T: CpuIo> ApicClient for SnpApicClient<'_, T> {
@@ -563,10 +591,11 @@ impl<T: CpuIo> ApicClient for SnpApicClient<'_, T> {
     }
 
     fn wake(&mut self, vp_index: VpIndex) {
-        self.partition.vps[vp_index.index() as usize].wake(Vtl::Vtl0, WakeReason::INTCON);
+        self.partition.vps[vp_index.index() as usize].wake(self.vtl, WakeReason::INTCON);
     }
 
     fn eoi(&mut self, vector: u8) {
+        debug_assert_eq!(self.vtl, Vtl::Vtl0);
         self.dev.handle_eoi(vector.into())
     }
 
@@ -682,19 +711,19 @@ impl<T> HypercallIo for GhcbEnlightenedHypercall<'_, '_, '_, T> {
 }
 
 impl UhProcessor<'_, SnpBacked> {
-    fn handle_interrupt(&mut self, vector: u8) {
-        let mut vmsa = self.runner.vmsa_mut(self.last_vtl());
+    fn handle_interrupt(&mut self, vtl: Vtl, vector: u8) {
+        let mut vmsa = self.runner.vmsa_mut(vtl);
         vmsa.v_intr_cntrl_mut().set_vector(vector);
         vmsa.v_intr_cntrl_mut().set_priority((vector >> 4).into());
         vmsa.v_intr_cntrl_mut().set_ignore_tpr(false);
         vmsa.v_intr_cntrl_mut().set_irq(true);
-        self.backing.halted = false;
+        self.backing.lapics[vtl].halted = false;
     }
 
-    fn handle_nmi(&mut self) {
+    fn handle_nmi(&mut self, vtl: Vtl) {
         // TODO SNP: support virtual NMI injection
         // For now, just inject an NMI and hope for the best.
-        let mut vmsa = self.runner.vmsa_mut(self.last_vtl());
+        let mut vmsa = self.runner.vmsa_mut(vtl);
         vmsa.set_event_inject(
             SevEventInjectInfo::new()
                 .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_NMI)
@@ -702,21 +731,19 @@ impl UhProcessor<'_, SnpBacked> {
                 .with_valid(true),
         );
 
-        self.backing.halted = false;
+        self.backing.lapics[vtl].halted = false;
     }
 
-    fn handle_init(&mut self) -> Result<(), UhRunVpError> {
+    fn handle_init(&mut self, vtl: Vtl) -> Result<(), UhRunVpError> {
         let vp_info = self.inner.vp_info;
-        {
-            let mut access = self.access_state(Vtl::Vtl0);
-            vp::x86_init(&mut access, &vp_info).map_err(UhRunVpError::State)?;
-        }
+        let mut access = self.access_state(vtl);
+        vp::x86_init(&mut access, &vp_info).map_err(UhRunVpError::State)?;
         Ok(())
     }
 
-    fn handle_sipi(&mut self, vector: u8) -> Result<(), UhRunVpError> {
-        if self.backing.startup_suspend {
-            let mut vmsa = self.runner.vmsa_mut(self.last_vtl());
+    fn handle_sipi(&mut self, vtl: Vtl, vector: u8) -> Result<(), UhRunVpError> {
+        if self.backing.lapics[vtl].startup_suspend {
+            let mut vmsa = self.runner.vmsa_mut(vtl);
             let address = (vector as u64) << 12;
             vmsa.set_cs(hv_seg_to_snp(&hvdef::HvX64SegmentRegister {
                 base: address,
@@ -725,8 +752,8 @@ impl UhProcessor<'_, SnpBacked> {
                 attributes: 0x9b,
             }));
             vmsa.set_rip(0);
-            self.backing.startup_suspend = false;
-            self.backing.halted = false;
+            self.backing.lapics[vtl].startup_suspend = false;
+            self.backing.lapics[vtl].halted = false;
         }
         Ok(())
     }
@@ -847,10 +874,9 @@ impl UhProcessor<'_, SnpBacked> {
     }
 
     #[must_use]
-    fn sync_lazy_eoi(&mut self) -> bool {
-        // TODO GUEST VSM
-        if let Some(hv) = &mut self.hv[Vtl::Vtl0] {
-            if self.backing.lapic.is_lazy_eoi_pending() {
+    fn sync_lazy_eoi(&mut self, vtl: Vtl) -> bool {
+        if let Some(hv) = &mut self.hv[vtl] {
+            if self.backing.lapics[vtl].lapic.is_lazy_eoi_pending() {
                 return hv.set_lazy_eoi();
             }
         }
@@ -863,14 +889,18 @@ impl UhProcessor<'_, SnpBacked> {
 
         vmsa.v_intr_cntrl_mut().set_guest_busy(false);
 
+        // TODO CVM GUEST VSM actually check and run vtl 1
         self.unlock_tlb_lock(Vtl::Vtl2);
         let tlb_halt = self.should_halt_for_tlb_unlock(Vtl::Vtl0);
 
-        self.runner
-            .set_halted(self.backing.halted || self.backing.startup_suspend || tlb_halt);
+        self.runner.set_halted(
+            self.backing.lapics[Vtl::Vtl0].halted
+                || self.backing.lapics[Vtl::Vtl0].startup_suspend
+                || tlb_halt,
+        );
 
         // Set the lazy EOI bit just before running.
-        let lazy_eoi = self.sync_lazy_eoi();
+        let lazy_eoi = self.sync_lazy_eoi(Vtl::Vtl0);
 
         let mut has_intercept = self
             .runner
@@ -910,7 +940,7 @@ impl UhProcessor<'_, SnpBacked> {
         if last_interrupt_ctrl.irq() && !vmsa.v_intr_cntrl().irq() {
             self.backing.general_stats.int_ack.increment();
             // The guest has acknowledged the interrupt.
-            self.backing
+            self.backing.lapics[entered_from_vtl]
                 .lapic
                 .acknowledge_interrupt(last_interrupt_ctrl.vector());
         }
@@ -918,26 +948,25 @@ impl UhProcessor<'_, SnpBacked> {
         vmsa.v_intr_cntrl_mut().set_irq(false);
 
         // Clear lazy EOI before processing the exit.
-        // TODO GUEST VSM
-        if lazy_eoi {
-            if self.hv[Vtl::Vtl0]
+        if lazy_eoi
+            && self.hv[entered_from_vtl]
                 .as_mut()
                 .map(|hv| hv.clear_lazy_eoi())
                 .unwrap_or(false)
-            {
-                self.backing
-                    .lapic
-                    .access(&mut SnpApicClient {
-                        partition: self.partition,
-                        vmsa,
-                        dev,
-                        vmtime: &self.vmtime,
-                    })
-                    .lazy_eoi();
-            }
+        {
+            self.backing.lapics[entered_from_vtl]
+                .lapic
+                .access(&mut SnpApicClient {
+                    partition: self.partition,
+                    vmsa,
+                    dev,
+                    vmtime: &self.vmtime,
+                    vtl: entered_from_vtl,
+                })
+                .lazy_eoi();
         }
 
-        let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
+        let mut vmsa = self.runner.vmsa_mut(self.last_vtl());
         let sev_error_code = SevExitCode(vmsa.guest_error_code());
 
         let stat = match sev_error_code {
@@ -977,14 +1006,14 @@ impl UhProcessor<'_, SnpBacked> {
 
                 let gp = if is_write {
                     let value = (vmsa.rax() as u32 as u64) | ((vmsa.rdx() as u32 as u64) << 32);
-                    let r = self
-                        .backing
+                    let r = self.backing.lapics[entered_from_vtl]
                         .lapic
                         .access(&mut SnpApicClient {
                             partition: self.partition,
                             vmsa,
                             dev,
                             vmtime: &self.vmtime,
+                            vtl: entered_from_vtl,
                         })
                         .msr_write(msr, value)
                         .or_else_if_unknown(|| self.write_msr(msr, value))
@@ -999,14 +1028,14 @@ impl UhProcessor<'_, SnpBacked> {
                         Err(MsrError::InvalidAccess) => true,
                     }
                 } else {
-                    let r = self
-                        .backing
+                    let r = self.backing.lapics[entered_from_vtl]
                         .lapic
                         .access(&mut SnpApicClient {
                             partition: self.partition,
                             vmsa,
                             dev,
                             vmtime: &self.vmtime,
+                            vtl: entered_from_vtl,
                         })
                         .msr_read(msr)
                         .or_else_if_unknown(|| self.read_msr(msr))
@@ -1161,7 +1190,7 @@ impl UhProcessor<'_, SnpBacked> {
             SevExitCode::NPF => &mut self.backing.exit_stats.npf_no_intercept,
 
             SevExitCode::HLT => {
-                self.backing.halted = true;
+                self.backing.lapics[entered_from_vtl].halted = true;
                 // RIP has already advanced. Clear interrupt shadow.
                 vmsa.v_intr_cntrl_mut().set_intr_shadow(false);
                 &mut self.backing.exit_stats.hlt
@@ -1480,31 +1509,35 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
     }
 
     fn lapic_base_address(&self) -> Option<u64> {
-        self.vp.backing.lapic.base_address()
+        self.vp.backing.lapics[self.vp.last_vtl()]
+            .lapic
+            .base_address()
     }
 
     fn lapic_read(&mut self, address: u64, data: &mut [u8]) {
-        self.vp
-            .backing
+        let vtl = self.vp.last_vtl();
+        self.vp.backing.lapics[vtl]
             .lapic
             .access(&mut SnpApicClient {
                 partition: self.vp.partition,
-                vmsa: self.vp.runner.vmsa_mut(self.vp.last_vtl()),
+                vmsa: self.vp.runner.vmsa_mut(vtl),
                 dev: self.devices,
                 vmtime: &self.vp.vmtime,
+                vtl,
             })
             .mmio_read(address, data);
     }
 
     fn lapic_write(&mut self, address: u64, data: &[u8]) {
-        self.vp
-            .backing
+        let vtl = self.vp.last_vtl();
+        self.vp.backing.lapics[vtl]
             .lapic
             .access(&mut SnpApicClient {
                 partition: self.vp.partition,
-                vmsa: self.vp.runner.vmsa_mut(self.vp.last_vtl()),
+                vmsa: self.vp.runner.vmsa_mut(vtl),
                 dev: self.devices,
                 vmtime: &self.vp.vmtime,
+                vtl,
             })
             .mmio_write(address, data);
     }
@@ -1687,9 +1720,9 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
     }
 
     fn activity(&mut self) -> Result<vp::Activity, Self::Error> {
-        let mp_state = if self.vp.backing.startup_suspend {
+        let mp_state = if self.vp.backing.lapics[self.vtl].startup_suspend {
             vp::MpState::WaitForSipi
-        } else if self.vp.backing.halted {
+        } else if self.vp.backing.lapics[self.vtl].halted {
             vp::MpState::Halted
         } else {
             vp::MpState::Running
@@ -1719,8 +1752,8 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
             vp::MpState::Halted => (true, false),
             vp::MpState::Idle => (false, false), // TODO SNP: idle support
         };
-        self.vp.backing.halted = halted;
-        self.vp.backing.startup_suspend = startup_suspend;
+        self.vp.backing.lapics[self.vtl].halted = halted;
+        self.vp.backing.lapics[self.vtl].startup_suspend = startup_suspend;
         Ok(())
     }
 
@@ -1733,12 +1766,11 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
     }
 
     fn apic(&mut self) -> Result<vp::Apic, Self::Error> {
-        Ok(self.vp.backing.lapic.save())
+        Ok(self.vp.backing.lapics[self.vtl].lapic.save())
     }
 
     fn set_apic(&mut self, value: &vp::Apic) -> Result<(), Self::Error> {
-        self.vp
-            .backing
+        self.vp.backing.lapics[self.vtl]
             .lapic
             .restore(value)
             .map_err(vp_state::Error::InvalidApicBase)?;

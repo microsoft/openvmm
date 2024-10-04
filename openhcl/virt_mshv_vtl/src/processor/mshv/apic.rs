@@ -35,18 +35,21 @@ use x86defs::RFlags;
 #[derive(Inspect)]
 pub(super) struct UhApicState {
     lapic: LocalApic,
+    #[inspect(debug)]
+    vtl: Vtl,
     pub(super) halted: bool,
     pub(super) startup_suspend: bool,
     nmi_pending: bool,
 }
 
 impl UhApicState {
-    pub fn new(lapic: LocalApic, vp_info: &VpInfo) -> Self {
+    pub fn new(lapic: LocalApic, vtl: Vtl, vp_info: &VpInfo) -> Self {
         Self {
             lapic,
+            vtl,
             halted: false,
             nmi_pending: false,
-            startup_suspend: !vp_info.is_bsp(),
+            startup_suspend: vtl == Vtl::Vtl0 && !vp_info.is_bsp(),
         }
     }
 
@@ -69,6 +72,7 @@ impl UhApicState {
                 runner,
                 dev,
                 vmtime,
+                vtl: self.vtl,
             })
             .mmio_write(address, data);
     }
@@ -88,6 +92,7 @@ impl UhApicState {
                 runner,
                 dev,
                 vmtime,
+                vtl: self.vtl,
             })
             .mmio_read(address, data);
     }
@@ -107,6 +112,7 @@ impl UhApicState {
                 runner,
                 dev,
                 vmtime,
+                vtl: self.vtl,
             })
             .msr_write(msr, value)
     }
@@ -125,6 +131,7 @@ impl UhApicState {
                 runner,
                 dev,
                 vmtime,
+                vtl: self.vtl,
             })
             .msr_read(msr)
     }
@@ -254,10 +261,12 @@ impl UhApicState {
 
 impl UhProcessor<'_, HypervisorBackedX86> {
     /// Returns true if the VP is ready to run, false if it is halted.
-    pub(super) fn poll_apic(&mut self, scan_irr: bool) -> Result<bool, UhRunVpError> {
-        let Some(lapic) = self.backing.lapic.as_mut() else {
+    pub(super) fn poll_apic(&mut self, vtl: Vtl, scan_irr: bool) -> Result<bool, UhRunVpError> {
+        let Some(lapics) = self.backing.lapics.as_mut() else {
             return Ok(true);
         };
+
+        let lapic = &mut lapics[vtl];
         let ApicWork {
             init,
             extint,
@@ -287,14 +296,14 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         }
 
         if init {
-            self.handle_init()?;
+            self.handle_init(vtl)?;
         }
 
         if let Some(vector) = sipi {
-            self.handle_sipi(vector)?;
+            self.handle_sipi(vtl, vector)?;
         }
 
-        let lapic = self.backing.lapic.as_ref().unwrap();
+        let lapic = &self.backing.lapics.as_ref().unwrap()[vtl];
         if lapic.halted || lapic.startup_suspend {
             return Ok(false);
         }
@@ -302,17 +311,14 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         Ok(true)
     }
 
-    fn handle_init(&mut self) -> Result<(), UhRunVpError> {
+    fn handle_init(&mut self, vtl: Vtl) -> Result<(), UhRunVpError> {
         let vp_info = self.inner.vp_info;
-        {
-            let mut access = self.access_state(Vtl::Vtl0);
-            virt::x86::vp::x86_init(&mut access, &vp_info).map_err(UhRunVpError::State)?;
-        }
-        Ok(())
+        let mut access = self.access_state(vtl);
+        virt::x86::vp::x86_init(&mut access, &vp_info).map_err(UhRunVpError::State)
     }
 
-    fn handle_sipi(&mut self, vector: u8) -> Result<(), UhRunVpError> {
-        let lapic = self.backing.lapic.as_mut().unwrap();
+    fn handle_sipi(&mut self, vtl: Vtl, vector: u8) -> Result<(), UhRunVpError> {
+        let lapic = &mut self.backing.lapics.as_mut().unwrap()[vtl];
         if lapic.startup_suspend {
             let address = (vector as u64) << 12;
             let cs: hvdef::HvX64SegmentRegister = hvdef::HvX64SegmentRegister {
@@ -339,6 +345,7 @@ struct UhApicClient<'a, 'b, T> {
     runner: &'a mut ProcessorRunner<'b, MshvX64>,
     dev: &'a T,
     vmtime: &'a VmTimeAccess,
+    vtl: Vtl,
 }
 
 impl<T: CpuIo> ApicClient for UhApicClient<'_, '_, T> {
@@ -365,10 +372,11 @@ impl<T: CpuIo> ApicClient for UhApicClient<'_, '_, T> {
         self.partition
             .vp(vp_index)
             .unwrap()
-            .wake(Vtl::Vtl0, WakeReason::INTCON);
+            .wake(self.vtl, WakeReason::INTCON);
     }
 
     fn eoi(&mut self, vector: u8) {
+        debug_assert_eq!(self.vtl, Vtl::Vtl0);
         self.dev.handle_eoi(vector.into())
     }
 

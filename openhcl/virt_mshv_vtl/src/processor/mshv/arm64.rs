@@ -194,11 +194,12 @@ impl BackingPrivate for HypervisorBackedArm64 {
         Ok(())
     }
 
-    fn poll_apic(this: &mut UhProcessor<'_, Self>, scan_irr: bool) -> Result<bool, UhRunVpError> {
-        {
-            let _ = (this, scan_irr);
-            Ok(true)
-        }
+    fn poll_apic(
+        _this: &mut UhProcessor<'_, Self>,
+        _vtl: Vtl,
+        _scan_irr: bool,
+    ) -> Result<bool, UhRunVpError> {
+        Ok(true)
     }
 
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
