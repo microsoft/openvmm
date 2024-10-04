@@ -449,10 +449,6 @@ impl BackingPrivate for SnpBacked {
         target_vmsa.set_r15(current_vmsa.r15());
         target_vmsa.set_xcr0(current_vmsa.xcr0());
 
-        if this.backing.tsc_aux_virtualized {
-            target_vmsa.set_tsc_aux(current_vmsa.tsc_aux());
-        }
-
         target_vmsa.set_cr2(current_vmsa.cr2());
 
         // DR6 not shared on AMD
@@ -2045,7 +2041,7 @@ impl UhProcessor<'_, SnpBacked> {
             x86defs::X64_MSR_GS_BASE => vmsa.gs().base,
             x86defs::X64_MSR_KERNEL_GS_BASE => vmsa.kernel_gs_base(),
             x86defs::X86X_MSR_TSC_AUX => {
-                if self.partition.caps.tsc_aux {
+                if self.backing.tsc_aux_virtualized {
                     vmsa.tsc_aux() as u64
                 } else {
                     return Err(MsrError::InvalidAccess);
@@ -2114,7 +2110,7 @@ impl UhProcessor<'_, SnpBacked> {
             }
             x86defs::X64_MSR_KERNEL_GS_BASE => vmsa.set_kernel_gs_base(value),
             x86defs::X86X_MSR_TSC_AUX => {
-                if self.partition.caps.tsc_aux {
+                if self.backing.tsc_aux_virtualized {
                     vmsa.set_tsc_aux(value as u32);
                 } else {
                     return Err(MsrError::InvalidAccess);
