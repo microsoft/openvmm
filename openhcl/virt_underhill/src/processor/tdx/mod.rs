@@ -3177,18 +3177,18 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
 }
 
 impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
-    pub fn wake_processors_for_tlb_flush(&mut self, vtl: Vtl, processor_set: Option<Vec<u32>>) {
+    pub fn wake_processors_for_tlb_flush(&mut self, _vtl: Vtl, processor_set: Option<Vec<u32>>) {
         // TODO: Add additional checks? HCL checks that VP is active and in target VTL
         if let Some(processors) = processor_set {
             for vp in processors {
                 if self.vp.vp_index().index() != vp {
-                    self.vp.partition.vps[vp as usize].wake(vtl, WakeReason::TLB_FLUSH);
+                    self.vp.partition.vps[vp as usize].wake_vtl2();
                 }
             }
         } else {
             for vp in self.vp.partition.vps.iter() {
                 if self.vp.vp_index().index() != vp.cpu_index {
-                    vp.wake(vtl, WakeReason::TLB_FLUSH);
+                    vp.wake_vtl2();
                 }
             }
         }

@@ -551,9 +551,7 @@ struct WakeReason {
     message_queues: bool,
     hv_start_enable_vtl_vp: bool,
     intcon: bool,
-    inspect: bool,
-    tlb_flush: bool,
-    #[bits(26)]
+    #[bits(28)]
     _reserved: u32,
 }
 
@@ -563,9 +561,6 @@ impl WakeReason {
     const MESSAGE_QUEUES: Self = Self::new().with_message_queues(true);
     const HV_START_ENABLE_VP_VTL: Self = Self::new().with_hv_start_enable_vtl_vp(true); // StartVp/EnableVpVtl handling
     const INTCON: Self = Self::new().with_intcon(true);
-    const INSPECT: Self = Self::new().with_inspect(true);
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    const TLB_FLUSH: Self = Self::new().with_tlb_flush(true);
 }
 
 /// Immutable access to useful bits of Partition state.
@@ -705,7 +700,7 @@ impl UhPartitionInner {
         // Wake VPs to propagate updates.
         if wake_vps {
             for vp in self.vps.iter() {
-                vp.wake(Vtl::Vtl0, WakeReason::INSPECT);
+                vp.wake_vtl2();
             }
         }
     }

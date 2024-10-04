@@ -334,6 +334,12 @@ impl UhVpInner {
         }
     }
 
+    pub fn wake_vtl2(&self) {
+        if let Some(waker) = &*self.waker.read() {
+            waker.wake_by_ref();
+        }
+    }
+
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     pub fn set_sidecar_exit_reason(&self, reason: SidecarExitReason) {
         self.sidecar_exit_reason.lock().get_or_insert_with(|| {

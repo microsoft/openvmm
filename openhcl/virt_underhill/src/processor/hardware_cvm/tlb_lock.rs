@@ -4,7 +4,6 @@
 
 use crate::HardwareIsolatedBacking;
 use crate::UhProcessor;
-use crate::WakeReason;
 use hvdef::Vtl;
 use std::sync::atomic::Ordering;
 
@@ -133,8 +132,7 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
                             // synchronize with its sleep state as a spurious IPI is not
                             // harmful.
                             if other_lock.sleeping.load(Ordering::SeqCst) {
-                                self.partition.vps[blocked_vp]
-                                    .wake(target_vtl, WakeReason::TLB_FLUSH);
+                                self.partition.vps[blocked_vp].wake_vtl2();
                             }
                         }
                     }
