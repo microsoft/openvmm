@@ -334,6 +334,7 @@ impl GuestEventPort for EmulatedGuestEventPort {
                     let _ = hv.synic.signal_event(
                         &partition.gm,
                         vp,
+                        vtl,
                         sint,
                         flag,
                         &mut partition.synic_interrupt(vp, vtl),

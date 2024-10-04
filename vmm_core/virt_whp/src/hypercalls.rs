@@ -188,6 +188,7 @@ impl<T: CpuIo> hv1_hypercall::SignalEventDirect for WhpHypercallExit<'_, '_, T> 
                 .signal_event(
                     &self.vp.vp.partition.gm,
                     vp,
+                    vtl,
                     sint,
                     flag,
                     &mut self.vp.vp.partition.synic_interrupt(vp, vtl),
