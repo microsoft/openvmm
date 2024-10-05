@@ -8,3 +8,8 @@ title = "OpenVMM Developer Guide"
 
 [build]
 create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/microsoft/OpenVMM"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/microsoft/OpenVMM/edit/main/Guide/{path}"

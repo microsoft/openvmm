@@ -23,20 +23,22 @@ few significant design departures from Hyper-V:
   the impact of successful guest attacks, improves developer productivity, and
   simplifies servicing.
 
-An important use case of the OpenVMM VMM is [OpenHCL](./openhcl/index.md),
-an environment for providing virtualization services from inside Virtual Trust
-Level 2 (VTL2) in a guest virtual machine rather than in the privileged
-host/root partition.
+An important use case of the OpenVMM VMM is
+[OpenHCL](./user_guide/openhcl/index.md), an environment for providing
+virtualization services from inside Virtual Trust Level 2 (VTL2) in a guest
+virtual machine rather than in the privileged host/root partition.
 
-This guide describes the architecture and provides developer guidelines for
-both OpenVMM and OpenHCL. For instructions on installing dependencies,
-please refer to the getting started guide for [Windows](./getting_started.md)
-or [WSL2](./getting_started_wsl.md). **OpenHCL can only be built on linux,
-and WSL2 is the only platform that is currently supported for OpenHCL
-development.** Once you have the dependencies installed (and optionally
-setup your [development environment](./ide_setup.md)), please
-refer to the instructions for building [OpenVMM](./openvmm/build.md) or
-[OpenHCL](./openhcl/build.md)
+This guide describes the architecture and provides developer guidelines for both
+OpenVMM and OpenHCL. For instructions on setting up the OpenVMM repo locally,
+please refer to the getting started guide for
+[Windows](./user_guide/getting_started/windows.md) or
+[WSL2](./user_guide/getting_started/linux.md).
 
-The latest version of this guide can be found at [here](https://aka.ms/openvmmguide). The
-source code for OpenVMM can be found at [https://aka.ms/openvmm](https://aka.ms/openvmm).
+Once you have the dependencies installed, please refer to the instructions for
+building [OpenVMM](./user_guide/openvmm/build.md) or
+[OpenHCL](./user_guide/openhcl/build.md), (and optionally, setup
+your [development environment](./dev_guide/suggested_dev_env.md))
+
+The latest version of this guide can be found at [here](https://aka.ms/openvmmguide).
+
+The source code for OpenVMM can be found at [https://aka.ms/openvmm](https://aka.ms/openvmm).
