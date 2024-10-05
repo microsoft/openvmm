@@ -235,6 +235,7 @@ pub struct ParsedDeviceTree<
     /// The vtl2 memory allocation mode OpenHCL should use for memory.
     pub memory_allocation_mode: MemoryAllocationMode,
     /// Entropy from the host to be used by the OpenHCL kernel
+    #[cfg_attr(feature = "inspect", inspect(with = "Option::is_some"))]
     pub entropy: Option<ArrayVec<u8, MAX_ENTROPY_SIZE>>,
 }
 
