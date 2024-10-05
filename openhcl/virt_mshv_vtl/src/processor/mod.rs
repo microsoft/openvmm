@@ -312,7 +312,7 @@ impl UhVpInner {
             waker: Default::default(),
             cpu_index,
             vp_info,
-            vtl1_enabled: Mutex::new(false),
+            hcvm_vtl1_enabled: Mutex::new(false),
             hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
             sidecar_exit_reason: Default::default(),
             tlb_lock_info: VtlArray::<_, 2>::from_fn(|_| super::TlbLockInfo::new(vp_count)),
@@ -714,6 +714,25 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         T::access_vp_state(self, vtl)
+    }
+
+    fn vtl_enabled(&self, vtl: Vtl) -> bool {
+        match vtl {
+            Vtl::Vtl0 => true,
+            Vtl::Vtl1 => {
+                if self.partition.is_hardware_isolated() {
+                    *self.inner.hcvm_vtl1_enabled.lock()
+                } else {
+                    // The best we can do is use whether we have detected the
+                    // guest using vsm on the partition.
+                    matches!(
+                        *self.partition.guest_vsm.read(),
+                        GuestVsmState::Enabled { vtl1: _ }
+                    )
+                }
+            }
+            Vtl::Vtl2 => false,
+        }
     }
 }
 

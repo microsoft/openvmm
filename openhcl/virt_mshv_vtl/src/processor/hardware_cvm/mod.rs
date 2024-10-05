@@ -154,7 +154,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         // Lock the remote vp state to make sure no other VP is trying to enable
         // VTL 1 on it.
         let target_vp = &self.vp.partition.vps[vp_index as usize];
-        let mut vtl1_enabled = target_vp.vtl1_enabled.lock();
+        let mut vtl1_enabled = target_vp.hcvm_vtl1_enabled.lock();
 
         if *vtl1_enabled {
             return Err(HvError::VtlAlreadyEnabled);
@@ -352,7 +352,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             != Vtl::Vtl0
         {
             false
-        } else if !*self.vp.inner.vtl1_enabled.lock() {
+        } else if !*self.vp.inner.hcvm_vtl1_enabled.lock() {
             // VTL 1 must be enabled on the vp
             false
         } else {
