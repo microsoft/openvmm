@@ -4,18 +4,15 @@
 
 # User Guide
 
-- [Getting Started](./user_guide/getting_started.md)
-  - [On Linux / WSL2](./user_guide/getting_started/linux.md)
-  - [On Windows](./user_guide/getting_started/windows.md)
 - [OpenVMM](./user_guide/openvmm.md)
-  - [Building](./user_guide/openvmm/build.md)
   - [Running](./user_guide/openvmm/run.md)
+    - [Examples](./user_guide/openvmm/run/examples.md)
+    - [CLI](./user_guide/openvmm/run/cli.md)
+    - [Interactive Console](./user_guide/openvmm/run/interactive_console.md)
+    - [Graphical Console](./user_guide/openvmm/run/graphical_console.md)
+    - [Logging](./user_guide/openvmm/run/logging.md)
   - [Troubleshooting](./user_guide/openvmm/troubleshooting.md)
-  - [Diagnostics](./user_guide/openvmm/diag.md)
-    - [Interactive Console](./user_guide/openvmm/diag/interactive_console.md)
-    - [Logging](./user_guide/openvmm/diag/logging.md)
 - [OpenHCL](./user_guide/openhcl.md)
-  - [Building](./user_guide/openhcl/build.md)
   - [Running](./user_guide/openhcl/run.md)
     - [On Windows - Hyper-V](./user_guide/openhcl/run/hyperv.md)
     - [On Windows - OpenVMM](./user_guide/openhcl/run/openvmm.md)
@@ -29,7 +26,12 @@
 
 # Developer Guide
 
-- [Suggested Dev Environment](./dev_guide/suggested_dev_env.md)
+- [Getting Started](./dev_guide/getting_started.md)
+  - [On Linux / WSL2](./dev_guide/getting_started/linux.md)
+  - [On Windows](./dev_guide/getting_started/windows.md)
+  - [Building OpenVMM](./dev_guide/getting_started/build_openvmm.md)
+  - [Building OpenHCL](./dev_guide/getting_started/build_openhcl.md)
+  - [Suggested Dev Environment](./dev_guide/getting_started/suggested_dev_env.md)
 - [Contributing](./dev_guide/contrib.md)
   - [Coding Conventions](./dev_guide/contrib/code.md)
   - [Submitting Changes](./dev_guide/contrib/pr.md)

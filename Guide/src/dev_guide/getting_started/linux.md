@@ -1,10 +1,7 @@
 # Getting started on Linux / WSL2
 
 This page provides instructions for installing the necessary dependencies to
-build OpenVMM or OpenHCL in WSL2.
-
-You must be running a recent version of Windows 11. Windows 10 is no longer
-supported as a development platform, due to needed WHP APIs.
+build OpenVMM or OpenHCL on Linux / WSL2.
 
 ## [WSL2] Installing WSL2
 
@@ -27,6 +24,10 @@ Once that command has completed, you will need to open WSL to complete the
 installation and set your password. You can open WSL by typing `wsl` or `bash`
 into Command Prompt or Powershell, or by opening the "Ubuntu" Windows Terminal
 profile that should have been created.
+
+> If you intend to cross-compile OpenVMM for Windows, please ensure you are
+> running a recent version of Windows 11. Windows 10 is no longer supported as a
+> development platform, due to needed WHP APIs.
 
 All subsequent commands on this page must be run within WSL2.
 
@@ -54,5 +55,5 @@ $ git clone https://github.com/microsoft/openvmm.git
 
 ## Next Steps
 
-You are now ready to build [OpenVMM](../openvmm.md) or
-[OpenHCL](../openhcl.md)!
+You are now ready to build [OpenVMM](./build_openvmm.md) or
+[OpenHCL](./build_openhcl.md)!

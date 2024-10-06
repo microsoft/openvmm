@@ -4,10 +4,9 @@ This page provides instructions for installing the necessary dependencies to
 build OpenVMM on Windows.
 
 > We _strongly_ suggest using [WSL2](./linux.md) for OpenVMM development, rather
-> than developing on Windows directly.
->
-> Developing in WSL2 offers a smoother development experience, while still
-> allowing you to build and run OpenVMM on Windows through the use of
+> than developing on Windows directly. Developing in WSL2 offers a smoother
+> development experience, while still allowing you to build and run OpenVMM on
+> Windows through the use of
 > [cross compilation](../../dev_guide/suggested_dev_env.md#wsl2-cross-compiling-from-wsl2-to-windows).
 >
 > Additionally, it allows you to have a single clone of the OpenVMM repo
@@ -63,4 +62,4 @@ PS> git clone https://github.com/microsoft/openvmm.git
 
 ## Next Steps
 
-You are now ready to build [OpenVMM](../openvmm.md)!
+You are now ready to build [OpenVMM](./build_openvmm.md)!

@@ -3,16 +3,15 @@
 **Prerequisites:**
 
 - One of:
-  - [Getting started on Windows](../getting_started.md)
-  - [Getting started on WSL2](../getting_started_wsl.md).
+  - [Getting started on Windows](./windows.md)
+  - [Getting started on Linux / WSL2](./linux.md).
 
 * * *
 
-It is strongly suggested that you use [WSL2](../getting_started_wsl.md)
-for OpenVMM development, and [cross compile](../openhcl/cross_compile.md)
+It is strongly suggested that you use WSL2, and [cross compile](./suggested_dev_env.md#wsl2-cross-compiling-from-wsl2-to-windows)
 for Windows when necessary.
 
-## Pre-build Dependencies
+## Build Dependencies
 
 OpenVMM currently requires a handful of external dependencies to be present in
 order to properly build / run. e.g: a copy of `protoc` to compile Protobuf
@@ -22,9 +21,11 @@ Running the following command will fetch and unpack these various artifacts into
 the correct locations within the repo:
 
 ```sh
-# Where `ARCH` is either `x86-64` or `aarch64`
-cargo xflowey restore-packages [ARCH]
+cargo xflowey restore-packages
 ```
+
+If you intend to cross-compile, refer to the command's `--help` for additional
+options related to downloading packages for other architectures.
 
 ### [Linux] Additional Dependencies
 

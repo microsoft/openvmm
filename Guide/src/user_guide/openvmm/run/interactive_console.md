@@ -3,7 +3,7 @@
 By default, OpenVMM will connect the guests's COM1 serial port to the current
 terminal session, forwarding all keystrokes directly to the VM.
 
-To enter OpenVMM's interactive command mode, type `ctrl-q`.
+To enter OpenVMM's interactive command mode, launch OpenVMM, and type `ctrl-q`.
 
 You can then type the following commands (followed by return):
 
