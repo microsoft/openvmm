@@ -2,6 +2,7 @@
 
 use crate::download_lxutil::LxutilArch;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
+use crate::init_openvmm_magicpath_linux_test_kernel::OpenvmmLinuxTestKernelArch;
 use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
 use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
@@ -19,9 +20,10 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::init_openvmm_magicpath_protoc::Node>();
+        ctx.import::<crate::init_openvmm_magicpath_linux_test_kernel::Node>();
         ctx.import::<crate::init_openvmm_magicpath_lxutil::Node>();
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
+        ctx.import::<crate::init_openvmm_magicpath_protoc::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
     }
 
@@ -31,13 +33,12 @@ impl FlowNode for Node {
         for req in &requests {
             match req.arch {
                 CommonArch::X86_64 => {
-                    let (openhcl_sysroot_read, openhcl_sysroot_write) = ctx.new_var();
-                    ctx.req(crate::init_openvmm_magicpath_openhcl_sysroot::Request {
-                        arch: OpenvmmSysrootArch::X64,
-                        path: openhcl_sysroot_write,
-                    });
                     deps.extend_from_slice(&[
-                        openhcl_sysroot_read.into_side_effect(),
+                        ctx.reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
+                            arch: OpenvmmSysrootArch::X64,
+                            path: v,
+                        })
+                        .into_side_effect(),
                         ctx.reqv(|done| crate::init_openvmm_magicpath_lxutil::Request {
                             arch: LxutilArch::X86_64,
                             done,
@@ -46,16 +47,21 @@ impl FlowNode for Node {
                             arch: MuMsvmArch::X86_64,
                             done,
                         }),
+                        ctx.reqv(
+                            |done| crate::init_openvmm_magicpath_linux_test_kernel::Request {
+                                arch: OpenvmmLinuxTestKernelArch::X64,
+                                done,
+                            },
+                        ),
                     ]);
                 }
                 CommonArch::Aarch64 => {
-                    let (openhcl_sysroot_read, openhcl_sysroot_write) = ctx.new_var();
-                    ctx.req(crate::init_openvmm_magicpath_openhcl_sysroot::Request {
-                        arch: OpenvmmSysrootArch::Aarch64,
-                        path: openhcl_sysroot_write,
-                    });
                     deps.extend_from_slice(&[
-                        openhcl_sysroot_read.into_side_effect(),
+                        ctx.reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
+                            arch: OpenvmmSysrootArch::Aarch64,
+                            path: v,
+                        })
+                        .into_side_effect(),
                         ctx.reqv(|done| crate::init_openvmm_magicpath_lxutil::Request {
                             arch: LxutilArch::Aarch64,
                             done,
@@ -64,6 +70,12 @@ impl FlowNode for Node {
                             arch: MuMsvmArch::Aarch64,
                             done,
                         }),
+                        ctx.reqv(
+                            |done| crate::init_openvmm_magicpath_linux_test_kernel::Request {
+                                arch: OpenvmmLinuxTestKernelArch::Aarch64,
+                                done,
+                            },
+                        ),
                     ]);
                 }
             }

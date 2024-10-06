@@ -22,7 +22,6 @@ impl From<CommonArchCli> for CommonArch {
 #[derive(clap::Args)]
 /// Download and restore packages needed for building the specified architectures.
 pub struct RestorePackagesCli {
-    #[clap(required = true)]
     arch: Vec<CommonArchCli>,
 }
 
@@ -58,7 +57,18 @@ impl IntoPipeline for RestorePackagesCli {
                 deny_warnings: false,
             });
 
-        for arch in self.arch {
+        let arches = {
+            if self.arch.is_empty() {
+                vec![match JobArch::host(backend_hint) {
+                    JobArch::X86_64 => CommonArchCli::X86_64,
+                    JobArch::Aarch64 => CommonArchCli::Aarch64,
+                }]
+            } else {
+                self.arch
+            }
+        };
+
+        for arch in arches {
             job = job.dep_on(
                 |ctx| flowey_lib_hvlite::_jobs::local_restore_packages::Request {
                     arch: arch.into(),
