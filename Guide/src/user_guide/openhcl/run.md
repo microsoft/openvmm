@@ -1,4 +1,4 @@
-# Running
+# Running OpenHCL
 
 This chapter provides a high-level overview of different ways to launch and
 interact with OpenHCL.
