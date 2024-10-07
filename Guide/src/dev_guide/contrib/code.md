@@ -131,7 +131,7 @@ OpenVMM uses [`cargo clippy`](https://github.com/rust-lang/rust-clippy) to
 supplement rustc's built-in lints.
 
 Assuming you've followed the guide and set up `rust-analyzer` to
-[use clippy](../ide_setup.md#enabling-clippy), you should see clippy lints
+[use clippy](../getting_started/suggested_dev_env.md#enabling-clippy), you should see clippy lints
 appear inline when working on Rust code.
 
 The CI runs `cargo clippy` on every crate in the repo prior to building the

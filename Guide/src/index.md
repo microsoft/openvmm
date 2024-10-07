@@ -28,20 +28,20 @@ few significant design departures from Hyper-V:
   simplifies servicing.
 
 An important use case of the OpenVMM VMM is
-[OpenHCL](./user_guide/openhcl/index.md), an environment for providing
+[OpenHCL](./user_guide/openhcl.md), an environment for providing
 virtualization services from inside Virtual Trust Level 2 (VTL2) in a guest
 virtual machine rather than in the privileged host/root partition.
 
 This guide describes the architecture and provides developer guidelines for both
 OpenVMM and OpenHCL. For instructions on setting up the OpenVMM repo locally,
 please refer to the getting started guide for
-[Windows](./user_guide/getting_started/windows.md) or
-[WSL2](./user_guide/getting_started/linux.md).
+[Windows](./dev_guide/getting_started/windows.md) or
+[WSL2](./dev_guide/getting_started/linux.md).
 
 Once you have the dependencies installed, please refer to the instructions for
-building [OpenVMM](./user_guide/openvmm/build.md) or
-[OpenHCL](./user_guide/openhcl/build.md), (and optionally, setup
-your [development environment](./dev_guide/suggested_dev_env.md))
+building [OpenVMM](./dev_guide/getting_started/build_openvmm.md) or
+[OpenHCL](./dev_guide/getting_started/build_openhcl.md), (and optionally, setup
+your [development environment](./dev_guide/getting_started/suggested_dev_env.md))
 
 The latest version of this guide can be found at [here](https://aka.ms/openvmmguide).
 

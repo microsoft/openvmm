@@ -21,7 +21,7 @@ If you're using a different development environment, we nonetheless suggest
 reading through this section, so you can enable similar settings in whatever
 editor / IDE you happen to be using.
 
-### [WSL] Connecting to WSL using VSCode
+### \[WSL2] Connecting to WSL using VSCode
 
 When using Visual Studio Code with WSL, be sure to use the
 [WSL extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-wsl)
@@ -200,7 +200,7 @@ And you'll be all set!
 > seconds to run locally. That's far better than sinking ~20+ mins of CI time!
 
 
-# [WSL2] Cross Compiling from WSL2 to Windows
+# \[WSL2] Cross Compiling from WSL2 to Windows
 
 Setting up cross compilation is very useful, as it allows using the same repo
 cloned in WSL2 to both develop OpenHCL, as well as launch it via OpenVMM via the

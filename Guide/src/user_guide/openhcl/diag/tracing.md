@@ -13,16 +13,15 @@ on this page.
 Sometimes it can be useful to extract additional information from the kernel
 during runtime. By default the config OpenHCL uses does not support tracing;
 as such you will need to build a custom kernel with tracing support. First, see
-the [Kernel Development](kernel.md) section of the docs to find the repo. To set up
-a tracing enabled kernel:
+the [Kernel Development](../../../dev_guide/getting_started/build_ohcl_kernel.md)
+section of the docs to find the repo. To set up a tracing enabled kernel:
 
 1. Find `CONFIG_FTRACE` in Microsoft/hcl-dev.config and change it from
    `CONFIG_FTRACE is not set` to `CONFIG_FTRACE=y`.
 2. Build the kernel using the Microsoft/build-hcl-kernel.sh script.
-3. In the loader json you intend to use (see [OpenHCL build
-   instruction](build.md#building-the-openhcl-igvm-image)) change the
-   `kernel_path` entry to point to your newly built vmlinux. This can
-   usually be found at linux-dom0-hyperv/out/vmlinux.
+3. In the loader json you intend to use, change the `kernel_path` entry to point
+   to your newly built vmlinux. This can usually be found at
+   linux-dom0-hyperv/out/vmlinux.
 4. Build OpenHCL using `cargo xflowey build-igvm --custom-kernel path/to/vmlinux`.
 5. When launching your OpenHCL vm, be sure to Set-VmFirmwareParameters
    correctly. The following is an example that enables tracing hyper-v linux
@@ -30,7 +29,7 @@ a tracing enabled kernel:
    * `tp_printk=1` tells the kernel to print traces to the kernel log.
    * `trace_events=<module>` tells the kernel which module traces to print.
 
-## [Hyper-V] Saving traces to the Windows event log
+## \[Hyper-V] Saving traces to the Windows event log
 
 
 The OpenHCL traces can be saved to the Windows event log on the host. That is

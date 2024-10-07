@@ -6,7 +6,7 @@ issues you may encounter when running OpenHCL.
 If you are still running into issues, consider filing an issue on the OpenVMM
 GitHub Issue tracker.
 
-## [Hyper-V] Vtl2/Vtl0 failed to start
+## \[Hyper-V] Vtl2/Vtl0 failed to start
 
 VTL2/VTL0 fails to boot is when either VTL2 or VTL0 has crashed. When the crash happens, they will emit an event to the Hyper-V worker channel.
 

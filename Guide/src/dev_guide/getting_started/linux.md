@@ -3,7 +3,7 @@
 This page provides instructions for installing the necessary dependencies to
 build OpenVMM or OpenHCL on Linux / WSL2.
 
-## [WSL2] Installing WSL2
+## \[WSL2] Installing WSL2
 
 To install Windows Subsystem for Linux, run the following command in an
 elevated Powershell window:

@@ -66,22 +66,3 @@ If you need to test OpenHCL in Hyper-V (not just using VTL2 emulation with
 OpenVMM), you may want to use a separate physical test machine. In case you
 don't have a spare physical system, you can do your testing using
 [nested virtualization](https://docs.microsoft.com/en-us/virtualization/hyper-v-on-windows/user-guide/nested-virtualization).
-
-To install dependencies for building OpenHCL, please refer to the getting
-started guide for [WSL2](../getting_started_wsl.md).
-
-Once you have installed the dependencies (and optionally setup your
-[development environment](../ide_setup.md)), you can continue to
-the following chapters:
-
-* [Building](./build.md) the OpenHCL IGVM image.
-
-* [Diagnosing](./diag.md) and [debugging](./debug.md)
-
-* [Developer Features](./dev_features.md)
-
-* [Kernel development](./kernel.md)
-
-* [Performance analysis](./perf.md)
-
-* [Troubleshooting](./troubleshoot.md)

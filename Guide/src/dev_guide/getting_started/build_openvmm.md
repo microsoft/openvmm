@@ -27,7 +27,7 @@ cargo xflowey restore-packages
 If you intend to cross-compile, refer to the command's `--help` for additional
 options related to downloading packages for other architectures.
 
-### [Linux] Additional Dependencies
+### \[Linux] Additional Dependencies
 
 On Linux, there are various other dependencies you will need depending on what
 you're working on. On Debian-based distros such as Ubuntu, running the following
