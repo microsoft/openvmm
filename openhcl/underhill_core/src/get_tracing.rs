@@ -31,9 +31,7 @@ use get_helpers::build_tracelogging_notification_buffer;
 use get_protocol::LogFlags;
 use get_protocol::LogLevel;
 use get_protocol::LogType;
-use get_protocol::TraceLoggingNotificationLegacy;
 use get_protocol::GET_LOG_INTERFACE_GUID;
-use get_protocol::GET_LOG_INTERFACE_GUID_LEGACY;
 use mesh::rpc::Rpc;
 use mesh_tracing::Level;
 use mesh_tracing::RemoteTracer;
@@ -49,8 +47,6 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Layer;
 use vmbus_async::async_dgram::AsyncSendExt;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
 
 fn tracing_log_level(level: Level) -> LogLevel {
     match level {
@@ -67,37 +63,19 @@ pub fn init_tracing_backend(driver: impl 'static + SpawnDriver) -> anyhow::Resul
     let trace_filter = std::env::var("HVLITE_LOG").unwrap_or_else(|_| "info".to_owned());
     let perf_trace_filter = std::env::var("HVLITE_PERF_TRACE").unwrap_or_else(|_| "off".to_owned());
 
-    let mut legacy_traces = false;
-
-    let mut pipe = vmbus_user_channel::open_uio_device(&GET_LOG_INTERFACE_GUID)
+    let pipe = vmbus_user_channel::open_uio_device(&GET_LOG_INTERFACE_GUID)
         .and_then(|dev| vmbus_user_channel::message_pipe(&driver, dev))
         .map_err(|err| {
             tracing::error!(
                 error = &err as &dyn std::error::Error,
-                "failed to open the new vmbus tracing channel"
+                "failed to open the vmbus tracing channel"
             );
-            legacy_traces = true;
         })
         .ok();
 
-    if legacy_traces {
-        pipe = vmbus_user_channel::open_uio_device(&GET_LOG_INTERFACE_GUID_LEGACY)
-            .and_then(|dev| vmbus_user_channel::message_pipe(&driver, dev))
-            .map_err(|err| {
-                tracing::error!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to open the legacy vmbus tracing channel"
-                );
-            })
-            .ok();
-    }
+    let kmsg = kmsg_stream::KmsgStream::new(&driver)?;
 
-    let kmsg = kmsg_stream::KmsgStream::new(&driver, legacy_traces)?;
-
-    let mut get_backend = pipe.map(|pipe| GetTracingBackend {
-        pipe,
-        legacy_traces,
-    });
+    let mut get_backend = pipe.map(|pipe| GetTracingBackend { pipe });
 
     TracingBackend::new(
         driver,
@@ -113,7 +91,6 @@ pub fn init_tracing_backend(driver: impl 'static + SpawnDriver) -> anyhow::Resul
 
 struct GetTracingBackend {
     pipe: vmbus_async::pipe::MessagePipe<vmbus_user_channel::MappedRingMem>,
-    legacy_traces: bool,
 }
 
 impl GetTracingBackend {
@@ -124,34 +101,25 @@ impl GetTracingBackend {
         mut flush: mesh::Receiver<Rpc<(), ()>>,
     ) {
         let mut tracing_requests = requests.map(|request| {
-            if self.legacy_traces {
-                let mut notification = TraceLoggingNotificationLegacy::new_zeroed();
-                let len = request.message.len().min(notification.message.len());
-                notification.level = tracing_log_level(request.level);
-                notification.size = len as u16;
-                notification.message[..len].copy_from_slice(&request.message[..len]);
-                notification.as_bytes().to_vec()
-            } else {
-                let log_type = match request.log_type {
-                    Type::Event => LogType::EVENT,
-                    Type::SpanEnter => LogType::SPAN_ENTER,
-                    Type::SpanExit => LogType::SPAN_EXIT,
-                };
+            let log_type = match request.log_type {
+                Type::Event => LogType::EVENT,
+                Type::SpanEnter => LogType::SPAN_ENTER,
+                Type::SpanExit => LogType::SPAN_EXIT,
+            };
 
-                build_tracelogging_notification_buffer(
-                    log_type,
-                    tracing_log_level(request.level),
-                    LogFlags::new(),
-                    request.activity_id,
-                    request.related_activity_id,
-                    request.correlation_id,
-                    request.name.as_ref().map(Vec::as_ref),
-                    request.target.as_ref().map(Vec::as_ref),
-                    request.fields.as_ref().map(Vec::as_ref),
-                    request.message.as_ref(),
-                    request.timestamp,
-                )
-            }
+            build_tracelogging_notification_buffer(
+                log_type,
+                tracing_log_level(request.level),
+                LogFlags::new(),
+                request.activity_id,
+                request.related_activity_id,
+                request.correlation_id,
+                request.name.as_ref().map(Vec::as_ref),
+                request.target.as_ref().map(Vec::as_ref),
+                request.fields.as_ref().map(Vec::as_ref),
+                request.message.as_ref(),
+                request.timestamp,
+            )
         });
 
         enum Event {

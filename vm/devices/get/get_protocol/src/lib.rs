@@ -1535,44 +1535,8 @@ impl ModifyVtl2SettingsCompleteNotification {
     }
 }
 
-// TODO: Deprecate this GUID once the host side changes are in place.
-/// Async trace logging notification channel ID.
-pub const GET_LOG_INTERFACE_GUID_LEGACY: Guid =
-    Guid::from_static_str("ED3D4F91-6394-447B-9448-BD18BD704374");
-
 pub const GET_LOG_INTERFACE_GUID: Guid =
     Guid::from_static_str("AA5DE534-D149-487A-9053-05972BA20A7C");
-
-/// Maximum size of the notification string.
-pub const TRACE_LOGGING_STRING_HOST_NOTIFICATION_MAX_SIZE_LEGACY: usize = 512;
-
-/// Async trace logging notification.
-///
-/// This stands out from the other GET facilities:
-///     * uses a different pipe,
-///     * does not require version negotiation,
-///     * on the host, TraceLogging ETW is emitted if the rate is within limits,
-///     * on the host, the trace *is not persisted by the virtstack* (e.g. to the
-///       Event Log) by default although there is a registry registry to save the data
-///       to the operational log intended for testing.
-///       The user starts the tracing session to capture the trace.
-///       Note, that the GET messages defined above used for tracing
-///       make the host to write to the Event Log which might be construed as
-///       as a data loss risk as the size of the Event Log is limited.
-///     * the host does not parse the message, only emits a TraceLogging ETW.
-/// All of these requirements are geared towards creating a simple to use
-/// logging approach that has much less chances to highten security risk or
-/// lead to resource exaustion.
-// TODO: Deprecate this after the host side changes are in place.
-#[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
-pub struct TraceLoggingNotificationLegacy {
-    pub level: LogLevel,
-    pub size: u16,
-    pub mbz0: u16,
-    pub message: [u8; TRACE_LOGGING_STRING_HOST_NOTIFICATION_MAX_SIZE_LEGACY],
-}
-const_assert_eq!(520, size_of::<TraceLoggingNotificationLegacy>());
 
 open_enum! {
     #[derive(AsBytes, FromBytes, FromZeroes)]

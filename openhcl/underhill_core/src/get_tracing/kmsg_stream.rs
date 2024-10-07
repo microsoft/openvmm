@@ -10,9 +10,7 @@ use get_helpers::build_tracelogging_notification_buffer;
 use get_protocol::LogFlags;
 use get_protocol::LogLevel;
 use get_protocol::LogType;
-use get_protocol::TraceLoggingNotificationLegacy;
 use get_protocol::TRACE_LOGGING_MESSAGE_MAX_SIZE;
-use get_protocol::TRACE_LOGGING_STRING_HOST_NOTIFICATION_MAX_SIZE_LEGACY;
 use kmsg::KmsgParsedEntry;
 use pal_async::driver::Driver;
 use pal_async::pipe::PolledPipe;
@@ -24,24 +22,20 @@ use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
 use tracing::Level;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
 
 /// A stream of trace logging notifications from `/dev/kmsg`.
 pub struct KmsgStream {
     pipe: PolledPipe,
-    legacy_traces: bool,
     next_seq: u64,
 }
 
 impl KmsgStream {
     /// Opens `/dev/kmsg`.
-    pub fn new(driver: &(impl Driver + ?Sized), legacy_traces: bool) -> std::io::Result<Self> {
+    pub fn new(driver: &(impl Driver + ?Sized)) -> std::io::Result<Self> {
         let kmsg = fs_err::File::open("/dev/kmsg")?.into();
 
         let kmsg_stream = KmsgStream {
             pipe: PolledPipe::new(driver, kmsg)?,
-            legacy_traces,
             next_seq: 0,
         };
         Ok(kmsg_stream)
@@ -144,31 +138,19 @@ impl Stream for KmsgStream {
                     let remaining = writer.0.len();
                     let message_len = message.len() - remaining;
 
-                    let notification = if self.legacy_traces {
-                        let message_len =
-                            message_len.min(TRACE_LOGGING_STRING_HOST_NOTIFICATION_MAX_SIZE_LEGACY);
-                        let mut kmsg = TraceLoggingNotificationLegacy {
-                            level,
-                            size: message_len as u16,
-                            ..FromZeroes::new_zeroed()
-                        };
-                        kmsg.message[..message_len].copy_from_slice(&message[..message_len]);
-                        kmsg.as_bytes().to_vec()
-                    } else {
-                        build_tracelogging_notification_buffer(
-                            LogType::EVENT,
-                            level,
-                            LogFlags::new().with_kmsg(true),
-                            None,
-                            None,
-                            None,
-                            None,
-                            Some(target.as_bytes()),
-                            None,
-                            &message[..message_len],
-                            (entry.time.as_nanos() / 100) as u64,
-                        )
-                    };
+                    let notification = build_tracelogging_notification_buffer(
+                        LogType::EVENT,
+                        level,
+                        LogFlags::new().with_kmsg(true),
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(target.as_bytes()),
+                        None,
+                        &message[..message_len],
+                        (entry.time.as_nanos() / 100) as u64,
+                    );
 
                     break notification;
                 }
