@@ -165,6 +165,7 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
             resp.binary("feature_flags", u32::from(info.version.feature_flags));
             resp.field("interrupt_page", info.interrupt_page);
             resp.field("modifying", info.modifying);
+            resp.field("client_id", info.client_id);
             trusted = info.trusted;
         }
 
@@ -3365,7 +3366,7 @@ fn send_offer<N: Notifier>(notifier: &mut N, channel: &mut Channel, version: Ver
     let mut flags = channel.offer.flags;
     if !version.feature_flags.confidential_channels() {
         flags.set_confidential_ring_buffer(false);
-        flags.with_confidential_external_memory(false);
+        flags.set_confidential_external_memory(false);
     }
 
     let msg = protocol::OfferChannel {

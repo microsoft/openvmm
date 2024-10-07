@@ -2533,7 +2533,7 @@ async fn new_underhill_vm(
         // N.B. The channel ID offset can break older Linux versions (that only support vmbus
         //      protocol V1 and Win7) because they don't support channel IDs above 255.
         let vmbus = VmbusServer::builder(&tp, synic.clone(), gm.untrusted_dma_memory().clone())
-            .trusted_gm(Some(gm.vtl0().clone()))
+            .trusted_gm(gm.trusted_memory().cloned())
             .hvsock_notify(hvsock_notify)
             .server_relay(server_relay)
             .enable_channel_id_offset(!with_vmbus_relay)
