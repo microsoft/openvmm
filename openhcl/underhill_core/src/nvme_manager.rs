@@ -300,17 +300,8 @@ impl NvmeManagerWorker {
 
         let nvme_state = NvmeManagerSavedState {
             cpu_count: self.vp_count,
-            mem_buffer: Some(NvmeDmaBufferSavedState {
-                dma_base: self.mem_block.base_as_u64().unwrap(),
-                dma_size: self.mem_block.len(),
-                pfns: self.mem_block.pfns().to_vec(),
-            }),
-            mem_next_offset: self.mem_next_offset,
             nvme_disks,
         };
-
-        // Bypass device shutdown.
-        self.nvme_keepalive = true;
 
         Ok(nvme_state)
     }
@@ -358,22 +349,16 @@ impl ResourceId<DiskHandleKind> for NvmeDiskConfig {
 }
 
 #[derive(Protobuf, SavedStateRoot)]
-#[mesh(package = "openvmm.nvme")]
+#[mesh(package = "openhcl.nvme")]
 pub struct NvmeManagerSavedState {
     #[mesh(1)]
     pub cpu_count: u32,
-    /// NVMe DMA buffer saved state.
     #[mesh(2)]
-    pub mem_buffer: Option<NvmeDmaBufferSavedState>,
-    /// NVMe DMA buffer next offset.
-    #[mesh(3)]
-    pub mem_next_offset: usize,
-    #[mesh(4)]
     pub nvme_disks: Vec<NvmeSavedDiskConfig>,
 }
 
 #[derive(Protobuf, Clone)]
-#[mesh(package = "openvmm.nvme")]
+#[mesh(package = "openhcl.nvme")]
 pub struct NvmeSavedDiskConfig {
     #[mesh(1)]
     pub pci_id: String,
@@ -382,7 +367,7 @@ pub struct NvmeSavedDiskConfig {
 }
 
 #[derive(Protobuf)]
-#[mesh(package = "openvmm.nvme")]
+#[mesh(package = "openhcl.nvme")]
 pub struct NvmeDmaBufferSavedState {
     /// GVA of the DMA buffer assigned to NVMe device(s).
     #[mesh(1)]

@@ -31,6 +31,7 @@ use tracing::info_span;
 use tracing::Instrument;
 use user_driver::backoff::Backoff;
 use user_driver::DeviceBacking;
+use user_driver::save_restore::VfioDeviceSavedState;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::AsBytes;
@@ -165,6 +166,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 .map_bar(0)
                 .context("failed to map device registers")?,
         );
+        let bar0_va = bar0.base_va();
 
         let cc = bar0.cc();
         if cc.en() || bar0.csts().rdy() {
@@ -647,7 +649,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
 
         tracing::debug!(cpu, qid, "creating io queue");
 
-        // Share IO queue 0's interrupt with the admin queue.
+        // Share IO queue 1's interrupt with the admin queue.
         let iv = self.io.len() as u16;
         let interrupt = self
             .device
@@ -754,9 +756,6 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                 NvmeDriverSavedState {
                     admin: None,
                     io: vec![],
-                    dma_base: None,
-                    dma_len: None,
-                    dma_pfns: vec![],
                     nsid: 0, // Invalid namespace ID per NVMe spec.
                     identify_ctrl: [0; 4096],
                     device_id: "".to_string(),
@@ -778,26 +777,12 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         let admin = self.admin.as_ref().unwrap().save().await?;
         let mut io: Vec<QueuePairSavedState> = Vec::new();
         for io_q in self.io.iter() {
-            let temp = io_q.save().await;
-            match temp {
-                Ok(_) => {io.push(temp.unwrap())}
-                _ => {continue}
-            }
+            io.push(io_q.save().await?);
         }
 
-        let mem_block = self.mem_block.as_ref();
-        let (dma_base, dma_len, dma_pfns) = mem_block
-            .map_or((None, None, vec![]), |m| {
-                (m.base_as_u64(),
-                Some(m.len()),
-                m.pfns().to_vec())
-        });
         let save_state = NvmeDriverSavedState {
             admin: Some(admin),
             io,
-            dma_base,
-            dma_len,
-            dma_pfns,
             nsid: 0, // Will be updated by the caller.
             identify_ctrl: [0; 4096], // Will be updated by the caller.
             device_id: "".to_string(), // Will be updated by the caller.
@@ -823,7 +808,7 @@ impl<T: DeviceBacking> InspectTask<WorkerState> for DriverWorkerTask<T> {
 
 /// Save/restore state for NVMe driver.
 #[derive(Protobuf, Clone, Debug)]
-#[mesh(package = "openvmm.nvme")]
+#[mesh(package = "openhcl.nvme")]
 pub struct NvmeDriverSavedState {
     /// Namespace ID.
     #[mesh(1)]
@@ -834,34 +819,24 @@ pub struct NvmeDriverSavedState {
     /// IO queue states.
     #[mesh(3)]
     pub io: Vec<QueuePairSavedState>,
-    /// Contiguous chunk of memory assigned to this driver - base address (VA).
     #[mesh(4)]
-    pub dma_base: Option<u64>,
-    /// DMA block length in bytes.
-    #[mesh(5)]
-    pub dma_len: Option<usize>,
-    /// Vector of PFNs of this DMA block.
-    #[mesh(6)]
-    pub dma_pfns: Vec<u64>,
-    /// Copy of Identify Controller response.
-    #[mesh(7)]
     pub identify_ctrl: [u8; 4096],
     /// Device ID string.
-    #[mesh(8)]
+    #[mesh(5)]
     pub device_id: String,
     /// Namespace data.
-    #[mesh(9)]
+    #[mesh(6)]
     pub namespace: Option<crate::namespace::SavedNamespaceData>,
     /// BAR0 mapping.
-    #[mesh(10)]
+    #[mesh(7)]
     pub bar0_va: Option<u64>,
     /// Queue size as determined by CAP.MQES.
-    #[mesh(11)]
+    #[mesh(8)]
     pub qsize: u16,
     /// Max number of IO queue pairs.
-    #[mesh(12)]
+    #[mesh(9)]
     pub max_io_queues: u16,
     /// State of the attached VFIO device.
-    #[mesh(13)]
+    #[mesh(10)]
     pub vfio_state: VfioDeviceSavedState,
 }

@@ -75,7 +75,7 @@ impl SubmissionQueue {
             tail: self.tail,
             committed_tail: self.committed_tail,
             len: self.len,
-            base_mem: self.mem.base_as_u64(),
+            base_mem: self.mem.base_va(),
             pfns: self.mem.pfns().to_vec(),
         }
     }
@@ -139,7 +139,7 @@ impl CompletionQueue {
             committed_head: self.committed_head,
             len: self.len,
             phase: self.phase,
-            base_mem: self.mem.base_as_u64(),
+            base_mem: self.mem.base_va(),
             pfns: self.mem.pfns().to_vec(),
         }
     }
@@ -154,7 +154,7 @@ fn advance(n: u32, l: u32) -> u32 {
 }
 
 #[derive(Protobuf, Clone, Debug)]
-#[mesh(package = "openvmm.nvme")]
+#[mesh(package = "openhcl.nvme")]
 pub struct SubmissionQueueSavedState {
     #[mesh(1)]
     pub sqid: u16,
@@ -167,13 +167,13 @@ pub struct SubmissionQueueSavedState {
     #[mesh(5)]
     pub len: u32,
     #[mesh(7)]
-    pub base_mem: Option<u64>,
+    pub base_mem: u64,
     #[mesh(8)]
     pub pfns: Vec<u64>,
 }
 
 #[derive(Protobuf, Clone, Debug)]
-#[mesh(package = "openvmm.nvme")]
+#[mesh(package = "openhcl.nvme")]
 pub struct CompletionQueueSavedState {
     #[mesh(1)]
     pub cqid: u16,
@@ -187,7 +187,7 @@ pub struct CompletionQueueSavedState {
     /// NVMe completion tag.
     pub phase: bool,
     #[mesh(7)]
-    pub base_mem: Option<u64>,
+    pub base_mem: u64,
     #[mesh(8)]
     pub pfns: Vec<u64>,
 }

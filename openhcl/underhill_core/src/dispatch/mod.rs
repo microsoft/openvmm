@@ -261,7 +261,7 @@ impl LoadedVm {
                     WorkerRpc::Restart(response) => {
                         let state = async {
                             let running = self.stop().await;
-                            match self.save(None).await {
+                            match self.save(None, true).await {
                                 Ok(servicing_state) => Some((response, servicing_state)),
                                 Err(err) => {
                                     if running {
@@ -323,7 +323,7 @@ impl LoadedVm {
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(|()| async {
                             let running = self.stop().await;
-                            let r = self.save(None).await;
+                            let r = self.save(None, true).await;
                             if running {
                                 self.start(None).await;
                             }
@@ -484,7 +484,7 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
-            let mut state = self.save(Some(deadline)).await?;
+            let mut state = self.save(Some(deadline), nvme_keepalive).await?;
             state.init_state.correlation_id = Some(correlation_id);
 
             // Unload any network devices.
@@ -613,6 +613,7 @@ impl LoadedVm {
     async fn save(
         &mut self,
         _deadline: Option<std::time::Instant>,
+        nvme_keepalive: bool,
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
@@ -625,7 +626,7 @@ impl LoadedVm {
         // Only save NVMe state if there are NVMe controllers, otherwise save None.
         let nvme_state = match self.nvme_manager.as_ref() {
             Some(n) => {
-                if self.servicing_flags.nvme_keepalive {
+                if nvme_keepalive {
                     Some(NvmeSavedState {
                         nvme_state: n.save().await.ok()
                     })

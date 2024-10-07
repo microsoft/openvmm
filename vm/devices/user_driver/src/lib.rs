@@ -57,8 +57,8 @@ pub trait DeviceRegisterIo: Send + Sync {
     fn write_u32(&self, offset: usize, data: u32);
     /// Writes a `u64` register.
     fn write_u64(&self, offset: usize, data: u64);
-    /// Returns base VA.
-    fn base_addr(&self) -> u64;
+    /// Returns base virtual address.
+    fn base_va(&self) -> u64;
 }
 
 pub trait HostDmaAllocator: Send + Sync {
@@ -70,7 +70,7 @@ pub mod save_restore {
 
     /// Saved state for the VFIO device user mode driver.
     #[derive(Protobuf, Clone, Debug)]
-    #[mesh(package = "openvmm.nvme")]
+    #[mesh(package = "openhcl.nvme")]
     pub struct VfioDeviceSavedState {
         #[mesh(1)]
         pub pci_id: String,

@@ -36,7 +36,7 @@ mod state {
     }
 
     #[derive(Protobuf)]
-    #[mesh(package = "openvmm.nvme")]
+    #[mesh(package = "openhcl.nvme")]
     pub struct NvmeSavedState {
         /// NVMe manager (worker) saved state.
         #[mesh(1)]

@@ -154,7 +154,7 @@ impl QueuePair {
         local_queue_data.sq_addr = self.sq_addr();
         local_queue_data.cq_addr = self.cq_addr();
 
-        local_queue_data.base_mem = self.mem.base_as_u64();
+        local_queue_data.base_mem = Some(self.mem.base_va());
         local_queue_data.mem_len = Some(self.mem.len());
         local_queue_data.pfns = Some(self.mem.pfns().to_vec());
 
@@ -528,7 +528,7 @@ pub(crate) fn admin_cmd(opcode: spec::AdminOpcode) -> spec::Command {
 
 #[repr(C)]
 #[derive(Protobuf, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
-#[mesh(package = "openvmm.nvme")]
+#[mesh(package = "openhcl.nvme")]
 pub struct PendingCommandSavedState {
     #[mesh(1)]
     pub command: [u8; 64],
@@ -549,7 +549,7 @@ impl From<&[u8]> for PendingCommandSavedState {
 }
 
 #[derive(Protobuf, Clone, Debug)]
-#[mesh(package = "openvmm.nvme")]
+#[mesh(package = "openhcl.nvme")]
 pub struct QueuePairSavedState {
     #[mesh(1)]
     /// Which CPU handles requests.

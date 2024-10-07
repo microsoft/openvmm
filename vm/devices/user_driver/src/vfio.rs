@@ -10,7 +10,6 @@ use crate::interrupt::DeviceInterruptSource;
 use crate::memory::MemoryBlock;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
-use crate::save_restore::VfioDeviceSavedState;
 use anyhow::Context;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -328,6 +327,10 @@ impl DeviceRegisterIo for vfio_sys::MappedRegion {
     fn write_u64(&self, offset: usize, data: u64) {
         self.write_u64(offset, data)
     }
+
+    fn base_va(&self) -> u64 {
+        self.as_ptr() as u64
+    }
 }
 
 impl MappedRegionWithFallback {
@@ -409,6 +412,10 @@ impl DeviceRegisterIo for MappedRegionWithFallback {
         self.write_to_mapping(offset, data).unwrap_or_else(|_| {
             self.write_to_file(offset, &data.to_ne_bytes());
         })
+    }
+
+    fn base_va(&self) -> u64 {
+        self.mapping.base_va()
     }
 }
 
