@@ -64,4 +64,4 @@
 
 ---
 
-[OpenVMM Crate Docs](./rustdoc.md)
+[OpenVMM Crate Docs]()
