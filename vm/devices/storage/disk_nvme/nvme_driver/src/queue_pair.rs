@@ -7,6 +7,8 @@ use crate::page_allocator::PageAllocator;
 use crate::page_allocator::ScopedPages;
 use crate::queues::CompletionQueue;
 use crate::queues::SubmissionQueue;
+use crate::queues::CompletionQueueSavedState;
+use crate::queues::SubmissionQueueSavedState;
 use crate::registers::DeviceRegisters;
 use anyhow::Context;
 use futures::StreamExt;
@@ -19,6 +21,7 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh::Cancel;
 use mesh::CancelContext;
+use mesh::payload::Protobuf;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Task;
 use safeatomic::AtomicSliceOps;
@@ -27,12 +30,14 @@ use std::future::poll_fn;
 use std::sync::Arc;
 use std::task::Poll;
 use thiserror::Error;
+use user_driver::DeviceBacking;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
-use user_driver::DeviceBacking;
 use user_driver::HostDmaAllocator;
+use zerocopy::AsBytes;
+use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
 
 /// Value for unused PRP entries, to catch/mitigate buffer size mismatches.
@@ -137,6 +142,23 @@ impl QueuePair {
     pub async fn shutdown(mut self) -> impl Send {
         self.cancel.cancel();
         self.task.await
+    }
+
+    /// Save queue pair state for servicing.
+    pub async fn save(&self) -> anyhow::Result<QueuePairSavedState> {
+        // Send an RPC request to QueueHandler thread to save its data.
+        let queue_data = self.issuer.send.call(Req::Save, ()).await?;
+        
+        // Add more data to the returned response.
+        let mut local_queue_data = queue_data.unwrap();
+        local_queue_data.sq_addr = self.sq_addr();
+        local_queue_data.cq_addr = self.cq_addr();
+
+        local_queue_data.base_mem = self.mem.base_as_u64();
+        local_queue_data.mem_len = Some(self.mem.len());
+        local_queue_data.pfns = Some(self.mem.pfns().to_vec());
+
+        Ok(local_queue_data)
     }
 }
 
@@ -385,6 +407,7 @@ struct PendingCommand {
 enum Req {
     Command(Rpc<spec::Command, spec::Completion>),
     Inspect(inspect::Deferred),
+    Save(Rpc<(), Result<QueuePairSavedState, anyhow::Error>>),
 }
 
 #[derive(Inspect)]
@@ -449,6 +472,9 @@ impl QueueHandler {
                         self.stats.issued.increment();
                     }
                     Req::Inspect(deferred) => deferred.inspect(&self),
+                    Req::Save(queue_state) => {
+                        queue_state.complete(self.save().await);
+                    }
                 },
                 Event::Completion(completion) => {
                     let command = self.commands.remove(completion.cid.into());
@@ -460,6 +486,37 @@ impl QueueHandler {
             }
         }
     }
+
+    /// Save queue data for servicing.
+    pub async fn save(&self) -> anyhow::Result<QueuePairSavedState> {
+        let mut pending_cmds: Vec<PendingCommandSavedState> = Vec::new();
+        for cmd in &self.commands {
+            let mut command: [u8; 64] = [0; 64];
+            command.copy_from_slice(cmd.1.command.as_bytes());
+            let command = PendingCommandSavedState {
+                command,
+                cid: cmd.0 as u16,
+            };
+            pending_cmds.push(
+                //cmd.1.command.as_bytes().into()
+                command
+            );
+        }
+        // The data is collected from both QueuePair and QueueHandler.
+        Ok(QueuePairSavedState {
+            max_cids: self.max_cids,
+            sq_state: self.sq.save(),
+            cq_state: self.cq.save(),
+            pending_cmds,
+            cpu: 0, // Will be updated by the caller.
+            msix: 0, // Will be updated by the caller.
+            sq_addr: 0, // Will be updated by the caller.
+            cq_addr: 0, // Will be updated by the caller.
+            base_mem: None, // Will be updated by the caller.
+            mem_len: None, // Will be updated by the caller.
+            pfns: None, // Will be updated by the caller.
+        })
+    }
 }
 
 pub(crate) fn admin_cmd(opcode: spec::AdminOpcode) -> spec::Command {
@@ -467,4 +524,55 @@ pub(crate) fn admin_cmd(opcode: spec::AdminOpcode) -> spec::Command {
         cdw0: spec::Cdw0::new().with_opcode(opcode.0),
         ..FromZeroes::new_zeroed()
     }
+}
+
+#[repr(C)]
+#[derive(Protobuf, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[mesh(package = "openvmm.nvme")]
+pub struct PendingCommandSavedState {
+    #[mesh(1)]
+    pub command: [u8; 64],
+    #[mesh(2)]
+    pub cid: u16,
+}
+
+impl From<&[u8]> for PendingCommandSavedState {
+    fn from(value: &[u8]) -> Self {
+        let mut command: [u8; 64] = [0; 64];
+        command.copy_from_slice(value);
+        let cid = ((command[0] as u16) << 8) | command[1] as u16;
+        Self {
+            command,
+            cid,
+        }
+    }
+}
+
+#[derive(Protobuf, Clone, Debug)]
+#[mesh(package = "openvmm.nvme")]
+pub struct QueuePairSavedState {
+    #[mesh(1)]
+    /// Which CPU handles requests.
+    pub cpu: u32,
+    #[mesh(2)]
+    /// Interrupt vector (MSI-X)
+    pub msix: u32,
+    #[mesh(3)]
+    pub max_cids: usize,
+    #[mesh(4)]
+    pub sq_state: SubmissionQueueSavedState,
+    #[mesh(5)]
+    pub cq_state: CompletionQueueSavedState,
+    #[mesh(6)]
+    pub sq_addr: u64,
+    #[mesh(7)]
+    pub cq_addr: u64,
+    #[mesh(8)]
+    pub base_mem: Option<u64>, 
+    #[mesh(9)]
+    pub mem_len: Option<usize>, 
+    #[mesh(10)]
+    pub pfns: Option<Vec<u64>>, 
+    #[mesh(11)]
+    pub pending_cmds: Vec<PendingCommandSavedState>,
 }

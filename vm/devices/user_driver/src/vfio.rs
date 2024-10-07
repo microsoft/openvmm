@@ -10,6 +10,7 @@ use crate::interrupt::DeviceInterruptSource;
 use crate::memory::MemoryBlock;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
+use crate::save_restore::VfioDeviceSavedState;
 use anyhow::Context;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
