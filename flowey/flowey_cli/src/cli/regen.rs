@@ -56,36 +56,20 @@ impl Regen {
                     }
 
                     // find the built flowey
-                    let mut bin = None;
+                    let bin = working_dir
+                        .join(
+                            std::env::var("CARGO_TARGET_DIR")
+                                .as_deref()
+                                .unwrap_or("target"),
+                        )
+                        .join(std::env::var("CARGO_BUILD_TARGET").as_deref().unwrap_or(""))
+                        .join("debug")
+                        .join(&exe_name);
 
-                    // first, try the target-agnostic `debug` folder
-                    let candidate = working_dir.join("target").join("debug").join(&exe_name);
-                    if candidate.exists() {
-                        bin = Some(candidate)
+                    if !bin.exists() {
+                        panic!("should have found built {bin_name}");
                     }
 
-                    if bin.is_none() {
-                        'outer: for e in fs_err::read_dir(working_dir.join("target"))? {
-                            let e = e?;
-                            if !e.file_type()?.is_dir() {
-                                continue;
-                            }
-
-                            if !e.path().join("debug").exists() {
-                                continue;
-                            }
-
-                            for e in fs_err::read_dir(e.path().join("debug"))? {
-                                let e = e?;
-                                if e.path().file_name() == Some(exe_name.as_ref()) {
-                                    bin = Some(e.path());
-                                    break 'outer;
-                                }
-                            }
-                        }
-                    }
-
-                    let bin = bin.unwrap_or_else(|| panic!("should have found built {bin_name}"));
                     // stash result for future consumers
                     bin2flowey.insert(bin_name.clone(), bin.clone());
                     bin
