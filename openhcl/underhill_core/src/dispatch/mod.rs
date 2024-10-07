@@ -12,6 +12,7 @@ use crate::nvme_manager::NvmeManager;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
 use crate::servicing::ServicingState;
+use crate::servicing::NvmeSavedState;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
 use crate::worker::FirmwareType;
 use crate::worker::NetworkSettingsError;
@@ -620,6 +621,26 @@ impl LoadedVm {
         }
 
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
+
+        // Only save NVMe state if there are NVMe controllers, otherwise save None.
+        let nvme_state = match self.nvme_manager.as_ref() {
+            Some(n) => {
+                if self.servicing_flags.nvme_keepalive {
+                    Some(NvmeSavedState {
+                        nvme_state: n.save().await.ok()
+                    })
+                }
+                else {
+                    // nvme_keepalive was explicitly disabled.
+                    None
+                }
+            },
+            None => {
+                // No NVMe controllers to save.
+                None
+            }
+        };
+
         let units = self.save_units().await.context("state unit save failed")?;
         let vmgs = self
             .vmgs_thin_client
@@ -638,6 +659,7 @@ impl LoadedVm {
                 vm_stop_reference_time: self.last_state_unit_stop.unwrap().as_100ns(),
                 correlation_id: None,
                 emuplat,
+                nvme_state,
                 flush_logs_result: None,
                 vmgs: (vmgs, vmgs_get_storage_meta),
                 overlay_shutdown_device: self.shutdown_relay.is_some(),

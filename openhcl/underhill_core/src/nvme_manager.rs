@@ -5,6 +5,7 @@
 
 use anyhow::Context;
 use async_trait::async_trait;
+use crate::servicing::NvmeSavedState;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedSimpleDisk;
 use futures::future::join_all;
@@ -28,6 +29,8 @@ use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceId;
 use vm_resource::ResourceResolver;
 use vmcore::vm_task::VmTaskDriverSource;
+use mesh::payload::Protobuf;
+use vmcore::save_restore::SavedStateRoot;
 
 #[derive(Debug, Error)]
 #[error("nvme device {pci_id} error")]
@@ -105,7 +108,6 @@ impl NvmeManager {
     }
 
     pub async fn shutdown(self, nvme_keepalive: bool) {
-        //
         // Early return would be the fastest way to skip shutdown.
         // Unfortunately, then there is no good way to prevent
         // controller reset in the drop() fn if we early return here.
@@ -119,12 +121,20 @@ impl NvmeManager {
         });
         self.task.await;
     }
+
+    /// Save NVMe manager's state during servicing.
+    pub async fn save(&self) -> anyhow::Result<NvmeManagerSavedState> {
+        // NVMe manager has no own data to save, everything will be done
+        // in the Worker task which can be contacted through Client.
+        self.client().save().await
+    }
 }
 
 enum Request {
     Inspect(inspect::Deferred),
     ForceLoadDriver(inspect::DeferredUpdate),
-    GetNamespace(Rpc<(String, u32, tracing::Span), Result<nvme_driver::Namespace, NamespaceError>>),
+    GetNamespace(Rpc<(String, u32, tracing::Span), Result<Arc<nvme_driver::Namespace>, NamespaceError>>),
+    Save(Rpc<(), Result<NvmeManagerSavedState, anyhow::Error>>),
     Shutdown {
         span: tracing::Span,
         nvme_keepalive: bool,
@@ -141,7 +151,7 @@ impl NvmeManagerClient {
         &self,
         pci_id: String,
         nsid: u32,
-    ) -> anyhow::Result<nvme_driver::Namespace> {
+    ) -> anyhow::Result<Arc<nvme_driver::Namespace>> {
         Ok(self
             .sender
             .call(
@@ -154,6 +164,13 @@ impl NvmeManagerClient {
             )
             .await
             .context("nvme manager is shut down")??)
+    }
+
+    /// Send an RPC call to save NVMe worker data.
+    pub async fn save(
+        &self,
+    ) -> anyhow::Result<NvmeManagerSavedState> {
+        self.sender.call(Request::Save, ()).await?
     }
 }
 
@@ -192,6 +209,13 @@ impl NvmeManagerWorker {
                         self.get_namespace(pci_id.clone(), nsid)
                             .map_err(|source| NamespaceError { pci_id, source })
                             .instrument(span)
+                    })
+                    .await
+                }
+                // Request to save worker data for servicing.
+                Request::Save(rpc) => {
+                    rpc.handle(|_| {
+                        self.save()
                     })
                     .await
                 }
@@ -256,12 +280,39 @@ impl NvmeManagerWorker {
         &mut self,
         pci_id: String,
         nsid: u32,
-    ) -> Result<nvme_driver::Namespace, InnerError> {
+    ) -> Result<Arc<nvme_driver::Namespace>, InnerError> {
         let driver = self.get_driver(pci_id.to_owned()).await?;
         driver
             .namespace(nsid)
             .await
             .map_err(|source| InnerError::Namespace { nsid, source })
+    }
+
+    /// Saves NVMe device's states into buffer during servicing.
+    pub async fn save(&mut self) -> anyhow::Result<NvmeManagerSavedState> {
+        let mut nvme_disks: Vec<NvmeSavedDiskConfig> = Vec::new();
+        for (pci_id, driver) in self.devices.iter_mut() {
+            nvme_disks.push(NvmeSavedDiskConfig {
+                pci_id: pci_id.clone(),
+                driver_state: driver.save().await?,
+            });
+        }
+
+        let nvme_state = NvmeManagerSavedState {
+            cpu_count: self.vp_count,
+            mem_buffer: Some(NvmeDmaBufferSavedState {
+                dma_base: self.mem_block.base_as_u64().unwrap(),
+                dma_size: self.mem_block.len(),
+                pfns: self.mem_block.pfns().to_vec(),
+            }),
+            mem_next_offset: self.mem_next_offset,
+            nvme_disks,
+        };
+
+        // Bypass device shutdown.
+        self.nvme_keepalive = true;
+
+        Ok(nvme_state)
     }
 }
 
@@ -292,11 +343,11 @@ impl AsyncResolveResource<DiskHandleKind, NvmeDiskConfig> for NvmeDiskResolver {
             .await
             .context("could not open nvme namespace")?;
 
-        Ok(disk_nvme::NvmeDisk::new(namespace).into())
+        Ok(disk_nvme::NvmeDisk::new(namespace.clone()).into())
     }
 }
 
-#[derive(MeshPayload)]
+#[derive(MeshPayload, Default)]
 pub struct NvmeDiskConfig {
     pub pci_id: String,
     pub nsid: u32,
@@ -304,4 +355,42 @@ pub struct NvmeDiskConfig {
 
 impl ResourceId<DiskHandleKind> for NvmeDiskConfig {
     const ID: &'static str = "nvme";
+}
+
+#[derive(Protobuf, SavedStateRoot)]
+#[mesh(package = "openvmm.nvme")]
+pub struct NvmeManagerSavedState {
+    #[mesh(1)]
+    pub cpu_count: u32,
+    /// NVMe DMA buffer saved state.
+    #[mesh(2)]
+    pub mem_buffer: Option<NvmeDmaBufferSavedState>,
+    /// NVMe DMA buffer next offset.
+    #[mesh(3)]
+    pub mem_next_offset: usize,
+    #[mesh(4)]
+    pub nvme_disks: Vec<NvmeSavedDiskConfig>,
+}
+
+#[derive(Protobuf, Clone)]
+#[mesh(package = "openvmm.nvme")]
+pub struct NvmeSavedDiskConfig {
+    #[mesh(1)]
+    pub pci_id: String,
+    #[mesh(2)]
+    pub driver_state: nvme_driver::NvmeDriverSavedState,
+}
+
+#[derive(Protobuf)]
+#[mesh(package = "openvmm.nvme")]
+pub struct NvmeDmaBufferSavedState {
+    /// GVA of the DMA buffer assigned to NVMe device(s).
+    #[mesh(1)]
+    pub dma_base: u64,
+    /// Total size of DMA buffer in bytes.
+    #[mesh(2)]
+    pub dma_size: usize,
+    /// List of PFNs for this DMA buffer.
+    #[mesh(3)]
+    pub pfns: Vec<u64>,
 }
