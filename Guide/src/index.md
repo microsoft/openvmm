@@ -1,5 +1,9 @@
 # Introduction
 
+TODO OSS: this entire introduction needs to be rewritten
+
+* * *
+
 OpenVMM is a virtual machine monitor (VMM) written in Rust for Windows and Linux.
 It was codenamed HvLite so you may see some references to this name in the
 documentation and code. The HvLite name comes from the project being a

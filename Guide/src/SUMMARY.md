@@ -21,8 +21,9 @@
   - [Diagnostics](./user_guide/openhcl/diag.md)
     - [Preface: CVM restrictions](./user_guide/openhcl/diag/cvm_restrictions.md)
     - [ohcldiag-dev](./user_guide/openhcl/diag/ohcldiag_dev.md)
-    - [Network packet capture (PCAP)](./user_guide/openhcl/diag/pcap.md)
-    - [Performance analysis](./user_guide/openhcl/diag/perf.md)
+      - [Network packet capture (PCAP)](./user_guide/openhcl/diag/ohcldiag_dev/pcap.md)
+      - [Performance analysis](./user_guide/openhcl/diag/ohcldiag_dev/perf.md)
+    - [Tracing](./user_guide/openhcl/diag/tracing.md)
 
 # Developer Guide
 
@@ -31,6 +32,7 @@
   - [On Windows](./dev_guide/getting_started/windows.md)
   - [Building OpenVMM](./dev_guide/getting_started/build_openvmm.md)
   - [Building OpenHCL](./dev_guide/getting_started/build_openhcl.md)
+    - [Building a Custom Kernel](./dev_guide/getting_started/build_ohcl_kernel.md)
   - [Suggested Dev Environment](./dev_guide/getting_started/suggested_dev_env.md)
 - [Testing](./dev_guide/tests.md)
   - [Unit Tests](./dev_guide/tests/unit.md)
@@ -63,10 +65,3 @@
 ---
 
 [OpenVMM Crate Docs]()
-
-<!-- # TEMP - pages to delete / fold into other pages
-
-- [Serial Access](./openhcl/dev_features.md)
-- [Scripts](./process/scripts.md)
-- [Building the OHCL Linux Kernel](./openhcl/kernel.md)
-- [Windows - OpenVMM (via WSL2)](./openhcl/cross_compile.md) -->

@@ -1,8 +1,8 @@
-# Performance analysis in VTL2
+# Performance analysis
 
 Besides performance analysis for VTL0 VM and host OS, we'd like to capture trace
-inside VTL2 and analyze those data on dev box. It enables us to analyze Linux
-kernel and OpenHCL worker process inside VTL2.
+inside VTL2 as well. This allows us to analyze the Linux kernel and
+`openvmm_hcl` worker process inside VTL2.
 
 ## Prerequisite for capturing perf data
 
@@ -39,13 +39,13 @@ of perf data and saves it in a file. You can find more info about perf on
 external page [perf Examples](https://www.brendangregg.com/perf.html)
 
 ```bash
-.\ohcldiag-dev.exe <VM Name> run -- perf record -F 999 -a --call-graph=dwarf -o ./underhill.fio.perf -- sleep 15
+.\ohcldiag-dev.exe <VM Name> run -- perf record -F 999 -a --call-graph=dwarf -o ./openhcl.fio.perf -- sleep 15
 ```
 
 Use perf to convert perf data to plain text and dump it to a file on host
 
 ```bash
-.\ohcldiag-dev.exe <VM Name> run -- perf script -i ./underhill.fio.perf > .\traces\underhill.fio.perf.script
+.\ohcldiag-dev.exe <VM Name> run -- perf script -i ./openhcl.fio.perf > .\traces\openhcl.fio.perf.script
 ```
 
 ## Visualize perf profiling data
@@ -58,11 +58,11 @@ Here is an example command on WSL2. It converts the perf script file to SVG
 file. Both of files are located under d:\tmp\vtl2 folder on Windows.
 
 ```bash
-perf_file=/mnt/d/tmp/vtl2/underhill.fio.perf.script; cat $perf_file | ./stackcollapse-perf.pl > $perf_file.folded; cat $perf_file.folded | ./flamegraph.pl > $perf_file.svg
+perf_file=/mnt/d/tmp/vtl2/openhcl.fio.perf.script; cat $perf_file | ./stackcollapse-perf.pl > $perf_file.folded; cat $perf_file.folded | ./flamegraph.pl > $perf_file.svg
 ```
 
 If the perf script file doesn't have rust functions demangled correctly, please add rustfilt in the pipe to assist demangling.
 
 ```bash
-perf_file=/mnt/d/tmp/vtl2/underhill.fio.perf.script; cat $perf_file | rustfilt | ./stackcollapse-perf.pl > $perf_file.folded; cat $perf_file.folded | ./flamegraph.pl > $perf_file.svg
+perf_file=/mnt/d/tmp/vtl2/openhcl.fio.perf.script; cat $perf_file | rustfilt | ./stackcollapse-perf.pl > $perf_file.folded; cat $perf_file.folded | ./flamegraph.pl > $perf_file.svg
 ```

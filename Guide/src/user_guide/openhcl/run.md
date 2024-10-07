@@ -3,6 +3,8 @@
 This chapter provides a high-level overview of different ways to launch and
 interact with OpenHCL.
 
+* * *
+
 To get started, ensure you have a copy of an OpenHCL IGVM firmware image:
 
 ## Building OpenHCL

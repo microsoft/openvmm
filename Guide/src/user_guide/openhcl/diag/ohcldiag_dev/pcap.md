@@ -1,15 +1,16 @@
-# PCAP based packet capture
-PCAP is an industry standard format for capturing network packets. `OpenHCL` now
-supports PCAP based packet capture for the network packets that are going through it. 
+# Network packet capture (PCAP)
+
+PCAP is an industry standard format for capturing network packets. OpenHCL now
+supports PCAP based packet capture for the network packets that are going through it.
 
 ## Prerequisites
-* PCAP based packet capture support in `OpenHCL` came in around Nov 2023. The easiest
-way to check whether the `OpenHCL` version you are running has PCAP support or not is by
+* PCAP based packet capture support in OpenHCL came in around Nov 2023. The easiest
+way to check whether the OpenHCL version you are running has PCAP support or not is by
 running `ohcldiag-dev -h` and if the output shows an option for `packet-capture`, then
-the support is there. Otherwise, pick a newer version of `OpenHCL`.
-* `OpenHCL` PCAP support is only for the synthetic network path. It will likely not
+the support is there. Otherwise, pick a newer version of OpenHCL.
+* OpenHCL PCAP support is only for the synthetic network path. It will likely not
 show any packets captured if a vNIC is operating in accelerated networking mode. If you
-would like to capture the network packets for a given vNIC in `OpenHCL`, disable
+would like to capture the network packets for a given vNIC in OpenHCL, disable
 accelerated networking on the vNIC first.
 
 ## Packet capture options

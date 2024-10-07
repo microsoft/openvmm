@@ -1,4 +1,4 @@
-# Logging
+# OpenVMM Logging
 
 ## Configuring the logging messages to emit
 

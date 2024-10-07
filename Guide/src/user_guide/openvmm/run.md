@@ -4,6 +4,8 @@
 This chapter provides a high-level overview of different ways to launch and
 interact with OpenVMM.
 
+* * *
+
 To get started, ensure you have a copy of the OpenVMM binary:
 
 ## Building OpenVMM
