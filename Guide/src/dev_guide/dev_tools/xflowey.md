@@ -20,4 +20,3 @@ In a nutshell:
 - `cargo xtask`: implements novel, standalone tools/utilities
 - `cargo xflowey`: orchestrates invoking a sequence of tools/utilities, without
   doing any non-trivial data processing itself
-
