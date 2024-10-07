@@ -37,7 +37,7 @@ async fn nvme_relay(config: PetriVmConfig) -> Result<(), anyhow::Error> {
 /// Use the shared pool override to test the shared pool dma path.
 #[vmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64)))]
 async fn nvme_relay_shared_pool(config: PetriVmConfig) -> Result<(), anyhow::Error> {
-    nvme_relay_test_core(config, "UNDERHILL_ENABLE_SHARED_VISIBILITY_POOL=1").await
+    nvme_relay_test_core(config, "OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1").await
 }
 
 /// Boot the UEFI firmware, with a VTL2 range automatically configured by

@@ -20,11 +20,12 @@ pub(crate) const HVLITE_TARGET: &str = "hvlite_log";
 pub(crate) fn try_init_tracing(
     log_file: File,
 ) -> Result<(), tracing_subscriber::util::TryInitError> {
-    let targets = if let Ok(var) = std::env::var("HVLITE_LOG") {
-        var.parse().unwrap()
-    } else {
-        Targets::new().with_default(LevelFilter::DEBUG)
-    };
+    let targets =
+        if let Ok(var) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
+            var.parse().unwrap()
+        } else {
+            Targets::new().with_default(LevelFilter::DEBUG)
+        };
     tracing_subscriber::fmt()
         .compact()
         .with_ansi(false) // avoid polluting logs with escape sequences

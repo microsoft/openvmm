@@ -586,12 +586,13 @@ impl PetriVmConfigSetupCore<'_> {
     }
 
     fn load_firmware(&self) -> anyhow::Result<LoadMode> {
-        // Forward HVLITE_LOG to OpenHCL if it's set.
-        let openhcl_tracing = if let Ok(x) = std::env::var("HVLITE_LOG") {
-            format!("HVLITE_LOG={x}")
-        } else {
-            "HVLITE_LOG=debug".to_owned()
-        };
+        // Forward OPENVMM_LOG to OpenHCL if it's set.
+        let openhcl_tracing =
+            if let Ok(x) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
+                format!("OPENVMM_LOG={x}")
+            } else {
+                "OPENVMM_LOG=debug".to_owned()
+            };
 
         Ok(match (self.arch, &self.firmware) {
             (MachineArch::X86_64, Firmware::LinuxDirect { .. }) => {

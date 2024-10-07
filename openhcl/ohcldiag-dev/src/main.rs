@@ -118,7 +118,7 @@ enum Command {
     /// Starts the VM if it's waiting for the signal to start.
     ///
     /// Underhill must have been started with --wait-for-start or
-    /// UNDERHILL_WAIT_FOR_START set.
+    /// OPENHCL_WAIT_FOR_START set.
     Start {
         /// Environment variables to set, in the form X=Y
         #[clap(short, long)]

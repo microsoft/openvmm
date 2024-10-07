@@ -579,7 +579,7 @@ fn load_igvm_x86(
     // TODO: pass this through an IGVM parameter
     let cmdline = if let Some(vtl2_framebuffer_gpa_base) = vtl2_framebuffer_gpa_base {
         format!(
-            "UNDERHILL_FRAMEBUFFER_GPA_BASE={} {}",
+            "OPENHCL_FRAMEBUFFER_GPA_BASE={} {}",
             vtl2_framebuffer_gpa_base, cmdline
         )
     } else {

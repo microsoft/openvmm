@@ -150,7 +150,7 @@ fn build_kernel_command_line(
         // Specify the init path.
         "rdinit=/underhill-init",
         // Default to user-mode NVMe driver.
-        "UNDERHILL_NVME_VFIO=1",
+        "OPENHCL_NVME_VFIO=1",
         // The next three items reduce the memory overhead of the storvsc driver.
         // Since it is only used for DVD, performance is not critical.
         "hv_storvsc.storvsc_vcpus_per_sub_channel=2048",
@@ -209,7 +209,7 @@ fn build_kernel_command_line(
         write!(
             cmdline,
             "{}=1 ",
-            underhill_confidentiality::UNDERHILL_CONFIDENTIAL_ENV_VAR_NAME
+            underhill_confidentiality::OPENHCL_CONFIDENTIAL_ENV_VAR_NAME
         )?;
     }
 

@@ -151,8 +151,8 @@ impl PetriVmConfig {
         }
         self.with_openhcl_command_line(&format!(
             "{}=1 {}=0",
-            underhill_confidentiality::UNDERHILL_CONFIDENTIAL_ENV_VAR_NAME,
-            underhill_confidentiality::UNDERHILL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME
+            underhill_confidentiality::OPENHCL_CONFIDENTIAL_ENV_VAR_NAME,
+            underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME
         ))
     }
 

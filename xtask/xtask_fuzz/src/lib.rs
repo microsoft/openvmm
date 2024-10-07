@@ -29,7 +29,7 @@ pub fn init_tracing_if_repro() {
 
     if is_repro() {
         INIT.call_once(|| {
-            let targets = if let Ok(var) = std::env::var("HVLITE_LOG") {
+            let targets = if let Ok(var) = std::env::var("OPENVMM_LOG") {
                 var.parse().unwrap()
             } else {
                 Targets::new().with_default(LevelFilter::TRACE)

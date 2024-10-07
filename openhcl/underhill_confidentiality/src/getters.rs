@@ -13,14 +13,19 @@ fn get_bool_env_var(name: &str) -> bool {
 ///
 /// Generally, accessing this information through the HCL ioctl is preferred.
 pub fn is_confidential_vm() -> bool {
-    *CONFIDENTIAL.get_or_init(|| get_bool_env_var(crate::UNDERHILL_CONFIDENTIAL_ENV_VAR_NAME))
+    *CONFIDENTIAL.get_or_init(|| {
+        get_bool_env_var(crate::OPENHCL_CONFIDENTIAL_ENV_VAR_NAME)
+            || get_bool_env_var(crate::LEGACY_CONFIDENTIAL_ENV_VAR_NAME)
+    })
 }
 
 /// Gets whether confidential debugging is enabled. This is an IGVM-level setting,
 /// intended to allow for disabling diagnostic restrictions on CVMs.
 pub fn confidential_debug_enabled() -> bool {
-    *CONFIDENTIAL_DEBUG
-        .get_or_init(|| get_bool_env_var(crate::UNDERHILL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME))
+    *CONFIDENTIAL_DEBUG.get_or_init(|| {
+        get_bool_env_var(crate::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME)
+            || get_bool_env_var(crate::LEGACY_CONFIDENTIAL_DEBUG_ENV_VAR_NAME)
+    })
 }
 
 /// Gets whether confidential filtering is enabled. This is the source of truth for

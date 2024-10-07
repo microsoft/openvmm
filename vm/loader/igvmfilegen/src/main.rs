@@ -38,7 +38,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
-use underhill_confidentiality::UNDERHILL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME;
+use underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 
@@ -714,7 +714,7 @@ fn load_vtl2<R: IgvmfilegenRegister + GuestArch>(
                 tracing::info!("enabling underhill confidential debug environment flag");
                 format!(
                     "{command_line} {}=1",
-                    UNDERHILL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME
+                    OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME
                 )
             } else {
                 command_line.to_string()

@@ -60,7 +60,7 @@ impl FlowNode for Node {
             // Used by the test_with_tracing macro in test runners
             ("RUST_LOG", "trace,mesh_node=info"),
             // Used by the process spawned for VMM tests
-            ("HVLITE_LOG", "debug,mesh_node=info"),
+            ("OPENVMM_LOG", "debug,mesh_node=info"),
         ]
         .into_iter()
         .map(|(a, b)| (a.to_owned(), b.to_owned()))

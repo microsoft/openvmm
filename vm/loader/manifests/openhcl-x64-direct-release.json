@@ -13,7 +13,7 @@
             },
             "vtl2": {
                 "underhill": {
-                    "command_line": "UNDERHILL_FORCE_LOAD_VTL0_IMAGE=linux OPENHCL_BOOT_LOG=com3",
+                    "command_line": "OPENHCL_FORCE_LOAD_VTL0_IMAGE=linux OPENHCL_BOOT_LOG=com3",
                     "memory_page_count": 245760
                 }
             }

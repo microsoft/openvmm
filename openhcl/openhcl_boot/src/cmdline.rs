@@ -3,7 +3,7 @@
 //! Command line arguments and parsing for openhcl_boot.
 
 use crate::boot_logger::LoggerType;
-use underhill_confidentiality::UNDERHILL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME;
+use underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME;
 
 /// Enable boot logging in the bootloader.
 ///
@@ -31,7 +31,7 @@ pub fn parse_boot_command_line(cmdline: &str) -> BootCommandLineOptions {
             if let Some(SERIAL_LOGGER) = arg {
                 result.logger = Some(LoggerType::Serial)
             }
-        } else if arg.starts_with(UNDERHILL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME) {
+        } else if arg.starts_with(OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME) {
             let arg = arg.split_once('=').map(|(_, arg)| arg);
             if arg.is_some_and(|a| a != "0") {
                 result.confidential_debug = true;
@@ -92,7 +92,7 @@ mod tests {
             }
         );
 
-        let cmdline = format!("{UNDERHILL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME}=1");
+        let cmdline = format!("{OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME}=1");
         assert_eq!(
             parse_boot_command_line(&cmdline),
             BootCommandLineOptions {

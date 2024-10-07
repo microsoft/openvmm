@@ -13,16 +13,17 @@ pub fn enable_tracing() -> anyhow::Result<()> {
     use tracing_subscriber::util::SubscriberInitExt;
 
     // Enable tracing for underhill_log by default since this is passed through
-    // from the guest (but still allow it to be disabled via HVLITE_LOG).
+    // from the guest (but still allow it to be disabled via OPENVMM_LOG).
     let base = "underhill_log=trace";
-    let filter = if let Ok(filter) = std::env::var("HVLITE_LOG") {
-        tracing_subscriber::EnvFilter::try_new(format!("{base},{filter}"))
-            .context("invalid HVLITE_LOG")?
-    } else {
-        tracing_subscriber::EnvFilter::default()
-            .add_directive(tracing::metadata::LevelFilter::INFO.into())
-            .add_directive(base.parse().unwrap())
-    };
+    let filter =
+        if let Ok(filter) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
+            tracing_subscriber::EnvFilter::try_new(format!("{base},{filter}"))
+                .context("invalid OPENVMM_LOG")?
+        } else {
+            tracing_subscriber::EnvFilter::default()
+                .add_directive(tracing::metadata::LevelFilter::INFO.into())
+                .add_directive(base.parse().unwrap())
+        };
 
     if std::env::var("HVLITE_DISABLE_TRACING_RATELIMITS").map_or(false, |v| !v.is_empty()) {
         tracelimit::disable_rate_limiting(true);

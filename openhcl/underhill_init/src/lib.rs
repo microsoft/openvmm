@@ -314,7 +314,7 @@ fn init_logging() {
     let syslog = SysLog::new().expect("failed to open /dev/kmsg");
     log::set_boxed_logger(Box::new(syslog)).expect("no logger already set");
 
-    // TODO: syslog should respect the HVLITE_LOG env variable to allow runtime
+    // TODO: syslog should respect the OPENVMM_LOG env variable to allow runtime
     // log level changes without rebuilding, but for now downgrade the default
     // to info to stop noisy logs and allow compile time changes for local
     // debugging.
@@ -536,7 +536,7 @@ fn do_main() -> anyhow::Result<()> {
     setup(&stat_files, &options, writes, &filesystems)?;
 
     if matches!(
-        std::env::var("UNDERHILL_NVME_VFIO").as_deref(),
+        std::env::var("OPENHCL_NVME_VFIO").as_deref(),
         Ok("true" | "1")
     ) {
         // Register VFIO to bind to all NVMe devices, from any vendor.

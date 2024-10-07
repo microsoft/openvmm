@@ -57,11 +57,23 @@ fn tracing_log_level(level: Level) -> LogLevel {
     }
 }
 
+/// Reads an environment variable, falling back to a legacy variable (replacing
+/// "OPENVMM_" with "HVLITE_") if the original is not set.
+fn legacy_openvmm_env(name: &str) -> Result<String, std::env::VarError> {
+    std::env::var(name).or_else(|_| {
+        std::env::var(format!(
+            "HVLITE_{}",
+            name.strip_prefix("OPENVMM_").unwrap_or(name)
+        ))
+    })
+}
+
 /// Initializes the tracing backend, opening the VMBus pipe to send tracing
 /// events to the host.
 pub fn init_tracing_backend(driver: impl 'static + SpawnDriver) -> anyhow::Result<TracingBackend> {
-    let trace_filter = std::env::var("HVLITE_LOG").unwrap_or_else(|_| "info".to_owned());
-    let perf_trace_filter = std::env::var("HVLITE_PERF_TRACE").unwrap_or_else(|_| "off".to_owned());
+    let trace_filter = legacy_openvmm_env("OPENVMM_LOG").unwrap_or_else(|_| "info".to_owned());
+    let perf_trace_filter =
+        legacy_openvmm_env("OPENVMM_PERF_TRACE").unwrap_or_else(|_| "off".to_owned());
 
     let pipe = vmbus_user_channel::open_uio_device(&GET_LOG_INTERFACE_GUID)
         .and_then(|dev| vmbus_user_channel::message_pipe(&driver, dev))
@@ -172,7 +184,7 @@ impl GetTracingBackend {
 
 /// Enables tracing output to the tracing task and to stderr.
 pub fn init_tracing(spawn: impl Spawn, tracer: RemoteTracer) -> anyhow::Result<()> {
-    if std::env::var_os("HVLITE_DISABLE_TRACING_RATELIMITS").map_or(false, |v| !v.is_empty()) {
+    if legacy_openvmm_env("OPENVMM_DISABLE_TRACING_RATELIMITS").map_or(false, |v| !v.is_empty()) {
         tracelimit::disable_rate_limiting(true);
     }
 

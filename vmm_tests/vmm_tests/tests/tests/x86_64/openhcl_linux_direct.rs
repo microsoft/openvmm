@@ -93,7 +93,7 @@ async fn mana_nic(config: PetriVmConfig) -> Result<(), anyhow::Error> {
 #[vmm_test(openhcl_linux_direct_x64)]
 async fn mana_nic_shared_pool(config: PetriVmConfig) -> Result<(), anyhow::Error> {
     boot_openhcl_linux_mana_nic(
-        config.with_openhcl_command_line("UNDERHILL_ENABLE_SHARED_VISIBILITY_POOL=1"),
+        config.with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1"),
     )
     .await
 }

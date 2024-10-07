@@ -119,7 +119,7 @@ pub fn main() -> anyhow::Result<()> {
     // standard panic output.
     install_task_name_panic_hook();
 
-    if let Some(path) = std::env::var_os("UNDERHILL_WRITE_SAVED_STATE_PROTO") {
+    if let Some(path) = std::env::var_os("OPENVMM_WRITE_SAVED_STATE_PROTO") {
         if cfg!(debug_assertions) {
             mesh::payload::protofile::DescriptorWriter::new(
                 vmcore::save_restore::saved_state_roots(),
