@@ -35,13 +35,11 @@ All subsequent commands on this page must be run within WSL2.
 
 To build OpenVMM or OpenHCL, you first need to install Rust.
 
-You can follow
-[these download instructions](https://www.rust-lang.org/tools/install).
-Run the following command from that page inside WSL.
+The OpenVMM project actively tracks the latest stable release of Rust, though it
+may take a week or two after a new stable is released until OpenVMM switches
+over to it.
 
-```bash
-$ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
+Please follow the [official instructions](https://www.rust-lang.org/tools/install) to do so.
 
 ## Cloning the OpenVMM source
 

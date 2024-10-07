@@ -37,12 +37,12 @@ temp directory with path ohcldiag-dev. For example, running via powershell:
 cargo run -p ohcldiag-dev -- $env:temp\ohcldiag-dev kmsg
 ```
 
-## Vtl2 VmBus Support
+## Vtl2 VMBus Support
 
-OpenHCL run under OpenVMM can act as the VmBus server to VTL0. Additionally,
+OpenHCL run under OpenVMM can act as the VMBus server to VTL0. Additionally,
 OpenHCL can be configured to forward offers made by OpenVMM to VTL0.
 
-To run OpenVMM and OpenHCL with VmBus host relay support:
+To run OpenVMM and OpenHCL with VMBus host relay support:
 
 ```bash
  --vmbus-redirect
@@ -50,7 +50,7 @@ To run OpenVMM and OpenHCL with VmBus host relay support:
 
 ## Assigning MANA devices to VTL2
 
-OpenHCL can be assigned a MANA NIC to VTL2, and expose a VMBUS NIC to the
+OpenHCL can be assigned a MANA NIC to VTL2, and expose a VMBus NIC to the
 guest in VTL0. Expose it by adding the following:
 
 ```bash
@@ -68,7 +68,7 @@ You can assign a SCSI disk to VTL2 and have OpenHCL reassign it to VTL0:
 ## Assigning NVME devices to VTL2
 
 You can assign an NVME disk to VTL2 and have OpenHCL relay it to VTL0 as a
-vmbus scsi device:
+VMBus scsi device:
 
 ```bash
 --disk mem:1G,uh-nvme --vmbus-redirect

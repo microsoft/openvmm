@@ -5,7 +5,8 @@ interact with OpenHCL.
 
 * * *
 
-To get started, ensure you have a copy of an OpenHCL IGVM firmware image:
+To get started, ensure you have a copy of an OpenHCL IGVM firmware image, via
+one of the following options:
 
 ## Building OpenHCL
 

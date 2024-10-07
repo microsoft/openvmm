@@ -6,7 +6,8 @@ interact with OpenVMM.
 
 * * *
 
-To get started, ensure you have a copy of the OpenVMM binary:
+To get started, ensure you have a copy of the OpenVMM binary, via one of the
+following options:
 
 ## Building OpenVMM
 

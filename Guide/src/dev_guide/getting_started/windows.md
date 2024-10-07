@@ -22,8 +22,13 @@ guide for [Linux / WSL2](./linux.md).
 
 ## Installing Rust
 
-To build OpenVMM, you first need Rust. You can follow
-[these download instructions](https://www.rust-lang.org/tools/install).
+To build OpenVMM, you first need to install Rust.
+
+The OpenVMM project actively tracks the latest stable release of Rust, though it
+may take a week or two after a new stable is released until OpenVMM switches
+over to it.
+
+Please follow the [official instructions](https://www.rust-lang.org/tools/install) to do so.
 
 If you don't already have it, you will need to install
 [Visual Studio C++ Build tools ](https://visualstudio.microsoft.com/visual-cpp-build-tools/)

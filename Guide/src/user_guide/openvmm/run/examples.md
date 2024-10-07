@@ -23,22 +23,27 @@ Instead, you can type `crtl-q` to enter OpenVMM's
 
 ## Sample Linux Kernel, via direct-boot
 
-For convenience, and to offer an "instant on" example of running OpenVMM - a
-sample prebuilt Linux kernel and initrd are provided via the `cargo xflowey
-restore-packages` command.
-
 This example will launch Linux via direct boot (i.e: without going through UEFI
 or BIOS), and appends `single` to the kernel command line.
+
+The Linux guest's console will be hooked up to COM1, and is relayed to the host
+terminal by default.
 
 To launch Linux with an interactive console into the shell within initrd, simply
 run:
 
 ```shell
-cargo run -- -c single
+cargo run
 ```
 
-The Linux guest's console will be hooked up to COM1, and is relayed to the host
-terminal by default.
+This works by setting the default `[env]` vars in `.cargo/config.toml` to
+configure OpenVMM to use a set of pre-compiled test kernel + initrd images,
+which are downloaded as part of the `cargo xflowey restore-packages` command.
+Note that this behavior only happens when run via `cargo run` (as `cargo` is the
+tool which ensures the required env-vars are set).
+
+The source for the sample kernel + initrd can be found on the
+[microsoft/openvmm-deps](https://github.com/microsoft/openvmm-deps) repo.
 
 The kernel and initrd can be controlled via options:
 
@@ -64,18 +69,20 @@ docs.
 
 The file `windows.vhdx` can be any format of VHD(X).
 
-Note that OpenVMM does not currently support using VHD/VHDX files on Linux
-hosts. Instead, convert the OS image to raw format using the following command:
+Note that OpenVMM does not currently support using dynamic VHD/VHDX files on
+Linux hosts. Unless you have a fixed VHD1 image, you will need to convert the
+image to raw format, using the following command:
 
 ```shell
 qemu-img convert -f vhdx -O raw windows.vhdx windows.img
 ```
 
-Also, note the use of `memdiff`, which creates a memory-backed "differencing disk",
-which ensures that any writes the VM makes to the VHD are not persisted between
-runs. This is very useful when iterating on OpenVMM code, since booting the VM
-becomes repeatable and you don't have to worry about shutting down properly. Use
-`file` instead for normal persistent storage.
+Also, note the use of `memdiff`, which creates a memory-backed "differencing
+disk" shim between the VMM and the backing disk image, which ensures that any
+writes the VM makes to the VHD are not persisted between runs. This is very
+useful when iterating on OpenVMM code, since booting the VM becomes repeatable
+and you don't have to worry about shutting down properly. Use `file` instead for
+normal persistent storage.
 
 ## DOS, via PCAT BIOS
 
@@ -102,31 +109,3 @@ cargo run -- --pcat --gfx --floppy memdiff:/path/to/msdos.vfd --pcat-boot-order=
 >
 > In the future, it would be interesting to support alternative BIOS
 > implementations, such as SeaBIOS, but this is not currently supported.
-
-## Alpine Linux, via direct boot
-
-In order to set up Alpine for use with OpenVMM, it is easiest to first install it
-normally using a Hyper-V VM. First, [download the standard Alpine x86_64 ISO
-file](https://www.alpinelinux.org/downloads/). Then, create a new Generation 1
-VM, using a fixed VHD (*not* VHDX) as the disk. Make sure the VM has networking
-and disable automatic checkpoints.
-
-Boot the VM from the Alpine ISO, run `setup-alpine` and go through the
-installation. Most of the default options are fine. You'll want to partition the
-disk using the "sys" option, which creates a /boot, a swap, and a root
-partition. After installation, eject the ISO and reboot the VM.
-
-To be able to use the installation with OpenVMM, you must enable the serial
-console and configure it to allow logging in as root from the serial console.
-Run the following two commands:
-
-```bash
-sed -i /^#ttyS0/s/^#// /etc/inittab
-echo ttyS0 >> /etc/securetty
-```
-
-Finally, `poweroff` the VM, then run OpenVMM with the following command:
-
-```shell
-cargo run -- --hv --nic --disk file:alpine.vhd -c root=/dev/sda3
-```
