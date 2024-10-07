@@ -819,6 +819,7 @@ pub struct NvmeDriverSavedState {
     /// IO queue states.
     #[mesh(3)]
     pub io: Vec<QueuePairSavedState>,
+    /// Copy of the controller's IDENTIFY structure.
     #[mesh(4)]
     pub identify_ctrl: [u8; 4096],
     /// Device ID string.

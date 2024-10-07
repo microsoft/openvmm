@@ -2541,7 +2541,7 @@ impl LoadedVm {
                 Event::WorkerRpc(Err(_)) => break,
                 Event::WorkerRpc(Ok(message)) => match message {
                     WorkerRpc::Stop => break,
-                    WorkerRpc::Restart(response) => {
+                    WorkerRpc::Restart(_flags, response) => {
                         let mut stopped = false;
                         // First run the non-destructive operations.
                         let r = async {

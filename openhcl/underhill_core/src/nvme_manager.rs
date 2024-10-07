@@ -85,6 +85,7 @@ impl NvmeManager {
         driver_source: &VmTaskDriverSource,
         vp_count: u32,
         dma_buffer: Arc<dyn VfioDmaBuffer>,
+        saved_state: Option<NvmeSavedState>,
     ) -> Self {
         let (send, recv) = mesh::channel();
         let driver = driver_source.simple();
@@ -94,7 +95,10 @@ impl NvmeManager {
             vp_count,
             dma_buffer,
         };
-        let task = driver.spawn("nvme-manager", async move { worker.run(recv).await });
+        worker.restore(saved_state).expect("unable to restore nvme state");
+        let task = driver.spawn("nvme-manager", async move {
+            worker.run(recv).await
+        });
         Self {
             task,
             client: NvmeManagerClient {
@@ -304,6 +308,15 @@ impl NvmeManagerWorker {
         };
 
         Ok(nvme_state)
+    }
+
+    /// Restore NVMe manager worker state after servicing.
+    pub fn restore(
+        &mut self,
+        _saved_state: Option<NvmeSavedState>,
+    ) -> anyhow::Result<()> {
+        // TODO: This is the placeholder for the next update.
+        Ok(())
     }
 }
 

@@ -40,7 +40,6 @@ use crate::loader::vtl2_config::RuntimeParameters;
 use crate::loader::LoadKind;
 use crate::nvme_manager::NvmeDiskConfig;
 use crate::nvme_manager::NvmeDiskResolver;
-use crate::nvme_manager::NvmeDmaBufferSavedState;
 use crate::nvme_manager::NvmeManager;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -1748,10 +1747,12 @@ async fn new_underhill_vm(
     );
 
     let nvme_manager = if env_cfg.nvme_vfio {
+        let nvme_saved_state = servicing_state.nvme_state.unwrap_or(None);
         let manager = NvmeManager::new(
             &driver_source,
             processor_topology.vp_count(),
             vfio_dma_buffer(&shared_vis_pages_pool),
+            nvme_saved_state,
         );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(

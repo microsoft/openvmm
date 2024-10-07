@@ -64,7 +64,7 @@ impl Worker for DiagWorker {
                 };
                 match msg {
                     WorkerRpc::Stop => break Ok(()),
-                    WorkerRpc::Restart(response) => {
+                    WorkerRpc::Restart(_flags, response) => {
                         response.send(Err(RemoteError::new(anyhow::anyhow!("not supported"))));
                     }
                     WorkerRpc::Inspect(_) => {}

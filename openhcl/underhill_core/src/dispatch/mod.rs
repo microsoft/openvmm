@@ -39,6 +39,7 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh::CancelContext;
 use mesh::MeshPayload;
+use mesh_worker::RestartFlags;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
 use pal_async::task::Spawn;
@@ -258,10 +259,13 @@ impl LoadedVm {
                 Event::WorkerRpcGone => break None,
                 Event::WorkerRpc(message) => match message {
                     WorkerRpc::Stop => break None,
-                    WorkerRpc::Restart(response) => {
+                    WorkerRpc::Restart(flags, response) => {
                         let state = async {
+                            let RestartFlags {
+                                nvme_keepalive,
+                            } = flags;
                             let running = self.stop().await;
-                            match self.save(None, true).await {
+                            match self.save(None, nvme_keepalive).await {
                                 Ok(servicing_state) => Some((response, servicing_state)),
                                 Err(err) => {
                                     if running {
