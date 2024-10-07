@@ -21,7 +21,7 @@ Once you're ready to take a stab at writing your own fuzzer, spinning up a new
 fuzzer is as easy as running:
 
 ```bash
-cargo xtask fuzz init hvlite_crate_to_fuzz TEMPLATE
+cargo xtask fuzz init openvmm_crate_to_fuzz TEMPLATE
 ```
 
 Use `--help` for more details on the available TEMPLATE types.

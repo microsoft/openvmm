@@ -1,16 +1,14 @@
 # guest_test_uefi
 
-`guest_test_uefi` is a minimal, no-fuss, `no_std` + `alloc` environment from
-which to write unit tests that are able to exercise OpenVMM devices, without
-having to deal with annoying things like "virtual memory" or "OS security
-features".
+`guest_test_uefi` is a minimal `no_std` + `alloc` EFI application which hosts
+a variety of OpenVMM-specific "bare metal" unit tests.
 
 Want to write to an arbitrary MMIO/PIO address? Go for it! It's just you, the
 VM, and the (very unobtrusive) UEFI runtime!
 
 ## Building + Running
 
-`guest_test_uefi` must be built for `XXX-unknown-uefi` targets. These are not
+`guest_test_uefi` must be built for `*-unknown-uefi` targets. These are not
 installed by default, so you'll need to install the correct target via `rustup`.
 For example:
 
@@ -34,8 +32,8 @@ cargo xtask guest-test uefi --bootx64 ./target/x86_64-unknown-uefi/debug/guest_t
 cargo run -- --uefi --gfx --hv --processors 1 --disk memdiff:./target/x86_64-unknown-uefi/debug/guest_test_uefi.img
 ```
 
-Protip: this is a generic UEFI binary, and can be run outside of the HvLite repo
-as well (e.g: in QEMU, Hyper-V, etc...)!
+Protip: this is a generic UEFI binary, and can be run outside of the OpenVMM
+repo as well (e.g: in QEMU, Hyper-V, etc...)!
 
 To convert the raw `.img` into other formats, `qemu-img` is very helpful:
 

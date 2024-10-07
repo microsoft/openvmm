@@ -94,11 +94,11 @@ So, for example:
 
 ```toml
 [package]
-name = "hvlite"
+name = "openvmm"
 
 [dependencies]
 # crate-specific subcrates
-hvlite_core.workspace = true
+openvmm_core.workspace = true
 ...
 
 # /vmcore
@@ -209,22 +209,20 @@ is audited for correctness by area experts.
 
 _Checked Automatically:_ **Yes** (via [`cargo xtask fmt house-rules`](../dev_tools/xtask.md))
 
-**TL;DR:** Unless you're working on something that's *genuinely* tied to the
-host's CPU architecture, you almost certainly want to use `cfg(guest_arch =
-...)` instead.
+Unless you're working on something that's genuinely tied to the host's CPU
+architecture, you should use `cfg(guest_arch = ...)` instead of `cfg(target_arch = ...)`.
 
-OpenVMM is a multi-architecture VMM framework, capable of running both x86 and
-Aarch64 guests (and potentially others in the future).
+OpenVMM is a multi-architecture VMM framework, capable of running running x64
+guests on a x64 host, as well as Aarch64 guests on Aarch64 hosts (with the
+potential of adding additional platforms in the future).
 
-Often times, the host architecture and the guest architecture will match,
-thereby enabling the use of hardware-accelerated CPU virtualization backends
-(e.g: KVM on Linux, WHP in Windows, etc...). That said, it's probable that at
-some point in the future, OpenVMM will also support *mismatched* guest/host
-architectures via an emulated CPU virtualization backend (akin to what QEMU
-does).
+At the moment, OpenVMM requires that the host architecture and guest
+architecture match. That said, it's possible that at some point in the future,
+OpenVMM may also support _mismatched_ guest/host architectures, via an emulated
+CPU virtualization backend (akin to QEMU).
 
-Having an emulated CPU backend would enable
-OpenVMM to support such useful scenarios as:
+Having an emulated CPU backend would enable OpenVMM to support such useful
+scenarios as:
 
 - running Arch64 guests on x86 machines
 - running x86 guests on ARM

@@ -257,7 +257,7 @@ default cargo build target:
 # Setup environment and windows cross tooling.
 
 export CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu
-cd ~/hvlite || exit
+cd path/to/openvmm || exit
 . build_support/setup_windows_cross.sh
 exec "$SHELL"
 ```

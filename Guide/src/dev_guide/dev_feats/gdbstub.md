@@ -122,9 +122,9 @@ Serial Protocol <-> WinDbg translation layer!
 For more information, see
 [Setting Up QEMU Kernel-Mode Debugging using EXDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/setting-up-qemu-kernel-mode-debugging-using-exdi)
 
-Getting this working with OpenVMM or OpenHCL is as easy as following the guide, except you'll need to [enable our debugger](#enabling-the-debugger) instead of running QEMU.
-
-### TL;DR
+Getting this working with OpenVMM or OpenHCL is as easy as following the guide,
+except you'll need to [enable our debugger](#enabling-the-debugger) instead of
+running QEMU.
 
 It's easiest to connect through the GUI. The steps are relatively simple: Open Windbgx -> File -> Attach to kernel -> EXDI. On the form, fill out:
 - Target Type: `QEMU`
