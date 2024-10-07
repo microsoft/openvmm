@@ -46,8 +46,6 @@ pub struct NvmeDriver<T: DeviceBacking> {
     #[inspect(flatten)]
     task: Option<TaskControl<DriverWorkerTask<T>, WorkerState>>,
     device_id: String,
-    /// Namespace ID associated with this driver.
-    //nsid: u32,
     identify: Option<Arc<spec::IdentifyController>>,
     #[inspect(skip)]
     driver: VmTaskDriver,
