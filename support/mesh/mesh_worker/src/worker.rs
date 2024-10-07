@@ -80,7 +80,7 @@ pub trait Worker: 'static + Sized {
 #[derive(Debug, MeshPayload)]
 pub struct RestartFlags {
     /// Preserve NVMe physical device state.
-    pub nvme_keepalive: bool
+    pub nvme_keepalive: bool,
 }
 
 /// Common requests for workers.

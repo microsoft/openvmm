@@ -132,7 +132,7 @@ async fn test_nvme_save(driver: DefaultDriver) {
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let payload_len = 264 * 1024 * 4;
-    let emu_mem = DeviceSharedMemory::new(64*1024*1024, payload_len);
+    let emu_mem = DeviceSharedMemory::new(64 * 1024 * 1024, payload_len);
     let mut msi_x = MsiInterruptSet::new();
     let nvme_ctrl = nvme::NvmeController::new(
         &driver_source,
@@ -149,15 +149,12 @@ async fn test_nvme_save(driver: DefaultDriver) {
     // Add a namespace so Identify Namespace command will succeed later.
     nvme_ctrl
         .client()
-        .add_namespace(1, Arc::new(RamDisk::new(1024*1024, false).unwrap()))
+        .add_namespace(1, Arc::new(RamDisk::new(1024 * 1024, false).unwrap()))
         .await
         .unwrap();
     let device = EmulatedDevice::new(nvme_ctrl, msi_x, emu_mem);
 
-    let mut nvme_driver = NvmeDriver::new(
-        &driver_source,
-        CPU_COUNT,
-        device)
+    let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
         .await
         .unwrap();
 
@@ -166,5 +163,4 @@ async fn test_nvme_save(driver: DefaultDriver) {
     assert_eq!(saved_state.nsid, 1);
     assert_eq!(saved_state.namespace.is_some(), true);
     assert_eq!(saved_state.namespace.as_ref().unwrap().nsid, 1);
-
 }

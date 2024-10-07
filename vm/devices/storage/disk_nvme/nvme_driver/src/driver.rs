@@ -6,13 +6,13 @@ use super::spec;
 use crate::queue_pair::admin_cmd;
 use crate::queue_pair::Issuer;
 use crate::queue_pair::QueuePair;
+use crate::queue_pair::QueuePairSavedState;
 use crate::registers::Bar0;
 use crate::registers::DeviceRegisters;
 use crate::Namespace;
 use crate::NamespaceError;
 use crate::RequestError;
 use crate::NVME_PAGE_SHIFT;
-use crate::queue_pair::QueuePairSavedState;
 use anyhow::Context as _;
 use futures::future::join_all;
 use futures::StreamExt;
@@ -30,8 +30,8 @@ use task_control::TaskControl;
 use tracing::info_span;
 use tracing::Instrument;
 use user_driver::backoff::Backoff;
-use user_driver::DeviceBacking;
 use user_driver::save_restore::VfioDeviceSavedState;
+use user_driver::DeviceBacking;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::AsBytes;
@@ -434,16 +434,17 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
-        let ns = Arc::new(Namespace::new(
-            &self.driver,
-            self.admin.as_ref().unwrap().clone(),
-            self.rescan_event.clone(),
-            self.identify.clone().unwrap(),
-            &self.io_issuers,
-            &self.device_id,
-            nsid,
-        )
-        .await?
+        let ns = Arc::new(
+            Namespace::new(
+                &self.driver,
+                self.admin.as_ref().unwrap().clone(),
+                self.rescan_event.clone(),
+                self.identify.clone().unwrap(),
+                &self.io_issuers,
+                &self.device_id,
+                nsid,
+            )
+            .await?,
         );
         self.namespace = Some(ns.clone());
         Ok(ns)
@@ -470,14 +471,15 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .await?;
 
         // Update other fields not accessible by worker task.
-        self.identify.as_ref().unwrap().write_to(save_state.identify_ctrl.as_mut());
+        self.identify
+            .as_ref()
+            .unwrap()
+            .write_to(save_state.identify_ctrl.as_mut());
         save_state.device_id = self.device_id.clone();
         save_state.nsid = self.namespace.as_ref().map_or(0, |ns| ns.nsid());
         // Either 1 or 0 namespaces per driver.
         save_state.namespace = match &self.namespace {
-            Some(ns) => {
-                Some(ns.save()?)
-            },
+            Some(ns) => Some(ns.save()?),
             None => None,
         };
         save_state.bar0_va = self.bar0_va;
@@ -583,17 +585,15 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
                 match self.recv.next().await {
                     Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
                         rpc.handle(|cpu| self.create_io_issuer(state, cpu)).await
-                    },
+                    }
                     Some(NvmeWorkerRequest::Save(rpc)) => {
                         rpc.handle(|_| {
-                                let save_state = self.save_wrapper(state);
-                                save_state
-                            }
-                        ).await
-                    },
-                    None => {
-                        break
+                            let save_state = self.save_wrapper(state);
+                            save_state
+                        })
+                        .await
                     }
+                    None => break,
                 }
             }
         })
@@ -748,13 +748,8 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
 
     /// Wrapper around save() to consume its response (for AsyncRun thread).
     async fn save_wrapper(&mut self, worker_state: &mut WorkerState) -> NvmeDriverSavedState {
-        match self
-            .save(worker_state)
-            .await
-        {
-            Ok(state) => {
-                state
-            },
+        match self.save(worker_state).await {
+            Ok(state) => state,
             Err(_) => {
                 NvmeDriverSavedState {
                     admin: None,
@@ -769,14 +764,17 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     vfio_state: VfioDeviceSavedState {
                         pci_id: "".to_string(), // Empty string on error.
                         msix_info_count: 0,
-                    }
+                    },
                 }
             }
         }
     }
 
     /// Save NVMe driver state for servicing.
-    pub async fn save(&mut self, worker_state: &mut WorkerState) -> anyhow::Result<NvmeDriverSavedState> {
+    pub async fn save(
+        &mut self,
+        worker_state: &mut WorkerState,
+    ) -> anyhow::Result<NvmeDriverSavedState> {
         let admin = self.admin.as_ref().unwrap().save().await?;
         let mut io: Vec<QueuePairSavedState> = Vec::new();
         for io_q in self.io.iter() {
@@ -786,17 +784,17 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         let save_state = NvmeDriverSavedState {
             admin: Some(admin),
             io,
-            nsid: 0, // Will be updated by the caller.
-            identify_ctrl: [0; 4096], // Will be updated by the caller.
+            nsid: 0,                   // Will be updated by the caller.
+            identify_ctrl: [0; 4096],  // Will be updated by the caller.
             device_id: "".to_string(), // Will be updated by the caller.
-            namespace: None, // Will be updated by the caller.
-            bar0_va: None, // Will be updated by the caller.
+            namespace: None,           // Will be updated by the caller.
+            bar0_va: None,             // Will be updated by the caller.
             qsize: worker_state.qsize,
             max_io_queues: worker_state.max_io_queues,
             vfio_state: VfioDeviceSavedState {
                 pci_id: self.device.id().to_owned(),
                 msix_info_count: self.device.max_interrupt_count(),
-            }
+            },
         };
 
         Ok(save_state)

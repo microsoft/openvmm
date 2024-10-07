@@ -6,8 +6,8 @@ use super::spec;
 use crate::page_allocator::PageAllocator;
 use crate::page_allocator::ScopedPages;
 use crate::queues::CompletionQueue;
-use crate::queues::SubmissionQueue;
 use crate::queues::CompletionQueueSavedState;
+use crate::queues::SubmissionQueue;
 use crate::queues::SubmissionQueueSavedState;
 use crate::registers::DeviceRegisters;
 use anyhow::Context;
@@ -17,11 +17,11 @@ use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
 use inspect_counters::Counter;
+use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh::Cancel;
 use mesh::CancelContext;
-use mesh::payload::Protobuf;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Task;
 use safeatomic::AtomicSliceOps;
@@ -30,11 +30,11 @@ use std::future::poll_fn;
 use std::sync::Arc;
 use std::task::Poll;
 use thiserror::Error;
-use user_driver::DeviceBacking;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
+use user_driver::DeviceBacking;
 use user_driver::HostDmaAllocator;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
@@ -148,7 +148,7 @@ impl QueuePair {
     pub async fn save(&self) -> anyhow::Result<QueuePairSavedState> {
         // Send an RPC request to QueueHandler thread to save its data.
         let queue_data = self.issuer.send.call(Req::Save, ()).await?;
-        
+
         // Add more data to the returned response.
         let mut local_queue_data = queue_data.unwrap();
         local_queue_data.sq_addr = self.sq_addr();
@@ -499,7 +499,7 @@ impl QueueHandler {
             };
             pending_cmds.push(
                 //cmd.1.command.as_bytes().into()
-                command
+                command,
             );
         }
         // The data is collected from both QueuePair and QueueHandler.
@@ -508,13 +508,13 @@ impl QueueHandler {
             sq_state: self.sq.save(),
             cq_state: self.cq.save(),
             pending_cmds,
-            cpu: 0, // Will be updated by the caller.
-            msix: 0, // Will be updated by the caller.
-            sq_addr: 0, // Will be updated by the caller.
-            cq_addr: 0, // Will be updated by the caller.
+            cpu: 0,         // Will be updated by the caller.
+            msix: 0,        // Will be updated by the caller.
+            sq_addr: 0,     // Will be updated by the caller.
+            cq_addr: 0,     // Will be updated by the caller.
             base_mem: None, // Will be updated by the caller.
-            mem_len: None, // Will be updated by the caller.
-            pfns: None, // Will be updated by the caller.
+            mem_len: None,  // Will be updated by the caller.
+            pfns: None,     // Will be updated by the caller.
         })
     }
 }
@@ -541,10 +541,7 @@ impl From<&[u8]> for PendingCommandSavedState {
         let mut command: [u8; 64] = [0; 64];
         command.copy_from_slice(value);
         let cid = ((command[0] as u16) << 8) | command[1] as u16;
-        Self {
-            command,
-            cid,
-        }
+        Self { command, cid }
     }
 }
 
@@ -568,11 +565,11 @@ pub struct QueuePairSavedState {
     #[mesh(7)]
     pub cq_addr: u64,
     #[mesh(8)]
-    pub base_mem: Option<u64>, 
+    pub base_mem: Option<u64>,
     #[mesh(9)]
-    pub mem_len: Option<usize>, 
+    pub mem_len: Option<usize>,
     #[mesh(10)]
-    pub pfns: Option<Vec<u64>>, 
+    pub pfns: Option<Vec<u64>>,
     #[mesh(11)]
     pub pending_cmds: Vec<PendingCommandSavedState>,
 }

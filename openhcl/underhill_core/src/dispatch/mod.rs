@@ -11,8 +11,8 @@ use crate::emuplat::EmuplatServicing;
 use crate::nvme_manager::NvmeManager;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
-use crate::servicing::ServicingState;
 use crate::servicing::NvmeSavedState;
+use crate::servicing::ServicingState;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
 use crate::worker::FirmwareType;
 use crate::worker::NetworkSettingsError;
@@ -261,9 +261,7 @@ impl LoadedVm {
                     WorkerRpc::Stop => break None,
                     WorkerRpc::Restart(flags, response) => {
                         let state = async {
-                            let RestartFlags {
-                                nvme_keepalive,
-                            } = flags;
+                            let RestartFlags { nvme_keepalive } = flags;
                             let running = self.stop().await;
                             match self.save(None, nvme_keepalive).await {
                                 Ok(servicing_state) => Some((response, servicing_state)),
@@ -632,14 +630,13 @@ impl LoadedVm {
             Some(n) => {
                 if nvme_keepalive {
                     Some(NvmeSavedState {
-                        nvme_state: n.save().await.ok()
+                        nvme_state: n.save().await.ok(),
                     })
-                }
-                else {
+                } else {
                     // nvme_keepalive was explicitly disabled.
                     None
                 }
-            },
+            }
             None => {
                 // No NVMe controllers to save.
                 None

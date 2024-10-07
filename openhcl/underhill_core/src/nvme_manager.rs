@@ -3,15 +3,16 @@
 //! Provides access to NVMe namespaces that are backed by the user-mode NVMe
 //! VFIO driver. Keeps track of all the NVMe drivers.
 
+use crate::servicing::NvmeSavedState;
 use anyhow::Context;
 use async_trait::async_trait;
-use crate::servicing::NvmeSavedState;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedSimpleDisk;
 use futures::future::join_all;
 use futures::StreamExt;
 use futures::TryFutureExt;
 use inspect::Inspect;
+use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh::MeshPayload;
@@ -28,9 +29,8 @@ use vm_resource::kind::DiskHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceId;
 use vm_resource::ResourceResolver;
-use vmcore::vm_task::VmTaskDriverSource;
-use mesh::payload::Protobuf;
 use vmcore::save_restore::SavedStateRoot;
+use vmcore::vm_task::VmTaskDriverSource;
 
 #[derive(Debug, Error)]
 #[error("nvme device {pci_id} error")]
@@ -95,10 +95,10 @@ impl NvmeManager {
             vp_count,
             dma_buffer,
         };
-        worker.restore(saved_state).expect("unable to restore nvme state");
-        let task = driver.spawn("nvme-manager", async move {
-            worker.run(recv).await
-        });
+        worker
+            .restore(saved_state)
+            .expect("unable to restore nvme state");
+        let task = driver.spawn("nvme-manager", async move { worker.run(recv).await });
         Self {
             task,
             client: NvmeManagerClient {
@@ -137,7 +137,9 @@ impl NvmeManager {
 enum Request {
     Inspect(inspect::Deferred),
     ForceLoadDriver(inspect::DeferredUpdate),
-    GetNamespace(Rpc<(String, u32, tracing::Span), Result<Arc<nvme_driver::Namespace>, NamespaceError>>),
+    GetNamespace(
+        Rpc<(String, u32, tracing::Span), Result<Arc<nvme_driver::Namespace>, NamespaceError>>,
+    ),
     Save(Rpc<(), Result<NvmeManagerSavedState, anyhow::Error>>),
     Shutdown {
         span: tracing::Span,
@@ -171,9 +173,7 @@ impl NvmeManagerClient {
     }
 
     /// Send an RPC call to save NVMe worker data.
-    pub async fn save(
-        &self,
-    ) -> anyhow::Result<NvmeManagerSavedState> {
+    pub async fn save(&self) -> anyhow::Result<NvmeManagerSavedState> {
         self.sender.call(Request::Save, ()).await?
     }
 }
@@ -217,12 +217,7 @@ impl NvmeManagerWorker {
                     .await
                 }
                 // Request to save worker data for servicing.
-                Request::Save(rpc) => {
-                    rpc.handle(|_| {
-                        self.save()
-                    })
-                    .await
-                }
+                Request::Save(rpc) => rpc.handle(|_| self.save()).await,
                 Request::Shutdown {
                     span,
                     nvme_keepalive,
@@ -311,11 +306,8 @@ impl NvmeManagerWorker {
     }
 
     /// Restore NVMe manager worker state after servicing.
-    pub fn restore(
-        &mut self,
-        _saved_state: Option<NvmeSavedState>,
-    ) -> anyhow::Result<()> {
-        // TODO: This is the placeholder for the next update.
+    pub fn restore(&mut self, _saved_state: Option<NvmeSavedState>) -> anyhow::Result<()> {
+        // TODO: A placeholder for the next update.
         Ok(())
     }
 }
