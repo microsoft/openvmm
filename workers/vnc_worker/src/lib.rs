@@ -124,7 +124,7 @@ impl<T: Listener + MeshField> VncWorker<T> {
                     Ok(message) => match message {
                         WorkerRpc::Stop => break None,
                         WorkerRpc::Inspect(deferred) => deferred.inspect(&server),
-                        WorkerRpc::Restart(response) => break Some(response),
+                        WorkerRpc::Restart(_flags, response) => break Some(response),
                     },
                     Err(_) => break None,
                 }

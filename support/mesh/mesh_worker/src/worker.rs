@@ -766,7 +766,7 @@ mod tests {
                 while let Ok(req) = recv.recv().await {
                     match req {
                         WorkerRpc::Stop => break,
-                        WorkerRpc::Restart(state_send) => {
+                        WorkerRpc::Restart(_flags, state_send) => {
                             state_send.send(Ok(TestWorkerState { value: self.value }));
                             break;
                         }
@@ -798,7 +798,7 @@ mod tests {
                 while let Ok(req) = recv.recv().await {
                     match req {
                         WorkerRpc::Stop => break,
-                        WorkerRpc::Restart(state_send) => {
+                        WorkerRpc::Restart(_flags, state_send) => {
                             state_send.send(Ok(()));
                             break;
                         }
