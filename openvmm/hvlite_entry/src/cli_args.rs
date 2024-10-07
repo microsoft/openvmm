@@ -32,9 +32,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use thiserror::Error;
 
-/// Hvlite's command-line options.
+/// OpenVMM virtual machine monitor.
 #[derive(Parser)]
-#[clap(name = "hvlite", about = "Hyper-V Lite")]
 pub struct Options {
     /// processor count
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
