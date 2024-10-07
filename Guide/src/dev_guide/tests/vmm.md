@@ -81,7 +81,7 @@ artifact.
 
 In order to see the OpenVMM logs while running a VMM test, do the following:
 1. Add the `--no-capture` flag to your `cargo nextest` command.
-2. Set `HVLITE_LOG=trace`, replacing `trace` with the log level you want to view.
+2. Set `OPENVMM_LOG=trace`, replacing `trace` with the log level you want to view.
 
 ### Writing VMM Tests
 

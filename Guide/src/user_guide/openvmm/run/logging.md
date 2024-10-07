@@ -2,18 +2,18 @@
 
 ## Configuring the logging messages to emit
 
-To configure logging, use the `HVLITE_LOG` environment variable. For example:
+To configure logging, use the `OPENVMM_LOG` environment variable. For example:
 
 Enables debug events from all modules:
 
 ```
-set HVLITE_LOG=debug
+set OPENVMM_LOG=debug
 ```
 
 Enables trace events from the `mesh` crate and info events from everything else:
 
 ```
-set HVLITE_LOG=info,mesh=trace
+set OPENVMM_LOG=info,mesh=trace
 ```
 
 This is backed by the

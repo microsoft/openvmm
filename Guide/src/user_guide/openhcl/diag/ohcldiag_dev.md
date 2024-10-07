@@ -92,7 +92,7 @@ higher. You can adjust this globally or on a module-by-module basis. And you can
 set the tracing configuration at startup or dynamically with `ohcldiag-dev`.
 
 To set the trace filter at startup, add a kernel command line option
-`HVLITE_LOG=<filter>`. To update it on a running VM, run:
+`OPENVMM_LOG=<filter>`. To update it on a running VM, run:
 
 ```powershell
 ohcldiag-dev.exe <vm name> inspect trace/filter -u <filter>

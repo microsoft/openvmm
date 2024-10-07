@@ -13,7 +13,7 @@ host.
 ## Simulating CVM restrictions
 
 Most of these restrictions can be simulated on a non-CVM OpenHCL VM by setting the
-`UNDERHILL_CONFIDENTIAL` environment variable to `1`, either in your IGVM JSON definition or by
+`OPENHCL_CONFIDENTIAL` environment variable to `1`, either in your IGVM JSON definition or by
 using the `Set-VmFirmwareParameters` cmdlet. This environment variable will cause OpenHCL to
 behave as if it is running in a CVM for the purpose of diagnostics.
 
@@ -83,7 +83,7 @@ crash occurred, but there will be no debugging information available.
 
 > NOTE: This restriction also applies to _debug_ builds of OpenHCL when running a CVM.
 
-> NOTE: This restriction cannot be simulated using `UNDERHILL_CONFIDENTIAL`.
+> NOTE: This restriction cannot be simulated using `OPENHCL_CONFIDENTIAL`.
 
 ## Saved state
 

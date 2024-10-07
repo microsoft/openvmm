@@ -20,10 +20,10 @@ debug worker. e.g., `--gdb 9001`
 To pause the VM until the debugger has been attached, pass `--paused` at startup.
 
 ### OpenHCL
-1. Pass the `UNDERHILL_GDBSTUB=1` `UNDERHILL_GDBSTUB_PORT=<gdbstub port>` parameters to enable gdbstub. e.g., `Set-VmFirmwareParameters -Name UhVM -CommandLine UNDERHILL_GDBSTUB=1 UNDERHILL_GDBSTUB_PORT=5900`.
+1. Pass the `OPENHCL_GDBSTUB=1` `OPENHCL_GDBSTUB_PORT=<gdbstub port>` parameters to enable gdbstub. e.g., `Set-VmFirmwareParameters -Name UhVM -CommandLine OPENHCL_GDBSTUB=1 OPENHCL_GDBSTUB_PORT=5900`.
 2. To expose a TCP port, run `ohcldiag-dev.exe <name> vsock-tcp-relay --allow-remote --reconnect <gdbstub port> <tcp port>`.
 
-To pause VTL0 boot until desired, pass `UNDERHILL_VTL0_STARTS_PAUSED=1` as a parameter. Then once the debugger is attached, you can start VTL0 with `ohcldiag-dev.exe <name> resume`.
+To pause VTL0 boot until desired, pass `OPENHCL_VTL0_STARTS_PAUSED=1` as a parameter. Then once the debugger is attached, you can start VTL0 with `ohcldiag-dev.exe <name> resume`.
 
 ## Connecting via GDB
 
