@@ -47,7 +47,7 @@ pub struct NvmeDriver<T: DeviceBacking> {
     task: Option<TaskControl<DriverWorkerTask<T>, WorkerState>>,
     device_id: String,
     /// Namespace ID associated with this driver.
-    nsid: u32,
+    //nsid: u32,
     identify: Option<Arc<spec::IdentifyController>>,
     #[inspect(skip)]
     driver: VmTaskDriver,
@@ -57,8 +57,9 @@ pub struct NvmeDriver<T: DeviceBacking> {
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
     rescan_event: Arc<event_listener::Event>,
+    /// NVMe namespace associated with this driver (1:1).
     #[inspect(skip)]
-    namespace: Vec<Arc<Namespace>>,
+    namespace: Option<Arc<Namespace>>,
     bar0_va: Option<u64>,
     /// Keeps the controller connected (CSTS.RDY==1) while servicing.
     nvme_keepalive: bool,
@@ -200,7 +201,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         Ok(Self {
             device_id: device.id().to_owned(),
-            nsid: 0, // Invalid namespace ID.
             task: Some(TaskControl::new(DriverWorkerTask {
                 device,
                 driver: driver.clone(),
@@ -215,7 +215,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             driver,
             io_issuers,
             rescan_event: Default::default(),
-            namespace: vec![],
+            namespace: None,
             bar0_va: Some(bar0_va),
             nvme_keepalive: false,
         })
@@ -404,7 +404,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     /// Shuts the device down.
     pub async fn shutdown(mut self) {
         // If nvme_keepalive was requested, return early.
-        // The memory is still aliased as we don't flush pendiong IOs.
+        // The memory is still aliased as we don't flush pending IOs.
         if self.nvme_keepalive {
             return;
         }
@@ -445,7 +445,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         )
         .await?
         );
-        self.namespace.push(ns.clone());
+        self.namespace = Some(ns.clone());
         Ok(ns)
     }
 
@@ -472,11 +472,14 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // Update other fields not accessible by worker task.
         self.identify.as_ref().unwrap().write_to(save_state.identify_ctrl.as_mut());
         save_state.device_id = self.device_id.clone();
-        save_state.nsid = self.nsid;
+        save_state.nsid = self.namespace.as_ref().map_or(0, |ns| ns.nsid());
         // Either 1 or 0 namespaces per driver.
-        for ns in &self.namespace {
-            save_state.namespace = Some(ns.save()?);
-        }
+        save_state.namespace = match &self.namespace {
+            Some(ns) => {
+                Some(ns.save()?)
+            },
+            None => None,
+        };
         save_state.bar0_va = self.bar0_va;
 
         Ok(save_state)

@@ -48,9 +48,7 @@ async fn test_nvme_driver(driver: DefaultDriver) {
         .unwrap();
 
     let device = EmulatedDevice::new(nvme, msi_set, mem);
-
-    let driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();
-
+    let mut driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();
     let namespace = driver.namespace(1).await.unwrap();
 
     payload_mem.write_at(0, &[0xcc; 8192]).unwrap();
@@ -133,7 +131,7 @@ async fn test_nvme_save(driver: DefaultDriver) {
     const CPU_COUNT: u32 = 64;
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let payload_len = QueuePair::required_dma_size() * 4;
+    let payload_len = 264 * 1024 * 4;
     let emu_mem = DeviceSharedMemory::new(64*1024*1024, payload_len);
     let mut msi_x = MsiInterruptSet::new();
     let nvme_ctrl = nvme::NvmeController::new(
@@ -155,15 +153,10 @@ async fn test_nvme_save(driver: DefaultDriver) {
         .await
         .unwrap();
     let device = EmulatedDevice::new(nvme_ctrl, msi_x, emu_mem);
-    let mem_block = device
-        .host_allocator()
-        .allocate_dma_buffer(payload_len)
-        .unwrap();
 
     let mut nvme_driver = NvmeDriver::new(
         &driver_source,
         CPU_COUNT,
-        mem_block.clone(),
         device)
         .await
         .unwrap();
