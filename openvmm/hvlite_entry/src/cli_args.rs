@@ -33,6 +33,9 @@ use std::str::FromStr;
 use thiserror::Error;
 
 /// OpenVMM virtual machine monitor.
+///
+/// This is not yet a stable interface and may change radically between
+/// versions.
 #[derive(Parser)]
 pub struct Options {
     /// processor count
