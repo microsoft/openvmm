@@ -217,7 +217,11 @@ impl NvmeManagerWorker {
                     .await
                 }
                 // Request to save worker data for servicing.
-                Request::Save(rpc) => rpc.handle(|_| self.save()).await,
+                Request::Save(rpc) => {
+                    rpc.handle(|_| self.save())
+                        .instrument(tracing::info_span!("nvme_save_state"))
+                        .await
+                }
                 Request::Shutdown {
                     span,
                     nvme_keepalive,
