@@ -507,7 +507,7 @@ impl<
                                     );
                                 }
                                 let use_entropy_bytes =
-                                    std::cmp::min(host_entropy.len(), MAX_ENTROPY_SIZE);
+                                    core::cmp::min(host_entropy.len(), MAX_ENTROPY_SIZE);
                                 let entropy =
                                     ArrayVec::try_from(&host_entropy[..use_entropy_bytes]).unwrap();
 
