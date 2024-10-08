@@ -38,6 +38,25 @@ pub fn direct_run(
     out_dir: PathBuf,
     persist_dir: PathBuf,
 ) -> anyhow::Result<()> {
+    direct_run_do_work(pipeline, windows_as_wsl, out_dir.clone(), persist_dir)?;
+
+    // cleanup
+    if out_dir.join(".job_artifacts").exists() {
+        fs_err::remove_dir_all(out_dir.join(".job_artifacts"))?;
+    }
+    if out_dir.join(".work").exists() {
+        fs_err::remove_dir_all(out_dir.join(".work"))?;
+    }
+
+    Ok(())
+}
+
+fn direct_run_do_work(
+    pipeline: ResolvedPipeline,
+    windows_as_wsl: bool,
+    out_dir: PathBuf,
+    persist_dir: PathBuf,
+) -> anyhow::Result<()> {
     fs_err::create_dir_all(&out_dir)?;
     let out_dir = std::path::absolute(out_dir)?;
 
@@ -336,14 +355,6 @@ pub fn direct_run(
                 log::info!(""); // log a newline, for the pretty
             }
         }
-    }
-
-    // cleanup
-    if out_dir.join(".job_artifacts").exists() {
-        fs_err::remove_dir_all(out_dir.join(".job_artifacts"))?;
-    }
-    if out_dir.join(".work").exists() {
-        fs_err::remove_dir_all(out_dir.join(".work"))?;
     }
 
     Ok(())
