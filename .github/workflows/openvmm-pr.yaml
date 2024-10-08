@@ -3216,6 +3216,12 @@ jobs:
     - name: report openvmm magicpath dir
       run: flowey e 15 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
+    - name: checking if apt packages need to be installed
+      run: flowey e 15 flowey_lib_common::install_apt_pkg 0
+      shell: bash
+    - name: installing `apt` packages
+      run: flowey e 15 flowey_lib_common::install_apt_pkg 1
+      shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 15 flowey_lib_common::download_gh_release 0
       shell: bash
@@ -3322,12 +3328,6 @@ jobs:
       shell: bash
     - name: extract X64 sysroot.tar.gz
       run: flowey e 15 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 1
-      shell: bash
-    - name: checking if apt packages need to be installed
-      run: flowey e 15 flowey_lib_common::install_apt_pkg 0
-      shell: bash
-    - name: installing `apt` packages
-      run: flowey e 15 flowey_lib_common::install_apt_pkg 1
       shell: bash
     - name: unpack Microsoft.WSL.LxUtil.x64.zip
       run: flowey e 15 flowey_lib_hvlite::download_lxutil 0
