@@ -98,48 +98,51 @@ mod dev_random_ioctls {
     );
 }
 
-// Use host-generated entropy to speed up boot and improve entropy quality.
+// If it is available, use host-generated entropy to speed up boot and
+// improve entropy quality.
 //
-// This is especially useful onmachines without hardware random number
+// This is especially useful on machines without hardware random number
 // generation. When random numbers are requested from /dev/random, the
-// system blocks until it has gained enough entropy. This strategy cannot be
-// used by confidential VMs, however, since the host could manipulate the
-// entropy it provides to attack the guest.
+// system blocks until it has gained enough entropy.
+//
+// It is safe to apply host-provided entropy even to a confidential VM,
+// because host-provided data is hashed into the existing entropy sources.
 fn use_host_entropy() -> anyhow::Result<()> {
     use dev_random_ioctls::MAX_ENTROPY_SIZE;
 
-    match fs_err::read("/proc/device-tree/openhcl/entropy/reg") {
-        Ok(host_entropy) => {
-            if host_entropy.len() > MAX_ENTROPY_SIZE {
-                log::warn!(
-                    "Truncating host-provided entropy (received {} bytes)",
-                    host_entropy.len()
-                );
-            }
-            let use_entropy_bytes = std::cmp::min(host_entropy.len(), MAX_ENTROPY_SIZE);
-            log::info!("Using {} bytes of entropy from the host", use_entropy_bytes);
-
-            let mut entropy = dev_random_ioctls::RndAddEntropy {
-                entropy_count: (use_entropy_bytes * 8) as i32,
-                buf_size: use_entropy_bytes as i32,
-                buf: [0; MAX_ENTROPY_SIZE],
-            };
-            entropy.buf[..use_entropy_bytes].copy_from_slice(&host_entropy[..use_entropy_bytes]);
-
-            let dev_random = fs_err::OpenOptions::new()
-                .write(true)
-                .open("/dev/random")
-                .with_context(|| ("failed to open dev random for setting entropy").to_string())?;
-
-            // SAFETY: API called according to the documentation.
-            unsafe {
-                dev_random_ioctls::rnd_add_entropy_ioctl(dev_random.as_raw_fd(), &entropy)
-                    .context("rnd_add_entropy_ioctl")?;
-            }
-        }
+    let host_entropy = match fs_err::read("/proc/device-tree/openhcl/entropy/reg") {
+        Ok(contents) => contents,
         Err(e) => {
             log::warn!("Did not get entropy from the host: {e:#}");
+            return Ok(());
         }
+    };
+
+    if host_entropy.len() > MAX_ENTROPY_SIZE {
+        log::warn!(
+            "Truncating host-provided entropy (received {} bytes)",
+            host_entropy.len()
+        );
+    }
+    let use_entropy_bytes = std::cmp::min(host_entropy.len(), MAX_ENTROPY_SIZE);
+    log::info!("Using {} bytes of entropy from the host", use_entropy_bytes);
+
+    let mut entropy = dev_random_ioctls::RndAddEntropy {
+        entropy_count: (use_entropy_bytes * 8) as i32,
+        buf_size: use_entropy_bytes as i32,
+        buf: [0; MAX_ENTROPY_SIZE],
+    };
+    entropy.buf[..use_entropy_bytes].copy_from_slice(&host_entropy[..use_entropy_bytes]);
+
+    let dev_random = fs_err::OpenOptions::new()
+        .write(true)
+        .open("/dev/random")
+        .with_context(|| ("failed to open dev random for setting entropy").to_string())?;
+
+    // SAFETY: API called according to the documentation.
+    unsafe {
+        dev_random_ioctls::rnd_add_entropy_ioctl(dev_random.as_raw_fd(), &entropy)
+            .context("rnd_add_entropy_ioctl")?;
     }
 
     Ok(())
@@ -184,10 +187,7 @@ fn setup(
         fs_err::write(path, data).with_context(|| format!("failed to write {data}"))?;
     }
 
-    // For non-confidential VMs, use the host-provided entropy if it is available.
-    if !underhill_confidentiality::is_confidential_vm() {
-        use_host_entropy().context("use host entropy")?;
-    }
+    use_host_entropy().context("use host entropy")?;
 
     for setup in &options.setup_script {
         log::info!("Running provided setup script {}", setup);

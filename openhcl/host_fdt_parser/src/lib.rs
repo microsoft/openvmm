@@ -104,12 +104,6 @@ enum ErrorKind<'a> {
         expected: &'a str,
         actual: &'a str,
     },
-    Capacity {
-        node_name: &'a str,
-        prop_name: &'a str,
-        max: usize,
-        actual: usize,
-    },
     UnexpectedVmbusVtl {
         node_name: &'a str,
         vtl: u32,
@@ -177,7 +171,6 @@ impl<'a> Display for ErrorKind<'a> {
             }
             ErrorKind::PropInvalidU32 { node_name, prop_name, expected, actual } => f.write_fmt(format_args!("{node_name} had an invalid u32 value for {prop_name}: expected {expected}, actual {actual}")),
             ErrorKind::PropInvalidStr { node_name, prop_name, expected, actual } => f.write_fmt(format_args!("{node_name} had an invalid str value for {prop_name}: expected {expected}, actual {actual}")),
-            ErrorKind::Capacity { node_name, prop_name, max, actual } => f.write_fmt(format_args!("{node_name} had an invalid length for {prop_name}: expected <= {max}, actual {actual}")),
             ErrorKind::UnexpectedVmbusVtl { node_name, vtl } => f.write_fmt(format_args!("{node_name} has an unexpected vtl {vtl}")),
             ErrorKind::MultipleVmbusNode { node_name } => f.write_fmt(format_args!("{node_name} specifies a duplicate vmbus node")),
             ErrorKind::VmbusRangesChildParent { node_name, child_base, parent_base } => f.write_fmt(format_args!("vmbus {node_name} ranges child base {child_base} does not match parent {parent_base}")),
@@ -497,22 +490,27 @@ impl<
                         #[allow(clippy::single_match)]
                         match openhcl_child.name {
                             "entropy" => {
-                                let entropy_reg_property = openhcl_child
+                                let host_entropy = openhcl_child
                                     .find_property("reg")
                                     .map_err(ErrorKind::Prop)?
                                     .ok_or(ErrorKind::PropMissing {
                                         node_name: openhcl_child.name,
                                         prop_name: "reg",
-                                    })?;
-                                let mut entropy = ArrayVec::new();
-                                entropy
-                                    .try_extend_from_slice(entropy_reg_property.data)
-                                    .map_err(|_| ErrorKind::Capacity {
-                                        node_name: "entropy",
-                                        prop_name: "reg",
-                                        max: MAX_ENTROPY_SIZE,
-                                        actual: entropy_reg_property.data.len(),
-                                    })?;
+                                    })?
+                                    .data;
+
+                                if host_entropy.len() > MAX_ENTROPY_SIZE {
+                                    #[cfg(feature = "std")]
+                                    tracing::warn!(
+                                        entropy_len = host_entropy.len(),
+                                        "Truncating host-provided entropy",
+                                    );
+                                }
+                                let use_entropy_bytes =
+                                    std::cmp::min(host_entropy.len(), MAX_ENTROPY_SIZE);
+                                let entropy =
+                                    ArrayVec::try_from(&host_entropy[..use_entropy_bytes]).unwrap();
+
                                 storage.entropy = Some(entropy);
                             }
                             _ => {
