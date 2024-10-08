@@ -26,10 +26,14 @@ use std::collections::BTreeSet;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum OpenhclKernelPackage {
-    /// Last known good
-    Lkg,
-    /// Development
+    /// Kernel from the hcl-main branch
+    Main,
+    /// CVM kernel from the hcl-main branch
+    Cvm,
+    /// Kernel from the hcl-dev branch
     Dev,
+    /// CVM kernel from the hcl-dev brnach
+    CvmDev,
     /// Path to a custom local package
     CustomLocal(PathBuf),
 }
@@ -82,6 +86,7 @@ pub enum OpenhclIgvmRecipe {
     X64TestLinuxDirect,
     X64TestLinuxDirectDevkern,
     X64Cvm,
+    X64CvmDevkern,
     Aarch64,
     Aarch64Devkern,
 }
@@ -116,7 +121,7 @@ impl OpenhclIgvmRecipe {
             Self::X64 => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template("openhcl-x64-dev.json", "openhcl-x64-release.json"),
-                openhcl_kernel_package: OpenhclKernelPackage::Lkg,
+                openhcl_kernel_package: OpenhclKernelPackage::Main,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
                 target: CommonTriple::X86_64_LINUX_MUSL,
                 vtl0_kernel_type: None,
@@ -135,13 +140,27 @@ impl OpenhclIgvmRecipe {
                 with_interactive,
                 with_sidecar_details: false,
             },
+            Self::X64CvmDevkern => OpenhclIgvmRecipeDetails {
+                local_only: None,
+                igvm_manifest: in_repo_template(
+                    "openhcl-x64-cvm-dev.json",
+                    "openhcl-x64-cvm-release.json",
+                ),
+                openhcl_kernel_package: OpenhclKernelPackage::CvmDev,
+                openvmm_hcl_features: base_openvmm_hcl_features(),
+                target: CommonTriple::X86_64_LINUX_MUSL,
+                vtl0_kernel_type: None,
+                with_uefi: true,
+                with_interactive,
+                with_sidecar_details: false,
+            },
             Self::X64TestLinuxDirect => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
                     "openhcl-x64-direct-dev.json",
                     "openhcl-x64-direct-release.json",
                 ),
-                openhcl_kernel_package: OpenhclKernelPackage::Lkg,
+                openhcl_kernel_package: OpenhclKernelPackage::Main,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
                 target: CommonTriple::X86_64_LINUX_MUSL,
                 vtl0_kernel_type: Some(Vtl0KernelType::Example),
@@ -169,7 +188,7 @@ impl OpenhclIgvmRecipe {
                     "openhcl-x64-cvm-dev.json",
                     "openhcl-x64-cvm-release.json",
                 ),
-                openhcl_kernel_package: OpenhclKernelPackage::Dev,
+                openhcl_kernel_package: OpenhclKernelPackage::Cvm,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
                 target: CommonTriple::X86_64_LINUX_MUSL,
                 vtl0_kernel_type: None,
@@ -183,7 +202,7 @@ impl OpenhclIgvmRecipe {
                     "openhcl-aarch64-dev.json",
                     "openhcl-aarch64-release.json",
                 ),
-                openhcl_kernel_package: OpenhclKernelPackage::Lkg,
+                openhcl_kernel_package: OpenhclKernelPackage::Main,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
                 target: CommonTriple::AARCH64_LINUX_MUSL,
                 vtl0_kernel_type: None,
@@ -305,11 +324,17 @@ impl SimpleFlowNode for Node {
             }
 
             let download_kind = match openhcl_kernel_package {
-                OpenhclKernelPackage::Lkg => {
-                    DownloadOrLocal::Download(OpenhclKernelPackageKind::Stable)
+                OpenhclKernelPackage::Main => {
+                    DownloadOrLocal::Download(OpenhclKernelPackageKind::Main)
+                }
+                OpenhclKernelPackage::Cvm => {
+                    DownloadOrLocal::Download(OpenhclKernelPackageKind::Cvm)
                 }
                 OpenhclKernelPackage::Dev => {
                     DownloadOrLocal::Download(OpenhclKernelPackageKind::Dev)
+                }
+                OpenhclKernelPackage::CvmDev => {
+                    DownloadOrLocal::Download(OpenhclKernelPackageKind::CvmDev)
                 }
                 OpenhclKernelPackage::CustomLocal(path) => DownloadOrLocal::Local(path),
             };

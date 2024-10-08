@@ -7,8 +7,10 @@ use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OpenhclKernelPackageKind {
-    Stable,
+    Main,
+    Cvm,
     Dev,
+    CvmDev,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -75,29 +77,29 @@ impl FlowNode for Node {
 
         for ((kind, arch), out_vars) in reqs {
             let version = versions.get(&kind).expect("checked above");
-            let tag = match kind {
-                OpenhclKernelPackageKind::Stable => {
-                    format!("rolling-lts/hcl-main/{version}")
-                }
-                OpenhclKernelPackageKind::Dev => {
-                    format!("rolling-lts/hcl-dev/{version}")
-                }
+            let kind_string = match kind {
+                OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => "main",
+                OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => "dev",
             };
 
-            let file_name = {
-                let arch_str = match arch {
+            let tag = format!("rolling-lts/hcl-{kind_string}/{version}");
+
+            let file_name = format!(
+                "Microsoft.OHCL.Kernel.{}-{}-{}.zip",
+                version,
+                match kind {
+                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Dev => {
+                        kind_string.to_string()
+                    }
+                    OpenhclKernelPackageKind::Cvm | OpenhclKernelPackageKind::CvmDev => {
+                        format!("{kind_string}-cvm")
+                    }
+                },
+                match arch {
                     OpenhclKernelPackageArch::X86_64 => "x64",
                     OpenhclKernelPackageArch::Aarch64 => "arm64",
-                };
-                match kind {
-                    OpenhclKernelPackageKind::Stable => {
-                        format!("Microsoft.OHCL.Kernel.{version}-main-{arch_str}.zip")
-                    }
-                    OpenhclKernelPackageKind::Dev => {
-                        format!("Microsoft.OHCL.Kernel.{version}-dev-{arch_str}.zip")
-                    }
                 }
-            };
+            );
 
             let kernel_package_zip =
                 ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
@@ -108,77 +110,62 @@ impl FlowNode for Node {
                     path: v,
                 });
 
-            ctx.emit_rust_step(
-                {
-                    format!(
-                        "unpack openhcl kernel package ({}-{})",
-                        match arch {
-                            OpenhclKernelPackageArch::X86_64 => "x64",
-                            OpenhclKernelPackageArch::Aarch64 => "aarch64",
-                        },
-                        match kind {
-                            OpenhclKernelPackageKind::Stable => "stable",
-                            OpenhclKernelPackageKind::Dev => "dev",
-                        },
-                    )
-                },
-                |ctx| {
-                    let extract_zip_deps = extract_zip_deps.clone().claim(ctx);
-                    let out_vars = out_vars.claim(ctx);
-                    let kernel_package_zip = kernel_package_zip.claim(ctx);
-                    move |rt| {
-                        let kernel_package_zip = rt.read(kernel_package_zip);
+            ctx.emit_rust_step(format!("unpack {file_name}"), |ctx| {
+                let extract_zip_deps = extract_zip_deps.clone().claim(ctx);
+                let out_vars = out_vars.claim(ctx);
+                let kernel_package_zip = kernel_package_zip.claim(ctx);
+                move |rt| {
+                    let kernel_package_zip = rt.read(kernel_package_zip);
 
-                        let extract_dir = flowey_lib_common::_util::extract::extract_zip_if_new(
-                            rt,
-                            extract_zip_deps,
-                            &kernel_package_zip,
-                            &file_name, // filename currently includes version and arch
-                        )?;
+                    let extract_dir = flowey_lib_common::_util::extract::extract_zip_if_new(
+                        rt,
+                        extract_zip_deps,
+                        &kernel_package_zip,
+                        &file_name, // filename currently includes version and arch
+                    )?;
 
-                        let base_dir = std::env::current_dir()?;
+                    let base_dir = std::env::current_dir()?;
 
-                        if cfg!(unix) {
-                            #[cfg(unix)]
-                            {
-                                // HACK: recursively chmod all the files, otherwise they all have 000 access.
-                                let sh = xshell::Shell::new()?;
-                                xshell::cmd!(sh, "chmod -R 755 {extract_dir}").run()?;
+                    if cfg!(unix) {
+                        #[cfg(unix)]
+                        {
+                            // HACK: recursively chmod all the files, otherwise they all have 000 access.
+                            let sh = xshell::Shell::new()?;
+                            xshell::cmd!(sh, "chmod -R 755 {extract_dir}").run()?;
 
-                                // HACK: recreate the layout used by nuget packages.
-                                let nuget_path = "build/native/bin";
-                                let metadata_file = "kernel_build_metadata.json";
-                                fs_err::create_dir_all(nuget_path)?;
-                                fs_err::os::unix::fs::symlink(
-                                    extract_dir.join(metadata_file),
-                                    format!("{}/{}", nuget_path, metadata_file),
-                                )?;
+                            // HACK: recreate the layout used by nuget packages.
+                            let nuget_path = "build/native/bin";
+                            let metadata_file = "kernel_build_metadata.json";
+                            fs_err::create_dir_all(nuget_path)?;
+                            fs_err::os::unix::fs::symlink(
+                                extract_dir.join(metadata_file),
+                                format!("{}/{}", nuget_path, metadata_file),
+                            )?;
 
-                                fs_err::os::unix::fs::symlink(
-                                    extract_dir,
-                                    format!(
-                                        "{}/{}",
-                                        nuget_path,
-                                        match arch {
-                                            OpenhclKernelPackageArch::X86_64 => "x64",
-                                            OpenhclKernelPackageArch::Aarch64 => "arm64",
-                                        }
-                                    ),
-                                )?;
-                            }
-                        } else {
-                            let _ = extract_dir;
-                            anyhow::bail!(
-                                "cannot download openhcl kernel package on non-unix machines"
-                            );
+                            fs_err::os::unix::fs::symlink(
+                                extract_dir,
+                                format!(
+                                    "{}/{}",
+                                    nuget_path,
+                                    match arch {
+                                        OpenhclKernelPackageArch::X86_64 => "x64",
+                                        OpenhclKernelPackageArch::Aarch64 => "arm64",
+                                    }
+                                ),
+                            )?;
                         }
-
-                        rt.write_all(out_vars, &base_dir);
-
-                        Ok(())
+                    } else {
+                        let _ = extract_dir;
+                        anyhow::bail!(
+                            "cannot download openhcl kernel package on non-unix machines"
+                        );
                     }
-                },
-            );
+
+                    rt.write_all(out_vars, &base_dir);
+
+                    Ok(())
+                }
+            });
         }
 
         Ok(())

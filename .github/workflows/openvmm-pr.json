@@ -93,8 +93,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"
@@ -216,8 +218,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"
@@ -351,8 +355,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"
@@ -475,8 +481,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"
@@ -601,8 +609,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"
@@ -773,8 +783,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"
@@ -922,8 +934,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"
@@ -1095,8 +1109,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"
@@ -1268,8 +1284,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"
@@ -1480,8 +1498,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"
@@ -1720,8 +1740,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"
@@ -1796,8 +1818,8 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.20.1-dev-arm64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:3:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:103:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-dev/6.6.20.1\"}",
-        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-arm64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:1:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:103:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
+        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.20.1-dev-arm64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:3:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-dev/6.6.20.1\"}",
+        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-arm64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:1:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
         "{\"file_name\":\"hyperv.uefi.mscoreuefi.AARCH64.RELEASE.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v0.1.0\"}",
         "{\"file_name\":\"openvmm-deps.aarch64.0.1.0-20241008.7.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:2:flowey_lib_hvlite/src/download_openvmm_deps.rs:109:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241008.7\"}",
         "{\"file_name\":\"openvmm-deps.x86_64.0.1.0-20241008.7.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:1:flowey_lib_hvlite/src/download_openvmm_deps.rs:89:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241008.7\"}",
@@ -1832,7 +1854,7 @@
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:8:flowey_lib_hvlite/src/run_cargo_build.rs:346:41\",\"is_secret\":false},\"package_names\":[\"gcc-aarch64-linux-gnu\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:0:flowey_lib_hvlite/src/download_openvmm_deps.rs:80:13\",\"is_secret\":false},\"package_names\":[\"lbzip2\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:73:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:0:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:74:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:0:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:76:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:0:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:55:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:0:flowey_lib_hvlite/src/build_openhcl_initrd.rs:61:26\",\"is_secret\":false},\"package_names\":[\"python3\"]}}"
       ],
@@ -1893,24 +1915,24 @@
         "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_publish_from_aarch64-linux-musl-pipette\"},\"is_secret\":false},\"done\":{\"backing_var\":\"start33\",\"is_secret\":false},\"pipette\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::build_and_publish_pipette:0:flowey_lib_hvlite/src/_jobs/build_and_publish_pipette.rs:37:27\"},\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::build_igvmfilegen": [
-        "{\"build_params\":{\"profile\":\"Release\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxGnu\"}}},\"igvmfilegen\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:32:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:435:31\",\"is_secret\":false}}",
-        "{\"build_params\":{\"profile\":\"Release\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxGnu\"}}},\"igvmfilegen\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:4:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:435:31\",\"is_secret\":false}}"
+        "{\"build_params\":{\"profile\":\"Release\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxGnu\"}}},\"igvmfilegen\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:32:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:460:31\",\"is_secret\":false}}",
+        "{\"build_params\":{\"profile\":\"Release\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxGnu\"}}},\"igvmfilegen\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:4:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:460:31\",\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::build_openhcl_boot": [
-        "{\"build_params\":{\"arch\":\"Aarch64\",\"profile\":\"Debug\"},\"openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:33:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:462:17\",\"is_secret\":false}}",
-        "{\"build_params\":{\"arch\":\"Aarch64\",\"profile\":\"Debug\"},\"openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:5:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:462:17\",\"is_secret\":false}}"
+        "{\"build_params\":{\"arch\":\"Aarch64\",\"profile\":\"Debug\"},\"openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:33:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:487:17\",\"is_secret\":false}}",
+        "{\"build_params\":{\"arch\":\"Aarch64\",\"profile\":\"Debug\"},\"openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:5:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:487:17\",\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::build_openhcl_igvm_from_recipe": [
         "{\"built_openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:1:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:62:69\",\"is_secret\":false},\"built_openhcl_igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:2:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"built_openvmm_hcl\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:0:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:61:67\",\"is_secret\":false},\"built_sidecar\":null,\"custom_target\":{\"Custom\":\"aarch64-unknown-linux-musl\"},\"profile\":\"Debug\",\"recipe\":\"Aarch64\"}",
         "{\"built_openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:12:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:62:69\",\"is_secret\":false},\"built_openhcl_igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:13:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"built_openvmm_hcl\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:11:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:61:67\",\"is_secret\":false},\"built_sidecar\":null,\"custom_target\":{\"Custom\":\"aarch64-unknown-linux-musl\"},\"profile\":\"Debug\",\"recipe\":\"Aarch64Devkern\"}"
       ],
       "flowey_lib_hvlite::build_openhcl_initrd": [
-        "{\"arch\":\"Aarch64\",\"bin_openhcl\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:18:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:527:51\"},\"is_secret\":false},\"extra_env\":null,\"extra_params\":null,\"initrd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:20:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:529:17\",\"is_secret\":false},\"interactive\":true,\"kernel_package_root\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:1:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:320:25\"},\"is_secret\":false},\"rootfs_config\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:16:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:526:51\"},\"is_secret\":false}}",
-        "{\"arch\":\"Aarch64\",\"bin_openhcl\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:46:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:527:51\"},\"is_secret\":false},\"extra_env\":null,\"extra_params\":null,\"initrd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:48:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:529:17\",\"is_secret\":false},\"interactive\":true,\"kernel_package_root\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:29:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:320:25\"},\"is_secret\":false},\"rootfs_config\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:44:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:526:51\"},\"is_secret\":false}}"
+        "{\"arch\":\"Aarch64\",\"bin_openhcl\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:18:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:552:51\"},\"is_secret\":false},\"extra_env\":null,\"extra_params\":null,\"initrd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:20:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:554:17\",\"is_secret\":false},\"interactive\":true,\"kernel_package_root\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:1:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\"},\"is_secret\":false},\"rootfs_config\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:16:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:551:51\"},\"is_secret\":false}}",
+        "{\"arch\":\"Aarch64\",\"bin_openhcl\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:46:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:552:51\"},\"is_secret\":false},\"extra_env\":null,\"extra_params\":null,\"initrd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:48:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:554:17\",\"is_secret\":false},\"interactive\":true,\"kernel_package_root\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:29:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\"},\"is_secret\":false},\"rootfs_config\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:44:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:551:51\"},\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::build_openvmm_hcl": [
-        "{\"build_params\":{\"features\":[\"Gdb\",\"Tpm\"],\"no_split_dbg_info\":true,\"profile\":\"Debug\",\"target\":{\"Custom\":\"aarch64-unknown-linux-musl\"}},\"openvmm_hcl_output\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:31:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:416:35\",\"is_secret\":false}}",
-        "{\"build_params\":{\"features\":[\"Gdb\",\"Tpm\"],\"no_split_dbg_info\":true,\"profile\":\"Debug\",\"target\":{\"Custom\":\"aarch64-unknown-linux-musl\"}},\"openvmm_hcl_output\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:3:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:416:35\",\"is_secret\":false}}"
+        "{\"build_params\":{\"features\":[\"Gdb\",\"Tpm\"],\"no_split_dbg_info\":true,\"profile\":\"Debug\",\"target\":{\"Custom\":\"aarch64-unknown-linux-musl\"}},\"openvmm_hcl_output\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:31:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:441:35\",\"is_secret\":false}}",
+        "{\"build_params\":{\"features\":[\"Gdb\",\"Tpm\"],\"no_split_dbg_info\":true,\"profile\":\"Debug\",\"target\":{\"Custom\":\"aarch64-unknown-linux-musl\"}},\"openvmm_hcl_output\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:3:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:441:35\",\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::build_pipette": [
         "{\"pipette\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_pipette:0:flowey_lib_hvlite/src/_jobs/build_and_publish_pipette.rs:37:27\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":{\"Common\":{\"arch\":\"Aarch64\",\"platform\":\"LinuxMusl\"}}}"
@@ -1923,10 +1945,12 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
-        "{\"GetPackage\":{\"arch\":\"Aarch64\",\"kind\":\"Dev\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:29:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:320:25\",\"is_secret\":false}}}",
-        "{\"GetPackage\":{\"arch\":\"Aarch64\",\"kind\":\"Stable\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:1:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:320:25\",\"is_secret\":false}}}",
+        "{\"GetPackage\":{\"arch\":\"Aarch64\",\"kind\":\"Dev\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:29:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\",\"is_secret\":false}}}",
+        "{\"GetPackage\":{\"arch\":\"Aarch64\",\"kind\":\"Main\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:1:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\",\"is_secret\":false}}}",
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"GetOpenhclCpioDbgrd\":[\"Aarch64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:2:flowey_lib_hvlite/src/build_openhcl_initrd.rs:93:21\",\"is_secret\":false}]}",
@@ -1936,13 +1960,13 @@
         "{\"Version\":\"0.1.0-20241008.7\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"GetMsvmFd\":{\"arch\":\"Aarch64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:2:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:335:21\",\"is_secret\":false}}}",
-        "{\"GetMsvmFd\":{\"arch\":\"Aarch64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:30:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:335:21\",\"is_secret\":false}}}",
+        "{\"GetMsvmFd\":{\"arch\":\"Aarch64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:2:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:360:21\",\"is_secret\":false}}}",
+        "{\"GetMsvmFd\":{\"arch\":\"Aarch64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:30:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:360:21\",\"is_secret\":false}}}",
         "{\"Version\":\"0.1.0\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
-        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:0:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:294:37\",\"is_secret\":false}}",
-        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:28:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:294:37\",\"is_secret\":false}}",
+        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:0:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:313:37\",\"is_secret\":false}}",
+        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:28:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:313:37\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:1:flowey_lib_hvlite/src/build_openhcl_initrd.rs:68:37\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::cfg_openvmm_magicpath:0:flowey_lib_hvlite/src/cfg_openvmm_magicpath.rs:26:29\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings:0:flowey_lib_hvlite/src/init_openvmm_cargo_config_deny_warnings.rs:50:37\",\"is_secret\":false}}",
@@ -1972,12 +1996,12 @@
         "{\"crate_name\":\"pipette\",\"crate_type\":\"Bin\",\"extra_env\":null,\"features\":[],\"no_split_dbg_info\":false,\"out_name\":\"pipette\",\"output\":{\"backing_var\":\"flowey_lib_hvlite::build_pipette:0:flowey_lib_hvlite/src/build_pipette.rs:39:26\",\"is_secret\":false},\"pre_build_deps\":[],\"profile\":\"Debug\",\"target\":\"aarch64-unknown-linux-musl\"}"
       ],
       "flowey_lib_hvlite::run_igvmfilegen": [
-        "{\"igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:2:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"igvmfilegen\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:24:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:578:39\"},\"is_secret\":false},\"manifest\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:26:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:585:35\"},\"is_secret\":false},\"resources\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:23:flowey_core/src/node.rs:819:34\"},\"is_secret\":false}}",
-        "{\"igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:13:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"igvmfilegen\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:52:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:578:39\"},\"is_secret\":false},\"manifest\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:54:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:585:35\"},\"is_secret\":false},\"resources\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:51:flowey_core/src/node.rs:819:34\"},\"is_secret\":false}}"
+        "{\"igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:2:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"igvmfilegen\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:24:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:603:39\"},\"is_secret\":false},\"manifest\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:26:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:610:35\"},\"is_secret\":false},\"resources\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:23:flowey_core/src/node.rs:819:34\"},\"is_secret\":false}}",
+        "{\"igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:13:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"igvmfilegen\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:52:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:603:39\"},\"is_secret\":false},\"manifest\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:54:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:610:35\"},\"is_secret\":false},\"resources\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:51:flowey_core/src/node.rs:819:34\"},\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::run_split_debug_info": [
-        "{\"arch\":\"Aarch64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:37:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:495:46\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:35:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:492:41\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:36:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:493:49\",\"is_secret\":false}}",
-        "{\"arch\":\"Aarch64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:9:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:495:46\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:7:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:492:41\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:8:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:493:49\",\"is_secret\":false}}",
+        "{\"arch\":\"Aarch64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:37:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:520:46\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:35:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:517:41\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:36:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:518:49\",\"is_secret\":false}}",
+        "{\"arch\":\"Aarch64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:9:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:520:46\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:7:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:517:41\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:8:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:518:49\",\"is_secret\":false}}",
         "{\"arch\":\"Aarch64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:13:flowey_lib_hvlite/src/run_cargo_build.rs:428:51\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:15:flowey_lib_hvlite/src/run_cargo_build.rs:433:52\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:16:flowey_lib_hvlite/src/run_cargo_build.rs:434:52\",\"is_secret\":false}}",
         "{\"arch\":\"Aarch64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:25:flowey_lib_hvlite/src/run_cargo_build.rs:428:51\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:27:flowey_lib_hvlite/src/run_cargo_build.rs:433:52\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:28:flowey_lib_hvlite/src/run_cargo_build.rs:434:52\",\"is_secret\":false}}",
         "{\"arch\":\"X86_64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:3:flowey_lib_hvlite/src/run_cargo_build.rs:428:51\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:5:flowey_lib_hvlite/src/run_cargo_build.rs:433:52\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:6:flowey_lib_hvlite/src/run_cargo_build.rs:434:52\",\"is_secret\":false}}"
@@ -1986,7 +2010,7 @@
     "12": {
       "flowey_lib_common::cache": [
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_cli:0:flowey_core/src/node.rs:819:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_cli:1:flowey_lib_common/src/download_gh_cli.rs:66:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-cli-2.52.0\"},\"is_secret\":false},\"label\":\"gh-cli\",\"restore_keys\":null}",
-        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:819:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-bf24ce2cb39ee3e7\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
+        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:819:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-b8db1423fc749658\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
       ],
       "flowey_lib_common::cfg_cargo_common_flags": [
         "{\"GetFlags\":{\"backing_var\":\"flowey_lib_common::run_cargo_build:1:flowey_lib_common/src/run_cargo_build.rs:101:25\",\"is_secret\":false}}",
@@ -2012,8 +2036,9 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.20.1-dev-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:3:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:103:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-dev/6.6.20.1\"}",
-        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:1:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:103:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
+        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.20.1-dev-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:5:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-dev/6.6.20.1\"}",
+        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-cvm-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:3:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
+        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:1:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
         "{\"file_name\":\"hyperv.uefi.mscoreuefi.x64.RELEASE.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v0.1.0\"}",
         "{\"file_name\":\"openvmm-deps.x86_64.0.1.0-20241008.7.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:1:flowey_lib_hvlite/src/download_openvmm_deps.rs:89:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241008.7\"}",
         "{\"file_name\":\"protoc-27.1-linux-x86_64.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_protoc:0:flowey_lib_common/src/download_protoc.rs:65:30\",\"is_secret\":false},\"repo_name\":\"protobuf\",\"repo_owner\":\"protocolbuffers\",\"tag\":\"v27.1\"}"
@@ -2047,7 +2072,7 @@
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_split_debug_info:8:flowey_lib_hvlite/src/run_split_debug_info.rs:35:17\",\"is_secret\":false},\"package_names\":[\"binutils-x86-64-linux-gnu\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:0:flowey_lib_hvlite/src/download_openvmm_deps.rs:80:13\",\"is_secret\":false},\"package_names\":[\"lbzip2\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:73:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:0:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:74:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:0:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:76:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:0:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:55:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:0:flowey_lib_hvlite/src/build_openhcl_initrd.rs:61:26\",\"is_secret\":false},\"package_names\":[\"python3\"]}}"
       ],
@@ -2108,18 +2133,18 @@
         "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_publish_from_x64-linux-musl-pipette\"},\"is_secret\":false},\"done\":{\"backing_var\":\"start35\",\"is_secret\":false},\"pipette\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::build_and_publish_pipette:0:flowey_lib_hvlite/src/_jobs/build_and_publish_pipette.rs:37:27\"},\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::build_igvmfilegen": [
-        "{\"build_params\":{\"profile\":\"Release\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxGnu\"}}},\"igvmfilegen\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:118:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:435:31\",\"is_secret\":false}}",
-        "{\"build_params\":{\"profile\":\"Release\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxGnu\"}}},\"igvmfilegen\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:32:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:435:31\",\"is_secret\":false}}",
-        "{\"build_params\":{\"profile\":\"Release\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxGnu\"}}},\"igvmfilegen\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:4:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:435:31\",\"is_secret\":false}}",
-        "{\"build_params\":{\"profile\":\"Release\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxGnu\"}}},\"igvmfilegen\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:60:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:435:31\",\"is_secret\":false}}",
-        "{\"build_params\":{\"profile\":\"Release\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxGnu\"}}},\"igvmfilegen\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:89:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:435:31\",\"is_secret\":false}}"
+        "{\"build_params\":{\"profile\":\"Release\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxGnu\"}}},\"igvmfilegen\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:118:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:460:31\",\"is_secret\":false}}",
+        "{\"build_params\":{\"profile\":\"Release\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxGnu\"}}},\"igvmfilegen\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:32:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:460:31\",\"is_secret\":false}}",
+        "{\"build_params\":{\"profile\":\"Release\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxGnu\"}}},\"igvmfilegen\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:4:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:460:31\",\"is_secret\":false}}",
+        "{\"build_params\":{\"profile\":\"Release\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxGnu\"}}},\"igvmfilegen\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:60:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:460:31\",\"is_secret\":false}}",
+        "{\"build_params\":{\"profile\":\"Release\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxGnu\"}}},\"igvmfilegen\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:89:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:460:31\",\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::build_openhcl_boot": [
-        "{\"build_params\":{\"arch\":\"X86_64\",\"profile\":\"Debug\"},\"openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:119:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:462:17\",\"is_secret\":false}}",
-        "{\"build_params\":{\"arch\":\"X86_64\",\"profile\":\"Debug\"},\"openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:33:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:462:17\",\"is_secret\":false}}",
-        "{\"build_params\":{\"arch\":\"X86_64\",\"profile\":\"Debug\"},\"openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:5:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:462:17\",\"is_secret\":false}}",
-        "{\"build_params\":{\"arch\":\"X86_64\",\"profile\":\"Debug\"},\"openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:61:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:462:17\",\"is_secret\":false}}",
-        "{\"build_params\":{\"arch\":\"X86_64\",\"profile\":\"Debug\"},\"openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:90:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:462:17\",\"is_secret\":false}}"
+        "{\"build_params\":{\"arch\":\"X86_64\",\"profile\":\"Debug\"},\"openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:119:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:487:17\",\"is_secret\":false}}",
+        "{\"build_params\":{\"arch\":\"X86_64\",\"profile\":\"Debug\"},\"openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:33:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:487:17\",\"is_secret\":false}}",
+        "{\"build_params\":{\"arch\":\"X86_64\",\"profile\":\"Debug\"},\"openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:5:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:487:17\",\"is_secret\":false}}",
+        "{\"build_params\":{\"arch\":\"X86_64\",\"profile\":\"Debug\"},\"openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:61:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:487:17\",\"is_secret\":false}}",
+        "{\"build_params\":{\"arch\":\"X86_64\",\"profile\":\"Debug\"},\"openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:90:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:487:17\",\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::build_openhcl_igvm_from_recipe": [
         "{\"built_openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:1:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:62:69\",\"is_secret\":false},\"built_openhcl_igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:2:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"built_openvmm_hcl\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:0:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:61:67\",\"is_secret\":false},\"built_sidecar\":null,\"custom_target\":{\"Custom\":\"x86_64-unknown-linux-musl\"},\"profile\":\"Debug\",\"recipe\":\"X64\"}",
@@ -2129,18 +2154,18 @@
         "{\"built_openhcl_boot\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:34:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:62:69\",\"is_secret\":false},\"built_openhcl_igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:35:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"built_openvmm_hcl\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:33:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:61:67\",\"is_secret\":false},\"built_sidecar\":null,\"custom_target\":{\"Custom\":\"x86_64-unknown-linux-musl\"},\"profile\":\"Debug\",\"recipe\":\"X64TestLinuxDirectDevkern\"}"
       ],
       "flowey_lib_hvlite::build_openhcl_initrd": [
-        "{\"arch\":\"X86_64\",\"bin_openhcl\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:103:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:527:51\"},\"is_secret\":false},\"extra_env\":null,\"extra_params\":null,\"initrd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:105:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:529:17\",\"is_secret\":false},\"interactive\":true,\"kernel_package_root\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:85:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:320:25\"},\"is_secret\":false},\"rootfs_config\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:101:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:526:51\"},\"is_secret\":false}}",
-        "{\"arch\":\"X86_64\",\"bin_openhcl\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:132:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:527:51\"},\"is_secret\":false},\"extra_env\":null,\"extra_params\":null,\"initrd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:134:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:529:17\",\"is_secret\":false},\"interactive\":true,\"kernel_package_root\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:114:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:320:25\"},\"is_secret\":false},\"rootfs_config\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:130:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:526:51\"},\"is_secret\":false}}",
-        "{\"arch\":\"X86_64\",\"bin_openhcl\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:18:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:527:51\"},\"is_secret\":false},\"extra_env\":null,\"extra_params\":null,\"initrd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:20:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:529:17\",\"is_secret\":false},\"interactive\":true,\"kernel_package_root\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:1:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:320:25\"},\"is_secret\":false},\"rootfs_config\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:16:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:526:51\"},\"is_secret\":false}}",
-        "{\"arch\":\"X86_64\",\"bin_openhcl\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:46:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:527:51\"},\"is_secret\":false},\"extra_env\":null,\"extra_params\":null,\"initrd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:48:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:529:17\",\"is_secret\":false},\"interactive\":true,\"kernel_package_root\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:29:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:320:25\"},\"is_secret\":false},\"rootfs_config\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:44:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:526:51\"},\"is_secret\":false}}",
-        "{\"arch\":\"X86_64\",\"bin_openhcl\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:74:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:527:51\"},\"is_secret\":false},\"extra_env\":null,\"extra_params\":null,\"initrd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:76:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:529:17\",\"is_secret\":false},\"interactive\":true,\"kernel_package_root\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:57:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:320:25\"},\"is_secret\":false},\"rootfs_config\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:72:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:526:51\"},\"is_secret\":false}}"
+        "{\"arch\":\"X86_64\",\"bin_openhcl\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:103:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:552:51\"},\"is_secret\":false},\"extra_env\":null,\"extra_params\":null,\"initrd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:105:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:554:17\",\"is_secret\":false},\"interactive\":true,\"kernel_package_root\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:85:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\"},\"is_secret\":false},\"rootfs_config\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:101:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:551:51\"},\"is_secret\":false}}",
+        "{\"arch\":\"X86_64\",\"bin_openhcl\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:132:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:552:51\"},\"is_secret\":false},\"extra_env\":null,\"extra_params\":null,\"initrd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:134:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:554:17\",\"is_secret\":false},\"interactive\":true,\"kernel_package_root\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:114:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\"},\"is_secret\":false},\"rootfs_config\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:130:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:551:51\"},\"is_secret\":false}}",
+        "{\"arch\":\"X86_64\",\"bin_openhcl\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:18:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:552:51\"},\"is_secret\":false},\"extra_env\":null,\"extra_params\":null,\"initrd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:20:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:554:17\",\"is_secret\":false},\"interactive\":true,\"kernel_package_root\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:1:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\"},\"is_secret\":false},\"rootfs_config\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:16:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:551:51\"},\"is_secret\":false}}",
+        "{\"arch\":\"X86_64\",\"bin_openhcl\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:46:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:552:51\"},\"is_secret\":false},\"extra_env\":null,\"extra_params\":null,\"initrd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:48:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:554:17\",\"is_secret\":false},\"interactive\":true,\"kernel_package_root\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:29:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\"},\"is_secret\":false},\"rootfs_config\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:44:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:551:51\"},\"is_secret\":false}}",
+        "{\"arch\":\"X86_64\",\"bin_openhcl\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:74:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:552:51\"},\"is_secret\":false},\"extra_env\":null,\"extra_params\":null,\"initrd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:76:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:554:17\",\"is_secret\":false},\"interactive\":true,\"kernel_package_root\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:57:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\"},\"is_secret\":false},\"rootfs_config\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:72:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:551:51\"},\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::build_openvmm_hcl": [
-        "{\"build_params\":{\"features\":[\"Gdb\",\"Tpm\"],\"no_split_dbg_info\":true,\"profile\":\"Debug\",\"target\":{\"Custom\":\"x86_64-unknown-linux-musl\"}},\"openvmm_hcl_output\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:117:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:416:35\",\"is_secret\":false}}",
-        "{\"build_params\":{\"features\":[\"Gdb\",\"Tpm\"],\"no_split_dbg_info\":true,\"profile\":\"Debug\",\"target\":{\"Custom\":\"x86_64-unknown-linux-musl\"}},\"openvmm_hcl_output\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:31:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:416:35\",\"is_secret\":false}}",
-        "{\"build_params\":{\"features\":[\"Gdb\",\"Tpm\"],\"no_split_dbg_info\":true,\"profile\":\"Debug\",\"target\":{\"Custom\":\"x86_64-unknown-linux-musl\"}},\"openvmm_hcl_output\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:3:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:416:35\",\"is_secret\":false}}",
-        "{\"build_params\":{\"features\":[\"Gdb\",\"Tpm\"],\"no_split_dbg_info\":true,\"profile\":\"Debug\",\"target\":{\"Custom\":\"x86_64-unknown-linux-musl\"}},\"openvmm_hcl_output\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:59:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:416:35\",\"is_secret\":false}}",
-        "{\"build_params\":{\"features\":[\"Gdb\",\"Tpm\"],\"no_split_dbg_info\":true,\"profile\":\"Debug\",\"target\":{\"Custom\":\"x86_64-unknown-linux-musl\"}},\"openvmm_hcl_output\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:88:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:416:35\",\"is_secret\":false}}"
+        "{\"build_params\":{\"features\":[\"Gdb\",\"Tpm\"],\"no_split_dbg_info\":true,\"profile\":\"Debug\",\"target\":{\"Custom\":\"x86_64-unknown-linux-musl\"}},\"openvmm_hcl_output\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:117:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:441:35\",\"is_secret\":false}}",
+        "{\"build_params\":{\"features\":[\"Gdb\",\"Tpm\"],\"no_split_dbg_info\":true,\"profile\":\"Debug\",\"target\":{\"Custom\":\"x86_64-unknown-linux-musl\"}},\"openvmm_hcl_output\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:31:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:441:35\",\"is_secret\":false}}",
+        "{\"build_params\":{\"features\":[\"Gdb\",\"Tpm\"],\"no_split_dbg_info\":true,\"profile\":\"Debug\",\"target\":{\"Custom\":\"x86_64-unknown-linux-musl\"}},\"openvmm_hcl_output\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:3:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:441:35\",\"is_secret\":false}}",
+        "{\"build_params\":{\"features\":[\"Gdb\",\"Tpm\"],\"no_split_dbg_info\":true,\"profile\":\"Debug\",\"target\":{\"Custom\":\"x86_64-unknown-linux-musl\"}},\"openvmm_hcl_output\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:59:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:441:35\",\"is_secret\":false}}",
+        "{\"build_params\":{\"features\":[\"Gdb\",\"Tpm\"],\"no_split_dbg_info\":true,\"profile\":\"Debug\",\"target\":{\"Custom\":\"x86_64-unknown-linux-musl\"}},\"openvmm_hcl_output\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:88:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:441:35\",\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::build_pipette": [
         "{\"pipette\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_pipette:0:flowey_lib_hvlite/src/_jobs/build_and_publish_pipette.rs:37:27\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":{\"Common\":{\"arch\":\"X86_64\",\"platform\":\"LinuxMusl\"}}}"
@@ -2153,19 +2178,21 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
-        "{\"GetPackage\":{\"arch\":\"X86_64\",\"kind\":\"Dev\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:114:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:320:25\",\"is_secret\":false}}}",
-        "{\"GetPackage\":{\"arch\":\"X86_64\",\"kind\":\"Dev\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:29:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:320:25\",\"is_secret\":false}}}",
-        "{\"GetPackage\":{\"arch\":\"X86_64\",\"kind\":\"Dev\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:57:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:320:25\",\"is_secret\":false}}}",
-        "{\"GetPackage\":{\"arch\":\"X86_64\",\"kind\":\"Stable\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:1:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:320:25\",\"is_secret\":false}}}",
-        "{\"GetPackage\":{\"arch\":\"X86_64\",\"kind\":\"Stable\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:85:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:320:25\",\"is_secret\":false}}}",
+        "{\"GetPackage\":{\"arch\":\"X86_64\",\"kind\":\"Cvm\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:29:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\",\"is_secret\":false}}}",
+        "{\"GetPackage\":{\"arch\":\"X86_64\",\"kind\":\"Dev\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:114:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\",\"is_secret\":false}}}",
+        "{\"GetPackage\":{\"arch\":\"X86_64\",\"kind\":\"Dev\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:57:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\",\"is_secret\":false}}}",
+        "{\"GetPackage\":{\"arch\":\"X86_64\",\"kind\":\"Main\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:1:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\",\"is_secret\":false}}}",
+        "{\"GetPackage\":{\"arch\":\"X86_64\",\"kind\":\"Main\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:85:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\",\"is_secret\":false}}}",
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
-        "{\"GetLinuxTestInitrd\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:116:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:363:30\",\"is_secret\":false}]}",
-        "{\"GetLinuxTestInitrd\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:87:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:363:30\",\"is_secret\":false}]}",
-        "{\"GetLinuxTestKernel\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:115:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:350:52\",\"is_secret\":false}]}",
-        "{\"GetLinuxTestKernel\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:86:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:350:52\",\"is_secret\":false}]}",
+        "{\"GetLinuxTestInitrd\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:116:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:388:30\",\"is_secret\":false}]}",
+        "{\"GetLinuxTestInitrd\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:87:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:388:30\",\"is_secret\":false}]}",
+        "{\"GetLinuxTestKernel\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:115:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:375:52\",\"is_secret\":false}]}",
+        "{\"GetLinuxTestKernel\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:86:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:375:52\",\"is_secret\":false}]}",
         "{\"GetOpenhclCpioDbgrd\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:10:flowey_lib_hvlite/src/build_openhcl_initrd.rs:93:21\",\"is_secret\":false}]}",
         "{\"GetOpenhclCpioDbgrd\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:2:flowey_lib_hvlite/src/build_openhcl_initrd.rs:93:21\",\"is_secret\":false}]}",
         "{\"GetOpenhclCpioDbgrd\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:4:flowey_lib_hvlite/src/build_openhcl_initrd.rs:93:21\",\"is_secret\":false}]}",
@@ -2175,17 +2202,17 @@
         "{\"Version\":\"0.1.0-20241008.7\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"GetMsvmFd\":{\"arch\":\"X86_64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:2:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:335:21\",\"is_secret\":false}}}",
-        "{\"GetMsvmFd\":{\"arch\":\"X86_64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:30:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:335:21\",\"is_secret\":false}}}",
-        "{\"GetMsvmFd\":{\"arch\":\"X86_64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:58:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:335:21\",\"is_secret\":false}}}",
+        "{\"GetMsvmFd\":{\"arch\":\"X86_64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:2:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:360:21\",\"is_secret\":false}}}",
+        "{\"GetMsvmFd\":{\"arch\":\"X86_64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:30:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:360:21\",\"is_secret\":false}}}",
+        "{\"GetMsvmFd\":{\"arch\":\"X86_64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:58:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:360:21\",\"is_secret\":false}}}",
         "{\"Version\":\"0.1.0\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
-        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:0:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:294:37\",\"is_secret\":false}}",
-        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:113:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:294:37\",\"is_secret\":false}}",
-        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:28:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:294:37\",\"is_secret\":false}}",
-        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:56:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:294:37\",\"is_secret\":false}}",
-        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:84:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:294:37\",\"is_secret\":false}}",
+        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:0:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:313:37\",\"is_secret\":false}}",
+        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:113:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:313:37\",\"is_secret\":false}}",
+        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:28:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:313:37\",\"is_secret\":false}}",
+        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:56:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:313:37\",\"is_secret\":false}}",
+        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:84:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:313:37\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:1:flowey_lib_hvlite/src/build_openhcl_initrd.rs:68:37\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::cfg_openvmm_magicpath:0:flowey_lib_hvlite/src/cfg_openvmm_magicpath.rs:26:29\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings:0:flowey_lib_hvlite/src/init_openvmm_cargo_config_deny_warnings.rs:50:37\",\"is_secret\":false}}",
@@ -2214,18 +2241,18 @@
         "{\"crate_name\":\"pipette\",\"crate_type\":\"Bin\",\"extra_env\":null,\"features\":[],\"no_split_dbg_info\":false,\"out_name\":\"pipette\",\"output\":{\"backing_var\":\"flowey_lib_hvlite::build_pipette:0:flowey_lib_hvlite/src/build_pipette.rs:39:26\",\"is_secret\":false},\"pre_build_deps\":[],\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-musl\"}"
       ],
       "flowey_lib_hvlite::run_igvmfilegen": [
-        "{\"igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:24:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"igvmfilegen\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:109:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:578:39\"},\"is_secret\":false},\"manifest\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:111:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:585:35\"},\"is_secret\":false},\"resources\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:108:flowey_core/src/node.rs:819:34\"},\"is_secret\":false}}",
-        "{\"igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:35:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"igvmfilegen\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:138:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:578:39\"},\"is_secret\":false},\"manifest\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:140:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:585:35\"},\"is_secret\":false},\"resources\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:137:flowey_core/src/node.rs:819:34\"},\"is_secret\":false}}",
-        "{\"igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:2:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"igvmfilegen\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:24:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:578:39\"},\"is_secret\":false},\"manifest\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:26:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:585:35\"},\"is_secret\":false},\"resources\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:23:flowey_core/src/node.rs:819:34\"},\"is_secret\":false}}",
-        "{\"igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:46:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"igvmfilegen\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:52:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:578:39\"},\"is_secret\":false},\"manifest\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:54:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:585:35\"},\"is_secret\":false},\"resources\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:51:flowey_core/src/node.rs:819:34\"},\"is_secret\":false}}",
-        "{\"igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:13:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"igvmfilegen\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:80:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:578:39\"},\"is_secret\":false},\"manifest\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:82:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:585:35\"},\"is_secret\":false},\"resources\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:79:flowey_core/src/node.rs:819:34\"},\"is_secret\":false}}"
+        "{\"igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:24:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"igvmfilegen\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:109:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:603:39\"},\"is_secret\":false},\"manifest\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:111:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:610:35\"},\"is_secret\":false},\"resources\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:108:flowey_core/src/node.rs:819:34\"},\"is_secret\":false}}",
+        "{\"igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:35:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"igvmfilegen\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:138:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:603:39\"},\"is_secret\":false},\"manifest\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:140:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:610:35\"},\"is_secret\":false},\"resources\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:137:flowey_core/src/node.rs:819:34\"},\"is_secret\":false}}",
+        "{\"igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:2:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"igvmfilegen\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:24:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:603:39\"},\"is_secret\":false},\"manifest\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:26:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:610:35\"},\"is_secret\":false},\"resources\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:23:flowey_core/src/node.rs:819:34\"},\"is_secret\":false}}",
+        "{\"igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:46:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"igvmfilegen\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:52:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:603:39\"},\"is_secret\":false},\"manifest\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:54:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:610:35\"},\"is_secret\":false},\"resources\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:51:flowey_core/src/node.rs:819:34\"},\"is_secret\":false}}",
+        "{\"igvm\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe:13:flowey_lib_hvlite/src/_jobs/build_and_publish_openhcl_igvm_from_recipe.rs:63:69\",\"is_secret\":false},\"igvmfilegen\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:80:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:603:39\"},\"is_secret\":false},\"manifest\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:82:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:610:35\"},\"is_secret\":false},\"resources\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:79:flowey_core/src/node.rs:819:34\"},\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::run_split_debug_info": [
-        "{\"arch\":\"X86_64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:123:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:495:46\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:121:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:492:41\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:122:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:493:49\",\"is_secret\":false}}",
-        "{\"arch\":\"X86_64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:37:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:495:46\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:35:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:492:41\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:36:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:493:49\",\"is_secret\":false}}",
-        "{\"arch\":\"X86_64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:65:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:495:46\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:63:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:492:41\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:64:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:493:49\",\"is_secret\":false}}",
-        "{\"arch\":\"X86_64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:94:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:495:46\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:92:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:492:41\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:93:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:493:49\",\"is_secret\":false}}",
-        "{\"arch\":\"X86_64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:9:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:495:46\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:7:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:492:41\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:8:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:493:49\",\"is_secret\":false}}",
+        "{\"arch\":\"X86_64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:123:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:520:46\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:121:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:517:41\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:122:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:518:49\",\"is_secret\":false}}",
+        "{\"arch\":\"X86_64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:37:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:520:46\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:35:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:517:41\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:36:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:518:49\",\"is_secret\":false}}",
+        "{\"arch\":\"X86_64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:65:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:520:46\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:63:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:517:41\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:64:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:518:49\",\"is_secret\":false}}",
+        "{\"arch\":\"X86_64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:94:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:520:46\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:92:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:517:41\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:93:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:518:49\",\"is_secret\":false}}",
+        "{\"arch\":\"X86_64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:9:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:520:46\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:7:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:517:41\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:8:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:518:49\",\"is_secret\":false}}",
         "{\"arch\":\"X86_64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:11:flowey_lib_hvlite/src/run_cargo_build.rs:428:51\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:13:flowey_lib_hvlite/src/run_cargo_build.rs:433:52\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:14:flowey_lib_hvlite/src/run_cargo_build.rs:434:52\",\"is_secret\":false}}",
         "{\"arch\":\"X86_64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:21:flowey_lib_hvlite/src/run_cargo_build.rs:428:51\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:23:flowey_lib_hvlite/src/run_cargo_build.rs:433:52\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:24:flowey_lib_hvlite/src/run_cargo_build.rs:434:52\",\"is_secret\":false}}",
         "{\"arch\":\"X86_64\",\"in_bin\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:3:flowey_lib_hvlite/src/run_cargo_build.rs:428:51\"},\"is_secret\":false},\"out_bin\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:5:flowey_lib_hvlite/src/run_cargo_build.rs:433:52\",\"is_secret\":false},\"out_dbg_info\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:6:flowey_lib_hvlite/src/run_cargo_build.rs:434:52\",\"is_secret\":false}}"
@@ -2372,8 +2399,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"
@@ -2572,8 +2601,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"
@@ -2789,8 +2820,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"GetOpenhclSysroot\":[\"Aarch64\",{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot:1:flowey_lib_hvlite/src/init_openvmm_magicpath_openhcl_sysroot.rs:51:46\",\"is_secret\":false}]}",
@@ -2962,8 +2995,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"GetLinuxTestInitrd\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::init_vmm_tests_env:0:flowey_lib_hvlite/src/init_vmm_tests_env.rs:79:41\",\"is_secret\":false}]}",
@@ -3116,8 +3151,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"GetLinuxTestInitrd\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::init_vmm_tests_env:0:flowey_lib_hvlite/src/init_vmm_tests_env.rs:79:41\",\"is_secret\":false}]}",
@@ -3267,8 +3304,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"GetLinuxTestInitrd\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::init_vmm_tests_env:0:flowey_lib_hvlite/src/init_vmm_tests_env.rs:79:41\",\"is_secret\":false}]}",
@@ -3377,8 +3416,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"
@@ -3459,8 +3500,10 @@
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
+        "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
         "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Stable\",\"6.6.51.2\"]}"
+        "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"Version\":\"0.1.0-20241008.7\"}"

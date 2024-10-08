@@ -58,7 +58,9 @@ impl FlowNode for Node {
     fn emit(_requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         ctx.req(crate::download_lxutil::Request::Version(LXUTIL.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
-        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Stable, OPENHCL_KERNEL_STABLE_VERSION.into()));
+        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
+        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));
+        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::CvmDev, OPENHCL_KERNEL_DEV_VERSION.into()));
         ctx.req(crate::download_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
         ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
         ctx.req(flowey_lib_common::download_azcopy::Request::Version(AZCOPY.into()));

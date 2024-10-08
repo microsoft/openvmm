@@ -17,6 +17,8 @@ pub enum OpenhclRecipeCli {
     Aarch64Devkern,
     /// X64 OpenHCL, with CVM support.
     X64Cvm,
+    /// X64 OpenHCL, with CVM support using the dev kernel in VTL2
+    X64CvmDevkern,
     /// X64 OpenHCL booting VTL0 using a test linux-direct kernel + initrd (no
     /// UEFI).
     X64TestLinuxDirect,
@@ -162,9 +164,9 @@ pub struct BuildIgvmCliCustomizations {
 
 #[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
 pub enum KernelPackageKindCli {
-    /// Last known good
-    Lkg,
-    /// Development
+    /// Main branch
+    Main,
+    /// Develop branch
     Dev,
 }
 
@@ -278,6 +280,7 @@ impl IntoPipeline for BuildIgvmCli {
                         OpenhclIgvmRecipe::X64TestLinuxDirectDevkern
                     }
                     OpenhclRecipeCli::X64Cvm => OpenhclIgvmRecipe::X64Cvm,
+                    OpenhclRecipeCli::X64CvmDevkern => OpenhclIgvmRecipe::X64CvmDevkern,
                     OpenhclRecipeCli::Aarch64 => OpenhclIgvmRecipe::Aarch64,
                     OpenhclRecipeCli::Aarch64Devkern => OpenhclIgvmRecipe::Aarch64Devkern,
                 },
@@ -292,7 +295,7 @@ impl IntoPipeline for BuildIgvmCli {
                     with_perf_tools,
                     with_debuginfo,
                     override_kernel_pkg: override_kernel_pkg.map(|p| match p {
-                        KernelPackageKindCli::Lkg => OpenhclKernelPackage::Lkg,
+                        KernelPackageKindCli::Main => OpenhclKernelPackage::Main,
                         KernelPackageKindCli::Dev => OpenhclKernelPackage::Dev,
                     }),
                     with_sidecar,
