@@ -33,12 +33,15 @@ impl FlowNode for Node {
         for req in &requests {
             match req.arch {
                 CommonArch::X86_64 => {
+                    if matches!(ctx.platform(), FlowPlatform::Linux) {
+                        deps.extend_from_slice(&[ctx
+                            .reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
+                                arch: OpenvmmSysrootArch::X64,
+                                path: v,
+                            })
+                            .into_side_effect()]);
+                    }
                     deps.extend_from_slice(&[
-                        ctx.reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
-                            arch: OpenvmmSysrootArch::X64,
-                            path: v,
-                        })
-                        .into_side_effect(),
                         ctx.reqv(|done| crate::init_openvmm_magicpath_lxutil::Request {
                             arch: LxutilArch::X86_64,
                             done,
@@ -56,12 +59,15 @@ impl FlowNode for Node {
                     ]);
                 }
                 CommonArch::Aarch64 => {
+                    if matches!(ctx.platform(), FlowPlatform::Linux) {
+                        deps.extend_from_slice(&[ctx
+                            .reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
+                                arch: OpenvmmSysrootArch::Aarch64,
+                                path: v,
+                            })
+                            .into_side_effect()]);
+                    }
                     deps.extend_from_slice(&[
-                        ctx.reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
-                            arch: OpenvmmSysrootArch::Aarch64,
-                            path: v,
-                        })
-                        .into_side_effect(),
                         ctx.reqv(|done| crate::init_openvmm_magicpath_lxutil::Request {
                             arch: LxutilArch::Aarch64,
                             done,
