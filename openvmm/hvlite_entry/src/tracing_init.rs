@@ -6,6 +6,17 @@ use std::io::IsTerminal;
 use tracing_subscriber::fmt::format::Format;
 use tracing_subscriber::fmt::time::uptime;
 
+/// Reads an environment variable, falling back to a legacy variable (replacing
+/// "OPENVMM_" with "HVLITE_") if the original is not set.
+fn legacy_openvmm_env(name: &str) -> Result<String, std::env::VarError> {
+    std::env::var(name).or_else(|_| {
+        std::env::var(format!(
+            "HVLITE_{}",
+            name.strip_prefix("OPENVMM_").unwrap_or(name)
+        ))
+    })
+}
+
 /// Enables tracing output to stderr.
 pub fn enable_tracing() -> anyhow::Result<()> {
     use tracing_subscriber::fmt::writer::BoxMakeWriter;
@@ -15,17 +26,16 @@ pub fn enable_tracing() -> anyhow::Result<()> {
     // Enable tracing for underhill_log by default since this is passed through
     // from the guest (but still allow it to be disabled via OPENVMM_LOG).
     let base = "underhill_log=trace";
-    let filter =
-        if let Ok(filter) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
-            tracing_subscriber::EnvFilter::try_new(format!("{base},{filter}"))
-                .context("invalid OPENVMM_LOG")?
-        } else {
-            tracing_subscriber::EnvFilter::default()
-                .add_directive(tracing::metadata::LevelFilter::INFO.into())
-                .add_directive(base.parse().unwrap())
-        };
+    let filter = if let Ok(filter) = legacy_openvmm_env("OPENVMM_LOG") {
+        tracing_subscriber::EnvFilter::try_new(format!("{base},{filter}"))
+            .context("invalid OPENVMM_LOG")?
+    } else {
+        tracing_subscriber::EnvFilter::default()
+            .add_directive(tracing::metadata::LevelFilter::INFO.into())
+            .add_directive(base.parse().unwrap())
+    };
 
-    if std::env::var("HVLITE_DISABLE_TRACING_RATELIMITS").map_or(false, |v| !v.is_empty()) {
+    if legacy_openvmm_env("OPENVMM_DISABLE_TRACING_RATELIMITS").map_or(false, |v| !v.is_empty()) {
         tracelimit::disable_rate_limiting(true);
     }
 

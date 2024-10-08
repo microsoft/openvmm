@@ -151,7 +151,7 @@ impl SimpleFlowNode for Node {
                 };
                 // TODO OSS: update env vars to use OPENVMM naming (requires petri updates)
                 env.insert(
-                    "HVLITE_UNDERHILL_DUMP_PATH".into(),
+                    "OPENHCL_DUMP_PATH".into(),
                     path_as_string(&openhcl_dumps_dir)?,
                 );
 

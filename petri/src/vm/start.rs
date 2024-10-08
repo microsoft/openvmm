@@ -364,7 +364,7 @@ impl PetriVmConfig {
             for line in read.lines() {
                 match line {
                     Ok(line) => {
-                        tracing::info!(target: crate::tracing::HVLITE_TARGET, "{}", line);
+                        tracing::info!(target: crate::tracing::OPENVMM_TARGET, "{}", line);
                         // add a newline otherwise the file is unreadable
                         if let Err(err) = log_file.write_all(format!("{line}\n").as_bytes()) {
                             tracing::error!(

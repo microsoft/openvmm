@@ -51,7 +51,7 @@ function extract_include_lib {
 }
 
 function setup_windows_cross {
-    local llvm_version=${HVLITE_LLVM_VERSION:-14}
+    local llvm_version=${OPENVMM_LLVM_VERSION:-${HVLITE_LLVM_VERSION:-14}}
     # NOTE: clang-cl-<ver> is the msvc style arguments, which is what we want. This
     #       is sometimes in a different package than the default clang-<ver> which
     #       is gcc style.

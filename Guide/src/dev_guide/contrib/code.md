@@ -240,7 +240,7 @@ OpenVMM-specific `cfg(guest_arch = ...)` cfg parameter.
 
 By default, `cfg(guest_arch = ...)` will act the same way as `cfg(target_arch =
 ...)`,  but it can be swapped to a different architecture by setting the
-`HVLITE_GUEST_TARGET` env var at compile-time.
+`OPENVMM_GUEST_TARGET` env var at compile-time.
 
 There are very few reasons to use `cfg(target_arch = ...)` within the OpenVMM
 repo, and to enforce this rule, we have an in-house `xtask fmt house-rules`

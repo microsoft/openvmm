@@ -90,7 +90,8 @@ fn choose_terminal_apps(app: Option<&Path>) -> Vec<App<'_>> {
     }
 
     // Use just the environment variable if specified.
-    if let Some(term) = std::env::var_os("HVLITE_TERM") {
+    if let Some(term) = std::env::var_os("OPENVMM_TERM").or_else(|| std::env::var_os("HVLITE_TERM"))
+    {
         return vec![App {
             path: PathBuf::from(term).into(),
             args: Vec::new(),

@@ -5,7 +5,7 @@
 //!
 //! By default, `cfg(guest_arch = ...)` will be the same as Rust built-in
 //! `cfg(target_arch = ...)`, but this can be overwritten by setting the
-//! `HVLITE_GUEST_TARGET=...` env var at compile time.
+//! `OPENVMM_GUEST_TARGET=...` env var at compile time.
 //!
 //! HvLite code should not be written to assume that `guest_arch` and
 //! `target_arch` will always be equal!
@@ -59,10 +59,10 @@ impl std::str::FromStr for GuestArch {
 }
 
 pub fn emit_guest_arch() {
-    println!("cargo:rerun-if-env-changed=HVLITE_GUEST_TARGET");
+    println!("cargo:rerun-if-env-changed=OPENVMM_GUEST_TARGET");
     let host_arch = GuestArch::host_arch();
     let arch = {
-        if let Ok(s) = std::env::var("HVLITE_GUEST_TARGET") {
+        if let Ok(s) = std::env::var("OPENVMM_GUEST_TARGET") {
             s.parse().unwrap()
         } else {
             host_arch

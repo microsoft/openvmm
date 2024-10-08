@@ -158,10 +158,10 @@ impl FlowNode for Node {
                     // as the closed-source openhcl-deps.
                     match arch {
                         CommonArch::X86_64 => {
-                            sh.set_var("HVLITE_DEPS_X64", interactive_dep.parent().unwrap());
+                            sh.set_var("OPENVMM_DEPS_X64", interactive_dep.parent().unwrap());
                         }
                         CommonArch::Aarch64 => {
-                            sh.set_var("HVLITE_DEPS_AARCH64", interactive_dep.parent().unwrap());
+                            sh.set_var("OPENVMM_DEPS_AARCH64", interactive_dep.parent().unwrap());
                         }
                     }
 

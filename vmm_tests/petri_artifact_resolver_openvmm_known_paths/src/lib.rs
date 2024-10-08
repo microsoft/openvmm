@@ -345,7 +345,9 @@ fn test_log_directory_path() -> anyhow::Result<PathBuf> {
 fn openhcl_dump_path() -> anyhow::Result<PathBuf> {
     static DUMP_PATH: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
     Ok(
-        if let Some(path) = std::env::var_os("HVLITE_UNDERHILL_DUMP_PATH") {
+        if let Some(path) = std::env::var_os("OPENHCL_DUMP_PATH")
+            .or_else(|| std::env::var_os("HVLITE_UNDERHILL_DUMP_PATH"))
+        {
             PathBuf::from(path)
         } else {
             DUMP_PATH

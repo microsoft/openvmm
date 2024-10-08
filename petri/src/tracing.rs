@@ -15,7 +15,7 @@ pub(crate) const LINUX_TARGET: &str = "linux_log";
 pub(crate) const PCAT_TARGET: &str = "pcat_log";
 pub(crate) const UEFI_TARGET: &str = "uefi_log";
 pub(crate) const OPENHCL_TARGET: &str = "openhcl_log";
-pub(crate) const HVLITE_TARGET: &str = "hvlite_log";
+pub(crate) const OPENVMM_TARGET: &str = "openvmm_log";
 
 pub(crate) fn try_init_tracing(
     log_file: File,
@@ -61,7 +61,7 @@ impl<'a> MakeWriter<'a> for PetriWriter {
             PCAT_TARGET,
             UEFI_TARGET,
             OPENHCL_TARGET,
-            HVLITE_TARGET,
+            OPENVMM_TARGET,
         ]
         .contains(&meta.target())
         {

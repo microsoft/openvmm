@@ -99,12 +99,12 @@ def process(temp_dir: str, underhill_path: str, kernel_path: str,
     shutil.copy(underhill_path, final_underhill_path)
 
     if not build_info:
-        build_info = os.path.join(temp_dir, 'UNDERHILL_BUILD_INFO')
+        build_info = os.path.join(temp_dir, 'openhcl-build-info.json')
         generate_build_info(build_info)
 
-    os.environ["UNDERHILL"] = final_underhill_path
-    os.environ["UNDERHILL_KERNEL_PATH"] = kernel_path
-    os.environ["UNDERHILL_BUILD_INFO"] = build_info
+    os.environ["OPENHCL_OPENVMM_PATH"] = final_underhill_path
+    os.environ["OPENHCL_KERNEL_PATH"] = kernel_path
+    os.environ["OPENHCL_BUILD_INFO"] = build_info
 
     create_cpio_from_config(rootfs_config_path, underhill_cpio_gz_file_name, 'gzip')
 
@@ -166,15 +166,19 @@ def main():
     if arch == 'x86_64':
         kernel_arch = 'x64'
         package_arch = 'x64'
-        deps_env = "HVLITE_DEPS_X64"
+        deps_env = "OPENVMM_DEPS_X64"
     elif arch == 'aarch64':
         kernel_arch = 'arm64'
         package_arch = 'aarch64'
-        deps_env = "HVLITE_DEPS_AARCH64"
+        deps_env = "OPENVMM_DEPS_AARCH64"
     else:
         raise Exception(f"Unsupported target arch: {arch}")
 
     deps=os.environ.get(deps_env)
+    if deps is None:
+        # Try with replacing OPENVMM_ with HVLITE_.
+        deps = os.environ.get(deps_env.replace("OPENVMM_", "HVLITE_"))
+
     if deps is None:
         deps = os.path.join(get_script_path(), f"../.packages/underhill-deps-private/{package_arch}")
     else:
@@ -187,7 +191,7 @@ def main():
     args = parser.parse_args()
 
     # For the initrd config, we need to know the kernel arch
-    os.environ["UNDERHILL_KERNEL_ARCH"] = kernel_arch
+    os.environ["OPENHCL_KERNEL_ARCH"] = kernel_arch
 
     for required_tool in Config.REQUIRED_TOOLS:
         if shutil.which(required_tool) is None:
