@@ -67,8 +67,8 @@ impl FlowNode for Node {
 
         // -- end of req processing -- //
 
-        if linux_test_initrd.is_empty()
-            && linux_test_kernel.is_empty()
+        if linux_test_kernel.is_empty()
+            && linux_test_initrd.is_empty()
             && openhcl_cpio_dbgrd.is_empty()
             && openhcl_cpio_shell.is_empty()
             && openhcl_sysroot.is_empty()
@@ -79,24 +79,49 @@ impl FlowNode for Node {
         let extract_tar_bz2_deps =
             flowey_lib_common::_util::extract::extract_tar_bz2_if_new_deps(ctx);
 
-        let file_name = format!("openvmm-deps.{version}.tar.bz2");
+        let openvmm_deps_tar_bz2_x64 = if linux_test_initrd.contains_key(&OpenvmmDepsArch::X86_64)
+            || linux_test_kernel.contains_key(&OpenvmmDepsArch::X86_64)
+            || openhcl_cpio_dbgrd.contains_key(&OpenvmmDepsArch::X86_64)
+            || openhcl_cpio_shell.contains_key(&OpenvmmDepsArch::X86_64)
+            || openhcl_sysroot.contains_key(&OpenvmmDepsArch::X86_64)
+        {
+            Some(
+                ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
+                    repo_owner: "microsoft".into(),
+                    repo_name: "openvmm-deps".into(),
+                    tag: version.clone(),
+                    file_name: format!("openvmm-deps.x86_64.{version}.tar.bz2"),
+                    path: v,
+                }),
+            )
+        } else {
+            None
+        };
 
-        // DEVNOTE: until we find time to resolve microsoft/openvmm-deps#15,
-        // there is a single chunky archive file containing all these deps.
-        //
-        // This is unfortunate, as you end up downloading a bunch of stuff you
-        // don't use...
-        let openvmm_deps_tar_bz2 = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
-            repo_owner: "microsoft".into(),
-            repo_name: "openvmm-deps".into(),
-            tag: version.clone(),
-            file_name: file_name.clone(),
-            path: v,
-        });
+        let openvmm_deps_tar_bz2_aarch64 = if linux_test_initrd
+            .contains_key(&OpenvmmDepsArch::Aarch64)
+            || linux_test_kernel.contains_key(&OpenvmmDepsArch::Aarch64)
+            || openhcl_cpio_dbgrd.contains_key(&OpenvmmDepsArch::Aarch64)
+            || openhcl_cpio_shell.contains_key(&OpenvmmDepsArch::Aarch64)
+            || openhcl_sysroot.contains_key(&OpenvmmDepsArch::Aarch64)
+        {
+            Some(
+                ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
+                    repo_owner: "microsoft".into(),
+                    repo_name: "openvmm-deps".into(),
+                    tag: version.clone(),
+                    file_name: format!("openvmm-deps.aarch64.{version}.tar.bz2"),
+                    path: v,
+                }),
+            )
+        } else {
+            None
+        };
 
         ctx.emit_rust_step("unpack openvmm-deps archive", |ctx| {
             let extract_tar_bz2_deps = extract_tar_bz2_deps.claim(ctx);
-            let openvmm_deps_tar_bz2 = openvmm_deps_tar_bz2.claim(ctx);
+            let openvmm_deps_tar_bz2_x64 = openvmm_deps_tar_bz2_x64.claim(ctx);
+            let openvmm_deps_tar_bz2_aarch64 = openvmm_deps_tar_bz2_aarch64.claim(ctx);
 
             let linux_test_kernel = linux_test_kernel.claim(ctx);
             let linux_test_initrd = linux_test_initrd.claim(ctx);
@@ -104,34 +129,42 @@ impl FlowNode for Node {
             let openhcl_cpio_shell = openhcl_cpio_shell.claim(ctx);
             let openhcl_sysroot = openhcl_sysroot.claim(ctx);
             move |rt| {
-                let openvmm_deps_tar_bz2 = rt.read(openvmm_deps_tar_bz2);
-
-                let extract_dir = flowey_lib_common::_util::extract::extract_tar_bz2_if_new(
-                    rt,
-                    extract_tar_bz2_deps,
-                    &openvmm_deps_tar_bz2,
-                    // NOTE: until we have different files for various
-                    // artifacts, the only unique id for the package is the
-                    // version.
-                    &version,
-                )?;
-
-                let base_dir = move |arch| {
-                    extract_dir.join(match arch {
-                        OpenvmmDepsArch::X86_64 => "x86_64",
-                        OpenvmmDepsArch::Aarch64 => "aarch64",
+                let extract_dir_x64 = openvmm_deps_tar_bz2_x64
+                    .map(|file| {
+                        let file = rt.read(file);
+                        flowey_lib_common::_util::extract::extract_tar_bz2_if_new(
+                            rt,
+                            extract_tar_bz2_deps.clone(),
+                            &file,
+                            &version,
+                        )
                     })
+                    .transpose()?;
+
+                let extract_dir_aarch64 = openvmm_deps_tar_bz2_aarch64
+                    .map(|file| {
+                        let file = rt.read(file);
+                        flowey_lib_common::_util::extract::extract_tar_bz2_if_new(
+                            rt,
+                            extract_tar_bz2_deps.clone(),
+                            &file,
+                            &version,
+                        )
+                    })
+                    .transpose()?;
+
+                let base_dir = move |arch| match arch {
+                    OpenvmmDepsArch::X86_64 => extract_dir_x64.clone().unwrap(),
+                    OpenvmmDepsArch::Aarch64 => extract_dir_aarch64.clone().unwrap(),
                 };
 
-                let kernel_path = |arch| {
-                    base_dir(OpenvmmDepsArch::X86_64).join(match arch {
-                        OpenvmmDepsArch::X86_64 => "vmlinux",
-                        OpenvmmDepsArch::Aarch64 => "Image",
-                    })
+                let kernel_file_name = |arch| match arch {
+                    OpenvmmDepsArch::X86_64 => "vmlinux",
+                    OpenvmmDepsArch::Aarch64 => "Image",
                 };
 
                 for (arch, vars) in linux_test_kernel {
-                    let path = kernel_path(arch);
+                    let path = base_dir(arch).join(kernel_file_name(arch));
                     rt.write_all(vars, &path)
                 }
 

@@ -25,7 +25,7 @@ pub const NEXTEST: &str = "0.9.74";
 pub const NODEJS: &str = "18.x";
 pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.6.20.1";
 pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.6.51.2";
-pub const OPENVMM_DEPS: &str = "0.1.0-20240807.1";
+pub const OPENVMM_DEPS: &str = "0.1.0-20241008.7";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {
