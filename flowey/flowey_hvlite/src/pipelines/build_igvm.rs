@@ -164,10 +164,14 @@ pub struct BuildIgvmCliCustomizations {
 
 #[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
 pub enum KernelPackageKindCli {
-    /// Main branch
+    /// Kernel from the hcl-main branch
     Main,
-    /// Develop branch
+    /// CVM kernel from the hcl-main branch
+    Cvm,
+    /// Kernel from the hcl-dev branch
     Dev,
+    /// CVM kernel from the hcl-dev brnach
+    CvmDev,
 }
 
 #[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
@@ -296,7 +300,9 @@ impl IntoPipeline for BuildIgvmCli {
                     with_debuginfo,
                     override_kernel_pkg: override_kernel_pkg.map(|p| match p {
                         KernelPackageKindCli::Main => OpenhclKernelPackage::Main,
+                        KernelPackageKindCli::Cvm => OpenhclKernelPackage::Cvm,
                         KernelPackageKindCli::Dev => OpenhclKernelPackage::Dev,
+                        KernelPackageKindCli::CvmDev => OpenhclKernelPackage::CvmDev,
                     }),
                     with_sidecar,
                     override_openvmm_hcl_feature,
