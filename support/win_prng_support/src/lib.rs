@@ -10,12 +10,12 @@
 
 /// Links in crypto stubs to workaround rust stdlib's usage during hashmap
 /// initialization. This is to avoid the bcrypt.dll and advapi32.dll
-/// dependencies to allow binaries to run on minimal Windows SKUs where these
-/// deps are not available.
+/// dependencies to allow binaries to run if a Windows SKU doesn't provide
+/// these deps.
 ///
 /// Usage:
 /// ```
-/// win1_support::use_win10_prng_apis!(bcrypt, advapi32);
+/// win_prng_support::use_win10_prng_apis!(bcrypt, advapi32);
 /// ```
 #[macro_export]
 macro_rules! use_win10_prng_apis {

@@ -4391,7 +4391,7 @@ version = "0.0.0"
 dependencies = [
  "hvlite_entry",
  "openvmm_resources",
- "win1_support",
+ "win_prng_support",
 ]
 
 [[package]]
@@ -8321,14 +8321,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "653f141f39ec16bba3c5abe400a0c60da7468261cc2cbf36805022876bc721a8"
 
 [[package]]
-name = "win1_support"
-version = "0.0.0"
-dependencies = [
- "widestring",
- "win_import_lib",
-]
-
-[[package]]
 name = "win_etw_metadata"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8370,6 +8362,14 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "cc",
+]
+
+[[package]]
+name = "win_prng_support"
+version = "0.0.0"
+dependencies = [
+ "widestring",
+ "win_import_lib",
 ]
 
 [[package]]

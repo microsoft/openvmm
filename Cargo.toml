@@ -131,7 +131,7 @@ uevent = { path = "support/uevent" }
 unix_socket = { path = "support/unix_socket" }
 vmsocket = { path = "support/vmsocket" }
 win_import_lib = { path = "support/win_import_lib" }
-win1_support = { path = "support/win1_support" }
+win_prng_support = { path = "support/win_prng_support" }
 zerocopy_helpers = { path = "support/zerocopy_helpers" }
 
 azure_profiler_proto = { path = "openhcl/azure_profiler_proto" }
