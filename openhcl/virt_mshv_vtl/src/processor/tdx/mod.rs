@@ -768,6 +768,8 @@ impl BackingPrivate for TdxBacked {
     fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: Vtl) {
         todo!()
     }
+
+    fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
 }
 
 impl UhProcessor<'_, TdxBacked> {

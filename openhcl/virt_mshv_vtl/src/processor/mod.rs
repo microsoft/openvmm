@@ -234,6 +234,8 @@ mod private {
         /// Copies shared registers (per VSM TLFS spec) from the last VTL to
         /// the target VTL that will become active.
         fn switch_vtl_state(this: &mut UhProcessor<'_, Self>, target_vtl: Vtl);
+
+        fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>);
     }
 }
 
@@ -443,6 +445,8 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             "sidecar_base_cpu",
             self.partition.hcl.sidecar_base_cpu(self.vp_index().index()),
         );
+
+        T::inspect_extra(self, resp);
     }
 
     fn update_synic(&mut self, vtl: Vtl, untrusted_synic: bool) {
@@ -723,12 +727,10 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 if self.partition.is_hardware_isolated() {
                     *self.inner.hcvm_vtl1_enabled.lock()
                 } else {
-                    // The best we can do is use whether we have detected the
-                    // guest using vsm on the partition.
-                    matches!(
-                        *self.partition.guest_vsm.read(),
-                        GuestVsmState::Enabled { vtl1: _ }
-                    )
+                    // TODO: when there's support for returning VTL 1 registers,
+                    // use the VsmVpStatus register to query the hypervisor for
+                    // whether VTL 1 is enabled on the vp.
+                    false
                 }
             }
             Vtl::Vtl2 => false,

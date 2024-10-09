@@ -506,8 +506,7 @@ struct UhVpInner {
     vp_info: TargetVpInfo,
     cpu_index: u32,
     /// Only modified for hardware CVMs. On other types of VMs, since VTL 2
-    /// doesn't handle EnableVpVtl, it's harder to tell if VTL 1 is enabled on
-    /// the VP.
+    /// doesn't handle EnableVpVtl, there's no obvious place to set this.
     hcvm_vtl1_enabled: Mutex<bool>,
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]

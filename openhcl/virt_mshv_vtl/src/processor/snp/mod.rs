@@ -469,6 +469,36 @@ impl BackingPrivate for SnpBacked {
             target_vmsa.set_ymm_registers(i, current_vmsa.ymm_registers(i));
         }
     }
+
+    fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {
+        let vtl0_vmsa = this.runner.vmsa(Vtl::Vtl0);
+        let vtl1_vmsa = if *this.inner.hcvm_vtl1_enabled.lock() {
+            Some(this.runner.vmsa(Vtl::Vtl1))
+        } else {
+            None
+        };
+
+        let add_vmsa_inspect = |req: inspect::Request<'_>, vmsa: VmsaWrapper<'_, &SevVmsa>| {
+            req.respond()
+                .field("guest_error_code", inspect::AsHex(vmsa.guest_error_code()))
+                .field("exit_info1", inspect::AsHex(vmsa.exit_info1()))
+                .field("exit_info2", inspect::AsHex(vmsa.exit_info2()))
+                .field(
+                    "v_intr_cntrl",
+                    inspect::AsHex(u64::from(vmsa.v_intr_cntrl())),
+                );
+        };
+
+        resp.child("vmsa_additional", |req| {
+            req.respond()
+                .child("vtl0", |inner_req| add_vmsa_inspect(inner_req, vtl0_vmsa))
+                .child("vtl1", |inner_req| {
+                    if let Some(vtl1_vmsa) = vtl1_vmsa {
+                        add_vmsa_inspect(inner_req, vtl1_vmsa);
+                    }
+                });
+        });
+    }
 }
 
 fn hv_seg_to_snp(val: &hvdef::HvX64SegmentRegister) -> SevSelector {
