@@ -3,6 +3,8 @@
 use anyhow::Context;
 use flowey_core::node::user_facing::GhPermission;
 use flowey_core::node::user_facing::GhPermissionValue;
+use flowey_core::node::FlowArch;
+use flowey_core::node::FlowPlatform;
 use flowey_core::node::NodeHandle;
 use flowey_core::patch::ResolvedPatches;
 use flowey_core::pipeline::internal::AdoPool;
@@ -19,8 +21,6 @@ use flowey_core::pipeline::GhCiTriggers;
 use flowey_core::pipeline::GhPrTriggers;
 use flowey_core::pipeline::GhRunner;
 use flowey_core::pipeline::GhScheduleTriggers;
-use flowey_core::pipeline::JobArch;
-use flowey_core::pipeline::JobPlatform;
 use flowey_core::pipeline::Pipeline;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -61,8 +61,8 @@ pub struct ResolvedPipelineJob {
     pub root_nodes: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
     pub patches: ResolvedPatches,
     pub label: String,
-    pub platform: JobPlatform,
-    pub arch: JobArch,
+    pub platform: FlowPlatform,
+    pub arch: FlowArch,
     pub ado_pool: Option<AdoPool>,
     pub ado_variables: BTreeMap<String, String>,
     pub gh_pool: Option<GhRunner>,

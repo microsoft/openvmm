@@ -55,10 +55,7 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let cargo_nextest_bin = match ctx.platform() {
-            FlowPlatform::Windows => "cargo-nextest.exe",
-            FlowPlatform::Linux => "cargo-nextest",
-        };
+        let cargo_nextest_bin = ctx.platform().binary("cargo-nextest");
 
         let cache_dir = ctx.emit_rust_stepv("create cargo-nextest cache dir", |_| {
             |_| Ok(std::env::current_dir()?.absolute()?)
@@ -101,7 +98,7 @@ impl FlowNode for Node {
                 let cache_dir = rt.read(cache_dir);
                 let rust_deps = rust_deps.map(|(a, b, c)| (rt.read(a), rt.read(b), rt.read(c)));
 
-                let cached_bin_path = cache_dir.join(cargo_nextest_bin);
+                let cached_bin_path = cache_dir.join(&cargo_nextest_bin);
                 let cached = if matches!(rt.read(hitvar), CacheHit::Hit) {
                     assert!(cached_bin_path.exists());
                     Some(cached_bin_path.clone())
@@ -142,7 +139,7 @@ impl FlowNode for Node {
                         run(None)?;
                     }
 
-                    let out_bin = root.absolute()?.join("bin").join(cargo_nextest_bin);
+                    let out_bin = root.absolute()?.join("bin").join(&cargo_nextest_bin);
 
                     // move the compiled bin into the cache dir
                     fs_err::rename(out_bin, &cached_bin_path)?;
@@ -161,7 +158,7 @@ impl FlowNode for Node {
                 if let Some(cargo_home) = cargo_home {
                     fs_err::copy(
                         &path_to_cargo_nextest,
-                        cargo_home.join("bin").join(cargo_nextest_bin),
+                        cargo_home.join("bin").join(&cargo_nextest_bin),
                     )?;
                 }
 

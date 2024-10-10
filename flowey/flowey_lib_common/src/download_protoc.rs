@@ -59,6 +59,9 @@ impl FlowNode for Node {
                 (FlowPlatform::Windows, _) => "win64",
                 (FlowPlatform::Linux, FlowArch::X86_64) => "linux-x86_64",
                 (FlowPlatform::Linux, FlowArch::Aarch64) => "linux-aarch_64",
+                (FlowPlatform::MacOs, FlowArch::X86_64) => "osx-x86_64",
+                (FlowPlatform::MacOs, FlowArch::Aarch64) => "osx-aarch_64",
+                (platform, arch) => anyhow::bail!("unsupported platform {platform} {arch}"),
             }
         );
 
@@ -87,10 +90,7 @@ impl FlowNode for Node {
 
                 let protoc_bin = extract_dir
                     .join("bin")
-                    .join(match rt.platform() {
-                        FlowPlatform::Windows => "protoc.exe",
-                        FlowPlatform::Linux => "protoc",
-                    })
+                    .join(rt.platform().binary("protoc"))
                     .absolute()?;
 
                 assert!(protoc_bin.exists());

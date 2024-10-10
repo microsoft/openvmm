@@ -250,8 +250,8 @@ impl IntoPipeline for BuildIgvmCli {
 
         pipeline
             .new_job(
-                JobPlatform::host(backend_hint),
-                JobArch::host(backend_hint),
+                FlowPlatform::host(backend_hint),
+                FlowArch::host(backend_hint),
                 "build-igvm",
             )
             .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request {})

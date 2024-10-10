@@ -8,7 +8,9 @@ use crate::node::user_facing::AdoRuntimeVar;
 use crate::node::user_facing::GhContextVar;
 use crate::node::user_facing::GhPermission;
 use crate::node::user_facing::GhPermissionValue;
+use crate::node::FlowArch;
 use crate::node::FlowNodeBase;
+use crate::node::FlowPlatform;
 use crate::node::IntoRequest;
 use crate::node::NodeHandle;
 use crate::node::ReadVar;
@@ -36,8 +38,6 @@ pub mod user_facing {
     pub use super::GhRunnerOsLabel;
     pub use super::GhScheduleTriggers;
     pub use super::IntoPipeline;
-    pub use super::JobArch;
-    pub use super::JobPlatform;
     pub use super::Pipeline;
     pub use super::PipelineBackendHint;
     pub use super::PipelineJob;
@@ -46,70 +46,48 @@ pub mod user_facing {
     pub use super::PublishArtifact;
     pub use super::UseArtifact;
     pub use super::UseParameter;
+    pub use crate::node::FlowArch;
+    pub use crate::node::FlowPlatform;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
-pub enum JobPlatform {
-    Windows,
-    Linux,
-}
-
-impl JobPlatform {
+impl FlowPlatform {
     /// Return the platform of the current host machine.
     ///
     /// Will panic on non-local backends.
-    pub fn host(backend_hint: PipelineBackendHint) -> JobPlatform {
+    pub fn host(backend_hint: PipelineBackendHint) -> FlowPlatform {
         if !matches!(backend_hint, PipelineBackendHint::Local) {
-            panic!("can only use `JobPlatform::host` when defining a local-only pipeline");
+            panic!("can only use `FlowPlatform::host` when defining a local-only pipeline");
         }
 
         if cfg!(target_os = "windows") {
-            JobPlatform::Windows
+            FlowPlatform::Windows
         } else if cfg!(target_os = "linux") {
-            JobPlatform::Linux
+            FlowPlatform::Linux
+        } else if cfg!(target_os = "macos") {
+            FlowPlatform::MacOs
         } else {
             panic!("no valid host-os")
         }
     }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            JobPlatform::Windows => "windows",
-            JobPlatform::Linux => "linux",
-        }
-    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
-pub enum JobArch {
-    X86_64,
-    Aarch64,
-}
-
-impl JobArch {
+impl FlowArch {
     /// Return the arch of the current host machine.
     ///
     /// Will panic on non-local backends.
-    pub fn host(backend_hint: PipelineBackendHint) -> JobArch {
+    pub fn host(backend_hint: PipelineBackendHint) -> FlowArch {
         if !matches!(backend_hint, PipelineBackendHint::Local) {
-            panic!("can only use `JobArch::host` when defining a local-only pipeline");
+            panic!("can only use `FlowArch::host` when defining a local-only pipeline");
         }
 
         // xtask-fmt allow-target-arch oneoff-flowey
         if cfg!(target_arch = "x86_64") {
-            JobArch::X86_64
+            FlowArch::X86_64
         // xtask-fmt allow-target-arch oneoff-flowey
         } else if cfg!(target_arch = "aarch64") {
-            JobArch::Aarch64
+            FlowArch::Aarch64
         } else {
             panic!("no valid host-arch")
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            JobArch::X86_64 => "x86_64",
-            JobArch::Aarch64 => "aarch64",
         }
     }
 }
@@ -530,8 +508,8 @@ impl Pipeline {
 
     pub fn new_job(
         &mut self,
-        platform: JobPlatform,
-        arch: JobArch,
+        platform: FlowPlatform,
+        arch: FlowArch,
         label: impl AsRef<str>,
     ) -> PipelineJob<'_> {
         let idx = self.jobs.len();
@@ -1077,8 +1055,8 @@ pub mod internal {
         pub root_nodes: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
         pub patches: PatchResolver,
         pub label: String,
-        pub platform: JobPlatform,
-        pub arch: JobArch,
+        pub platform: FlowPlatform,
+        pub arch: FlowArch,
         pub cond_param_idx: Option<usize>,
         // backend specific
         pub ado_pool: Option<AdoPool>,

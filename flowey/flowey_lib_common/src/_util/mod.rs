@@ -1,5 +1,6 @@
 // Copyright (C) Microsoft Corporation. All rights reserved.
 
+use flowey::node::prelude::FlowPlatformKind;
 use flowey::node::prelude::RustRuntimeServices;
 use std::path::Path;
 
@@ -36,8 +37,8 @@ pub fn running_in_wsl(_rt: &mut RustRuntimeServices<'_>) -> bool {
 /// inbox tar.exe. Elsewhere, use bsdtar. This will require installing the
 /// libarchive-tools package on Debian-based Linux.
 pub fn bsdtar_name(rt: &mut RustRuntimeServices<'_>) -> &'static str {
-    match rt.platform() {
-        flowey::node::prelude::FlowPlatform::Windows => "tar.exe",
-        flowey::node::prelude::FlowPlatform::Linux => "bsdtar",
+    match rt.platform().kind() {
+        FlowPlatformKind::Windows => "tar.exe",
+        FlowPlatformKind::Unix => "bsdtar",
     }
 }

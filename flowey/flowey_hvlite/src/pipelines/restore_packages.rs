@@ -34,8 +34,8 @@ impl IntoPipeline for RestorePackagesCli {
         let mut pipeline = Pipeline::new();
         let mut job = pipeline
             .new_job(
-                JobPlatform::host(backend_hint),
-                JobArch::host(backend_hint),
+                FlowPlatform::host(backend_hint),
+                FlowArch::host(backend_hint),
                 "restore packages",
             )
             .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request {})
@@ -59,9 +59,10 @@ impl IntoPipeline for RestorePackagesCli {
 
         let arches = {
             if self.arch.is_empty() {
-                vec![match JobArch::host(backend_hint) {
-                    JobArch::X86_64 => CommonArchCli::X86_64,
-                    JobArch::Aarch64 => CommonArchCli::Aarch64,
+                vec![match FlowArch::host(backend_hint) {
+                    FlowArch::X86_64 => CommonArchCli::X86_64,
+                    FlowArch::Aarch64 => CommonArchCli::Aarch64,
+                    arch => anyhow::bail!("unsupported arch {arch}"),
                 }]
             } else {
                 self.arch

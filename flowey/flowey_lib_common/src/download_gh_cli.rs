@@ -48,14 +48,12 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let gh_bin = match ctx.platform() {
-            FlowPlatform::Windows => "gh.exe",
-            FlowPlatform::Linux => "gh",
-        };
+        let gh_bin = ctx.platform().binary("gh");
 
         let gh_arch = match ctx.arch() {
-            FlowArch::X86_64 => "386",
+            FlowArch::X86_64 => "amd64",
             FlowArch::Aarch64 => "arm64",
+            arch => anyhow::bail!("unsupported architecture {arch}"),
         };
 
         let cache_dir = ctx.emit_rust_stepv("create gh cache dir", |_| {
@@ -79,7 +77,7 @@ impl FlowNode for Node {
                 let cache_dir = rt.read(cache_dir);
 
                 let cached = if matches!(rt.read(hitvar), CacheHit::Hit) {
-                    let cached_bin = cache_dir.join(gh_bin);
+                    let cached_bin = cache_dir.join(&gh_bin);
                     assert!(cached_bin.exists());
                     Some(cached_bin)
                 } else {
@@ -99,10 +97,15 @@ impl FlowNode for Node {
                             xshell::cmd!(sh, "curl -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_linux_{gh_arch}.tar.gz -o gh.tar.gz").run()?;
                             xshell::cmd!(sh, "tar -xf gh.tar.gz --strip-components=1").run()?;
                         },
+                        FlowPlatform::MacOs => {
+                            xshell::cmd!(sh, "curl -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_macOS_{gh_arch}.zip -o gh.zip").run()?;
+                            xshell::cmd!(sh, "tar -xf gh.zip --strip-components=1").run()?;
+                        }
+                        platform => anyhow::bail!("unsupported platform {platform}"),
                     };
 
                     // move the unzipped bin into the cache dir
-                    let final_bin = cache_dir.join(gh_bin);
+                    let final_bin = cache_dir.join(&gh_bin);
                     fs_err::rename(format!("bin/{gh_bin}"), &final_bin)?;
 
                     final_bin.absolute()?

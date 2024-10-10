@@ -549,9 +549,11 @@ impl FlowNode for Node {
                 let crash_dumps_exist_write = crash_dumps_exist_write.claim(ctx);
                 |rt| {
                     // TODO Linux
-                    let path = match rt.platform() {
-                        FlowPlatform::Windows => r#"C:\Users\cloudtest\AppData\Local\CrashDumps"#,
-                        FlowPlatform::Linux => "/will/not/exist",
+                    let path = match rt.platform().kind() {
+                        FlowPlatformKind::Windows => {
+                            r#"C:\Users\cloudtest\AppData\Local\CrashDumps"#
+                        }
+                        FlowPlatformKind::Unix => "/will/not/exist",
                     }
                     .to_owned();
 

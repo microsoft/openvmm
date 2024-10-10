@@ -151,6 +151,7 @@ pub mod common {
         WindowsMsvc,
         LinuxGnu,
         LinuxMusl,
+        MacOs,
     }
 
     #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -235,6 +236,13 @@ pub mod common {
                         operating_system: target_lexicon::OperatingSystem::Linux,
                         environment: target_lexicon::Environment::Musl,
                         binary_format: target_lexicon::BinaryFormat::Elf,
+                    },
+                    CommonPlatform::MacOs => target_lexicon::Triple {
+                        architecture: arch.as_arch(),
+                        vendor: target_lexicon::Vendor::Apple,
+                        operating_system: target_lexicon::OperatingSystem::Darwin,
+                        environment: target_lexicon::Environment::Unknown,
+                        binary_format: target_lexicon::BinaryFormat::Macho,
                     },
                 },
                 CommonTriple::Custom(t) => t.clone(),

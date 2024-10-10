@@ -3527,7 +3527,7 @@ jobs:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
       with:
-        name: _internal-flowey-bootstrap-win-uid-9
+        name: _internal-flowey-bootstrap-windows-uid-9
         path: ${{ runner.temp }}/bootstrapped-flowey
     - name: 🌼📦 Download x64-guest_test_uefi
       uses: actions/download-artifact@v4
@@ -3882,7 +3882,7 @@ jobs:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
       with:
-        name: _internal-flowey-bootstrap-win-uid-9
+        name: _internal-flowey-bootstrap-windows-uid-9
         path: ${{ runner.temp }}/bootstrapped-flowey
     - name: 🌼📦 Download x64-guest_test_uefi
       uses: actions/download-artifact@v4
@@ -5093,7 +5093,7 @@ jobs:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
       with:
-        name: _internal-flowey-bootstrap-win-uid-9
+        name: _internal-flowey-bootstrap-windows-uid-9
         path: ${{ runner.temp }}/bootstrapped-flowey
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
@@ -7101,7 +7101,7 @@ jobs:
     - name: 🌼🥾 Publish bootstrapped flowey
       uses: actions/upload-artifact@v4
       with:
-        name: _internal-flowey-bootstrap-win-uid-9
+        name: _internal-flowey-bootstrap-windows-uid-9
         path: ${{ runner.temp }}/bootstrapped-flowey
   job9:
     name: build artifacts [aarch64-linux]

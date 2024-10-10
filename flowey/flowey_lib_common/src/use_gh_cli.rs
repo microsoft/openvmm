@@ -7,6 +7,7 @@
 //! authentication.
 
 use flowey::node::prelude::*;
+use std::io::Write;
 
 #[derive(Serialize, Deserialize)]
 pub enum GhCliAuth<C = VarNotClaimed> {
@@ -105,36 +106,34 @@ impl FlowNode for Node {
                 // only set GITHUB_TOKEN if there is a value to set it to, otherwise
                 // let the user's environment take precedence over authenticating interactively
                 let gh_token = if !gh_token.is_empty() {
-                    match rt.platform() {
-                        FlowPlatform::Windows => format!(r#"SET "GITHUB_TOKEN={gh_token}""#),
-                        FlowPlatform::Linux => format!(r#"export GITHUB_TOKEN="{gh_token}""#),
+                    match rt.platform().kind() {
+                        FlowPlatformKind::Windows => format!(r#"SET "GITHUB_TOKEN={gh_token}""#),
+                        FlowPlatformKind::Unix => format!(r#"GITHUB_TOKEN="{gh_token}""#),
                     }
                 } else {
-                    gh_token
+                    String::new()
                 };
 
-                let shim_txt = match rt.platform() {
-                    FlowPlatform::Windows => WINDOWS_SHIM_BAT.trim(),
-                    FlowPlatform::Linux => LINUX_SHIM_SH.trim(),
+                let shim_txt = match rt.platform().kind() {
+                    FlowPlatformKind::Windows => WINDOWS_SHIM_BAT.trim(),
+                    FlowPlatformKind::Unix => UNIX_SHIM_SH.trim(),
                 }
                 .replace("{GITHUB_TOKEN}", &gh_token)
                 .replace("{GH_BIN_PATH}", &gh_bin_path);
 
-                let path = match rt.platform() {
-                    FlowPlatform::Windows => {
-                        let dst = std::env::current_dir()?.join("shim.bat");
-                        fs_err::write(&dst, shim_txt)?;
-                        dst.absolute()?
-                    }
-                    FlowPlatform::Linux => {
-                        let dst = std::env::current_dir()?.join("shim.sh");
-                        fs_err::write(&dst, shim_txt)?;
-                        // ensure its executable
-                        xshell::cmd!(sh, "chmod +x ./shim.sh").run()?;
-                        dst.absolute()?
-                    }
+                let script_name = match rt.platform().kind() {
+                    FlowPlatformKind::Windows => "shim.bat",
+                    FlowPlatformKind::Unix => "shim.sh",
                 };
-
+                let path = {
+                    let dst = std::env::current_dir()?.join(script_name);
+                    let mut options = fs_err::OpenOptions::new();
+                    #[cfg(unix)]
+                    fs_err::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o777); // executable
+                    let mut file = options.create_new(true).write(true).open(&dst)?;
+                    file.write_all(shim_txt.as_bytes())?;
+                    dst.absolute()?
+                };
                 if !xshell::cmd!(sh, "{path} auth status")
                     .ignore_status()
                     .output()?
@@ -160,10 +159,9 @@ impl FlowNode for Node {
     }
 }
 
-const LINUX_SHIM_SH: &str = r#"
+const UNIX_SHIM_SH: &str = r#"
 #!/bin/sh
-{GITHUB_TOKEN}
-{GH_BIN_PATH} "$@"
+{GITHUB_TOKEN} exec {GH_BIN_PATH} "$@"
 "#;
 
 const WINDOWS_SHIM_BAT: &str = r#"

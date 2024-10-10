@@ -116,17 +116,22 @@ impl SimpleFlowNode for Node {
 
         pre_build_deps.push(ctx.reqv(crate::install_openvmm_rust_build_essential::Request));
 
-        let xtask = ctx.reqv(|v| crate::build_xtask::Request {
-            target: CommonTriple::Common {
-                arch: match flowey_arch {
-                    FlowArch::X86_64 => CommonArch::X86_64,
-                    FlowArch::Aarch64 => CommonArch::Aarch64,
-                },
-                platform: match flowey_platform {
-                    FlowPlatform::Windows => CommonPlatform::WindowsMsvc,
-                    FlowPlatform::Linux => CommonPlatform::LinuxGnu,
-                },
+        let xtask_target = CommonTriple::Common {
+            arch: match flowey_arch {
+                FlowArch::X86_64 => CommonArch::X86_64,
+                FlowArch::Aarch64 => CommonArch::Aarch64,
+                arch => anyhow::bail!("unsupported arch {arch}"),
             },
+            platform: match flowey_platform {
+                FlowPlatform::Windows => CommonPlatform::WindowsMsvc,
+                FlowPlatform::Linux => CommonPlatform::LinuxGnu,
+                FlowPlatform::MacOs => CommonPlatform::MacOs,
+                platform => anyhow::bail!("unsupported platform {platform}"),
+            },
+        };
+
+        let xtask = ctx.reqv(|v| crate::build_xtask::Request {
+            target: xtask_target,
             xtask: v,
         });
 

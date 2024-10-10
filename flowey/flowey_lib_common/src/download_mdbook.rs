@@ -43,10 +43,7 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let mdbook_bin = match ctx.platform() {
-            FlowPlatform::Windows => "mdbook.exe",
-            FlowPlatform::Linux => "mdbook",
-        };
+        let mdbook_bin = ctx.platform().binary("mdbook");
 
         let tag = format!("v{version}");
         let file_name = format!(
@@ -55,6 +52,8 @@ impl FlowNode for Node {
             match ctx.platform() {
                 FlowPlatform::Windows => "pc-windows-msvc.zip",
                 FlowPlatform::Linux => "unknown-linux-gnu.tar.gz",
+                FlowPlatform::MacOs => "apple-darwin.tar.gz",
+                platform => anyhow::bail!("unsupported platform {platform}"),
             }
         );
 

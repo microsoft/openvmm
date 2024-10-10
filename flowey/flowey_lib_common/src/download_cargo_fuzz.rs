@@ -46,10 +46,7 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let cargo_fuzz_bin = match ctx.platform() {
-            FlowPlatform::Windows => "cargo-fuzz.exe",
-            FlowPlatform::Linux => "cargo-fuzz",
-        };
+        let cargo_fuzz_bin = ctx.platform().binary("cargo-fuzz");
 
         let cache_dir = ctx.emit_rust_stepv("create cargo-fuzz cache dir", |_| {
             |_| Ok(std::env::current_dir()?.absolute()?)
@@ -83,7 +80,7 @@ impl FlowNode for Node {
             move |rt| {
                 let cache_dir = rt.read(cache_dir);
 
-                let cached_bin_path = cache_dir.join(cargo_fuzz_bin);
+                let cached_bin_path = cache_dir.join(&cargo_fuzz_bin);
                 let cached = if matches!(rt.read(hitvar), CacheHit::Hit) {
                     assert!(cached_bin_path.exists());
                     Some(cached_bin_path.clone())
@@ -122,7 +119,7 @@ impl FlowNode for Node {
                         run(None)?;
                     }
 
-                    let out_bin = root.absolute()?.join("bin").join(cargo_fuzz_bin);
+                    let out_bin = root.absolute()?.join("bin").join(&cargo_fuzz_bin);
 
                     // move the compiled bin into the cache dir
                     fs_err::rename(out_bin, &cached_bin_path)?;
@@ -133,7 +130,7 @@ impl FlowNode for Node {
                 // downloaded is accessible via cargo fuzz
                 fs_err::copy(
                     &path_to_cargo_fuzz,
-                    rt.read(cargo_home).join("bin").join(cargo_fuzz_bin),
+                    rt.read(cargo_home).join("bin").join(&cargo_fuzz_bin),
                 )?;
 
                 Ok(())

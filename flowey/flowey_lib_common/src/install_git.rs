@@ -66,7 +66,7 @@ impl FlowNode for Node {
 
                 |rt: &mut RustRuntimeServices<'_>| {
                     match rt.platform() {
-                        FlowPlatform::Linux => {
+                        FlowPlatform::Linux | FlowPlatform::MacOs => {
                             rt.write(write_bin, &Some(crate::check_needs_relaunch::BinOrEnv::Bin("git".to_string())));
                             Ok(())
                         },
@@ -78,7 +78,8 @@ impl FlowNode for Node {
 
                             rt.write(write_bin, &Some(crate::check_needs_relaunch::BinOrEnv::Bin("git".to_string())));
                             Ok(())
-                        }
+                        },
+                        platform => anyhow::bail!("unsupported platform {platform}"),
                     }
                 }
             });

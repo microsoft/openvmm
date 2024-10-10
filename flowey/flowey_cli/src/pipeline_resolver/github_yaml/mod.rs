@@ -20,11 +20,10 @@ use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
+use flowey_core::node::FlowPlatformKind;
 use flowey_core::node::NodeHandle;
 use flowey_core::pipeline::GhRunner;
 use flowey_core::pipeline::GhRunnerOsLabel;
-use flowey_core::pipeline::JobArch;
-use flowey_core::pipeline::JobPlatform;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt::Write;
@@ -79,27 +78,23 @@ pub fn github_yaml(
 
     for job_idx in order {
         let ResolvedPipelineJob {
-            root_nodes,
-            patches,
-            label,
+            ref root_nodes,
+            ref patches,
+            ref label,
             platform,
             arch,
-            external_read_vars,
+            ref external_read_vars,
             ado_pool: _,
-            gh_pool,
-            gh_permissions,
+            ref gh_pool,
+            ref gh_permissions,
             cond_param_idx: _,
-            parameters_used,
-            artifacts_used,
-            artifacts_published,
+            ref parameters_used,
+            ref artifacts_used,
+            ref artifacts_published,
             ado_variables: _,
-        } = &graph[job_idx];
+        } = graph[job_idx];
 
-        let flowey_bin = match platform {
-            JobPlatform::Windows => "flowey.exe",
-            JobPlatform::Linux => "flowey",
-        };
-
+        let flowey_bin = platform.binary("flowey");
         let (steps, req_db) = resolve_flow_as_github_yaml_steps(
             root_nodes
                 .clone()
@@ -108,16 +103,10 @@ pub fn github_yaml(
                 .collect(),
             patches.clone(),
             external_read_vars.clone(),
-            match platform {
-                JobPlatform::Windows => FlowPlatform::Windows,
-                JobPlatform::Linux => FlowPlatform::Linux,
-            },
-            match arch {
-                JobArch::X86_64 => FlowArch::X86_64,
-                JobArch::Aarch64 => FlowArch::Aarch64,
-            },
+            platform,
+            arch,
             job_idx.index(),
-            flowey_bin,
+            &flowey_bin,
             gh_permissions,
         )
         .context(format!("in job '{label}'"))?;
@@ -138,13 +127,7 @@ pub fn github_yaml(
             }
 
             let gh_bootstrap_template = gh_bootstrap_template
-                .replace(
-                    "{{FLOWEY_BIN_EXTENSION}}",
-                    match platform {
-                        JobPlatform::Windows => ".exe",
-                        JobPlatform::Linux => "",
-                    },
-                )
+                .replace("{{FLOWEY_BIN_EXTENSION}}", platform.exe_suffix())
                 .replace("{{FLOWEY_CRATE}}", flowey_crate)
                 .replace(
                     "{{FLOWEY_PIPELINE_PATH}}",
@@ -153,8 +136,9 @@ pub fn github_yaml(
                 .replace(
                     "{{FLOWEY_TARGET}}",
                     match platform {
-                        JobPlatform::Windows => "x86_64-pc-windows-msvc",
-                        JobPlatform::Linux => "x86_64-unknown-linux-gnu",
+                        FlowPlatform::Windows => "x86_64-pc-windows-msvc",
+                        FlowPlatform::Linux => "x86_64-unknown-linux-gnu",
+                        platform => panic!("platform {platform} not supported"),
                     },
                 )
                 .replace(
@@ -235,7 +219,7 @@ pub fn github_yaml(
 
         let bootstrap_bash_var_db_inject = |var, is_raw_string| {
             crate::cli::var_db::construct_var_db_cli(
-                flowey_bin,
+                &flowey_bin,
                 job_idx.index(),
                 var,
                 false,
@@ -321,14 +305,14 @@ EOF
                 r#"mkdir -p "$AgentTempDirNormal/publish_artifacts/{name}""#
             )?;
             let var_db_inject_cmd = bootstrap_bash_var_db_inject(flowey_var, true);
-            match platform {
-                JobPlatform::Windows => {
+            match platform.kind() {
+                FlowPlatformKind::Windows => {
                     writeln!(
                         flowey_bootstrap_bash,
                         r#"echo "{RUNNER_TEMP}\\publish_artifacts\\{name}" | {var_db_inject_cmd}"#,
                     )?;
                 }
-                JobPlatform::Linux => {
+                FlowPlatformKind::Unix => {
                     writeln!(
                         flowey_bootstrap_bash,
                         r#"echo "$AgentTempDirNormal/publish_artifacts/{name}" | {var_db_inject_cmd}"#,
@@ -341,14 +325,14 @@ EOF
         // are used by this job
         for ResolvedJobArtifact { flowey_var, name } in artifacts_used {
             let var_db_inject_cmd = bootstrap_bash_var_db_inject(flowey_var, true);
-            match platform {
-                JobPlatform::Windows => {
+            match platform.kind() {
+                FlowPlatformKind::Windows => {
                     writeln!(
                         flowey_bootstrap_bash,
                         r#"echo "{RUNNER_TEMP}\\used_artifacts\\{name}" | {var_db_inject_cmd}"#,
                     )?;
                 }
-                JobPlatform::Linux => {
+                FlowPlatformKind::Unix => {
                     writeln!(
                         flowey_bootstrap_bash,
                         r#"echo "$AgentTempDirNormal/used_artifacts/{name}" | {var_db_inject_cmd}"#,
@@ -374,7 +358,7 @@ EOF
         if let FloweySource::Bootstrap(..) = &flowey_source {
             let mut current_invocation = std::env::args().collect::<Vec<_>>();
 
-            current_invocation[0] = flowey_bin.into();
+            current_invocation[0] = flowey_bin;
 
             // if this code path is run while generating the YAML to compare the
             // check against, we want to remove the --check param from the
@@ -398,10 +382,13 @@ EOF
                     .position(|s| s.starts_with("--out"))
                     .unwrap();
 
-                let current_yaml = if matches!(platform, JobPlatform::Windows) {
-                    r#"$ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml"#
-                } else {
-                    r#"$ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml"#
+                let current_yaml = match platform.kind() {
+                    FlowPlatformKind::Windows => {
+                        r#"$ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml"#
+                    }
+                    FlowPlatformKind::Unix => {
+                        r#"$ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml"#
+                    }
                 };
 
                 current_invocation.insert(i, current_yaml.into());

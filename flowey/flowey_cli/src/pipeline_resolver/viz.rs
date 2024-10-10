@@ -12,8 +12,6 @@ use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
 use flowey_core::node::NodeHandle;
-use flowey_core::pipeline::JobArch;
-use flowey_core::pipeline::JobPlatform;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
@@ -68,21 +66,21 @@ fn viz_pipeline_generic(
 
     for idx in order {
         let ResolvedPipelineJob {
-            root_nodes,
-            patches,
-            label,
+            ref root_nodes,
+            ref patches,
+            ref label,
             platform,
             arch,
             cond_param_idx: _,
-            ado_pool,
+            ref ado_pool,
             ado_variables: _,
-            gh_pool,
+            ref gh_pool,
             gh_permissions: _,
-            external_read_vars,
+            ref external_read_vars,
             parameters_used: _,
-            artifacts_used,
-            artifacts_published,
-        } = &graph[idx];
+            ref artifacts_used,
+            ref artifacts_published,
+        } = graph[idx];
 
         println!(
             "== {}{}{} ==",
@@ -123,14 +121,8 @@ fn viz_pipeline_generic(
             patches.clone(),
             external_read_vars.clone(),
             backend,
-            match platform {
-                JobPlatform::Windows => FlowPlatform::Windows,
-                JobPlatform::Linux => FlowPlatform::Linux,
-            },
-            match arch {
-                JobArch::X86_64 => FlowArch::X86_64,
-                JobArch::Aarch64 => FlowArch::Aarch64,
-            },
+            platform,
+            arch,
             with_persist_dir,
         )?;
 

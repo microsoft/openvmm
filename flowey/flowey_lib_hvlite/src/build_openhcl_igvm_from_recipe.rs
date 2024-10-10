@@ -455,6 +455,7 @@ impl SimpleFlowNode for Node {
         let igvmfilegen_arch = match ctx.arch() {
             FlowArch::X86_64 => CommonArch::X86_64,
             FlowArch::Aarch64 => CommonArch::Aarch64,
+            arch => anyhow::bail!("unsupported arch {arch}"),
         };
 
         let igvmfilegen = ctx.reqv(|v| {

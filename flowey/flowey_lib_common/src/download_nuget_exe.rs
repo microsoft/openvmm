@@ -9,6 +9,7 @@ use std::fs;
 pub enum NugetInstallPlatform {
     Windows,
     Linux,
+    MacOs,
 }
 
 flowey_request! {
@@ -85,6 +86,8 @@ impl FlowNode for Node {
                             }
                         }
                         FlowPlatform::Linux => NugetInstallPlatform::Linux,
+                        FlowPlatform::MacOs => NugetInstallPlatform::MacOs,
+                        platform => anyhow::bail!("unsupported platform {platform}"),
                     };
 
                     rt.write_all(broadcast_nuget_config_platform, &nuget_config_platform);
@@ -120,10 +123,7 @@ impl Node {
                 // trust that the ADO nuget install task works correctly
                 rt.write_all(
                     broadcast_nuget_tool_kind,
-                    &match rt.platform() {
-                        FlowPlatform::Windows => which::which("nuget.exe")?,
-                        FlowPlatform::Linux => which::which("nuget")?,
-                    },
+                    &which::which(rt.platform().binary("nuget"))?,
                 );
 
                 Ok(())
@@ -232,6 +232,7 @@ impl Node {
                         }
                     }
                     FlowPlatform::Linux => write_mono_shim()?,
+                    platform => anyhow::bail!("unsupported platform {platform}"),
                 };
 
                 rt.write_all(broadcast_nuget_tool_kind, &nuget_exec_path);

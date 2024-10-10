@@ -16,11 +16,10 @@ use anyhow::Context;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
+use flowey_core::node::FlowPlatformKind;
 use flowey_core::node::NodeHandle;
 use flowey_core::pipeline::internal::AdoPool;
 use flowey_core::pipeline::internal::InternalAdoResourcesRepository;
-use flowey_core::pipeline::JobArch;
-use flowey_core::pipeline::JobPlatform;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt::Write;
@@ -80,21 +79,21 @@ pub fn ado_yaml(
 
     for job_idx in order {
         let ResolvedPipelineJob {
-            root_nodes,
-            patches,
-            label,
+            ref root_nodes,
+            ref patches,
+            ref label,
             platform,
             arch,
             cond_param_idx,
-            ado_pool,
+            ref ado_pool,
             gh_pool: _,
             gh_permissions: _,
-            external_read_vars,
-            parameters_used,
-            artifacts_used,
-            artifacts_published,
-            ado_variables,
-        } = &graph[job_idx];
+            ref external_read_vars,
+            ref parameters_used,
+            ref artifacts_used,
+            ref artifacts_published,
+            ref ado_variables,
+        } = graph[job_idx];
 
         let flowey_source = job_flowey_source.remove(&job_idx).unwrap();
 
@@ -107,13 +106,12 @@ pub fn ado_yaml(
             patches.clone(),
             external_read_vars.clone(),
             match platform {
-                JobPlatform::Windows => FlowPlatform::Windows,
-                JobPlatform::Linux => FlowPlatform::Linux,
+                FlowPlatform::Windows => FlowPlatform::Windows,
+                FlowPlatform::Linux => FlowPlatform::Linux,
+                FlowPlatform::MacOs => FlowPlatform::MacOs,
+                _ => panic!("unsupported ADO platform {platform:?}"),
             },
-            match arch {
-                JobArch::X86_64 => FlowArch::X86_64,
-                JobArch::Aarch64 => FlowArch::Aarch64,
-            },
+            arch,
             job_idx.index(),
         )
         .context(format!("in job '{label}'"))?;
@@ -134,13 +132,7 @@ pub fn ado_yaml(
             }
 
             let ado_bootstrap_template = ado_bootstrap_template
-                .replace(
-                    "{{FLOWEY_BIN_EXTENSION}}",
-                    match platform {
-                        JobPlatform::Windows => ".exe",
-                        JobPlatform::Linux => "",
-                    },
-                )
+                .replace("{{FLOWEY_BIN_EXTENSION}}", platform.exe_suffix())
                 .replace("{{FLOWEY_CRATE}}", flowey_crate)
                 .replace(
                     "{{FLOWEY_PIPELINE_PATH}}",
@@ -149,8 +141,9 @@ pub fn ado_yaml(
                 .replace(
                     "{{FLOWEY_TARGET}}",
                     match platform {
-                        JobPlatform::Windows => "x86_64-pc-windows-msvc",
-                        JobPlatform::Linux => "x86_64-unknown-linux-gnu",
+                        FlowPlatform::Windows => "x86_64-pc-windows-msvc",
+                        FlowPlatform::Linux => "x86_64-unknown-linux-gnu",
+                        platform => anyhow::bail!("unsupported ADO platform {platform:?}"),
                     },
                 )
                 .replace(
@@ -231,10 +224,7 @@ pub fn ado_yaml(
 
         // and now use those vars to do some flowey bootstrap
         writeln!(flowey_bootstrap_bash, "{}", {
-            let flowey_bin = match platform {
-                JobPlatform::Windows => "flowey.exe",
-                JobPlatform::Linux => "flowey",
-            };
+            let flowey_bin = platform.binary("flowey");
 
             let runtime_debug_level = if runtime_debug_log { "debug" } else { "info" };
 
@@ -371,10 +361,13 @@ EOF
                     .position(|s| s.starts_with("--out"))
                     .unwrap();
 
-                let current_yaml = if matches!(platform, JobPlatform::Windows) {
-                    r#"$ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml"#
-                } else {
-                    r#"$ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml"#
+                let current_yaml = match platform.kind() {
+                    FlowPlatformKind::Windows => {
+                        r#"$ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml"#
+                    }
+                    FlowPlatformKind::Unix => {
+                        r#"$ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml"#
+                    }
                 };
 
                 current_invocation.insert(i, current_yaml.into());

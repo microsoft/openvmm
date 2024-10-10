@@ -38,6 +38,7 @@ pub mod user_facing {
     pub use super::FlowBackend;
     pub use super::FlowNode;
     pub use super::FlowPlatform;
+    pub use super::FlowPlatformKind;
     pub use super::ImportCtx;
     pub use super::IntoRequest;
     pub use super::NodeCtx;
@@ -717,20 +718,83 @@ pub enum FlowBackend {
     Github,
 }
 
+/// The kind platform the flow is being running on, Windows or Unix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FlowPlatformKind {
+    Windows,
+    Unix,
+}
+
 /// What platform the flow is being running on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum FlowPlatform {
     /// Windows
     Windows,
     /// Linux (including WSL2)
     Linux,
+    /// macOS
+    MacOs,
+}
+
+impl FlowPlatform {
+    pub fn kind(&self) -> FlowPlatformKind {
+        match self {
+            Self::Windows => FlowPlatformKind::Windows,
+            Self::Linux | Self::MacOs => FlowPlatformKind::Unix,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Windows => "windows",
+            Self::Linux => "linux",
+            Self::MacOs => "macos",
+        }
+    }
+
+    /// The suffix to use for executables on this platform.
+    pub fn exe_suffix(&self) -> &'static str {
+        if self == &Self::Windows {
+            ".exe"
+        } else {
+            ""
+        }
+    }
+
+    /// The full name for a binary on this platform (i.e. `name + self.exe_suffix()`).
+    pub fn binary(&self, name: &str) -> String {
+        format!("{}{}", name, self.exe_suffix())
+    }
+}
+
+impl std::fmt::Display for FlowPlatform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(self.as_str())
+    }
 }
 
 /// What architecture the flow is being running on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum FlowArch {
     X86_64,
     Aarch64,
+}
+
+impl FlowArch {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::X86_64 => "x86_64",
+            Self::Aarch64 => "aarch64",
+        }
+    }
+}
+
+impl std::fmt::Display for FlowArch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(self.as_str())
+    }
 }
 
 /// Context object for an individual step.
@@ -1872,7 +1936,7 @@ pub mod steps {
             }
 
             /// What platform the flow is being running on (e.g: windows, linux,
-            /// wsl2, etc...).
+            /// etc...).
             pub fn platform(&self) -> FlowPlatform {
                 self.platform
             }

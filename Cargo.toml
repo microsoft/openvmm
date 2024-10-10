@@ -517,6 +517,11 @@ inherits = 'dev'
 # xtask is CPU bound in places, so enable light optimizations
 opt-level = 1
 
+[profile.flowey]
+# work around linkme bug on macos, <https://github.com/dtolnay/linkme/issues/61>
+lto = 'thin'
+inherits = 'dev'
+
 [profile.flowey-ci]
 inherits = 'dev'
 # flowey-ci is published+downloaded during CI; avoid debug symbols to minimize

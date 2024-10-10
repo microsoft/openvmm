@@ -14,8 +14,6 @@ use flowey_core::node::FlowPlatform;
 use flowey_core::node::NodeHandle;
 use flowey_core::node::RuntimeVarDb;
 use flowey_core::pipeline::internal::Parameter;
-use flowey_core::pipeline::JobArch;
-use flowey_core::pipeline::JobPlatform;
 use petgraph::prelude::NodeIndex;
 use petgraph::visit::EdgeRef;
 use std::collections::BTreeSet;
@@ -86,9 +84,9 @@ fn direct_run_do_work(
 
     for idx in order {
         let ResolvedPipelineJob {
-            root_nodes,
-            patches,
-            label,
+            ref root_nodes,
+            ref patches,
+            ref label,
             platform,
             arch,
             cond_param_idx,
@@ -96,11 +94,11 @@ fn direct_run_do_work(
             ado_variables: _,
             gh_pool: _,
             gh_permissions: _,
-            external_read_vars,
-            parameters_used,
-            artifacts_used,
-            artifacts_published,
-        } = &graph[idx];
+            ref external_read_vars,
+            ref parameters_used,
+            ref artifacts_used,
+            ref artifacts_published,
+        } = graph[idx];
 
         // orange color
         log::info!("\x1B[0;33m### job: {label} ###\x1B[0m");
@@ -116,14 +114,6 @@ fn direct_run_do_work(
             continue;
         }
 
-        let flow_platform = if cfg!(windows) {
-            FlowPlatform::Windows
-        } else if cfg!(target_os = "linux") {
-            FlowPlatform::Linux
-        } else {
-            unreachable!("flowey only runs on windows/linux at the moment")
-        };
-
         // xtask-fmt allow-target-arch oneoff-flowey
         let flow_arch = if cfg!(target_arch = "x86_64") {
             FlowArch::X86_64
@@ -135,40 +125,35 @@ fn direct_run_do_work(
         };
 
         match (arch, flow_arch) {
-            (JobArch::X86_64, FlowArch::X86_64) | (JobArch::Aarch64, FlowArch::Aarch64) => (),
+            (FlowArch::X86_64, FlowArch::X86_64) | (FlowArch::Aarch64, FlowArch::Aarch64) => (),
             _ => {
                 log::error!("mismatch between job arch and local arch. skipping job...");
                 continue;
             }
         }
 
-        let flow_platform = match (platform, flow_platform) {
-            // sure, no problem
-            (JobPlatform::Windows, FlowPlatform::Windows)
-            | (JobPlatform::Linux, FlowPlatform::Linux) => flow_platform,
-
-            // give WSL2 users an escape hatch to run Windows jobs locally
-            // (at their own peril)
-            (JobPlatform::Windows, FlowPlatform::Linux) if windows_as_wsl => FlowPlatform::Windows,
-
-            // nah, it ain't happening
-            (JobPlatform::Windows, FlowPlatform::Linux)
-            | (JobPlatform::Linux, FlowPlatform::Windows) => {
-                log::error!("mismatch between job platform and local platform. skipping job...");
-                log::info!("");
-                if crate::running_in_wsl() && matches!(platform, JobPlatform::Windows) {
-                    log::warn!("###");
-                    log::warn!("### NOTE: detected that you're running in WSL2");
-                    log::warn!(
-                        "###       if the the pipeline supports it, you can try passing --windows-as-wsl"
-                    );
-                    log::warn!("###");
-                    log::info!("");
-                }
-                skipped_jobs.insert(idx);
-                continue;
-            }
+        let platform_ok = match platform {
+            FlowPlatform::Windows => cfg!(windows) || (cfg!(target_os = "linux") && windows_as_wsl),
+            FlowPlatform::Linux => cfg!(target_os = "linux"),
+            FlowPlatform::MacOs => cfg!(target_os = "macos"),
+            platform => panic!("unknown platform {platform}"),
         };
+
+        if !platform_ok {
+            log::error!("mismatch between job platform and local platform. skipping job...");
+            log::info!("");
+            if crate::running_in_wsl() && matches!(platform, FlowPlatform::Windows) {
+                log::warn!("###");
+                log::warn!("### NOTE: detected that you're running in WSL2");
+                log::warn!(
+                    "###       if the the pipeline supports it, you can try passing --windows-as-wsl"
+                );
+                log::warn!("###");
+                log::info!("");
+            }
+            skipped_jobs.insert(idx);
+            continue;
+        }
 
         let nodes = {
             let mut resolved_local_nodes = Vec::new();
@@ -176,7 +161,7 @@ fn direct_run_do_work(
             let (mut output_graph, _, err_unreachable_nodes) =
                 crate::flow_resolver::stage1_dag::stage1_dag(
                     FlowBackend::Local,
-                    flow_platform,
+                    platform,
                     flow_arch,
                     patches.clone(),
                     root_nodes
@@ -307,7 +292,7 @@ fn direct_run_do_work(
         let mut runtime_services = flowey_core::node::steps::rust::new_rust_runtime_services(
             &mut in_mem_var_db,
             FlowBackend::Local,
-            flow_platform,
+            platform,
             flow_arch,
         );
 
@@ -315,7 +300,7 @@ fn direct_run_do_work(
             let Parameter::Bool {
                 description: _,
                 default,
-            } = &parameters[*cond_param_idx]
+            } = &parameters[cond_param_idx]
             else {
                 panic!("cond param is guaranteed to be bool by type system")
             };

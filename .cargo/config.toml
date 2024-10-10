@@ -2,7 +2,7 @@
 
 [alias]
 xtask = "run -p xtask --profile xtask --"
-xflowey = "run -p flowey_hvlite -- pipeline run"
+xflowey = "run -p flowey_hvlite --profile flowey -- pipeline run"
 
 [env]
 # Use the packaged openssl libraries on musl targets.

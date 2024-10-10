@@ -148,6 +148,7 @@ impl FlowNode for Node {
                                 let path = check_az_install(rt)?;
                                 rt.write_all(get_az_cli, &path);
                             }
+                            platform => anyhow::bail!("unsupported platform {platform}"),
                         };
 
                         Ok(())

@@ -6,17 +6,19 @@
 
 use flowey::pipeline::prelude::*;
 
-pub fn default_x86_pool(job_platform: JobPlatform) -> GhRunner {
-    match job_platform {
-        JobPlatform::Windows => windows_amd_self_hosted(),
-        JobPlatform::Linux => linux_self_hosted(),
+pub fn default_x86_pool(platform: FlowPlatform) -> GhRunner {
+    match platform {
+        FlowPlatform::Windows => windows_amd_self_hosted(),
+        FlowPlatform::Linux => linux_self_hosted(),
+        platform => panic!("unsupported platform {platform}"),
     }
 }
 
-pub fn default_gh_hosted(job_platform: JobPlatform) -> GhRunner {
-    match job_platform {
-        JobPlatform::Windows => gh_hosted_windows(),
-        JobPlatform::Linux => gh_hosted_linux(),
+pub fn default_gh_hosted(platform: FlowPlatform) -> GhRunner {
+    match platform {
+        FlowPlatform::Windows => gh_hosted_windows(),
+        FlowPlatform::Linux => gh_hosted_linux(),
+        platform => panic!("unsupported platform {platform}"),
     }
 }
 

@@ -5,7 +5,7 @@
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::pipeline_resolver::generic::ResolvedPipelineJob;
 use anyhow::Context;
-use flowey_core::pipeline::JobPlatform;
+use flowey_core::node::FlowPlatform;
 use petgraph::visit::EdgeRef;
 use serde::Serialize;
 use serde_yaml::Value;
@@ -55,7 +55,7 @@ pub(crate) fn job_flowey_bootstrap_source(
     // the first traversal builds a list of all ancestors of a give node
     let mut ancestors = BTreeMap::<
         petgraph::prelude::NodeIndex,
-        BTreeSet<(petgraph::prelude::NodeIndex, JobPlatform)>,
+        BTreeSet<(petgraph::prelude::NodeIndex, FlowPlatform)>,
     >::new();
     for idx in order {
         for ancestor_idx in graph
@@ -125,10 +125,7 @@ pub(crate) fn job_flowey_bootstrap_source(
             // necessary since GitHub doesn't let you double-publish an
             // artifact with the same name
             floweyno += 1;
-            let platform = match graph[*idx].platform {
-                JobPlatform::Windows => "win",
-                JobPlatform::Linux => "linux",
-            };
+            let platform = graph[*idx].platform;
             bootstrapped_flowey.insert(
                 *idx,
                 FloweySource::Bootstrap(

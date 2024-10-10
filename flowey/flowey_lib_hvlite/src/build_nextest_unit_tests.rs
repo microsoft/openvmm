@@ -69,14 +69,17 @@ impl FlowNode for Node {
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let flowey_platform = ctx.platform();
 
-        let xtask = ctx.reqv(|v| crate::build_xtask::Request {
-            target: CommonTriple::Common {
-                arch: CommonArch::X86_64, // FUTURE: support native ARM hosts
-                platform: match flowey_platform {
-                    FlowPlatform::Windows => CommonPlatform::WindowsMsvc,
-                    FlowPlatform::Linux => CommonPlatform::LinuxGnu,
-                },
+        let xtask_target = CommonTriple::Common {
+            arch: CommonArch::X86_64, // FUTURE: support native ARM hosts
+            platform: match flowey_platform {
+                FlowPlatform::Windows => CommonPlatform::WindowsMsvc,
+                FlowPlatform::Linux => CommonPlatform::LinuxGnu,
+                FlowPlatform::MacOs => CommonPlatform::MacOs,
+                platform => anyhow::bail!("unknown platform {platform}"),
             },
+        };
+        let xtask = ctx.reqv(|v| crate::build_xtask::Request {
+            target: xtask_target,
             xtask: v,
         });
 

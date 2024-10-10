@@ -47,10 +47,7 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let azcopy_bin = match ctx.platform() {
-            FlowPlatform::Windows => "azcopy.exe",
-            FlowPlatform::Linux => "azcopy",
-        };
+        let azcopy_bin = ctx.platform().binary("azcopy");
 
         let cache_dir = ctx.emit_rust_stepv("create azcopy cache dir", |_| {
             |_| Ok(std::env::current_dir()?.absolute()?)
@@ -80,7 +77,7 @@ impl FlowNode for Node {
                 let cache_dir = rt.read(cache_dir);
 
                 let cached = if matches!(rt.read(hitvar), CacheHit::Hit) {
-                    let cached_bin = cache_dir.join(azcopy_bin);
+                    let cached_bin = cache_dir.join(&azcopy_bin);
                     assert!(cached_bin.exists());
                     Some(cached_bin)
                 } else {
@@ -92,22 +89,27 @@ impl FlowNode for Node {
                     cached
                 } else {
                     let sh = xshell::Shell::new()?;
-                    match rt.platform() {
-                        FlowPlatform::Windows => {
+                    match rt.platform().kind() {
+                        FlowPlatformKind::Windows => {
                             xshell::cmd!(sh, "curl -L https://azcopyvnext.azureedge.net/releases/release-{version_with_date}/azcopy_windows_amd64_{version_without_date}.zip -o azcopy.zip").run()?;
 
                             let bsdtar = crate::_util::bsdtar_name(rt);
                             xshell::cmd!(sh, "{bsdtar} -xf azcopy.zip --strip-components=1").run()?;
                         }
-                        FlowPlatform::Linux => {
-                            xshell::cmd!(sh, "curl -L https://azcopyvnext.azureedge.net/releases/release-{version_with_date}/azcopy_linux_amd64_{version_without_date}.tar.gz -o azcopy.tar.gz").run()?;
+                        FlowPlatformKind::Unix => {
+                            let os = match rt.platform() {
+                                FlowPlatform::Linux => "linux",
+                                FlowPlatform::MacOs => "darwin",
+                                platform => anyhow::bail!("unhandled platform {platform}"),
+                            };
+                            xshell::cmd!(sh, "curl -L https://azcopyvnext.azureedge.net/releases/release-{version_with_date}/azcopy_{os}_amd64_{version_without_date}.tar.gz -o azcopy.tar.gz").run()?;
                             xshell::cmd!(sh, "tar -xf azcopy.tar.gz --strip-components=1").run()?;
-                        },
+                        }
                     };
 
                     // move the unzipped bin into the cache dir
-                    let final_bin = cache_dir.join(azcopy_bin);
-                    fs_err::rename(azcopy_bin, &final_bin)?;
+                    let final_bin = cache_dir.join(&azcopy_bin);
+                    fs_err::rename(&azcopy_bin, &final_bin)?;
 
                     final_bin.absolute()?
                 };
