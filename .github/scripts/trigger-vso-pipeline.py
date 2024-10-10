@@ -35,6 +35,7 @@ def main(pipeline_id: str, token: str, commit: str, cancel: str, organization: s
 
             build = {
                       'definition': {'id': pipeline_id},
+                      'sourceBranch': 'release/lkg',
                       'templateParameters': {'OssSubmoduleCommit': commit}
                     }
             build = client.queue_build(build, project=project)
