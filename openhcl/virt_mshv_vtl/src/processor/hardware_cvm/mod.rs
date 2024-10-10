@@ -27,7 +27,7 @@ use virt::vp::AccessVpState;
 use virt::Processor;
 use zerocopy::FromZeroes;
 
-impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
+impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     pub fn hcvm_enable_partition_vtl(
         &mut self,
         partition_id: u64,
@@ -201,31 +201,81 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         Ok(())
     }
 
-    pub fn hcvm_get_vp_registers(
+    fn validate_register_access(
         &mut self,
-        partition_id: u64,
-        vp_index: u32,
-        vtl: Option<Vtl>,
-        registers: &[hvdef::HvRegisterName],
-        output: &mut [hvdef::HvRegisterValue],
-    ) -> hvdef::HvRepResult {
-        if partition_id != hvdef::HV_PARTITION_ID_SELF {
-            return Err((HvError::AccessDenied, 0));
+        vtl: GuestVtl,
+        name: hvdef::HvRegisterName,
+    ) -> HvResult<()> {
+        match name.into() {
+            HvX64RegisterName::Star
+            | HvX64RegisterName::Lstar
+            | HvX64RegisterName::Cstar
+            | HvX64RegisterName::SysenterCs
+            | HvX64RegisterName::SysenterEip
+            | HvX64RegisterName::SysenterEsp
+            | HvX64RegisterName::Sfmask
+            | HvX64RegisterName::Xfem
+            | HvX64RegisterName::KernelGsBase
+            | HvX64RegisterName::Efer
+            | HvX64RegisterName::Cr0
+            | HvX64RegisterName::Cr2
+            | HvX64RegisterName::Cr3
+            | HvX64RegisterName::Cr4
+            | HvX64RegisterName::Cr8
+            | HvX64RegisterName::Dr0
+            | HvX64RegisterName::Dr1
+            | HvX64RegisterName::Dr2
+            | HvX64RegisterName::Dr3
+            | HvX64RegisterName::Dr7
+            | HvX64RegisterName::Es
+            | HvX64RegisterName::Cs
+            | HvX64RegisterName::Ss
+            | HvX64RegisterName::Ds
+            | HvX64RegisterName::Fs
+            | HvX64RegisterName::Gs
+            | HvX64RegisterName::Tr
+            | HvX64RegisterName::Ldtr
+            | HvX64RegisterName::Gdtr
+            | HvX64RegisterName::Idtr
+            | HvX64RegisterName::Rip
+            | HvX64RegisterName::Rflags
+            | HvX64RegisterName::Rax
+            | HvX64RegisterName::Rcx
+            | HvX64RegisterName::Rdx
+            | HvX64RegisterName::Rbx
+            | HvX64RegisterName::Rsp
+            | HvX64RegisterName::Rbp
+            | HvX64RegisterName::Rsi
+            | HvX64RegisterName::Rdi
+            | HvX64RegisterName::R8
+            | HvX64RegisterName::R9
+            | HvX64RegisterName::R10
+            | HvX64RegisterName::R11
+            | HvX64RegisterName::R12
+            | HvX64RegisterName::R13
+            | HvX64RegisterName::R14
+            | HvX64RegisterName::R15
+            | HvX64RegisterName::Pat => {
+                // Architectural registers can only be accessed by a higher VTL.
+                if vtl >= self.intercepted_vtl {
+                    return Err(HvError::AccessDenied);
+                }
+                Ok(())
+            }
+            HvX64RegisterName::TscAux => {
+                // Architectural registers can only be accessed by a higher VTL.
+                if vtl >= self.intercepted_vtl {
+                    return Err(HvError::AccessDenied);
+                }
+
+                if self.vp.partition.caps.tsc_aux {
+                    Ok(())
+                } else {
+                    Err(HvError::InvalidParameter)
+                }
+            }
+            _ => Ok(()),
         }
-
-        if vp_index != hvdef::HV_VP_INDEX_SELF && vp_index != self.vp.vp_index().index() {
-            return Err((HvError::AccessDenied, 0));
-        }
-
-        let vtl = self
-            .target_vtl_no_higher(vtl.unwrap_or_else(|| self.intercepted_vtl.into()))
-            .map_err(|e| (e, 0))?;
-
-        for (i, (&name, output)) in zip(registers, output).enumerate() {
-            *output = self.get_vp_register(name, vtl).map_err(|e| (e, i))?;
-        }
-
-        Ok(())
     }
 
     fn get_vp_register(
@@ -233,6 +283,22 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         name: hvdef::HvRegisterName,
         vtl: GuestVtl,
     ) -> HvResult<hvdef::HvRegisterValue> {
+        self.validate_register_access(vtl, name)?;
+        // TODO: when get vp register i.e. in access vp state gets refactored,
+        // clean this up.
+
+        let (registers, msrs, debug_regs, cache_control, xcr, tsc_aux) = {
+            let mut vp_state = self.vp.access_state(vtl.into());
+            (
+                vp_state.registers().unwrap(),
+                vp_state.virtual_msrs().unwrap(),
+                vp_state.debug_regs().unwrap(),
+                vp_state.cache_control().unwrap(),
+                vp_state.xcr().unwrap(),
+                vp_state.tsc_aux().unwrap(),
+            )
+        };
+
         match name.into() {
             HvX64RegisterName::VsmCodePageOffsets => Ok(u64::from(
                 self.vp.backing.cvm_state_mut().hv[vtl].vsm_code_page_offsets(true),
@@ -245,6 +311,58 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             HvX64RegisterName::VpAssistPage => Ok(self.vp.backing.cvm_state_mut().hv[vtl]
                 .vp_assist_page()
                 .into()),
+            // TODO GUEST VSM: add the synic registers (definitely missing VINA
+            // and ApicBase)
+            HvX64RegisterName::Star => Ok(msrs.star.into()),
+            HvX64RegisterName::Lstar => Ok(msrs.lstar.into()),
+            HvX64RegisterName::Cstar => Ok(msrs.cstar.into()),
+            HvX64RegisterName::SysenterCs => Ok(msrs.sysenter_cs.into()),
+            HvX64RegisterName::SysenterEip => Ok(msrs.sysenter_eip.into()),
+            HvX64RegisterName::SysenterEsp => Ok(msrs.sysenter_esp.into()),
+            HvX64RegisterName::Sfmask => Ok(msrs.sfmask.into()),
+            HvX64RegisterName::KernelGsBase => Ok(msrs.kernel_gs_base.into()),
+            HvX64RegisterName::Xfem => Ok(xcr.value.into()),
+            HvX64RegisterName::TscAux => Ok(tsc_aux.value.into()),
+            HvX64RegisterName::Efer => Ok(registers.efer.into()),
+            HvX64RegisterName::Cr0 => Ok(registers.cr0.into()),
+            HvX64RegisterName::Cr2 => Ok(registers.cr2.into()),
+            HvX64RegisterName::Cr3 => Ok(registers.cr3.into()),
+            HvX64RegisterName::Cr4 => Ok(registers.cr4.into()),
+            HvX64RegisterName::Cr8 => Ok(registers.cr8.into()),
+            HvX64RegisterName::Es => Ok(hvdef::HvX64SegmentRegister::from(registers.es).into()),
+            HvX64RegisterName::Cs => Ok(hvdef::HvX64SegmentRegister::from(registers.cs).into()),
+            HvX64RegisterName::Ss => Ok(hvdef::HvX64SegmentRegister::from(registers.ss).into()),
+            HvX64RegisterName::Ds => Ok(hvdef::HvX64SegmentRegister::from(registers.ds).into()),
+            HvX64RegisterName::Fs => Ok(hvdef::HvX64SegmentRegister::from(registers.fs).into()),
+            HvX64RegisterName::Gs => Ok(hvdef::HvX64SegmentRegister::from(registers.gs).into()),
+            HvX64RegisterName::Tr => Ok(hvdef::HvX64SegmentRegister::from(registers.tr).into()),
+            HvX64RegisterName::Ldtr => Ok(hvdef::HvX64SegmentRegister::from(registers.ldtr).into()),
+            HvX64RegisterName::Gdtr => Ok(hvdef::HvX64TableRegister::from(registers.gdtr).into()),
+            HvX64RegisterName::Idtr => Ok(hvdef::HvX64TableRegister::from(registers.idtr).into()),
+            HvX64RegisterName::Rip => Ok(registers.rip.into()),
+            HvX64RegisterName::Rflags => Ok(registers.rflags.into()),
+            HvX64RegisterName::Rax => Ok(registers.rax.into()),
+            HvX64RegisterName::Rcx => Ok(registers.rcx.into()),
+            HvX64RegisterName::Rdx => Ok(registers.rdx.into()),
+            HvX64RegisterName::Rbx => Ok(registers.rbx.into()),
+            HvX64RegisterName::Rsp => Ok(registers.rsp.into()),
+            HvX64RegisterName::Rbp => Ok(registers.rbp.into()),
+            HvX64RegisterName::Rsi => Ok(registers.rsi.into()),
+            HvX64RegisterName::Rdi => Ok(registers.rdi.into()),
+            HvX64RegisterName::R8 => Ok(registers.r8.into()),
+            HvX64RegisterName::R9 => Ok(registers.r9.into()),
+            HvX64RegisterName::R10 => Ok(registers.r10.into()),
+            HvX64RegisterName::R11 => Ok(registers.r11.into()),
+            HvX64RegisterName::R12 => Ok(registers.r12.into()),
+            HvX64RegisterName::R13 => Ok(registers.r13.into()),
+            HvX64RegisterName::R14 => Ok(registers.r14.into()),
+            HvX64RegisterName::R15 => Ok(registers.r15.into()),
+            HvX64RegisterName::Dr0 => Ok(debug_regs.dr0.into()),
+            HvX64RegisterName::Dr1 => Ok(debug_regs.dr1.into()),
+            HvX64RegisterName::Dr2 => Ok(debug_regs.dr2.into()),
+            HvX64RegisterName::Dr3 => Ok(debug_regs.dr3.into()),
+            HvX64RegisterName::Dr7 => Ok(debug_regs.dr7.into()),
+            HvX64RegisterName::Pat => Ok(cache_control.msr_cr_pat.into()),
             _ => {
                 tracing::error!(
                     ?name,
@@ -255,6 +373,135 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         }
     }
 
+    fn set_vp_register(
+        &mut self,
+        reg: &hvdef::hypercall::HvRegisterAssoc,
+        vtl: GuestVtl,
+    ) -> HvResult<()> {
+        self.validate_register_access(vtl, reg.name)?;
+        // TODO CVM:
+        // - when access vp state has support for single registers, clean this
+        //   up.
+        // - validate the values being set, e.g. that addresses are canonical,
+        //   that efer and pat make sense, etc. Similar validation is needed in
+        //   the write_msr path.
+
+        match HvX64RegisterName::from(reg.name) {
+            HvX64RegisterName::VsmPartitionConfig => self.vp.set_vsm_partition_config(
+                HvRegisterVsmPartitionConfig::from(reg.value.as_u64()),
+                vtl,
+            ),
+            HvX64RegisterName::VpAssistPage => self.vp.backing.cvm_state_mut().hv[vtl]
+                .msr_write(hvdef::HV_X64_MSR_VP_ASSIST_PAGE, reg.value.as_u64())
+                .map_err(|_| HvError::InvalidRegisterValue),
+            virt_msr @ (HvX64RegisterName::Star
+            | HvX64RegisterName::Cstar
+            | HvX64RegisterName::Lstar
+            | HvX64RegisterName::SysenterCs
+            | HvX64RegisterName::SysenterEip
+            | HvX64RegisterName::SysenterEsp
+            | HvX64RegisterName::Sfmask) => {
+                let mut msrs = self.vp.access_state(vtl.into()).virtual_msrs().unwrap();
+                match virt_msr {
+                    HvX64RegisterName::Star => msrs.star = reg.value.as_u64(),
+                    HvX64RegisterName::Cstar => msrs.cstar = reg.value.as_u64(),
+                    HvX64RegisterName::Lstar => msrs.lstar = reg.value.as_u64(),
+                    HvX64RegisterName::SysenterCs => msrs.sysenter_cs = reg.value.as_u64(),
+                    HvX64RegisterName::SysenterEip => msrs.sysenter_eip = reg.value.as_u64(),
+                    HvX64RegisterName::SysenterEsp => msrs.sysenter_esp = reg.value.as_u64(),
+                    HvX64RegisterName::Sfmask => msrs.sfmask = reg.value.as_u64(),
+                    _ => unreachable!(),
+                }
+                self.vp
+                    .access_state(vtl.into())
+                    .set_virtual_msrs(&msrs)
+                    .unwrap();
+                Ok(())
+            }
+            HvX64RegisterName::TscAux => {
+                self.vp
+                    .access_state(vtl.into())
+                    .set_tsc_aux(&virt::vp::TscAux {
+                        value: reg.value.as_u64(),
+                    })
+                    .unwrap();
+                Ok(())
+            }
+
+            debug_reg @ (HvX64RegisterName::Dr3 | HvX64RegisterName::Dr7) => {
+                let mut debug_registers = self.vp.access_state(vtl.into()).debug_regs().unwrap();
+                match debug_reg {
+                    HvX64RegisterName::Dr3 => debug_registers.dr3 = reg.value.as_u64(),
+                    HvX64RegisterName::Dr7 => debug_registers.dr7 = reg.value.as_u64(),
+                    _ => unreachable!(),
+                }
+
+                self.vp
+                    .access_state(vtl.into())
+                    .set_debug_regs(&debug_registers)
+                    .unwrap();
+                Ok(())
+            }
+            HvX64RegisterName::Pat => {
+                let mut cache_control = self.vp.access_state(vtl.into()).cache_control().unwrap();
+                cache_control.msr_cr_pat = reg.value.as_u64();
+                self.vp
+                    .access_state(vtl.into())
+                    .set_cache_control(&cache_control)
+                    .unwrap();
+                Ok(())
+            }
+            register @ (HvX64RegisterName::Efer
+            | HvX64RegisterName::Cr0
+            | HvX64RegisterName::Cr4
+            | HvX64RegisterName::Cr8
+            | HvX64RegisterName::Ldtr
+            | HvX64RegisterName::Gdtr
+            | HvX64RegisterName::Idtr
+            | HvX64RegisterName::Rip
+            | HvX64RegisterName::Rflags
+            | HvX64RegisterName::Rsp) => {
+                let mut registers = self.vp.access_state(vtl.into()).registers().unwrap();
+                match register {
+                    HvX64RegisterName::Efer => registers.efer = reg.value.as_u64(),
+                    HvX64RegisterName::Cr0 => registers.cr0 = reg.value.as_u64(),
+                    HvX64RegisterName::Cr4 => registers.cr4 = reg.value.as_u64(),
+                    HvX64RegisterName::Cr8 => registers.cr8 = reg.value.as_u64(),
+                    HvX64RegisterName::Ldtr => {
+                        registers.ldtr = hvdef::HvX64SegmentRegister::from(reg.value).into()
+                    }
+                    HvX64RegisterName::Gdtr => {
+                        registers.gdtr = hvdef::HvX64TableRegister::from(reg.value).into()
+                    }
+                    HvX64RegisterName::Idtr => {
+                        registers.idtr = hvdef::HvX64TableRegister::from(reg.value).into()
+                    }
+                    HvX64RegisterName::Rip => registers.rip = reg.value.as_u64(),
+                    HvX64RegisterName::Rflags => registers.rflags = reg.value.as_u64(),
+                    HvX64RegisterName::Rsp => registers.rsp = reg.value.as_u64(),
+                    _ => unreachable!(),
+                }
+                self.vp
+                    .access_state(vtl.into())
+                    .set_registers(&registers)
+                    .unwrap();
+                Ok(())
+            }
+            _ => {
+                tracing::error!(
+                    "guest invoked SetVpRegisters with register {:?} != VsmPartitionConfig",
+                    reg
+                );
+                Err(HvError::InvalidParameter)
+            }
+        }
+
+        // TODO GUEST VSM: interrupt rewinding
+        // TODO TDX GUEST VSM: update execution mode
+    }
+}
+
+impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     fn retarget_physical_interrupt(
         &mut self,
         device_id: u64,
@@ -333,6 +580,37 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     }
 }
 
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::GetVpRegisters
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn get_vp_registers(
+        &mut self,
+        partition_id: u64,
+        vp_index: u32,
+        vtl: Option<Vtl>,
+        registers: &[hvdef::HvRegisterName],
+        output: &mut [hvdef::HvRegisterValue],
+    ) -> hvdef::HvRepResult {
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err((HvError::AccessDenied, 0));
+        }
+
+        if vp_index != hvdef::HV_VP_INDEX_SELF && vp_index != self.vp.vp_index().index() {
+            return Err((HvError::AccessDenied, 0));
+        }
+
+        let vtl = self
+            .target_vtl_no_higher(vtl.unwrap_or_else(|| self.intercepted_vtl.into()))
+            .map_err(|e| (e, 0))?;
+
+        for (i, (&name, output)) in zip(registers, output).enumerate() {
+            *output = self.get_vp_register(name, vtl).map_err(|e| (e, i))?;
+        }
+
+        Ok(())
+    }
+}
+
 impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
     for UhHypercallHandler<'_, '_, T, B>
 {
@@ -356,28 +634,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
             .map_err(|_| (HvError::InvalidParameter, 0))?;
 
         for (i, reg) in registers.iter().enumerate() {
-            match HvX64RegisterName::from(reg.name) {
-                HvX64RegisterName::VsmPartitionConfig => {
-                    self.vp
-                        .set_vsm_partition_config(
-                            HvRegisterVsmPartitionConfig::from(reg.value.as_u64()),
-                            target_vtl,
-                        )
-                        .map_err(|e| (e, i))?;
-                }
-                HvX64RegisterName::VpAssistPage => {
-                    self.vp.backing.cvm_state_mut().hv[target_vtl]
-                        .msr_write(hvdef::HV_X64_MSR_VP_ASSIST_PAGE, reg.value.as_u64())
-                        .map_err(|_| (HvError::InvalidRegisterValue, 0))?;
-                }
-                _ => {
-                    tracing::error!(
-                        ?reg,
-                        "guest invoked SetVpRegisters with unsupported register"
-                    );
-                    return Err((HvError::InvalidParameter, i));
-                }
-            }
+            self.set_vp_register(reg, target_vtl).map_err(|e| (e, i))?;
         }
 
         Ok(())
