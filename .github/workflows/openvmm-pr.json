@@ -94,8 +94,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -219,8 +219,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -356,8 +356,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -482,8 +482,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -610,8 +610,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -784,8 +784,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -935,8 +935,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -1110,8 +1110,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -1285,8 +1285,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -1499,8 +1499,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -1741,8 +1741,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -1792,7 +1792,7 @@
     "11": {
       "flowey_lib_common::cache": [
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_cli:0:flowey_core/src/node.rs:819:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_cli:1:flowey_lib_common/src/download_gh_cli.rs:66:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-cli-2.52.0\"},\"is_secret\":false},\"label\":\"gh-cli\",\"restore_keys\":null}",
-        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:819:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-a569ff6e02860e46\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
+        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:819:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-8aaf8e16fcca05ce\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
       ],
       "flowey_lib_common::cfg_cargo_common_flags": [
         "{\"GetFlags\":{\"backing_var\":\"flowey_lib_common::run_cargo_build:1:flowey_lib_common/src/run_cargo_build.rs:101:25\",\"is_secret\":false}}",
@@ -1818,7 +1818,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.20.1-dev-arm64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:3:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-dev/6.6.20.1\"}",
+        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.5-dev-arm64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:3:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-dev/6.6.51.5\"}",
         "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-arm64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:1:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
         "{\"file_name\":\"hyperv.uefi.mscoreuefi.AARCH64.RELEASE.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v0.1.0\"}",
         "{\"file_name\":\"openvmm-deps.aarch64.0.1.0-20241008.7.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:2:flowey_lib_hvlite/src/download_openvmm_deps.rs:109:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241008.7\"}",
@@ -1948,8 +1948,8 @@
         "{\"GetPackage\":{\"arch\":\"Aarch64\",\"kind\":\"Dev\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:29:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\",\"is_secret\":false}}}",
         "{\"GetPackage\":{\"arch\":\"Aarch64\",\"kind\":\"Main\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:1:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\",\"is_secret\":false}}}",
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -2010,7 +2010,7 @@
     "12": {
       "flowey_lib_common::cache": [
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_cli:0:flowey_core/src/node.rs:819:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_cli:1:flowey_lib_common/src/download_gh_cli.rs:66:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-cli-2.52.0\"},\"is_secret\":false},\"label\":\"gh-cli\",\"restore_keys\":null}",
-        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:819:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-b8db1423fc749658\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
+        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:819:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-15bd898fbf2dbbfc\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
       ],
       "flowey_lib_common::cfg_cargo_common_flags": [
         "{\"GetFlags\":{\"backing_var\":\"flowey_lib_common::run_cargo_build:1:flowey_lib_common/src/run_cargo_build.rs:101:25\",\"is_secret\":false}}",
@@ -2036,7 +2036,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.20.1-dev-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:5:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-dev/6.6.20.1\"}",
+        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.5-dev-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:5:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-dev/6.6.51.5\"}",
         "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-cvm-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:3:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
         "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:1:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
         "{\"file_name\":\"hyperv.uefi.mscoreuefi.x64.RELEASE.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v0.1.0\"}",
@@ -2184,8 +2184,8 @@
         "{\"GetPackage\":{\"arch\":\"X86_64\",\"kind\":\"Main\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:1:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\",\"is_secret\":false}}}",
         "{\"GetPackage\":{\"arch\":\"X86_64\",\"kind\":\"Main\",\"pkg\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:85:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:345:25\",\"is_secret\":false}}}",
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -2400,8 +2400,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -2602,8 +2602,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -2821,8 +2821,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -2996,8 +2996,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -3152,8 +3152,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -3305,8 +3305,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -3417,8 +3417,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
@@ -3501,8 +3501,8 @@
       ],
       "flowey_lib_hvlite::download_openhcl_kernel_package": [
         "{\"Version\":[\"Cvm\",\"6.6.51.2\"]}",
-        "{\"Version\":[\"CvmDev\",\"6.6.20.1\"]}",
-        "{\"Version\":[\"Dev\",\"6.6.20.1\"]}",
+        "{\"Version\":[\"CvmDev\",\"6.6.51.5\"]}",
+        "{\"Version\":[\"Dev\",\"6.6.51.5\"]}",
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
