@@ -18,14 +18,7 @@ You can inspect a running OpenHCL VM with ohcldiag-dev.
 ```powershell
 .\ohcldiag-dev.exe inspect <vm name> build_info
 ```
-You can use that to validate that the VM you created is running with the OpenHCL image you built, by checking the scm-revision matches the commit hash of your OpenHCL repo, which you can get using  `git log --max-count=1`.
-
-As an example,
-
-First output (in Windows):
-![alt text](image.png)
-Second output (in WSL):
-![alt text](image-1.png)
+You can use that to validate your VM is running with the OpenHCL image you intended by checking the scm-revision output matches the commit hash of the OpenHCL repo (if building OpenHCL, you can get the commit hash of your repo using  `git log --max-count=1`).
 
 The detailed kernel version information is available from the initial RAM filesystem only:
 

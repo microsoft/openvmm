@@ -1,3 +1,30 @@
+
+<#
+.SYNOPSIS
+    Create a VM that uses OpenHCL on Hyper-V host.
+
+.DESCRIPTION
+    Create a VM with the provided name, of the provided security type, using the provided OpenHCL image on the current Hyper-V host. 
+
+.PARAMETER type
+    The security type of the VM. These are the options:
+    - `TrustedLaunch`: Enables Trusted Launch for the VM.
+    - `VBS`: Enables VBS for the VM.
+    - `SNP`: Enables SEV-SNP for the VM.
+    - `TDX`: Enables TDX for the VM. 
+    If not provided, will default to create a TrustedLaunch VM
+
+.PARAMETER VmName
+    The name of the VM.
+
+.PARAMETER Path
+    Local path to the IGVM OpenHCL file 
+
+.EXAMPLE
+    \openhcl\New-OpenHCL-HyperV-VM.ps1 -Type TrustedLaunch -VmName $VmName -Path $Path
+
+#>
+
 param
 (
     [string]
