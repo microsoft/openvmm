@@ -5,7 +5,7 @@
 //!
 //! This uses a special stack frame passed to the signal handler which the
 //! signal handler uses to jump back and report failure. Might be somewhat
-//! reminiscent of `setjmp`/`longjmp` yet it is much leaner.
+//! reminiscent of `setjmp`/`longjmp`.
 //!
 //! # Architecture specifics
 //!
@@ -98,26 +98,20 @@ struct FailureFrame {
     access_failure: *mut AccessFailure,
 }
 
-struct SigRestore {
-    sig: i32,
-}
-
-impl Drop for SigRestore {
-    fn drop(&mut self) {
-        // Restore the default handler and continue to crash the process.
-        // SAFETY: no state is shared between threads, the code runs in one thread.
-        unsafe {
-            let mut act: sigaction = std::mem::zeroed();
-            act.sa_sigaction = SIG_DFL;
-            sigemptyset(&mut act.sa_mask);
-            sigaction(self.sig, &act, std::ptr::null_mut());
-        }
+/// Restore the default handler and continue to crash the process.
+fn restore_sig(sig: i32) {
+    // SAFETY: no state is shared between threads, the code runs in one thread.
+    unsafe {
+        let mut act: sigaction = std::mem::zeroed();
+        act.sa_sigaction = SIG_DFL;
+        sigemptyset(&mut act.sa_mask);
+        sigaction(sig, &act, std::ptr::null_mut());
     }
 }
 
 extern "C" fn handle_signal(sig: i32, info: *mut siginfo_t, ucontext: *mut libc::c_void) {
-    let sig_restore = SigRestore { sig };
     if (sig != SIGSEGV && sig != SIGBUS) || info.is_null() || ucontext.is_null() {
+        restore_sig(sig);
         return;
     }
 
@@ -126,6 +120,7 @@ extern "C" fn handle_signal(sig: i32, info: *mut siginfo_t, ucontext: *mut libc:
     let info = unsafe { info.as_ref().unwrap() };
     // SAFETY: Reading the failure address, no safety requirements.
     if unsafe { info.si_addr() }.is_null() {
+        restore_sig(sig);
         return;
     }
 
@@ -163,8 +158,6 @@ extern "C" fn handle_signal(sig: i32, info: *mut siginfo_t, ucontext: *mut libc:
     access_failure.address = unsafe { info.si_addr() }.cast();
     access_failure.si_code = info.si_code;
     access_failure.si_signo = info.si_signo;
-
-    let _ = sig_restore;
 
     // Jump back.
 
