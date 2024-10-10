@@ -15,14 +15,17 @@ That is to say:
 ### Check `OpenHCL` version
 
 You can inspect a running OpenHCL VM with ohcldiag-dev.
-
 ```powershell
-PS C:\> .\ohcldiag-dev.exe inspect gen1-testvm build_info
-{
-   crate_name: "underhill_core",
-   scm_revision: "bd7d6a98b7ca8365acdfd5fa2b10a17e62ffa766",
-}
+.\ohcldiag-dev.exe inspect <vm name> build_info
 ```
+You can use that to validate that the VM you created is running with the OpenHCL image you built, by checking the scm-revision matches the commit hash of your OpenHCL repo, which you can get using  `git log --max-count=1`.
+
+As an example,
+
+First output (in Windows):
+![alt text](image.png)
+Second output (in WSL):
+![alt text](image-1.png)
 
 The detailed kernel version information is available from the initial RAM filesystem only:
 
@@ -34,16 +37,15 @@ PS D:\> .\Tools\ohcldiag-dev.exe uhvm00-client run -- cat /etc/kernel-build-info
   "build_id": "74486489",
   "build_name": "5.15.90.7-hcl.1"
 }
-
+```
 The OpenHCL version information can be read from the filesystem, too:
-
+```powershell
 PS D:\> .\Tools\ohcldiag-dev.exe uhvm00-client run -- cat /etc/underhill-build-info.json
 {
     "git_branch": "user/romank/kernel_build_info",
     "git_revision": "a7c4ba3ffcd8708346d33a608f25b9287ac89f8b"
 }
 ```
-
 ### Interactive Shell
 
 To get an interactive shell into the VM, try:
