@@ -13,16 +13,14 @@ Since this is not yet generally available, you can get it via Windows Insider. T
 
 Simply [register](https://www.microsoft.com/en-us/windowsinsider/register) with your Microsoft account, which is the same account you use for other Microsoft services, like email, or Microsoft Office and follow these [instructions](https://www.microsoft.com/en-us/windowsinsider/for-business-getting-started#flight). You should choose the “Release Preview Channel” unless you want to experiment a bit more and are willing to forgo stability. 
 
-
-You may have to click the Check for updates button to download the latest Insider Preview build twice, and this update may take over an hour (pe prepared, so you don’t go crazy waiting). Finally go to Settings > About to check you are on Windows 11, version 24H2 (Build 26100.1586). 
-![alt text](exampleWindows.png)
+You may have to click the Check for updates button to download the latest Insider Preview build twice, and this update may take over an hour. Finally go to Settings > About to check you are on Windows 11, version 24H2 (Build 26100.1586). 
+![alt text](./_images/exampleWindows.png)
 
 Next, make sure Hyper-V is [enabled](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/quick-start/enable-hyper-v).
 
 ## Create a VM
-> **Note:** If using an OpenHCL image you built, don't forget to find the .bin file in your WSL or Linux instance (you can use `find . -name "*.bin"`) and copy that to your Windows host somewhere that vmwp.exe has permissions to read it (can be in windows\system32, or another directory with wide read access).
 
-Save the path of the OpenHCL IGVM file you are using in a var named $Path and save the VM name you want to use in a var named $VmName.
+Make sure your OpenHCL .bin is located somewhere that vmwp.exe in your Windows host has permissions to read it (that can be in windows\system32, or another directory with wide read access). Then, save the path of the OpenHCL .bin in a var named $Path and save the VM name you want to use in a var named $VmName.
 
 For example:
 
@@ -31,22 +29,22 @@ For example:
 `$VmName = 'myFirstVM`
 ```
 
-## Create a VM as a Trusted Launch VM
-### Create a VM as a Trusted Launch VM
-Creates a Trusted Launch for the VM.
-No additional instructions required (simplest path).
+## Create a VM
+### Create VM as a Trusted Launch VM
+Enables [Trusted Launch](https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch) for the VM.
+You can use this script with no additional instructions required (simplest path).
 ```powershell
 <your openvmm repo root>\openhcl\New-OpenHCL-HyperV-VM.ps1 -VmName $VmName -Path $Path
 ```
-### Create a VM as a VBS VM
-Creates a VBS for the VM. Coming soon!
-### Create a VM as a TDX VM
-Creates a TDX for the VM. Coming soon!
-### Create a VM as an SNP VM
-Creates an SEV-SNP for the VM. Coming soon!
+### Create VM as a VBS VM
+Enables VBS for the VM. Coming soon!
+### Create VM as a TDX VM
+Enables TDX for the VM. Coming soon!
+### Create VM as an SNP VM
+Enables SEV-SNP for the VM. Coming soon!
 
-### Setting up a guest VHD for your VM
-Running a VM will be more useful if you have a guest OS image. Given that OpenHCL is a compatibility layer, the goal is to be able to run any existing image (although some configuration may not be yet supported).
+### Set up guest OS VHD
+Running a VM will be more useful if you have a guest OS image. Given that OpenHCL is a compatibility layer, the goal is to support the same set of guest OS images that Hyper-V currently supports without a paravisor.
 
 You can pick any existing image that you have or download one from the web, such as from Ubuntu, or any other distro that is currently supported in Hyper-V.
 

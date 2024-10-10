@@ -15,9 +15,15 @@ That is to say:
 ### Check `OpenHCL` version
 
 You can inspect a running OpenHCL VM with ohcldiag-dev.
+
 ```powershell
-.\ohcldiag-dev.exe inspect <vm name> build_info
+PS C:\> .\ohcldiag-dev.exe inspect gen1-testvm build_info
+{
+   crate_name: "underhill_core",
+   scm_revision: "bd7d6a98b7ca8365acdfd5fa2b10a17e62ffa766",
+}
 ```
+
 You can use that to validate your VM is running with the OpenHCL image you intended by checking the scm-revision output matches the commit hash of the OpenHCL repo (if building OpenHCL, you can get the commit hash of your repo using  `git log --max-count=1`).
 
 The detailed kernel version information is available from the initial RAM filesystem only:
