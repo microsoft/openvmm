@@ -1,48 +1,58 @@
 # Introduction
 
-TODO OSS: this entire introduction needs to be rewritten
+OpenVMM is a modular, cross-platform, general-purpose Virtual Machine Monitor
+(VMM), written in Rust. The project is open-source under the MIT License, and
+developed openly on
+[github.com/microsoft/openvmm](https://github.com/microsoft/openvmm).
 
-* * *
+* **Cross-Platform**
 
-OpenVMM is a virtual machine monitor (VMM) written in Rust for Windows and Linux.
-It was codenamed HvLite so you may see some references to this name in the
-documentation and code. The HvLite name comes from the project being a
-lightweight redesign of the Hyper-V VMM (virtualization stack), with the goal of
-supporting most of the guest-visible features of Hyper-V. However, OpenVMM has a
-few significant design departures from Hyper-V:
+  OpenVMM supports on a variety of host operating systems, architectures, and
+  virtualization backends:
 
-* Cross-platform: OpenVMM runs on Windows and Linux, and it can run on either the
-  Microsoft hypervisor or on KVM.
+  | Host OS             | Architecture  | Virtualization API                     |
+  | ------------------- | ------------- | -------------------------------------- |
+  | Windows             | x64 / Aarch64 | WHP (Windows Hypervisor Platform)      |
+  | Linux               | x64           | KVM                                    |
+  |                     | x64           | MSHV (Microsoft Hypervisor)            |
+  | macOS               | Aarch64       | Hypervisor.framework                   |
+  | Linux ([paravisor]) | x64 / Aarch64 | MSHV (using [VBS] / [TDX] / [SEV-SNP]) |
 
-* Decoupled: Unlike Hyper-V, OpenVMM is built in its own repo and can run on
-  multiple versions of Windows. It runs as an individual process, without the
-  presence of any control service/daemon. This improves development and
-  deployment time and simplifies servicing.
+[paravisor]: ./user_guide/openhcl.md
+[VBS]: https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/oem-vbs
+[TDX]: https://www.intel.com/content/www/us/en/developer/tools/trust-domain-extensions/overview.html
+[SEV-SNP]: https://www.amd.com/en/developer/sev.html
 
-* Public APIs: Wherever possible, OpenVMM depends on public Windows (and Linux)
-  APIs. It uses the Windows Hypervisor Platform (WHP) interface to interact with
-  the Microsoft hypervisor.
+* **General Purpose**
 
-* User mode: OpenVMM implements as much as possible in user mode. This reduces
-  the impact of successful guest attacks, improves developer productivity, and
-  simplifies servicing.
+  OpenVMM can host a wide variety of popular guest operating systems (such as
+  Windows, Linux, and FreeBSD), with support for both modern and legacy versions
+  of those operating systems.
 
-An important use case of the OpenVMM VMM is
-[OpenHCL](./user_guide/openhcl.md), an environment for providing
-virtualization services from inside Virtual Trust Level 2 (VTL2) in a guest
-virtual machine rather than in the privileged host/root partition.
+  - Modern operating systems (which boot via UEFI, or Linux Direct boot) can
+  interface with OpenVMM's wide selection of modern paravirtualized VirtIO and
+  VMBus-based paravirtualized devices.
 
-This guide describes the architecture and provides developer guidelines for both
-OpenVMM and OpenHCL. For instructions on setting up the OpenVMM repo locally,
-please refer to the getting started guide for
-[Windows](./dev_guide/getting_started/windows.md) or
-[WSL2](./dev_guide/getting_started/linux.md).
+  - Legacy operating systems (which boot via legacy x86 BIOS) can interface with
+  OpenVMM's various emulated devices, including legacy IDE hard-disk/optical
+  hardware, floppy disk drives, and VGA graphics cards.
 
-Once you have the dependencies installed, please refer to the instructions for
-building [OpenVMM](./dev_guide/getting_started/build_openvmm.md) or
-[OpenHCL](./dev_guide/getting_started/build_openhcl.md), (and optionally, setup
-your [development environment](./dev_guide/getting_started/suggested_dev_env.md))
+* **Modular**
 
-The latest version of this guide can be found at [here](https://aka.ms/openvmmguide).
+  OpenVMM is designed from the ground up to support a wide variety of distinct
+  virtualization scenarios, each with their own unique needs and constraints.
 
-The source code for OpenVMM can be found at [https://aka.ms/openvmm](https://aka.ms/openvmm).
+  Rather than relying on a "one size fits all" solution, the OpenVMM project
+  enables users to build specialized versions of OpenVMM with the precise set of
+  features required to power their particular scenario.
+
+  For example: A build of OpenVMM designed to run on a user's personal PC might
+  compile-in all available features, in order support a wide variety of
+  workloads, whereas a build of OpenVMM designed to run linux container
+  workloads might opt for a narrow set of enabled features, in order to minimize
+  resource consumption and VM-visible surface area.
+
+  One particularly notable specialized build of OpenVMM is
+  [**OpenHCL**](./user_guide/openhcl.md) (AKA, OpenVMM as a paravisor), which
+  provides virtualization services from _inside_ a guest virtual machine, rather
+  than in the privileged host/root partition.
