@@ -182,12 +182,7 @@ fn pipette_path(arch: MachineArch, os_flavor: PipetteFlavor) -> anyhow::Result<P
         }
     }
 
-    // The loop above exausts all options, not sure how to express that
-    // in Rust. Thus this below to keep the compiler happy.
-    anyhow::bail!(
-        "None of the suffixes {:?} had `pipette` built",
-        target_suffixes
-    )
+    unreachable!()
 }
 
 /// Path to the output location of the hvlite executable.
