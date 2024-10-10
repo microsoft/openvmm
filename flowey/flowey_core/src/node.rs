@@ -745,7 +745,7 @@ impl FlowPlatform {
         }
     }
 
-    pub fn as_str(&self) -> &'static str {
+    fn as_str(&self) -> &'static str {
         match self {
             Self::Windows => "windows",
             Self::Linux => "linux",
@@ -783,7 +783,7 @@ pub enum FlowArch {
 }
 
 impl FlowArch {
-    pub fn as_str(&self) -> &'static str {
+    fn as_str(&self) -> &'static str {
         match self {
             Self::X86_64 => "x86_64",
             Self::Aarch64 => "aarch64",

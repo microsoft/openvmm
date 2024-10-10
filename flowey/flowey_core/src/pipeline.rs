@@ -37,6 +37,7 @@ pub mod user_facing {
     pub use super::GhRunner;
     pub use super::GhRunnerOsLabel;
     pub use super::GhScheduleTriggers;
+    pub use super::HostExt;
     pub use super::IntoPipeline;
     pub use super::Pipeline;
     pub use super::PipelineBackendHint;
@@ -50,42 +51,49 @@ pub mod user_facing {
     pub use crate::node::FlowPlatform;
 }
 
-impl FlowPlatform {
+pub trait HostExt: Sized {
+    /// Return the value for the current host machine.
+    ///
+    /// Will panic on non-local backends.
+    fn host(backend_hint: PipelineBackendHint) -> Self;
+}
+
+impl HostExt for FlowPlatform {
     /// Return the platform of the current host machine.
     ///
     /// Will panic on non-local backends.
-    pub fn host(backend_hint: PipelineBackendHint) -> FlowPlatform {
+    fn host(backend_hint: PipelineBackendHint) -> Self {
         if !matches!(backend_hint, PipelineBackendHint::Local) {
             panic!("can only use `FlowPlatform::host` when defining a local-only pipeline");
         }
 
         if cfg!(target_os = "windows") {
-            FlowPlatform::Windows
+            Self::Windows
         } else if cfg!(target_os = "linux") {
-            FlowPlatform::Linux
+            Self::Linux
         } else if cfg!(target_os = "macos") {
-            FlowPlatform::MacOs
+            Self::MacOs
         } else {
             panic!("no valid host-os")
         }
     }
 }
 
-impl FlowArch {
+impl HostExt for FlowArch {
     /// Return the arch of the current host machine.
     ///
     /// Will panic on non-local backends.
-    pub fn host(backend_hint: PipelineBackendHint) -> FlowArch {
+    fn host(backend_hint: PipelineBackendHint) -> Self {
         if !matches!(backend_hint, PipelineBackendHint::Local) {
             panic!("can only use `FlowArch::host` when defining a local-only pipeline");
         }
 
         // xtask-fmt allow-target-arch oneoff-flowey
         if cfg!(target_arch = "x86_64") {
-            FlowArch::X86_64
+            Self::X86_64
         // xtask-fmt allow-target-arch oneoff-flowey
         } else if cfg!(target_arch = "aarch64") {
-            FlowArch::Aarch64
+            Self::Aarch64
         } else {
             panic!("no valid host-arch")
         }

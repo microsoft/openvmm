@@ -204,21 +204,21 @@ impl IntoPipeline for CheckinGatesCli {
         all_jobs.push(job);
 
         // emit rustdoc jobs
-        for (target, job_platform) in [
+        for (target, platform) in [
             (CommonTriple::X86_64_WINDOWS_MSVC, FlowPlatform::Windows),
             (CommonTriple::X86_64_LINUX_GNU, FlowPlatform::Linux),
         ] {
             let deny_warnings = !matches!(backend_hint, PipelineBackendHint::Local);
             let (pub_rustdoc, _use_rustdoc) =
-                pipeline.new_artifact(format!("x64-{}-rustdoc", job_platform.as_str()));
+                pipeline.new_artifact(format!("x64-{platform}-rustdoc"));
             let job = pipeline
                 .new_job(
-                    job_platform,
+                    platform,
                     FlowArch::X86_64,
-                    format!("build and check docs [x64-{}]", job_platform.as_str()),
+                    format!("build and check docs [x64-{platform}]"),
                 )
                 .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                    job_platform,
+                    platform,
                 ))
                 .dep_on(|_ctx| {
                     flowey_lib_hvlite::build_rustdoc::Request::SetDenyWarnings(deny_warnings)
