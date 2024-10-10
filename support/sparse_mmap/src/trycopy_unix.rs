@@ -234,6 +234,7 @@ mod x86_64 {
                 ".p2align 4",
                 "{func}:",
 
+                "endbr64", // TODO: W/o endbr64 Windows wouldn't boot 100%, with this ~80%
                 // Save non-volatiles, signal handling may clobber these
                 "push %rbx","push %rbp","push %r12","push %r13","push %r14","push %r15",
 
@@ -283,14 +284,14 @@ mod x86_64 {
         crate::try_memmove,
         "%rcx",
         [],
-        ["call memcpy",],
+        ["call memcpy", "endbr64"], // TODO: W/o endbr64 Windows wouldn't boot 100%, with this ~80%
         ["xorl %eax, %eax"]
     );
     try_op!(
         crate::try_memset,
         "%rcx",
         [],
-        ["call memset",],
+        ["call memset", "endbr64"], // TODO: W/o endbr64 Windows wouldn't boot 100%, with this ~80%
         ["xorl %eax, %eax"]
     );
     try_op!(
