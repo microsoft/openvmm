@@ -32,6 +32,36 @@ For example, to run a simple VMM test that simply boots using UEFI:
 cargo nextest run -p vmm_tests x86_64::uefi_x64_frontpage
 ```
 
+#### \[Linux] Cross-compiling `pipette.exe`
+
+These commands might use the test agent (`pipette`) that is put inside the VM,
+and if the host machine OS and the guest machine OS are different, a setup
+is required for cross-building. The recommended approach is to use WSL2 and
+cross-compile using the freely available Microsoft Visual Studio Build Tools
+or Microsoft Visual Studio Community Edition as described in
+(\[WSL2] Cross Compiling from WSL2 to Windows)[../getting_started/suggested_dev_env.md#wsl2-cross-compiling-from-wsl2-to-windows]
+
+If that is not possible, here is another option that relies on [MinGW-w64](https://www.mingw-w64.org/)
+and doesn't require installing Windows:
+
+```bash
+# Do 1 once, do 2 as needed.
+#
+# 1. Setup the toolchain
+rustup target add x86_64-pc-windows-gnu
+sudo apt-get install mingw-w64-x86-64-dev
+mingw-genlib -a x86_64 ./support/pal/api-ms-win-security-base-private-l1-1-1.def
+sudo mv libapi-ms-win-security-base-private-l1-1-1.a /usr/x86_64-w64-mingw32/lib
+
+# 2. Build Pipette (builds target/x86_64-pc-windows-gnu/debug/pipette.exe first)
+cargo build --target x86_64-pc-windows-gnu -p pipette
+```
+
+```bash
+# Run a test
+cargo nextest run -p vmm_tests x86_64::uefi_x64_windows_datacenter_core_2022_x64_boot
+```
+
 #### Acquiring external dependencies
 
 Unlike Unit Tests, VMM tests may rely on additional external artifacts in order

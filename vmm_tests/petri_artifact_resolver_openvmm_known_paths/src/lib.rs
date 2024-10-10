@@ -154,18 +154,39 @@ fn guest_test_uefi_disk_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
 fn pipette_path(arch: MachineArch, os_flavor: PipetteFlavor) -> anyhow::Result<PathBuf> {
     // Always use (statically-built) musl on Linux to avoid needing libc
     // compatibility.
-    let (target_suffix, binary) = match os_flavor {
-        PipetteFlavor::Windows => ("pc-windows-msvc", "pipette.exe"),
-        PipetteFlavor::Linux => ("unknown-linux-musl", "pipette"),
+    let (target_suffixes, binary) = match os_flavor {
+        PipetteFlavor::Windows => (vec!["pc-windows-msvc", "pc-windows-gnu"], "pipette.exe"),
+        PipetteFlavor::Linux => (vec!["unknown-linux-musl"], "pipette"),
     };
-    let target = format!("{}-{}", target_arch_path(arch), target_suffix);
-    get_path(
-        format!("target/{target}/debug"),
-        binary,
-        MissingCommand::Build {
-            package: "pipette",
-            target: Some(&target),
-        },
+    for (index, target_suffix) in target_suffixes.iter().enumerate() {
+        let target = format!("{}-{}", target_arch_path(arch), target_suffix);
+        match get_path(
+            format!("target/{target}/debug"),
+            binary,
+            MissingCommand::Build {
+                package: "pipette",
+                target: Some(&target),
+            },
+        ) {
+            Ok(path) => return Ok(path),
+            Err(err) => {
+                if index < target_suffixes.len() - 1 {
+                    continue;
+                } else {
+                    anyhow::bail!(
+                        "None of the suffixes {:?} had `pipette` built, {err:?}",
+                        target_suffixes
+                    );
+                }
+            }
+        }
+    }
+
+    // The loop above exausts all options, not sure how to express that
+    // in Rust. Thus this below to keep the compiler happy.
+    anyhow::bail!(
+        "None of the suffixes {:?} had `pipette` built",
+        target_suffixes
     )
 }
 
