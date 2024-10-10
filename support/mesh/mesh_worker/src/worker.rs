@@ -76,13 +76,6 @@ pub trait Worker: 'static + Sized {
     fn run(self, recv: mesh::Receiver<WorkerRpc<Self::State>>) -> anyhow::Result<()>;
 }
 
-/// Flags controlling Restart behavior.
-#[derive(Debug, MeshPayload)]
-pub struct RestartFlags {
-    /// Preserve NVMe physical device state.
-    pub nvme_keepalive: bool,
-}
-
 /// Common requests for workers.
 #[derive(Debug, MeshPayload)]
 #[mesh(bound = "T: MeshPayload")]
@@ -91,7 +84,7 @@ pub enum WorkerRpc<T> {
     Stop,
     /// Tear down and send the state necessary to restart on the provided
     /// channel.
-    Restart(RestartFlags, mesh::OneshotSender<RemoteResult<T>>),
+    Restart(mesh::OneshotSender<RemoteResult<T>>),
     /// Inspect the worker.
     Inspect(inspect::Deferred),
 }
@@ -452,10 +445,7 @@ impl WorkerLaunchRequest {
             }
             LaunchType::Restart { send, events } => {
                 let (state_send, state_recv) = mesh::oneshot();
-                let flags = RestartFlags {
-                    nvme_keepalive: true,
-                };
-                send.send(WorkerRpc::Restart(flags, state_send));
+                send.send(WorkerRpc::Restart(state_send));
                 let state = match block_on(state_recv).flatten() {
                     Ok(state) => state,
                     Err(err) => {
@@ -766,7 +756,7 @@ mod tests {
                 while let Ok(req) = recv.recv().await {
                     match req {
                         WorkerRpc::Stop => break,
-                        WorkerRpc::Restart(_flags, state_send) => {
+                        WorkerRpc::Restart(state_send) => {
                             state_send.send(Ok(TestWorkerState { value: self.value }));
                             break;
                         }
@@ -798,7 +788,7 @@ mod tests {
                 while let Ok(req) = recv.recv().await {
                     match req {
                         WorkerRpc::Stop => break,
-                        WorkerRpc::Restart(_flags, state_send) => {
+                        WorkerRpc::Restart(state_send) => {
                             state_send.send(Ok(()));
                             break;
                         }

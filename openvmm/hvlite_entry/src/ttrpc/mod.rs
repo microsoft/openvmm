@@ -152,7 +152,7 @@ impl VmService {
                 },
                 request = recv.recv().fuse() => {
                     match request {
-                        Ok(WorkerRpc::Restart(_flags, response)) => response.send(Err(RemoteError::new(anyhow::anyhow!("not supported")))),
+                        Ok(WorkerRpc::Restart(response)) => response.send(Err(RemoteError::new(anyhow::anyhow!("not supported")))),
                         Ok(WorkerRpc::Inspect(_)) => (),
                         Ok(WorkerRpc::Stop) => {
                             tracing::info!("ttrpc worker stopping");
