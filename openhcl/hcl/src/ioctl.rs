@@ -1577,6 +1577,26 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
         }
     }
 
+    /// Gets the kernel offload interrupt request bitmap.
+    pub fn kernel_ipi_offload_irr(&mut self) -> Option<[u32; 8]> {
+        // SAFETY: the `ipi_offload_irr` field of the run page
+        // is atomically accessed by everyone.
+        unsafe {
+            let offload_irr = &*(addr_of!((*self.run.as_ptr()).ipi_offload_irr) as *const [AtomicU32; 8]);
+
+            let mut r = [0; 8];
+            let mut found = false;
+            for (irr, r) in offload_irr.iter().zip(r.iter_mut()) {
+                if irr.load(Ordering::Acquire) != 0 {
+                    *r = irr.swap(0, Ordering::SeqCst);
+                    found = true;
+                }
+            }
+
+            found.then_some(r)
+        }
+    }
+
     /// Gets the proxied interrupt request bitmap from the hypervisor.
     pub fn proxy_irr(&mut self) -> Option<[u32; 8]> {
         // SAFETY: the `scan_proxy_irr` and `proxy_irr` fields of the run page

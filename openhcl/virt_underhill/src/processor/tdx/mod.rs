@@ -769,12 +769,14 @@ impl UhProcessor<'_, TdxBacked> {
     /// Returns `Ok(false)` if the APIC offload needs to be disabled and the
     /// poll retried.
     fn try_poll_apic(&mut self, scan_irr: bool) -> Result<bool, UhRunVpError> {
-        // Check for interrupt requests from the host.
+        // Check for interrupt requests from the host and kernel IPI offload.
         let mut update_rvi = false;
-        if let Some(irr) = self.runner.proxy_irr() {
-            // TODO TDX: filter proxy IRRs.
+        let proxy_irr = self.runner.proxy_irr();
+        let kernel_irr = self.runner.kernel_ipi_offload_irr();
+
+        let mut pull_irr = |irr: [u32; 8]| {
             if self.backing.lapic.can_offload_irr() {
-                // Put the proxied IRR directly on the APIC page to avoid going
+                // Put the IRR directly on the APIC page to avoid going
                 // through the local APIC.
 
                 // OR in and update RVI.
@@ -786,7 +788,13 @@ impl UhProcessor<'_, TdxBacked> {
             } else {
                 self.backing.lapic.request_fixed_interrupts(irr);
             }
-        }
+        };
+
+        // TODO TDX: filter proxy IRRs.
+        proxy_irr.and_then(|irr| Some(pull_irr(irr)));
+
+        // Pull state from kernel IPI offload irr
+        kernel_irr.and_then(|irr| Some(pull_irr(irr)));
 
         let ApicWork {
             init,
