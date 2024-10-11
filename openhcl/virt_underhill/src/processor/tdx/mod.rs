@@ -791,10 +791,14 @@ impl UhProcessor<'_, TdxBacked> {
         };
 
         // TODO TDX: filter proxy IRRs.
-        proxy_irr.map(|irr| pull_irr(irr));
+        if let Some(irr) = proxy_irr {
+            pull_irr(irr);
+        }
 
         // Pull state from kernel IPI offload irr
-        kernel_irr.map(|irr| pull_irr(irr));
+        if let Some(irr) = kernel_irr {
+            pull_irr(irr);
+        }
 
         let ApicWork {
             init,
