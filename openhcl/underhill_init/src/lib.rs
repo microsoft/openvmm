@@ -145,8 +145,10 @@ fn use_host_entropy() -> anyhow::Result<()> {
         .with_context(|| ("failed to open dev random for setting entropy").to_string())?;
 
     if underhill_confidentiality::is_confidential_vm() {
-        // Just write to dev_random (and don't increase entropy count)
-        dev_random.write_all(&entropy.buf)?;
+        // Just write to /dev/random (and don't increase entropy count)
+        dev_random
+            .write_all(&entropy.buf[..use_entropy_bytes])
+            .context("write to /dev/random")?;
     } else {
         // Write to /dev/random and increase the entropy count
         // so that we can speed up boot when the host entropy can be trusted.
