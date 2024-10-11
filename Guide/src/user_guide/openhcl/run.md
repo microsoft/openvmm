@@ -8,9 +8,9 @@ interact with OpenHCL.
 To get started, ensure you have a copy of an OpenHCL IGVM firmware image, via
 one of the following options:
 
-## Building OpenHCL
+## Building OpenHCL Locally
 
-Please refer to the page [Building OpenHCL](../../dev_guide/getting_started/build_openhcl.md)
+Follow the instructions on: [Building OpenHCL](../../dev_guide/getting_started/build_openhcl.md).
 
 ## Pre-Built Binaries
 
