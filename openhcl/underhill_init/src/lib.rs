@@ -24,6 +24,7 @@ use std::ffi::OsStr;
 use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::Write;
 use std::os::unix::prelude::*;
 use std::path::Path;
 use std::process::Child;
@@ -107,6 +108,10 @@ mod dev_random_ioctls {
 //
 // It is safe to apply host-provided entropy even to a confidential VM,
 // because host-provided data is hashed into the existing entropy sources.
+// However, we don't know if the entropy from the host can be trusted.
+// Therefore we don't want to increase the entropy count in case the kernel
+// has not already filled its entropy pool via safe means, so we just write
+// to /dev/random instead of using rnd_add_entropy_ioctl.
 fn use_host_entropy() -> anyhow::Result<()> {
     use dev_random_ioctls::MAX_ENTROPY_SIZE;
 
@@ -134,15 +139,22 @@ fn use_host_entropy() -> anyhow::Result<()> {
     };
     entropy.buf[..use_entropy_bytes].copy_from_slice(&host_entropy[..use_entropy_bytes]);
 
-    let dev_random = fs_err::OpenOptions::new()
+    let mut dev_random = fs_err::OpenOptions::new()
         .write(true)
         .open("/dev/random")
         .with_context(|| ("failed to open dev random for setting entropy").to_string())?;
 
-    // SAFETY: API called according to the documentation.
-    unsafe {
-        dev_random_ioctls::rnd_add_entropy_ioctl(dev_random.as_raw_fd(), &entropy)
-            .context("rnd_add_entropy_ioctl")?;
+    if underhill_confidentiality::is_confidential_vm() {
+        // Just write to dev_random (and don't increase entropy count)
+        dev_random.write_all(&entropy.buf)?;
+    } else {
+        // Write to /dev/random and increase the entropy count
+        // so that we can speed up boot when the host entropy can be trusted.
+        // SAFETY: API called according to the documentation.
+        unsafe {
+            dev_random_ioctls::rnd_add_entropy_ioctl(dev_random.as_raw_fd(), &entropy)
+                .context("rnd_add_entropy_ioctl")?;
+        }
     }
 
     Ok(())
