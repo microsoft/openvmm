@@ -1582,7 +1582,8 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
         // SAFETY: the `ipi_offload_irr` field of the run page
         // is atomically accessed by everyone.
         unsafe {
-            let offload_irr = &*(addr_of!((*self.run.as_ptr()).ipi_offload_irr) as *const [AtomicU32; 8]);
+            let offload_irr =
+                &*(addr_of!((*self.run.as_ptr()).ipi_offload_irr).cast::<[AtomicU32; 8]>());
 
             let mut r = [0; 8];
             let mut found = false;
