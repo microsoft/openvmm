@@ -1,9 +1,9 @@
 # Introduction
 
 OpenVMM is a modular, cross-platform, general-purpose Virtual Machine Monitor
-(VMM), written in Rust. The project is open-source under the MIT License, and
-developed openly on
-[github.com/microsoft/openvmm](https://github.com/microsoft/openvmm).
+(VMM), written in Rust. The project is open-source, MIT Licensed, and developed
+in-the-open at [microsoft/openvmm](https://github.com/microsoft/openvmm) on
+GitHub.
 
 **Cross-Platform**
 
@@ -20,18 +20,21 @@ virtualization backends:
 
 **General Purpose**
 
-OpenVMM can host a wide variety of popular guest operating systems (such as
-Windows, Linux, and FreeBSD), with support for both modern and legacy versions
-of those operating systems.
+Similar to other general-purpose VMMs (such as Hyper-V, QEMU, VirtualBox),
+OpenVMM is able to host a wide variety of both modern and legacy guest operating
+systems on-top of its flexible virtual hardware platform.
 
-- Modern operating systems (such as those which support UEFI boot, or Linux
-Direct boot) can leverage OpenVMM's wide selection of modern paravirtualized
-VirtIO and VMBus-based paravirtualized devices for improved performance.
+- Modern operating systems can boot via UEFI, and interface with a wide
+selection of paravirtualized devices for services like networking, storage, and
+graphics.
 
-- Legacy operating systems (such as those which require legacy x86 BIOS boot)
-are able to run by interfacing with OpenVMM's collection of emulated hardware,
-such as legacy IDE hard-disk/optical hardware, floppy disk drives, and VGA
-graphics cards, etc.
+- Legacy x86 operating systems can boot via BIOS, and are presented with a
+PC-compatible emulated device platform which includes legacy hardware such as
+IDE hard-disk/optical drives, floppy disk drives, and VGA graphics cards.
+
+OpenVMM is regularly tested to ensure compatibility with popular operating
+systems (such as Windows, Linux, and FreeBSD), and strives to maintain reasonable
+compatibility with other, more niche/legacy operating systems as well.
 
 **Modular**
 
