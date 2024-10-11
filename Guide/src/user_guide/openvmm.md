@@ -16,6 +16,10 @@ At the moment, OpenVMM can be built and run on the following host platforms:
 When compiled, OpenVMM consists of a single standalone `openvmm` / `openvmm.exe`
 executable.[^note]
 
+## Next Steps
+
+Before heading on to [Running OpenVMM](./openvmm/run.md), please take a moment
+to read and understand the following important disclaimer:
 
 > **DISCLAIMER**
 >
@@ -32,14 +36,10 @@ executable.[^note]
 > - Unexpectedly missing device features (e.g: legacy IDE drive, PS/2 mouse features)
 > - **No API or feature-set stability guarantees whatsoever.**
 >
-> Suffice to say: At this time, OpenVMM _on the host_ is not yet ready to run
-> end-user workloads. amd should be treated more akin to a useful development
-> platform for implementing new OpenVMM features, rather than a ready-to-deploy
+> At this time, OpenVMM _on the host_ is not yet ready to run end-user
+> workloads, and should should be treated more akin to a development platform
+> for implementing new OpenVMM features, rather than a ready-to-deploy
 > application.
-
-Assuming you've read the disclaimer above, and are prepared to deal with any
-potential "rough edges" you may encounter when using OpenVMM, proceed to
-[Running OpenVMM](./openvmm/run.md) to try OpenVMM out for yourself!
 
 [^note]: though, depending on the platform and compiled-in feature-set, some
     additional DLLs and/or system libraries may need to be installed (notably:

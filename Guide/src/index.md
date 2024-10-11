@@ -1,13 +1,14 @@
 # Introduction
 
 OpenVMM is a modular, cross-platform, general-purpose Virtual Machine Monitor
-(VMM), written in Rust. The project is open-source, MIT Licensed, and developed
-in-the-open at [microsoft/openvmm](https://github.com/microsoft/openvmm) on
-GitHub.
+(VMM), written in Rust.
+
+The project is open-source, MIT Licensed, and developed publicly at
+[microsoft/openvmm](https://github.com/microsoft/openvmm) on GitHub.
 
 **Cross-Platform**
 
-OpenVMM supports on a variety of host operating systems, architectures, and
+OpenVMM supports a variety of host operating systems, architectures, and
 virtualization backends:
 
 | Host OS             | Architecture  | Virtualization API                     |
