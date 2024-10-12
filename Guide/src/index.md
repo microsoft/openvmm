@@ -85,8 +85,8 @@ following links:
 
 |                                                                               |                                           |
 | ----------------------------------------------------------------------------- | ----------------------------------------- |
-| [User Guide: OpenVMM](./user_guide/openvmm.md)                                | Running OpenVMM as traditional host VMM   |
-| [User Guide: OpenHCL](./user_guide/openhcl.md)                                | Running OpenVMM as a paravisor (OpenHCL)  |
+| [Getting Started: OpenVMM](./user_guide/openvmm.md)                           | Running OpenVMM as traditional host VMM   |
+| [Getting Started: OpenHCL](./user_guide/openhcl.md)                           | Running OpenVMM as a paravisor (OpenHCL)  |
 | [Developer Guide: Getting Started](./dev_guide/getting_started.md)            | Building OpenVMM / OpenHCL locally        |
 | [[Github] microsoft/openvmm](https://github.com/microsoft/openvmm)            | Viewing / Downloading OpenVMM source code |
 | [[Github] OpenVMM issue tracker](https://github.com/microsoft/openvmm/issues) | Reporting OpenVMM issues                  |

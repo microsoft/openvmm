@@ -9,6 +9,25 @@ with WHP, with some caveats:
    are missing, you can implement the required support in OpenVMM's WHP
    implementation.
 
+> Due to the developer-oriented nature of this support at the moment, the
+> following examples assume you are already comfortable with the OpenVMM command
+> line, and are willing to deal with certain "rough edges" in the experience.
+>
+> At this time, we strongly suggest running and testing OpenHCL on Hyper-V.
+
+# Examples
+
+## Preface: Using ohcldiag-dev
+
+Add support for ohcldiag-dev by specifying the `--vtl2-vsock-path` option at vm
+launch. This will create a Unix socket that the ohcldiag-dev binary can connect to by
+specifying the path to the unix socket. By default, the socket is created in the
+temp directory with path ohcldiag-dev. For example, running via powershell:
+
+```powershell
+cargo run -p ohcldiag-dev -- $env:temp\ohcldiag-dev kmsg
+```
+
 ## Linux direct
 
 Linux direct will work with an interactive console available via COM ports
@@ -26,16 +45,7 @@ favorite shell and by default OpenVMM will use `cmd.exe`. A vsock window can be
 opened using the OpenVMM terminal on windows using `v 9980` or whichever hvsock
 port is configured to allow consoles for OpenHCL.
 
-## Using ohcldiag-dev
 
-Add support for ohcldiag-dev by specifying the `--vtl2-vsock-path` option at vm
-launch. This will create a Unix socket that the ohcldiag-dev binary can connect to by
-specifying the path to the unix socket. By default, the socket is created in the
-temp directory with path ohcldiag-dev. For example, running via powershell:
-
-```powershell
-cargo run -p ohcldiag-dev -- $env:temp\ohcldiag-dev kmsg
-```
 
 ## Vtl2 VMBus Support
 
