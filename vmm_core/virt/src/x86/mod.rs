@@ -4,6 +4,7 @@
 //! x86-specific state.
 
 pub mod apic_software_device;
+pub mod translate;
 pub mod vm;
 pub mod vp;
 

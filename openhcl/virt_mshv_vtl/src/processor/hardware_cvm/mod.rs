@@ -16,6 +16,7 @@ use crate::GuestVtl;
 use crate::WakeReason;
 use hv1_emulator::RequestInterrupt;
 use hvdef::hypercall::HvFlushFlags;
+use hvdef::hypercall::TranslateGvaResultCode;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
 use hvdef::HvRegisterVsmPartitionConfig;
@@ -28,6 +29,24 @@ use virt::io::CpuIo;
 use virt::vp::AccessVpState;
 use virt::Processor;
 use zerocopy::FromZeroes;
+
+pub trait HvTranslateGvaSupport {
+    type Error;
+
+    /// Gets the object used to access the guest memory.
+    fn guest_memory(&self, vtl: Vtl) -> &guestmem::GuestMemory;
+
+    /// Acquires the TLB lock for this processor.
+    fn acquire_tlb_lock(&mut self, vtl: Vtl);
+
+    /// Returns the registers used to walk the page table.
+    fn registers(
+        &mut self,
+        vtl: Vtl,
+    ) -> Result<virt::x86::translate::TranslationRegisters, Self::Error>;
+
+    fn overlay_page(&self, vtl: Vtl) -> u64;
+}
 
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     pub fn hcvm_enable_partition_vtl(
@@ -628,6 +647,48 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
 
         // TODO GUEST VSM: interrupt rewinding
         // TODO TDX GUEST VSM: update execution mode
+    }
+
+    pub fn hcvm_translate_virtual_address<S: HvTranslateGvaSupport>(
+        support: &mut S,
+        target_vtl: Vtl,
+        gva: u64,
+        flags: hvdef::hypercall::TranslateGvaControlFlagsX64,
+    ) -> HvResult<hvdef::hypercall::TranslateVirtualAddressOutput> {
+        // TODO: what about all the other control flags? Definitely need to be able to target a vtl
+
+        if flags.tlb_flush_inhibit() {
+            // TODO: This probably isn't the right VTL
+            support.acquire_tlb_lock(target_vtl);
+        }
+
+        // TODO: what about all the other control flags? Definitely need to be able to target a vtl
+
+        // TODO: these probably aren't the right registers
+        let registers = support
+            .registers(target_vtl)
+            .map_err(|_| HvError::AccessDenied)
+            .unwrap(); // TODO: fix this
+
+        // TODO: this isn't the right memory object
+        match virt::x86::translate::translate_gva_to_gpa(
+            support.guest_memory(target_vtl),
+            gva,
+            &registers,
+            virt::x86::translate::TranslateFlags::from_hv_flags(flags),
+        ) {
+            Ok(gpa) => Ok(hvdef::hypercall::TranslateVirtualAddressOutput {
+                translation_result: hvdef::hypercall::TranslateGvaResult::new()
+                    .with_result_code(TranslateGvaResultCode::SUCCESS.0)
+                    .with_overlay_page(gpa == support.overlay_page(target_vtl)), // TODO fill out the rest
+                gpa_page: gpa / hvdef::HV_PAGE_SIZE,
+            }),
+            Err(err) => Ok(hvdef::hypercall::TranslateVirtualAddressOutput {
+                translation_result: hvdef::hypercall::TranslateGvaResult::new()
+                    .with_result_code(TranslateGvaResultCode::from(err).0), // TODO fill out the rest
+                gpa_page: 0,
+            }), // TODO: should this be ok or err?
+        }
     }
 }
 

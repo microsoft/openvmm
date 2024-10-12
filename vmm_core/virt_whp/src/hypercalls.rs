@@ -713,9 +713,9 @@ mod x86 {
     use std::sync::atomic::Ordering;
     use tracing_helpers::ErrorValueExt;
     use virt::io::CpuIo;
+    use virt::x86::translate::translate_gva_to_gpa;
+    use virt::x86::translate::TranslateFlags;
     use virt::VpIndex;
-    use virt_support_x86emu::translate::translate_gva_to_gpa;
-    use virt_support_x86emu::translate::TranslateFlags;
     use vmcore::vpci_msi::VpciInterruptParameters;
     use whp::abi::WHV_REGISTER_VALUE;
     use whp::RegisterName;

@@ -1271,6 +1271,7 @@ mod vp_state {
         gva: u64,
     ) -> anyhow::Result<u64> {
         let state = debug.get_vp_state(vtl).context("failed to get vp state")?;
+
         match &*state {
             DebuggerVpState::X86_64(state) => {
                 let registers = virt_support_x86emu::translate::TranslationRegisters {
@@ -1325,7 +1326,7 @@ mod vp_state {
                     gva,
                     &registers,
                     flags,
-                )?)
+                )?.gpa)
             }
         }
     }
