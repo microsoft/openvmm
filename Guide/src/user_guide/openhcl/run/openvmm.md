@@ -5,19 +5,36 @@ with WHP, with some caveats:
 
 1. Performance is not great due to the extra overhead of OpenVMM modeling VTLs,
    not the hypervisor.
-2. Not all hypercalls are implemented, only the set used by OpenHCL. If any
-   are missing, you can implement the required support in OpenVMM's WHP
-   implementation.
+2. Not all hypercalls are implemented, only the set used by OpenHCL.
+3. Not all OpenHCL configuration and runtime management APIs are exposed / wired-up.
 
-> Due to the developer-oriented nature of this support at the moment, the
-> following examples assume you are already comfortable with the OpenVMM command
-> line, and are willing to deal with certain "rough edges" in the experience.
+These are all caveats that can (and will) be overcome with additional
+investments into OpenVMM.
+
+That said: running OpenHCL on OpenVMM is currently considered to be a **dev-only
+workflow**, not suitable for production use.
+
+To get a more complete and accurate experience of what OpenHCL's production
+runtime characteristics and user ergonomics are like, we currently suggest
+[running OpenHCL on Hyper-V](./hyperv.md).
+
+## Examples
+
+> These examples all use `cargo run --`, with the assumption that you are a
+> developer building your own copy of OpenVMM locally!
 >
-> At this time, we strongly suggest running and testing OpenHCL on Hyper-V.
+> To run these examples using a pre-compiled copy of OpenVMM, swap `cargo run
+> --` with `/path/to/openvmm`.
+>
+> Moreover - these examples assume basic familiarity with the OpenVMM command
+> line, and willingness to deal with OpenVMM's various "rough edges" (as
+> described in [Getting Started: OpenVMM](../../openvmm.md#disclaimer)).
 
-# Examples
+If you run into any issues, please refer to
+[OpenVMM: Troubleshooting](../../openvmm/troubleshooting.md), and/or
+[OpenHCL: Troubleshooting](../troubleshooting.md).
 
-## Preface: Using ohcldiag-dev
+### _Preface:_ Using ohcldiag-dev
 
 Add support for ohcldiag-dev by specifying the `--vtl2-vsock-path` option at vm
 launch. This will create a Unix socket that the ohcldiag-dev binary can connect to by
@@ -28,7 +45,7 @@ temp directory with path ohcldiag-dev. For example, running via powershell:
 cargo run -p ohcldiag-dev -- $env:temp\ohcldiag-dev kmsg
 ```
 
-## Linux direct
+### Linux direct
 
 Linux direct will work with an interactive console available via COM ports
 hosted in VTL2, relayed over VMBUS like on Hyper-V. Build a Linux direct IGVM
@@ -45,9 +62,7 @@ favorite shell and by default OpenVMM will use `cmd.exe`. A vsock window can be
 opened using the OpenVMM terminal on windows using `v 9980` or whichever hvsock
 port is configured to allow consoles for OpenHCL.
 
-
-
-## Vtl2 VMBus Support
+### Vtl2 VMBus Support
 
 OpenHCL run under OpenVMM can act as the VMBus server to VTL0. Additionally,
 OpenHCL can be configured to forward offers made by OpenVMM to VTL0.
@@ -58,7 +73,7 @@ To run OpenVMM and OpenHCL with VMBus host relay support:
  --vmbus-redirect
 ```
 
-## Assigning MANA devices to VTL2
+### Assigning MANA devices to VTL2
 
 OpenHCL can be assigned a MANA NIC to VTL2, and expose a VMBus NIC to the
 guest in VTL0. Expose it by adding the following:
@@ -67,7 +82,7 @@ guest in VTL0. Expose it by adding the following:
 --net uh:consomme --vmbus-redirect
 ```
 
-## Assigning SCSI devices to VTL2
+### Assigning SCSI devices to VTL2
 
 You can assign a SCSI disk to VTL2 and have OpenHCL reassign it to VTL0:
 
@@ -75,7 +90,7 @@ You can assign a SCSI disk to VTL2 and have OpenHCL reassign it to VTL0:
 --disk file:ubuntu.img,uh --vmbus-redirect
 ```
 
-## Assigning NVME devices to VTL2
+### Assigning NVME devices to VTL2
 
 You can assign an NVME disk to VTL2 and have OpenHCL relay it to VTL0 as a
 VMBus scsi device:

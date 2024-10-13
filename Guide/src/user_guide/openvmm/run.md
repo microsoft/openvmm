@@ -1,19 +1,22 @@
 
 # Running OpenVMM
 
-This chapter provides a high-level overview of different ways to launch and
-interact with OpenVMM.
+This page offers a high-level overview of different ways to launch and interact
+with OpenVMM.
 
-* * *
+These examples are by no means "exhaustive", and should be treated as a useful
+jumping-off point for subsequent self-guided experimentation with OpenVMM.
+
+## Obtaining a copy of OpenVMM
 
 To get started, ensure you have a copy of the OpenVMM executable and its runtime
 dependencies, via one of the following options:
 
-## Building OpenVMM Locally
+### Building OpenVMM Locally
 
 Follow the instructions on: [Building OpenVMM](../../dev_guide/getting_started/build_openvmm.md).
 
-## Pre-Built Binaries
+### Pre-Built Binaries
 
 If you would prefer to try OpenVMM without building it from scratch, you can
 download pre-built copies of the binary from
@@ -27,7 +30,7 @@ architecture and operating system.
 [`microsoft/openvmm-deps`](https://github.com/microsoft/openvmm-deps/releases/tag/Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release)
 on GitHub, and ensure it is in the same directory as `openvmm.exe`.
 
-# Examples
+## Examples
 
 > These examples all use `cargo run --`, with the assumption that you are a
 > developer building your own copy of OpenVMM locally!
@@ -37,7 +40,7 @@ on GitHub, and ensure it is in the same directory as `openvmm.exe`.
 
 If you run into any issues, please refer to [Troubleshooting](./troubleshooting.md).
 
-## Preface: Quitting OpenVMM
+### _Preface:_ Quitting OpenVMM
 
 By default, OpenVMM will connect the guests's COM1 serial port to the current
 terminal session, forwarding all keystrokes directly to the VM.
@@ -46,7 +49,7 @@ As such, a simple `ctrl-c` does not suffice to quit OpenVMM!
 
 Instead, you can type `crtl-q` to enter OpenVMM's [interactive console](../../reference/openvmm/management/interactive_console.md), and enter `q` to quit.
 
-## Sample Linux Kernel, via direct-boot
+### Sample Linux Kernel, via direct-boot
 
 This example will launch Linux via direct boot (i.e: without going through UEFI
 or BIOS), and appends `single` to the kernel command line.
@@ -76,7 +79,7 @@ The kernel and initrd can be controlled via options:
 * `--initrd <PATH>`: The initial ramdisk image.
 * `-c <STRING>` or `--cmdline <STRING>`: Extra kernel command line options, such as `root=/dev/sda`.
 
-## Windows, via UEFI
+### Windows, via UEFI
 
 This example will launch a modern copy of Windows via UEFI, using the `mu_msvm`
 firmware package.
@@ -109,7 +112,7 @@ useful when iterating on OpenVMM code, since booting the VM becomes repeatable
 and you don't have to worry about shutting down properly. Use `file` instead for
 normal persistent storage.
 
-## DOS, via PCAT BIOS
+### DOS, via PCAT BIOS
 
 While DOS in particular is not a scenario that the OpenVMM has heavily invested
 in, the fact DOS is able to boot in OpenVMM serves as a testament to OpenVMM's

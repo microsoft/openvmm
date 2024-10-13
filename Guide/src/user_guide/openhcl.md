@@ -3,6 +3,15 @@
 TODO OSS: this entire introduction needs to be rewritten, and diagrams will need to
 be replaced
 
+> _Note:_ As you explore the OpenVMM repo, you may find references to the term
+> **Underhill**.
+>
+> Underhill was the former codename for OpenHCL, so whenever you see the term
+> "Underhill", you can treat it as synonymous to "OpenHCL".
+>
+> We are actively migrating existing code and docs away from using the term
+> "Underhill".
+
 * * *
 
 OpenHCL is an environment for running virtualization facilities inside of

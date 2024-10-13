@@ -1,4 +1,4 @@
-# Troubleshooting
+# OpenVMM Troubleshooting
 
 This page includes a miscellaneous collection of troubleshooting tips for common
 issues you may encounter when running OpenVMM.

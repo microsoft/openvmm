@@ -16,6 +16,15 @@ At the moment, OpenVMM can be built and run on the following host platforms:
 When compiled, OpenVMM consists of a single standalone `openvmm` / `openvmm.exe`
 executable.[^dlls]
 
+> _Note:_ As you explore the OpenVMM repo, you may find references to the
+> term **HvLite**.
+>
+> HvLite was the former codename for OpenVMM, so whenever you see the term
+> "HvLite", you can treat it as synonymous to "OpenVMM".
+>
+> We are actively migrating existing code and docs away from using the term
+> "HvLite".
+
 ## Notable Features
 
 This *non-exhaustive* list provides a broad overview of some notable features,
@@ -64,17 +73,15 @@ devices, and scenarios OpenVMM currently supports.
 For more information on any / all of these features, see their corresponding
 pages under the **Reference** section of the OpenVMM Guide.
 
-Though, as you may be able to tell by looking at the sidebar, that section of
+...though, as you may be able to tell by looking at the sidebar, that section of
 the Guide is currently under construction, and not all items have corresponding
 pages at this time.
 
-## Next Steps
+## DISCLAIMER
 
 Before heading on to [Running OpenVMM](./openvmm/run.md), please take a moment
 to read and understand the following important disclaimer:
 
-> **DISCLAIMER**
->
 > In recent years, development efforts in the OpenVMM project have primarily
 > focused on [OpenHCL](./openhcl.md) (AKA: OpenVMM as a paravisor).
 >

@@ -98,10 +98,12 @@
   - [Graphics and Input]()
   - [Storage]()
   - [Networking]()
-- [Architecture]()
+- [Architecture](./reference/architecture.md)
   - [OpenVMM Architecture](./reference/architecture/openvmm.md)
+    - [mesh]()
+    - [inspect]()
   - [OpenHCL Architecture](./reference/architecture/openhcl.md)
 
 ---
 
-[OpenVMM Crate Docs]()
+[OpenVMM Rust Crate API Docs]()
