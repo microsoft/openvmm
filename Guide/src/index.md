@@ -97,4 +97,4 @@ following links:
 [Confidential VMs]: https://azure.microsoft.com/en-us/solutions/confidential-compute
 [Trusted Launch VMs]: https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch
 [TDX]: https://www.intel.com/content/www/us/en/developer/tools/trust-domain-extensions/overview.html
-[SEV-SNP]: https://www.amd.com/en/developer/sev.html
+[SEV-SNP]: https://www.amd.com/content/dam/amd/en/documents/epyc-business-docs/white-papers/SEV-SNP-strengthening-vm-isolation-with-integrity-protection-and-more.pdf
