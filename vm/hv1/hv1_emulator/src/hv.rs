@@ -98,7 +98,6 @@ pub struct GlobalHvParams {
 impl GlobalHv {
     /// Returns a new hypervisor emulator instance.
     pub fn new(params: GlobalHvParams) -> Self {
-        let [vtl0_protector, vtl1_protector] = params.hypercall_page_protectors.into_array();
         Self {
             partition_state: Arc::new(GlobalHvState {
                 vendor: params.vendor,
@@ -106,10 +105,9 @@ impl GlobalHv {
                 is_ref_time_backed_by_tsc: params.ref_time.is_backed_by_tsc(),
                 ref_time: params.ref_time,
             }),
-            vtl_mutable_state: VtlArray::from([
-                Arc::new(Mutex::new(MutableHvState::new(vtl0_protector))),
-                Arc::new(Mutex::new(MutableHvState::new(vtl1_protector))),
-            ]),
+            vtl_mutable_state: params
+                .hypercall_page_protectors
+                .map(|protector| Arc::new(Mutex::new(MutableHvState::new(protector)))),
             synic: VtlArray::from_fn(|_| GlobalSynic::new(params.max_vp_count)),
         }
     }

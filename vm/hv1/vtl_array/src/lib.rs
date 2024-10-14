@@ -44,9 +44,15 @@ impl<T, const N: usize> VtlArray<T, N> {
         }
     }
 
-    /// Returns the raw underlying array
-    pub fn into_array(self) -> [T; N] {
-        self.data
+    /// Maps over the vtl array using the raw underlying array
+    pub fn map<U, F>(self, f: F) -> VtlArray<U, N>
+    where
+        F: FnMut(T) -> U,
+    {
+        assert!(N > 0 && N <= 3);
+        VtlArray {
+            data: self.data.map(f),
+        }
     }
 }
 
