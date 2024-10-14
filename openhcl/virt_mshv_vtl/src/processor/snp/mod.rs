@@ -373,15 +373,12 @@ impl BackingPrivate for SnpBacked {
             tracelimit::warn_ratelimited!("extint not supported");
         }
 
-        // An INIT/SIPI targeted at a VP with more than one guest VTL enabled is ignored.
-        if !this.vtl_enabled(Vtl::Vtl1) {
-            if init {
-                this.handle_init(vtl)?;
-            }
+        if init {
+            this.handle_init(vtl)?;
+        }
 
-            if let Some(vector) = sipi {
-                this.handle_sipi(vtl, vector)?;
-            }
+        if let Some(vector) = sipi {
+            this.handle_sipi(vtl, vector)?;
         }
 
         // Return ready even if halted. `run_vp` will wait in the kernel when
@@ -738,7 +735,6 @@ impl UhProcessor<'_, SnpBacked> {
     }
 
     fn handle_init(&mut self, vtl: Vtl) -> Result<(), UhRunVpError> {
-        assert_eq!(vtl, Vtl::Vtl0);
         let vp_info = self.inner.vp_info;
         let mut access = self.access_state(vtl);
         vp::x86_init(&mut access, &vp_info).map_err(UhRunVpError::State)?;
@@ -746,7 +742,6 @@ impl UhProcessor<'_, SnpBacked> {
     }
 
     fn handle_sipi(&mut self, vtl: Vtl, vector: u8) -> Result<(), UhRunVpError> {
-        assert_eq!(vtl, Vtl::Vtl0);
         if self.backing.lapics[vtl].startup_suspend {
             let mut vmsa = self.runner.vmsa_mut(vtl);
             let address = (vector as u64) << 12;

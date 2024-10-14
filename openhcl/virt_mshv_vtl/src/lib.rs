@@ -505,7 +505,7 @@ struct UhVpInner {
     #[inspect(skip)]
     vp_info: TargetVpInfo,
     cpu_index: u32,
-    hcvm_vtl1_enabled: RwLock<bool>,
+    vtl1_enabled: Mutex<bool>,
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
     hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<hvdef::hypercall::InitialVpContextX64>>>, 2>,
