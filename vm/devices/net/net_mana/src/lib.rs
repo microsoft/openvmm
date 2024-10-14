@@ -579,7 +579,7 @@ impl Inspect for QueueStats {
 
 impl<T: DeviceBacking> InspectMut for ManaQueue<T> {
     // N.B. Inspect fields need to be kept in sync with
-    //      vmm_tests/tests/tests/x86_64/uhdiag.rs : EXPECTED_QUEUE_FIELDS_V1
+    // internal diagnostics testing. Search for EXPECTED_QUEUE_FIELDS_V1.
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.respond()
             .merge(&self.contiguous_memory)
