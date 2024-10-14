@@ -44,7 +44,7 @@ mod mapping {
     use std::ptr::NonNull;
     use std::sync::Arc;
     use thiserror::Error;
-    use virt_underhill::ProtectIsolatedMemory;
+    use virt_mshv_vtl::ProtectIsolatedMemory;
     use vm_topology::memory::MemoryLayout;
     use x86defs::snp::SevRmpAdjust;
     use x86defs::tdx::GpaVmAttributes;
@@ -764,7 +764,7 @@ mod mapping {
         }
     }
 
-    /// An implementation of [`virt_underhill::ChangeHostVisibility`] for Underhill VMs.
+    /// An implementation of [`virt_mshv_vtl::ChangeHostVisibility`] for Underhill VMs.
     pub struct HardwareIsolatedMemoryProtector {
         // Serves as a lock for synchronizing visibility and page-protection changes.
         inner: Mutex<HardwareIsolatedMemoryProtectorInner>,

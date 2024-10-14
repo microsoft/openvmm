@@ -11,7 +11,7 @@ use underhill_threadpool::AffinitizedThreadpool;
 
 pub(crate) async fn spawn_vps(
     tp: &AffinitizedThreadpool,
-    vps: Vec<virt_underhill::UhProcessorBox>,
+    vps: Vec<virt_mshv_vtl::UhProcessorBox>,
     runners: Vec<vmm_core::partition_unit::VpRunner>,
     chipset: &vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
     isolation: Option<hcl::ioctl::IsolationType>,
@@ -27,7 +27,7 @@ pub(crate) async fn spawn_vps(
 
 /// An object to spawn and run a VP.
 struct VpSpawner {
-    vp: virt_underhill::UhProcessorBox,
+    vp: virt_mshv_vtl::UhProcessorBox,
     cpu: u32,
     chipset: vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
     runner: vmm_core::partition_unit::VpRunner,
@@ -37,7 +37,7 @@ struct VpSpawner {
 impl VpSpawner {
     /// Creates a new spawner.
     pub fn new(
-        vp: virt_underhill::UhProcessorBox,
+        vp: virt_mshv_vtl::UhProcessorBox,
         chipset: vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
         runner: vmm_core::partition_unit::VpRunner,
         isolation: Option<hcl::ioctl::IsolationType>,
@@ -71,14 +71,14 @@ impl VpSpawner {
         }
     }
 
-    async fn run_backed_vp<T: virt_underhill::Backing>(
+    async fn run_backed_vp<T: virt_mshv_vtl::Backing>(
         &mut self,
         saved_state: Option<vmcore::save_restore::SavedStateBlob>,
         control: Option<&mut IdleControl>,
         save_on_cancel: bool,
     ) -> anyhow::Result<Option<vmcore::save_restore::SavedStateBlob>>
     where
-        for<'a> virt_underhill::UhProcessor<'a, T>: vmcore::save_restore::ProtobufSaveRestore,
+        for<'a> virt_mshv_vtl::UhProcessor<'a, T>: vmcore::save_restore::ProtobufSaveRestore,
     {
         let thread = underhill_threadpool::Thread::current().unwrap();
         // TODO propagate this error back earlier. This is easiest if
@@ -116,7 +116,7 @@ impl VpSpawner {
     ) -> Option<vmcore::save_restore::SavedStateBlob> {
         let r = match self.isolation {
             None | Some(hcl::ioctl::IsolationType::Vbs) => {
-                self.run_backed_vp::<virt_underhill::HypervisorBacked>(
+                self.run_backed_vp::<virt_mshv_vtl::HypervisorBacked>(
                     saved_state,
                     control,
                     save_on_cancel,
@@ -125,21 +125,13 @@ impl VpSpawner {
             }
             #[cfg(guest_arch = "x86_64")]
             Some(hcl::ioctl::IsolationType::Snp) => {
-                self.run_backed_vp::<virt_underhill::SnpBacked>(
-                    saved_state,
-                    control,
-                    save_on_cancel,
-                )
-                .await
+                self.run_backed_vp::<virt_mshv_vtl::SnpBacked>(saved_state, control, save_on_cancel)
+                    .await
             }
             #[cfg(guest_arch = "x86_64")]
             Some(hcl::ioctl::IsolationType::Tdx) => {
-                self.run_backed_vp::<virt_underhill::TdxBacked>(
-                    saved_state,
-                    control,
-                    save_on_cancel,
-                )
-                .await
+                self.run_backed_vp::<virt_mshv_vtl::TdxBacked>(saved_state, control, save_on_cancel)
+                    .await
             }
             #[cfg(guest_arch = "aarch64")]
             _ => unimplemented!(),

@@ -120,8 +120,8 @@ use virt::state::HvRegisterState;
 use virt::Partition;
 use virt::VpIndex;
 use virt::X86Partition;
-use virt_underhill::UhPartition;
-use virt_underhill::UhPartitionNewParams;
+use virt_mshv_vtl::UhPartition;
+use virt_mshv_vtl::UhPartitionNewParams;
 use vm_loader::initial_regs::initial_regs;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::KeyboardInputHandleKind;
@@ -1255,7 +1255,7 @@ async fn new_underhill_vm(
         #[cfg(guest_arch = "x86_64")]
         Some(hcl::ioctl::IsolationType::Snp) => {
             let cpu_bytes = boot_info.cpus.len() as u64
-                * virt_underhill::snp_shared_pages_required_per_cpu()
+                * virt_mshv_vtl::snp_shared_pages_required_per_cpu()
                 * hvdef::HV_PAGE_SIZE;
 
             round_up_to_2mb(cpu_bytes + device_dma + attestation)
@@ -1263,7 +1263,7 @@ async fn new_underhill_vm(
         #[cfg(guest_arch = "x86_64")]
         Some(hcl::ioctl::IsolationType::Tdx) => {
             let cpu_bytes = boot_info.cpus.len() as u64
-                * virt_underhill::tdx_shared_pages_required_per_cpu()
+                * virt_mshv_vtl::tdx_shared_pages_required_per_cpu()
                 * hvdef::HV_PAGE_SIZE;
 
             round_up_to_2mb(cpu_bytes + device_dma + attestation)

@@ -9,7 +9,7 @@ use firmware_uefi::platform::logger::UefiLogger;
 use guest_emulation_transport::api::EventLogId;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use std::sync::Weak;
-use virt_underhill::UhPartition;
+use virt_mshv_vtl::UhPartition;
 
 /// An Underhill specific logger used to log UEFI and PCAT events.
 #[derive(Debug)]

@@ -10,7 +10,7 @@ hcl.workspace = true
 hvdef.workspace = true
 memory_range.workspace = true
 underhill_threadpool.workspace = true
-virt_underhill.workspace = true
+virt_mshv_vtl.workspace = true
 vm_topology.workspace = true
 x86defs.workspace = true
 

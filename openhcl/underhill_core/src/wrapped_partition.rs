@@ -6,7 +6,7 @@ use inspect::InspectMut;
 use memory_range::MemoryRange;
 use std::sync::Arc;
 use virt::PageVisibility;
-use virt_underhill::UhPartition;
+use virt_mshv_vtl::UhPartition;
 use vmcore::save_restore::NoSavedState;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;

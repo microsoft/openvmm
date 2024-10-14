@@ -2,7 +2,7 @@
 
 use std::ops::RangeInclusive;
 use std::sync::Arc;
-use virt_underhill::UhPartition;
+use virt_mshv_vtl::UhPartition;
 
 pub struct UhRegisterHostIoFastPath(pub Arc<UhPartition>);
 

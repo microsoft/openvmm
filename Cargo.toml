@@ -158,7 +158,7 @@ underhill_init = { path = "openhcl/underhill_init" }
 underhill_mem = { path = "openhcl/underhill_mem" }
 openvmm_hcl_resources = { path = "openhcl/openvmm_hcl_resources" }
 underhill_threadpool = { path = "openhcl/underhill_threadpool" }
-virt_underhill = { path = "openhcl/virt_underhill" }
+virt_mshv_vtl = { path = "openhcl/virt_mshv_vtl" }
 
 aarch64defs = { path = "vm/aarch64/aarch64defs" }
 aarch64emu = { path = "vm/aarch64/aarch64emu" }

@@ -9,7 +9,7 @@ edition = "2021"
 profiler = ["dep:profiler_worker", "diag_server/profiler"]
 
 # Enable gdbstub support
-gdb = ["debug_worker_defs", "vmm_core/gdb", "virt_underhill/gdb"]
+gdb = ["debug_worker_defs", "vmm_core/gdb", "virt_mshv_vtl/gdb"]
 
 # Enable locally compiling and statically linking a copy of OpenSSL.
 # The build process requires a C compiler, perl, and make.
@@ -92,7 +92,7 @@ underhill_threadpool.workspace = true
 bootloader_fdt_parser.workspace = true
 vga_proxy.workspace = true
 video_core.workspace = true
-virt_underhill.workspace = true
+virt_mshv_vtl.workspace = true
 vm_manifest_builder.workspace = true
 vmbus_async.workspace = true
 vmbus_user_channel.workspace = true

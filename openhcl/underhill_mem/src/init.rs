@@ -21,7 +21,7 @@ use pal_async::task::Spawn;
 use std::sync::Arc;
 use tracing::Instrument;
 use underhill_threadpool::AffinitizedThreadpool;
-use virt_underhill::ProtectIsolatedMemory;
+use virt_mshv_vtl::ProtectIsolatedMemory;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
 use vm_topology::processor::ProcessorTopology;
