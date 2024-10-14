@@ -66,7 +66,7 @@
   - [Kernel Debugging (KDNET)](./reference/dev_feats/kdnet.md)
 - [Devices]()
   - [Firmware]()
-    - [UEFI: mu_msvm]()
+    - [UEFI: mu_msvm](./reference/devices/firmware/mu_msvm_uefi.md)
     - [BIOS: Hyper-V PCAT BIOS](./reference/devices/firmware/pcat_bios.md)
     - [Linux Direct]()
   - [Virtio]()
