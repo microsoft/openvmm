@@ -32,7 +32,7 @@ constant, to mark statements that could contain secrets and should not be logged
 Examples:
 
 ```rust
-use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::{CVM_ALLOWED, CVM_CONFIDENTIAL};
 
 tracing::info!(CVM_ALLOWED, foo, ?bar, "This statement will be logged in a CVM");
 tracing::info!(baz, "This statement will not be logged in a CVM");
