@@ -901,6 +901,7 @@ impl IntoPipeline for CheckinGatesCli {
         }
 
         // Add a job that depends on all others as a workaround for https://github.com/orgs/community/discussions/12395.
+        // TODO: Add a way for this job to skip flowey setup and become a true no-op.
         let all_good_job = pipeline
             .new_job(
                 FlowPlatform::Windows,
