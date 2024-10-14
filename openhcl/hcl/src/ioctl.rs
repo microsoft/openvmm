@@ -1924,11 +1924,7 @@ impl<T: Backing> ProcessorRunner<'_, T> {
         // SAFETY: self.run is mapped, and the target_vtl field can only be
         // mutated or accessed by this object and only before the kernel is
         // invoked during `run`
-        unsafe {
-            let run_vtl = self.run.as_ref().target_vtl.target_vtl().unwrap();
-            assert!(run_vtl.is_none() || (run_vtl.unwrap() != Vtl::from(vtl)));
-            self.run.as_mut().target_vtl = vtl.into()
-        }
+        unsafe { self.run.as_mut().target_vtl = vtl.into() }
     }
 }
 

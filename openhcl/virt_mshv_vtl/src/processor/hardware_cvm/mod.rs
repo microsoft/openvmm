@@ -28,8 +28,14 @@ use zerocopy::FromZeroes;
 
 #[derive(Inspect, InspectMut)]
 pub struct GuestVsmVpState {
+    // The lower VTL that was running when VTL 2 received an intercept. Queried
+    // during intercept handling and only valid during intercept handling.
+    #[inspect(with = "|x| x.map(|v| u8::from(v))")]
+    pub intercepted_vtl: Option<Vtl>,
+    // Used in VTL 2 exit code to determine which VTL to exit to, and which VTL
+    // is being entered from.
     #[inspect(with = "|x| u8::from(*x)")]
-    pub current_vtl: GuestVtl,
+    pub exit_vtl: GuestVtl,
 }
 
 impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
@@ -347,7 +353,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             .cvm_guest_vsm
             .as_ref()
             .expect("has guest vsm state")
-            .current_vtl
+            .last_vtl
             != GuestVtl::Vtl0
         {
             false
@@ -367,7 +373,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             .cvm_guest_vsm
             .as_mut()
             .expect("has guest vsm state")
-            .current_vtl = GuestVtl::Vtl1;
+            .exit_vtl = GuestVtl::Vtl1;
 
         // TODO GUEST_VSM: Force reevaluation of the VTL 1 APIC in case delivery of
         // low-priority interrupts was suppressed while in VTL 0.

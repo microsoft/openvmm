@@ -928,7 +928,8 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                         );
                         self.cvm_guest_vsm = Some(GuestVsmVpState {
                             // TODO CVM GUEST VSM: Revisit during AP startup if this is correct
-                            current_vtl: GuestVtl::Vtl0,
+                            last_vtl: None,
+                            exit_vtl: GuestVtl::Vtl0,
                         })
                     }
                 }
@@ -1121,8 +1122,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     fn switch_vtl(&mut self, target_vtl: GuestVtl) {
         T::switch_vtl_state(self, target_vtl);
-
-        self.runner.set_exit_vtl(target_vtl);
     }
 }
 

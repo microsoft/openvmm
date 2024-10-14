@@ -396,7 +396,7 @@ impl BackingPrivate for SnpBacked {
             .cvm_guest_vsm
             .as_ref()
             .expect("has guest vsm state")
-            .current_vtl;
+            .last_vtl;
 
         let [vmsa0, vmsa1] = this.runner.vmsas_mut();
         let (current_vmsa, mut target_vmsa) = match (current_vtl, target_vtl) {
@@ -903,40 +903,58 @@ impl UhProcessor<'_, SnpBacked> {
     }
 
     async fn run_vp_snp(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
-        // TODO CVM GUEST VSM: split out the "next vtl" that VTL 2 will exit to from
-        // last_vtl/current_vtl
-        let last_vtl = self
+        // TODO CVM GUEST VSM: actually check if there is an interrupt waiting
+        // for VTL 1 and switch to it if there is
+        let next_vtl = self
             .cvm_guest_vsm
             .as_ref()
-            .map_or(GuestVtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
+            .map_or(GuestVtl::Vtl0, |gvsm_state| gvsm_state.exit_vtl);
 
-        let mut vmsa = self.runner.vmsa_mut(last_vtl);
+        let mut vmsa = self.runner.vmsa_mut(next_vtl);
         let last_interrupt_ctrl = vmsa.v_intr_cntrl();
 
         vmsa.v_intr_cntrl_mut().set_guest_busy(false);
 
-        // TODO CVM GUEST VSM actually check and run vtl 1
         self.unlock_tlb_lock(Vtl::Vtl2);
-        let tlb_halt = self.should_halt_for_tlb_unlock(GuestVtl::Vtl0);
+        let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
 
-        self.runner.set_halted(
-            self.backing.lapics[GuestVtl::Vtl0].halted
-                || self.backing.lapics[GuestVtl::Vtl0].startup_suspend
-                || tlb_halt,
-        );
+        let halt = self.backing.lapics[next_vtl].halted
+            || self.backing.lapics[GuestVtl::Vtl0].startup_suspend // TODO GUEST VSM
+            || tlb_halt;
+
+        if halt && next_vtl == GuestVtl::Vtl1 {
+            tracelimit::warn_ratelimited!("halting VTL 1, which will halt the guest");
+        }
+
+        self.runner.set_halted(halt);
+
+        self.runner.set_exit_vtl(next_vtl);
 
         // Set the lazy EOI bit just before running.
-        let lazy_eoi = self.sync_lazy_eoi(GuestVtl::Vtl0);
+        let lazy_eoi = self.sync_lazy_eoi(next_vtl);
+
+        if let Some(gvsm_state) = self.cvm_guest_vsm.as_mut() {
+            gvsm_state.intercepted_vtl = None;
+            gvsm_state.exit_vtl = next_vtl; // TODO GUEST VSM: update next_vtl based on interrupts
+        }
 
         let mut has_intercept = self
             .runner
             .run()
             .map_err(|err| VpHaltReason::Hypervisor(UhRunVpError::Run(err)))?;
 
-        let entered_from_vtl = self
-            .cvm_guest_vsm
-            .as_ref()
-            .map_or(GuestVtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
+        // If VTL 2 entered due to an intercept, fix up the last vtl
+        let mut set_intercepted_vtl = || {
+            if let Some(gvsm_state) = self.cvm_guest_vsm.as_mut() {
+                gvsm_state.intercepted_vtl = Some(next_vtl);
+            }
+        };
+
+        if has_intercept {
+            set_intercepted_vtl();
+        }
+
+        let entered_from_vtl = next_vtl;
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
 
         // TODO SNP: The guest busy bit needs to be tested and set atomically.
@@ -1028,6 +1046,7 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::MSR => {
+                set_intercepted_vtl();
                 let is_write = vmsa.exit_info1() & 1 != 0;
                 let msr = vmsa.rcx() as u32;
 
@@ -1110,6 +1129,7 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::IOIO => {
+                set_intercepted_vtl();
                 let io_info = x86defs::snp::SevIoAccessInfo::from(vmsa.exit_info1() as u32);
                 if io_info.string_access() || io_info.rep_access() {
                     self.emulate(dev, false, entered_from_vtl).await?;
@@ -1141,6 +1161,7 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::VMMCALL => {
+                set_intercepted_vtl();
                 let is_64bit = self.long_mode(entered_from_vtl);
                 let guest_memory = &self.partition.gm[entered_from_vtl];
                 let handler = UhHypercallHandler {
@@ -1174,6 +1195,7 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::NPF if has_intercept => {
+                set_intercepted_vtl();
                 // Determine whether an NPF needs to be handled. If not, assume this fault is spurious
                 // and that the instruction can be retried. The intercept itself may be presented by the
                 // hypervisor as either a GPA intercept or an exception intercept.
@@ -1263,6 +1285,7 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::VMGEXIT if has_intercept => {
+                set_intercepted_vtl();
                 has_intercept = false;
                 match self.runner.exit_message().header.typ {
                     HvMessageType::HvMessageTypeX64SevVmgexitIntercept => {

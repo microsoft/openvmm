@@ -1146,6 +1146,8 @@ impl UhProcessor<'_, TdxBacked> {
             .run()
             .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?;
 
+        // TODO GUEST_VSM: set the last vtl
+
         *self.runner.tdx_vp_entry_flags_mut() = TdxVmFlags::new();
 
         if !has_intercept {
