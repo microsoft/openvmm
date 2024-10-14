@@ -72,8 +72,8 @@ important Azure scenarios:
   next-generation hardware accelerator), without requiring any modifications to
   the guest VM image.
 
-- Enabling existing, un-enlightened guest operating systems to run inside
-  software and hardware-backed [Confidential VMs].
+- Enabling existing guest operating systems to run inside hardware-backed
+  [Confidential VMs].
 
 - Powering [Trusted Launch VMs] - VMs that support Secure Boot, and include a
   vTPM.
