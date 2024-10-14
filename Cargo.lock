@@ -6949,6 +6949,7 @@ dependencies = [
  "bitfield-struct",
  "libc",
  "nix 0.26.4",
+ "pal_event",
  "tracing",
  "vfio-bindings",
 ]
