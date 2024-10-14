@@ -331,7 +331,7 @@ impl GuestEventPort for EmulatedGuestEventPort {
                     let Hv1State::Emulated(hv) = &partition.vtlp(vtl).hvstate else {
                         unreachable!()
                     };
-                    let _ = hv.synic.signal_event(
+                    let _ = hv.synic[vtl].signal_event(
                         &partition.gm,
                         vp,
                         sint,

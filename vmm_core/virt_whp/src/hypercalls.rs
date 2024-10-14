@@ -183,8 +183,7 @@ impl<T: CpuIo> hv1_hypercall::SignalEventDirect for WhpHypercallExit<'_, '_, T> 
 
                 return Err(HvError::InvalidSynicState);
             }
-            Hv1State::Emulated(hv) => hv
-                .synic
+            Hv1State::Emulated(hv) => hv.synic[vtl]
                 .signal_event(
                     &self.vp.vp.partition.gm,
                     vp,
