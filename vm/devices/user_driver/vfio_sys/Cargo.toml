@@ -11,8 +11,6 @@ libc.workspace = true
 nix = { workspace = true, features = ["ioctl"] }
 tracing.workspace = true
 vfio-bindings.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
 pal_event.workspace = true
 
 [lints]
