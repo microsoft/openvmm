@@ -900,21 +900,6 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(job);
         }
 
-        let all_good_job = pipeline
-            .new_job(
-                FlowPlatform::Windows,
-                FlowArch::X86_64,
-                "openvmm checkin gates",
-            )
-            .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                FlowPlatform::Windows,
-            ))
-            .finish();
-
-        for job in all_jobs.iter() {
-            pipeline.non_artifact_dep(&all_good_job, job);
-        }
-
         Ok(pipeline)
     }
 }

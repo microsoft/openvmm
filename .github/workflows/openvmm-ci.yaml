@@ -5060,59 +5060,6 @@ jobs:
       with:
         name: x64-linux-rustdoc
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-rustdoc/
-  job20:
-    name: openvmm checkin gates
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Win-Pool-WestUS3
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-    - job19
-    - job18
-    - job17
-    - job16
-    - job15
-    - job14
-    - job13
-    - job12
-    - job11
-    - job10
-    - job9
-    - job8
-    - job7
-    - job6
-    - job5
-    - job4
-    - job3
-    - job2
-    - job1
-    - job0
-    steps:
-    - name: 🌼🥾 Download bootstrapped flowey
-      uses: actions/download-artifact@v4
-      with:
-        name: _internal-flowey-bootstrap-windows-uid-9
-        path: ${{ runner.temp }}/bootstrapped-flowey
-    - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
-      shell: bash
-      name: 🌼📦 Add flowey to PATH
-    - name: 🌼🛫 Initialize job
-      run: |
-        AgentTempDirNormal="${{ runner.temp }}"
-        AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
-
-        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey.exe
-
-        echo '"debug"' | flowey.exe v 20 'FLOWEY_LOG' --update-from-stdin
-        echo "${{ runner.temp }}/work" | flowey.exe v 20 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
-
-        cat <<'EOF' | flowey.exe v 20 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
-        EOF
-      shell: bash
   job3:
     name: xtask fmt (windows)
     runs-on: windows-latest
