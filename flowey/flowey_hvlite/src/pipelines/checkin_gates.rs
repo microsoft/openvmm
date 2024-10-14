@@ -900,6 +900,7 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(job);
         }
 
+        // Add a job that depends on all others as a workaround for https://github.com/orgs/community/discussions/12395.
         let all_good_job = pipeline
             .new_job(
                 FlowPlatform::Windows,
