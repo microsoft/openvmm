@@ -113,7 +113,7 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
             .config
             .processor_topology
             .vps()
-            .map(|vp_info| hv1.synic.add_vp(vp_info.vp_index, Vtl::Vtl0))
+            .map(|vp_info| hv1.synic.add_vp(vp_info.vp_index))
             .collect::<Vec<_>>();
 
         let mut gicd = gic::Distributor::new(256);
