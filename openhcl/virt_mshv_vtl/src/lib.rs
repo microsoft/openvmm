@@ -869,7 +869,7 @@ impl vmcore::synic::GuestEventPort for UhEventPort {
             };
             tracing::trace!(vp = vp.index(), sint, flag, "signal_event");
             if let Some(hv) = partition.hv.as_ref() {
-                match hv.synic.signal_event(
+                match hv.synic[vtl].signal_event(
                     &partition.gm[vtl],
                     vp,
                     sint,

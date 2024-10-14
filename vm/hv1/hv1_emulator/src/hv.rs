@@ -30,8 +30,8 @@ pub struct GlobalHv {
     partition_state: Arc<GlobalHvState>,
     /// Mutable state, per VTL
     vtl_mutable_state: VtlArray<Arc<Mutex<MutableHvState>>, 2>,
-    /// The partition-wide synic state.
-    pub synic: GlobalSynic,
+    /// The per-vtl synic state.
+    pub synic: VtlArray<GlobalSynic, 2>,
 }
 
 #[derive(Inspect)]
@@ -89,7 +89,7 @@ impl GlobalHv {
             vtl_mutable_state: VtlArray::from_fn(|_| {
                 Arc::new(Mutex::new(MutableHvState::AT_RESET))
             }),
-            synic: GlobalSynic::new(params.max_vp_count),
+            synic: VtlArray::from_fn(|_| GlobalSynic::new(params.max_vp_count)),
         }
     }
 
@@ -104,7 +104,7 @@ impl GlobalHv {
             vp_index,
             partition_state: self.partition_state.clone(),
             vtl_state: self.vtl_mutable_state[vtl].clone(),
-            synic: self.synic.add_vp(vp_index, vtl),
+            synic: self.synic[vtl].add_vp(vp_index),
             vp_assist_page: 0.into(),
             guest_memory,
         }

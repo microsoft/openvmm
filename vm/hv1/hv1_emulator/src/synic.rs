@@ -11,7 +11,6 @@ use hvdef::HvMessageType;
 use hvdef::HvSynicSimpSiefp;
 use hvdef::HvSynicStimerConfig;
 use hvdef::TimerMessagePayload;
-use hvdef::Vtl;
 use hvdef::HV_MESSAGE_SIZE;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PAGE_SIZE_USIZE;
@@ -247,30 +246,15 @@ impl GlobalSynic {
     }
 
     /// Adds a virtual processor to the synthetic interrupt controller state.
-    pub fn add_vp(&self, vp_index: VpIndex, vtl: Vtl) -> ProcessorSynic {
-        match vtl {
-            Vtl::Vtl0 => {
-                let shared = self.vps[vp_index.index() as usize].clone();
-                let old_shared =
-                    std::mem::replace(&mut *shared.write(), SharedProcessorState::AT_RESET);
-                assert!(!old_shared.online);
+    pub fn add_vp(&self, vp_index: VpIndex) -> ProcessorSynic {
+        let shared = self.vps[vp_index.index() as usize].clone();
+        let old_shared = std::mem::replace(&mut *shared.write(), SharedProcessorState::AT_RESET);
+        assert!(!old_shared.online);
 
-                ProcessorSynic {
-                    sints: SintState::AT_RESET,
-                    timers: array::from_fn(|_| Timer::default()),
-                    shared,
-                }
-            }
-            Vtl::Vtl1 => {
-                // TODO CVM GUEST VSM, these values are just placeholders to prevent
-                // messing with VTL 0's state
-                ProcessorSynic {
-                    sints: SintState::AT_RESET,
-                    timers: array::from_fn(|_| Timer::default()),
-                    shared: Arc::new(RwLock::new(SharedProcessorState::AT_RESET)),
-                }
-            }
-            Vtl::Vtl2 => unreachable!(),
+        ProcessorSynic {
+            sints: SintState::AT_RESET,
+            timers: array::from_fn(|_| Timer::default()),
+            shared,
         }
     }
 }

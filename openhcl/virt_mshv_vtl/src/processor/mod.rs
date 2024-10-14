@@ -742,7 +742,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         let untrusted_synic = partition
             .untrusted_synic
             .as_ref()
-            .map(|synic| synic.add_vp(vp_info.base.vp_index, Vtl::Vtl0));
+            .map(|synic| synic.add_vp(vp_info.base.vp_index));
 
         let mut vp = Self {
             partition,
