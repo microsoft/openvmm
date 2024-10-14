@@ -31,10 +31,6 @@ CC_x86_64_unknown_linux_musl = { value = "build_support/underhill_cross/x86_64-u
 # Use the packaged verison of protoc, symlinked by repo setup tooling
 PROTOC = { value = ".packages/Google.Protobuf.Tools/tools/protoc", relative = true }
 
-# The path of the library for NTFS formatting
-X86_64_LIB_NTFS_FMT_DIR = { value = ".packages/extracted/x86_64-sysroot/lib", relative = true }
-AARCH64_LIB_NTFS_FMT_DIR = { value = ".packages/extracted/aarch64-sysroot/lib", relative = true }
-
 # Path to lxutil.dll
 X86_64_LXUTIL_DLL_DIR = { value = ".packages/Microsoft.WSL.LxUtil.amd64fre/build/native/bin", relative = true }
 AARCH64_LXUTIL_DLL_DIR = { value = ".packages/Microsoft.WSL.LxUtil.arm64fre/build/native/bin", relative = true }
