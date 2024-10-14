@@ -1223,8 +1223,7 @@ impl<T: RingMem> ProcessLoop<T> {
             }
             GuestNotifications::MODIFY_VTL2_SETTINGS => {
                 // Protocol wart: the fact that we still support this packet
-                // (even through MODIFY_VTL2_SETTINGS_REV1 exists) is a real
-                // bummer.
+                // (even through MODIFY_VTL2_SETTINGS_REV1 exists) is unfortunate.
                 //
                 // We should've deprecated this packet and just used
                 // MODIFY_VTL2_SETTINGS_REV1 for everything... but we didn't,
@@ -1543,7 +1542,7 @@ async fn request_device_platform_settings_v2(
         // `HostRequests::DEVICE_PLATFORM_SETTINGS_V2_REV1` packets, depending
         // on how big the contained payload is.
         //
-        // This is a real bummer, since not only is this a design principle
+        // This is unfortunate, since not only is this a design principle
         // violation of how the GET is supposed to work, but it's also totally
         // useless, since `DEVICE_PLATFORM_SETTINGS_V2_REV1` is more than
         // capable of handling small payloads itself! We should've just "fixed"

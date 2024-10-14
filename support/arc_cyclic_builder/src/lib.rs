@@ -55,7 +55,7 @@
 //! representation of `Arc`/`Weak` is going to change in the near future, and
 //! that this code will continue to work fine (at least for a while).
 //!
-//! Of course, leaving this kind of ticking timebomb in the codebase isn't a
+//! Of course, leaving this kind of risk in the codebase isn't a
 //! great idea, as while unit tests and MIRI tests serve as a reasonable
 //! early-warning indicator if the `Arc`/`Weak` representations have changed,
 //! ultimately, this code needs to land upstream in the std.
