@@ -295,6 +295,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             todo!();
         }
 
+        // TODO WHP GUEST VSM: An INIT/SIPI targeted at a VP with more than one guest VTL enabled is ignored.
         if init {
             self.handle_init(vtl)?;
         }

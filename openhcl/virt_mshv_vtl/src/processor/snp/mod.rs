@@ -373,12 +373,19 @@ impl BackingPrivate for SnpBacked {
             tracelimit::warn_ratelimited!("extint not supported");
         }
 
+        // An INIT/SIPI targeted at a VP with more than one guest VTL enabled is ignored.
+        // Check VTL enablement inside each block to avoid taking a lock on the hot path,
+        // INIT and SIPI are quite cold.
         if init {
-            this.handle_init(vtl)?;
+            if !*this.inner.vtl1_enabled.lock() {
+                this.handle_init(vtl)?;
+            }
         }
 
         if let Some(vector) = sipi {
-            this.handle_sipi(vtl, vector)?;
+            if !*this.inner.vtl1_enabled.lock() {
+                this.handle_sipi(vtl, vector)?;
+            }
         }
 
         // Return ready even if halted. `run_vp` will wait in the kernel when
