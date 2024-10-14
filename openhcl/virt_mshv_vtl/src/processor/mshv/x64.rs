@@ -314,8 +314,6 @@ impl BackingPrivate for HypervisorBackedX86 {
     fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: Vtl) {
         unreachable!("vtl switching should be managed by the hypervisor");
     }
-
-    fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
 }
 
 fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {

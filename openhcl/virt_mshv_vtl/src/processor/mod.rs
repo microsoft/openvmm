@@ -235,7 +235,7 @@ mod private {
         /// the target VTL that will become active.
         fn switch_vtl_state(this: &mut UhProcessor<'_, Self>, target_vtl: Vtl);
 
-        fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>);
+        fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
     }
 }
 
@@ -720,7 +720,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
         T::access_vp_state(self, vtl)
     }
 
-    fn vtl_enabled(&self, vtl: Vtl) -> bool {
+    fn vtl_inspectable(&self, vtl: Vtl) -> bool {
         match vtl {
             Vtl::Vtl0 => true,
             Vtl::Vtl1 => {
@@ -729,7 +729,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 } else {
                     // TODO: when there's support for returning VTL 1 registers,
                     // use the VsmVpStatus register to query the hypervisor for
-                    // whether VTL 1 is enabled on the vp.
+                    // whether VTL 1 is enabled on the vp (this can be cached).
                     false
                 }
             }

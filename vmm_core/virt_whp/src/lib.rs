@@ -1475,7 +1475,7 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         Err(Error::GuestDebuggingNotSupported)
     }
 
-    fn vtl_enabled(&self, vtl: Vtl) -> bool {
+    fn vtl_inspectable(&self, vtl: Vtl) -> bool {
         self.state.enabled_vtls.is_set(vtl)
     }
 

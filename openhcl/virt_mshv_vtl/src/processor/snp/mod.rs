@@ -377,13 +377,13 @@ impl BackingPrivate for SnpBacked {
         // Check VTL enablement inside each block to avoid taking a lock on the hot path,
         // INIT and SIPI are quite cold.
         if init {
-            if !*this.inner.vtl1_enabled.lock() {
+            if !*this.inner.hcvm_vtl1_enabled.lock() {
                 this.handle_init(vtl)?;
             }
         }
 
         if let Some(vector) = sipi {
-            if !*this.inner.vtl1_enabled.lock() {
+            if !*this.inner.hcvm_vtl1_enabled.lock() {
                 this.handle_sipi(vtl, vector)?;
             }
         }

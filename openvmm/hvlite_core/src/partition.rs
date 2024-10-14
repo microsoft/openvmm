@@ -326,8 +326,8 @@ impl<T: Processor> Processor for WrappedVp<'_, T> {
         self.0.access_state(vtl)
     }
 
-    fn vtl_enabled(&self, vtl: Vtl) -> bool {
-        self.0.vtl_enabled(vtl)
+    fn vtl_inspectable(&self, vtl: Vtl) -> bool {
+        self.0.vtl_inspectable(vtl)
     }
 }
 

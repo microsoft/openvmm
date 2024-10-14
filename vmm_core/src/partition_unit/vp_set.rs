@@ -192,7 +192,7 @@ where
             ("vtl1", Vtl::Vtl1),
             ("vtl2", Vtl::Vtl2),
         ] {
-            if self.vp.vtl_enabled(vtl) {
+            if self.vp.vtl_inspectable(vtl) {
                 resp.field_mut(
                     name,
                     &mut inspect::adhoc_mut(|req| {

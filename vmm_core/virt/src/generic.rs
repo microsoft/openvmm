@@ -405,10 +405,10 @@ pub trait Processor: InspectMut {
     /// can be saved/restored correctly.
     fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError>;
 
-    /// Returns whether the specified VTL is enabled on this processor.
+    /// Returns whether the specified VTL can be inspected on this processor.
     ///
-    /// VTL0 is always enabled.
-    fn vtl_enabled(&self, vtl: Vtl) -> bool {
+    /// VTL0 is always inspectable.
+    fn vtl_inspectable(&self, vtl: Vtl) -> bool {
         vtl == Vtl::Vtl0
     }
 
