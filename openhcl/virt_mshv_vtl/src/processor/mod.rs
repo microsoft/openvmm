@@ -56,6 +56,7 @@ use pal_async::driver::PollImpl;
 use pal_async::timer::PollTimer;
 use pal_uring::IdleControl;
 use parking_lot::Mutex;
+use parking_lot::RwLock;
 use private::BackingPrivate;
 use std::convert::Infallible;
 use std::future::poll_fn;
@@ -312,7 +313,7 @@ impl UhVpInner {
             waker: Default::default(),
             cpu_index,
             vp_info,
-            vtl1_enabled: Mutex::new(false),
+            hcvm_vtl1_enabled: RwLock::new(false),
             hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
             sidecar_exit_reason: Default::default(),
             tlb_lock_info: VtlArray::<_, 2>::from_fn(|_| super::TlbLockInfo::new(vp_count)),
@@ -714,6 +715,23 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         T::access_vp_state(self, vtl)
+    }
+
+    fn vtl_enabled(&self, vtl: Vtl) -> bool {
+        match vtl {
+            Vtl::Vtl0 => true,
+            Vtl::Vtl1 => {
+                if self.partition.is_hardware_isolated() {
+                    *self.inner.hcvm_vtl1_enabled.read()
+                } else {
+                    // TODO: when there's support for returning VTL 1 registers,
+                    // use the VsmVpStatus register to query the hypervisor for
+                    // whether VTL 1 is enabled on the vp.
+                    false
+                }
+            }
+            Vtl::Vtl2 => false,
+        }
     }
 }
 
