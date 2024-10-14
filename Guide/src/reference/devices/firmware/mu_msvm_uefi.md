@@ -12,14 +12,14 @@ booting and running modern EFI-boot capable operating systems.
 Two OpenVMM components work in tandem in order to load and run the `mu_msvm`
 UEFI firmware:
 
-- Pre-boot: the UEFI firmware loader writes the `mu_msvm` firmware into guest
-  RAM, and sets up the initial register state such that the VM will begin
-  executing the firmware.
+- Pre-boot: the VMM's UEFI firmware loader does  3 things:
+  1. Writes the `mu_msvm` UEFI firmware package into guest RAM
+  2. Writes VM topology information, and `mu_msvm`-specific config data into guest RAM
+  3. Initializes register state such that the VM will begin executing from UEFI
 
-- At runtime: UEFI code inside the VM communicates with a bespoke
-  `firmware_uefi` virtual device, which it uses to fetch information about the
-  VM's current topology, and to implement certain UEFI services (notably: NVRam
-  variables).
+- At runtime: the UEFI code within the Guest interfaces with a bespoke
+  `firmware_uefi` device in order to implement certain UEFI services, such as
+  NVRam variable support, watchdog timers, logging, etc.
 
 ## Acquiring a copy of `mu_msvm`
 

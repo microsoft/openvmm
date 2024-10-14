@@ -12,9 +12,9 @@ systems.
 
 Two OpenVMM components work in tandem in order to load and run the BIOS:
 
-- Pre-boot: the BIOS firmware loader writes the PCAT BIOS into guest RAM, and
-  sets up the initial register state such that the VM will begin executing the
-  firmware.
+- Pre-boot: the VMM's BIOS firmware loader writes the PCAT BIOS into guest RAM,
+  and sets up the initial register state such that the VM will begin executing
+  the firmware.
 
 - At runtime: the BIOS code inside the VM communicates with a bespoke
   `firmware_pcat` virtual device, which it uses to fetch information about the
