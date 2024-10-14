@@ -1321,7 +1321,7 @@ impl MshvHvcall {
             - size_of::<hvdef::hypercall::ModifyVtlProtectionMask>())
             / size_of::<u64>();
 
-        let span = tracing::span!(tracing::Level::INFO, "modify_vtl_protection_mask", ?range);
+        let span = tracing::span!(tracing::Level::INFO, "modify_vtl_protection_mask", %range);
         let _enter = span.enter();
 
         let start = range.start() / HV_PAGE_SIZE;

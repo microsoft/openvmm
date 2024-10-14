@@ -121,12 +121,12 @@ async fn openhcl_servicing_shutdown_ic(
     // Make sure the disk showed up.
     cmd!(sh, "ls /dev/sda").run().await?;
 
-    let shutdown_ic = vm.wait_for_enlightened_shutdown_ready().await?;
+    let (_, shutdown_device_stopped) = vm.wait_for_enlightened_shutdown_ready().await?;
     vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
         .await?;
     // VTL2 will disconnect and then reconnect the shutdown IC across a servicing event.
     tracing::info!("waiting for shutdown IC to close");
-    shutdown_ic.await.unwrap_err();
+    shutdown_device_stopped.await.unwrap_err();
     vm.wait_for_enlightened_shutdown_ready().await?;
 
     // Make sure the VTL0 disk is still present by reading it.

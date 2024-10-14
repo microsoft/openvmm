@@ -19,6 +19,7 @@ mod nvme_manager;
 mod options;
 mod reference_time;
 mod servicing;
+mod shutdown_relay;
 mod threadpool_vm_task_backend;
 mod vmbus_relay_unit;
 mod vp;

@@ -3137,6 +3137,7 @@ dependencies = [
  "hyperv_ic_resources",
  "inspect",
  "mesh",
+ "mesh_channel",
  "task_control",
  "thiserror 2.0.12",
  "tracing",
@@ -3184,6 +3185,7 @@ name = "hyperv_ic_resources"
 version = "0.0.0"
 dependencies = [
  "mesh",
+ "mesh_channel",
  "vm_resource",
 ]
 
@@ -4891,6 +4893,7 @@ dependencies = [
  "macaddr",
  "mcr_resources",
  "mesh",
+ "mesh_channel",
  "mesh_process",
  "mesh_rpc",
  "mesh_worker",
@@ -7317,6 +7320,7 @@ dependencies = [
  "mcr_resources",
  "memory_range",
  "mesh",
+ "mesh_channel",
  "mesh_process",
  "mesh_tracing",
  "mesh_worker",

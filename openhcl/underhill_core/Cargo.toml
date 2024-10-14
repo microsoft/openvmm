@@ -134,6 +134,7 @@ guid.workspace = true
 inspect.workspace = true
 kmsg.workspace = true
 local_clock.workspace = true
+mesh_channel.workspace = true
 mesh_process.workspace = true
 mesh_worker.workspace = true
 mesh.workspace = true
