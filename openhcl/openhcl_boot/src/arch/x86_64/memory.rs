@@ -8,6 +8,7 @@ use crate::host_params::shim_params::IsolationType;
 use crate::host_params::PartitionInfo;
 use crate::hypercall::hvcall;
 use crate::ShimParams;
+use host_fdt_parser::MemoryAllocationMode;
 use memory_range::MemoryRange;
 use sha2::Digest;
 use sha2::Sha384;
@@ -24,6 +25,32 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
     // TODO: if applying vtl 2 protections for non-isolated VMs moves to the
     // boot shim, apply them here.
     if let IsolationType::None = shim_params.isolation_type {
+        match partition_info.memory_allocation_mode {
+            MemoryAllocationMode::Vtl2 { memory_size: _, mmio_size: _ } => {
+                let result = safe_x86_intrinsics::cpuid(
+                    hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+                    0,
+                );
+                let is_pinning_supported = hvdef::HvEnlightenmentInformation::from(
+                    result.eax as u128
+                        | (result.ebx as u128) << 32
+                        | (result.ecx as u128) << 64
+                        | (result.edx as u128) << 96,
+                )
+                .use_gpa_pinning_hypercall();
+
+                if is_pinning_supported == true
+                {
+                    for entry in partition_info.vtl2_ram.iter() {
+                        hvcall()
+                            .pin_gpa_range(entry.range)
+                            .expect("Failed to pin the VTl2 memory");
+                    }
+                }
+            }
+            MemoryAllocationMode::Host => {
+            },
+        }
         return;
     }
 
