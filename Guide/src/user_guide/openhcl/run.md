@@ -12,7 +12,12 @@ one of the following options:
 
 Follow the instructions on: [Building OpenHCL](../../dev_guide/getting_started/build_openhcl.md).
 
+<<<<<<< HEAD
 ### Pre-Built Binaries
+=======
+
+## Pre-Built Binaries
+>>>>>>> 3214d5e91a55fe6e52ff5c3cf1287ef75915649c
 
 If you would prefer to try OpenHCL without building it from scratch, you can
 download pre-built copies of OpenHCL IGVM files from
