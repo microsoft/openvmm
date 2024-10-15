@@ -94,10 +94,55 @@ impl FlowNode for Node {
             return Ok(());
         }
 
+        let persistent_dir = ctx.persistent_dir();
+
         let need_install =
-            ctx.emit_rust_stepv("checking if apt packages need to be installed", |_ctx| {
+            ctx.emit_rust_stepv("checking if apt packages need to be installed", |ctx| {
+                let persistent_dir = persistent_dir.claim(ctx);
                 let packages = packages.clone();
-                move |_| {
+                move |rt| {
+                    // until more flowey nodes learn that debian isn't the only
+                    // linux distro that exists, lets give users an escape-hatch
+                    // to run linux flows on non-linux platforms.
+                    if matches!(rt.backend(), FlowBackend::Local) && which::which("dpkg-query").is_err() {
+                        log::error!("Could not find `dpkg-query`");
+                        log::warn!("");
+                        log::warn!("================================================================================");
+                        log::warn!("This flow is hard-coded to assume it is running on a Debian-based linux distro.");
+                        log::warn!("If you would like to *attempt* running this flow on a non-Debian-based distro...");
+                        log::warn!("");
+                        log::warn!("                             PROCEED WITH CAUTION");
+                        log::warn!("");
+                        log::warn!("If you proceed, do NOT file a GitHub issue when things break!");
+                        log::warn!("================================================================================");
+                        log::warn!("");
+                        log::info!("Please ensure the following debian packages (or equivalent) are installed:");
+                        for pkg in &packages {
+                            log::info!("- {pkg}");
+                        }
+                        log::info!("");
+
+                        if let Some(persistent_dir) = persistent_dir {
+                            // only show the prompt once per dependency-set
+                            let hasher = &mut rustc_hash::FxHasher::default();
+                            std::hash::Hash::hash(&packages, hasher);
+                            let hash = std::hash::Hasher::finish(hasher);
+
+                            let promptfile = rt.read(persistent_dir).join(format!("prompt_{:08x?}", hash));
+
+                            if !promptfile.exists() {
+                                log::info!("Press [enter] to proceed, or [ctrl-c] to exit.");
+                                log::info!("This interactive prompt will only appear once per dependency-set.");
+                                let _ = std::io::stdin().read_line(&mut String::new());
+                                fs_err::write(promptfile, [])?;
+                            }
+                        } else {
+                            log::warn!("Proceeding with the assumption that these packages are installed...");
+                        }
+
+                        return Ok(false)
+                    }
+
                     let sh = xshell::Shell::new()?;
 
                     let mut installed_packages = BTreeSet::new();
