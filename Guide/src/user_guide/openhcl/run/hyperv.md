@@ -1,5 +1,6 @@
 # Windows - Hyper-V
-Hyper-V has support for running with OpenHCL when running on Windows. This is the closest configuration to what we ship in Azure VMs, the only difference being that we use Azure Host OS (as opposed to Windows Client or Windows Server).
+Hyper-V has support for running with OpenHCL when running on Windows. 
+This is the closest configuration to what Microsoft ships in Azure VMs, the only difference being that Azure uses Azure Host OS (as opposed to Windows Client or Windows Server).
 
 ## Get a Windows version that has development support for OpenHCL
 
@@ -17,14 +18,14 @@ Otherwise, you can get it via [Windows Insider](https://www.microsoft.com/en-us/
 ### Windows Server
 Instructions coming soon.
 
-### Machine setup
-#### Enable loading from developer file
+## Machine setup
+### Enable loading from developer file
 Once you get the right Windows Version, run the following command once before starting your VM.  Note that this enabled loading unsigned images, and must be done as administrator.
 
 ```powershell
 `Set-ItemProperty "HKLM:/Software/Microsoft/Windows NT/CurrentVersion/Virtualization" -Name "AllowFirmwareLoadFromFile" -Value 1 -Type DWORD | Out-Null`
 ```
-#### Enable Hyper-V
+### Enable Hyper-V
 Enbable [Hyper-V](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/quick-start/enable-hyper-v) on your machine. 
 
 ### File access
