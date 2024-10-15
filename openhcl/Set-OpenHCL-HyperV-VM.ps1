@@ -18,6 +18,9 @@ param
     [Parameter(Mandatory)]
     [Microsoft.Management.Infrastructure.CimInstance] $CIMInstanceOfVM
 )
+
+$ROOT_HYPER_V_NAMESPACE = "root\virtualization\v2"
+
 filter Trace-CimMethodExecution {
     param (
         [Alias("WmiClass")]
@@ -161,9 +164,12 @@ function Set-VmSystemSettings {
     }
 }
 
-$ROOT_HYPER_V_NAMESPACE = "root\virtualization\v2"
+if (Get-VMHostSupportedVersion | Where-Object { $_.Version -eq "13.0" }) { 
 $CIMInstanceOfVM.GuestFeatureSet = 0x00000201
 Set-VmSystemSettings $CIMInstanceOfVM
+}else {
+    write-output "This Windows host does not support VMs version 12.0; please update your Windows version according to the instruction and try again."
+}
 
 
 
