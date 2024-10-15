@@ -164,7 +164,7 @@ function Set-VmSystemSettings {
     }
 }
 
-if (Get-VMHostSupportedVersion | Where-Object { $_.Version -eq "13.0" }) { 
+if (Get-VMHostSupportedVersion | Where-Object { $_.Version -eq "12.0" }) { 
 $CIMInstanceOfVM.GuestFeatureSet = 0x00000201
 Set-VmSystemSettings $CIMInstanceOfVM
 }else {

@@ -19,7 +19,7 @@ Instructions coming soon.
 
 ### Machine setup
 #### Enable loading from developer file
-Once you get the right Windows Version, run this command once before creating any VMs.
+Once you get the right Windows Version, run the following command once before starting your VM.  Note that this enabled loading unsigned images, and must be done as administrator.
 
 ```powershell
 `Set-ItemProperty "HKLM:/Software/Microsoft/Windows NT/CurrentVersion/Virtualization" -Name "AllowFirmwareLoadFromFile" -Value 1 -Type DWORD | Out-Null`
