@@ -1,43 +1,52 @@
 # Windows - Hyper-V
 Hyper-V has support for running with OpenHCL when running on Windows. This is the closest configuration to what we ship in Azure VMs, the only difference being that we use Azure Host OS (as opposed to Windows Client or Windows Server).
 
-## Get the right Windows version on your machine
+## Get a Windows version that has development support for OpenHCL
 
-You need to use a Windows version that has development support for OpenHCL. Note that Windows Client and Server versions only have development support for OpenHCL VMs, not production support.
+Note that no Windows Client/Windows Server versions have production support for OpenHCL VMs, but certain versions have development support for OpenHCL VMs.
 
-For now, you can use the Windows 11 2024 Update (AKA version 24H2), the third and upcoming major update to Windows 11, as this is the first Windows version to have development support for OpenHCL VMs.
+### Windows Client
 
-Since this is not yet generally available, you can get it via [Windows Insider](https://www.microsoft.com/en-us/windowsinsider). The Windows Insider Program is a community of millions of Windows users who get to preview Windows features and engage directly with Microsoft engineers to help shape the future of Windows.
+You can use the Windows 11 2024 Update (AKA version 24H2), the third and new major update to Windows 11, as this is the first Windows version to have development support for OpenHCL VMs.
 
-Since this is not yet generally available, you can get it via Windows Insider. The Windows Insider Program is a community of millions of Windows users who get to preview Windows features and engage directly with Microsoft engineers to help shape the future of Windows.
+As of October 1, 2024, the Windows 11 2024 Update is  available. Microsoft is taking a phased approach with its rollout. If the update is available for your device, it will [download and install automatically](https://learn.microsoft.com/en-us/windows/release-health/status-windows-11-24h2). 
 
-Simply [register](https://www.microsoft.com/en-us/windowsinsider/register) with your Microsoft account, which is the same account you use for other Microsoft services, like email, or Microsoft Office and follow these [instructions](https://www.microsoft.com/en-us/windowsinsider/for-business-getting-started#flight). You should choose the “Release Preview Channel” unless you want to experiment a bit more and are willing to forgo stability. 
-
-You may have to click the Check for updates button to download the latest Insider Preview build twice, and this update may take over an hour. Finally go to Settings > About to check you are on Windows 11, version 24H2 (Build 26100.1586). 
+Otherwise, you can get it via [Windows Insider](https://www.microsoft.com/en-us/windowsinsider) by [registering](https://www.microsoft.com/en-us/windowsinsider/register) with your Microsoft account and following these [instructions](https://www.microsoft.com/en-us/windowsinsider/for-business-getting-started#flight) (you can choose the “Release Preview Channel”). You may have to click the Check for updates button to download the latest Insider Preview build twice, and this update may take over an hour. Finally go to Settings > About to check you are on Windows 11, version 24H2 (Build 26100.1586). 
 ![alt text](./_images/exampleWindows.png)
 
-Next, make sure Hyper-V is [enabled](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/quick-start/enable-hyper-v).
+### Windows Server
+Instructions coming soon.
+
+### Registry keys
+Once you get the right Windows Version, run this command once before creating any VMs.
+
+```powershell
+`Set-ItemProperty "HKLM:/Software/Microsoft/Windows NT/CurrentVersion/Virtualization" -Name "AllowFirmwareLoadFromFile" -Value 1 -Type DWORD | Out-Null`
+```
 
 ## Create a VM
 
-Make sure your OpenHCL .bin is located somewhere that vmwp.exe in your Windows host has permissions to read it (that can be in windows\system32, or another directory with wide read access). Then, save the path of the OpenHCL .bin in a var named $Path and save the VM name you want to use in a var named $VmName.
+Ensure Hyper-V is [enabled](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/quick-start/enable-hyper-v), and that your OpenHCL .bin is located somewhere that vmwp.exe in your Windows host has permissions to read it (that can be in windows\system32, or another directory with wide read access). 
+
+Save the path of the OpenHCL .bin in a var named $Path and save the VM name you want to use in a var named $VmName.
 
 For example:
 
 ```powershell
-`$Path = ‘C:\Windows\System32\openhcl-x64.bin`
-`$VmName = 'myFirstVM`
+`$Path = 'C:\Windows\System32\openhcl-x64.bin'
+`$VmName = 'myFirstVM'
 ```
 
-## Create a VM
 ### Create VM as a Trusted Launch VM
 Enables [Trusted Launch](https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch) for the VM.
 You can use this script with no additional instructions required (simplest path).
 ```powershell
-<your openvmm repo root>\openhcl\New-OpenHCL-HyperV-VM.ps1 -VmName $VmName -Path $Path
+new-vm $VmName -generation <VM generation> -GuestStateIsolationType TrustedLaunch
+
+$vm = Get-CimInstance -namespace "root\virtualization\v2" -query "select * from Msvm_ComputerSystem where ElementName = '$VmName'" | Get-CimAssociatedInstance -ResultClass "Msvm_VirtualSystemSettingData" -Association "Msvm_SettingsDefineState"
+$vm.FirmwareFile = $Path
+.\openhcl\Set-OpenHCL-HyperV-VM.ps1 -CIMInstanceOfVM $vm 
 ```
-### Create VM as a VBS VM
-Enables VBS for the VM. Coming soon!
 ### Create VM as a TDX VM
 Enables TDX for the VM. Coming soon!
 ### Create VM as an SNP VM

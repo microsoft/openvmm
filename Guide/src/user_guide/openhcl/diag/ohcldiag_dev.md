@@ -17,7 +17,7 @@ That is to say:
 You can inspect a running OpenHCL VM with ohcldiag-dev.
 
 ```powershell
-PS C:\> .\ohcldiag-dev.exe inspect gen1-testvm build_info
+PS > .\ohcldiag-dev.exe <vm name> inspect build_info
 {
    crate_name: "underhill_core",
    scm_revision: "bd7d6a98b7ca8365acdfd5fa2b10a17e62ffa766",
@@ -29,7 +29,7 @@ You can use that to validate your VM is running with the OpenHCL image you inten
 The detailed kernel version information is available from the initial RAM filesystem only:
 
 ```powershell
-PS D:\> .\Tools\ohcldiag-dev.exe uhvm00-client run -- cat /etc/kernel-build-info.json
+PS > .\ohcldiag-dev.exe <vm name> run -- cat /etc/kernel-build-info.json
 {
   "git_branch": "rolling-lts/underhill/5.15.90.7",
   "git_revision": "55792e0aa5e92ac4450dc10bf032caadc019fd84",
@@ -39,7 +39,7 @@ PS D:\> .\Tools\ohcldiag-dev.exe uhvm00-client run -- cat /etc/kernel-build-info
 ```
 The OpenHCL version information can be read from the filesystem, too:
 ```powershell
-PS D:\> .\Tools\ohcldiag-dev.exe uhvm00-client run -- cat /etc/underhill-build-info.json
+PS > .\ohcldiag-dev.exe <vm name> run -- cat /etc/underhill-build-info.json
 {
     "git_branch": "user/romank/kernel_build_info",
     "git_revision": "a7c4ba3ffcd8708346d33a608f25b9287ac89f8b"
@@ -117,7 +117,7 @@ can be overridden on individual trace statements.
 So to enable warning traces by default, but debug level for storvsp traces, try:
 
 ```powershell
-ohcldiag-dev.exe myvm inspect trace/filter -u warn,storvsp=debug
+ohcldiag-dev.exe <vm name> inspect trace/filter -u warn,storvsp=debug
 ```
 
 If successful, the new filter will take effect immediately, even if you have an

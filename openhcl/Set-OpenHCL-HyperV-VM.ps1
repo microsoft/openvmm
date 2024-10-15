@@ -1,42 +1,22 @@
 
 <#
 .SYNOPSIS
-    Create a VM that uses OpenHCL on Hyper-V host.
+    Sets OpenHCL for the VM on the current Hyper-V host. 
 
 .DESCRIPTION
-    Create a VM with the provided name, of the provided security type, using the provided OpenHCL image on the current Hyper-V host. 
+    Sets OpenHCL for the VM on the current Hyper-V host. 
 
-.PARAMETER type
-    The security type of the VM. These are the options:
-    - `TrustedLaunch`: Enables Trusted Launch for the VM.
-    - `VBS`: Enables VBS for the VM.
-    - `SNP`: Enables SEV-SNP for the VM.
-    - `TDX`: Enables TDX for the VM. 
-    If not provided, will default to create a TrustedLaunch VM
-
-.PARAMETER VmName
-    The name of the VM.
-
-.PARAMETER Path
-    Local path to the IGVM OpenHCL file 
+.PARAMETER CIMInstanceOfVM
+    The CIMInstance of the WMI VM object you want to modify.
 
 .EXAMPLE
-    \openhcl\New-OpenHCL-HyperV-VM.ps1 -Type TrustedLaunch -VmName $VmName -Path $Path
-
+    \openhcl\Set-OpenHCL-HyperV-VM.ps1 -CIMInstanceOfVM $CIMInstanceOfVM
 #>
 
 param
 (
-    [string]
-    $type, 
-
-    [ValidateNotNullOrEmpty()]
-    [string]
-    $VmName, 
-
-    [ValidateNotNullOrEmpty()]
-    [string]
-    $Path 
+    [Parameter(Mandatory)]
+    [Microsoft.Management.Infrastructure.CimInstance] $CIMInstanceOfVM
 )
 filter Trace-CimMethodExecution {
     param (
@@ -181,14 +161,9 @@ function Set-VmSystemSettings {
     }
 }
 
-new-vm $VmName -generation 2 -GuestStateIsolationType TrustedLaunch
-Set-ItemProperty "HKLM:/Software/Microsoft/Windows NT/CurrentVersion/Virtualization" -Name "AllowFirmwareLoadFromFile" -Value 1 -Type DWORD | Out-Null
 $ROOT_HYPER_V_NAMESPACE = "root\virtualization\v2"
-$vm = Get-CimInstance -namespace $ROOT_HYPER_V_NAMESPACE -query "select * from Msvm_ComputerSystem where ElementName = '$VmName'"
-$vssd = $vm | Get-CimAssociatedInstance -ResultClass "Msvm_VirtualSystemSettingData" -Association "Msvm_SettingsDefineState"
-$vssd.FirmwareFile =$Path
-$vssd.GuestFeatureSet =0x00000201
-Set-VmSystemSettings $vssd
+$CIMInstanceOfVM.GuestFeatureSet = 0x00000201
+Set-VmSystemSettings $CIMInstanceOfVM
 
 
 
