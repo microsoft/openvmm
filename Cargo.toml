@@ -7,6 +7,7 @@ members = [
   # openvmm
   "openvmm/openvmm",
   # repo tooling
+  "flowey/flowey_trampoline",
   "flowey/flowey_hvlite",
   "xtask",
   # openhcl
@@ -518,8 +519,8 @@ inherits = 'dev'
 opt-level = 1
 
 [profile.flowey]
-# work around linkme bug on macos, <https://github.com/dtolnay/linkme/issues/61>
-lto = 'thin'
+# This exists to support the use of flowey_trampoline, which overrides part of
+# the profile definition via environment variables.
 inherits = 'dev'
 
 [profile.flowey-ci]
