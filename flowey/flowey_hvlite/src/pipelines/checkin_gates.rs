@@ -908,7 +908,7 @@ impl IntoPipeline for CheckinGatesCli {
                 FlowArch::X86_64,
                 "openvmm checkin gates",
             )
-            .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+            .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
                 FlowPlatform::Windows,
             ))
             .finish();

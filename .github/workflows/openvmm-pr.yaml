@@ -5050,9 +5050,7 @@ jobs:
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-rustdoc/
   job20:
     name: openvmm checkin gates
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Win-Pool-WestUS3
+    runs-on: windows-latest
     permissions:
       contents: read
       id-token: write
