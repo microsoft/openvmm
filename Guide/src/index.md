@@ -17,7 +17,7 @@ virtualization backends:
 | Linux               | x64           | KVM                                    |
 |                     | x64           | MSHV (Microsoft Hypervisor)            |
 | macOS               | Aarch64       | Hypervisor.framework                   |
-| Linux ([paravisor]) | x64 / Aarch64 | MSHV (using [VBS] / [TDX] / [SEV-SNP]) |
+| Linux ([paravisor]) | x64 / Aarch64 | MSHV (using [VSM] / [TDX] / [SEV-SNP]) |
 
 **General Purpose**
 
@@ -57,16 +57,17 @@ resource consumption and VM-visible surface area.
 One particularly notable use-case of OpenVMM is in
 [**OpenHCL**](./user_guide/openhcl.md) (AKA, OpenVMM as a paravisor).
 
-Unlike in the traditional virtualization model, where a VMM runs in a privileged
-host/root partition and provides virtualization services to a unprivileged guest
+Unlike in traditional virtualization, where a VMM runs in a privileged host/root
+partition and provides virtualization services to a unprivileged guest
 partition, the "paravisor" model enables a VMM to provide virtualization
 services from _within_ the guest partition itself.
 
-This is exciting, as it enables a wide variety of useful and novel
-virtualization scenarios.
+It can be considered a form of "virtual firmware", running at a privilege level
+above the primary guest OS, but below the host.
 
-For example: at Microsoft, OpenHCL plays a key role in enabling several
-important Azure scenarios:
+Paravisors are quite exciting, as they enable a wide variety of useful and novel
+virtualization scenarios! For example: at Microsoft, OpenHCL plays a key role in
+enabling several important Azure scenarios:
 
 - Enabling existing workloads to seamlessly leverage [Azure Boost] (Azure's
   next-generation hardware accelerator), without requiring any modifications to
@@ -92,7 +93,7 @@ following links:
 | [[Github] OpenVMM issue tracker](https://github.com/microsoft/openvmm/issues) | Reporting OpenVMM issues                  |
 
 [paravisor]: ./user_guide/openhcl.md
-[VBS]: https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/oem-vbs
+[VSM]: https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/vsm
 [Azure Boost]: https://learn.microsoft.com/en-us/azure/azure-boost/overview
 [Confidential VMs]: https://azure.microsoft.com/en-us/solutions/confidential-compute
 [Trusted Launch VMs]: https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch

@@ -1,3 +1,3 @@
 # OpenVMM Architecture
 
-This page is a stub.
+> This page is under construction
