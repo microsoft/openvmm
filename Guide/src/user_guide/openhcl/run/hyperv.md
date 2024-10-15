@@ -44,14 +44,15 @@ For example:
 
 ### Create VM as a Trusted Launch VM
 Enables [Trusted Launch](https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch) for the VM.
+
 You can use this script with no additional instructions required (simplest path).
 ```powershell
 new-vm $VmName -generation <VM generation> -GuestStateIsolationType TrustedLaunch
-
-$vm = Get-CimInstance -namespace "root\virtualization\v2" -query "select * from Msvm_ComputerSystem where ElementName = '$VmName'" | Get-CimAssociatedInstance -ResultClass "Msvm_VirtualSystemSettingData" -Association "Msvm_SettingsDefineState"
-$vm.FirmwareFile = $Path
-.\openhcl\Set-OpenHCL-HyperV-VM.ps1 -CIMInstanceOfVM $vm 
+$vm = get-VM -id <vm id>
+.\openhcl\Set-OpenHCL-HyperV-VM.ps1 -VM $vm -Path $Path
 ```
+Note: If you don't know the vm id, you can get this with the `get-vm | ft VMName, VMId` command.
+
 ### Create other VM types
 Coming soon!
 

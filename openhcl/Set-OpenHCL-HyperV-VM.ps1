@@ -1,26 +1,36 @@
-
 <#
 .SYNOPSIS
-    Sets OpenHCL for the VM on the current Hyper-V host. 
-
+    Sets OpenHCL for the VM on the current Hyper-V host.
+ 
 .DESCRIPTION
-    Sets OpenHCL for the VM on the current Hyper-V host. 
+    Sets OpenHCL for the VM on the current Hyper-V host via provided OpenHCL file.
+ 
+.PARAMETER VM
+    The VM object you want to modify.
 
-.PARAMETER CIMInstanceOfVM
-    The CIMInstance of the WMI VM object you want to modify.
-
+.PARAMETER Path
+    The path of the OpenHCL IGVM file.
+ 
 .EXAMPLE
-    \openhcl\Set-OpenHCL-HyperV-VM.ps1 -CIMInstanceOfVM $CIMInstanceOfVM
+.\openhcl\Set-OpenHCL-HyperV-VM.ps1 -VM $vm -Path $Path
 #>
-
+ 
 param
 (
-    [Parameter(Mandatory)]
-    [Microsoft.Management.Infrastructure.CimInstance] $CIMInstanceOfVM
+    [parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+    [System.Object[]] $VM,
+ 
+    [parameter(Position = 1, Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Path 
 )
-
+ 
 $ROOT_HYPER_V_NAMESPACE = "root\virtualization\v2"
-
+ 
+if (-not (Get-VMHostSupportedVersion | Where-Object { $_.Version -eq "12.0" })) {
+    write-output "This Windows host does not support VMs version 12.0; please update your Windows version according to the instruction and try again."
+}
+ 
 filter Trace-CimMethodExecution {
     param (
         [Alias("WmiClass")]
@@ -77,7 +87,7 @@ filter Trace-CimMethodExecution {
         $caption = if ($job.Caption) { $job.Caption } else { "Job in progress (no caption available)" }
         $jobStatus = if ($job.JobStatus) { $job.JobState } else { "No job status available" }
         $percentComplete = if ($job.PercentComplete) { $job.PercentComplete } else { 0 }
-
+ 
         if (($job.JobState -eq 4) -and $TimeoutSeconds -gt 0) {
             $timer = [Diagnostics.Stopwatch]::StartNew()
         }
@@ -89,7 +99,7 @@ filter Trace-CimMethodExecution {
             Start-Sleep -seconds 1
             $job = $job | Get-CimInstance
         }
-
+ 
         if ($timer) { $timer.Stop() }
         if ($job.JobState -ne 7) {
             if (![string]::IsNullOrEmpty($job.ErrorDescription)) {
@@ -126,6 +136,7 @@ filter Trace-CimMethodExecution {
     }
     return $returnObject
 }
+ 
 function ConvertTo-CimEmbeddedString {
     [CmdletBinding()]
     param(
@@ -139,13 +150,13 @@ function ConvertTo-CimEmbeddedString {
     $serializedObj = $cimSerializer.Serialize($CimInstance, [Microsoft.Management.Infrastructure.Serialization.InstanceSerializationOptions]::None)
     return [System.Text.Encoding]::Unicode.GetString($serializedObj)
 }
-
+ 
 function Get-WMIVSManagementService {
     [CmdletBinding()]
     param()
     Get-CimInstance -Namespace $ROOT_HYPER_V_NAMESPACE -Class Msvm_VirtualSystemManagementService
 }
-
+ 
 function Set-VmSystemSettings {
     param(
         [ValidateNotNullOrEmpty()]
@@ -163,13 +174,13 @@ function Set-VmSystemSettings {
         Trace-CimMethodExecution -CimInstance $vmms -MethodName "ModifySystemSettings" | Out-Null
     }
 }
-
-if (Get-VMHostSupportedVersion | Where-Object { $_.Version -eq "12.0" }) { 
-$CIMInstanceOfVM.GuestFeatureSet = 0x00000201
-Set-VmSystemSettings $CIMInstanceOfVM
-}else {
-    write-output "This Windows host does not support VMs version 12.0; please update your Windows version according to the instruction and try again."
-}
-
-
-
+ 
+$vmname = $VM.Name
+$cimvm = Get-CimInstance -namespace $ROOT_HYPER_V_NAMESPACE -query "select * from Msvm_ComputerSystem where ElementName = '$vmname'"
+$vssd = $cimvm | Get-CimAssociatedInstance -ResultClass "Msvm_VirtualSystemSettingData" -Association "Msvm_SettingsDefineState"
+ 
+# Enable OpenHCL by feature
+$vssd.GuestFeatureSet = 0x00000201
+# Set the OpenHCL image file path 
+$vssd.FirmwareFile = $Path
+Set-VmSystemSettings $vssd
