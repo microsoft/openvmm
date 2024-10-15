@@ -24,7 +24,7 @@ paravisor.
 
 VTLs can be backed by:
 
-- Hardware-based TEEs, like Intel [TDX] and AMD [SEV-SNP]
+- Hardware-based [TEEs], like Intel [TDX] and AMD [SEV-SNP]
 - Software-based constructs, like Hyper-V [VSM]
 
 OpenHCL runs within VTL2, and provides virtualization services a Guest OS
@@ -77,3 +77,4 @@ in OpenHCL over MANA
 [Virtual Trust Levels]: https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/vsm
 [TDX]: https://www.intel.com/content/www/us/en/developer/tools/trust-domain-extensions/overview.html
 [SEV-SNP]: https://www.amd.com/content/dam/amd/en/documents/epyc-business-docs/white-papers/SEV-SNP-strengthening-vm-isolation-with-integrity-protection-and-more.pdf
+[TEEs]: https://en.wikipedia.org/wiki/Trusted_execution_environment
