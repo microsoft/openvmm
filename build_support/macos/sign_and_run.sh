@@ -2,7 +2,14 @@
 
 set -e
 
-# Add entitlements for using hypervisor framework.
-entitlements=$(dirname "$0")/entitlements.xml
-codesign --entitlements "$entitlements" -f -s - "$1" > /dev/null
+case "$CARGO_PKG_NAME" in
+    "openvmm")
+        # Add entitlements for using hypervisor framework.
+        entitlements=$(dirname "$0")/entitlements.xml
+        codesign --entitlements "$entitlements" -f -s - "$1" > /dev/null
+        ;;
+    *)
+        ;;
+esac
+
 exec "$@"
