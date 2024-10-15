@@ -103,43 +103,30 @@ impl FlowNode for Node {
                 move |rt| {
                     // until more flowey nodes learn that debian isn't the only
                     // linux distro that exists, lets give users an escape-hatch
-                    // to run linux flows on non-linux platforms.
+                    // to run linux flows on non-debian platforms.
                     if matches!(rt.backend(), FlowBackend::Local) && which::which("dpkg-query").is_err() {
-                        log::error!("Could not find `dpkg-query`");
+                        log::error!("This Linux distribution is not actively supported at the moment.");
                         log::warn!("");
                         log::warn!("================================================================================");
-                        log::warn!("This flow is hard-coded to assume it is running on a Debian-based linux distro.");
-                        log::warn!("If you would like to *attempt* running this flow on a non-Debian-based distro...");
+                        log::warn!("You are running on an untested configuration, and may be required to manually");
+                        log::warn!("install certain packages in order to build.");
                         log::warn!("");
                         log::warn!("                             PROCEED WITH CAUTION");
                         log::warn!("");
-                        log::warn!("If you proceed, do NOT file a GitHub issue when things break!");
                         log::warn!("================================================================================");
-                        log::warn!("");
-                        log::info!("Please ensure the following debian packages (or equivalent) are installed:");
-                        for pkg in &packages {
-                            log::info!("- {pkg}");
-                        }
-                        log::info!("");
 
                         if let Some(persistent_dir) = persistent_dir {
-                            // only show the prompt once per dependency-set
-                            let hasher = &mut rustc_hash::FxHasher::default();
-                            std::hash::Hash::hash(&packages, hasher);
-                            let hash = std::hash::Hasher::finish(hasher);
-
-                            let promptfile = rt.read(persistent_dir).join(format!("prompt_{:08x?}", hash));
+                            let promptfile = rt.read(persistent_dir).join("unsupported_distro_prompt");
 
                             if !promptfile.exists() {
                                 log::info!("Press [enter] to proceed, or [ctrl-c] to exit.");
-                                log::info!("This interactive prompt will only appear once per dependency-set.");
+                                log::info!("This interactive prompt will only appear once.");
                                 let _ = std::io::stdin().read_line(&mut String::new());
                                 fs_err::write(promptfile, [])?;
                             }
-                        } else {
-                            log::warn!("Proceeding with the assumption that these packages are installed...");
                         }
 
+                        log::warn!("Proceeding anyways...");
                         return Ok(false)
                     }
 
