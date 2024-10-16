@@ -299,7 +299,7 @@ impl FlowNode for Node {
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
         ctx.import::<crate::run_split_debug_info::Node>();
-        ctx.import::<flowey_lib_common::install_apt_pkg::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::run_cargo_build::Node>();
     }
 
@@ -332,7 +332,7 @@ impl FlowNode for Node {
             //
             // FUTURE: this will need tweaking flowey is being run on non-x86
             // hosts
-            if matches!(ctx.platform(), FlowPlatform::Linux)
+            if matches!(ctx.platform(), FlowPlatform::Linux(_))
                 && matches!(
                     target.architecture,
                     target_lexicon::Architecture::Aarch64(_)
@@ -352,7 +352,7 @@ impl FlowNode for Node {
                 //   position-independent static ELF binaries with no std are
                 //   `aarch64-unknown-linux-*`.
                 pre_build_deps.push(ctx.reqv(|v| {
-                    flowey_lib_common::install_apt_pkg::Request::Install {
+                    flowey_lib_common::install_dist_pkg::Request::Install {
                         package_names: vec!["gcc-aarch64-linux-gnu".into()],
                         done: v,
                     }

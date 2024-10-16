@@ -138,8 +138,8 @@ pub fn github_yaml(
                     match (platform, arch) {
                         (FlowPlatform::Windows, FlowArch::X86_64) => "x86_64-pc-windows-msvc",
                         (FlowPlatform::Windows, FlowArch::Aarch64) => "aarch64-pc-windows-msvc",
-                        (FlowPlatform::Linux, FlowArch::X86_64) => "x86_64-unknown-linux-gnu",
-                        (FlowPlatform::Linux, FlowArch::Aarch64) => "aarch64-unknown-linux-gnu",
+                        (FlowPlatform::Linux(_), FlowArch::X86_64) => "x86_64-unknown-linux-gnu",
+                        (FlowPlatform::Linux(_), FlowArch::Aarch64) => "aarch64-unknown-linux-gnu",
                         (platform, arch) => {
                             anyhow::bail!("unsupported platform {platform} / arch {arch}")
                         }

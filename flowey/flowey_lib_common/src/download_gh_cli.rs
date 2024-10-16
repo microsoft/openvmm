@@ -24,7 +24,7 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::install_apt_pkg::Node>();
+        ctx.import::<crate::install_dist_pkg::Node>();
         ctx.import::<crate::cache::Node>();
     }
 
@@ -93,7 +93,7 @@ impl FlowNode for Node {
                             xshell::cmd!(sh, "curl -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_windows_{gh_arch}.zip -o gh.zip").run()?;
                             xshell::cmd!(sh, "tar -xf gh.zip").run()?;
                         },
-                        FlowPlatform::Linux => {
+                        FlowPlatform::Linux(_) => {
                             xshell::cmd!(sh, "curl -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_linux_{gh_arch}.tar.gz -o gh.tar.gz").run()?;
                             xshell::cmd!(sh, "tar -xf gh.tar.gz --strip-components=1").run()?;
                         },

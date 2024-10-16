@@ -9,6 +9,8 @@ use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
 use flowey_core::node::NodeHandle;
+use flowey_core::pipeline::HostExt;
+use flowey_core::pipeline::PipelineBackendHint;
 use std::collections::BTreeMap;
 
 /// (debug) get info about a specific node.
@@ -183,13 +185,7 @@ impl flowey_core::node::NodeCtxBackend for InterrogateCtx {
     }
 
     fn platform(&mut self) -> FlowPlatform {
-        if cfg!(windows) {
-            FlowPlatform::Windows
-        } else if cfg!(target_os = "linux") {
-            FlowPlatform::Linux
-        } else {
-            unreachable!("flowey only runs on windows/linux at the moment")
-        }
+        FlowPlatform::host(PipelineBackendHint::Local)
     }
 
     fn arch(&mut self) -> FlowArch {

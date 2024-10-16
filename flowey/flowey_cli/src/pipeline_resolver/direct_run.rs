@@ -134,7 +134,7 @@ fn direct_run_do_work(
 
         let platform_ok = match platform {
             FlowPlatform::Windows => cfg!(windows) || (cfg!(target_os = "linux") && windows_as_wsl),
-            FlowPlatform::Linux => cfg!(target_os = "linux"),
+            FlowPlatform::Linux(_) => cfg!(target_os = "linux"),
             FlowPlatform::MacOs => cfg!(target_os = "macos"),
             platform => panic!("unknown platform {platform}"),
         };
