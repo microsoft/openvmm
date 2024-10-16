@@ -342,13 +342,13 @@ impl NvramServices {
         tracing::info!(enabled, "configuring secure boot");
 
         let data = if enabled { [0x01] } else { [0x00] };
-        let attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES;
 
         tracing::trace!("Injecting 'SecureBoot'");
         {
             use uefi_specs::uefi::nvram::vars::SECURE_BOOT;
 
             let (vendor, name) = SECURE_BOOT();
+            let attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES_VOLATILE;
 
             self.services
                 .set_variable_ucs2(vendor, name, attr.into(), data.to_vec())
@@ -363,6 +363,7 @@ impl NvramServices {
             use uefi_specs::hyperv::nvram::vars::SECURE_BOOT_ENABLE;
 
             let (vendor, name) = SECURE_BOOT_ENABLE();
+            let attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES;
 
             self.services
                 .set_variable_ucs2(vendor, name, attr.into(), data.to_vec())
