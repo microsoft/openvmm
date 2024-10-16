@@ -284,7 +284,7 @@ enum Connection {
         #[mesh(6)]
         client_id: Option<Guid>,
         #[mesh(7)]
-        trusted: Option<bool>,
+        trusted: bool,
     },
     #[mesh(3)]
     Connected {
@@ -303,7 +303,7 @@ enum Connection {
         #[mesh(7)]
         client_id: Option<Guid>,
         #[mesh(8)]
-        trusted: Option<bool>,
+        trusted: bool,
     },
 }
 
@@ -322,7 +322,7 @@ impl Connection {
                     target_message_vp: info.target_message_vp,
                     next_action: ConnectionAction::save(next_action),
                     client_id: Some(info.client_id),
-                    trusted: Some(info.trusted),
+                    trusted: info.trusted,
                 })
             }
             super::ConnectionState::Connected(info) => Some(Connection::Connected {
@@ -333,7 +333,7 @@ impl Connection {
                 target_message_vp: info.target_message_vp,
                 modifying: info.modifying,
                 client_id: Some(info.client_id),
-                trusted: Some(info.trusted),
+                trusted: info.trusted,
             }),
             super::ConnectionState::Disconnecting {
                 next_action,
@@ -357,7 +357,7 @@ impl Connection {
             } => super::ConnectionState::Connecting {
                 info: super::ConnectionInfo {
                     version: version.restore()?,
-                    trusted: trusted.unwrap_or(false),
+                    trusted,
                     interrupt_page,
                     monitor_page: monitor_page.map(MonitorPageGpas::restore),
                     target_message_vp,
@@ -378,7 +378,7 @@ impl Connection {
                 trusted,
             } => super::ConnectionState::Connected(super::ConnectionInfo {
                 version: version.restore()?,
-                trusted: trusted.unwrap_or(false),
+                trusted,
                 offers_sent,
                 interrupt_page,
                 monitor_page: monitor_page.map(MonitorPageGpas::restore),
