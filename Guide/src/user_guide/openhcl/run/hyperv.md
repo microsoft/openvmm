@@ -4,7 +4,7 @@ This is the closest configuration to what Microsoft ships in Azure VMs, the only
 
 ## Get a Windows version that has development support for OpenHCL
 
-Note that no Windows Client/Windows Server versions have production support for OpenHCL VMs, but certain versions have development support for OpenHCL VMs.
+Note that Windows Client/Windows Server do not have production support for OpenHCL VMs (Microsoft does not support production workloads on OpenHCL VMs), but certain versions have development support for OpenHCL VMs (meaning they can be used as developer platforms for the purposes of using/testing/developing OpenHCL).
 
 ### Windows Client
 
@@ -19,14 +19,16 @@ Otherwise, you can get it via [Windows Insider](https://www.microsoft.com/en-us/
 Instructions coming soon.
 
 ## Machine setup
+
+### Enable Hyper-V
+Enbable [Hyper-V](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/quick-start/enable-hyper-v) on your machine. 
+
 ### Enable loading from developer file
 Once you get the right Windows Version, run the following command once before starting your VM.  Note that this enabled loading unsigned images, and must be done as administrator.
 
 ```powershell
 `Set-ItemProperty "HKLM:/Software/Microsoft/Windows NT/CurrentVersion/Virtualization" -Name "AllowFirmwareLoadFromFile" -Value 1 -Type DWORD | Out-Null`
 ```
-### Enable Hyper-V
-Enbable [Hyper-V](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/quick-start/enable-hyper-v) on your machine. 
 
 ### File access
 Ensure that your OpenHCL .bin is located somewhere that vmwp.exe in your Windows host has permissions to read it (that can be in windows\system32, or another directory with wide read access). 
@@ -47,11 +49,9 @@ Enables [Trusted Launch](https://learn.microsoft.com/en-us/azure/virtual-machine
 
 You can use this script with no additional instructions required (simplest path).
 ```powershell
-new-vm $VmName -generation <VM generation> -GuestStateIsolationType TrustedLaunch
-$vm = get-VM -id <vm id>
+$vm = new-vm $VmName -generation 2 -GuestStateIsolationType TrustedLaunch
 .\openhcl\Set-OpenHCL-HyperV-VM.ps1 -VM $vm -Path $Path
 ```
-Note: If you don't know the vm id, you can get this with the `get-vm | ft VMName, VMId` command.
 
 ### Create other VM types
 Coming soon!

@@ -27,8 +27,8 @@ param
  
 $ROOT_HYPER_V_NAMESPACE = "root\virtualization\v2"
  
-if (-not (Get-VMHostSupportedVersion | Where-Object { $_.Version -eq "12.0" })) {
-    write-output "This Windows host does not support VMs version 12.0; please update your Windows version according to the instruction and try again."
+if (-not (Get-VMHostSupportedVersion | Where-Object { $_.Version -eq "13.0" })) {
+    throw "This cript cannot run because VM Version 12.0 or higher is required to test OpenHCL."
 }
  
 filter Trace-CimMethodExecution {
@@ -175,8 +175,9 @@ function Set-VmSystemSettings {
     }
 }
  
-$vmname = $VM.Name
-$cimvm = Get-CimInstance -namespace $ROOT_HYPER_V_NAMESPACE -query "select * from Msvm_ComputerSystem where ElementName = '$vmname'"
+$vmid = $VM.Id
+$cimvm = Get-CimInstance -namespace $ROOT_HYPER_V_NAMESPACE -query "select * from Msvm_ComputerSystem where Name = '$vmid'"
+
 $vssd = $cimvm | Get-CimAssociatedInstance -ResultClass "Msvm_VirtualSystemSettingData" -Association "Msvm_SettingsDefineState"
  
 # Enable OpenHCL by feature
