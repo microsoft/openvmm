@@ -7,8 +7,8 @@ partition and provides virtualization services to a unprivileged guest
 partition, the "paravisor" model enables a VMM to provide virtualization
 services from _within_ the guest partition itself.
 
-It can be considered a form of "virtual firmware", running at a privilege level
-above the primary guest OS, but below the host.
+It can be considered a form of "virtual firmware", running at a higher privilege
+level than the primary guest OS.
 
 Paravisors are quite exciting, as they enable a wide variety of useful and novel
 virtualization scenarios! For example: at Microsoft, OpenHCL plays a key role in

@@ -6,8 +6,8 @@ interact with OpenHCL.
 ## High-level Overview
 
 In order to run OpenHCL, an existing host VMM must first load the OpenHCL
-environment into a VM, much like it would with traditional virtual firmware
-layers, such as UEFI or BIOS.
+environment into a VM, much akin to existing virtual firmware layers, like UEFI,
+or BIOS[^vtls].
 
 OpenHCL is distributed as an [IGVM] file (Independent Guest Virtual Machine),
 which encapsulates all the directives and data required to launch a particular
@@ -38,3 +38,7 @@ scroll down to select an appropriate `*-openhcl-igvm` artifact for your
 particular architecture and operating system.
 
 [IGVM]: https://github.com/microsoft/igvm
+
+[^vtls]: Though, unlike UEFI / BIOS, OpenHCL is loaded into a distinct, higher
+    privilege execution context within the VM, called
+    [VTL2](../../reference/architecture/openhcl.md#vtls).
