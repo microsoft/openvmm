@@ -634,7 +634,6 @@ impl LoadedVm {
         }
 
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
-        //let nvme_keepalive = self.servicing_flags.nvme_keepalive;
 
         // Only save NVMe state if there are NVMe controllers, otherwise save None.
         let nvme_state = match (
