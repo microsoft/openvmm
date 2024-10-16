@@ -5,6 +5,8 @@ Currently, OpenHCL cannot be used on Linux hosts, primarily due to limitations
 in KVM (or our imagination). We would love to improve this, and we would accept
 contributions that get this working.
 
+## Technical Details
+
 The main challenge is that OpenHCL needs to run in an environment where it can
 trap and emulate privileged instructions from the guest OS. It also benefits
 from the host being able to target interrupts directly into the guest OS,
