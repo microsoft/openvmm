@@ -1176,17 +1176,21 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                 // This implementation only supports non-volatile variables.
                 // Volatile variables should be handled within UEFI itself.
                 //
-                // The exceptions are the private Hyper-V OsLoaderIndications and
+                // The exceptions are variables that are controlled/injected by the loader.
+                // This includes secure boot enablement (volatile by specification),
+                // as well as the private Hyper-V OsLoaderIndications and
                 // OsLoaderIndicationsSupported variables, which are volatile variables
                 // that are injected via the non-volatile store. The dbDefault variable
                 // is also an exception.
                 if !attr.non_volatile() {
                     use uefi_specs::hyperv::nvram::vars as hyperv_vars;
                     use uefi_specs::uefi::nvram::vars::DBDEFAULT;
+                    use uefi_specs::uefi::nvram::vars::SECURE_BOOT;
                     let allowed_volatile = [
                         hyperv_vars::OS_LOADER_INDICATIONS(),
                         hyperv_vars::OS_LOADER_INDICATIONS_SUPPORTED(),
                         DBDEFAULT(),
+                        SECURE_BOOT(),
                     ];
 
                     let is_allowed = allowed_volatile.into_iter().any(|v| v == (in_vendor, name));
