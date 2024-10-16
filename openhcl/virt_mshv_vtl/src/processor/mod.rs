@@ -656,15 +656,14 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     self.update_synic(Vtl::Vtl0, true);
                 }
 
-                // TODO CVM GUEST VSM: Split ready into two to track per-vtl
-                let mut ready = false;
+                let mut ready = VtlArray::from([false, false]);
                 for vtl in [Vtl::Vtl1, Vtl::Vtl0] {
                     // Process interrupts.
                     if self.hv(vtl).is_some() {
                         self.update_synic(vtl, false);
                     }
 
-                    ready |= T::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
+                    ready[vtl] = T::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
                         .map_err(VpHaltReason::Hypervisor)?;
                 }
                 first_scan_irr = false;
@@ -677,7 +676,11 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     }
                 }
 
-                if ready {
+                // TODO WHP GUEST VSM: This should be next_vtl.
+                // All other backings always return true for ready, as they either
+                // will halt in the hypervisor or the kernel. WHP is the only case
+                // where we halt in usermode.
+                if ready[Vtl::Vtl0] {
                     return <Result<_, VpHaltReason<_>>>::Ok(()).into();
                 }
 
