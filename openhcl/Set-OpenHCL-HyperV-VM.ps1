@@ -27,8 +27,8 @@ param
  
 $ROOT_HYPER_V_NAMESPACE = "root\virtualization\v2"
  
-if (-not (Get-VMHostSupportedVersion | Where-Object { $_.Version -eq "13.0" })) {
-    throw "This cript cannot run because VM Version 12.0 or higher is required to test OpenHCL."
+if (-not (Get-VMHostSupportedVersion | Where-Object { $_.Version -eq "12.0" })) {
+    throw "This script cannot run because VM Version 12.0 or higher is required to test OpenHCL."
 }
  
 filter Trace-CimMethodExecution {
@@ -185,3 +185,4 @@ $vssd.GuestFeatureSet = 0x00000201
 # Set the OpenHCL image file path 
 $vssd.FirmwareFile = $Path
 Set-VmSystemSettings $vssd
+write-output("Script ran successfully; VM running with OpenHCL now.")

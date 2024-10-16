@@ -40,8 +40,8 @@ Save the path of the OpenHCL .bin in a var named $Path and save the VM name you 
 For example:
 
 ```powershell
-`$Path = 'C:\Windows\System32\openhcl-x64.bin'
-`$VmName = 'myFirstVM'
+$Path = 'C:\Windows\System32\openhcl-x64.bin'
+$VmName = 'myFirstVM'
 ```
 
 ### Create VM as a Trusted Launch VM
@@ -54,7 +54,7 @@ $vm = new-vm $VmName -generation 2 -GuestStateIsolationType TrustedLaunch
 ```
 
 ### Create other VM types
-Coming soon!
+Instructions coming soon.
 
 ### Set up guest OS VHD
 Running a VM will be more useful if you have a guest OS image. Given that OpenHCL is a compatibility layer, the goal is to support the same set of guest OS images that Hyper-V currently supports without a paravisor.
@@ -62,5 +62,5 @@ Running a VM will be more useful if you have a guest OS image. Given that OpenHC
 You can pick any existing image that you have or download one from the web, such as from Ubuntu, or any other distro that is currently supported in Hyper-V.
 
 ```powershell
-`Add-VMHardDiskDrive -VMName $VmName -Path "<guest OS VHDX path>"-ControllerType SCSI -ControllerNumber 0 -ControllerLocation 1`
+`Add-VMHardDiskDrive -VMName $VmName -Path "<VHDX path>"-ControllerType SCSI -ControllerNumber 0 -ControllerLocation 1`
 ```
