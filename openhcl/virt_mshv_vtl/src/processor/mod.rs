@@ -207,7 +207,9 @@ mod private {
             stop: &mut StopVp<'_>,
         ) -> impl Future<Output = Result<(), VpHaltReason<UhRunVpError>>>;
 
-        /// Returns true if the VP is ready to run the given VTL, false if it is halted.
+        /// Process any pending APIC work. Returns true if the VP is ready for
+        /// control to be handed off to the kernel, false if it should be halted
+        /// by us.
         fn poll_apic(
             this: &mut UhProcessor<'_, Self>,
             vtl: Vtl,
