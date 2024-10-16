@@ -110,7 +110,7 @@ trap and emulate privileged instructions from the guest OS. It also benefits
 from the host being able to target interrupts directly into the guest OS,
 without relaying them through OpenHCL.
 
-On Windows, this is achieved via Hyper-V's VTL support, even when leveraging SNP
+On Windows, this is achieved via Hyper-V's VTL support, even when leveraging isolation technologies like SNP
 or TDX. As of writing this, KVM does not yet support the required primitives for
 this.
 
@@ -122,7 +122,7 @@ Here are some approaches we can take to close the gap:
 
 * Extend KVM to support Hyper-V-style VTLs.
 
-* Extend KVM to fully multiple VMPLs on SNP machines, and update OpenHCL to
+* Extend KVM to fully support multiple VMPLs on SNP machines, and update OpenHCL to
   support using architectural GHCB calls to switch VMPLs, rather than
   Hyper-V-specific hypercalls.
 
