@@ -26,7 +26,7 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
     // boot shim, apply them here.
     if let IsolationType::None = shim_params.isolation_type {
         match partition_info.memory_allocation_mode {
-            MemoryAllocationMode::Vtl2 { memory_size: _, mmio_size: _ } => {
+            MemoryAllocationMode::Vtl2 { .. } => {
                 let result = safe_x86_intrinsics::cpuid(
                     hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
                     0,
