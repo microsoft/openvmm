@@ -154,7 +154,7 @@ fn advance(n: u32, l: u32) -> u32 {
 }
 
 #[derive(Protobuf, Clone, Debug)]
-#[mesh(package = "openhcl.nvme")]
+#[mesh(package = "underhill")]
 pub struct SubmissionQueueSavedState {
     #[mesh(1)]
     pub sqid: u16,
@@ -173,7 +173,7 @@ pub struct SubmissionQueueSavedState {
 }
 
 #[derive(Protobuf, Clone, Debug)]
-#[mesh(package = "openhcl.nvme")]
+#[mesh(package = "underhill")]
 pub struct CompletionQueueSavedState {
     #[mesh(1)]
     pub cqid: u16,

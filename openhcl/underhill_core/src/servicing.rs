@@ -36,11 +36,11 @@ mod state {
     }
 
     #[derive(Protobuf)]
-    #[mesh(package = "openhcl.nvme")]
+    #[mesh(package = "underhill")]
     pub struct NvmeSavedState {
         /// NVMe manager (worker) saved state.
         #[mesh(1)]
-        pub nvme_state: Option<crate::nvme_manager::NvmeManagerSavedState>,
+        pub nvme_state: crate::nvme_manager::NvmeManagerSavedState,
     }
 
     /// Servicing state needed to create the LoadedVm object.

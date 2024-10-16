@@ -634,22 +634,24 @@ impl LoadedVm {
         }
 
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
-        let nvme_keepalive = self.servicing_flags.nvme_keepalive;
+        //let nvme_keepalive = self.servicing_flags.nvme_keepalive;
 
         // Only save NVMe state if there are NVMe controllers, otherwise save None.
-        let nvme_state = match self.nvme_manager.as_ref() {
-            Some(n) => {
-                if nvme_keepalive {
-                    Some(NvmeSavedState {
-                        nvme_state: n.save().await.ok(),
-                    })
-                } else {
-                    // nvme_keepalive was explicitly disabled.
-                    None
-                }
+        let nvme_state = match (
+            self.nvme_manager.as_ref(),
+            self.servicing_flags.nvme_keepalive,
+        ) {
+            (Some(n), true) => {
+                // Do not save NVMe state if there was an error,
+                // revert back to the regular init after boot.
+                let nvme_state = match n.save().await {
+                    Ok(s) => Some(NvmeSavedState { nvme_state: s }),
+                    Err(_) => None,
+                };
+                nvme_state
             }
-            None => {
-                // No NVMe controllers to save.
+            _ => {
+                // No NVMe controllers to save or explicit disable flag was set.
                 None
             }
         };

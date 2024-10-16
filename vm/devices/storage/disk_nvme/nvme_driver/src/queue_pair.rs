@@ -528,7 +528,7 @@ pub(crate) fn admin_cmd(opcode: spec::AdminOpcode) -> spec::Command {
 
 #[repr(C)]
 #[derive(Protobuf, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
-#[mesh(package = "openhcl.nvme")]
+#[mesh(package = "underhill")]
 pub struct PendingCommandSavedState {
     #[mesh(1)]
     pub command: [u8; 64],
@@ -546,7 +546,7 @@ impl From<&[u8]> for PendingCommandSavedState {
 }
 
 #[derive(Protobuf, Clone, Debug)]
-#[mesh(package = "openhcl.nvme")]
+#[mesh(package = "underhill")]
 pub struct QueuePairSavedState {
     #[mesh(1)]
     /// Which CPU handles requests.

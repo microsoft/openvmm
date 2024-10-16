@@ -70,7 +70,7 @@ pub mod save_restore {
 
     /// Saved state for the VFIO device user mode driver.
     #[derive(Protobuf, Clone, Debug)]
-    #[mesh(package = "openhcl.nvme")]
+    #[mesh(package = "underhill")]
     pub struct VfioDeviceSavedState {
         #[mesh(1)]
         pub pci_id: String,

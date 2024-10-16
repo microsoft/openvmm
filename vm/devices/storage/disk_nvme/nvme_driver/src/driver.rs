@@ -807,7 +807,7 @@ impl<T: DeviceBacking> InspectTask<WorkerState> for DriverWorkerTask<T> {
 
 /// Save/restore state for NVMe driver.
 #[derive(Protobuf, Clone, Debug)]
-#[mesh(package = "openhcl.nvme")]
+#[mesh(package = "underhill")]
 pub struct NvmeDriverSavedState {
     /// Namespace ID.
     #[mesh(1)]

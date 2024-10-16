@@ -358,7 +358,7 @@ impl ResourceId<DiskHandleKind> for NvmeDiskConfig {
 }
 
 #[derive(Protobuf, SavedStateRoot)]
-#[mesh(package = "openhcl.nvme")]
+#[mesh(package = "underhill")]
 pub struct NvmeManagerSavedState {
     #[mesh(1)]
     pub cpu_count: u32,
@@ -367,7 +367,7 @@ pub struct NvmeManagerSavedState {
 }
 
 #[derive(Protobuf, Clone)]
-#[mesh(package = "openhcl.nvme")]
+#[mesh(package = "underhill")]
 pub struct NvmeSavedDiskConfig {
     #[mesh(1)]
     pub pci_id: String,
@@ -376,7 +376,7 @@ pub struct NvmeSavedDiskConfig {
 }
 
 #[derive(Protobuf)]
-#[mesh(package = "openhcl.nvme")]
+#[mesh(package = "underhill")]
 pub struct NvmeDmaBufferSavedState {
     /// GVA of the DMA buffer assigned to NVMe device(s).
     #[mesh(1)]
