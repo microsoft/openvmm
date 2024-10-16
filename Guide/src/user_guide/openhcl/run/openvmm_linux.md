@@ -1,5 +1,5 @@
 
-# Linux - OpenVMM
+# Linux
 
 Currently, OpenHCL cannot be used on Linux hosts, primarily due to limitations
 in KVM (or our imagination). We would love to improve this, and we would accept
@@ -31,5 +31,10 @@ Here are some approaches we can take to close the gap:
 * Update OpenHCL to support TDX without Hyper-V-specific hypercalls. Optionally,
   extend KVM to model TDX L2s as VTLs so that the host can target interrupts
   to the guest directly.
+
+Additionally, OpenHCL currently relies on Hyper-V communication devices for
+guest configuration and runtime services. This ties OpenHCL to the OpenVMM or
+Hyper-V VMMs. We are looking for ways to support alternatives for use with other
+VMMs such as qemu.
 
 If you are interested in helping with any of this, please let us know.

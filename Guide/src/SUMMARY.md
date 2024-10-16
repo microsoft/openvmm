@@ -12,7 +12,7 @@
   - [Running OpenHCL](./user_guide/openhcl/run.md)
     - [On Windows - Hyper-V](./user_guide/openhcl/run/hyperv.md)
     - [On Windows - OpenVMM](./user_guide/openhcl/run/openvmm.md)
-    - [On Linux - OpenVMM](./user_guide/openhcl/run/openvmm_linux.md)
+    - [On Linux](./user_guide/openhcl/run/openvmm_linux.md)
   - [Troubleshooting](./user_guide/openhcl/troubleshooting.md)
   - [Next Steps](./user_guide/openhcl/next_steps.md)
 
