@@ -39,7 +39,7 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
                 )
                 .use_gpa_pinning_hypercall();
 
-                if is_pinning_supported == true
+                if is_pinning_supported
                 {
                     for entry in partition_info.vtl2_ram.iter() {
                         hvcall()
