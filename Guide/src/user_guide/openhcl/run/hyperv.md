@@ -4,7 +4,7 @@ This is the closest configuration to what Microsoft ships in Azure VMs, the only
 
 ## Get a Windows version that has development support for OpenHCL
 
-Note that Windows Client/Windows Server do not have production support for OpenHCL VMs (Microsoft does not support production workloads on OpenHCL VMs), but certain versions have development support for OpenHCL VMs (meaning they can be used as developer platforms for the purposes of using/testing/developing OpenHCL).
+Note that Windows Client and Windows Server do not have production support for OpenHCL VMs (Microsoft does not support production workloads on OpenHCL VMs on Windows Client and Windows Server), but certain versions have development support for OpenHCL VMs (they can be used as developer platforms for the purposes of using/testing/developing OpenHCL).
 
 ### Windows Client
 
