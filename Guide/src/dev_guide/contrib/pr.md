@@ -1,2 +1,2 @@
 # Submitting Changes
-Follow the [CONTRIBUTING](https://github.com/microsoft/openvmm/blob/main/CONTRIBUTING.m) guide.
+Follow the [CONTRIBUTING](https://github.com/microsoft/openvmm/blob/main/CONTRIBUTING.md) guide.
