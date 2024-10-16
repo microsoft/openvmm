@@ -88,3 +88,24 @@ Note: the specific package that throws this error may vary, and may not always b
 You attempted to build OpenVMM without first restoring necessary packages.
 
 Please run `cargo xflowey restore-packages`, and try again.
+
+### use of unstable library feature
+
+**Error:**
+
+```
+error[E0658]: use of unstable library feature 'absolute_path'
+  --> flowey/flowey/src/lib.rs:37:17
+   |
+37 |                 std::path::absolute(self)
+   |                 ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: see issue #92750 <https://github.com/rust-lang/rust/issues/92750> for more information
+
+For more information about this error, try `rustc --explain E0658`.
+error: could not compile `flowey` (lib) due to previous error
+```
+
+**Solution:**
+
+Install Rust using the official instructions for [Linux](https://openvmm.dev/dev_guide/getting_started/linux.html#installing-rust) or [Windows](https://openvmm.dev/dev_guide/getting_started/windows.html#installing-rust).
