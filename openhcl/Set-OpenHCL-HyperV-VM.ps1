@@ -27,8 +27,8 @@ param
  
 $ROOT_HYPER_V_NAMESPACE = "root\virtualization\v2"
  
-if (-not (Get-VMHostSupportedVersion | Where-Object { $_.Version -eq "12.0" })) {
-    throw "This script cannot run because VM Version 12.0 or higher is required to test OpenHCL."
+if ($VM.Version -lt 12.0) {
+    throw "Version 12.0 or higher is required to test OpenHCL."
 }
  
 filter Trace-CimMethodExecution {
