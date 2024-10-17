@@ -4,12 +4,13 @@
 
 #![allow(unused)]
 
+use flowey::node::prelude::FlowPlatformLinuxDistro;
 use flowey::pipeline::prelude::*;
 
 pub fn default_x86_pool(platform: FlowPlatform) -> GhRunner {
     match platform {
         FlowPlatform::Windows => windows_amd_self_hosted(),
-        FlowPlatform::Linux => linux_self_hosted(),
+        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => linux_self_hosted(),
         platform => panic!("unsupported platform {platform}"),
     }
 }
@@ -17,7 +18,7 @@ pub fn default_x86_pool(platform: FlowPlatform) -> GhRunner {
 pub fn default_gh_hosted(platform: FlowPlatform) -> GhRunner {
     match platform {
         FlowPlatform::Windows => gh_hosted_windows(),
-        FlowPlatform::Linux => gh_hosted_linux(),
+        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => gh_hosted_linux(),
         platform => panic!("unsupported platform {platform}"),
     }
 }

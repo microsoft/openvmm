@@ -57,7 +57,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::download_nuget_exe::Node>();
         ctx.import::<flowey_lib_common::download_protoc::Node>();
         ctx.import::<flowey_lib_common::git_checkout::Node>();
-        ctx.import::<flowey_lib_common::install_apt_pkg::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
         ctx.import::<flowey_lib_common::install_git::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
@@ -148,7 +148,7 @@ impl SimpleFlowNode for Node {
             // wire up `interactive`
             {
                 ctx.req(
-                    flowey_lib_common::install_apt_pkg::Request::LocalOnlyInteractive(interactive),
+                    flowey_lib_common::install_dist_pkg::Request::LocalOnlyInteractive(interactive),
                 );
                 ctx.req(
                     flowey_lib_common::nuget_install_package::Request::LocalOnlyInteractive(
@@ -179,7 +179,9 @@ impl SimpleFlowNode for Node {
                     ),
                 );
                 ctx.req(
-                    flowey_lib_common::install_apt_pkg::Request::LocalOnlySkipUpdate(!auto_install),
+                    flowey_lib_common::install_dist_pkg::Request::LocalOnlySkipUpdate(
+                        !auto_install,
+                    ),
                 );
                 ctx.req(flowey_lib_common::install_nodejs::Request::AutoInstall(
                     auto_install,

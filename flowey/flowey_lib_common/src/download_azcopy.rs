@@ -21,7 +21,7 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::install_apt_pkg::Node>();
+        ctx.import::<crate::install_dist_pkg::Node>();
         ctx.import::<crate::cache::Node>();
     }
 
@@ -63,8 +63,18 @@ impl FlowNode for Node {
         });
 
         // in case we need to unzip the thing we downloaded
-        let bsdtar_installed = ctx.reqv(|v| crate::install_apt_pkg::Request::Install {
-            package_names: vec!["libarchive-tools".into()],
+        let platform = ctx.platform();
+        let bsdtar_installed = ctx.reqv(|v| crate::install_dist_pkg::Request::Install {
+            package_names: match platform {
+                FlowPlatform::Linux(linux_distribution) => match linux_distribution {
+                    FlowPlatformLinuxDistro::Fedora => vec!["bsdtar".into()],
+                    FlowPlatformLinuxDistro::Ubuntu => vec!["libarchive-tools".into()],
+                    FlowPlatformLinuxDistro::Unknown => vec![],
+                },
+                _ => {
+                    vec![]
+                }
+            },
             done: v,
         });
 
@@ -98,7 +108,7 @@ impl FlowNode for Node {
                         }
                         FlowPlatformKind::Unix => {
                             let os = match rt.platform() {
-                                FlowPlatform::Linux => "linux",
+                                FlowPlatform::Linux(_) => "linux",
                                 FlowPlatform::MacOs => "darwin",
                                 platform => anyhow::bail!("unhandled platform {platform}"),
                             };

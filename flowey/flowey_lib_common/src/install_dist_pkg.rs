@@ -1,6 +1,11 @@
 // Copyright (C) Microsoft Corporation. All rights reserved.
 
-//! Globally install a package via `apt` on debian-based linux systems
+//! Globally install a package via `apt` on DEB-based Linux systems,
+//! or `dnf` on RPM-based ones.
+//!
+//! This is a temporary solution, and this file will be split in
+//! two in the future to have two flowey Nodes.
+//! GitHub issue: <https://github.com/microsoft/openvmm/issues/90>
 
 use flowey::node::prelude::*;
 use std::collections::BTreeSet;
@@ -17,6 +22,80 @@ flowey_request! {
             package_names: Vec<String>,
             done: WriteVar<SideEffect>,
         },
+    }
+}
+
+#[derive(Debug)]
+struct PackageManager {
+    distro: FlowPlatformLinuxDistro,
+    sh: xshell::Shell,
+}
+
+impl PackageManager {
+    fn new(ctx: &NodeCtx<'_>) -> anyhow::Result<Self> {
+        let distro = match ctx.platform() {
+            FlowPlatform::Linux(linux_distribution) => linux_distribution,
+            _ => anyhow::bail!("Unsupported platform"),
+        };
+
+        let sh = xshell::Shell::new()?;
+
+        Ok(Self { distro, sh })
+    }
+
+    fn distro(&self) -> FlowPlatformLinuxDistro {
+        self.distro
+    }
+
+    fn query_cmd(&self, packages_to_check: &BTreeSet<String>) -> anyhow::Result<String> {
+        let Self { distro, sh } = self;
+
+        let output = match distro {
+            FlowPlatformLinuxDistro::Ubuntu => {
+                let fmt = "${binary:Package}\n";
+                xshell::cmd!(sh, "dpkg-query -W -f={fmt} {packages_to_check...}")
+            }
+            FlowPlatformLinuxDistro::Fedora => {
+                let fmt = "%{NAME}\n";
+                xshell::cmd!(sh, "rpm -q --queryformat={fmt} {packages_to_check...}")
+            }
+            FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
+        }
+        .ignore_status()
+        .output()?;
+        let output = String::from_utf8(output.stdout)?;
+
+        Ok(output)
+    }
+
+    fn update(&self) -> anyhow::Result<()> {
+        let Self { distro, sh } = self;
+
+        match distro {
+            FlowPlatformLinuxDistro::Ubuntu => xshell::cmd!(sh, "sudo apt-get update").run()?,
+            FlowPlatformLinuxDistro::Fedora => xshell::cmd!(sh, "sudo dnf update").run()?,
+            FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
+        }
+
+        Ok(())
+    }
+
+    fn install(&self, packages: &BTreeSet<String>, interactive: bool) -> anyhow::Result<()> {
+        let Self { distro, sh } = self;
+
+        match distro {
+            FlowPlatformLinuxDistro::Ubuntu => {
+                let auto_accept = (!interactive).then_some("-y");
+                xshell::cmd!(sh, "sudo apt-get install {auto_accept...} {packages...}").run()?;
+            }
+            FlowPlatformLinuxDistro::Fedora => {
+                let auto_accept = (!interactive).then_some("-y");
+                xshell::cmd!(sh, "sudo dnf install {auto_accept...} {packages...}").run()?;
+            }
+            FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
+        }
+
+        Ok(())
     }
 }
 
@@ -89,22 +168,21 @@ impl FlowNode for Node {
         // maybe a questionable design choice... but we'll allow non-linux
         // platforms from taking a dep on this, and simply report that it was
         // installed.
-        if !matches!(ctx.platform(), FlowPlatform::Linux) {
+        if !matches!(ctx.platform(), FlowPlatform::Linux(_)) {
             ctx.emit_side_effect_step([], did_install);
             return Ok(());
         }
 
+        let pacman = PackageManager::new(ctx)?;
         let persistent_dir = ctx.persistent_dir();
-
         let need_install =
-            ctx.emit_rust_stepv("checking if apt packages need to be installed", |ctx| {
+            ctx.emit_rust_stepv("checking if packages need to be installed", |ctx| {
                 let persistent_dir = persistent_dir.claim(ctx);
                 let packages = packages.clone();
                 move |rt| {
-                    // until more flowey nodes learn that debian isn't the only
-                    // linux distro that exists, lets give users an escape-hatch
-                    // to run linux flows on non-debian platforms.
-                    if matches!(rt.backend(), FlowBackend::Local) && which::which("dpkg-query").is_err() {
+                    // Provide the users an escape-hatch to run Linux flows on distributions that are not actively
+                    // supported at the moment.
+                    if matches!(rt.backend(), FlowBackend::Local) && pacman.distro() == FlowPlatformLinuxDistro::Unknown {
                         log::error!("This Linux distribution is not actively supported at the moment.");
                         log::warn!("");
                         log::warn!("================================================================================");
@@ -130,16 +208,9 @@ impl FlowNode for Node {
                         return Ok(false)
                     }
 
-                    let sh = xshell::Shell::new()?;
-
                     let mut installed_packages = BTreeSet::new();
                     let packages_to_check = &packages;
-
-                    let fmt = "${binary:Package}\n";
-                    let output = xshell::cmd!(sh, "dpkg-query -W -f={fmt} {packages_to_check...}")
-                        .ignore_status()
-                        .output()?;
-                    let output = String::from_utf8(output.stdout)?;
+                    let output = pacman.query_cmd(packages_to_check)?;
                     for ln in output.trim().lines() {
                         let package = match ln.split_once(':') {
                             Some((package, _arch)) => package,
@@ -149,14 +220,15 @@ impl FlowNode for Node {
                         assert!(no_existing);
                     }
 
-                    // apt won't re-install packages that are already
+                    // the package manager won't re-install packages that are already
                     // up-to-date, so this sort of coarse-grained signal should
                     // be plenty sufficient.
                     Ok(installed_packages != packages)
                 }
             });
 
-        ctx.emit_rust_step("installing `apt` packages", move |ctx| {
+        let pacman = PackageManager::new(ctx)?;
+        ctx.emit_rust_step("installing packages", move |ctx| {
             let packages = packages.clone();
             let need_install = need_install.claim(ctx);
             did_install.claim(ctx);
@@ -166,14 +238,10 @@ impl FlowNode for Node {
                 if !need_install {
                     return Ok(());
                 }
-
-                let sh = xshell::Shell::new()?;
-
                 if !skip_update {
-                    xshell::cmd!(sh, "sudo apt-get update").run()?;
+                    pacman.update()?;
                 }
-                let auto_accept = (!interactive).then_some("-y");
-                xshell::cmd!(sh, "sudo apt-get install {auto_accept...} {packages...}").run()?;
+                pacman.install(&packages, interactive)?;
 
                 Ok(())
             }

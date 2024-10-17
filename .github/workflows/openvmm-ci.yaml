@@ -721,11 +721,11 @@ jobs:
     - name: report common cargo flags
       run: flowey e 10 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: checking if apt packages need to be installed
-      run: flowey e 10 flowey_lib_common::install_apt_pkg 0
+    - name: checking if packages need to be installed
+      run: flowey e 10 flowey_lib_common::install_dist_pkg 0
       shell: bash
-    - name: installing `apt` packages
-      run: flowey e 10 flowey_lib_common::install_apt_pkg 1
+    - name: installing packages
+      run: flowey e 10 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 10 flowey_lib_common::download_gh_release 0
@@ -1197,11 +1197,11 @@ jobs:
         )
         flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
-    - name: checking if apt packages need to be installed
-      run: flowey e 11 flowey_lib_common::install_apt_pkg 0
+    - name: checking if packages need to be installed
+      run: flowey e 11 flowey_lib_common::install_dist_pkg 0
       shell: bash
-    - name: installing `apt` packages
-      run: flowey e 11 flowey_lib_common::install_apt_pkg 1
+    - name: installing packages
+      run: flowey e 11 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 11 flowey_lib_common::download_gh_release 0
@@ -1690,11 +1690,11 @@ jobs:
         )
         flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
-    - name: checking if apt packages need to be installed
-      run: flowey e 12 flowey_lib_common::install_apt_pkg 0
+    - name: checking if packages need to be installed
+      run: flowey e 12 flowey_lib_common::install_dist_pkg 0
       shell: bash
-    - name: installing `apt` packages
-      run: flowey e 12 flowey_lib_common::install_apt_pkg 1
+    - name: installing packages
+      run: flowey e 12 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 12 flowey_lib_common::download_gh_release 0
@@ -2750,11 +2750,11 @@ jobs:
     - name: report common cargo flags
       run: flowey e 14 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: checking if apt packages need to be installed
-      run: flowey e 14 flowey_lib_common::install_apt_pkg 0
+    - name: checking if packages need to be installed
+      run: flowey e 14 flowey_lib_common::install_dist_pkg 0
       shell: bash
-    - name: installing `apt` packages
-      run: flowey e 14 flowey_lib_common::install_apt_pkg 1
+    - name: installing packages
+      run: flowey e 14 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 14 flowey_lib_common::download_gh_release 0
@@ -3221,11 +3221,11 @@ jobs:
     - name: report openvmm magicpath dir
       run: flowey e 15 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
-    - name: checking if apt packages need to be installed
-      run: flowey e 15 flowey_lib_common::install_apt_pkg 0
+    - name: checking if packages need to be installed
+      run: flowey e 15 flowey_lib_common::install_dist_pkg 0
       shell: bash
-    - name: installing `apt` packages
-      run: flowey e 15 flowey_lib_common::install_apt_pkg 1
+    - name: installing packages
+      run: flowey e 15 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 15 flowey_lib_common::download_gh_release 0
@@ -4345,11 +4345,11 @@ jobs:
     - name: installing cargo-nextest
       run: flowey e 18 flowey_lib_common::download_cargo_nextest 1
       shell: bash
-    - name: checking if apt packages need to be installed
-      run: flowey e 18 flowey_lib_common::install_apt_pkg 0
+    - name: checking if packages need to be installed
+      run: flowey e 18 flowey_lib_common::install_dist_pkg 0
       shell: bash
-    - name: installing `apt` packages
-      run: flowey e 18 flowey_lib_common::install_apt_pkg 1
+    - name: installing packages
+      run: flowey e 18 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 18 flowey_lib_common::download_gh_release 0
@@ -5036,11 +5036,11 @@ jobs:
     - name: download artifacts from github releases
       run: flowey e 2 flowey_lib_common::download_gh_release 1
       shell: bash
-    - name: checking if apt packages need to be installed
-      run: flowey e 2 flowey_lib_common::install_apt_pkg 0
+    - name: checking if packages need to be installed
+      run: flowey e 2 flowey_lib_common::install_dist_pkg 0
       shell: bash
-    - name: installing `apt` packages
-      run: flowey e 2 flowey_lib_common::install_apt_pkg 1
+    - name: installing packages
+      run: flowey e 2 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: unpack protoc
       run: flowey e 2 flowey_lib_common::download_protoc 0
@@ -5670,11 +5670,11 @@ jobs:
     - name: download artifacts from github releases
       run: flowey e 4 flowey_lib_common::download_gh_release 1
       shell: bash
-    - name: checking if apt packages need to be installed
-      run: flowey e 4 flowey_lib_common::install_apt_pkg 0
+    - name: checking if packages need to be installed
+      run: flowey e 4 flowey_lib_common::install_dist_pkg 0
       shell: bash
-    - name: installing `apt` packages
-      run: flowey e 4 flowey_lib_common::install_apt_pkg 1
+    - name: installing packages
+      run: flowey e 4 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: unpack protoc
       run: flowey e 4 flowey_lib_common::download_protoc 0
@@ -7295,11 +7295,11 @@ jobs:
     - name: report common cargo flags
       run: flowey e 9 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: checking if apt packages need to be installed
-      run: flowey e 9 flowey_lib_common::install_apt_pkg 0
+    - name: checking if packages need to be installed
+      run: flowey e 9 flowey_lib_common::install_dist_pkg 0
       shell: bash
-    - name: installing `apt` packages
-      run: flowey e 9 flowey_lib_common::install_apt_pkg 1
+    - name: installing packages
+      run: flowey e 9 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 9 flowey_lib_common::download_gh_release 0
