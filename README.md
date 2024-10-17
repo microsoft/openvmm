@@ -4,8 +4,8 @@
 
 OpenVMM is a modular, cross-platform, general-purpose Virtual Machine Monitor (VMM), written in Rust.
 
-For more information, read our [introductory blog post](https://techcommunity.microsoft.com/t5/windows-os-platform-blog/openhcl-the-new-open-source-paravisor/ba-p/4273172)
-or our [guide](https://openvmm.dev/).
+For more information, read our [guide](https://openvmm.dev/)
+or our [introductory blog post](https://techcommunity.microsoft.com/t5/windows-os-platform-blog/openhcl-the-new-open-source-paravisor/ba-p/4273172).
 
 ## Getting Started
 
