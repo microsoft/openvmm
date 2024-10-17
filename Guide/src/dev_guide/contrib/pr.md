@@ -1,3 +1,3 @@
 # Submitting Changes
 
-TODO OSS: specific guidelines are currently being discussed and drafted.
+Follow the [CONTRIBUTING](https://github.com/microsoft/openvmm/blob/main/CONTRIBUTING.md) guide.
