@@ -2,7 +2,17 @@
 
 [![Build Status](https://github.com/microsoft/openvmm/actions/workflows/openvmm-ci.yaml/badge.svg?branch=main)](https://github.com/microsoft/openvmm/actions/workflows/openvmm-ci.yaml)
 
-OpenVMM is a modular, cross-platform, general-purpose Virtual Machine Monitor (VMM), written in Rust.
+OpenVMM is a modular, cross-platform, general-purpose Virtual Machine Monitor (VMM), written in Rust. 
+
+OpenVMM supports a variety of host operating systems, architectures, and virtualization backends. Similar 
+to other general-purpose VMMs (such as Hyper-V, QEMU, VirtualBox), OpenVMM is able to host a wide variety 
+of both modern and legacy guest operating systems on-top of its flexible virtual hardware platform.
+
+OpenVMM can be used as a traditional host VMM, where a VMM runs in a privileged host/root partition and 
+provides virtualization services to a unprivileged guest partition. However, one particularly notable 
+use-case of OpenVMM is in OpenHCL, which is OpenVMM as a paravisor. The OpenHCL "paravisor" model enables 
+the VMM to provide virtualization services from within the guest partition itself. Paravisors are quite 
+exciting, as they enable a wide variety of useful and novel virtualization scenarios.
 
 ## Getting Started
 
