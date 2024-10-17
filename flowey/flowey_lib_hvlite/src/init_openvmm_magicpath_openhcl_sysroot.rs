@@ -48,7 +48,7 @@ impl FlowNode for Node {
         let openvmm_magicpath = ctx.reqv(crate::cfg_openvmm_magicpath::Request);
 
         for (arch, out_vars) in sysroot_arch {
-            let openhcl_sysroot_tar_gz = ctx.reqv(|v| {
+            let openhcl_sysroot = ctx.reqv(|v| {
                 crate::download_openvmm_deps::Request::GetOpenhclSysroot(
                     match arch {
                         OpenvmmSysrootArch::Aarch64 => OpenvmmDepsArch::Aarch64,
@@ -60,14 +60,13 @@ impl FlowNode for Node {
 
             let openvmm_magicpath = openvmm_magicpath.clone();
 
-            // TODO: Refactor this into using a `flowey_lib_common::_util::extract` helper
             ctx.emit_rust_step(format!("extract {arch:?} sysroot.tar.gz"), move |ctx| {
-                let openhcl_sysroot_tar_gz = openhcl_sysroot_tar_gz.claim(ctx);
+                let openhcl_sysroot = openhcl_sysroot.claim(ctx);
                 let openvmm_magicpath = openvmm_magicpath.claim(ctx);
                 let requests = out_vars.claim(ctx);
 
                 move |rt| {
-                    let openhcl_sysroot_tar_gz = rt.read(openhcl_sysroot_tar_gz);
+                    let openhcl_sysroot = rt.read(openhcl_sysroot);
 
                     let extracted_sysroot_path =
                         rt.read(openvmm_magicpath)
@@ -76,19 +75,15 @@ impl FlowNode for Node {
                                 OpenvmmSysrootArch::Aarch64 => "aarch64-sysroot",
                                 OpenvmmSysrootArch::X64 => "x86_64-sysroot",
                             });
-                    fs_err::create_dir_all(&extracted_sysroot_path)?;
+                    fs_err::create_dir_all(extracted_sysroot_path.parent().unwrap())?;
+                    fs_err::remove_dir_all(&extracted_sysroot_path)?;
 
-                    let sh = xshell::Shell::new()?;
-                    xshell::cmd!(
-                        sh,
-                        "tar
-                                -xf {openhcl_sysroot_tar_gz}
-                                -C {extracted_sysroot_path}
-                                --no-same-owner
-                                --no-same-permissions
-                            "
-                    )
-                    .run()?;
+                    #[cfg(unix)]
+                    let symlink = |orig, link| fs_err::os::unix::fs::symlink(orig, link);
+                    #[cfg(windows)]
+                    let symlink = |orig, link| fs_err::os::windows::fs::symlink_dir(orig, link);
+
+                    symlink(openhcl_sysroot, &extracted_sysroot_path)?;
 
                     for var in requests {
                         rt.write(var, &extracted_sysroot_path.absolute()?)
