@@ -105,11 +105,7 @@ impl IntoPipeline for CheckinGatesCli {
 
         if let RepoSource::GithubSelf = &openvmm_repo_source {
             pipeline.gh_set_flowey_bootstrap_template(
-                crate::pipelines_shared::gh_flowey_bootstrap_template::get_template(
-                    &client_id,
-                    &tenant_id,
-                    &subscription_id,
-                ),
+                crate::pipelines_shared::gh_flowey_bootstrap_template::get_template(),
             );
         }
 

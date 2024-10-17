@@ -1,13 +1,3 @@
-- uses: Azure/login@v2
-  with:
-    # These secrets describe the HvLite-GitHub service principal and associated Azure subscription,
-    # which, along with the GITHUB_TOKEN, are used to authenticate GitHub Actions to Azure with OpenID Connect.
-    # The service principal has federated identity credentials configured describing which branches and
-    # scenarios can be authenticated.
-    client-id: {{OPENVMM_CLIENT_ID}}
-    tenant-id: {{OPENVMM_TENANT_ID}}
-    subscription-id: {{OPENVMM_SUBSCRIPTION_ID}}
-
 - name: Pull Azure Key Vault secrets
   run: |
     VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)

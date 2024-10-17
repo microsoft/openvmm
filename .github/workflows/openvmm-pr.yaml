@@ -31,11 +31,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -297,11 +292,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -590,11 +580,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -1083,11 +1068,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -1576,11 +1556,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -2239,11 +2214,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -2633,11 +2603,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -3072,11 +3037,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -4610,11 +4570,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -4793,11 +4748,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -5143,11 +5093,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -5420,11 +5365,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -5709,11 +5649,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -6063,11 +5998,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -6432,11 +6362,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -6789,11 +6714,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
@@ -7166,11 +7086,6 @@ jobs:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
       shell: bash
-    - uses: Azure/login@v2
-      with:
-        client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
-        tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
-        subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
     - name: Pull Azure Key Vault secrets
       run: |
         VPackAccessToken=$(az keyvault secret show --name "VPackAccessToken" --vault-name "HvLite-PATs" --query value --output tsv)
