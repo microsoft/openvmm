@@ -1,16 +1,23 @@
 // Copyright (C) Microsoft Corporation. All rights reserved.
 
 //! Hypercall infrastructure.
-
 use crate::single_threaded::SingleThreaded;
+use arrayvec::ArrayVec;
 use core::cell::RefCell;
 use core::cell::UnsafeCell;
+use core::cmp;
 use core::mem::size_of;
+use hvdef::hypercall::HvGpaRange;
+use hvdef::hypercall::HvGpaRangeExtended;
 use hvdef::hypercall::HvInputVtl;
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
 use minimal_rt::arch::hypercall::invoke_hypercall;
 use zerocopy::AsBytes;
+
+const PIN_REQUEST_HEADER_SIZE: usize = size_of::<hvdef::hypercall::PinUnpinGpaPageRangesHeader>();
+const MAX_INPUT_ELEMENTS: usize =
+    (HV_PAGE_SIZE as usize - PIN_REQUEST_HEADER_SIZE) / size_of::<u64>();
 
 /// Page-aligned, page-sized buffer for use with hypercalls
 #[repr(C, align(4096))]
@@ -195,6 +202,90 @@ impl HvCall {
             output.result()?;
 
             current_page += count;
+        }
+
+        Ok(())
+    }
+
+    fn to_hv_gva_range_array(
+        memory_range: &MemoryRange,
+    ) -> ArrayVec<HvGpaRange, MAX_INPUT_ELEMENTS> {
+        const PAGES_PER_ENTRY: u64 = 2048;
+        const PAGE_SIZE: u64 = HV_PAGE_SIZE;
+        let mut ranges = ArrayVec::new();
+
+        // Calculate the total number of pages in the memory range
+        let total_pages = (memory_range.end() - memory_range.start()).div_ceil(PAGE_SIZE);
+
+        // Iterate over the memory range in chunks of 2048 pages
+        let mut current_page = memory_range.start() >> 12; // Convert start address to page number
+        let mut remaining_pages = total_pages;
+
+        while remaining_pages > 0 {
+            // Determine how many pages to use in this HvGvaRange (either 2048 or the remaining pages if fewer)
+            let pages_in_this_range = cmp::min(PAGES_PER_ENTRY, remaining_pages);
+
+            ranges.push(HvGpaRange(
+                HvGpaRangeExtended::new()
+                    .with_additional_pages(pages_in_this_range - 1)
+                    .with_large_page(false)
+                    .with_gpa_page_number(current_page)
+                    .into_bits(),
+            ));
+
+            // Move to the next chunk of pages
+            current_page += pages_in_this_range;
+            remaining_pages -= pages_in_this_range;
+        }
+
+        ranges
+    }
+
+    // Hypercall to pin vtl2 memory
+    #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
+    pub fn pin_gpa_range(&mut self, memory_range: MemoryRange) -> Result<(), hvdef::HvError> {
+        const PAGES_PER_ENTRY: u64 = 2048;
+
+        // Calculate the total number of pages per request
+        let max_bytes_per_request = PAGES_PER_ENTRY * MAX_INPUT_ELEMENTS as u64 * HV_PAGE_SIZE;
+
+        // Track the current start of the memory range
+        let mut current_start = memory_range.start();
+        let mut remaining_size_bytes = memory_range.end() - memory_range.start();
+
+        let header = hvdef::hypercall::PinUnpinGpaPageRangesHeader { reserved: 0 };
+        let input_offset = size_of::<hvdef::hypercall::PinUnpinGpaPageRangesHeader>();
+
+        while remaining_size_bytes > 0 {
+            // Determine the size for this chunk of memory
+            let chunk_bytes = cmp::min(remaining_size_bytes, max_bytes_per_request);
+
+            let chunk_end = current_start + chunk_bytes;
+
+            // Create a sub-range for this chunk
+            let sub_range = MemoryRange::new(current_start..chunk_end);
+
+            // Get HvGvaRange for this sub-range
+            let gva_ranges: ArrayVec<HvGpaRange, MAX_INPUT_ELEMENTS> =
+                Self::to_hv_gva_range_array(&sub_range);
+
+            // Write the header and gva_ranges to the buffer
+            header.write_to_prefix(Self::input_page().buffer.as_mut_slice());
+
+            gva_ranges.write_to_prefix(&mut Self::input_page().buffer[input_offset..]);
+
+            // Call the hypercall with the current chunk
+            let output = self.dispatch_hvcall(
+                hvdef::HypercallCode::HvCallPinGpaPageRanges,
+                Some(gva_ranges.len()),
+            );
+
+            // Check if the hypercall was successful
+            output.result()?;
+
+            // Update remaining memory range for the next iteration
+            remaining_size_bytes -= chunk_bytes;
+            current_start = chunk_end;
         }
 
         Ok(())
