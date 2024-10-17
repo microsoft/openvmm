@@ -2,16 +2,16 @@
 
 [![Build Status](https://github.com/microsoft/openvmm/actions/workflows/openvmm-ci.yaml/badge.svg?branch=main)](https://github.com/microsoft/openvmm/actions/workflows/openvmm-ci.yaml)
 
-OpenVMM is a new VMM for Windows and Linux, written in Rust.
+OpenVMM is a modular, cross-platform, general-purpose Virtual Machine Monitor (VMM), written in Rust.
 
-## Developer Guide
+## Getting Started
 
-See the [developer guide][] and in particular the getting started section.
+For info on how to run, build, and use OpenVMM, check out the [The OpenVMM Guide][].
 
 The guide is published out of this repo via [Markdown files](Guide/src/SUMMARY.md).
 Please keep them up-to-date.
 
-[developer guide]: https://aka.ms/openvmmguide
+[The OpenVMM Guide]: https://aka.ms/openvmmguide
 
 ## Contributing
 
