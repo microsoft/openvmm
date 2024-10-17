@@ -11,6 +11,7 @@ use crate::emuplat::EmuplatServicing;
 use crate::nvme_manager::NvmeManager;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
+use crate::servicing::NvmeSavedState;
 use crate::servicing::ServicingState;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
 use crate::worker::FirmwareType;
@@ -469,7 +470,14 @@ impl LoadedVm {
         if self.isolation.is_some() {
             anyhow::bail!("Servicing is not yet supported for isolated VMs");
         }
+
+        // capabilities_flags used to explicitly disable the feature
+        // which is enabled by default.
         let nvme_keepalive = !capabilities_flags.disable_nvme_keepalive();
+        self.nvme_manager.as_mut().map(|m| {
+            m.set_nvme_keepalive(nvme_keepalive);
+        });
+
         // Do everything before the log flush under a span.
         let mut state = async {
             if !self.stop().await {
@@ -500,8 +508,8 @@ impl LoadedVm {
             let shutdown_nvme = async {
                 if let Some(nvme_manager) = self.nvme_manager.take() {
                     nvme_manager
-                        .shutdown(nvme_keepalive)
-                        .instrument(tracing::info_span!("shutdown_nvme_vfio", %correlation_id))
+                        .shutdown()
+                        .instrument(tracing::info_span!("shutdown_nvme_vfio", %correlation_id, %nvme_keepalive))
                         .await;
                 }
             };
@@ -620,6 +628,25 @@ impl LoadedVm {
         }
 
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
+
+        // Only save NVMe state when there are NVMe controllers and nvme_keepalive
+        // wasn't explicitly disabled through capabilities_flags, otherwise save None.
+        let nvme_state = match self.nvme_manager.as_ref() {
+            Some(n) => {
+                // Do not save NVMe state if there was an error during save
+                // or nvme_keepalive was explicitly disabled,
+                // revert back to the regular nvme_init after boot.
+                match n.save().await {
+                    Ok(s) => Some(NvmeSavedState { nvme_state: s }),
+                    Err(_) => None,
+                }
+            }
+            _ => {
+                // No NVMe controllers present.
+                None
+            }
+        };
+
         let units = self.save_units().await.context("state unit save failed")?;
         let vmgs = self
             .vmgs_thin_client
@@ -638,6 +665,7 @@ impl LoadedVm {
                 vm_stop_reference_time: self.last_state_unit_stop.unwrap().as_100ns(),
                 correlation_id: None,
                 emuplat,
+                nvme_state,
                 flush_logs_result: None,
                 vmgs: (vmgs, vmgs_get_storage_meta),
                 overlay_shutdown_device: self.shutdown_relay.is_some(),

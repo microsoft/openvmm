@@ -5,6 +5,7 @@
 use super::spec;
 use crate::registers::DeviceRegisters;
 use inspect::Inspect;
+use mesh::payload::Protobuf;
 use user_driver::memory::MemoryBlock;
 use user_driver::DeviceBacking;
 
@@ -65,6 +66,19 @@ impl SubmissionQueue {
             self.committed_tail = self.tail;
         }
     }
+
+    /// Saves queue data for servicing.
+    pub fn save(&self) -> SubmissionQueueSavedState {
+        SubmissionQueueSavedState {
+            sqid: self.sqid,
+            head: self.head,
+            tail: self.tail,
+            committed_tail: self.committed_tail,
+            len: self.len,
+            base_mem: self.mem.base_va(),
+            pfns: self.mem.pfns().to_vec(),
+        }
+    }
 }
 
 #[derive(Inspect)]
@@ -72,6 +86,7 @@ pub(crate) struct CompletionQueue {
     cqid: u16,
     head: u32,
     committed_head: u32,
+    /// Queue size in entries.
     len: u32,
     phase: bool,
     #[inspect(skip)]
@@ -115,6 +130,19 @@ impl CompletionQueue {
             self.committed_head = self.head;
         }
     }
+
+    /// Saves queue data for servicing.
+    pub fn save(&self) -> CompletionQueueSavedState {
+        CompletionQueueSavedState {
+            cqid: self.cqid,
+            head: self.head,
+            committed_head: self.committed_head,
+            len: self.len,
+            phase: self.phase,
+            base_mem: self.mem.base_va(),
+            pfns: self.mem.pfns().to_vec(),
+        }
+    }
 }
 
 fn advance(n: u32, l: u32) -> u32 {
@@ -123,4 +151,43 @@ fn advance(n: u32, l: u32) -> u32 {
     } else {
         0
     }
+}
+
+#[derive(Protobuf, Clone, Debug)]
+#[mesh(package = "underhill")]
+pub struct SubmissionQueueSavedState {
+    #[mesh(1)]
+    pub sqid: u16,
+    #[mesh(2)]
+    pub head: u32,
+    #[mesh(3)]
+    pub tail: u32,
+    #[mesh(4)]
+    pub committed_tail: u32,
+    #[mesh(5)]
+    pub len: u32,
+    #[mesh(7)]
+    pub base_mem: u64,
+    #[mesh(8)]
+    pub pfns: Vec<u64>,
+}
+
+#[derive(Protobuf, Clone, Debug)]
+#[mesh(package = "underhill")]
+pub struct CompletionQueueSavedState {
+    #[mesh(1)]
+    pub cqid: u16,
+    #[mesh(2)]
+    pub head: u32,
+    #[mesh(3)]
+    pub committed_head: u32,
+    #[mesh(4)]
+    pub len: u32,
+    #[mesh(5)]
+    /// NVMe completion tag.
+    pub phase: bool,
+    #[mesh(7)]
+    pub base_mem: u64,
+    #[mesh(8)]
+    pub pfns: Vec<u64>,
 }
