@@ -398,7 +398,7 @@ impl BackingPrivate for SnpBacked {
         unreachable!("extint managed through software apic")
     }
 
-    fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16) {
+    fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, vtl: Vtl, sints: u16) {
         if this.backing.hv_sint_notifications & !sints == 0 {
             return;
         }
@@ -410,6 +410,7 @@ impl BackingPrivate for SnpBacked {
             .set_vp_register(
                 HvX64RegisterName::DeliverabilityNotifications,
                 u64::from(notifications).into(),
+                vtl,
             )
             .expect("requesting deliverability is not a fallable operation");
     }
