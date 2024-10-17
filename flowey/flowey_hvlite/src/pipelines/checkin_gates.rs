@@ -941,11 +941,6 @@ impl IntoPipeline for CheckinGatesCli {
                         done: ctx.new_done_handle(),
                     },
                 )
-                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_gh_azure_login::Params {
-                    client_id: client_id.clone(),
-                    tenant_id: tenant_id.clone(),
-                    subscription_id: subscription_id.clone(),
-                })
                 .finish();
             all_jobs.push(job);
         }

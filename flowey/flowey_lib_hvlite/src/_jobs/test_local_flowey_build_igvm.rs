@@ -21,7 +21,6 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
-        ctx.import::<flowey_lib_common::gh_download_azure_key_vault_secret::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -29,14 +28,7 @@ impl SimpleFlowNode for Node {
 
         let hvlite_repo = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
         let rust_install = ctx.reqv(flowey_lib_common::install_rust::Request::EnsureInstalled);
-        let (gh_token, write_gh_token) = ctx.new_secret_var();
-        ctx.req(
-            flowey_lib_common::gh_download_azure_key_vault_secret::GetSecret {
-                key_vault_name: "HvLite-PATs".to_string(),
-                secret: "GitHub-CLI-PAT".into(),
-                resolved_secret: write_gh_token,
-            },
-        );
+        let gh_token = ctx.get_gh_context_var(GhContextVar::GITHUB__TOKEN);
 
         let test_local = ctx.emit_rust_step(
             "test cargo xflowey build-igvm x64 --install-missing-deps",

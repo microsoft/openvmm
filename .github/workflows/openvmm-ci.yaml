@@ -4319,48 +4319,11 @@ jobs:
     - name: install Rust
       run: flowey e 19 flowey_lib_common::install_rust 0
       shell: bash
-    - run: ${{ secrets.OPENVMM_CLIENT_ID }}
-      shell: flowey v 19 'flowey_lib_hvlite::_jobs::cfg_gh_azure_login:0:flowey_lib_hvlite/src/_jobs/cfg_gh_azure_login.rs:36:29' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'secrets.OPENVMM_CLIENT_ID'
-    - run: ${{ secrets.OPENVMM_TENANT_ID }}
-      shell: flowey v 19 'flowey_lib_hvlite::_jobs::cfg_gh_azure_login:1:flowey_lib_hvlite/src/_jobs/cfg_gh_azure_login.rs:37:29' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'secrets.OPENVMM_TENANT_ID'
-    - run: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
-      shell: flowey v 19 'flowey_lib_hvlite::_jobs::cfg_gh_azure_login:2:flowey_lib_hvlite/src/_jobs/cfg_gh_azure_login.rs:38:35' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'secrets.OPENVMM_SUBSCRIPTION_ID'
-    - name: Create OpenIDConnect Credentials
-      run: flowey e 19 flowey_lib_hvlite::_jobs::cfg_gh_azure_login 3
-      shell: bash
-    - name: Read Azure Login Credentials
-      run: flowey e 19 flowey_lib_common::gh_task_azure_login 0
-      shell: bash
-    - run: |
-        flowey v 19 'flowey_lib_common::gh_task_azure_login:0:flowey_lib_common/src/gh_task_azure_login.rs:53:48' --is-secret --write-to-gh-env floweyvar2 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar2'
-    - run: |
-        flowey v 19 'flowey_lib_common::gh_task_azure_login:2:flowey_lib_common/src/gh_task_azure_login.rs:55:60' --is-secret --write-to-gh-env floweyvar3 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar3'
-    - run: |
-        flowey v 19 'flowey_lib_common::gh_task_azure_login:1:flowey_lib_common/src/gh_task_azure_login.rs:54:48' --is-secret --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-    - id: flowey_lib_common__gh_task_azure_login__1
-      uses: Azure/login@v2
-      with:
-        client-id: ${{ env.floweyvar2 }}
-        subscription-id: ${{ env.floweyvar3 }}
-        tenant-id: ${{ env.floweyvar4 }}
-      name: Azure Login
-    - name: installing azure-cli
-      run: flowey e 19 flowey_lib_common::install_azure_cli 0
-      shell: bash
-    - name: Downloading secrets from key vault HvLite-PATs
-      run: flowey e 19 flowey_lib_common::gh_download_azure_key_vault_secret 0
-      shell: bash
+    - run: ${{ github.token }}
+      shell: flowey v 19 'flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm:2:flowey_lib_hvlite/src/_jobs/test_local_flowey_build_igvm.rs:31:28' --update-from-file {0} --is-raw-string
+      name: 🌼 Read from 'github.token'
     - name: test cargo xflowey build-igvm x64 --install-missing-deps
-      run: flowey e 19 flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm 0
+      run: flowey e 19 flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm 1
       shell: bash
   job2:
     name: build and check docs [x64-linux]
