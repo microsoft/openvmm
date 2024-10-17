@@ -32,7 +32,7 @@ pub fn windows_amd_self_hosted() -> GhRunner {
 pub fn windows_intel_self_hosted() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
-        "1ES.Pool=HvLite-GitHub-Win-Pool-Intel-WestUS3".to_string(),
+        "1ES.Pool=OpenVMM-GitHub-Win-Pool-Intel-WestUS3".to_string(),
         "1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB".to_string(),
     ])
 }
@@ -54,7 +54,7 @@ pub fn windows_amd_self_hosted_largedisk() -> GhRunner {
 pub fn windows_intel_self_hosted_largedisk() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
-        "1ES.Pool=HvLite-GitHub-Win-Pool-Intel-WestUS3".to_string(),
+        "1ES.Pool=OpenVMM-GitHub-Win-Pool-Intel-WestUS3".to_string(),
         "1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB".to_string(),
     ])
 }
