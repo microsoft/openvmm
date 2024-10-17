@@ -13,6 +13,7 @@ use crate::NVME_PAGE_SHIFT;
 use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
 use inspect::Inspect;
+use mesh::payload::Protobuf;
 use mesh::CancelContext;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
@@ -78,10 +79,18 @@ impl Namespace {
         io_issuers: &Arc<IoIssuers>,
         device_id: &str,
         nsid: u32,
+        identify_ns: Option<nvm::IdentifyNamespace>,
     ) -> Result<Self, NamespaceError> {
-        let identify = identify_namespace(&admin, nsid)
-            .await
-            .map_err(NamespaceError::Request)?;
+        let identify = match identify_ns {
+            Some(ns) => {
+                ns.clone()
+            },
+            None => {
+                identify_namespace(&admin, nsid)
+                    .await
+                    .map_err(NamespaceError::Request)?
+            }
+        };
         if identify.nsze == 0 {
             return Err(NamespaceError::NotFound);
         }
@@ -499,6 +508,52 @@ impl Namespace {
 
         Ok(())
     }
+
+    /// Return Namespace ID.
+    pub fn nsid(&self) -> u32 {
+        self.nsid
+    }
+
+    /// Save namespace data for servicing.
+    pub fn save(&self) -> anyhow::Result<SavedNamespaceData> {
+        let id = self.state.identify.lock();
+        let mut save_data = SavedNamespaceData {
+            nsid: self.nsid,
+            block_count: self.state.block_count.load(Ordering::Relaxed),
+            identify_ns: [0; 4096],
+        };
+        save_data.identify_ns.copy_from_slice(id.as_bytes());
+        Ok(save_data)
+    }
+
+    /// Restore namespace data after servicing.
+    pub(super) fn restore(
+        driver: &VmTaskDriver,
+        admin: Arc<Issuer>,
+        rescan_event: Arc<event_listener::Event>,
+        identify_ctrl: Arc<spec::IdentifyController>,
+        io_issuers: &Arc<IoIssuers>,
+        device_id: &str,
+        nsid: u32,
+        identify_ns: &[u8; 4096],
+        _saved_state: &SavedNamespaceData
+    ) -> Result<Self, NamespaceError> {
+        let identify = nvm::IdentifyNamespace::read_from_prefix(identify_ns)
+            .unwrap_or(nvm::IdentifyNamespace::new_zeroed());
+        // Restore provides Identify Namespace result to new() so there is no wait.
+        let ns = futures::executor::block_on(Namespace::new(
+            driver,
+            admin,
+            rescan_event,
+            identify_ctrl,
+            io_issuers,
+            device_id,
+            nsid,
+            Some(identify),
+        ));
+
+        ns
+    }
 }
 
 impl DynamicState {
@@ -578,4 +633,16 @@ fn nvm_cmd(opcode: nvm::NvmOpcode, nsid: u32) -> spec::Command {
         nsid,
         ..FromZeroes::new_zeroed()
     }
+}
+
+/// Save/restore NVMe namespace data.
+#[derive(Protobuf, Clone, Debug)]
+#[mesh(package = "underhill")]
+pub struct SavedNamespaceData {
+    #[mesh(1)]
+    pub nsid: u32,
+    #[mesh(2)]
+    pub block_count: u64,
+    #[mesh(3)]
+    pub identify_ns: [u8; 4096],
 }

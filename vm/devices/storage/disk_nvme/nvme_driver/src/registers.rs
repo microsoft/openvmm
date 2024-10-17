@@ -119,4 +119,8 @@ impl<T: DeviceRegisterIo + Inspect> Bar0<T> {
             backoff.back_off().await;
         }
     }
+
+    pub fn base_va(&self) -> u64 {
+        self.0.base_va()
+    }
 }

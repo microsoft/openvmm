@@ -96,6 +96,8 @@ open_enum! {
         /// and usermode. Today, this is only used for SNP: VMSA, CPUID pages,
         /// and secrets pages.
         VTL2_RESERVED = 7,
+        /// Memory preserved during servicing.
+        VTL2_PRESERVED = 8,
     }
 }
 
@@ -110,6 +112,7 @@ impl MemoryVtlType {
                 | MemoryVtlType::VTL2_SIDECAR_IMAGE
                 | MemoryVtlType::VTL2_SIDECAR_NODE
                 | MemoryVtlType::VTL2_RESERVED
+                | MemoryVtlType::VTL2_PRESERVED
         )
     }
 }

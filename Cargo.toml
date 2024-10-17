@@ -148,6 +148,7 @@ build_info = { path = "openhcl/build_info" }
 diag_client = { path = "openhcl/diag_client" }
 diag_proto = { path = "openhcl/diag_proto" }
 diag_server = { path = "openhcl/diag_server" }
+fixed_pool_alloc = { path = "openhcl/fixed_pool_alloc" }
 hcl = { path = "openhcl/hcl" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }
 kmsg_defs = { path = "openhcl/kmsg_defs" }
@@ -282,7 +283,7 @@ tpm_resources = { path = "vm/devices/tpm_resources" }
 mcr_resources = { path = "vm/devices/mcr_resources" } # TODO MCR: move to closed-source
 uidevices = { path = "vm/devices/uidevices" }
 uidevices_resources = { path = "vm/devices/uidevices_resources" }
-user_driver = { path = "vm/devices/user_driver" }
+user_driver = { path = "vm/devices/user_driver", features = ["nvme_keepalive"] }
 video_core = { path = "vm/devices/video_core" }
 vga = { path = "vm/devices/vga" }
 vga_proxy = { path = "vm/devices/vga_proxy" }

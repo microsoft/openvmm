@@ -36,6 +36,14 @@ mod state {
         pub netvsp_state: Vec<crate::emuplat::netvsp::SavedState>,
     }
 
+    #[derive(Protobuf)]
+    #[mesh(package = "underhill")]
+    pub struct NvmeSavedState {
+        /// NVMe manager (worker) saved state.
+        #[mesh(1)]
+        pub nvme_state: crate::nvme_manager::NvmeManagerSavedState,
+    }
+
     /// Servicing state needed to create the LoadedVm object.
     #[derive(Protobuf)]
     #[mesh(package = "underhill")]
@@ -65,6 +73,9 @@ mod state {
         /// Intercept the host-provided shutdown IC device.
         #[mesh(7)]
         pub overlay_shutdown_device: bool,
+        /// NVMe saved state.
+        #[mesh(8)]
+        pub nvme_state: Option<NvmeSavedState>,
     }
 
     #[derive(Protobuf)]
@@ -121,6 +132,7 @@ pub mod transposed {
         pub firmware_type: Option<Firmware>,
         pub vm_stop_reference_time: Option<u64>,
         pub emuplat: OptionEmuplatSavedState,
+        pub nvme_state: Option<Option<NvmeSavedState>>,
         pub flush_logs_result: Option<Option<FlushLogsResult>>,
         pub vmgs: Option<(
             vmgs::save_restore::state::SavedVmgsState,
@@ -151,6 +163,7 @@ pub mod transposed {
                             get_backed_adjust_gpa_range,
                             netvsp_state,
                         },
+                    nvme_state,
                     flush_logs_result,
                     vmgs,
                     overlay_shutdown_device,
@@ -164,6 +177,7 @@ pub mod transposed {
                         get_backed_adjust_gpa_range: Some(get_backed_adjust_gpa_range),
                         netvsp_state: Some(netvsp_state),
                     },
+                    nvme_state: Some(nvme_state),
                     flush_logs_result: Some(flush_logs_result),
                     vmgs: Some(vmgs),
                     overlay_shutdown_device: Some(overlay_shutdown_device),

@@ -11,6 +11,7 @@ use crate::interrupt::DeviceInterruptSource;
 use crate::memory::MemoryBlock;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
+use crate::save_restore::VfioDeviceSavedState;
 use anyhow::Context;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -38,6 +39,9 @@ use zerocopy::FromBytes;
 pub trait VfioDmaBuffer: 'static + Send + Sync {
     /// Create a new DMA buffer of the given `len` bytes. Guaranteed to be zero-initialized.
     fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
+
+    /// Restore a dma buffer in the predefined location with the given `len` in bytes.
+    fn restore_dma_buffer(&self, addr: u64, len: usize, pfns: &[u64]) -> anyhow::Result<MemoryBlock>;
 }
 
 /// A device backend accessed via VFIO.
@@ -76,6 +80,18 @@ impl VfioDevice {
         pci_id: &str,
         dma_buffer: Arc<dyn VfioDmaBuffer>,
     ) -> anyhow::Result<Self> {
+        Self::restore(driver_source, pci_id, dma_buffer, None).await
+    }
+
+    /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
+    /// or creates a device from the saved state if provided.
+    pub async fn restore(
+        driver_source: &VmTaskDriverSource,
+        pci_id: &str,
+        dma_buffer: Arc<dyn VfioDmaBuffer>,
+        _saved_state: Option<&VfioDeviceSavedState>,
+    ) -> anyhow::Result<Self> {
+        let is_restoring = _saved_state.is_some();
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
         // The vfio device attaches asynchronously after the PCI device is added,
@@ -100,6 +116,10 @@ impl VfioDevice {
         }
 
         container.set_iommu(IommuType::NoIommu)?;
+        if is_restoring {
+            // Prevent physical hardware interaction when restoring.
+            group.set_keep_alive(path.file_name().unwrap().to_str().unwrap())?;
+        }
         let device = group.open_device(path.file_name().unwrap().to_str().unwrap())?;
         let msix_info = device.irq_info(vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX)?;
         if msix_info.flags.noresize() {
@@ -118,12 +138,18 @@ impl VfioDevice {
         })
     }
 
-    fn map_bar(&self, n: u8) -> anyhow::Result<MappedRegionWithFallback> {
+    /// Maps PCI BAR[n] to VA space, optionally to a fixed address.
+    fn map_bar(&self, n: u8, addr_fixed: Option<u64>) -> anyhow::Result<MappedRegionWithFallback> {
         if n >= 6 {
             anyhow::bail!("invalid bar");
         }
         let info = self.device.region_info(n.into())?;
-        let mapping = self.device.map(info.offset, info.size as usize, true)?;
+        let mapping = if addr_fixed.is_none() {
+            self.device.map(info.offset, info.size as usize, true)?
+        }
+        else {
+            self.device.map_to(addr_fixed.unwrap(), info.offset, info.size as usize, true)?
+        };
         sparse_mmap::initialize_try_copy();
         Ok(MappedRegionWithFallback {
             device: self.device.clone(),
@@ -159,8 +185,8 @@ impl DeviceBacking for VfioDevice {
         &self.pci_id
     }
 
-    fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers> {
-        (*self).map_bar(n)
+    fn map_bar(&mut self, n: u8, addr_fixed: Option<u64>) -> anyhow::Result<Self::Registers> {
+        (*self).map_bar(n, addr_fixed)
     }
 
     fn host_allocator(&self) -> Self::DmaAllocator {
@@ -328,6 +354,10 @@ impl DeviceRegisterIo for vfio_sys::MappedRegion {
     fn write_u64(&self, offset: usize, data: u64) {
         self.write_u64(offset, data)
     }
+
+    fn base_va(&self) -> u64 {
+        self.as_ptr() as u64
+    }
 }
 
 impl MappedRegionWithFallback {
@@ -410,6 +440,10 @@ impl DeviceRegisterIo for MappedRegionWithFallback {
             self.write_to_file(offset, &data.to_ne_bytes());
         })
     }
+
+    fn base_va(&self) -> u64 {
+        self.mapping.base_va()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -448,6 +482,16 @@ pub struct LockedMemoryAllocator {
 
 impl crate::HostDmaAllocator for LockedMemoryAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
+        self.dma_buffer.create_dma_buffer(len)
+    }
+
+    fn reserve_dma_buffer(&self, _offset: usize, len: usize) -> anyhow::Result<MemoryBlock> {
+        // FIXME: Just using regular allocate until we have memory mapping restore.
+        self.dma_buffer.create_dma_buffer(len)
+    }
+
+    fn restore_dma_buffer(&mut self, _addr: u64, len: usize, _pfns: &[u64]) -> anyhow::Result<MemoryBlock> {
+        // FIXME: Just using regular allocate until we have memory mapping restore.
         self.dma_buffer.create_dma_buffer(len)
     }
 }

@@ -29,8 +29,8 @@ pub trait DeviceBacking: 'static + Send + Inspect {
     /// Returns a device ID for diagnostics.
     fn id(&self) -> &str;
 
-    /// Maps a BAR.
-    fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers>;
+    /// Maps a BAR, optionally to a predefined VA address.
+    fn map_bar(&mut self, n: u8, addr_fixed: Option<u64>) -> anyhow::Result<Self::Registers>;
 
     /// Returns an object that can allocate host memory to be shared with the device.
     fn host_allocator(&self) -> Self::DmaAllocator;
@@ -58,8 +58,31 @@ pub trait DeviceRegisterIo: Send + Sync {
     fn write_u32(&self, offset: usize, data: u32);
     /// Writes a `u64` register.
     fn write_u64(&self, offset: usize, data: u64);
+    /// Returns base virtual address.
+    fn base_va(&self) -> u64;
 }
 
 pub trait HostDmaAllocator: Send + Sync {
+    /// Allocate a new block using default allocation strategy.
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
+
+    /// Reserve DMA bufer at specific offset within pre-allocated buffer.
+    fn reserve_dma_buffer(&self, offset: usize, len: usize) -> anyhow::Result<MemoryBlock>;
+
+    /// Restore DMA bufer at pre-existing location.
+    fn restore_dma_buffer(&mut self, addr: u64, len: usize, pfns: &[u64]) -> anyhow::Result<MemoryBlock>;
+}
+
+pub mod save_restore {
+    use mesh::payload::Protobuf;
+
+    /// Saved state for the VFIO device user mode driver.
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "underhill")]
+    pub struct VfioDeviceSavedState {
+        #[mesh(1)]
+        pub pci_id: String,
+        #[mesh(2)]
+        pub msix_info_count: u32,
+    }
 }

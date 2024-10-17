@@ -41,6 +41,7 @@ use crate::loader::vtl2_config::RuntimeParameters;
 use crate::loader::LoadKind;
 use crate::nvme_manager::NvmeDiskConfig;
 use crate::nvme_manager::NvmeDiskResolver;
+use crate::nvme_manager::NvmeDmaBufferSavedState;
 use crate::nvme_manager::NvmeManager;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -59,6 +60,7 @@ use disk_backend::Disk;
 use disk_blockdevice::BlockDeviceResolver;
 use disk_blockdevice::OpenBlockDeviceConfig;
 use firmware_uefi::UefiCommandSet;
+use fixed_pool_alloc::FixedPool;
 use futures::executor::block_on;
 use futures::future::join_all;
 use futures_concurrency::future::Race;
@@ -116,6 +118,7 @@ use uevent::UeventListener;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::lockmem::LockedMemorySpawner;
+use user_driver::memory::MemoryBlock;
 use user_driver::vfio::VfioDmaBuffer;
 use virt::state::HvRegisterState;
 use virt::Partition;
@@ -1801,6 +1804,7 @@ async fn new_underhill_vm(
     );
 
     let nvme_manager = if env_cfg.nvme_vfio {
+        let nvme_saved_state = servicing_state.nvme_state.unwrap_or(None);
         let shared_vis_pool_spawner = shared_vis_pages_pool
             .as_ref()
             .map(|p| p.allocator_spawner());

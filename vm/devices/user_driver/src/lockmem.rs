@@ -50,6 +50,30 @@ impl Mapping {
         Ok(Self { addr, len })
     }
 
+    #[cfg(feature = "nvme_keepalive")]
+    fn new_in(addr_saved: u64, len: usize) -> std::io::Result<Self> {
+        // SAFETY: No file descriptor is being passed.
+        // addr is saved across servicing (unsafe).
+        // The result is being validated.
+        let addr = unsafe {
+            // MAP_UNINITIALIZED is documented but not defined in MapFlags.
+            // MAP_ANONYMOUS is documented as performing zeroinit. To remove it, fd must be set.
+            // TODO: Check if MAP_UNINITIALIZED is needed.
+            libc::mmap(
+                addr_saved as *mut c_void,
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_LOCKED | libc::MAP_FIXED,
+                -1,
+                0,
+            )
+        };
+        if addr == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self { addr, len })
+    }
+
     fn lock(&self) -> std::io::Result<()> {
         // SAFETY: self contains a valid mmap result.
         if unsafe { libc::mlock(self.addr, self.len) } < 0 {
@@ -100,6 +124,17 @@ impl LockedMemory {
             pfns: pages,
         })
     }
+
+    /// Restore locked memory region at the preserved address.
+    pub fn restore(addr: u64, len: usize) -> anyhow::Result<Self> {
+        let mapping = Mapping::new_in(addr, len).context("failed to create fixed mapping")?;
+        mapping.lock().context("failed to lock mapping")?;
+        let pages = mapping.pages()?;
+        Ok(Self {
+            mapping,
+            pfns: pages,
+        })
+    }
 }
 
 // SAFETY: The stored mapping is valid for the lifetime of the LockedMemory.
@@ -125,5 +160,10 @@ pub struct LockedMemorySpawner;
 impl crate::vfio::VfioDmaBuffer for LockedMemorySpawner {
     fn create_dma_buffer(&self, len: usize) -> anyhow::Result<crate::memory::MemoryBlock> {
         Ok(crate::memory::MemoryBlock::new(LockedMemory::new(len)?))
+    }
+
+    /// Restore mapped DMA memory at the same physical location which was used before.
+    fn restore_dma_buffer(&self, addr: u64, len: usize, _pfns: &[u64]) -> anyhow::Result<crate::memory::MemoryBlock> {
+        Ok(crate::memory::MemoryBlock::new(LockedMemory::restore(addr, len)?))
     }
 }

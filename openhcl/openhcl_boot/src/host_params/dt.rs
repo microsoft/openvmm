@@ -433,7 +433,7 @@ impl PartitionInfo {
         let vtl2_config_region_reclaim =
             MemoryRange::try_new(reclaim_base..reclaim_end).expect("range is valid");
 
-        log!("reclaim aligned base {reclaim_base:x}, reclaim end {reclaim_end:x}");
+        log!("reclaim device tree memory {reclaim_base:x}-{reclaim_end:x}");
 
         for entry in &parsed.memory {
             storage.partition_ram.push(*entry);

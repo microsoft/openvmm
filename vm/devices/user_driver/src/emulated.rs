@@ -263,6 +263,14 @@ impl HostDmaAllocator for EmulatedDmaAllocator {
         memory.as_slice().atomic_fill(0);
         Ok(memory)
     }
+
+    fn reserve_dma_buffer(&self, _offset: usize, len: usize) -> anyhow::Result<MemoryBlock> {
+        self.allocate_dma_buffer(len)
+    }
+
+    fn restore_dma_buffer(&mut self, _addr: u64, len: usize, _pfns: &[u64]) -> anyhow::Result<MemoryBlock> {
+        self.allocate_dma_buffer(len)
+    }
 }
 
 impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedDevice<T> {
@@ -273,7 +281,7 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
         "emulated"
     }
 
-    fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers> {
+    fn map_bar(&mut self, n: u8, _addr_fixed: Option<u64>) -> anyhow::Result<Self::Registers> {
         Ok(Mapping {
             device: self.device.clone(),
             addr: (n as u64) << 32,
@@ -332,5 +340,9 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for Mapping<T> {
             .lock()
             .mmio_write(self.addr + offset as u64, &data.to_ne_bytes())
             .unwrap();
+    }
+
+    fn base_va(&self) -> u64 {
+        self.addr
     }
 }
