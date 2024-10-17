@@ -91,14 +91,7 @@ impl SimpleFlowNode for Node {
             ));
 
             {
-                let (gh_token, write_gh_token) = ctx.new_secret_var();
-                ctx.req(
-                    flowey_lib_common::gh_download_azure_key_vault_secret::GetSecret {
-                        key_vault_name: "HvLite-PATs".to_string(),
-                        secret: "GitHub-CLI-PAT".into(),
-                        resolved_secret: write_gh_token,
-                    },
-                );
+                let gh_token = ctx.get_gh_context_var(GhContextVar::GITHUB__TOKEN);
 
                 ctx.req(flowey_lib_common::use_gh_cli::Request::WithAuth(
                     flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(gh_token),

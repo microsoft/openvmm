@@ -1773,6 +1773,9 @@ pub mod steps {
 
             /// `github.workspace`
             pub const GITHUB__WORKSPACE: GhContextVar = GhContextVar::new("github.workspace");
+
+            /// `github.token`
+            pub const GITHUB__TOKEN: GhContextVar = GhContextVar::new("github.token");
         }
 
         impl GhContextVar {
