@@ -292,8 +292,17 @@ impl BackingPrivate for HypervisorBackedX86 {
         this: &mut UhProcessor<'_, Self>,
         vtl: GuestVtl,
         scan_irr: bool,
-    ) -> Result<bool, UhRunVpError> {
+    ) -> Result<(), UhRunVpError> {
         this.poll_apic(vtl, scan_irr)
+    }
+
+    fn halt_in_usermode(this: &mut UhProcessor<'_, Self>, target_vtl: Vtl) -> bool {
+        if let Some(lapics) = this.backing.lapics.as_ref() {
+            if lapics[target_vtl].halted || lapics[target_vtl].startup_suspend {
+                return true;
+            }
+        }
+        false
     }
 
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {

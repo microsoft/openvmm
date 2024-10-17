@@ -340,7 +340,7 @@ impl BackingPrivate for SnpBacked {
         this: &mut UhProcessor<'_, Self>,
         vtl: GuestVtl,
         scan_irr: bool,
-    ) -> Result<bool, UhRunVpError> {
+    ) -> Result<(), UhRunVpError> {
         // Check for interrupt requests from the host.
         // TODO SNP GUEST VSM supporting VTL 1 proxy irrs requires kernel changes
         if vtl == GuestVtl::Vtl0 {
@@ -390,10 +390,7 @@ impl BackingPrivate for SnpBacked {
             }
         }
 
-        // Return ready even if halted. `run_vp` will wait in the kernel when
-        // halted, which is necessary so that we are efficiently notified when
-        // more interrupts arrive.
-        Ok(true)
+        Ok(())
     }
 
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {

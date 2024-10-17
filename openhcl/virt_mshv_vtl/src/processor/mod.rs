@@ -207,12 +207,12 @@ mod private {
             stop: &mut StopVp<'_>,
         ) -> impl Future<Output = Result<(), VpHaltReason<UhRunVpError>>>;
 
-        /// Returns true if the VP is ready to run the given VTL, false if it is halted.
+        /// Process any pending APIC work.
         fn poll_apic(
             this: &mut UhProcessor<'_, Self>,
             vtl: GuestVtl,
             scan_irr: bool,
-        ) -> Result<bool, UhRunVpError>;
+        ) -> Result<(), UhRunVpError>;
 
         /// Requests the VP to exit when an external interrupt is ready to be
         /// delivered.
@@ -234,6 +234,13 @@ mod private {
         /// Copies shared registers (per VSM TLFS spec) from the last VTL to
         /// the target VTL that will become active.
         fn switch_vtl_state(this: &mut UhProcessor<'_, Self>, target_vtl: GuestVtl);
+
+        /// Returns whether this VP should be put to sleep in usermode, or
+        /// whether it's ready to proceed into the kernel.
+        fn halt_in_usermode(this: &mut UhProcessor<'_, Self>, target_vtl: GuestVtl) -> bool {
+            let _ = (this, target_vtl);
+            false
+        }
 
         fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
     }
@@ -654,15 +661,13 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     self.update_synic(GuestVtl::Vtl0, true);
                 }
 
-                // TODO CVM GUEST VSM: Split ready into two to track per-vtl
-                let mut ready = false;
                 for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
                     // Process interrupts.
                     if self.hv(vtl).is_some() {
                         self.update_synic(vtl, false);
                     }
 
-                    ready |= T::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
+                    T::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
                         .map_err(VpHaltReason::Hypervisor)?;
                 }
                 first_scan_irr = false;
@@ -675,11 +680,12 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     }
                 }
 
-                if ready {
+                // TODO WHP GUEST VSM: This should be next_vtl
+                if T::halt_in_usermode(self, Vtl::Vtl0) {
+                    break Poll::Pending;
+                } else {
                     return <Result<_, VpHaltReason<_>>>::Ok(()).into();
                 }
-
-                break Poll::Pending;
             })
             .await?;
 

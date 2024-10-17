@@ -200,8 +200,8 @@ impl BackingPrivate for HypervisorBackedArm64 {
         _this: &mut UhProcessor<'_, Self>,
         _vtl: GuestVtl,
         _scan_irr: bool,
-    ) -> Result<bool, UhRunVpError> {
-        Ok(true)
+    ) -> Result<(), UhRunVpError> {
+        Ok(())
     }
 
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
