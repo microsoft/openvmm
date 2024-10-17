@@ -219,7 +219,7 @@ where
     // If an AP kernel was provided, load it next.
     let (sidecar_size, sidecar_entrypoint) = if let Some(sidecar) = sidecar {
         // Sidecar load addr must be 2MB aligned
-        let offset = align_up_to_large_page_size(offset);
+        offset = align_up_to_large_page_size(offset);
 
         let load_info = crate::elf::load_static_elf(
             importer,
