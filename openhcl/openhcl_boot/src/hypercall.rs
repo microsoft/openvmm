@@ -79,8 +79,7 @@ impl HvCall {
     #[cfg(target_arch = "x86_64")]
     pub fn hypercall_page(&mut self) -> u64 {
         self.init_if_needed();
-        // SAFETY: just getting the address of the page.
-        unsafe { core::ptr::addr_of!(minimal_rt::arch::hypercall::HYPERCALL_PAGE) as u64 }
+        core::ptr::addr_of!(minimal_rt::arch::hypercall::HYPERCALL_PAGE) as u64
     }
 
     fn init_if_needed(&mut self) {

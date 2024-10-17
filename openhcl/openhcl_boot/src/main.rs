@@ -260,9 +260,7 @@ fn shim_parameters(shim_params_raw_offset: isize) -> ShimParams {
         static __ehdr_start: u8;
     }
 
-    // SAFETY: just taking the address of the image base, this is always a valid
-    // pointer.
-    let shim_base = unsafe { core::ptr::addr_of!(__ehdr_start) as usize };
+    let shim_base = core::ptr::addr_of!(__ehdr_start) as usize;
 
     // SAFETY: The host is required to relocate everything by the same bias, so
     //         the shim parameters should be at the build time specified offset

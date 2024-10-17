@@ -504,8 +504,7 @@ impl NodeDefinition {
             pad: [0; 3],
         };
         let idtr = hvdef::HvX64TableRegister {
-            // SAFETY: just getting the address
-            base: unsafe { addr_of!(IDT) } as u64,
+            base: addr_of!(IDT) as u64,
             // SAFETY: just getting the size
             limit: size_of_val(unsafe { &*addr_of!(IDT) }) as u16 - 1,
             pad: [0; 3],
