@@ -3037,7 +3037,7 @@ impl Hcl {
 
         let query = mshv_rmpquery {
             start_pfn: gpa / HV_PAGE_SIZE,
-            page_count,s
+            page_count,
             terminate_on_failure: 0,
             ram: 0,
             padding: Default::default(),

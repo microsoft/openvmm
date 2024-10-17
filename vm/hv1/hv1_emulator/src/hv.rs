@@ -517,6 +517,6 @@ const INTEL_HYPERCALL_PAGE: HypercallPage = hypercall_page(false);
 pub trait VtlProtectHypercallOverlay: Send + Sync {
     /// Change the location of the overlay.
     fn change_overlay(&self, gpn: u64);
-    /// To handle removal or disablement of the overlay.
+    /// Disable the overlay.
     fn disable_overlay(&self);
 }
