@@ -4,31 +4,45 @@
 //! The module for `AK_CERT_REQUEST` request type that supports parsing the
 //! response.
 
-use crate::igvm_attest::Error;
 use crate::protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use crate::protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
 use zerocopy::FromBytes;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum AkCertError {
+    #[error("AK cert response size is too small to parse")]
+    AkCertResponseSizeTooSmall,
+    #[error(
+        "AK cert response size {specified_size} specified in the header is larger then the actual size {size}"
+    )]
+    AkCertResponseSizeMismatch { size: usize, specified_size: usize },
+    #[error(
+        "AK cert response header version {version} does match the expected version {expected_version}"
+    )]
+    AkCertResponseHeaderVersionMismatch { version: u32, expected_version: u32 },
+}
 
 /// Parse a `AK_CERT_REQUEST` response and return the payload (i.e., the AK cert).
 ///
 /// Returns `Ok(Vec<u8>)` on successfully validating the response, otherwise returns an error.
-pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, Error> {
+pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
     const HEADER_SIZE: usize = size_of::<IgvmAttestAkCertResponseHeader>();
 
     let Some(header) = IgvmAttestAkCertResponseHeader::read_from_prefix(response) else {
-        Err(Error::AkCertResponseSizeTooSmall)?
+        Err(AkCertError::AkCertResponseSizeTooSmall)?
     };
 
     let size = header.data_size as usize;
     if size > response.len() {
-        Err(Error::AkCertResponseSizeMismatch {
+        Err(AkCertError::AkCertResponseSizeMismatch {
             size: response.len(),
             specified_size: size,
         })?
     }
 
     if header.version != AK_CERT_RESPONSE_HEADER_VERSION {
-        Err(Error::AkCertResponseHeaderVersionMismatch {
+        Err(AkCertError::AkCertResponseHeaderVersionMismatch {
             version: header.version,
             expected_version: AK_CERT_RESPONSE_HEADER_VERSION,
         })?
