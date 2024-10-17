@@ -195,7 +195,7 @@ impl OwnedSocketExt for OwnedSocket {
             }
             // In theory SIO_SOCKET_TRANSFER_END could have changed `socket`, so
             // forget the handle and use the socket instead.
-            std::mem::forget(handle);
+            let _gone = handle.into_raw_handle();
             Ok(Self::from_raw_socket(socket as RawSocket))
         }
     }
