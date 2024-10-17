@@ -53,17 +53,18 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_openvmm_deps::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
-        ctx.import::<flowey_lib_common::install_apt_pkg::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         // ambient deps required by `update-rootfs.py`
-        let pydeps = ctx.reqv(
-            |side_effect| flowey_lib_common::install_apt_pkg::Request::Install {
-                package_names: ["python3"].map(Into::into).into(),
-                done: side_effect,
-            },
-        );
+        let pydeps =
+            ctx.reqv(
+                |side_effect| flowey_lib_common::install_dist_pkg::Request::Install {
+                    package_names: ["python3"].map(Into::into).into(),
+                    done: side_effect,
+                },
+            );
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 

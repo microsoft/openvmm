@@ -19,7 +19,7 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::install_apt_pkg::Node>();
+        ctx.import::<crate::install_dist_pkg::Node>();
         ctx.import::<crate::download_gh_release::Node>();
     }
 
@@ -51,7 +51,7 @@ impl FlowNode for Node {
             version,
             match ctx.platform() {
                 FlowPlatform::Windows => "pc-windows-msvc.zip",
-                FlowPlatform::Linux => "unknown-linux-gnu.tar.gz",
+                FlowPlatform::Linux(_) => "unknown-linux-gnu.tar.gz",
                 FlowPlatform::MacOs => "apple-darwin.tar.gz",
                 platform => anyhow::bail!("unsupported platform {platform}"),
             }

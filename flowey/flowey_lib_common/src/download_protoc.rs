@@ -25,7 +25,7 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::install_apt_pkg::Node>();
+        ctx.import::<crate::install_dist_pkg::Node>();
         ctx.import::<crate::download_gh_release::Node>();
         ctx.import::<crate::cache::Node>();
     }
@@ -57,8 +57,8 @@ impl FlowNode for Node {
                 // protoc is not currently available for windows aarch64,
                 // so emulate the x64 version
                 (FlowPlatform::Windows, _) => "win64",
-                (FlowPlatform::Linux, FlowArch::X86_64) => "linux-x86_64",
-                (FlowPlatform::Linux, FlowArch::Aarch64) => "linux-aarch_64",
+                (FlowPlatform::Linux(_), FlowArch::X86_64) => "linux-x86_64",
+                (FlowPlatform::Linux(_), FlowArch::Aarch64) => "linux-aarch_64",
                 (FlowPlatform::MacOs, FlowArch::X86_64) => "osx-x86_64",
                 (FlowPlatform::MacOs, FlowArch::Aarch64) => "osx-aarch_64",
                 (platform, arch) => anyhow::bail!("unsupported platform {platform} {arch}"),

@@ -10,6 +10,8 @@ use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
 use flowey_core::node::NodeHandle;
+use flowey_core::pipeline::HostExt;
+use flowey_core::pipeline::PipelineBackendHint;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -70,23 +72,8 @@ impl ExecSnippet {
             dry_run,
         } = self;
 
-        let flow_platform = if cfg!(windows) {
-            FlowPlatform::Windows
-        } else if cfg!(target_os = "linux") {
-            FlowPlatform::Linux
-        } else {
-            unreachable!("flowey only runs on windows/linux at the moment")
-        };
-
-        // xtask-fmt allow-target-arch oneoff-flowey
-        let flow_arch = if cfg!(target_arch = "x86_64") {
-            FlowArch::X86_64
-        // xtask-fmt allow-target-arch oneoff-flowey
-        } else if cfg!(target_arch = "aarch64") {
-            FlowArch::Aarch64
-        } else {
-            unreachable!("flowey only runs on X86_64 or Aarch64 at the moment")
-        };
+        let flow_platform = FlowPlatform::host(PipelineBackendHint::Local);
+        let flow_arch = FlowArch::host(PipelineBackendHint::Local);
 
         let mut runtime_var_db = super::var_db::open_var_db(job_idx)?;
 
