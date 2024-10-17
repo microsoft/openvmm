@@ -183,7 +183,14 @@ impl FlowNode for Node {
                 }
 
                 for (arch, vars) in openhcl_sysroot {
-                    let path = base_dir(arch).join("sysroot.tar.gz");
+                    // Extract the internal sysroot archive, rather than just
+                    // handing it out as a file.
+                    let path = flowey_lib_common::_util::extract::extract_archive_if_new(
+                        rt,
+                        extract_archive_deps.clone(),
+                        &base_dir(arch).join("sysroot.tar.gz"),
+                        &version,
+                    )?;
                     rt.write_all(vars, &path)
                 }
 

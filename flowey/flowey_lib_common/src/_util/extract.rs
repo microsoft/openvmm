@@ -99,7 +99,13 @@ pub fn extract_archive_if_new(
     if !already_extracted {
         fs_err::create_dir_all(&extract_dir)?;
         let bsdtar = crate::_util::bsdtar_name(rt);
-        xshell::cmd!(sh, "{bsdtar} -xf {file} -C {extract_dir}").run()?;
+        // Pass in --no-same-owner and --no-same-permissions to avoid divergent
+        // behavior when running as root.
+        xshell::cmd!(
+            sh,
+            "{bsdtar} -xf {file} -C {extract_dir} --no-same-owner --no-same-permissions"
+        )
+        .run()?;
         fs_err::write(pkg_info_file, file_version)?;
     } else {
         log::info!("already extracted!");
