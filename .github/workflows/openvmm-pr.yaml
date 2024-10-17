@@ -582,7 +582,7 @@ jobs:
     name: build artifacts [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Linux-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
@@ -1075,7 +1075,7 @@ jobs:
     name: build openhcl [aarch64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Linux-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
@@ -1568,7 +1568,7 @@ jobs:
     name: build openhcl [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Linux-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
@@ -2625,7 +2625,7 @@ jobs:
     name: clippy [linux, macos], unit tests [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Linux-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
@@ -3064,7 +3064,7 @@ jobs:
     name: clippy [linux-musl, misc nostd], unit tests [x64-linux-musl]
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Linux-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
@@ -4237,7 +4237,7 @@ jobs:
     name: run vmm-tests [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Linux-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
@@ -4602,7 +4602,7 @@ jobs:
     name: test flowey local backend
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Linux-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
@@ -4785,7 +4785,7 @@ jobs:
     name: build and check docs [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Linux-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
@@ -5412,7 +5412,7 @@ jobs:
     name: xtask fmt (linux)
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Linux-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
@@ -7158,7 +7158,7 @@ jobs:
     name: build artifacts [aarch64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Linux-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
