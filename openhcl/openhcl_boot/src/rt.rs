@@ -3,7 +3,8 @@
 //! Architecture-independent runtime support.
 
 // This must match the hardcoded value set at the entry point in the asm.
-const STACK_SIZE: usize = 32768;
+pub(crate) const STACK_SIZE: usize = 32768;
+pub(crate) const STACK_COOKIE: u32 = 0x30405060;
 
 #[repr(C, align(16))]
 pub struct Stack([u8; STACK_SIZE]);
@@ -19,7 +20,7 @@ pub fn verify_stack_cookie() {
     // is bogus.
     unsafe {
         let stack_ptr = core::ptr::addr_of!(STACK).cast::<u32>();
-        if core::ptr::read(stack_ptr) != 0x30405060 {
+        if core::ptr::read(stack_ptr) != STACK_COOKIE {
             panic!("Stack was overrun - check for large variables");
         }
     }
