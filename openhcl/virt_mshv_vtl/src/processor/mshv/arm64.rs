@@ -91,6 +91,8 @@ pub struct HypervisorBackedArm64 {
     next_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     stats: ProcessorStatsArm64,
     cpu_state: CpuState,
+    #[inspect(with = "|x| x.map(|vtl| u8::from(vtl))")]
+    last_vtl: Option<Vtl>,
 }
 
 #[derive(Inspect, Default)]
@@ -120,6 +122,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
             next_deliverability_notifications: Default::default(),
             stats: Default::default(),
             cpu_state: CpuState::default(),
+            last_vtl: None,
         })
     }
 
@@ -154,12 +157,25 @@ impl BackingPrivate for HypervisorBackedArm64 {
                 this.backing.next_deliverability_notifications;
         }
 
+        this.backing.last_vtl = None;
+
         let intercepted = this
             .runner
             .run()
             .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?;
 
         if intercepted {
+            this.backing.last_vtl = Some(
+                hvdef::HvArm64InterceptMessageHeader::ref_from_prefix(
+                    this.runner.exit_message().payload(),
+                )
+                .unwrap()
+                .execution_state
+                .vtl()
+                .try_into()
+                .unwrap(),
+            );
+
             let stat = match this.runner.exit_message().header.typ {
                 HvMessageType::HvMessageTypeUnmappedGpa
                 | HvMessageType::HvMessageTypeGpaIntercept => {
@@ -219,9 +235,8 @@ impl BackingPrivate for HypervisorBackedArm64 {
     /// The VTL that was running when the VP exited into VTL2, with the
     /// exception of a successful vtl switch, where it will return the VTL
     /// that will run on VTL 2 exit.
-    fn last_vtl(_this: &UhProcessor<'_, Self>) -> GuestVtl {
-        // TODO ARM64
-        GuestVtl::Vtl0
+    fn last_vtl(this: &UhProcessor<'_, Self>) -> GuestVtl {
+        this.backing.last_vtl.unwrap_or(GuestVtl::Vtl0)
     }
 
     /// Copies shared registers (per VSM TLFS spec) from the last VTL to
