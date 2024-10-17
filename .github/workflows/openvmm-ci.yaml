@@ -19,7 +19,7 @@ jobs:
     name: build mdbook guide [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Win-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
@@ -301,7 +301,7 @@ jobs:
     name: build and check docs [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Win-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
@@ -2243,7 +2243,7 @@ jobs:
     name: clippy [windows], unit tests [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Win-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
@@ -3882,7 +3882,7 @@ jobs:
     name: run vmm-tests [x64-windows-amd]
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Win-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
     - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
     permissions:
       contents: read
@@ -5713,7 +5713,7 @@ jobs:
     name: build artifacts (not for VMM tests) [aarch64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Win-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
@@ -6436,7 +6436,7 @@ jobs:
     name: build artifacts (not for VMM tests) [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=HvLite-GitHub-Win-Pool-WestUS3
+    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
     permissions:
       contents: read
       id-token: write
