@@ -11,7 +11,7 @@ on:
         default: false
         required: false
         type: boolean
-  pull_request:
+  pull_request_target:
     branches:
     - main
 concurrency:
@@ -203,7 +203,7 @@ jobs:
       run: flowey.exe e 0 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey.exe v 0 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 0 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey.exe e 0 flowey_lib_common::use_gh_cli 0
@@ -418,7 +418,7 @@ jobs:
       run: flowey.exe e 1 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey.exe v 1 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 1 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey.exe e 1 flowey_lib_common::use_gh_cli 0
@@ -655,7 +655,7 @@ jobs:
       run: flowey e 10 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 10 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey v 10 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey e 10 flowey_lib_common::use_gh_cli 0
@@ -1080,7 +1080,7 @@ jobs:
       run: flowey e 11 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 11 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey v 11 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey e 11 flowey_lib_common::use_gh_cli 0
@@ -1522,7 +1522,7 @@ jobs:
       run: flowey e 12 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 12 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey v 12 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey e 12 flowey_lib_common::use_gh_cli 0
@@ -2163,7 +2163,7 @@ jobs:
       run: flowey.exe e 13 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey.exe v 13 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 13 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey.exe e 13 flowey_lib_common::use_gh_cli 0
@@ -2480,7 +2480,7 @@ jobs:
       run: flowey e 14 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 14 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey v 14 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey e 14 flowey_lib_common::use_gh_cli 0
@@ -2900,7 +2900,7 @@ jobs:
       run: flowey e 15 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 15 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey v 15 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey e 15 flowey_lib_common::use_gh_cli 0
@@ -3252,7 +3252,7 @@ jobs:
       run: flowey.exe e 16 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey.exe v 16 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 16 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey.exe e 16 flowey_lib_common::use_gh_cli 0
@@ -3616,7 +3616,7 @@ jobs:
       run: flowey.exe e 17 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey.exe v 17 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 17 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey.exe e 17 flowey_lib_common::use_gh_cli 0
@@ -3981,7 +3981,7 @@ jobs:
       run: flowey e 18 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 18 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey v 18 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey e 18 flowey_lib_common::use_gh_cli 0
@@ -4308,7 +4308,7 @@ jobs:
       run: flowey e 19 flowey_lib_common::install_rust 0
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 19 'flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm:2:flowey_lib_hvlite/src/_jobs/test_local_flowey_build_igvm.rs:31:28' --update-from-file {0} --is-raw-string
+      shell: flowey v 19 'flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm:2:flowey_lib_hvlite/src/_jobs/test_local_flowey_build_igvm.rs:31:28' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: test cargo xflowey build-igvm x64 --install-missing-deps
       run: flowey e 19 flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm 1
@@ -4497,7 +4497,7 @@ jobs:
       run: flowey e 2 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 2 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey v 2 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey e 2 flowey_lib_common::use_gh_cli 0
@@ -4803,7 +4803,7 @@ jobs:
       run: flowey.exe e 3 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey.exe v 3 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 3 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey.exe e 3 flowey_lib_common::use_gh_cli 0
@@ -5029,7 +5029,7 @@ jobs:
       run: flowey e 4 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 4 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey v 4 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey e 4 flowey_lib_common::use_gh_cli 0
@@ -5275,7 +5275,7 @@ jobs:
       run: flowey.exe e 5 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey.exe v 5 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 5 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey.exe e 5 flowey_lib_common::use_gh_cli 0
@@ -5544,7 +5544,7 @@ jobs:
       run: flowey.exe e 6 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey.exe v 6 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 6 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey.exe e 6 flowey_lib_common::use_gh_cli 0
@@ -5896,7 +5896,7 @@ jobs:
       run: flowey.exe e 7 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey.exe v 7 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 7 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey.exe e 7 flowey_lib_common::use_gh_cli 0
@@ -6168,7 +6168,7 @@ jobs:
       run: flowey.exe e 8 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey.exe v 8 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 8 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey.exe e 8 flowey_lib_common::use_gh_cli 0
@@ -6506,7 +6506,7 @@ jobs:
       run: flowey e 9 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 9 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --update-from-file {0} --is-raw-string
+      shell: flowey v 9 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey e 9 flowey_lib_common::use_gh_cli 0

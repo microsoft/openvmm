@@ -104,7 +104,7 @@ pub struct Triggers {
     pub workflow_call: Option<WorkflowCall>,
     pub workflow_dispatch: Option<WorkflowDispatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pull_request: Option<PrTrigger>,
+    pub pull_request_target: Option<PrTrigger>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub push: Option<CiTrigger>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
