@@ -316,4 +316,8 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for Mapping<T> {
             .mmio_write(self.addr + offset as u64, &data.to_ne_bytes())
             .unwrap();
     }
+
+    fn base_va(&self) -> u64 {
+        self.addr
+    }
 }
