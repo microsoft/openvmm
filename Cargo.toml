@@ -593,7 +593,6 @@ unnecessary_box_returns = "warn"
 # useful, but _very_ tedious to fix
 #   doc_markdown = "warn"
 
-
 # Nested if / else if statements can be easier to read than an equivalent
 # flattened statements.
 collapsible_else_if = "allow"
