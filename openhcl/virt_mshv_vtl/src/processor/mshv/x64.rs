@@ -318,10 +318,8 @@ impl BackingPrivate for HypervisorBackedX86 {
     }
 
     // If there's no register page, assume only VTL0 is supported.
-    fn last_vtl(this: &UhProcessor<'_, Self>) -> GuestVtl {
-        this.runner
-            .reg_page_vtl()
-            .map_or(GuestVtl::Vtl0, |vtl| vtl.try_into().unwrap())
+    fn intercepted_vtl(this: &UhProcessor<'_, Self>) -> GuestVtl {
+        this.runner.reg_page_vtl().unwrap_or(GuestVtl::Vtl0)
     }
 
     fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: GuestVtl) {
@@ -467,7 +465,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         let is_64bit =
             message.header.execution_state.cr0_pe() && message.header.execution_state.efer_lma();
 
-        let guest_memory = self.last_vtl_gm();
+        let guest_memory = self.intercepted_vtl_gm();
         let handler = UhHypercallHandler {
             vp: self,
             bus,
@@ -619,7 +617,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             hvdef::HvX64MsrInterceptMessage::ref_from_prefix(self.runner.exit_message().payload())
                 .unwrap();
         let rip = next_rip(&message.header);
-        let last_vtl = self.last_vtl();
+        let last_vtl = self.intercepted_vtl();
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "msr");
 
@@ -717,12 +715,12 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
     fn handle_unrecoverable_exception(&self) -> Result<(), VpHaltReason<UhRunVpError>> {
         Err(VpHaltReason::TripleFault {
-            vtl: self.last_vtl().into(),
+            vtl: self.intercepted_vtl().into(),
         })
     }
 
     fn handle_halt(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let last_vtl = self.last_vtl();
+        let last_vtl = self.intercepted_vtl();
         self.backing.lapics.as_mut().unwrap()[last_vtl].halt();
         Ok(())
     }
@@ -1010,11 +1008,11 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         // Note: the restriction to VTL 1 support also means that for WHP, which doesn't support VTL 1
         // the HvCheckSparseGpaPageVtlAccess hypercall--which is unimplemented in whp--will never be made.
         if mode == virt_support_x86emu::emulate::TranslateMode::Execute
-            && self.vp.last_vtl() == GuestVtl::Vtl0
+            && self.vp.intercepted_vtl() == GuestVtl::Vtl0
             && self.vp.vtl1_supported()
         {
             // Should always be called after translate gva with the tlb lock flag
-            debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vp.last_vtl()));
+            debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vp.intercepted_vtl()));
 
             let mbec_user_execute = self
                 .vp
@@ -1065,7 +1063,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             }
         };
 
-        let target_vtl = self.vp.last_vtl();
+        let target_vtl = self.vp.intercepted_vtl();
 
         // The translation will be used, so set the appropriate page table bits
         // (the access/dirty bit).
@@ -1119,7 +1117,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             ),
         ];
 
-        let last_vtl = self.vp.last_vtl();
+        let last_vtl = self.vp.intercepted_vtl();
 
         self.vp
             .runner
@@ -1152,7 +1150,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn lapic_base_address(&self) -> Option<u64> {
-        let last_vtl = self.vp.last_vtl();
+        let last_vtl = self.vp.intercepted_vtl();
         self.vp
             .backing
             .lapics
@@ -1161,7 +1159,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn lapic_read(&mut self, address: u64, data: &mut [u8]) {
-        let last_vtl = self.vp.last_vtl();
+        let last_vtl = self.vp.intercepted_vtl();
         self.vp.backing.lapics.as_mut().unwrap()[last_vtl].mmio_read(
             self.vp.partition,
             &mut self.vp.runner,
@@ -1173,7 +1171,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn lapic_write(&mut self, address: u64, data: &[u8]) {
-        let last_vtl = self.vp.last_vtl();
+        let last_vtl = self.vp.intercepted_vtl();
         self.vp.backing.lapics.as_mut().unwrap()[last_vtl].mmio_write(
             self.vp.partition,
             &mut self.vp.runner,
@@ -1547,7 +1545,7 @@ impl<T> hv1_hypercall::SetVpRegisters for UhHypercallHandler<'_, '_, T, Hypervis
         }
 
         let target_vtl = self
-            .target_vtl_no_higher(vtl.unwrap_or(self.vp.last_vtl().into()))
+            .target_vtl_no_higher(vtl.unwrap_or(self.vp.intercepted_vtl().into()))
             .map_err(|e| (e, 0))?;
 
         for (i, reg) in registers.iter().enumerate() {

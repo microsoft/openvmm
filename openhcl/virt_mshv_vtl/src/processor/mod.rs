@@ -229,7 +229,7 @@ mod private {
         /// The VTL that was running when the VP exited into VTL2, with the
         /// exception of a successful vtl switch, where it will return the VTL
         /// that will run on VTL 2 exit.
-        fn last_vtl(this: &UhProcessor<'_, Self>) -> GuestVtl;
+        fn intercepted_vtl(this: &UhProcessor<'_, Self>) -> GuestVtl;
 
         /// Copies shared registers (per VSM TLFS spec) from the last VTL to
         /// the target VTL that will become active.
@@ -930,7 +930,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
     #[cfg(guest_arch = "x86_64")]
     fn write_msr(&mut self, msr: u32, value: u64) -> Result<(), MsrError> {
-        let last_vtl = self.last_vtl();
+        let last_vtl = self.intercepted_vtl();
         if msr & 0xf0000000 == 0x40000000 {
             if let Some(hv) = self.hv_mut(last_vtl) {
                 let r = hv.msr_write(msr, value);
@@ -966,7 +966,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
     #[cfg(guest_arch = "x86_64")]
     fn read_msr(&mut self, msr: u32) -> Result<u64, MsrError> {
-        let last_vtl = self.last_vtl();
+        let last_vtl = self.intercepted_vtl();
         if msr & 0xf0000000 == 0x40000000 {
             if let Some(hv) = &mut self.hv(last_vtl) {
                 let r = hv.msr_read(msr);
@@ -999,7 +999,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         for<'b> UhEmulationState<'b, 'a, D, T>:
             virt_support_x86emu::emulate::EmulatorSupport<Error = UhRunVpError>,
     {
-        let guest_memory = self.last_vtl_gm();
+        let guest_memory = self.intercepted_vtl_gm();
         virt_support_x86emu::emulate::emulate(
             &mut UhEmulationState {
                 vp: &mut *self,
@@ -1023,7 +1023,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         for<'b> UhEmulationState<'b, 'a, D, T>:
             virt_support_aarch64emu::emulate::EmulatorSupport<Error = UhRunVpError>,
     {
-        let guest_memory = self.last_vtl_gm();
+        let guest_memory = self.intercepted_vtl_gm();
         virt_support_aarch64emu::emulate::emulate(
             &mut UhEmulationState {
                 vp: &mut *self,
@@ -1044,13 +1044,13 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         )
     }
 
-    fn last_vtl(&self) -> GuestVtl {
-        T::last_vtl(self)
+    fn intercepted_vtl(&self) -> GuestVtl {
+        T::intercepted_vtl(self)
     }
 
     /// Returns the guest memory object that should be used based on the last vtl
-    fn last_vtl_gm(&self) -> &'a GuestMemory {
-        &self.partition.gm[self.last_vtl()]
+    fn intercepted_vtl_gm(&self) -> &'a GuestMemory {
+        &self.partition.gm[self.intercepted_vtl()]
     }
 
     fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
@@ -1164,7 +1164,7 @@ struct UhHypercallHandler<'a, 'b, T, B: Backing> {
 
 impl<T, B: Backing> UhHypercallHandler<'_, '_, T, B> {
     fn target_vtl_no_higher(&self, target_vtl: Vtl) -> Result<GuestVtl, HvError> {
-        if Vtl::from(self.vp.last_vtl()) < target_vtl {
+        if Vtl::from(self.vp.intercepted_vtl()) < target_vtl {
             return Err(HvError::AccessDenied);
         }
         Ok(target_vtl.try_into().unwrap())
@@ -1296,7 +1296,7 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::PostMessage for UhHypercallHandler<'_,
         );
 
         self.bus.post_synic_message(
-            self.vp.last_vtl().into(),
+            self.vp.intercepted_vtl().into(),
             connection_id,
             self.trusted,
             message,
@@ -1309,7 +1309,7 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::SignalEvent for UhHypercallHandler<'_,
         tracing::trace!(connection_id, "handling signal event intercept");
 
         self.bus
-            .signal_synic_event(self.vp.last_vtl().into(), connection_id, flag)
+            .signal_synic_event(self.vp.intercepted_vtl().into(), connection_id, flag)
     }
 }
 

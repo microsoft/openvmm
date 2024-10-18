@@ -139,7 +139,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             //
             // TODO GUEST_VSM: last_vtl currently always returns 0 (which is wrong),
             // so for any VP outside of the BSP, this will fail
-            if self.vp.last_vtl() < GuestVtl::Vtl1 {
+            if self.vp.intercepted_vtl() < GuestVtl::Vtl1 {
                 if vtl1_state_inner.enabled_on_vp_count > 0 || vp_index != current_vp_index {
                     return Err(HvError::AccessDenied);
                 }
@@ -230,7 +230,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         }
 
         let vtl = self
-            .target_vtl_no_higher(vtl.unwrap_or_else(|| self.vp.last_vtl().into()))
+            .target_vtl_no_higher(vtl.unwrap_or_else(|| self.vp.intercepted_vtl().into()))
             .map_err(|e| (e, 0))?;
 
         for (i, (&name, output)) in zip(registers, output).enumerate() {
@@ -395,7 +395,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
         }
 
         let target_vtl = vtl
-            .map_or_else(|| Ok(self.vp.last_vtl()), |vtl| vtl.try_into())
+            .map_or_else(|| Ok(self.vp.intercepted_vtl()), |vtl| vtl.try_into())
             .map_err(|_| (HvError::InvalidParameter, 0))?;
 
         for (i, reg) in registers.iter().enumerate() {

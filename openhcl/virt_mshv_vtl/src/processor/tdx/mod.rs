@@ -769,7 +769,7 @@ impl BackingPrivate for TdxBacked {
         }
     }
 
-    fn last_vtl(this: &UhProcessor<'_, Self>) -> GuestVtl {
+    fn intercepted_vtl(this: &UhProcessor<'_, Self>) -> GuestVtl {
         this.cvm_guest_vsm
             .as_ref()
             .map_or(GuestVtl::Vtl0, |gvsm_state| gvsm_state.current_vtl)
@@ -1431,7 +1431,7 @@ impl UhProcessor<'_, TdxBacked> {
                     let is_64bit = self.backing.cr0.read(&self.runner) & X64_CR0_PE != 0
                         && self.backing.efer & X64_EFER_LMA != 0;
 
-                    let guest_memory = self.last_vtl_gm();
+                    let guest_memory = self.intercepted_vtl_gm();
                     let handler = UhHypercallHandler {
                         vp: &mut *self,
                         bus: dev,
@@ -1712,7 +1712,7 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn read_tdvmcall_msr(&mut self, msr: u32) -> Result<u64, MsrError> {
-        let last_vtl = self.last_vtl();
+        let last_vtl = self.intercepted_vtl();
         match msr {
             msr @ (hvdef::HV_X64_MSR_GUEST_OS_ID | hvdef::HV_X64_MSR_VP_INDEX) => {
                 self.hv(last_vtl).unwrap().msr_read(msr)
@@ -1726,7 +1726,7 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn write_tdvmcall_msr(&mut self, msr: u32, value: u64) -> Result<(), MsrError> {
-        let last_vtl = self.last_vtl();
+        let last_vtl = self.intercepted_vtl();
         match msr {
             msr @ hvdef::HV_X64_MSR_GUEST_OS_ID => {
                 self.hv_mut(last_vtl).unwrap().msr_write(msr, value)?
@@ -2116,11 +2116,11 @@ impl TranslateGvaSupport for UhProcessor<'_, TdxBacked> {
     type Error = UhRunVpError;
 
     fn guest_memory(&self) -> &guestmem::GuestMemory {
-        self.last_vtl_gm()
+        self.intercepted_vtl_gm()
     }
 
     fn acquire_tlb_lock(&mut self) {
-        self.set_tlb_lock(Vtl::Vtl2, self.last_vtl())
+        self.set_tlb_lock(Vtl::Vtl2, self.intercepted_vtl())
     }
 
     fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
@@ -3141,7 +3141,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
         self.hcvm_validate_flush_inputs(&processor_set, flags, true)
             .map_err(|e| (e, 0))?;
 
-        let vtl = self.vp.last_vtl();
+        let vtl = self.vp.intercepted_vtl();
         {
             let mut flush_state = self.vp.backing.shared.flush_state[vtl].write();
 
@@ -3199,7 +3199,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
         flags: HvFlushFlags,
     ) -> hvdef::HvResult<()> {
         self.hcvm_validate_flush_inputs(&processor_set, flags, false)?;
-        let vtl = self.vp.last_vtl();
+        let vtl = self.vp.intercepted_vtl();
 
         {
             let mut flush_state = self.vp.backing.shared.flush_state[vtl].write();
