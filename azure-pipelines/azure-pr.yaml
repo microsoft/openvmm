@@ -1,6 +1,6 @@
 trigger: none
 pr: none
-# variables:
+# variables: 
 # - name: DisablePipelineConfigDetector
 #   value: 'true'
 jobs:
