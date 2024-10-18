@@ -47,7 +47,7 @@ jobs:
                     archive_format: 'zip',
                 });
                 let fs = require('fs');
-                fs.writeFileSync(`${process.env.GITHUB_WORKSPACE}/github-ref.zip`, Buffer.from(download.data));
+                fs.writeFileSync(`${{ github.workspace }}/github-ref.zip`, Buffer.from(download.data));
             } else {
                 console.log("No matching artifacts found");
             }
