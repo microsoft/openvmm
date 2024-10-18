@@ -1775,7 +1775,7 @@ pub mod steps {
             pub const GITHUB__WORKSPACE: GhContextVar = GhContextVar::new("github.workspace");
 
             /// `github.token`
-            pub const GITHUB__TOKEN: GhContextVar = GhContextVar::new_secret("github.token");
+            pub const GITHUB__TOKEN: GhContextVar = GhContextVar::new("github.token");
         }
 
         impl GhContextVar {
@@ -1786,6 +1786,7 @@ pub mod steps {
                 }
             }
 
+            #[allow(unused)]
             const fn new_secret(s: &'static str) -> Self {
                 Self {
                     is_secret: true,

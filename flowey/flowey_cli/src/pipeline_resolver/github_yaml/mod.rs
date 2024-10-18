@@ -618,7 +618,7 @@ EOF
                     .collect::<BTreeMap<String, github_yaml_defs::Input>>(),
             },
         }),
-        pull_request_target: match gh_pr_triggers {
+        pull_request: match gh_pr_triggers {
             Some(gh_pr_triggers) => {
                 if gh_pr_triggers.auto_cancel {
                     concurrency = Some(github_yaml_defs::Concurrency {
