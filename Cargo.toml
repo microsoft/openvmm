@@ -592,13 +592,7 @@ unnecessary_box_returns = "warn"
 #
 # useful, but _very_ tedious to fix
 #   doc_markdown = "warn"
-# will be useful to weed-out stubbed codepaths in production
-#   todo = "warn"
-#   unimplemented = "warn"
-# useful, but will require a follow-up PR to enable
-#   map_err_ignore = "warn"
-# useful, but requires a follow-up PR to enable
-#   unused_self = "warn"
+
 
 # Nested if / else if statements can be easier to read than an equivalent
 # flattened statements.
