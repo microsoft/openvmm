@@ -853,6 +853,13 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
             },
         ] {
+            // TODO: Enable VMM tests for pull requests once the issues around
+            // using secret variables are resolved.
+            // This is tracked by https://github.com/microsoft/openvmm/issues/137.
+            if matches!(config, PipelineConfig::Pr) {
+                break;
+            }
+
             let pub_vmm_tests_junit_xml = if matches!(backend_hint, PipelineBackendHint::Local) {
                 Some(pipeline.new_artifact(format!("{label}-vmm-tests")).0)
             } else {
