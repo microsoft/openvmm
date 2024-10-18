@@ -1,4 +1,4 @@
-# This check is currently disabled
+# This check is temporarily disabled
 name: Unsafe Reviewers Check
 on:
   workflow_dispatch:
