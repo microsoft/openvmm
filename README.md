@@ -2,7 +2,13 @@
 
 [![Build Status](https://github.com/microsoft/openvmm/actions/workflows/openvmm-ci.yaml/badge.svg?branch=main)](https://github.com/microsoft/openvmm/actions/workflows/openvmm-ci.yaml)
 
-OpenVMM is a modular, cross-platform, general-purpose Virtual Machine Monitor (VMM), written in Rust.
+OpenVMM is a modular, cross-platform Virtual Machine Monitor (VMM), written in
+Rust.
+
+Although it can function as a traditional VMM, OpenVMM's development is
+currently focused on its role in the OpenHCL paravisor.
+
+This repo is the home for both projects.
 
 For more information, read our [guide](https://openvmm.dev/)
 or our [introductory blog post](https://techcommunity.microsoft.com/t5/windows-os-platform-blog/openhcl-the-new-open-source-paravisor/ba-p/4273172).
