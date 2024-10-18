@@ -2,6 +2,8 @@ trigger: none
 pr: none
 jobs:
   - job: AzureDevOpsPullRequestValidation
+    variables:
+      DisablePipelineConfigDetector : true
     steps:
     - task: TriggerBuild@4
       inputs:
