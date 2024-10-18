@@ -1,0 +1,23 @@
+name: Private VSO build Trampoline
+on:
+  pull_request:
+    types: [synchronize, opened, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  PrivateBuildTrampoline:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      # adapted from https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#workflow_run
+      - name: Save GITHUB_REF
+        run: |
+          mkdir -p ./ghref
+          echo $GITHUB_REF > ./ghref/github_ref
+      - uses: actions/upload-artifact@v4
+        with:
+          name: github-ref-${{ github.run_number }}
+          path: ghref/
