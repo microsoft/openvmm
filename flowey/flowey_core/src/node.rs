@@ -1671,7 +1671,7 @@ pub mod steps {
             /// let (tenant_id, write_tenant_id) = ctx.new_secret_var();
             /// let (subscription_id, write_subscription_id) = ctx.new_secret_var();
             /// ... <insert rust step writing to each of those secrets>
-            /// GhStepBuilder::new("Azure Login", "Azure/login@v2")
+            /// GhStepBuilder::new("Azure Login", "Azure/login@v2.2.0")
             ///               .with("client-id", client_id)
             ///               .with("tenant-id", tenant_id)
             ///               .with("subscription-id", subscription_id)
@@ -1679,7 +1679,7 @@ pub mod steps {
             ///
             /// ```ignore
             /// - name: Azure Login
-            ///   uses: Azure/login@v2
+            ///   uses: Azure/login@v2.2.0
             ///   with:
             ///     client-id: ${{ env.floweyvar1 }} // Assuming the backend wrote client_id to floweyvar1
             ///     tenant-id: ${{ env.floweyvar2 }} // Assuming the backend wrote tenant-id to floweyvar2

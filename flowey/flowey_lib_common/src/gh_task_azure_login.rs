@@ -1,6 +1,6 @@
 // Copyright (C) Microsoft Corporation. All rights reserved.
 
-//! Github Actions Task Wrapper: `Azure/login@v2`
+//! Github Actions Task Wrapper: `Azure/login@v2.2.0`
 
 use flowey::node::prelude::*;
 
@@ -73,7 +73,7 @@ impl FlowNode for Node {
         });
 
         let logged_in = ctx
-            .emit_gh_step("Azure Login", "Azure/login@v2")
+            .emit_gh_step("Azure Login", "Azure/login@v2.2.0")
             .with("client-id", client_id)
             .with("tenant-id", tenant_id)
             .with("subscription-id", subscription_id)

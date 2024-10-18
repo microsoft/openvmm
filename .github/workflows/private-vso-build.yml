@@ -57,7 +57,8 @@ jobs:
                 console.log("No matching artifacts found");
             }
 
-      - uses: Azure/login@v1
+      - name: Azure Login
+        uses: Azure/login@v2.2.0
         with:
           # These secrets describe the HvLite-GitHub service principal and associated Azure subscription,
           # which, along with the GITHUB_TOKEN, are used to authenticate GitHub Actions to Azure with OpenID Connect.
