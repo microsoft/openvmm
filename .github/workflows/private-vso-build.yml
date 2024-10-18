@@ -37,20 +37,20 @@ jobs:
                     let numB = parseInt(b.name.split('-').pop());
                     return numB - numA;
                 });
-                let largestArtifact = matchArtifacts;
-                console.log(largestArtifact.name);
+                let matchArtifact = matchArtifacts[0];
+                console.log(matchArtifact.name);
+
+                let download = await github.rest.actions.downloadArtifact({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    artifact_id: matchArtifact.id,
+                    archive_format: 'zip',
+                });
+                let fs = require('fs');
+                fs.writeFileSync(`${process.env.GITHUB_WORKSPACE}/github-ref.zip`, Buffer.from(download.data));
             } else {
                 console.log("No matching artifacts found");
             }
-
-            let download = await github.rest.actions.downloadArtifact({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                artifact_id: matchArtifact.id,
-                archive_format: 'zip',
-            });
-            let fs = require('fs');
-            fs.writeFileSync(`${process.env.GITHUB_WORKSPACE}/github-ref.zip`, Buffer.from(download.data));
 
       - uses: Azure/login@v1
         with:
