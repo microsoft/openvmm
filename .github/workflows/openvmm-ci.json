@@ -91,7 +91,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:0:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:35:14\",\"is_secret\":false}}",
@@ -205,7 +205,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_rustdoc:1:flowey_lib_hvlite/src/build_rustdoc.rs:61:37\",\"is_secret\":false}}",
@@ -331,7 +331,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_rustdoc:1:flowey_lib_hvlite/src/build_rustdoc.rs:61:37\",\"is_secret\":false}}",
@@ -446,7 +446,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_xtask_fmt:0:flowey_lib_hvlite/src/_jobs/check_xtask_fmt.rs:28:37\",\"is_secret\":false}}",
@@ -563,7 +563,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_xtask_fmt:0:flowey_lib_hvlite/src/_jobs/check_xtask_fmt.rs:28:37\",\"is_secret\":false}}",
@@ -726,7 +726,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::cfg_openvmm_magicpath:0:flowey_lib_hvlite/src/cfg_openvmm_magicpath.rs:26:29\",\"is_secret\":false}}",
@@ -889,7 +889,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_nextest_vmm_tests:1:flowey_lib_hvlite/src/build_nextest_vmm_tests.rs:137:29\",\"is_secret\":false}}",
@@ -1055,7 +1055,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_and_test_vmgs_lib:4:flowey_lib_hvlite/src/build_and_test_vmgs_lib.rs:104:41\",\"is_secret\":false}}",
@@ -1219,7 +1219,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_nextest_vmm_tests:1:flowey_lib_hvlite/src/build_nextest_vmm_tests.rs:137:29\",\"is_secret\":false}}",
@@ -1422,7 +1422,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_guest_test_uefi:1:flowey_lib_hvlite/src/build_guest_test_uefi.rs:74:41\",\"is_secret\":false}}",
@@ -1653,7 +1653,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_and_test_vmgs_lib:4:flowey_lib_hvlite/src/build_and_test_vmgs_lib.rs:104:41\",\"is_secret\":false}}",
@@ -1696,7 +1696,7 @@
     "11": {
       "flowey_lib_common::cache": [
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_cli:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_cli:1:flowey_lib_common/src/download_gh_cli.rs:64:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-cli-2.52.0\"},\"is_secret\":false},\"label\":\"gh-cli\",\"restore_keys\":null}",
-        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-efc500a6538341c0\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
+        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-da61a23fe7ed6773\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
       ],
       "flowey_lib_common::cfg_cargo_common_flags": [
         "{\"GetFlags\":{\"backing_var\":\"flowey_lib_common::run_cargo_build:1:flowey_lib_common/src/run_cargo_build.rs:101:25\",\"is_secret\":false}}",
@@ -1724,7 +1724,7 @@
       "flowey_lib_common::download_gh_release": [
         "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.5-dev-arm64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:3:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-dev/6.6.51.5\"}",
         "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-arm64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:1:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
-        "{\"file_name\":\"hyperv.uefi.mscoreuefi.AARCH64.RELEASE.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.1\"}",
+        "{\"file_name\":\"RELEASE-AARCH64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
         "{\"file_name\":\"openvmm-deps.aarch64.0.1.0-20241014.2.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:2:flowey_lib_hvlite/src/download_openvmm_deps.rs:109:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241014.2\"}",
         "{\"file_name\":\"openvmm-deps.x86_64.0.1.0-20241014.2.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:1:flowey_lib_hvlite/src/download_openvmm_deps.rs:89:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241014.2\"}",
         "{\"file_name\":\"protoc-27.1-linux-x86_64.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_protoc:0:flowey_lib_common/src/download_protoc.rs:68:30\",\"is_secret\":false},\"repo_name\":\"protobuf\",\"repo_owner\":\"protocolbuffers\",\"tag\":\"v27.1\"}"
@@ -1855,7 +1855,7 @@
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
         "{\"GetMsvmFd\":{\"arch\":\"Aarch64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:2:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:360:21\",\"is_secret\":false}}}",
         "{\"GetMsvmFd\":{\"arch\":\"Aarch64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:30:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:360:21\",\"is_secret\":false}}}",
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:0:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:313:37\",\"is_secret\":false}}",
@@ -1903,7 +1903,7 @@
     "12": {
       "flowey_lib_common::cache": [
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_cli:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_cli:1:flowey_lib_common/src/download_gh_cli.rs:64:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-cli-2.52.0\"},\"is_secret\":false},\"label\":\"gh-cli\",\"restore_keys\":null}",
-        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-6a765d45d22a1583\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
+        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-8cc5a8caae12c6ac\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
       ],
       "flowey_lib_common::cfg_cargo_common_flags": [
         "{\"GetFlags\":{\"backing_var\":\"flowey_lib_common::run_cargo_build:1:flowey_lib_common/src/run_cargo_build.rs:101:25\",\"is_secret\":false}}",
@@ -1932,7 +1932,7 @@
         "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.5-dev-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:5:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-dev/6.6.51.5\"}",
         "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-cvm-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:3:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
         "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:1:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:105:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
-        "{\"file_name\":\"hyperv.uefi.mscoreuefi.x64.RELEASE.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.1\"}",
+        "{\"file_name\":\"RELEASE-X64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
         "{\"file_name\":\"openvmm-deps.x86_64.0.1.0-20241014.2.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:1:flowey_lib_hvlite/src/download_openvmm_deps.rs:89:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241014.2\"}",
         "{\"file_name\":\"protoc-27.1-linux-x86_64.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_protoc:0:flowey_lib_common/src/download_protoc.rs:68:30\",\"is_secret\":false},\"repo_name\":\"protobuf\",\"repo_owner\":\"protocolbuffers\",\"tag\":\"v27.1\"}"
       ],
@@ -2087,7 +2087,7 @@
         "{\"GetMsvmFd\":{\"arch\":\"X86_64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:2:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:360:21\",\"is_secret\":false}}}",
         "{\"GetMsvmFd\":{\"arch\":\"X86_64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:30:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:360:21\",\"is_secret\":false}}}",
         "{\"GetMsvmFd\":{\"arch\":\"X86_64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:58:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:360:21\",\"is_secret\":false}}}",
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_igvm_from_recipe:0:flowey_lib_hvlite/src/build_openhcl_igvm_from_recipe.rs:313:37\",\"is_secret\":false}}",
@@ -2278,7 +2278,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:3:flowey_lib_hvlite/src/_jobs/check_clippy.rs:143:37\",\"is_secret\":false}}",
@@ -2468,7 +2468,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:11:flowey_lib_hvlite/src/_jobs/check_clippy.rs:143:37\",\"is_secret\":false}}",
@@ -2677,7 +2677,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:14:flowey_lib_hvlite/src/_jobs/check_clippy.rs:143:37\",\"is_secret\":false}}",
@@ -2731,7 +2731,7 @@
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_azcopy:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_azcopy:1:flowey_lib_common/src/download_azcopy.rs:57:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"azcopy-10.26.0-20240731\"},\"is_secret\":false},\"label\":\"azcopy\",\"restore_keys\":null}",
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_cargo_nextest:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_cargo_nextest:1:flowey_lib_common/src/download_cargo_nextest.rs:65:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"cargo-nextest-0.9.74\"},\"is_secret\":false},\"label\":\"cargo-nextest\",\"restore_keys\":null}",
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_cli:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_cli:1:flowey_lib_common/src/download_gh_cli.rs:64:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-cli-2.52.0\"},\"is_secret\":false},\"label\":\"gh-cli\",\"restore_keys\":null}",
-        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-558d6709ad6017b3\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
+        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-cece0abc200568d6\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
       ],
       "flowey_lib_common::cfg_cargo_common_flags": [
         "{\"SetLocked\":true}",
@@ -2753,7 +2753,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"hyperv.uefi.mscoreuefi.x64.RELEASE.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.1\"}",
+        "{\"file_name\":\"RELEASE-X64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
         "{\"file_name\":\"openvmm-deps.x86_64.0.1.0-20241014.2.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:1:flowey_lib_hvlite/src/download_openvmm_deps.rs:89:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -2852,7 +2852,7 @@
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
         "{\"GetMsvmFd\":{\"arch\":\"X86_64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_uefi_mu_msvm:0:flowey_lib_hvlite/src/init_openvmm_magicpath_uefi_mu_msvm.rs:48:29\",\"is_secret\":false}}}",
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::cfg_openvmm_magicpath:0:flowey_lib_hvlite/src/cfg_openvmm_magicpath.rs:26:29\",\"is_secret\":false}}",
@@ -2881,7 +2881,7 @@
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_azcopy:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_azcopy:1:flowey_lib_common/src/download_azcopy.rs:57:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"azcopy-10.26.0-20240731\"},\"is_secret\":false},\"label\":\"azcopy\",\"restore_keys\":null}",
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_cargo_nextest:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_cargo_nextest:1:flowey_lib_common/src/download_cargo_nextest.rs:65:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"cargo-nextest-0.9.74\"},\"is_secret\":false},\"label\":\"cargo-nextest\",\"restore_keys\":null}",
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_cli:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_cli:1:flowey_lib_common/src/download_gh_cli.rs:64:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-cli-2.52.0\"},\"is_secret\":false},\"label\":\"gh-cli\",\"restore_keys\":null}",
-        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-558d6709ad6017b3\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
+        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-cece0abc200568d6\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
       ],
       "flowey_lib_common::cfg_cargo_common_flags": [
         "{\"SetLocked\":true}",
@@ -2903,7 +2903,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"hyperv.uefi.mscoreuefi.x64.RELEASE.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.1\"}",
+        "{\"file_name\":\"RELEASE-X64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
         "{\"file_name\":\"openvmm-deps.x86_64.0.1.0-20241014.2.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:1:flowey_lib_hvlite/src/download_openvmm_deps.rs:89:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -3002,7 +3002,7 @@
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
         "{\"GetMsvmFd\":{\"arch\":\"X86_64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_uefi_mu_msvm:0:flowey_lib_hvlite/src/init_openvmm_magicpath_uefi_mu_msvm.rs:48:29\",\"is_secret\":false}}}",
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::cfg_openvmm_magicpath:0:flowey_lib_hvlite/src/cfg_openvmm_magicpath.rs:26:29\",\"is_secret\":false}}",
@@ -3031,7 +3031,7 @@
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_azcopy:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_azcopy:1:flowey_lib_common/src/download_azcopy.rs:57:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"azcopy-10.26.0-20240731\"},\"is_secret\":false},\"label\":\"azcopy\",\"restore_keys\":null}",
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_cargo_nextest:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_cargo_nextest:1:flowey_lib_common/src/download_cargo_nextest.rs:65:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"cargo-nextest-0.9.74\"},\"is_secret\":false},\"label\":\"cargo-nextest\",\"restore_keys\":null}",
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_cli:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_cli:1:flowey_lib_common/src/download_gh_cli.rs:64:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-cli-2.52.0\"},\"is_secret\":false},\"label\":\"gh-cli\",\"restore_keys\":null}",
-        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-558d6709ad6017b3\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
+        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-cece0abc200568d6\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
       ],
       "flowey_lib_common::cfg_cargo_common_flags": [
         "{\"SetLocked\":true}",
@@ -3053,7 +3053,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"hyperv.uefi.mscoreuefi.x64.RELEASE.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.1\"}",
+        "{\"file_name\":\"RELEASE-X64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
         "{\"file_name\":\"openvmm-deps.x86_64.0.1.0-20241014.2.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:1:flowey_lib_hvlite/src/download_openvmm_deps.rs:89:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -3149,7 +3149,7 @@
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
         "{\"GetMsvmFd\":{\"arch\":\"X86_64\",\"msvm_fd\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_uefi_mu_msvm:0:flowey_lib_hvlite/src/init_openvmm_magicpath_uefi_mu_msvm.rs:48:29\",\"is_secret\":false}}}",
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::cfg_openvmm_magicpath:0:flowey_lib_hvlite/src/cfg_openvmm_magicpath.rs:26:29\",\"is_secret\":false}}",
@@ -3241,7 +3241,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm:0:flowey_lib_hvlite/src/_jobs/test_local_flowey_build_igvm.rs:29:31\",\"is_secret\":false}}",
@@ -3314,7 +3314,7 @@
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
-        "{\"Version\":\"24.0.1\"}"
+        "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
         "{\"SetRepoId\":{\"backing_var\":{\"Inline\":\"hvlite\"},\"is_secret\":false}}"
