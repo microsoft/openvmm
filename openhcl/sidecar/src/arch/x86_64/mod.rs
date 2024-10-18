@@ -73,8 +73,7 @@ mod addr_space {
     }
 
     fn base_address() -> usize {
-        // SAFETY: just taking an address.
-        unsafe { core::ptr::addr_of!(__ehdr_start) as usize }
+        core::ptr::addr_of!(__ehdr_start) as usize
     }
 
     fn per_vp(page: usize) -> usize {

@@ -21,8 +21,7 @@ fn write_hypercall_msr(enable: bool) {
         read_msr(hvdef::HV_X64_MSR_HYPERCALL)
     });
 
-    // SAFETY: just getting the address.
-    let hypercall_page_num = unsafe { addr_of!(HYPERCALL_PAGE) } as u64 / HV_PAGE_SIZE;
+    let hypercall_page_num = addr_of!(HYPERCALL_PAGE) as u64 / HV_PAGE_SIZE;
 
     assert!(!enable || !hypercall_contents.enable());
     let new_hv_contents = hypercall_contents.with_enable(enable).with_gpn(if enable {
