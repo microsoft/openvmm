@@ -2707,29 +2707,7 @@ async fn new_underhill_vm(
             attach_simple_intercept_channel(&driver_source, relay, shutdown_guest).await?;
 
         // Expose a different shutdown device to the VTL0 guest.
-        // let shutdown_ic = SimpleDeviceWrapper::new(
-        //     driver_source.simple(),
-        //     ShutdownIc::new(driver_source.simple(), recv_guest_shutdown),
-        // );
-        // let shutdown_ic = resolver
-        //     .resolve(
-        //         hyperv_ic_resources::shutdown::ShutdownIcHandle {
-        //             recv: recv_guest_shutdown,
-        //         }
-        //         .into_resource(),
-        //         ResolveVmbusDeviceHandleParams {
-        //             driver_source: &driver_source,
-        //         },
-        //     )
-        //     .await?;
         let vmbus = vmbus_server.as_ref().unwrap();
-        // let vtl0_device =
-        //     offer_simple_device_unit(&driver_source, &state_units, vmbus, shutdown_ic)
-        //         .await?;
-        //
-        // let vtl0_device =
-        //     offer_channel_unit(&driver_source.simple(), &state_units, vmbus, shutdown_ic).await?;
-        //
         let vtl0_device = offer_vmbus_device_handle_unit(
             &driver_source,
             &state_units,
