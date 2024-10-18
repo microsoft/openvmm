@@ -12,6 +12,7 @@ use crate::NVME_PAGE_SHIFT;
 use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
 use inspect::Inspect;
+use mesh::payload::Protobuf;
 use mesh::CancelContext;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
@@ -498,6 +499,23 @@ impl Namespace {
 
         Ok(())
     }
+
+    /// Return Namespace ID.
+    pub fn nsid(&self) -> u32 {
+        self.nsid
+    }
+
+    /// Save namespace data for servicing.
+    pub fn save(&self) -> anyhow::Result<SavedNamespaceData> {
+        let id = self.state.identify.lock();
+        let mut save_data = SavedNamespaceData {
+            nsid: self.nsid,
+            block_count: self.state.block_count.load(Ordering::Relaxed),
+            identify_ns: [0; 4096],
+        };
+        save_data.identify_ns.copy_from_slice(id.as_bytes());
+        Ok(save_data)
+    }
 }
 
 impl DynamicState {
@@ -577,4 +595,16 @@ fn nvm_cmd(opcode: nvm::NvmOpcode, nsid: u32) -> spec::Command {
         nsid,
         ..FromZeroes::new_zeroed()
     }
+}
+
+/// Save/restore NVMe namespace data.
+#[derive(Protobuf, Clone, Debug)]
+#[mesh(package = "underhill")]
+pub struct SavedNamespaceData {
+    #[mesh(1)]
+    pub nsid: u32,
+    #[mesh(2)]
+    pub block_count: u64,
+    #[mesh(3)]
+    pub identify_ns: [u8; 4096],
 }

@@ -48,9 +48,7 @@ async fn test_nvme_driver(driver: DefaultDriver) {
         .unwrap();
 
     let device = EmulatedDevice::new(nvme, msi_set, mem);
-
-    let driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();
-
+    let mut driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();
     let namespace = driver.namespace(1).await.unwrap();
 
     payload_mem.write_at(0, &[0xcc; 8192]).unwrap();
@@ -124,4 +122,45 @@ async fn test_nvme_driver(driver: DefaultDriver) {
     assert!(v[1024..].iter().all(|&x| x == 0));
 
     driver.shutdown().await;
+}
+
+#[async_test]
+async fn test_nvme_save(driver: DefaultDriver) {
+    const MSIX_COUNT: u16 = 2;
+    const IO_QUEUE_COUNT: u16 = 64;
+    const CPU_COUNT: u32 = 64;
+
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let payload_len = 264 * 1024 * 4;
+    let emu_mem = DeviceSharedMemory::new(64 * 1024 * 1024, payload_len);
+    let mut msi_x = MsiInterruptSet::new();
+    let nvme_ctrl = nvme::NvmeController::new(
+        &driver_source,
+        emu_mem.guest_memory().clone(),
+        &mut msi_x,
+        &mut ExternallyManagedMmioIntercepts,
+        NvmeControllerCaps {
+            msix_count: MSIX_COUNT,
+            max_io_queues: IO_QUEUE_COUNT,
+            subsystem_id: Guid::default(),
+        },
+    );
+
+    // Add a namespace so Identify Namespace command will succeed later.
+    nvme_ctrl
+        .client()
+        .add_namespace(1, Arc::new(RamDisk::new(1024 * 1024, false).unwrap()))
+        .await
+        .unwrap();
+    let device = EmulatedDevice::new(nvme_ctrl, msi_x, emu_mem);
+
+    let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
+        .await
+        .unwrap();
+
+    let _ns1 = nvme_driver.namespace(1).await.unwrap();
+    let saved_state = nvme_driver.save().await.unwrap();
+    assert_eq!(saved_state.nsid, 1);
+    assert_eq!(saved_state.namespace.is_some(), true);
+    assert_eq!(saved_state.namespace.as_ref().unwrap().nsid, 1);
 }

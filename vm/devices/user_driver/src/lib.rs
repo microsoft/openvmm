@@ -57,8 +57,24 @@ pub trait DeviceRegisterIo: Send + Sync {
     fn write_u32(&self, offset: usize, data: u32);
     /// Writes a `u64` register.
     fn write_u64(&self, offset: usize, data: u64);
+    /// Returns base virtual address.
+    fn base_va(&self) -> u64;
 }
 
 pub trait HostDmaAllocator: Send + Sync {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
+}
+
+pub mod save_restore {
+    use mesh::payload::Protobuf;
+
+    /// Saved state for the VFIO device user mode driver.
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "underhill")]
+    pub struct VfioDeviceSavedState {
+        #[mesh(1)]
+        pub pci_id: String,
+        #[mesh(2)]
+        pub msix_info_count: u32,
+    }
 }
