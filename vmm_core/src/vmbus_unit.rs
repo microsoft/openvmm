@@ -129,6 +129,13 @@ pub async fn offer_channel_unit<T: 'static + VmbusDevice>(
     Ok(unit)
 }
 
+impl<T: ?Sized> ChannelUnit<T> {
+    /// Revokes a channel, returning a generic channel.
+    pub async fn revoke_generic(self) -> Box<dyn VmbusDevice> {
+        self.0.revoke_generic().await.unwrap()
+    }
+}
+
 impl<T: 'static + VmbusDevice> ChannelUnit<T> {
     /// Revokes a channel.
     pub async fn revoke(self) -> T {
@@ -221,6 +228,26 @@ impl<T: SimpleVmbusDevice> StateUnit for &'_ SimpleChannelUnit<T> {
     }
 }
 
+/// Offers a generic channel, creates a unit for it, and adds it to `state_units`.
+pub async fn offer_generic_channel_unit(
+    driver_source: &VmTaskDriverSource,
+    state_units: &StateUnits,
+    vmbus: &VmbusServerHandle,
+    channel: Box<dyn VmbusDevice>,
+) -> anyhow::Result<SpawnedUnit<ChannelUnit<dyn VmbusDevice>>> {
+    let offer = channel.offer();
+    let name = format!("{}:{}", offer.interface_name, offer.instance_id);
+    let handle =
+        offer_generic_channel(&driver_source.simple(), vmbus.control.as_ref(), channel).await?;
+    let unit = state_units
+        .add(name)
+        .depends_on(vmbus.unit.handle())
+        .spawn(driver_source.simple(), |recv| {
+            run_async_unit(ChannelUnit(handle), recv)
+        })?;
+    Ok(unit)
+}
+
 /// Offers a channel, creates a unit for it, and adds it to `state_units`.
 pub async fn offer_vmbus_device_handle_unit(
     driver_source: &VmTaskDriverSource,
@@ -232,15 +259,5 @@ pub async fn offer_vmbus_device_handle_unit(
     let channel = resolver
         .resolve(resource, ResolveVmbusDeviceHandleParams { driver_source })
         .await?;
-    let offer = channel.0.offer();
-    let name = format!("{}:{}", offer.interface_name, offer.instance_id);
-    let handle =
-        offer_generic_channel(&driver_source.simple(), vmbus.control.as_ref(), channel.0).await?;
-    let unit = state_units
-        .add(name)
-        .depends_on(vmbus.unit.handle())
-        .spawn(driver_source.simple(), |recv| {
-            run_async_unit(ChannelUnit(handle), recv)
-        })?;
-    Ok(unit)
+    offer_generic_channel_unit(driver_source, state_units, vmbus, channel.0).await
 }
