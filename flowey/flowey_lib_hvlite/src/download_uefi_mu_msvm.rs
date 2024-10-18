@@ -94,15 +94,7 @@ impl FlowNode for Node {
                             &zip_file_version,
                         )?;
 
-                        let msvm_fd = extract_dir
-                            .join(format!(
-                                "RELEASE-{}-artifacts",
-                                match arch {
-                                    MuMsvmArch::X86_64 => "x64",
-                                    MuMsvmArch::Aarch64 => "AARCH64",
-                                }
-                            ))
-                            .join("FV/MSVM.fd");
+                        let msvm_fd = extract_dir.join("FV/MSVM.fd");
 
                         for var in out_vars {
                             rt.write(var, &msvm_fd)
