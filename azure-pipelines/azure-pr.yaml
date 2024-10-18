@@ -13,7 +13,7 @@ jobs:
         waitForQueuedBuildsToFinish: true
         waitForQueuedBuildsToFinishRefreshTime: '30'
         failTaskIfBuildsNotSuccessful: true
-        buildParameters: 'OssSubmoduleCommit: $(Build.SourceVersion), OssSubmoduleRemote: https://microsoft.visualstudio.com/DefaultCollection/HyperVCloud/_git/openvmm'
+        buildParameters: 'OssSubmoduleCommit: $(Build.SourceVersion)'
         authenticationMethod: 'OAuth Token'
         password: '$(System.AccessToken)'
       displayName: Trigger Azure DevOps Pull Request Validation
