@@ -317,11 +317,6 @@ impl BackingPrivate for HypervisorBackedX86 {
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
     }
 
-    // If there's no register page, assume only VTL0 is supported.
-    fn intercepted_vtl(this: &UhProcessor<'_, Self>) -> GuestVtl {
-        this.runner.reg_page_vtl().unwrap_or(GuestVtl::Vtl0)
-    }
-
     fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: GuestVtl) {
         unreachable!("vtl switching should be managed by the hypervisor");
     }
@@ -385,6 +380,10 @@ fn next_rip(value: &HvX64InterceptMessageHeader) -> u64 {
 }
 
 impl UhProcessor<'_, HypervisorBackedX86> {
+    fn intercepted_vtl(&self) -> Option<Vtl> {
+        self.runner.reg_page_vtl()
+    }
+
     fn set_rip(&mut self, rip: u64) -> Result<(), VpHaltReason<UhRunVpError>> {
         self.runner
             .set_vp_register(HvX64RegisterName::Rip, rip.into())
@@ -465,11 +464,16 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         let is_64bit =
             message.header.execution_state.cr0_pe() && message.header.execution_state.efer_lma();
 
-        let guest_memory = self.intercepted_vtl_gm();
+        let intercepted_vtl = self
+            .intercepted_vtl()
+            .unwrap_or(message.header.execution_state.vtl().try_into().unwrap());
+
+        let guest_memory = &self.partition.gm[intercepted_vtl];
         let handler = UhHypercallHandler {
             vp: self,
             bus,
             trusted: false,
+            intercepted_vtl,
         };
         UhHypercallHandler::MSHV_DISPATCHER.dispatch(
             guest_memory,
@@ -516,7 +520,12 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             }
         }
 
-        self.emulate(dev, interruption_pending).await?;
+        self.emulate(
+            dev,
+            interruption_pending,
+            self.intercepted_vtl().expect("intercepted vtl is valid"),
+        )
+        .await?;
         Ok(())
     }
 
@@ -536,7 +545,12 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         let interruption_pending = message.header.execution_state.interruption_pending();
 
         if message.access_info.string_op() || message.access_info.rep_prefix() {
-            self.emulate(dev, interruption_pending).await
+            self.emulate(
+                dev,
+                interruption_pending,
+                self.intercepted_vtl().expect("intercepted vtl is valid"),
+            )
+            .await
         } else {
             let next_rip = next_rip(&message.header);
             let access_size = message.access_info.access_size();
@@ -617,7 +631,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             hvdef::HvX64MsrInterceptMessage::ref_from_prefix(self.runner.exit_message().payload())
                 .unwrap();
         let rip = next_rip(&message.header);
-        let last_vtl = self.intercepted_vtl();
+        let intercepted_vtl = self.intercepted_vtl().expect("intercepted vtl is valid");
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "msr");
 
@@ -625,7 +639,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         match message.header.intercept_access_type {
             HvInterceptAccessType::READ => {
                 let r = if let Some(lapics) = &mut self.backing.lapics {
-                    lapics[last_vtl].msr_read(
+                    lapics[intercepted_vtl].msr_read(
                         self.partition,
                         &mut self.runner,
                         &self.vmtime,
@@ -635,7 +649,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
                 } else {
                     Err(MsrError::Unknown)
                 };
-                let r = r.or_else_if_unknown(|| self.read_msr(msr));
+                let r = r.or_else_if_unknown(|| self.read_msr(msr, intercepted_vtl));
 
                 let value = match r {
                     Ok(v) => v,
@@ -656,7 +670,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             HvInterceptAccessType::WRITE => {
                 let value = (message.rax & 0xffff_ffff) | (message.rdx << 32);
                 let r = if let Some(lapic) = &mut self.backing.lapics {
-                    lapic[last_vtl].msr_write(
+                    lapic[intercepted_vtl].msr_write(
                         self.partition,
                         &mut self.runner,
                         &self.vmtime,
@@ -667,7 +681,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
                 } else {
                     Err(MsrError::Unknown)
                 };
-                let r = r.or_else_if_unknown(|| self.write_msr(msr, value));
+                let r = r.or_else_if_unknown(|| self.write_msr(msr, value, intercepted_vtl));
                 match r {
                     Ok(()) => {}
                     Err(MsrError::Unknown) => {
@@ -714,14 +728,15 @@ impl UhProcessor<'_, HypervisorBackedX86> {
     }
 
     fn handle_unrecoverable_exception(&self) -> Result<(), VpHaltReason<UhRunVpError>> {
+        let intercepted_vtl = self.intercepted_vtl().expect("register page is valid");
         Err(VpHaltReason::TripleFault {
-            vtl: self.intercepted_vtl().into(),
+            vtl: intercepted_vtl.into(),
         })
     }
 
     fn handle_halt(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let last_vtl = self.intercepted_vtl();
-        self.backing.lapics.as_mut().unwrap()[last_vtl].halt();
+        let intercepted_vtl = self.intercepted_vtl().expect("register page is valid");
+        self.backing.lapics.as_mut().unwrap()[intercepted_vtl].halt();
         Ok(())
     }
 
@@ -1008,11 +1023,11 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         // Note: the restriction to VTL 1 support also means that for WHP, which doesn't support VTL 1
         // the HvCheckSparseGpaPageVtlAccess hypercall--which is unimplemented in whp--will never be made.
         if mode == virt_support_x86emu::emulate::TranslateMode::Execute
-            && self.vp.intercepted_vtl() == GuestVtl::Vtl0
+            && self.vtl == GuestVtl::Vtl0
             && self.vp.vtl1_supported()
         {
             // Should always be called after translate gva with the tlb lock flag
-            debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vp.intercepted_vtl()));
+            debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vtl));
 
             let mbec_user_execute = self
                 .vp
@@ -1063,7 +1078,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             }
         };
 
-        let target_vtl = self.vp.intercepted_vtl();
+        let target_vtl = self.vtl;
 
         // The translation will be used, so set the appropriate page table bits
         // (the access/dirty bit).
@@ -1117,11 +1132,9 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             ),
         ];
 
-        let last_vtl = self.vp.intercepted_vtl();
-
         self.vp
             .runner
-            .set_vp_registers_hvcall(last_vtl.into(), regs)
+            .set_vp_registers_hvcall(self.vtl.into(), regs)
             .expect("set_vp_registers hypercall for setting pending event should not fail");
     }
 
@@ -1150,17 +1163,15 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn lapic_base_address(&self) -> Option<u64> {
-        let last_vtl = self.vp.intercepted_vtl();
         self.vp
             .backing
             .lapics
             .as_ref()
-            .and_then(|lapic| lapic[last_vtl].base_address())
+            .and_then(|lapic| lapic[self.vtl].base_address())
     }
 
     fn lapic_read(&mut self, address: u64, data: &mut [u8]) {
-        let last_vtl = self.vp.intercepted_vtl();
-        self.vp.backing.lapics.as_mut().unwrap()[last_vtl].mmio_read(
+        self.vp.backing.lapics.as_mut().unwrap()[self.vtl].mmio_read(
             self.vp.partition,
             &mut self.vp.runner,
             &self.vp.vmtime,
@@ -1171,8 +1182,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn lapic_write(&mut self, address: u64, data: &[u8]) {
-        let last_vtl = self.vp.intercepted_vtl();
-        self.vp.backing.lapics.as_mut().unwrap()[last_vtl].mmio_write(
+        self.vp.backing.lapics.as_mut().unwrap()[self.vtl].mmio_write(
             self.vp.partition,
             &mut self.vp.runner,
             &self.vp.vmtime,
@@ -1545,7 +1555,7 @@ impl<T> hv1_hypercall::SetVpRegisters for UhHypercallHandler<'_, '_, T, Hypervis
         }
 
         let target_vtl = self
-            .target_vtl_no_higher(vtl.unwrap_or(self.vp.intercepted_vtl().into()))
+            .target_vtl_no_higher(vtl.unwrap_or(self.intercepted_vtl.into()))
             .map_err(|e| (e, 0))?;
 
         for (i, reg) in registers.iter().enumerate() {

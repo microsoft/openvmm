@@ -139,7 +139,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             //
             // TODO GUEST_VSM: last_vtl currently always returns 0 (which is wrong),
             // so for any VP outside of the BSP, this will fail
-            if self.vp.intercepted_vtl() < GuestVtl::Vtl1 {
+            if self.intercepted_vtl < GuestVtl::Vtl1 {
                 if vtl1_state_inner.enabled_on_vp_count > 0 || vp_index != current_vp_index {
                     return Err(HvError::AccessDenied);
                 }
@@ -230,7 +230,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         }
 
         let vtl = self
-            .target_vtl_no_higher(vtl.unwrap_or_else(|| self.vp.intercepted_vtl().into()))
+            .target_vtl_no_higher(vtl.unwrap_or_else(|| self.intercepted_vtl.into()))
             .map_err(|e| (e, 0))?;
 
         for (i, (&name, output)) in zip(registers, output).enumerate() {
@@ -395,7 +395,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
         }
 
         let target_vtl = vtl
-            .map_or_else(|| Ok(self.vp.intercepted_vtl()), |vtl| vtl.try_into())
+            .map_or_else(|| Ok(self.intercepted_vtl), |vtl| vtl.try_into())
             .map_err(|_| (HvError::InvalidParameter, 0))?;
 
         for (i, reg) in registers.iter().enumerate() {
@@ -493,6 +493,17 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         guest_vsm_inner.deny_lower_vtl_startup = value.deny_lower_vtl_startup();
 
         Ok(())
+    }
+
+    // TODO CVM: change this to intercepted vtl by creating an intercepted_vtl
+    // that's available outside of guest vsm state, and split out the "next vtl"
+    // that's used in VTL 2 exit handling.
+    /// The lower VTL that was running before the VTL 2 entry. During a vtl switch,
+    /// this reflects the vtl that should be exited to.
+    pub fn last_vtl(&self) -> Vtl {
+        self.cvm_guest_vsm
+            .as_ref()
+            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl)
     }
 }
 

@@ -769,12 +769,6 @@ impl BackingPrivate for TdxBacked {
         }
     }
 
-    fn intercepted_vtl(this: &UhProcessor<'_, Self>) -> GuestVtl {
-        this.cvm_guest_vsm
-            .as_ref()
-            .map_or(GuestVtl::Vtl0, |gvsm_state| gvsm_state.current_vtl)
-    }
-
     fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: GuestVtl) {
         todo!()
     }
@@ -1273,8 +1267,12 @@ impl UhProcessor<'_, TdxBacked> {
                 let io_qual = ExitQualificationIo::from(exit_info.qualification() as u32);
 
                 if io_qual.is_string() || io_qual.rep_prefix() {
-                    self.emulate(dev, self.backing.interruption_information.valid())
-                        .await?;
+                    self.emulate(
+                        dev,
+                        self.backing.interruption_information.valid(),
+                        self.last_vtl(),
+                    )
+                    .await?;
                 } else {
                     let len = match io_qual.access_size() {
                         IO_SIZE_8_BIT => 1,
@@ -1316,7 +1314,7 @@ impl UhProcessor<'_, TdxBacked> {
                         dev,
                     })
                     .msr_read(msr)
-                    .or_else_if_unknown(|| self.read_msr(msr))
+                    .or_else_if_unknown(|| self.read_msr(msr, self.last_vtl()))
                     .or_else_if_unknown(|| self.read_msr_cvm(msr));
 
                 let value = match result {
@@ -1363,7 +1361,7 @@ impl UhProcessor<'_, TdxBacked> {
                         dev,
                     })
                     .msr_write(msr, value)
-                    .or_else_if_unknown(|| self.write_msr(msr, value))
+                    .or_else_if_unknown(|| self.write_msr(msr, value, self.last_vtl()))
                     .or_else_if_unknown(|| self.write_msr_cvm(msr, value));
 
                 let inject_gp = match result {
@@ -1431,11 +1429,13 @@ impl UhProcessor<'_, TdxBacked> {
                     let is_64bit = self.backing.cr0.read(&self.runner) & X64_CR0_PE != 0
                         && self.backing.efer & X64_EFER_LMA != 0;
 
-                    let guest_memory = self.intercepted_vtl_gm();
+                    let intercepted_vtl = self.last_vtl();
+                    let guest_memory = &self.partition.gm[intercepted_vtl];
                     let handler = UhHypercallHandler {
                         vp: &mut *self,
                         bus: dev,
                         trusted: true,
+                        intercepted_vtl,
                     };
 
                     UhHypercallHandler::TDX_DISPATCHER.dispatch(
@@ -1539,7 +1539,8 @@ impl UhProcessor<'_, TdxBacked> {
                 // sufficient, as it may be a write access where the page is
                 // protected, but we don't yet support MNF/guest VSM so this is
                 // okay enough.
-                let is_readable_ram = self.guest_memory().check_gpa_readable(exit_info.gpa());
+                let is_readable_ram =
+                    self.partition.gm[self.last_vtl()].check_gpa_readable(exit_info.gpa());
                 if is_readable_ram {
                     tracelimit::warn_ratelimited!(
                         gpa = exit_info.gpa(),
@@ -1567,8 +1568,12 @@ impl UhProcessor<'_, TdxBacked> {
                     }
 
                     // Emulate the access.
-                    self.emulate(dev, self.backing.interruption_information.valid())
-                        .await?;
+                    self.emulate(
+                        dev,
+                        self.backing.interruption_information.valid(),
+                        self.last_vtl(),
+                    )
+                    .await?;
                 }
 
                 &mut self.backing.exit_stats.ept_violation
@@ -1701,10 +1706,12 @@ impl UhProcessor<'_, TdxBacked> {
             // guests will issue hypercalls without the boundary bit set,
             // whereas UEFI will issue with the bit set.
             let guest_memory = &self.partition.untrusted_dma_memory;
+            let last_vtl = self.last_vtl();
             let handler = UhHypercallHandler {
                 vp: &mut *self,
                 bus: dev,
                 trusted: false,
+                intercepted_vtl: last_vtl,
             };
 
             UhHypercallHandler::TDCALL_DISPATCHER.dispatch(guest_memory, TdHypercall(handler));
@@ -1712,7 +1719,7 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn read_tdvmcall_msr(&mut self, msr: u32) -> Result<u64, MsrError> {
-        let last_vtl = self.intercepted_vtl();
+        let last_vtl = self.last_vtl();
         match msr {
             msr @ (hvdef::HV_X64_MSR_GUEST_OS_ID | hvdef::HV_X64_MSR_VP_INDEX) => {
                 self.hv(last_vtl).unwrap().msr_read(msr)
@@ -1726,11 +1733,11 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn write_tdvmcall_msr(&mut self, msr: u32, value: u64) -> Result<(), MsrError> {
-        let last_vtl = self.intercepted_vtl();
         match msr {
-            msr @ hvdef::HV_X64_MSR_GUEST_OS_ID => {
-                self.hv_mut(last_vtl).unwrap().msr_write(msr, value)?
-            }
+            msr @ hvdef::HV_X64_MSR_GUEST_OS_ID => self
+                .hv_mut(self.last_vtl())
+                .unwrap()
+                .msr_write(msr, value)?,
             _ => {
                 self.untrusted_synic.as_mut().unwrap().write_nontimer_msr(
                     &self.partition.gm[GuestVtl::Vtl0],
@@ -2083,7 +2090,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         >,
         Self::Error,
     > {
-        emulate_translate_gva(self.vp, gva, mode)
+        emulate_translate_gva(self, gva, mode)
     }
 
     fn inject_pending_event(&mut self, event_info: hvdef::HvX64PendingEvent) {
@@ -2112,26 +2119,30 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
     }
 }
 
-impl TranslateGvaSupport for UhProcessor<'_, TdxBacked> {
+impl<T: CpuIo> TranslateGvaSupport for UhEmulationState<'_, '_, T, TdxBacked> {
     type Error = UhRunVpError;
 
     fn guest_memory(&self) -> &guestmem::GuestMemory {
-        self.intercepted_vtl_gm()
+        &self.vp.partition.gm[self.vtl]
     }
 
     fn acquire_tlb_lock(&mut self) {
-        self.set_tlb_lock(Vtl::Vtl2, self.intercepted_vtl())
+        self.vp.set_tlb_lock(Vtl::Vtl2, self.vtl)
     }
 
     fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
-        let cr0 = self.backing.cr0.read(&self.runner);
-        let cr4 = self.backing.cr4.read(&self.runner);
-        let efer = self.backing.efer;
+        let cr0 = self.vp.backing.cr0.read(&self.vp.runner);
+        let cr4 = self.vp.backing.cr4.read(&self.vp.runner);
+        let efer = self.vp.backing.efer;
         let cr3 = self
+            .vp
             .runner
             .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_CR3);
-        let ss = self.read_segment(GuestVtl::Vtl0, TdxSegmentReg::Ss).into();
-        let rflags = self.runner.tdx_enter_guest_state().rflags;
+        let ss = self
+            .vp
+            .read_segment(GuestVtl::Vtl0, TdxSegmentReg::Ss)
+            .into();
+        let rflags = self.vp.runner.tdx_enter_guest_state().rflags;
         Ok(TranslationRegisters {
             cr0,
             cr4,
@@ -2140,7 +2151,7 @@ impl TranslateGvaSupport for UhProcessor<'_, TdxBacked> {
             ss,
             rflags,
             encryption_mode: virt_support_x86emu::translate::EncryptionMode::Vtom(
-                self.partition.caps.vtom.unwrap(),
+                self.vp.partition.caps.vtom.unwrap(),
             ),
         })
     }
@@ -3141,7 +3152,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
         self.hcvm_validate_flush_inputs(&processor_set, flags, true)
             .map_err(|e| (e, 0))?;
 
-        let vtl = self.vp.intercepted_vtl();
+        let vtl = self.intercepted_vtl;
         {
             let mut flush_state = self.vp.backing.shared.flush_state[vtl].write();
 
@@ -3199,7 +3210,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
         flags: HvFlushFlags,
     ) -> hvdef::HvResult<()> {
         self.hcvm_validate_flush_inputs(&processor_set, flags, false)?;
-        let vtl = self.vp.intercepted_vtl();
+        let vtl = self.intercepted_vtl;
 
         {
             let mut flush_state = self.vp.backing.shared.flush_state[vtl].write();

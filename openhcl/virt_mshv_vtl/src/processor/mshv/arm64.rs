@@ -91,8 +91,6 @@ pub struct HypervisorBackedArm64 {
     next_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     stats: ProcessorStatsArm64,
     cpu_state: CpuState,
-    #[inspect(with = "|x| x.map(|vtl| u8::from(vtl))")]
-    last_vtl: Option<Vtl>,
 }
 
 #[derive(Inspect, Default)]
@@ -122,7 +120,6 @@ impl BackingPrivate for HypervisorBackedArm64 {
             next_deliverability_notifications: Default::default(),
             stats: Default::default(),
             cpu_state: CpuState::default(),
-            last_vtl: None,
         })
     }
 
@@ -157,46 +154,27 @@ impl BackingPrivate for HypervisorBackedArm64 {
                 this.backing.next_deliverability_notifications;
         }
 
-        this.backing.last_vtl = None;
-
         let intercepted = this
             .runner
             .run()
             .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?;
 
         if intercepted {
-            let mut set_last_vtl = || {
-                this.backing.last_vtl = Some(
-                    hvdef::HvArm64InterceptMessageHeader::ref_from_prefix(
-                        this.runner.exit_message().payload(),
-                    )
-                    .unwrap()
-                    .execution_state
-                    .vtl()
-                    .try_into()
-                    .unwrap(),
-                )
-            };
-
             let stat = match this.runner.exit_message().header.typ {
                 HvMessageType::HvMessageTypeUnmappedGpa
                 | HvMessageType::HvMessageTypeGpaIntercept => {
-                    set_last_vtl();
                     this.handle_mmio_exit(dev).await?;
                     &mut this.backing.stats.mmio
                 }
                 HvMessageType::HvMessageTypeUnacceptedGpa => {
-                    set_last_vtl();
                     this.handle_unaccepted_gpa_intercept(dev).await?;
                     &mut this.backing.stats.unaccepted_gpa
                 }
                 HvMessageType::HvMessageTypeHypercallIntercept => {
-                    set_last_vtl();
                     this.handle_hypercall_exit(dev)?;
                     &mut this.backing.stats.hypercall
                 }
                 HvMessageType::HvMessageTypeSynicSintDeliverable => {
-                    set_last_vtl();
                     this.handle_synic_deliverable_exit();
                     &mut this.backing.stats.synic_deliverable
                 }
@@ -238,13 +216,6 @@ impl BackingPrivate for HypervisorBackedArm64 {
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
     }
 
-    /// The VTL that was running when the VP exited into VTL2, with the
-    /// exception of a successful vtl switch, where it will return the VTL
-    /// that will run on VTL 2 exit.
-    fn intercepted_vtl(this: &UhProcessor<'_, Self>) -> GuestVtl {
-        this.backing.last_vtl.unwrap_or(GuestVtl::Vtl0)
-    }
-
     /// Copies shared registers (per VSM TLFS spec) from the last VTL to
     /// the target VTL that will become active.
     fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: GuestVtl) {
@@ -255,6 +226,10 @@ impl BackingPrivate for HypervisorBackedArm64 {
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {
+    fn intercepted_vtl(message_header: &hvdef::HvArm64InterceptMessageHeader) -> Vtl {
+        message_header.execution_state.vtl().try_into().unwrap()
+    }
+
     fn handle_synic_deliverable_exit(&mut self) {
         let message = hvdef::HvArm64SynicSintDeliverableMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
@@ -288,13 +263,15 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "hypercall");
 
-        let guest_memory = self.intercepted_vtl_gm();
+        let intercepted_vtl = Self::intercepted_vtl(&message.header);
+        let guest_memory = &self.partition.gm[intercepted_vtl];
         let smccc_convention = message.immediate == 0;
 
         let handler = UhHypercallHandler {
             vp: self,
             bus,
             trusted: false,
+            intercepted_vtl,
         };
         UhHypercallHandler::MSHV_DISPATCHER.dispatch(
             guest_memory,
@@ -323,7 +300,8 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             interruption_pending: message.header.execution_state.interruption_pending(),
         };
 
-        self.emulate(dev, &intercept_state).await?;
+        let intercepted_vtl = Self::intercepted_vtl(&message.header);
+        self.emulate(dev, &intercept_state, intercepted_vtl).await?;
         Ok(())
     }
 
@@ -568,11 +546,11 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked>
         // Note: the restriction to VTL 1 support also means that for WHP, which doesn't support VTL 1
         // the HvCheckSparseGpaPageVtlAccess hypercall--which is unimplemented in whp--will never be made.
         if mode == emulate::TranslateMode::Execute
-            && self.vp.intercepted_vtl() == GuestVtl::Vtl0
+            && self.vtl == GuestVtl::Vtl0
             && self.vp.vtl1_supported()
         {
             // Should always be called after translate gva with the tlb lock flag
-            debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vp.intercepted_vtl()));
+            debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vtl));
 
             let cpsr: Cpsr64 = self
                 .vp
@@ -635,7 +613,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked>
         assert!(!control_flags.pan_clear());
 
         // Do the translation using the current VTL.
-        control_flags.set_input_vtl(self.vp.intercepted_vtl().into());
+        control_flags.set_input_vtl(self.vtl.into());
 
         match self
             .vp
@@ -664,7 +642,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked>
             u128::from_ne_bytes(event_info.as_bytes().try_into().unwrap()),
         )];
 
-        let last_vtl = self.vp.intercepted_vtl();
+        let last_vtl = self.vtl;
         self.vp
             .runner
             .set_vp_registers_hvcall(last_vtl.into(), regs)
