@@ -751,7 +751,7 @@ impl BackingPrivate for TdxBacked {
         unreachable!("extint managed through software apic")
     }
 
-    fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16) {
+    fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, _vtl: Vtl, sints: u16) {
         if let Some(synic) = &mut this.untrusted_synic {
             synic.request_sint_readiness(sints);
         } else {
@@ -1375,7 +1375,7 @@ impl UhProcessor<'_, TdxBacked> {
                 let subleaf = enter_state.rcx() as u32;
                 let xfem = self
                     .runner
-                    .get_vp_register(HvX64RegisterName::Xfem)
+                    .get_vp_register(HvX64RegisterName::Xfem, Vtl::Vtl0)
                     .map_err(|err| VpHaltReason::Hypervisor(UhRunVpError::EmulationState(err)))?
                     .as_u64();
                 let guest_state = crate::hardware_cvm::cpuid::CpuidGuestState {
@@ -1494,7 +1494,7 @@ impl UhProcessor<'_, TdxBacked> {
                     })
                 {
                     self.runner
-                        .set_vp_register(HvX64RegisterName::Xfem, value.into())
+                        .set_vp_register(HvX64RegisterName::Xfem, value.into(), Vtl::Vtl0)
                         .map_err(|err| {
                             VpHaltReason::Hypervisor(UhRunVpError::EmulationState(err))
                         })?;
@@ -1728,6 +1728,7 @@ impl UhProcessor<'_, TdxBacked> {
                             HvX64RegisterName::Sint0.0 + (msr - hvdef::HV_X64_MSR_SINT0),
                         ),
                         value.into(),
+                        Vtl::Vtl0,
                     ) {
                         tracelimit::warn_ratelimited!(
                             error = &err as &dyn std::error::Error,
@@ -2708,7 +2709,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             value: self
                 .vp
                 .runner
-                .get_vp_register(HvX64RegisterName::Xfem)
+                .get_vp_register(HvX64RegisterName::Xfem, self.vtl)
                 .unwrap()
                 .as_u64(),
         })
@@ -2837,6 +2838,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
                     HvX64RegisterName::Dr6,
                 ],
                 &mut values,
+                self.vtl,
             )
             .map_err(vp_state::Error::GetRegisters)?;
 
@@ -2866,13 +2868,16 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         } = value;
         self.vp
             .runner
-            .set_vp_registers([
-                (HvX64RegisterName::Dr0, dr0),
-                (HvX64RegisterName::Dr1, dr1),
-                (HvX64RegisterName::Dr2, dr2),
-                (HvX64RegisterName::Dr3, dr3),
-                (HvX64RegisterName::Dr6, dr6),
-            ])
+            .set_vp_registers(
+                [
+                    (HvX64RegisterName::Dr0, dr0),
+                    (HvX64RegisterName::Dr1, dr1),
+                    (HvX64RegisterName::Dr2, dr2),
+                    (HvX64RegisterName::Dr3, dr3),
+                    (HvX64RegisterName::Dr6, dr6),
+                ],
+                self.vtl,
+            )
             .map_err(vp_state::Error::SetRegisters)?;
 
         self.vp

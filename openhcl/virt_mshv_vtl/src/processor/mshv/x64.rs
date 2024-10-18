@@ -133,11 +133,12 @@ impl BackingPrivate for HypervisorBackedX86 {
             // Initialize APIC base to match the current VM state.
             let apic_base = params
                 .runner
-                .get_vp_register(HvX64RegisterName::ApicBase)
+                .get_vp_register(HvX64RegisterName::ApicBase, Vtl::Vtl0)
                 .unwrap()
                 .as_u64();
             let mut lapic0 = arr[Vtl::Vtl0].add_apic(params.vp_info);
             lapic0.set_apic_base(apic_base).unwrap();
+            // TODO WHP GUEST VSM is this the right base?
             let mut lapic1 = arr[Vtl::Vtl1].add_apic(params.vp_info);
             lapic1.set_apic_base(apic_base).unwrap();
 
@@ -182,6 +183,7 @@ impl BackingPrivate for HypervisorBackedX86 {
                 .set_vp_register(
                     VpRegisterName::DeliverabilityNotifications,
                     u64::from(notifications).into(),
+                    Vtl::Vtl0,
                 )
                 .expect("requesting deliverability is not a fallable operation");
             this.backing.deliverability_notifications =
@@ -300,7 +302,7 @@ impl BackingPrivate for HypervisorBackedX86 {
             .set_interrupt_notification(true);
     }
 
-    fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16) {
+    fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, _vtl: Vtl, sints: u16) {
         this.backing
             .next_deliverability_notifications
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
@@ -376,7 +378,7 @@ fn next_rip(value: &HvX64InterceptMessageHeader) -> u64 {
 impl UhProcessor<'_, HypervisorBackedX86> {
     fn set_rip(&mut self, rip: u64) -> Result<(), VpHaltReason<UhRunVpError>> {
         self.runner
-            .set_vp_register(HvX64RegisterName::Rip, rip.into())
+            .set_vp_register(HvX64RegisterName::Rip, rip.into(), self.last_vtl())
             .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::AdvanceRip(e)))?;
 
         Ok(())
@@ -411,7 +413,11 @@ impl UhProcessor<'_, HypervisorBackedX86> {
                 .with_vector(vector);
 
             self.runner
-                .set_vp_register(HvX64RegisterName::PendingEvent0, u128::from(event).into())
+                .set_vp_register(
+                    HvX64RegisterName::PendingEvent0,
+                    u128::from(event).into(),
+                    self.last_vtl(),
+                )
                 .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Event(e)))?;
         }
 
@@ -687,6 +693,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             .set_vp_register(
                 HvX64RegisterName::PendingEvent0,
                 u128::from(exception_event).into(),
+                self.last_vtl(),
             )
             .expect("set_vp_register should succeed for pending event");
     }
@@ -741,7 +748,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         ];
         let mut values = [FromZeroes::new_zeroed(); NAMES.len()];
         self.runner
-            .get_vp_registers(NAMES, &mut values)
+            .get_vp_registers(NAMES, &mut values, self.last_vtl())
             .expect("register query should not fail");
 
         let [rsp, es, ds, fs, gs, ss, cr0, efer] = values;
@@ -771,11 +778,14 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
     fn set_emulator_state(&mut self, state: &x86emu::CpuState) {
         self.runner
-            .set_vp_registers([
-                (HvX64RegisterName::Rip, state.rip),
-                (HvX64RegisterName::Rflags, state.rflags.into()),
-                (HvX64RegisterName::Rsp, state.gps[x86emu::CpuState::RSP]),
-            ])
+            .set_vp_registers(
+                [
+                    (HvX64RegisterName::Rip, state.rip),
+                    (HvX64RegisterName::Rflags, state.rflags.into()),
+                    (HvX64RegisterName::Rsp, state.gps[x86emu::CpuState::RSP]),
+                ],
+                self.last_vtl(),
+            )
             .unwrap();
 
         self.runner.cpu_context_mut().gps = state.gps;
@@ -1006,7 +1016,10 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             let mbec_user_execute = self
                 .vp
                 .runner
-                .get_vp_register(HvX64RegisterName::InstructionEmulationHints)
+                .get_vp_register(
+                    HvX64RegisterName::InstructionEmulationHints,
+                    self.vp.last_vtl(),
+                )
                 .map_err(UhRunVpError::EmulationState)?;
 
             let flags =
@@ -1281,7 +1294,7 @@ impl UhVpStateAccess<'_, '_, HypervisorBackedX86> {
         regs.get_values(values.iter_mut());
         self.vp
             .runner
-            .set_vp_registers(names.iter().copied().zip(values))
+            .set_vp_registers(names.iter().copied().zip(values), self.vtl)
             .map_err(vp_state::Error::SetRegisters)?;
         Ok(())
     }
@@ -1297,7 +1310,7 @@ impl UhVpStateAccess<'_, '_, HypervisorBackedX86> {
         let mut values = [HvRegisterValue::new_zeroed(); N];
         self.vp
             .runner
-            .get_vp_registers(&names, &mut values)
+            .get_vp_registers(&names, &mut values, self.vtl)
             .map_err(vp_state::Error::GetRegisters)?;
 
         regs.set_values(values.into_iter());
@@ -1549,12 +1562,14 @@ impl<T> hv1_hypercall::SetVpRegisters for UhHypercallHandler<'_, '_, T, Hypervis
     }
 }
 
+// TODO GUEST VSM Audit save state
 mod save_restore {
     use super::HypervisorBackedX86;
     use super::UhProcessor;
     use anyhow::Context;
     use hvdef::HvInternalActivityRegister;
     use hvdef::HvX64RegisterName;
+    use hvdef::Vtl;
     use virt::irqcon::MsiRequest;
     use virt::Processor;
     use vmcore::save_restore::RestoreError;
@@ -1648,13 +1663,13 @@ mod save_restore {
             };
 
             self.runner
-                .get_vp_registers(&SHARED_REGISTERS[..len], &mut values[..len])
+                .get_vp_registers(&SHARED_REGISTERS[..len], &mut values[..len], Vtl::Vtl0)
                 .context("failed to get shared registers")
                 .map_err(SaveError::Other)?;
 
             let startup_suspend = match self
                 .runner
-                .get_vp_register(HvX64RegisterName::InternalActivityState)
+                .get_vp_register(HvX64RegisterName::InternalActivityState, Vtl::Vtl0)
             {
                 Ok(val) => Some(HvInternalActivityRegister::from(val.as_u64()).startup_suspend()),
                 Err(e) => {
@@ -1752,7 +1767,10 @@ mod save_restore {
 
             let values = [dr0, dr1, dr2, dr3, dr6.unwrap_or(0)];
             self.runner
-                .set_vp_registers(SHARED_REGISTERS[..len].iter().copied().zip(values))
+                .set_vp_registers(
+                    SHARED_REGISTERS[..len].iter().copied().zip(values),
+                    Vtl::Vtl0,
+                )
                 .context("failed to set shared registers")
                 .map_err(RestoreError::Other)?;
 
@@ -1784,7 +1802,7 @@ mod save_restore {
                     ];
                     let mut values = [FromZeroes::new_zeroed(); NAMES.len()];
                     self.runner
-                        .get_vp_registers(&NAMES, &mut values)
+                        .get_vp_registers(&NAMES, &mut values, Vtl::Vtl0)
                         .context("failed to get VP registers for startup suspend log")
                         .map_err(RestoreError::Other)?;
                     let [rip, rflags, cr0, efer] = values.map(|reg| reg.as_u64());
@@ -1807,7 +1825,7 @@ mod save_restore {
                 let reg = u64::from(HvInternalActivityRegister::new().with_startup_suspend(true));
                 let result = self
                     .runner
-                    .set_vp_registers([(HvX64RegisterName::InternalActivityState, reg)]);
+                    .set_vp_registers([(HvX64RegisterName::InternalActivityState, reg)], Vtl::Vtl0);
 
                 if let Err(e) = result {
                     // The ioctl set_vp_register path does not tell us hv_status
@@ -1818,7 +1836,7 @@ mod save_restore {
                     );
 
                     self.partition.request_msi(
-                        hvdef::Vtl::Vtl0,
+                        Vtl::Vtl0,
                         MsiRequest::new_x86(
                             virt::irqcon::DeliveryMode::INIT,
                             self.inner.vp_info.apic_id,
