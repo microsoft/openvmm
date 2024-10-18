@@ -16,6 +16,11 @@ jobs:
       - name: Cancel Previous Runs
         uses: styfle/cancel-workflow-action@0.9.1
 
+      - name: Checkout actions
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       # adapted from https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#workflow_run
       - name: 'Download artifact'
         uses: actions/github-script@v6
@@ -68,11 +73,6 @@ jobs:
           keyvault: 'HvLite-PATs'
           secrets: 'HvliteMirrorPAT'
         id: AzureKeyVault
-
-      - name: Checkout actions
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Install dependencies
         shell: bash
