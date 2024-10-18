@@ -1,8 +1,9 @@
 name: Private VSO build
 on:
-  workflow_dispatch:
-  pull_request_target:
-    types: [synchronize, opened, reopened, ready_for_review]
+  workflow_run:
+    workflows: [Private VSO build Trampoline]
+    types:
+      - completed
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref }}
@@ -14,14 +15,49 @@ permissions:
 
 jobs:
   PrivateBuild:
-    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
+      # adapted from https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#workflow_run
+      - name: 'Download artifact'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            let allArtifacts = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: context.payload.workflow_run.id,
+            });
+
+            let matchArtifacts = allArtifacts.data.artifacts.filter((artifact) => {
+                return artifact.name.startsWith("github-ref-");
+            });
+
+            if (matchArtifacts.length > 0) {
+                matchArtifacts.sort((a, b) => {
+                    let numA = parseInt(a.name.split('-').pop());
+                    let numB = parseInt(b.name.split('-').pop());
+                    return numB - numA;
+                });
+                let largestArtifact = matchArtifacts;
+                console.log(largestArtifact.name);
+            } else {
+                console.log("No matching artifacts found");
+            }
+
+            let download = await github.rest.actions.downloadArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: matchArtifact.id,
+                archive_format: 'zip',
+            });
+            let fs = require('fs');
+            fs.writeFileSync(`${process.env.GITHUB_WORKSPACE}/github-ref.zip`, Buffer.from(download.data));
+
       - uses: Azure/login@v1
         with:
           # These secrets describe the HvLite-GitHub service principal and associated Azure subscription,
           # which, along with the GITHUB_TOKEN, are used to authenticate GitHub Actions to Azure with OpenID Connect.
-          # The service principal has federated identity credentials configured describing which branches and 
+          # The service principal has federated identity credentials configured describing which branches and
           # scenarios can be authenticated.
           client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
           tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
@@ -45,11 +81,14 @@ jobs:
 
       - name: Run VSO build
         shell: bash
-        run: python .github/scripts/trigger-vso-pipeline.py 109784 ${{ steps.AzureKeyVault.outputs.HvliteMirrorPAT }} --commit ${GITHUB_REF}
+        run: |
+          unzip github-ref.zip
+          GITHUB_REF=$(cat ./github_ref)
+          python .github/scripts/trigger-vso-pipeline.py 109784 ${{ steps.AzureKeyVault.outputs.HvliteMirrorPAT }} --commit ${GITHUB_REF}
 
       - name: Cancel VSO build
         shell: bash
-        run: | 
+        run: |
             build=$(cat build-id)
             echo "Build: $build"
             python .github/scripts/trigger-vso-pipeline.py 109784 ${{ steps.AzureKeyVault.outputs.HvliteMirrorPAT }} --cancel "$build"
