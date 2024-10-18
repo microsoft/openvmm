@@ -101,16 +101,14 @@ impl<R> Loader<'_, R> {
         let page_end = page_base + page_count - 1;
         match self.accepted_ranges.entry(page_base..=page_end) {
             Entry::Overlapping(entry) => {
-                let (overlap_start, overlap_end, overlap_info) = entry.get();
-                let overlap_len = overlap_end - overlap_start + 1;
-
-                Err(anyhow::anyhow!("new region at page base {:#x}, len {:#x}, acceptance {:?} overlaps with existing region at page base {:#x}, len {}, tag {}",
-                    page_base,
-                    page_count,
+                let (overlap_start, overlap_end, ref overlap_info) = *entry.get();
+                Err(anyhow::anyhow!(
+                    "{} at {} ({:?}) overlaps {} at {}",
+                    tag,
+                    MemoryRange::from_4k_gpn_range(page_base..page_end + 1),
                     acceptance,
-                    overlap_start,
-                    overlap_len,
-                    overlap_info.tag
+                    overlap_info.tag,
+                    MemoryRange::from_4k_gpn_range(overlap_start..overlap_end + 1),
                 ))
             }
             Entry::Vacant(entry) => {
