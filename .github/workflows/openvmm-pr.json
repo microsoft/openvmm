@@ -2727,15 +2727,6 @@
       ]
     },
     "16": {
-        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-558d6709ad6017b3\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
-        "{\"file_name\":\"hyperv.uefi.mscoreuefi.x64.RELEASE.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.1\"}",
-        "{\"Version\":\"24.0.1\"}"
-        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-558d6709ad6017b3\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
-        "{\"file_name\":\"hyperv.uefi.mscoreuefi.x64.RELEASE.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.1\"}",
-        "{\"Version\":\"24.0.1\"}"
-        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:883:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:150:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-558d6709ad6017b3\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
-        "{\"file_name\":\"hyperv.uefi.mscoreuefi.x64.RELEASE.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:63:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.1\"}",
-        "{\"Version\":\"24.0.1\"}"
       "flowey_lib_common::cfg_cargo_common_flags": [
         "{\"SetLocked\":true}",
         "{\"SetVerbose\":{\"backing_var\":{\"RuntimeVar\":\"param0\"},\"is_secret\":false}}"
