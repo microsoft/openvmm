@@ -75,6 +75,7 @@ unsafe fn virtual_alloc(
     extended_parameters: *mut Memory::MEM_EXTENDED_PARAMETER,
     parameter_count: u32,
 ) -> Result<*mut c_void, Error> {
+    // SAFETY: Using the system API, parameters are valid.
     let address = unsafe {
         VirtualAlloc2(
             process.handle() as isize,
@@ -98,6 +99,7 @@ unsafe fn virtual_free(
     size: usize,
     flags: u32,
 ) -> Result<(), Error> {
+    // SAFETY: Using the system API, parameters are valid.
     if unsafe { VirtualFreeEx(process.handle() as isize, address, size, flags) } == 0 {
         return Err(Error::last_os_error());
     }
@@ -113,6 +115,7 @@ unsafe fn map_view_of_file(
     allocation_type: u32,
     page_protection: u32,
 ) -> Result<*mut c_void, Error> {
+    // SAFETY: Using the system API, parameters are valid.
     let address = unsafe {
         MapViewOfFile3(
             file_mapping as isize,
@@ -138,6 +141,7 @@ unsafe fn unmap_view_of_file(
     address: *mut c_void,
     flags: u32,
 ) -> Result<(), Error> {
+    // SAFETY: Using the system API, parameters are valid.
     if unsafe {
         UnmapViewOfFile2(
             process.handle() as isize,
@@ -224,6 +228,7 @@ pub struct SparseMapping {
 // SAFETY: SparseMapping's internal pointer represents an owned virtual address
 // range. There is no safety issue accessing this pointer across threads.
 unsafe impl Send for SparseMapping {}
+// SAFETY: same as above.
 unsafe impl Sync for SparseMapping {}
 
 /// An owned handle to an OS object that can be mapped into a [`SparseMapping`].
@@ -260,6 +265,7 @@ pub fn new_mappable_from_file(
         }
     };
 
+    // SAFETY: Using the system API, parameters are valid.
     unsafe {
         let section = CreateFileMappingW(
             file.as_raw_handle() as isize,
@@ -315,6 +321,7 @@ impl SparseMapping {
         address: Option<*mut c_void>,
         len: usize,
     ) -> Result<Self, Error> {
+        // SAFETY: Using the system API, parameters are valid.
         unsafe {
             // Allocate a placeholder reservation to reserve a virtual address
             // range. This will be split up and recombined as mappings come and
@@ -360,6 +367,7 @@ impl SparseMapping {
     /// Coalesces placeholder reservations with the given beginning and ending
     /// offset.
     fn coalesce(&self, offset: usize, end: usize) {
+        // SAFETY: Using the system API, parameters are valid.
         unsafe {
             virtual_free(
                 self.process.as_ref(),
@@ -408,6 +416,7 @@ impl SparseMapping {
         let address = self.address.wrapping_add(offset);
         let (previous_end, next_begin) = mappings.previous_gap(index, self.len);
         if offset > previous_end || end < next_begin {
+            // SAFETY: Using the system API, parameters are valid.
             unsafe {
                 virtual_free(
                     self.process.as_ref(),
@@ -438,6 +447,7 @@ impl SparseMapping {
     /// Allocates private memory at the given offset with memory protection
     /// `protect`.
     pub fn virtual_alloc(&self, offset: usize, len: usize, protect: u32) -> Result<(), Error> {
+        // SAFETY: Using the system API, parameters are valid.
         self.map(offset, len, |addr| unsafe {
             virtual_alloc(
                 self.process.as_ref(),
@@ -479,6 +489,7 @@ impl SparseMapping {
         protect: u32,
     ) -> Result<(), Error> {
         assert_ne!(len, 0);
+        // SAFETY: Using the system API, parameters are valid.
         self.map(offset, len, |addr| unsafe {
             let access = match protect & 0xff {
                 PAGE_NOACCESS => 0,
@@ -511,6 +522,7 @@ impl SparseMapping {
     fn unmap_single(&self, mapping: &Mapping, offset: usize, end: usize) {
         assert!(offset >= mapping.offset);
         assert!(end <= mapping.end);
+        // SAFETY: Using the system API, parameters are valid.
         unsafe {
             match &mapping.info {
                 MappingInfo::Anonymous => {
@@ -664,6 +676,7 @@ impl SparseMapping {
 impl Drop for SparseMapping {
     fn drop(&mut self) {
         self.unmap_internal(&mut self.mappings.lock(), 0, self.len);
+        // SAFETY: Using the system API, parameters are valid.
         unsafe {
             virtual_free(self.process.as_ref(), self.address, 0, MEM_RELEASE)
                 .expect("placeholder free failed");
@@ -707,6 +720,7 @@ mod tests {
         sparse
             .map_view_of_file(0, 0x100000, &shmem, 0, PAGE_READWRITE)
             .unwrap();
+        // SAFETY: no memory is shared between threads.
         let data: &mut [u32] =
             unsafe { std::slice::from_raw_parts_mut(sparse.as_ptr().cast(), sparse.len() / 4) };
         for (i, d) in data.iter_mut().enumerate() {
@@ -714,6 +728,7 @@ mod tests {
         }
         let check = |offset: usize| {
             let mut d: u32 = 0;
+            // SAFETY: no memory is shared between threads.
             unsafe {
                 try_copy(
                     sparse.as_ptr().wrapping_add(offset),

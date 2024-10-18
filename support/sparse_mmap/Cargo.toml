@@ -4,9 +4,6 @@
 name = "sparse_mmap"
 edition = "2021"
 
-[build-dependencies]
-cc.workspace = true
-
 [dependencies]
 pal.workspace = true
 
