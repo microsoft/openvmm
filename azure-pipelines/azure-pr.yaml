@@ -1,8 +1,8 @@
 trigger: none
 pr: none
-variables:
-- name: DisablePipelineConfigDetector
-  value: 'true'
+# variables:
+# - name: DisablePipelineConfigDetector
+#   value: 'true'
 jobs:
   - job: AzureDevOpsPullRequestValidation
     steps:
@@ -17,4 +17,6 @@ jobs:
         waitForQueuedBuildsToFinishRefreshTime: '30'
         failTaskIfBuildsNotSuccessful: true
         buildParameters: 'OssSubmoduleCommit: $(Build.SourceVersion)'
+        authenticationMethod: 'OAuth Token'
+        password: '$(System.AccessToken)'
       displayName: Trigger Azure DevOps Pull Request Validation
