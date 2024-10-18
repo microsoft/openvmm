@@ -1,5 +1,8 @@
 trigger: none
 pr: none
+# variables: 
+# - name: DisablePipelineConfigDetector
+#   value: 'true'
 jobs:
   - job: AzureDevOpsPullRequestValidation
     steps:
