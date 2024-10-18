@@ -17,6 +17,4 @@ jobs:
         waitForQueuedBuildsToFinishRefreshTime: '30'
         failTaskIfBuildsNotSuccessful: true
         buildParameters: 'OssSubmoduleCommit: $(Build.SourceVersion)'
-        authenticationMethod: 'OAuth Token'
-        password: '$(System.AccessToken)'
       displayName: Trigger Azure DevOps Pull Request Validation
