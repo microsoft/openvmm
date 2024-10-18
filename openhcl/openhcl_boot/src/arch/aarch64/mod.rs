@@ -15,6 +15,9 @@ pub use memory::verify_imported_regions_hash;
 pub use vp::setup_vtl2_vp;
 pub use vsm::get_isolation_type;
 
+use crate::rt::STACK_COOKIE;
+use crate::rt::STACK_SIZE;
+
 // Entry point.
 #[cfg(minimal_rt)]
 core::arch::global_asm! {
@@ -22,4 +25,7 @@ core::arch::global_asm! {
     start = sym crate::rt::start,
     relocate = sym minimal_rt::reloc::relocate,
     stack = sym crate::rt::STACK,
+    STACK_COOKIE_LO = const (STACK_COOKIE as u16),
+    STACK_COOKIE_HI = const ((STACK_COOKIE >> 16) as u16),
+    STACK_SIZE = const STACK_SIZE,
 }
