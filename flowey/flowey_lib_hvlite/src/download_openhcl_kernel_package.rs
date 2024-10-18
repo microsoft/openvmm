@@ -73,7 +73,8 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let extract_zip_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
+        let extract_archive_deps =
+            flowey_lib_common::_util::extract::extract_archive_if_new_deps(ctx);
 
         for ((kind, arch), out_vars) in reqs {
             let version = versions.get(&kind).expect("checked above");
@@ -111,15 +112,15 @@ impl FlowNode for Node {
                 });
 
             ctx.emit_rust_step(format!("unpack {file_name}"), |ctx| {
-                let extract_zip_deps = extract_zip_deps.clone().claim(ctx);
+                let extract_archive_deps = extract_archive_deps.clone().claim(ctx);
                 let out_vars = out_vars.claim(ctx);
                 let kernel_package_zip = kernel_package_zip.claim(ctx);
                 move |rt| {
                     let kernel_package_zip = rt.read(kernel_package_zip);
 
-                    let extract_dir = flowey_lib_common::_util::extract::extract_zip_if_new(
+                    let extract_dir = flowey_lib_common::_util::extract::extract_archive_if_new(
                         rt,
-                        extract_zip_deps,
+                        extract_archive_deps,
                         &kernel_package_zip,
                         &file_name, // filename currently includes version and arch
                     )?;
@@ -131,7 +132,7 @@ impl FlowNode for Node {
                         {
                             // HACK: recursively chmod all the files, otherwise they all have 000 access.
                             let sh = xshell::Shell::new()?;
-                            xshell::cmd!(sh, "chmod -R 755 {extract_dir}").run()?;
+                            xshell::cmd!(sh, "chmod -R +rwX {extract_dir}").run()?;
 
                             // HACK: recreate the layout used by nuget packages.
                             let nuget_path = "build/native/bin";

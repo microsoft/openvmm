@@ -63,7 +63,7 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let extract_zip_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
+        let extract_archive_deps = flowey_lib_common::_util::extract::extract_archive_if_new_deps(ctx);
 
         for (arch, out_vars) in reqs {
             let tag = format!("Microsoft.WSL.LxUtil.{}", version);
@@ -87,15 +87,15 @@ impl FlowNode for Node {
             });
 
             ctx.emit_rust_step(format!("unpack {}", file_name), |ctx| {
-                let extract_zip_deps = extract_zip_deps.clone().claim(ctx);
+                let extract_archive_deps = extract_archive_deps.clone().claim(ctx);
                 let out_vars = out_vars.claim(ctx);
                 let lxutil_zip = lxutil_zip.claim(ctx);
                 move |rt| {
                     let lxutil_zip = rt.read(lxutil_zip);
 
-                    let extract_dir = flowey_lib_common::_util::extract::extract_zip_if_new(
+                    let extract_dir = flowey_lib_common::_util::extract::extract_archive_if_new(
                         rt,
-                        extract_zip_deps,
+                        extract_archive_deps,
                         &lxutil_zip,
                         &tag,
                     )?;
