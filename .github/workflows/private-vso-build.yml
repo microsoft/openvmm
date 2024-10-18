@@ -45,7 +45,7 @@ jobs:
 
       - name: Run VSO build
         shell: bash
-        run: python .github/scripts/trigger-vso-pipeline.py 109784 ${{ steps.AzureKeyVault.outputs.HvliteMirrorPAT }} --commit ${GITHUB_SHA}
+        run: python .github/scripts/trigger-vso-pipeline.py 109784 ${{ steps.AzureKeyVault.outputs.HvliteMirrorPAT }} --commit ${GITHUB_REF}
 
       - name: Cancel VSO build
         shell: bash
