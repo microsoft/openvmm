@@ -97,35 +97,6 @@ impl SimpleFlowNode for Node {
                     flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(gh_token),
                 ));
             }
-        } else if matches!(ctx.backend(), FlowBackend::Ado) {
-            if local_only.is_some() {
-                anyhow::bail!("can only set `local_only` params when using Local backend");
-            }
-
-            ctx.req(
-                flowey_lib_common::ado_task_nuget_authenticate::Request::ServiceConnection(
-                    "AzureDevFeed".into(),
-                ),
-            );
-
-            ctx.req(flowey_lib_common::install_azure_cli::Request::AutoInstall(
-                true,
-            ));
-
-            {
-                let (read_token, write_token) = ctx.new_secret_var();
-
-                ctx.req(flowey_lib_common::ado_task_azure_key_vault::Request {
-                    subscription: "HvLite Azure".into(),
-                    key_vault_name: "HvLite-PATs".into(),
-                    secret: "GitHub-CLI-PAT".into(),
-                    resolved_secret: write_token,
-                });
-
-                ctx.req(flowey_lib_common::use_gh_cli::Request::WithAuth(
-                    flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(read_token),
-                ));
-            }
         } else if matches!(ctx.backend(), FlowBackend::Local) {
             let local_only =
                 local_only.ok_or(anyhow::anyhow!("missing essential request: local_only"))?;
