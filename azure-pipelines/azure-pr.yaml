@@ -1,0 +1,19 @@
+trigger: none
+pr: none
+jobs:
+  - job: AzureDevOpsPullRequestValidation
+    steps:
+    - task: TriggerBuild@4
+      inputs:
+        definitionIsInCurrentTeamProject: true
+        buildDefinition: '[flowey] hvlite PR'
+        queueBuildForUserThatTriggeredBuild: false
+        useSameBranch: false
+        branchToUse: 'main'
+        waitForQueuedBuildsToFinish: true
+        waitForQueuedBuildsToFinishRefreshTime: '30'
+        failTaskIfBuildsNotSuccessful: true
+        buildParameters: 'OssSubmoduleCommit: $(Build.SourceVersion)'
+        authenticationMethod: 'OAuth Token'
+        password: '$(System.AccessToken)'
+      displayName: Trigger Azure DevOps Pull Request Validation
