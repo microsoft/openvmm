@@ -113,17 +113,10 @@ impl SimpleFlowNode for Node {
             ));
 
             {
-                let (read_token, write_token) = ctx.new_secret_var();
-
-                ctx.req(flowey_lib_common::ado_task_azure_key_vault::Request {
-                    subscription: "HvLite Azure".into(),
-                    key_vault_name: "HvLite-PATs".into(),
-                    secret: "GitHub-CLI-PAT".into(),
-                    resolved_secret: write_token,
-                });
+                let token = ctx.get_ado_variable(AdoRuntimeVar::SYSTEM__ACCESS_TOKEN);
 
                 ctx.req(flowey_lib_common::use_gh_cli::Request::WithAuth(
-                    flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(read_token),
+                    flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(token),
                 ));
             }
         } else if matches!(ctx.backend(), FlowBackend::Local) {
