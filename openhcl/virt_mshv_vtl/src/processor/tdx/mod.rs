@@ -730,7 +730,7 @@ impl BackingPrivate for TdxBacked {
         this: &mut UhProcessor<'_, Self>,
         _vtl: Vtl,
         scan_irr: bool,
-    ) -> Result<bool, UhRunVpError> {
+    ) -> Result<(), UhRunVpError> {
         if !this.try_poll_apic(scan_irr)? {
             tracing::info!("disabling APIC offload due to auto EOI");
             let page = zerocopy::transmute_mut!(this.runner.tdx_apic_page_mut());
@@ -741,10 +741,7 @@ impl BackingPrivate for TdxBacked {
             this.try_poll_apic(false)?;
         }
 
-        // Return ready even if halted. `run_vp` will wait in the kernel when
-        // halted, which is necessary so that we are efficiently notified when
-        // more interrupts arrive.
-        Ok(true)
+        Ok(())
     }
 
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {
