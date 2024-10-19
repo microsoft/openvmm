@@ -424,7 +424,6 @@ impl BackingPrivate for SnpBacked {
             .as_ref()
             .expect("has guest vsm state")
             .current_vtl;
-        assert!(current_vtl != target_vtl);
 
         let [vmsa0, vmsa1] = this.runner.vmsas_mut();
         let (current_vmsa, mut target_vmsa) = match (current_vtl, target_vtl) {
@@ -817,11 +816,11 @@ impl UhProcessor<'_, SnpBacked> {
         self.deliver_synic_messages(GuestVtl::Vtl0, message.deliverable_sints);
     }
 
-    fn handle_vmgexit(&mut self, dev: &impl CpuIo) -> Result<(), UhRunVpError> {
-        let intercepted_vtl = self
-            .cvm_guest_vsm
-            .as_ref()
-            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
+    fn handle_vmgexit(
+        &mut self,
+        dev: &impl CpuIo,
+        intercepted_vtl: GuestVtl,
+    ) -> Result<(), UhRunVpError> {
         let message = hvdef::HvX64VmgexitInterceptMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
         )
@@ -931,14 +930,12 @@ impl UhProcessor<'_, SnpBacked> {
     }
 
     async fn run_vp_snp(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
-        // TODO CVM: change this to intercepted vtl by creating an intercepted_vtl
-        // that's available outside of guest vsm state and that's only valid during
-        // intercept handling, and split out the "next vtl" that's used in VTL 2
-        // exit handling.
+        // TODO CVM GUEST VSM: split out the "next vtl" that VTL 2 will exit to from
+        // last_vtl/current_vtl
         let last_vtl = self
             .cvm_guest_vsm
             .as_ref()
-            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
+            .map_or(GuestVtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
 
         let mut vmsa = self.runner.vmsa_mut(last_vtl);
         let last_interrupt_ctrl = vmsa.v_intr_cntrl();
@@ -966,7 +963,7 @@ impl UhProcessor<'_, SnpBacked> {
         let entered_from_vtl = self
             .cvm_guest_vsm
             .as_ref()
-            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
+            .map_or(GuestVtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
 
         // TODO SNP: The guest busy bit needs to be tested and set atomically.
@@ -1296,7 +1293,7 @@ impl UhProcessor<'_, SnpBacked> {
                 has_intercept = false;
                 match self.runner.exit_message().header.typ {
                     HvMessageType::HvMessageTypeX64SevVmgexitIntercept => {
-                        self.handle_vmgexit(dev)
+                        self.handle_vmgexit(dev, entered_from_vtl)
                             .map_err(VpHaltReason::InvalidVmState)?;
                     }
                     _ => has_intercept = true,
@@ -1401,7 +1398,7 @@ impl UhProcessor<'_, SnpBacked> {
         Ok(())
     }
 
-    fn long_mode(&self, vtl: Vtl) -> bool {
+    fn long_mode(&self, vtl: GuestVtl) -> bool {
         let vmsa = self.runner.vmsa(vtl);
         vmsa.cr0() & x86defs::X64_CR0_PE != 0 && vmsa.efer() & x86defs::X64_EFER_LMA != 0
     }
@@ -2049,7 +2046,12 @@ fn advance_to_next_instruction(vmsa: &mut VmsaWrapper<'_, &mut SevVmsa>) {
 }
 
 impl UhProcessor<'_, SnpBacked> {
-    fn read_msr_cvm(&mut self, _dev: &impl CpuIo, msr: u32, vtl: Vtl) -> Result<u64, MsrError> {
+    fn read_msr_cvm(
+        &mut self,
+        _dev: &impl CpuIo,
+        msr: u32,
+        vtl: GuestVtl,
+    ) -> Result<u64, MsrError> {
         let vmsa = self.runner.vmsa(vtl);
         let value = match msr {
             x86defs::X64_MSR_FS_BASE => vmsa.fs().base,
@@ -2107,7 +2109,7 @@ impl UhProcessor<'_, SnpBacked> {
         _dev: &impl CpuIo,
         msr: u32,
         value: u64,
-        vtl: Vtl,
+        vtl: GuestVtl,
     ) -> Result<(), MsrError> {
         let mut vmsa = self.runner.vmsa_mut(vtl);
         match msr {

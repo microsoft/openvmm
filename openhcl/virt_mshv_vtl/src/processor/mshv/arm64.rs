@@ -226,7 +226,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {
-    fn intercepted_vtl(message_header: &hvdef::HvArm64InterceptMessageHeader) -> Option<Vtl> {
+    fn intercepted_vtl(message_header: &hvdef::HvArm64InterceptMessageHeader) -> Option<GuestVtl> {
         message_header.execution_state.vtl().try_into().ok()
     }
 

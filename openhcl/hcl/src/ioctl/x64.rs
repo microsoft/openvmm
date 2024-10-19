@@ -6,6 +6,7 @@
 use super::private::BackingPrivate;
 use super::BackingState;
 use super::Error;
+use super::GuestVtl;
 use super::HclVp;
 use super::NoRunner;
 use super::ProcessorRunner;
@@ -17,7 +18,6 @@ use hvdef::HvRegisterValue;
 use hvdef::HvX64RegisterName;
 use hvdef::HvX64RegisterPage;
 use hvdef::HypercallCode;
-use hvdef::Vtl;
 use hvdef::HV_PARTITION_ID_SELF;
 use hvdef::HV_VP_INDEX_SELF;
 use sidecar_client::SidecarVp;
@@ -66,7 +66,7 @@ impl ProcessorRunner<'_, MshvX64> {
     }
 
     /// Returns the last VTL according to the register page.
-    pub fn reg_page_vtl(&self) -> Option<Vtl> {
+    pub fn reg_page_vtl(&self) -> Option<GuestVtl> {
         self.reg_page()
             .map(|reg_page| reg_page.vtl.try_into().unwrap())
     }

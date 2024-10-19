@@ -68,3 +68,15 @@ impl TryFrom<Vtl> for GuestVtl {
         })
     }
 }
+
+impl TryFrom<u8> for GuestVtl {
+    type Error = UnsupportedGuestVtl;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Ok(match value {
+            0 => GuestVtl::Vtl0,
+            1 => GuestVtl::Vtl1,
+            _ => return Err(UnsupportedGuestVtl),
+        })
+    }
+}

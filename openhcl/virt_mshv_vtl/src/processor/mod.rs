@@ -493,7 +493,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn handle_debug_exception(&mut self, vtl: Vtl) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn handle_debug_exception(&mut self, vtl: GuestVtl) -> Result<(), VpHaltReason<UhRunVpError>> {
         // FUTURE: Underhill does not yet support VTL1 so this is only tested with VTL0.
         if vtl == GuestVtl::Vtl0 {
             let debug_regs: virt::x86::vp::DebugRegisters = self
@@ -926,7 +926,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn write_msr(&mut self, msr: u32, value: u64, vtl: Vtl) -> Result<(), MsrError> {
+    fn write_msr(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
         if msr & 0xf0000000 == 0x40000000 {
             if let Some(hv) = self.hv_mut(vtl) {
                 let r = hv.msr_write(msr, value);
@@ -962,7 +962,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn read_msr(&mut self, msr: u32, vtl: Vtl) -> Result<u64, MsrError> {
+    fn read_msr(&mut self, msr: u32, vtl: GuestVtl) -> Result<u64, MsrError> {
         if msr & 0xf0000000 == 0x40000000 {
             if let Some(hv) = &mut self.hv(vtl) {
                 let r = hv.msr_read(msr);
@@ -990,7 +990,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         &mut self,
         devices: &D,
         interruption_pending: bool,
-        vtl: Vtl,
+        vtl: GuestVtl,
     ) -> Result<(), VpHaltReason<UhRunVpError>>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>:
@@ -1016,7 +1016,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         &mut self,
         devices: &D,
         intercept_state: &aarch64emu::InterceptState,
-        vtl: Vtl,
+        vtl: GuestVtl,
     ) -> Result<(), VpHaltReason<UhRunVpError>>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>:
@@ -1137,7 +1137,7 @@ struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing> {
     vp: &'a mut UhProcessor<'b, U>,
     interruption_pending: bool,
     devices: &'a T,
-    vtl: Vtl,
+    vtl: GuestVtl,
 }
 
 struct UhHypercallHandler<'a, 'b, T, B: Backing> {
@@ -1152,7 +1152,7 @@ struct UhHypercallHandler<'a, 'b, T, B: Backing> {
     /// This should always be false if hardware isolation is not in use, as the distinction does
     /// not exist in that case.
     trusted: bool,
-    intercepted_vtl: Vtl,
+    intercepted_vtl: GuestVtl,
 }
 
 impl<T, B: Backing> UhHypercallHandler<'_, '_, T, B> {
