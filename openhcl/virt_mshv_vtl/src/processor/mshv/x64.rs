@@ -216,22 +216,30 @@ impl BackingPrivate for HypervisorBackedX86 {
         };
 
         if intercepted {
+            let intercepted_vtl =
+                this.runner
+                    .reg_page_vtl()
+                    .ok_or(VpHaltReason::InvalidVmState(
+                        UhRunVpError::InvalidInterceptedVtl,
+                    ))?;
+
             let stat = match this.runner.exit_message().header.typ {
                 HvMessageType::HvMessageTypeX64IoPortIntercept => {
-                    this.handle_io_port_exit(dev).await?;
+                    this.handle_io_port_exit(dev, intercepted_vtl).await?;
                     &mut this.backing.stats.io_port
                 }
                 HvMessageType::HvMessageTypeUnmappedGpa
                 | HvMessageType::HvMessageTypeGpaIntercept => {
-                    this.handle_mmio_exit(dev).await?;
+                    this.handle_mmio_exit(dev, intercepted_vtl).await?;
                     &mut this.backing.stats.mmio
                 }
                 HvMessageType::HvMessageTypeUnacceptedGpa => {
-                    this.handle_unaccepted_gpa_intercept(dev).await?;
+                    this.handle_unaccepted_gpa_intercept(dev, intercepted_vtl)
+                        .await?;
                     &mut this.backing.stats.unaccepted_gpa
                 }
                 HvMessageType::HvMessageTypeHypercallIntercept => {
-                    this.handle_hypercall_exit(dev)?;
+                    this.handle_hypercall_exit(dev, intercepted_vtl)?;
                     &mut this.backing.stats.hypercall
                 }
                 HvMessageType::HvMessageTypeSynicSintDeliverable => {
@@ -247,7 +255,7 @@ impl BackingPrivate for HypervisorBackedX86 {
                     &mut this.backing.stats.cpuid
                 }
                 HvMessageType::HvMessageTypeMsrIntercept => {
-                    this.handle_msr_intercept(dev)?;
+                    this.handle_msr_intercept(dev, intercepted_vtl)?;
                     &mut this.backing.stats.msr
                 }
                 HvMessageType::HvMessageTypeX64ApicEoi => {
@@ -255,15 +263,15 @@ impl BackingPrivate for HypervisorBackedX86 {
                     &mut this.backing.stats.eoi
                 }
                 HvMessageType::HvMessageTypeUnrecoverableException => {
-                    this.handle_unrecoverable_exception()?;
+                    this.handle_unrecoverable_exception(intercepted_vtl)?;
                     &mut this.backing.stats.unrecoverable_exception
                 }
                 HvMessageType::HvMessageTypeX64Halt => {
-                    this.handle_halt()?;
+                    this.handle_halt(intercepted_vtl)?;
                     &mut this.backing.stats.halt
                 }
                 HvMessageType::HvMessageTypeExceptionIntercept => {
-                    this.handle_exception()?;
+                    this.handle_exception(intercepted_vtl)?;
                     &mut this.backing.stats.exception_intercept
                 }
                 reason => unreachable!("unknown exit reason: {:#x?}", reason),
@@ -380,10 +388,6 @@ fn next_rip(value: &HvX64InterceptMessageHeader) -> u64 {
 }
 
 impl UhProcessor<'_, HypervisorBackedX86> {
-    fn intercepted_vtl(&self) -> Option<Vtl> {
-        self.runner.reg_page_vtl()
-    }
-
     fn set_rip(&mut self, rip: u64) -> Result<(), VpHaltReason<UhRunVpError>> {
         self.runner
             .set_vp_register(HvX64RegisterName::Rip, rip.into())
@@ -453,6 +457,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
     fn handle_hypercall_exit(
         &mut self,
         bus: &impl CpuIo,
+        intercepted_vtl: Vtl,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
         let message = hvdef::HvX64HypercallInterceptMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
@@ -463,10 +468,6 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         let is_64bit =
             message.header.execution_state.cr0_pe() && message.header.execution_state.efer_lma();
-
-        let intercepted_vtl = self.intercepted_vtl().ok_or(VpHaltReason::InvalidVmState(
-            UhRunVpError::InvalidInterceptedVtl,
-        ))?;
 
         let guest_memory = &self.partition.gm[intercepted_vtl];
         let handler = UhHypercallHandler {
@@ -486,6 +487,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
     async fn handle_mmio_exit(
         &mut self,
         dev: &impl CpuIo,
+        intercepted_vtl: Vtl,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
         let message = hvdef::HvX64MemoryInterceptMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
@@ -520,20 +522,15 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             }
         }
 
-        self.emulate(
-            dev,
-            interruption_pending,
-            self.intercepted_vtl().ok_or(VpHaltReason::InvalidVmState(
-                UhRunVpError::InvalidInterceptedVtl,
-            ))?,
-        )
-        .await?;
+        self.emulate(dev, interruption_pending, intercepted_vtl)
+            .await?;
         Ok(())
     }
 
     async fn handle_io_port_exit(
         &mut self,
         dev: &impl CpuIo,
+        intercepted_vtl: Vtl,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
         let message = hvdef::HvX64IoPortInterceptMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
@@ -547,14 +544,8 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         let interruption_pending = message.header.execution_state.interruption_pending();
 
         if message.access_info.string_op() || message.access_info.rep_prefix() {
-            self.emulate(
-                dev,
-                interruption_pending,
-                self.intercepted_vtl().ok_or(VpHaltReason::InvalidVmState(
-                    UhRunVpError::InvalidInterceptedVtl,
-                ))?,
-            )
-            .await
+            self.emulate(dev, interruption_pending, intercepted_vtl)
+                .await
         } else {
             let next_rip = next_rip(&message.header);
             let access_size = message.access_info.access_size();
@@ -574,6 +565,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
     async fn handle_unaccepted_gpa_intercept(
         &mut self,
         dev: &impl CpuIo,
+        intercepted_vtl: Vtl,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
         let gpa = hvdef::HvX64MemoryInterceptMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
@@ -595,7 +587,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         } else {
             // TODO SNP: for hardware isolation, if the intercept is due to a guest
             // error, inject a machine check
-            self.handle_mmio_exit(dev).await?;
+            self.handle_mmio_exit(dev, intercepted_vtl).await?;
             Ok(())
         }
     }
@@ -630,14 +622,15 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         self.set_rip(next_rip)
     }
 
-    fn handle_msr_intercept(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn handle_msr_intercept(
+        &mut self,
+        dev: &impl CpuIo,
+        intercepted_vtl: Vtl,
+    ) -> Result<(), VpHaltReason<UhRunVpError>> {
         let message =
             hvdef::HvX64MsrInterceptMessage::ref_from_prefix(self.runner.exit_message().payload())
                 .unwrap();
         let rip = next_rip(&message.header);
-        let intercepted_vtl = self.intercepted_vtl().ok_or(VpHaltReason::InvalidVmState(
-            UhRunVpError::InvalidInterceptedVtl,
-        ))?;
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "msr");
 
@@ -733,31 +726,32 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         Ok(())
     }
 
-    fn handle_unrecoverable_exception(&self) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let intercepted_vtl = self.intercepted_vtl().ok_or(VpHaltReason::InvalidVmState(
-            UhRunVpError::InvalidInterceptedVtl,
-        ))?;
+    fn handle_unrecoverable_exception(
+        &self,
+        intercepted_vtl: Vtl,
+    ) -> Result<(), VpHaltReason<UhRunVpError>> {
         Err(VpHaltReason::TripleFault {
             vtl: intercepted_vtl.into(),
         })
     }
 
-    fn handle_halt(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let intercepted_vtl = self.intercepted_vtl().ok_or(VpHaltReason::InvalidVmState(
-            UhRunVpError::InvalidInterceptedVtl,
-        ))?;
+    fn handle_halt(&mut self, intercepted_vtl: Vtl) -> Result<(), VpHaltReason<UhRunVpError>> {
         self.backing.lapics.as_mut().unwrap()[intercepted_vtl].halt();
         Ok(())
     }
 
-    fn handle_exception(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn handle_exception(&mut self, intercepted_vtl: Vtl) -> Result<(), VpHaltReason<UhRunVpError>> {
         let message = hvdef::HvX64ExceptionInterceptMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
         )
         .unwrap();
 
+        let _ = intercepted_vtl;
+
         match x86defs::Exception(message.vector as u8) {
-            x86defs::Exception::DEBUG if cfg!(feature = "gdb") => self.handle_debug_exception()?,
+            x86defs::Exception::DEBUG if cfg!(feature = "gdb") => {
+                self.handle_debug_exception(intercepted_vtl)?
+            }
             _ => tracing::error!("unexpected exception type {:#x?}", message.vector),
         }
         Ok(())

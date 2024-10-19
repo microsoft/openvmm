@@ -818,6 +818,10 @@ impl UhProcessor<'_, SnpBacked> {
     }
 
     fn handle_vmgexit(&mut self, dev: &impl CpuIo) -> Result<(), UhRunVpError> {
+        let intercepted_vtl = self
+            .cvm_guest_vsm
+            .as_ref()
+            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
         let message = hvdef::HvX64VmgexitInterceptMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
         )
@@ -863,7 +867,6 @@ impl UhProcessor<'_, SnpBacked> {
                             )
                             .map_err(UhRunVpError::HypercallParameters)?;
 
-                        let intercepted_vtl = self.last_vtl();
                         let mut handler = GhcbEnlightenedHypercall {
                             handler: UhHypercallHandler {
                                 vp: self,
@@ -928,7 +931,16 @@ impl UhProcessor<'_, SnpBacked> {
     }
 
     async fn run_vp_snp(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let mut vmsa = self.runner.vmsa_mut(self.last_vtl());
+        // TODO CVM: change this to intercepted vtl by creating an intercepted_vtl
+        // that's available outside of guest vsm state and that's only valid during
+        // intercept handling, and split out the "next vtl" that's used in VTL 2
+        // exit handling.
+        let last_vtl = self
+            .cvm_guest_vsm
+            .as_ref()
+            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
+
+        let mut vmsa = self.runner.vmsa_mut(last_vtl);
         let last_interrupt_ctrl = vmsa.v_intr_cntrl();
 
         vmsa.v_intr_cntrl_mut().set_guest_busy(false);
@@ -951,7 +963,10 @@ impl UhProcessor<'_, SnpBacked> {
             .run()
             .map_err(|err| VpHaltReason::Hypervisor(UhRunVpError::Run(err)))?;
 
-        let entered_from_vtl = self.last_vtl();
+        let entered_from_vtl = self
+            .cvm_guest_vsm
+            .as_ref()
+            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
 
         // TODO SNP: The guest busy bit needs to be tested and set atomically.
@@ -1348,7 +1363,7 @@ impl UhProcessor<'_, SnpBacked> {
 
         // Process debug exceptions before handling other intercepts.
         if cfg!(feature = "gdb") && sev_error_code == SevExitCode::EXCP_DB {
-            return self.handle_debug_exception();
+            return self.handle_debug_exception(entered_from_vtl);
         }
 
         // If there is an unhandled intercept message from the hypervisor, then

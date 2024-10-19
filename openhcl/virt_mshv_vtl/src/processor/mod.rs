@@ -493,9 +493,9 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn handle_debug_exception(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn handle_debug_exception(&mut self, vtl: Vtl) -> Result<(), VpHaltReason<UhRunVpError>> {
         // FUTURE: Underhill does not yet support VTL1 so this is only tested with VTL0.
-        if self.last_vtl() == GuestVtl::Vtl0 {
+        if vtl == GuestVtl::Vtl0 {
             let debug_regs: virt::x86::vp::DebugRegisters = self
                 .access_state(Vtl::Vtl0)
                 .debug_regs()
@@ -526,7 +526,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             return Err(VpHaltReason::HwBreak(bp));
         }
 
-        panic!("unexpected debug exception in VTL {:?}", self.last_vtl());
+        panic!("unexpected debug exception in VTL {:?}", vtl);
     }
 }
 

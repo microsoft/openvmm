@@ -494,17 +494,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
         Ok(())
     }
-
-    // TODO CVM: change this to intercepted vtl by creating an intercepted_vtl
-    // that's available outside of guest vsm state, and split out the "next vtl"
-    // that's used in VTL 2 exit handling.
-    /// The lower VTL that was running before the VTL 2 entry. During a vtl switch,
-    /// this reflects the vtl that should be exited to.
-    pub fn last_vtl(&self) -> Vtl {
-        self.cvm_guest_vsm
-            .as_ref()
-            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl)
-    }
 }
 
 pub(crate) struct XsetbvExitInput {
