@@ -348,38 +348,23 @@ impl NvramServices {
             use uefi_specs::uefi::nvram::vars::SECURE_BOOT;
 
             let (vendor, name) = SECURE_BOOT();
-            let attr: u32 = (EfiVariableAttributes::DEFAULT_ATTRIBUTES_VOLATILE).into();
 
             // Older versions of OpenHCL (and Hyper-V, closed-source HCL, etc. ) may have created
             // a SecureBoot variable with the NV attribute, which doesn't match the UEFI spec.
-            // If this variable already exists with the wrong attributes, delete it.
-            let do_write = match self.services.get_variable_ucs2(vendor, name).await {
-                Ok((existing_attr, existing_data)) => {
-                    if attr != existing_attr {
-                        let delete_attr = EfiVariableAttributes::new();
-                        self.services
-                            .set_variable_ucs2(vendor, name, delete_attr.into(), data.to_vec())
-                            .await
-                            .map_err(|(status, err)| {
-                                NvramSetupError::InjectPreBootVar(name.into(), status, err)
-                            })?;
-                        true
-                    } else {
-                        // If the variable is already set correctly, it needn't be re-injected
-                        data != *existing_data
-                    }
-                }
-                Err(_) => true,
-            };
+            // Delete this variable (if it exists).
+            let delete_attr = EfiVariableAttributes::new();
+            let _ = self
+                .services
+                .set_variable_ucs2(vendor, name, delete_attr.into(), data.to_vec())
+                .await;
 
-            if do_write {
-                self.services
-                    .set_variable_ucs2(vendor, name, attr.into(), data.to_vec())
-                    .await
-                    .map_err(|(status, err)| {
-                        NvramSetupError::InjectPreBootVar(name.into(), status, err)
-                    })?;
-            }
+            let attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES_VOLATILE;
+            self.services
+                .set_variable_ucs2(vendor, name, attr.into(), data.to_vec())
+                .await
+                .map_err(|(status, err)| {
+                    NvramSetupError::InjectPreBootVar(name.into(), status, err)
+                })?;
         }
 
         tracing::trace!("Injecting 'SecureBootEnabled'");
