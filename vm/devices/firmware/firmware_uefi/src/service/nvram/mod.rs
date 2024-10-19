@@ -350,12 +350,10 @@ impl NvramServices {
             let (vendor, name) = SECURE_BOOT();
             let attr: u32 = (EfiVariableAttributes::DEFAULT_ATTRIBUTES_VOLATILE).into();
 
-            let mut do_write = true;
-
             // Older versions of OpenHCL (and Hyper-V, closed-source HCL, etc. ) may have created
-            // SecureBoot variable with NV attribute, which doesn't match the UEFI spec.  If this
-            // variable already exists with the wrong attributes, delete it.
-            match self.services.get_variable_ucs2(vendor, name).await {
+            // a SecureBoot variable with the NV attribute, which doesn't match the UEFI spec.
+            // If this variable already exists with the wrong attributes, delete it.
+            let do_write = match self.services.get_variable_ucs2(vendor, name).await {
                 Ok((existing_attr, existing_data)) => {
                     if attr != existing_attr {
                         let delete_attr = EfiVariableAttributes::new();
@@ -365,12 +363,13 @@ impl NvramServices {
                             .map_err(|(status, err)| {
                                 NvramSetupError::InjectPreBootVar(name.into(), status, err)
                             })?;
-                    } else if data.to_vec() == existing_data {
-                        // The variable is already set correctly and needn't be re-injected
-                        do_write = false
+                        true
+                    } else {
+                        // If the variable is already set correctly, it needn't be re-injected
+                        data != *existing_data
                     }
                 }
-                Err(_) => {}
+                Err(_) => true,
             };
 
             if do_write {
