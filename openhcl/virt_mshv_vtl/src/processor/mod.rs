@@ -403,6 +403,9 @@ pub enum UhRunVpError {
     HypercallRetry(#[source] guestmem::GuestMemoryError),
     #[error("unexpected debug exception with dr6 value {0:#x}")]
     UnexpectedDebugException(u64),
+    /// Handling an intercept on behalf of an invalid Lower VTL
+    #[error("invalid intercepted vtl")]
+    InvalidInterceptedVtl,
 }
 
 /// Underhill processor run error

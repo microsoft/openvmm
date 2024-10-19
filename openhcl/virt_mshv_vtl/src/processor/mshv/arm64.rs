@@ -226,8 +226,8 @@ impl BackingPrivate for HypervisorBackedArm64 {
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {
-    fn intercepted_vtl(message_header: &hvdef::HvArm64InterceptMessageHeader) -> Vtl {
-        message_header.execution_state.vtl().try_into().unwrap()
+    fn intercepted_vtl(message_header: &hvdef::HvArm64InterceptMessageHeader) -> Option<Vtl> {
+        message_header.execution_state.vtl().try_into().ok()
     }
 
     fn handle_synic_deliverable_exit(&mut self) {
@@ -263,7 +263,9 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "hypercall");
 
-        let intercepted_vtl = Self::intercepted_vtl(&message.header);
+        let intercepted_vtl = Self::intercepted_vtl(&message.header).ok_or(
+            VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl),
+        )?;
         let guest_memory = &self.partition.gm[intercepted_vtl];
         let smccc_convention = message.immediate == 0;
 
@@ -300,7 +302,9 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             interruption_pending: message.header.execution_state.interruption_pending(),
         };
 
-        let intercepted_vtl = Self::intercepted_vtl(&message.header);
+        let intercepted_vtl = Self::intercepted_vtl(&message.header).ok_or(
+            VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl),
+        )?;
         self.emulate(dev, &intercept_state, intercepted_vtl).await?;
         Ok(())
     }

@@ -464,9 +464,9 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         let is_64bit =
             message.header.execution_state.cr0_pe() && message.header.execution_state.efer_lma();
 
-        let intercepted_vtl = self
-            .intercepted_vtl()
-            .unwrap_or(message.header.execution_state.vtl().try_into().unwrap());
+        let intercepted_vtl = self.intercepted_vtl().ok_or(VpHaltReason::InvalidVmState(
+            UhRunVpError::InvalidInterceptedVtl,
+        ))?;
 
         let guest_memory = &self.partition.gm[intercepted_vtl];
         let handler = UhHypercallHandler {
@@ -523,7 +523,9 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         self.emulate(
             dev,
             interruption_pending,
-            self.intercepted_vtl().expect("intercepted vtl is valid"),
+            self.intercepted_vtl().ok_or(VpHaltReason::InvalidVmState(
+                UhRunVpError::InvalidInterceptedVtl,
+            ))?,
         )
         .await?;
         Ok(())
@@ -548,7 +550,9 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             self.emulate(
                 dev,
                 interruption_pending,
-                self.intercepted_vtl().expect("intercepted vtl is valid"),
+                self.intercepted_vtl().ok_or(VpHaltReason::InvalidVmState(
+                    UhRunVpError::InvalidInterceptedVtl,
+                ))?,
             )
             .await
         } else {
@@ -631,7 +635,9 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             hvdef::HvX64MsrInterceptMessage::ref_from_prefix(self.runner.exit_message().payload())
                 .unwrap();
         let rip = next_rip(&message.header);
-        let intercepted_vtl = self.intercepted_vtl().expect("intercepted vtl is valid");
+        let intercepted_vtl = self.intercepted_vtl().ok_or(VpHaltReason::InvalidVmState(
+            UhRunVpError::InvalidInterceptedVtl,
+        ))?;
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "msr");
 
@@ -728,14 +734,18 @@ impl UhProcessor<'_, HypervisorBackedX86> {
     }
 
     fn handle_unrecoverable_exception(&self) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let intercepted_vtl = self.intercepted_vtl().expect("register page is valid");
+        let intercepted_vtl = self.intercepted_vtl().ok_or(VpHaltReason::InvalidVmState(
+            UhRunVpError::InvalidInterceptedVtl,
+        ))?;
         Err(VpHaltReason::TripleFault {
             vtl: intercepted_vtl.into(),
         })
     }
 
     fn handle_halt(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let intercepted_vtl = self.intercepted_vtl().expect("register page is valid");
+        let intercepted_vtl = self.intercepted_vtl().ok_or(VpHaltReason::InvalidVmState(
+            UhRunVpError::InvalidInterceptedVtl,
+        ))?;
         self.backing.lapics.as_mut().unwrap()[intercepted_vtl].halt();
         Ok(())
     }
