@@ -49,8 +49,6 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_openvmm_cargo_config_deny_warnings::Node>();
         ctx.import::<crate::install_git_credential_manager::Node>();
         ctx.import::<crate::install_openvmm_rust_build_essential::Node>();
-        ctx.import::<flowey_lib_common::ado_task_azure_key_vault::Node>();
-        ctx.import::<flowey_lib_common::ado_task_nuget_authenticate::Node>();
         ctx.import::<flowey_lib_common::cfg_cargo_common_flags::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
@@ -66,7 +64,6 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::nuget_install_package::Node>();
         ctx.import::<flowey_lib_common::run_cargo_nextest_run::Node>();
         ctx.import::<flowey_lib_common::use_gh_cli::Node>();
-        ctx.import::<flowey_lib_common::gh_download_azure_key_vault_secret::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -97,6 +94,14 @@ impl SimpleFlowNode for Node {
                     flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(gh_token),
                 ));
             }
+        } else if matches!(ctx.backend(), FlowBackend::Ado) {
+            if local_only.is_some() {
+                anyhow::bail!("can only set `local_only` params when using Local backend");
+            }
+
+            ctx.req(flowey_lib_common::install_azure_cli::Request::AutoInstall(
+                true,
+            ));
         } else if matches!(ctx.backend(), FlowBackend::Local) {
             let local_only =
                 local_only.ok_or(anyhow::anyhow!("missing essential request: local_only"))?;
