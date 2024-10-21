@@ -491,7 +491,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         // FUTURE: Underhill does not yet support VTL1 so this is only tested with VTL0.
         if self.last_vtl() == GuestVtl::Vtl0 {
             let debug_regs: virt::x86::vp::DebugRegisters = self
-                .access_state(GuestVtl::Vtl0)
+                .access_state(Vtl::Vtl0)
                 .debug_regs()
                 .expect("register query should not fail");
 
