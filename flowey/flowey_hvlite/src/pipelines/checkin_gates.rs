@@ -973,7 +973,7 @@ impl IntoPipeline for CheckinGatesCli {
             ))
             // always run this job, regardless whether or not any previous jobs failed
             .gh_dangerous_override_if("${{ always() }}")
-            .gh_dangerous_global_env_var("ANY_JOBS_FAILED", "${{ cancelled() || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}")
+            .gh_dangerous_global_env_var("ANY_JOBS_FAILED", "${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}")
             .dep_on(|ctx| flowey_lib_hvlite::_jobs::all_good_job::Params {
                 did_fail_env_var: "ANY_JOBS_FAILED".into(),
                 done: ctx.new_done_handle(),

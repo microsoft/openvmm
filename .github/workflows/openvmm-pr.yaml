@@ -3249,7 +3249,7 @@ jobs:
     - job0
     if: ${{ always() }}
     env:
-      ANY_JOBS_FAILED: ${{ cancelled() || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}
+      ANY_JOBS_FAILED: ${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}
     steps:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
