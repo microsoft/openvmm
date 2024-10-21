@@ -56,7 +56,7 @@ impl FlowNode for Node {
                 crate::download_openvmm_deps::Request::GetLinuxTestInitrd(openvmm_deps_arch, v)
             });
 
-            ctx.emit_rust_step(format!("extract {arch:?} sysroot.tar.gz"), |ctx| {
+            ctx.emit_rust_step(format!("copy {arch:?} linux test kernel"), |ctx| {
                 let openvmm_linux_test_kernel = openvmm_linux_test_kernel.claim(ctx);
                 let openvmm_linux_test_initrd = openvmm_linux_test_initrd.claim(ctx);
                 let openvmm_magicpath = openvmm_magicpath.clone().claim(ctx);

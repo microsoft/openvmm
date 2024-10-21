@@ -60,7 +60,7 @@ impl FlowNode for Node {
 
             let openvmm_magicpath = openvmm_magicpath.clone();
 
-            ctx.emit_rust_step(format!("extract {arch:?} sysroot.tar.gz"), move |ctx| {
+            ctx.emit_rust_step(format!("symlink {arch:?} openhcl sysroot"), move |ctx| {
                 let openhcl_sysroot = openhcl_sysroot.claim(ctx);
                 let openvmm_magicpath = openvmm_magicpath.claim(ctx);
                 let requests = out_vars.claim(ctx);
