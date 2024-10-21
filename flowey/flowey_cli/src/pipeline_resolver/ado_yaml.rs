@@ -105,12 +105,7 @@ pub fn ado_yaml(
                 .collect(),
             patches.clone(),
             external_read_vars.clone(),
-            match platform {
-                FlowPlatform::Windows => FlowPlatform::Windows,
-                FlowPlatform::Linux => FlowPlatform::Linux,
-                FlowPlatform::MacOs => FlowPlatform::MacOs,
-                _ => panic!("unsupported ADO platform {platform:?}"),
-            },
+            platform,
             arch,
             job_idx.index(),
         )
@@ -142,7 +137,7 @@ pub fn ado_yaml(
                     "{{FLOWEY_TARGET}}",
                     match platform {
                         FlowPlatform::Windows => "x86_64-pc-windows-msvc",
-                        FlowPlatform::Linux => "x86_64-unknown-linux-gnu",
+                        FlowPlatform::Linux(_) => "x86_64-unknown-linux-gnu",
                         platform => anyhow::bail!("unsupported ADO platform {platform:?}"),
                     },
                 )

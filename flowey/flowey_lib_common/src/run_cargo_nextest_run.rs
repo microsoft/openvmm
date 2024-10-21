@@ -435,7 +435,7 @@ impl FlowNode for Node {
                     // Will need to find time to experiment with this...
                     #[cfg(unix)]
                     let old_core_rlimits = if with_rlimit_unlimited_core_size
-                        && matches!(rt.platform(), FlowPlatform::Linux)
+                        && matches!(rt.platform(), FlowPlatform::Linux(_))
                     {
                         let limits = rlimit::getrlimit(rlimit::Resource::CORE)?;
                         rlimit::setrlimit(

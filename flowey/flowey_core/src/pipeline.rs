@@ -11,6 +11,7 @@ use crate::node::user_facing::GhPermissionValue;
 use crate::node::FlowArch;
 use crate::node::FlowNodeBase;
 use crate::node::FlowPlatform;
+use crate::node::FlowPlatformLinuxDistro;
 use crate::node::IntoRequest;
 use crate::node::NodeHandle;
 use crate::node::ReadVar;
@@ -51,6 +52,20 @@ pub mod user_facing {
     pub use crate::node::FlowPlatform;
 }
 
+fn linux_distro() -> FlowPlatformLinuxDistro {
+    if let Ok(etc_os_release) = fs_err::read_to_string("/etc/os-release") {
+        if etc_os_release.contains("ID=ubuntu") {
+            FlowPlatformLinuxDistro::Ubuntu
+        } else if etc_os_release.contains("ID=fedora") {
+            FlowPlatformLinuxDistro::Fedora
+        } else {
+            FlowPlatformLinuxDistro::Unknown
+        }
+    } else {
+        FlowPlatformLinuxDistro::Unknown
+    }
+}
+
 pub trait HostExt: Sized {
     /// Return the value for the current host machine.
     ///
@@ -70,7 +85,7 @@ impl HostExt for FlowPlatform {
         if cfg!(target_os = "windows") {
             Self::Windows
         } else if cfg!(target_os = "linux") {
-            Self::Linux
+            Self::Linux(linux_distro())
         } else if cfg!(target_os = "macos") {
             Self::MacOs
         } else {
