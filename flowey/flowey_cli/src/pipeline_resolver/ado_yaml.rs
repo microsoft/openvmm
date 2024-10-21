@@ -87,6 +87,8 @@ pub fn ado_yaml(
             arch,
             cond_param_idx,
             ref ado_pool,
+            gh_override_if: _,
+            gh_global_env: _,
             gh_pool: _,
             gh_permissions: _,
             ref external_read_vars,

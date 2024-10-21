@@ -2845,6 +2845,9 @@
       "flowey_lib_common::use_gh_cli": [
         "{\"WithAuth\":{\"AuthToken\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36\"},\"is_secret\":true}}}"
       ],
+      "flowey_lib_hvlite::_jobs::all_good_job": [
+        "{\"did_fail_env_var\":\"ANY_JOBS_FAILED\",\"done\":{\"backing_var\":\"start48\",\"is_secret\":false}}"
+      ],
       "flowey_lib_hvlite::_jobs::cfg_common": [
         "{\"deny_warnings\":true,\"local_only\":null,\"locked\":true,\"verbose\":{\"backing_var\":{\"RuntimeVar\":\"param0\"},\"is_secret\":false}}"
       ],

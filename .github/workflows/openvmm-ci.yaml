@@ -4575,7 +4575,7 @@ jobs:
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-rustdoc/
   job20:
     name: openvmm checkin gates
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -4600,11 +4600,14 @@ jobs:
     - job2
     - job1
     - job0
+    if: ${{ always() }}
+    env:
+      ANY_JOBS_FAILED: ${{ cancelled() || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}
     steps:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
       with:
-        name: _internal-flowey-bootstrap-x86_64-windows-uid-9
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-5
         path: ${{ runner.temp }}/bootstrapped-flowey
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
@@ -4615,14 +4618,17 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey.exe
+        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey
 
-        echo '"debug"' | flowey.exe v 20 'FLOWEY_LOG' --update-from-stdin
-        echo "${{ runner.temp }}/work" | flowey.exe v 20 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
+        echo '"debug"' | flowey v 20 'FLOWEY_LOG' --update-from-stdin
+        echo "${{ runner.temp }}/work" | flowey v 20 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey.exe v 20 'param0' --update-from-stdin
+        cat <<'EOF' | flowey v 20 'param0' --update-from-stdin
         ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
         EOF
+      shell: bash
+    - name: Check if any jobs failed
+      run: flowey e 20 flowey_lib_hvlite::_jobs::all_good_job 0
       shell: bash
   job3:
     name: xtask fmt (windows)

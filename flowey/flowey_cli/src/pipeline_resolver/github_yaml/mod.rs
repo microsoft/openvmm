@@ -86,6 +86,8 @@ pub fn github_yaml(
             arch,
             ref external_read_vars,
             ado_pool: _,
+            ref gh_override_if,
+            ref gh_global_env,
             ref gh_pool,
             ref gh_permissions,
             cond_param_idx: _,
@@ -565,6 +567,8 @@ EOF
                         })
                         .collect()
                 },
+                r#if: gh_override_if.clone(),
+                env: gh_global_env.clone(),
                 steps: gh_steps,
             },
         );

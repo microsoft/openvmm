@@ -953,17 +953,31 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(job);
         }
 
-        // Add a job that depends on all others as a workaround for https://github.com/orgs/community/discussions/12395.
-        // TODO: Add a way for this job to skip flowey setup and become a true no-op.
+        // Add a job that depends on all others as a workaround for
+        // https://github.com/orgs/community/discussions/12395.
+        //
+        // This workaround then itself requires _another_ workaround, requiring
+        // the use of `gh_dangerous_override_if`, and some additional custom job
+        // logic, to deal with https://github.com/actions/runner/issues/2566.
+        //
+        // TODO: Add a way for this job to skip flowey setup and become a true
+        // no-op.
         let all_good_job = pipeline
             .new_job(
-                FlowPlatform::Windows,
+                FlowPlatform::Linux,
                 FlowArch::X86_64,
                 "openvmm checkin gates",
             )
             .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
-                FlowPlatform::Windows,
+                FlowPlatform::Linux,
             ))
+            // always run this job, regardless whether or not any previous jobs failed
+            .gh_dangerous_override_if("${{ always() }}")
+            .gh_dangerous_global_env_var("ANY_JOBS_FAILED", "${{ cancelled() || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}")
+            .dep_on(|ctx| flowey_lib_hvlite::_jobs::all_good_job::Params {
+                did_fail_env_var: "ANY_JOBS_FAILED".into(),
+                done: ctx.new_done_handle(),
+            })
             .finish();
 
         for job in all_jobs.iter() {

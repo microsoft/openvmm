@@ -4,6 +4,7 @@
 //! Defines top-level "job nodes" which can be composed when defining a flowey
 //! pipeline using [`flowey::pipeline::prelude::PipelineJob::dep_on`].
 
+pub mod all_good_job;
 pub mod build_and_publish_guest_test_uefi;
 pub mod build_and_publish_guide;
 pub mod build_and_publish_igvmfilegen;

@@ -93,6 +93,8 @@ fn direct_run_do_work(
             cond_param_idx,
             ado_pool: _,
             ado_variables: _,
+            gh_override_if: _,
+            gh_global_env: _,
             gh_pool: _,
             gh_permissions: _,
             ref external_read_vars,

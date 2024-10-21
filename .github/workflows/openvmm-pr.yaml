@@ -2307,14 +2307,6 @@ jobs:
     - name: 'validate cache entry: gh-release-download'
       run: flowey.exe e 13 flowey_lib_common::cache 11
       shell: bash
-    - name: 🌼🧼 Redact bootstrap var db
-      run: rm $AgentTempDirNormal/bootstrapped-flowey/job13.json
-      shell: bash
-    - name: 🌼🥾 Publish bootstrapped flowey
-      uses: actions/upload-artifact@v4
-      with:
-        name: _internal-flowey-bootstrap-x86_64-windows-uid-4
-        path: ${{ runner.temp }}/bootstrapped-flowey
   job14:
     name: clippy [linux, macos], unit tests [x64-linux]
     runs-on:
@@ -3223,9 +3215,17 @@ jobs:
     - name: test cargo xflowey build-igvm x64 --install-missing-deps
       run: flowey e 16 flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm 1
       shell: bash
+    - name: 🌼🧼 Redact bootstrap var db
+      run: rm $AgentTempDirNormal/bootstrapped-flowey/job16.json
+      shell: bash
+    - name: 🌼🥾 Publish bootstrapped flowey
+      uses: actions/upload-artifact@v4
+      with:
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/bootstrapped-flowey
   job17:
     name: openvmm checkin gates
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -3247,11 +3247,14 @@ jobs:
     - job2
     - job1
     - job0
+    if: ${{ always() }}
+    env:
+      ANY_JOBS_FAILED: ${{ cancelled() || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}
     steps:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
       with:
-        name: _internal-flowey-bootstrap-x86_64-windows-uid-4
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
         path: ${{ runner.temp }}/bootstrapped-flowey
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
@@ -3262,14 +3265,17 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey.exe
+        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey
 
-        echo '"debug"' | flowey.exe v 17 'FLOWEY_LOG' --update-from-stdin
-        echo "${{ runner.temp }}/work" | flowey.exe v 17 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
+        echo '"debug"' | flowey v 17 'FLOWEY_LOG' --update-from-stdin
+        echo "${{ runner.temp }}/work" | flowey v 17 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey.exe v 17 'param0' --update-from-stdin
+        cat <<'EOF' | flowey v 17 'param0' --update-from-stdin
         ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
         EOF
+      shell: bash
+    - name: Check if any jobs failed
+      run: flowey e 17 flowey_lib_hvlite::_jobs::all_good_job 0
       shell: bash
   job2:
     name: build and check docs [x64-linux]
