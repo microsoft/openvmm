@@ -1747,10 +1747,12 @@ async fn new_underhill_vm(
     );
 
     let nvme_manager = if env_cfg.nvme_vfio {
+        let nvme_saved_state = servicing_state.nvme_state.unwrap_or(None);
         let manager = NvmeManager::new(
             &driver_source,
             processor_topology.vp_count(),
             vfio_dma_buffer(&shared_vis_pages_pool),
+            nvme_saved_state,
         );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
