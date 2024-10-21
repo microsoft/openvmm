@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Serde de/serialization helpers. To use one of these helpers, use the `with`
 //! serde attribute: `#[serde(with = "serde_helpers::foo")]`

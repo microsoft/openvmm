@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implements creation of JSON formatted launch measurement identity documents.
 //! This comes from Intel's TD Identity Mapping, and has been expanded

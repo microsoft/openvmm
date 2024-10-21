@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! The [`MemoryRange`] type, which represents a 4KB-page-aligned byte range of
 //! memory, plus algorithms operating on the type.

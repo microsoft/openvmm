@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Build an OpenHCL IGVM file using a particular known-good "recipe", which
 //! encodes the precise features / build parameters used by each constituent

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: Interacting with low level hardware and memory primitives.

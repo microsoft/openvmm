@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This crate contains utilities to interact with Flattened DeviceTree binary
 //! blobs. Included is a builder and parser, both available as no_std.

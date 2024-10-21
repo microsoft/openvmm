@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! The Vmgs worker will send messages to the Vmgs dispatch, allowing
 //! tasks to queue for the dispatcher to handle synchronously

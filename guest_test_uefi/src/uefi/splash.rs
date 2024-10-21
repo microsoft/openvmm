@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 // NOTE: adapted from uefi-rs sierpinski example code:
 // https://github.com/rust-osdev/uefi-rs/blob/main/uefi-test-runner/examples/sierpinski.rs

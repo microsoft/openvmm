@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implements the SimpleDisk and AsyncDisk traits for virtual disks backed by multiple raw block devices.
 

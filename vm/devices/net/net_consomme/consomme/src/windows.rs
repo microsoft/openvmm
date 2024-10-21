@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #![cfg(windows)]
 // UNSAFETY: Calling Win32 APIs to set TCP initial RTO.

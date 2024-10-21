@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #![cfg(windows)]
 // UNSAFETY: Calls to Win32 functions to handle delay loading, interacting

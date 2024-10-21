@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Pthread, a basic Linux pthread (pthread_t) wrapper to support send
 //! and sync on musl.

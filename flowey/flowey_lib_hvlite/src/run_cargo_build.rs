@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Returns well-formed `cargo build` invocations for building crates
 //! specifically in the the hvlite repo.

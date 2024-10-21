@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Stub Intel 82077AA Floppy Disk Controller, implementing a minimal subset of
 //! functionality required to boot using the Microsoft PCAT BIOS.

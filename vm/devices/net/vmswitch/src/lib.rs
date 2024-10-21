@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Crate to interact with the Windows vmswitch-based virtual networking
 //! capabilities, including the vmswitch and the HCN/HNS service.

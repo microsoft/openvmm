@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implements a tracing filter to restrict logging of events to only those
 //! that are marked as [`CVM_ALLOWED`].

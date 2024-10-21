@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Provides access to NVMe namespaces that are backed by the user-mode NVMe
 //! VFIO driver. Keeps track of all the NVMe drivers.

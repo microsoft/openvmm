@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #![no_main]
 #![cfg(all(target_os = "linux", target_env = "gnu"))]

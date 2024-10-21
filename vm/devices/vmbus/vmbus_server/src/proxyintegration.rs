@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implements support for using kernel-mode VMBus channel provider (VSPs) via
 //! the vmbusproxy driver.

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 // UNSAFETY: Calling Win32 APIs to get DNS server information.
 #![allow(unsafe_code)]

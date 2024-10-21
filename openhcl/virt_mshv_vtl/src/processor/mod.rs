@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module contains Underhill specific functionality and implementations of require traits
 //! in order to plug into the rest of the common HvLite code.

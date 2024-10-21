@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Ensure the mu_msvm MSVM.fd file is copied into the "magic directory" to
 //! automatically work in the context of the OpenVMM repo.

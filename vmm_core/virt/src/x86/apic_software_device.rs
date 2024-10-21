@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Software implementation of a VPCI-compatible device. Avoids using the
 //! hypervisor device interface.

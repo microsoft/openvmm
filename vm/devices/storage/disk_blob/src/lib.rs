@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A disk backend for "blobs", i.e. raw disk data that can be accessed through
 //! a simple interface such as HTTP.

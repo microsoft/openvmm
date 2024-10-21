@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Protocol definitions for a VMBUS based serial device. Today this serial device is only offered to VTL2.
 

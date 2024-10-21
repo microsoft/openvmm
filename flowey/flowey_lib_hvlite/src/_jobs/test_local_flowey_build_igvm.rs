@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Encapsulates the logic of invoking `cargo xflowey build-igvm x64 --install-missing-deps`
 use flowey::node::prelude::*;

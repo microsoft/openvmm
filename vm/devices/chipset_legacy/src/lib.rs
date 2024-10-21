@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Various "legacy" chipset devices that collectively implement the Hyper-V
 //! Generation 1 VM chipset.

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 // UNSAFETY: Calling into lxutil external dll.
 #![allow(unsafe_code)]

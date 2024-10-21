@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use crate::aarch64::Aarch64PartitionCapabilities;
 use crate::state::state_trait;

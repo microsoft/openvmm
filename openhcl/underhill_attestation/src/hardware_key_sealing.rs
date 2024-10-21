@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implementation of key derivation using hardware secret and the VMGS data encryption key (DEK)
 //! sealing using the derived key. The sealed DEK is written to the [FileId::HW_KEY_PROTECTOR`]

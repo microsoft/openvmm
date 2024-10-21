@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use petri_artifacts_common::tags::IsTestIso;
 use petri_artifacts_common::tags::IsTestVhd;

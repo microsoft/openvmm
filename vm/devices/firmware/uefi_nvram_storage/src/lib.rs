@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Abstractions to support pluggable UEFI nvram storage backends (e.g: in memory, file backed, etc...)
 

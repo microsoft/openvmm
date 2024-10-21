@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Definitions for [`SimpleDisk`] and related traits, which are used to define
 //! disk backends that work with different disk frontends (such as the Floppy,

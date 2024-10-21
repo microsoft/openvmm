@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Code to generate initial RTC CMOS ram state (as expected by the PCAT BIOS).
 //!

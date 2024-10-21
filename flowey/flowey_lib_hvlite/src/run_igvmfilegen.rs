@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Raw bindings to `igvmfilegen`, used to build an igvm file from a manifest +
 //! set of resources.

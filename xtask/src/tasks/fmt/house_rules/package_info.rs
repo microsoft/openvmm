@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Checks to ensure that the `[package]` sections of Cargo.toml files do not
 //! contain `authors` or `version` fields, and that rust-version is properly

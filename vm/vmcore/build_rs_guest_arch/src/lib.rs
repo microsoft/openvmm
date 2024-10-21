@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Centralized build-script logic to support `cfg(guest_arch = ...)` directives
 //! throughout the HvLite codebase.

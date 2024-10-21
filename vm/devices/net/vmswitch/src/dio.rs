@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module implements a `Pollable` interface to vmswitch's DirectIO NIC
 //! type. This provides a tap-like interface to vmswitch on Windows, allowing

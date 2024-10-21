@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Hardware definitions for the GDMA/MANA device, which is the NIC exposed by
 //! new Azure hardware SKUs.

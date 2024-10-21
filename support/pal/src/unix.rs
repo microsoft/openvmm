@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #![cfg(unix)]
 // UNSAFETY: Calls to libc functions to interact with low level primitives.

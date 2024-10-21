@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use crate::download_lxutil::LxutilArch;
 use crate::download_uefi_mu_msvm::MuMsvmArch;

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Contains [`PetriVmConfig::new`], which builds a [`PetriVmConfig`] with all
 //! default settings for a given [`Firmware`] and [`MachineArch`].

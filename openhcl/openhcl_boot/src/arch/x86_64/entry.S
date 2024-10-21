@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
 // Entry point that zeroes BSS, sets up the stack, enables SSE, performs
 // relocations, and jumps to start().

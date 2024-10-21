@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Combo Floppy controller + SuperIO config controller, as specified by the
 //! Winbond W83977ATF SIO chipset.

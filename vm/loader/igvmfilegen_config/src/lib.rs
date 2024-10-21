@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Configuration for generating IGVM files. These are deserialized from a JSON
 //! manifest file used by the file builder.

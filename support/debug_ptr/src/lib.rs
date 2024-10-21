@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A wrapper around AtomicPtr that automatically adds a blackbox hint to
 //! prevent it from being optimized out. Intended to be used as a write-

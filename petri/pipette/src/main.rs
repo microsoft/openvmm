@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This is the petri pipette agent, which runs on the guest and executes
 //! commands and other requests from the host.

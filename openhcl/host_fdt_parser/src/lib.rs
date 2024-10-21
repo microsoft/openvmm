@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Common parsing code for parsing the device tree provided by the host.
 //! Note that is is not a generic device tree parser, but parses the device tree

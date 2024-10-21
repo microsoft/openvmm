@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Artifact: `guest_test_uefi.img` disk image, along with contained
 //! `guest_test_uefi.efi` UEFI executable (with symbols).

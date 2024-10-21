@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This crate contains core virtualization definitions and functionality shared
 //! by other virtualization crates (such as VmBus). It is intended to be usable

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module implements support for KVM on aarch64.
 //! It is unsatisfactory (e.g. DeviceTree generation is disjoint from this code, and

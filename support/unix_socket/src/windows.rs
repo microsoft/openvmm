@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module implements Unix socket wrappers for Windows, since the ones in
 //! `std::os::unix::net` are only available on Unix.

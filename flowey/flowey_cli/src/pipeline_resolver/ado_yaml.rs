@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use super::common_yaml::check_generated_yaml_and_json;
 use super::common_yaml::job_flowey_bootstrap_source;

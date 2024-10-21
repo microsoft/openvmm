@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 pub trait OperationObject {
     fn append_to_vec(&self, byte_stream: &mut Vec<u8>);

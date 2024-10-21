@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Encapsulates the logic of invoking `cargo doc`, taking into account
 //! bits of "global" configuration and dependency management, such as setting

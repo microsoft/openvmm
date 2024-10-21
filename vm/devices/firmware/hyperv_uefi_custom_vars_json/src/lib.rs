@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Parsing and validation logic for Hyper-V UEFI custom nvram variables JSON
 //! files.

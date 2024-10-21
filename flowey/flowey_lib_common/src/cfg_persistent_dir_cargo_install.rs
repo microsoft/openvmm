@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A node which returns a PathBuf to a single shared persistent-dir that can be
 //! used by any nodes invoking `cargo install` in order to share a single cargo

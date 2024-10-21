@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! An amalgamated configuration node that streamlines the process of resolving
 //! the most common subset of shared configuration requests required by OpenVMM

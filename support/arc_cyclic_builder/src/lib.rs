@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! An extension to [`std::sync::Arc`] that adds
 //! [`Arc::new_cyclic_builder`](ArcCyclicBuilderExt::new_cyclic_builder), and

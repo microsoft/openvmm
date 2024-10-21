@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This crate implements the core VM worker for hvlite. This includes static
 //! configuration of hvlite platform resources, such as the clock source and

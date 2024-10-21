@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A thin wrapper around a `mesh::Sender<PipetteRequest>` that provides
 //! useful error handling semantics.

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! The module for `KEY_RELEASE_REQUEST` request type that supports preparing
 //! runtime claims, which is a part of the request, and parsing the response, which

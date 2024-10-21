@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use super::VmProxy;
 use gdbstub::target::ext::target_description_xml_override::TargetDescriptionXmlOverrideOps;

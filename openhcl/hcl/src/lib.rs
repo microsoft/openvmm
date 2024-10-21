@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Crate for interacting with the hypervisor via the /dev/mshv_vtl device and
 //! related kernel functionality.

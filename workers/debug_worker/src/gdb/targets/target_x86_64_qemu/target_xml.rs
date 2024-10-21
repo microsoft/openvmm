@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use crate::gdb::arch::x86::X86_64_QEMU;
 use crate::gdb::targets::VmTarget;

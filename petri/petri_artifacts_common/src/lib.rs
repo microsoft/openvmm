@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! `petri` test artifact declarations used by all petri-based tests, no matter
 //! what VMM backend is being used.

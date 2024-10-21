@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Glue to generate HTML LCOV-based coverage reports from `cargo-fuzz`
 //! `coverage.profdata` files.

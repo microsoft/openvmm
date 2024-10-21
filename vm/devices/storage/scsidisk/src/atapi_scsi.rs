@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implements ATAPI SCSI command handler for an IDE CD_ROM, wrapping a
 //! [`AsyncScsiDisk`].

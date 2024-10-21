@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Defines top-level "job nodes" which can be composed when defining a flowey
 //! pipeline using [`flowey::pipeline::prelude::PipelineJob::dep_on`].

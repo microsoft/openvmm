@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implementation of the Underhill guest crash device, used by
 //! `underhill_crash` to send user-mode crash dumps to the host.

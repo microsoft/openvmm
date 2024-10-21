@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 fn main() {
     // TODO: loader shouldn't have any `cfg`s (or typedefs for that matter)!

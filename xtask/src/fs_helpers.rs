@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Helper functions to traverse + enumerate the project's filesystem, used by
 //! multiple task implementations.

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 fn main() {
     if std::env::var_os("CARGO_CFG_WINDOWS").is_some()

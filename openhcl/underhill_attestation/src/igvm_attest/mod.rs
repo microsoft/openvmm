@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! The module helps preparing requests and parsing responses that are
 //! sent to and received from the IGVm agent runs on the host via GET

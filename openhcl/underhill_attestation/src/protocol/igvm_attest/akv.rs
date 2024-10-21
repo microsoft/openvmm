@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module includes the data types defined by Azure Key Vault (AKV) that
 //! is used for parsing the response of the `KEY_RELEASE_REQUEST`.

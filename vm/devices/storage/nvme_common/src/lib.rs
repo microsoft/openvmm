@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Common routines for interoperating between [`nvme_spec`] and
 //! [`disk_backend`] types.

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This crate provides the Vmbfs (vmbus file system) device, used to provide a
 //! simple, read-only virtual file system to the Windows boot loader and the

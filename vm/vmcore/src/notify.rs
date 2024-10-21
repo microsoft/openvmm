@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Guest-to-host notification infrastructure, abstracting over [platform
 //! events](pal_event::Event), and [task events](SlimEvent).

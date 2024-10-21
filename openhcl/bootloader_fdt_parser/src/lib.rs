@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Parsing code for the devicetree provided by openhcl_boot used by underhill
 //! usermode. Unlike `host_fdt_parser`, this code requires std as it is intended

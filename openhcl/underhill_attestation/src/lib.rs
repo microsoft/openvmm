@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This modules implements attestation protocols for Underhill to support TVM
 //! and CVM, including getting a tenant key via secure key release (SKR) for

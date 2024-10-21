@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A builder to streamline the construction of `Arc + Mutex` wrapped
 //! [`ChipsetDevice`] instances.

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Provides the synthetic hypervisor cpuid leaves matching this hv1 emulator's
 //! capabilities.

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implements reading fixed-at-IGVM-build-time measured config. This is
 //! configuration information that is deposited into the guest address space that

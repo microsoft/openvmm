@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implementation of the Underhill hypervisor backend, which uses
 //! `/dev/mshv_vtl` to interact with the Microsoft hypervisor while running in

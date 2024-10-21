@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module implements the inspect framework, which allows an object to
 //! expose its state for diagnostics purposes as a hierarchy. All such subtrees

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use crate::tests::common::run_test;
 use crate::tests::common::RFLAGS_LOGIC_MASK;

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Interface to `VmsaWrapper`, which combines a SEV-SNP VMSA
 //! with a bitmap to allow for register protection.

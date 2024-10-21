@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! The openhcl boot loader, which loads before the kernel to set up the
 //! kernel's boot parameters.

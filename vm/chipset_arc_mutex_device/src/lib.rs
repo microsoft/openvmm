@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! VMM-agnostic infrastructure to wire up
 //! [`ChipsetDevice`](chipset_device::ChipsetDevice) instances using

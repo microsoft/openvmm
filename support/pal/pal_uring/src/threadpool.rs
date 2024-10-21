@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module implements the following functionality:
 //! - A threadpool that executes tasks on a pool of affinitized worker threads, and manages a pool of

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A wrapper around [`SimpleDisk`] that adapts the trait for use with
 //! synchronous [`std::io`] traits (such as `Read`, `Write`, `Seek`, etc...).

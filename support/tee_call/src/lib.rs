@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module includes the `TeeCall` trait and its implementation. The trait defines
 //! the trusted execution environment (TEE)-specific APIs for attestation and data dealing.

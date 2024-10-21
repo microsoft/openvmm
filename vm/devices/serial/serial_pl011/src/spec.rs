@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Naming and fields come from specification for PL011 chip.
 //! <https://developer.arm.com/documentation/ddi0183/g/?lang=en>

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A simple asynchronous task model for execution that needs to be started,
 //! stopped, mutated, and inspected.

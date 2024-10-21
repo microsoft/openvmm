@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Target implementation that matches the x86_64 target defined in QEMU (for
 //! compatibility with ExdiGdbSrv)

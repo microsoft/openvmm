@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! The module for `WRAPPED_KEY_REQUEST` request type that supports parsing the
 //! response in JSON format defined by Azure CVM Provisioning Service (CPS).

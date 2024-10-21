@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Core virtio queue implementation, without any notification mechanisms, async
 //! support, or other transport-specific details.

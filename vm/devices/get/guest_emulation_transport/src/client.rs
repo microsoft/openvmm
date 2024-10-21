@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use super::process_loop::msg;
 use super::process_loop::msg::IgvmAttestRequestData;

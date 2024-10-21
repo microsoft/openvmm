@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Protocol used to interact between the Guest and Host via the
 //! GET (Guest Emulation Transport)
