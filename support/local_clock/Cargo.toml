@@ -3,6 +3,7 @@
 [package]
 name = "local_clock"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 default = ["time_exts", "inspect"]

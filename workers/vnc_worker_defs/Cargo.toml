@@ -3,6 +3,7 @@
 [package]
 name = "vnc_worker_defs"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 framebuffer.workspace = true

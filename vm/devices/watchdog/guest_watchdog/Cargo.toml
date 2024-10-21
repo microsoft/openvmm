@@ -3,6 +3,7 @@
 [package]
 name = "guest_watchdog"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 vmcore.workspace = true

@@ -3,6 +3,7 @@
 [package]
 name = "virt_kvm"
 edition = "2021"
+rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 virt.workspace = true

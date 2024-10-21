@@ -3,6 +3,7 @@
 [package]
 name = "serial_pl011_resources"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 vm_resource.workspace = true

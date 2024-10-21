@@ -3,6 +3,7 @@
 [package]
 name = "sev_guest_device"
 edition = "2021"
+rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 bitfield-struct.workspace = true

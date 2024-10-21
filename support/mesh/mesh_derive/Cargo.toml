@@ -3,6 +3,7 @@
 [package]
 name = "mesh_derive"
 edition = "2021"
+rust-version.workspace = true
 
 [lib]
 proc-macro = true

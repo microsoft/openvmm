@@ -3,6 +3,7 @@
 [package]
 name = "vmm_core"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 gdb = ["iced-x86", "virt_support_x86emu"]

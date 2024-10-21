@@ -3,6 +3,7 @@
 [package]
 name = "mesh_remote"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 mesh_channel.workspace = true

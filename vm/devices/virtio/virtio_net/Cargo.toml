@@ -3,6 +3,7 @@
 [package]
 name = "virtio_net"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 vm_resource.workspace = true

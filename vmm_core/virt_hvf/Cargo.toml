@@ -3,6 +3,7 @@
 [package]
 name = "virt_hvf"
 edition = "2021"
+rust-version.workspace = true
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 aarch64defs.workspace = true

@@ -3,6 +3,7 @@
 [package]
 name = "petri_artifacts_common"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 petri_artifacts_core.workspace = true

@@ -3,6 +3,7 @@
 [package]
 name = "hvlite_core"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 gdb = ["vmm_core/gdb"]

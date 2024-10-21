@@ -3,6 +3,7 @@
 [package]
 name = "mesh_rpc"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 grpc = ["dep:base64", "dep:h2", "dep:tokio", "dep:http", "dep:urlencoding"]

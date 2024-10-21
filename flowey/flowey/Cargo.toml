@@ -3,6 +3,7 @@
 [package]
 name = "flowey"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 flowey_core.workspace = true

@@ -3,6 +3,7 @@
 [package]
 name = "watchdog_vmgs_format"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 vmcore.workspace = true

@@ -3,6 +3,7 @@
 [package]
 name = "underhill_config"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 guid = { workspace = true, features = ["mesh", "inspect"] }

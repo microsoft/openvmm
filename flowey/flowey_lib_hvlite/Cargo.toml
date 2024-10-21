@@ -3,7 +3,7 @@
 [package]
 name = "flowey_lib_hvlite"
 edition = "2021"
-rust-version = "1.82"
+rust-version.workspace = true
 
 [dependencies]
 flowey.workspace = true

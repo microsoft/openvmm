@@ -3,6 +3,7 @@
 [package]
 name = "user_driver"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 default = ["vfio"]

@@ -3,6 +3,7 @@
 [package]
 name = "hvlite_defs"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 hvlite_pcat_locator.workspace = true

@@ -3,6 +3,7 @@
 [package]
 name = "sidecar_client"
 edition = "2021"
+rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 hvdef = { workspace = true, features = ["std"] }

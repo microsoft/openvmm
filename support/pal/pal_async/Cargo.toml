@@ -3,6 +3,7 @@
 [package]
 name = "pal_async"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 # Enable executor_tests module for out-of-crate executor testing.

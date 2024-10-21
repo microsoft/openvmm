@@ -3,6 +3,7 @@
 [package]
 name = "acpi"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 acpi_spec.workspace = true

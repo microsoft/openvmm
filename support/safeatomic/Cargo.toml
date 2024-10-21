@@ -3,6 +3,7 @@
 [package]
 name = "safeatomic"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 zerocopy.workspace = true

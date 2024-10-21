@@ -3,6 +3,7 @@
 [package]
 name = "vmbfs_resources"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 mesh.workspace = true

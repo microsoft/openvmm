@@ -4,6 +4,7 @@
 name = "fuzz_mesh_ttrpc"
 publish = false
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 mesh.workspace = true

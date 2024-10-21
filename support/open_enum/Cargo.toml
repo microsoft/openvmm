@@ -3,6 +3,7 @@
 [package]
 name = "open_enum"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 

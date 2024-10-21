@@ -3,6 +3,7 @@
 [package]
 name = "virt_whp"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 unstable_whp = ["whp/unstable_whp"]

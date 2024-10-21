@@ -3,6 +3,7 @@
 [package]
 name = "vmotherboard"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 encryption = ["firmware_uefi/auth-var-verify-crypto"]

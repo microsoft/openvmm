@@ -3,6 +3,7 @@
 [package]
 name = "firmware_uefi"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 default = []

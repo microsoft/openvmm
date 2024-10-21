@@ -3,6 +3,7 @@
 [package]
 name = "task_control"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 fast_select.workspace = true

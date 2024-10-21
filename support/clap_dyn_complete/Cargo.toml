@@ -3,6 +3,7 @@
 [package]
 name = "clap_dyn_complete"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 async-trait.workspace = true

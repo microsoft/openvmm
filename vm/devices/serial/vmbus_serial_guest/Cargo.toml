@@ -3,6 +3,7 @@
 [package]
 name = "vmbus_serial_guest"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 inspect.workspace = true

@@ -3,6 +3,7 @@
 [package]
 name = "virtio_p9"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 plan9.workspace = true

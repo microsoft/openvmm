@@ -3,6 +3,7 @@
 [package]
 name = "cvm_tracing"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 tracing.workspace = true

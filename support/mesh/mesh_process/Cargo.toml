@@ -3,6 +3,7 @@
 [package]
 name = "mesh_process"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 debug_ptr.workspace = true

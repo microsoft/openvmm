@@ -3,6 +3,7 @@
 [package]
 name = "safe_x86_intrinsics"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 

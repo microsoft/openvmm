@@ -3,6 +3,7 @@
 [package]
 name = "x86defs"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 open_enum.workspace = true

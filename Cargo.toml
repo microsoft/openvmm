@@ -43,6 +43,9 @@ exclude = [
   "xsync"
 ]
 
+[workspace.package]
+rust-version = "1.82"
+
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
 

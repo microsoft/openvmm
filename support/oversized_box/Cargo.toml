@@ -3,6 +3,7 @@
 [package]
 name = "oversized_box"
 edition = "2021"
+rust-version.workspace = true
 
 [lints]
 workspace = true

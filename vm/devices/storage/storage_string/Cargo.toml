@@ -3,6 +3,7 @@
 [package]
 name = "storage_string"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 inspect.workspace = true

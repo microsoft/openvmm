@@ -3,6 +3,7 @@
 [package]
 name = "virt_support_apic"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 hvdef.workspace = true

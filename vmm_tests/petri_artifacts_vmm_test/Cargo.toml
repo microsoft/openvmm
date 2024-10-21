@@ -3,6 +3,7 @@
 [package]
 name = "petri_artifacts_vmm_test"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 petri_artifacts_common.workspace = true

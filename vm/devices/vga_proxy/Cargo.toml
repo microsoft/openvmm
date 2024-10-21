@@ -3,6 +3,7 @@
 [package]
 name = "vga_proxy"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 inspect.workspace = true

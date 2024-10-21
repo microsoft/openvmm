@@ -3,6 +3,7 @@
 [package]
 edition = "2021"
 name = "igvmfilegen"
+rust-version.workspace = true
 
 [dependencies]
 igvmfilegen_config.workspace = true

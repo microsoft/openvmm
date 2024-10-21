@@ -4,6 +4,7 @@
 name = "fuzz_guestmem"
 publish = false
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 guestmem.workspace = true

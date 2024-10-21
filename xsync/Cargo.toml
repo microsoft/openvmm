@@ -5,6 +5,9 @@ default-members = ["xsync"]
 members = ["xsync"]
 resolver = "2"
 
+[workspace.package]
+rust-version = "1.82"
+
 [workspace.dependencies]
 anyhow = "1.0"
 cargo_toml = "0.20"
