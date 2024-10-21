@@ -934,7 +934,7 @@ impl UhProcessor<'_, SnpBacked> {
 
         // TODO CVM GUEST VSM actually check and run vtl 1
         self.unlock_tlb_lock(Vtl::Vtl2);
-        let tlb_halt = self.should_halt_for_tlb_unlock(Vtl::Vtl0);
+        let tlb_halt = self.should_halt_for_tlb_unlock(GuestVtl::Vtl0);
 
         self.runner.set_halted(
             self.backing.lapics[GuestVtl::Vtl0].halted

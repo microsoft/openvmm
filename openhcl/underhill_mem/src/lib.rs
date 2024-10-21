@@ -431,11 +431,10 @@ mod mapping {
     }
 
     impl DefaultVtlPermissions {
-        fn set(&mut self, vtl: Vtl, permissions: HvMapGpaFlags) {
+        fn set(&mut self, vtl: GuestVtl, permissions: HvMapGpaFlags) {
             match vtl {
-                Vtl::Vtl0 => self.vtl0 = permissions,
-                Vtl::Vtl1 => self.vtl1 = Some(permissions),
-                Vtl::Vtl2 => unreachable!(),
+                GuestVtl::Vtl0 => self.vtl0 = permissions,
+                GuestVtl::Vtl1 => self.vtl1 = Some(permissions),
             }
         }
     }
@@ -616,7 +615,11 @@ mod mapping {
                     // TODO CVM GUEST VSM: track the permissions directly in
                     // underhill. For now, use rmpquery.
                     assert!(self.isolation == IsolationType::Snp);
-                    let rmpadjust = self.mshv_vtl.rmpquery_page(gpa, vtl);
+                    let rmpadjust = self.mshv_vtl.rmpquery_page(
+                        gpa,
+                        vtl.try_into()
+                            .expect("only query non-VTL 2 permissions on hardware cvm"),
+                    );
 
                     GpaVtlPermissions::Snp(rmpadjust)
                 }
@@ -690,7 +693,7 @@ mod mapping {
     }
 
     struct HypercallOverlayProtector {
-        vtl: Vtl,
+        vtl: GuestVtl,
         protector: Arc<dyn ProtectIsolatedMemory>,
     }
 
@@ -745,7 +748,7 @@ mod mapping {
 
         fn apply_protections_with_overlay_handling(
             &self,
-            vtl: Vtl,
+            vtl: GuestVtl,
             ranges: &[MemoryRange],
             protections: HvMapGpaFlags,
         ) -> Result<(), ApplyVtlProtectionsError> {
@@ -754,27 +757,33 @@ mod mapping {
             for range in ranges {
                 match overlay_lock.as_mut() {
                     Some(overlay) if range.contains_addr(overlay.gpn * HV_PAGE_SIZE) => {
-                        overlay.permissions.set(vtl, protections);
+                        overlay.permissions.set(vtl.into(), protections);
 
                         let overlay_address = overlay.gpn * HV_PAGE_SIZE;
                         let overlay_offset = range.offset_of(overlay_address).unwrap();
                         let (left, right) = range.split_at_offset(overlay_offset);
 
-                        self.acceptor
-                            .apply_protections_from_flags(left, vtl, protections)?;
+                        self.acceptor.apply_protections_from_flags(
+                            left,
+                            vtl.into(),
+                            protections,
+                        )?;
                         let sub_range =
                             MemoryRange::new((overlay.gpn + 1) * HV_PAGE_SIZE..right.end());
                         if !sub_range.is_empty() {
                             self.acceptor.apply_protections_from_flags(
                                 sub_range,
-                                vtl,
+                                vtl.into(),
                                 protections,
                             )?;
                         }
                     }
                     _ => {
-                        self.acceptor
-                            .apply_protections_from_flags(*range, vtl, protections)?;
+                        self.acceptor.apply_protections_from_flags(
+                            *range,
+                            vtl.into(),
+                            protections,
+                        )?;
                     }
                 }
             }
@@ -784,14 +793,14 @@ mod mapping {
         /// Restore the original protections on the page that is overlaid.
         fn restore_overlay_permissions(
             &self,
-            vtl: Vtl,
+            vtl: GuestVtl,
             overlay: &HypercallOverlay,
         ) -> Result<(), ApplyVtlProtectionsError> {
             let range =
                 MemoryRange::new(overlay.gpn * HV_PAGE_SIZE..(overlay.gpn + 1) * HV_PAGE_SIZE);
 
             self.acceptor
-                .apply_protections(range, vtl, overlay.permissions)?;
+                .apply_protections(range, vtl.into(), overlay.permissions)?;
 
             Ok(())
         }
@@ -1026,11 +1035,10 @@ mod mapping {
 
         fn change_vtl_protections(
             &self,
-            vtl: Vtl,
+            vtl: GuestVtl,
             gpns: &[u64],
             protections: HvMapGpaFlags,
         ) -> HvRepResult {
-            assert!(vtl < Vtl::Vtl2);
             // Validate the ranges are RAM.
             for &gpn in gpns {
                 if !self
@@ -1072,7 +1080,7 @@ mod mapping {
 
         fn hypercall_overlay_protector(
             self: Arc<Self>,
-            vtl: Vtl,
+            vtl: GuestVtl,
         ) -> Box<dyn VtlProtectHypercallOverlay> {
             Box::new(HypercallOverlayProtector {
                 vtl,
@@ -1080,7 +1088,7 @@ mod mapping {
             })
         }
 
-        fn change_hypercall_overlay(&self, vtl: Vtl, gpn: u64) {
+        fn change_hypercall_overlay(&self, vtl: GuestVtl, gpn: u64) {
             // Should already have written contents to the page via the guest
             // memory object, confirming that this is a guest page
             assert!(self
@@ -1101,7 +1109,9 @@ mod mapping {
 
             let current_permissions = match self.acceptor.isolation {
                 IsolationType::Vbs => unreachable!(),
-                IsolationType::Snp => self.acceptor.vtl_permissions(vtl, gpn * HV_PAGE_SIZE),
+                IsolationType::Snp => self
+                    .acceptor
+                    .vtl_permissions(vtl.into(), gpn * HV_PAGE_SIZE),
                 IsolationType::Tdx => {
                     // TODO TDX GUEST VSM: implement acceptor.vtl_permissions
                     // For now, since guest vsm isn't enabled, this overlay can
@@ -1109,7 +1119,11 @@ mod mapping {
                     // permissions. So assume that the permissions haven't
                     // changed since VTL 2 initialized guest memory and they're
                     // still all.
-                    GpaVtlPermissions::new(IsolationType::Tdx, vtl, HV_MAP_GPA_PERMISSIONS_ALL)
+                    GpaVtlPermissions::new(
+                        IsolationType::Tdx,
+                        vtl.into(),
+                        HV_MAP_GPA_PERMISSIONS_ALL,
+                    )
                 }
             };
 
@@ -1121,7 +1135,7 @@ mod mapping {
             self.acceptor
                 .apply_protections_from_flags(
                     MemoryRange::new(gpn * HV_PAGE_SIZE..(gpn + 1) * HV_PAGE_SIZE),
-                    vtl,
+                    vtl.into(),
                     HV_MAP_GPA_PERMISSIONS_ALL,
                 )
                 .expect("applying vtl protections should succeed");
@@ -1129,7 +1143,7 @@ mod mapping {
             // TODO CVM GUEST VSM: flush TLB
         }
 
-        fn disable_hypercall_overlay(&self, vtl: Vtl) {
+        fn disable_hypercall_overlay(&self, vtl: GuestVtl) {
             let _lock = self.inner.lock();
 
             let mut overlay = self.hypercall_overlay[vtl].lock();

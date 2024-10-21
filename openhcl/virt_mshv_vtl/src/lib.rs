@@ -1133,7 +1133,7 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// Changes the vtl protections on a range of guest memory.
     fn change_vtl_protections(
         &self,
-        vtl: Vtl,
+        vtl: GuestVtl,
         gpns: &[u64],
         protections: HvMapGpaFlags,
     ) -> HvRepResult;
@@ -1142,14 +1142,14 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// VTL.
     fn hypercall_overlay_protector(
         self: Arc<Self>,
-        vtl: Vtl,
+        vtl: GuestVtl,
     ) -> Box<dyn VtlProtectHypercallOverlay>;
 
     /// Changes the overlay for the hypercall code page for a target VTL.
-    fn change_hypercall_overlay(&self, vtl: Vtl, gpn: u64);
+    fn change_hypercall_overlay(&self, vtl: GuestVtl, gpn: u64);
 
     /// Disables the overlay for the hypercall code page for a target VTL.
-    fn disable_hypercall_overlay(&self, vtl: Vtl);
+    fn disable_hypercall_overlay(&self, vtl: GuestVtl);
 }
 
 impl UhPartition {
@@ -1374,10 +1374,10 @@ impl UhPartition {
                 tsc_frequency,
                 ref_time,
                 hypercall_page_protectors: VtlArray::from_fn(|vtl| {
-                    params
-                        .isolated_memory_protector
-                        .as_ref()
-                        .map(|p| p.clone().hypercall_overlay_protector(vtl))
+                    params.isolated_memory_protector.as_ref().map(|p| {
+                        p.clone()
+                            .hypercall_overlay_protector(vtl.try_into().expect("no vtl 2"))
+                    })
                 }),
             }))
         } else {

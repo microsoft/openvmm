@@ -1387,12 +1387,10 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::ModifyVtlProtectionMask
         }
 
         if let Some(vtl) = target_vtl {
-            if vtl > self.vp.last_vtl() {
-                return Err((HvError::AccessDenied, 0));
-            }
+            let _target_vtl = self.target_vtl_no_higher(vtl).map_err(|e| (e, 0))?;
         }
 
-        let target_vtl = target_vtl.unwrap_or(self.vp.last_vtl());
+        let target_vtl = target_vtl.unwrap_or(self.vp.last_vtl().into());
         if target_vtl == Vtl::Vtl0 {
             return Err((HvError::InvalidParameter, 0));
         }
@@ -1400,7 +1398,7 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::ModifyVtlProtectionMask
         // A VTL cannot change its own VTL permissions until it has enabled VTL protection and
         // configured default permissions. Higher VTLs are not under this restriction (as they may
         // need to apply default permissions before VTL protection is enabled).
-        if target_vtl == self.vp.last_vtl() {
+        if target_vtl == self.vp.last_vtl().into() {
             if let Some(guest_vsm) = self.vp.partition.guest_vsm.read().get_vtl1() {
                 if !guest_vsm.enable_vtl_protection {
                     return Err((HvError::AccessDenied, 0));
@@ -1436,7 +1434,7 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::ModifyVtlProtectionMask
                 .isolated_memory_protector
                 .as_ref()
                 .expect("has a memory protector")
-                .change_vtl_protections(Vtl::Vtl0, gpa_pages, map_flags)?;
+                .change_vtl_protections(GuestVtl::Vtl0, gpa_pages, map_flags)?;
         } else {
             // TODO VBS GUEST VSM: verify this logic is correct
             // TODO VBS GUEST VSM: validation on map_flags, similar to default
