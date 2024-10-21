@@ -76,7 +76,11 @@ impl FlowNode for Node {
                                 OpenvmmSysrootArch::X64 => "x86_64-sysroot",
                             });
                     fs_err::create_dir_all(extracted_sysroot_path.parent().unwrap())?;
-                    fs_err::remove_dir_all(&extracted_sysroot_path)?;
+                    match fs_err::remove_dir_all(&extracted_sysroot_path) {
+                        Ok(_) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e.into()),
+                    }
 
                     #[cfg(unix)]
                     let symlink = |orig, link| fs_err::os::unix::fs::symlink(orig, link);

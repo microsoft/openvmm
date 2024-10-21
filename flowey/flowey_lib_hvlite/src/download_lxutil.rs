@@ -63,7 +63,8 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let extract_archive_deps = flowey_lib_common::_util::extract::extract_archive_if_new_deps(ctx);
+        let extract_archive_deps =
+            flowey_lib_common::_util::extract::extract_archive_if_new_deps(ctx);
 
         for (arch, out_vars) in reqs {
             let tag = format!("Microsoft.WSL.LxUtil.{}", version);
