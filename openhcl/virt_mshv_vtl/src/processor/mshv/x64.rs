@@ -14,7 +14,6 @@ use super::super::BackingPrivate;
 use super::super::UhEmulationState;
 use super::super::UhRunVpError;
 use crate::processor::from_seg;
-use crate::processor::mshv::apic;
 use crate::processor::BackingSharedParams;
 use crate::processor::SidecarExitReason;
 use crate::processor::SidecarRemoveExit;
@@ -25,8 +24,12 @@ use crate::Error;
 use crate::GuestVsmState;
 use crate::GuestVsmVtl1State;
 use crate::GuestVsmVtl1StateInner;
+use crate::UhPartitionInner;
+use crate::WakeReason;
 use hcl::ioctl;
+use hcl::ioctl::x64::MshvX64;
 use hcl::ioctl::ApplyVtlProtectionsError;
+use hcl::ioctl::ProcessorRunner;
 use hcl::protocol;
 use hvdef::hypercall;
 use hvdef::HvDeliverabilityNotificationsRegister;
@@ -38,7 +41,11 @@ use hvdef::HvRegisterValue;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmPartitionStatus;
 use hvdef::HvX64InterceptMessageHeader;
+use hvdef::HvX64InterruptStateRegister;
 use hvdef::HvX64PendingEvent;
+use hvdef::HvX64PendingEventReg0;
+use hvdef::HvX64PendingInterruptionRegister;
+use hvdef::HvX64PendingInterruptionType;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
@@ -53,19 +60,26 @@ use virt::vp;
 use virt::vp::AccessVpState;
 use virt::x86::MsrError;
 use virt::x86::MsrErrorExt;
+use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use virt_support_apic::ApicClient;
+use virt_support_apic::ApicWork;
+use virt_support_apic::LocalApic;
 use virt_support_x86emu::emulate::EmuCheckVtlAccessError;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::EmulatorSupport;
+use vmcore::vmtime::VmTime;
+use vmcore::vmtime::VmTimeAccess;
 use vtl_array::VtlArray;
 use vtl_array::VtlSet;
 use x86defs::xsave::Fxsave;
 use x86defs::xsave::XsaveHeader;
 use x86defs::xsave::XFEATURE_SSE;
 use x86defs::xsave::XFEATURE_X87;
+use x86defs::RFlags;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
@@ -74,8 +88,10 @@ use zerocopy::FromZeroes;
 /// software-isolated).
 #[derive(InspectMut)]
 pub struct HypervisorBackedX86 {
-    /// Underhill APIC state
-    pub(super) lapics: Option<VtlArray<apic::UhApicState, 2>>,
+    pub(super) lapics: Option<VtlArray<LocalApic, 2>>,
+    nmi_pending: VtlArray<bool, 2>,
+    halted: bool,
+    startup_suspend: bool,
     // TODO WHP GUEST VSM: To be completely correct here, when emulating the APICs
     // we would need two sets of deliverability notifications too. However currently
     // we don't support VTL 1 on WHP, and on the hypervisor we don't emulate the APIC,
@@ -105,7 +121,7 @@ struct ProcessorStatsX86 {
 }
 
 impl BackingPrivate for HypervisorBackedX86 {
-    type HclBacking = ioctl::x64::MshvX64;
+    type HclBacking = MshvX64;
     type BackingShared = ();
 
     fn new_shared_state(_params: BackingSharedParams<'_>) -> Result<Self::BackingShared, Error> {
@@ -141,15 +157,14 @@ impl BackingPrivate for HypervisorBackedX86 {
             let mut lapic1 = arr[Vtl::Vtl1].add_apic(params.vp_info);
             lapic1.set_apic_base(apic_base).unwrap();
 
-            [
-                apic::UhApicState::new(lapic0, Vtl::Vtl0, &params.vp_info.base),
-                apic::UhApicState::new(lapic1, Vtl::Vtl1, &params.vp_info.base),
-            ]
-            .into()
+            [lapic0, lapic1].into()
         });
 
         Ok(Self {
             lapics,
+            halted: false,
+            nmi_pending: [false, false].into(),
+            startup_suspend: !params.vp_info.base.is_bsp(),
             deliverability_notifications: Default::default(),
             next_deliverability_notifications: Default::default(),
             stats: Default::default(),
@@ -291,7 +306,46 @@ impl BackingPrivate for HypervisorBackedX86 {
         vtl: Vtl,
         scan_irr: bool,
     ) -> Result<bool, UhRunVpError> {
-        this.poll_apic(vtl, scan_irr)
+        let Some(lapics) = this.backing.lapics.as_mut() else {
+            return Ok(true);
+        };
+
+        let lapic = &mut lapics[vtl];
+        let ApicWork {
+            init,
+            extint,
+            sipi,
+            nmi,
+            interrupt,
+        } = lapic.scan(&mut this.vmtime, scan_irr);
+
+        if nmi || this.backing.nmi_pending[vtl] {
+            this.backing.nmi_pending[vtl] = true;
+            this.handle_nmi(vtl)?;
+        }
+
+        if let Some(vector) = interrupt {
+            this.handle_interrupt(vector, vtl)?;
+        }
+
+        if extint {
+            todo!();
+        }
+
+        // TODO WHP GUEST VSM: An INIT/SIPI targeted at a VP with more than one guest VTL enabled is ignored.
+        if init {
+            this.handle_init(vtl)?;
+        }
+
+        if let Some(vector) = sipi {
+            this.handle_sipi(vtl, vector)?;
+        }
+
+        if this.backing.halted || this.backing.startup_suspend {
+            return Ok(false);
+        }
+
+        Ok(true)
     }
 
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
@@ -382,6 +436,151 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         Ok(())
     }
 
+    fn handle_nmi(&mut self, vtl: Vtl) -> Result<(), UhRunVpError> {
+        const NAMES: &[HvX64RegisterName] = &[
+            HvX64RegisterName::InterruptState,
+            HvX64RegisterName::PendingInterruption,
+            HvX64RegisterName::PendingEvent0,
+        ];
+        let mut values = [0u32.into(); NAMES.len()];
+        self.runner
+            .get_vp_registers(NAMES, &mut values)
+            .map_err(UhRunVpError::EmulationState)?;
+
+        let &[interrupt_state, pending_interruption, pending_event] = &values;
+        let pending_interruption =
+            HvX64PendingInterruptionRegister::from(pending_interruption.as_u64());
+        let pending_event = HvX64PendingEventReg0::from(pending_event.as_u128());
+        let interrupt_state = HvX64InterruptStateRegister::from(interrupt_state.as_u64());
+
+        if pending_interruption.interruption_pending()
+            || interrupt_state.nmi_masked()
+            || interrupt_state.interrupt_shadow()
+            || pending_event.event_pending()
+        {
+            if !self
+                .backing
+                .next_deliverability_notifications
+                .nmi_notification()
+            {
+                self.backing
+                    .next_deliverability_notifications
+                    .set_nmi_notification(true);
+            }
+
+            return Ok(());
+        }
+
+        let interruption = HvX64PendingInterruptionRegister::new()
+            .with_interruption_type(HvX64PendingInterruptionType::HV_X64_PENDING_NMI.0)
+            .with_interruption_vector(2)
+            .with_interruption_pending(true);
+
+        self.runner
+            .set_vp_register(
+                HvX64RegisterName::PendingInterruption,
+                u64::from(interruption).into(),
+            )
+            .map_err(UhRunVpError::EmulationState)?;
+
+        self.backing.halted = false;
+        self.backing.nmi_pending[vtl] = false;
+
+        tracing::trace!("nmi");
+
+        Ok(())
+    }
+
+    fn handle_interrupt(&mut self, vector: u8, vtl: Vtl) -> Result<(), UhRunVpError> {
+        const NAMES: &[HvX64RegisterName] = &[
+            HvX64RegisterName::Rflags,
+            HvX64RegisterName::Cr8,
+            HvX64RegisterName::InterruptState,
+            HvX64RegisterName::PendingInterruption,
+            HvX64RegisterName::PendingEvent0,
+        ];
+        let mut values = [0u32.into(); NAMES.len()];
+        self.runner
+            .get_vp_registers(NAMES, &mut values)
+            .map_err(UhRunVpError::EmulationState)?;
+
+        let &[rflags, cr8, interrupt_state, pending_interruption, pending_event] = &values;
+        let pending_interruption =
+            HvX64PendingInterruptionRegister::from(pending_interruption.as_u64());
+        let pending_event = HvX64PendingEventReg0::from(pending_event.as_u128());
+        let interrupt_state = HvX64InterruptStateRegister::from(interrupt_state.as_u64());
+        let rflags = RFlags::from(rflags.as_u64());
+        let cr8 = cr8.as_u64();
+
+        let priority = vector >> 4;
+
+        let notifications = &mut self.backing.next_deliverability_notifications;
+        if pending_interruption.interruption_pending()
+            || interrupt_state.interrupt_shadow()
+            || !rflags.interrupt_enable()
+            || cr8 >= priority as u64
+            || pending_event.event_pending()
+        {
+            if !notifications.interrupt_notification()
+                || (notifications.interrupt_priority() != 0
+                    && notifications.interrupt_priority() < priority)
+            {
+                notifications.set_interrupt_notification(true);
+                notifications.set_interrupt_priority(priority);
+            }
+
+            return Ok(());
+        }
+
+        let interruption = HvX64PendingInterruptionRegister::new()
+            .with_interruption_type(HvX64PendingInterruptionType::HV_X64_PENDING_INTERRUPT.0)
+            .with_interruption_vector(vector.into())
+            .with_interruption_pending(true);
+
+        self.runner
+            .set_vp_register(
+                HvX64RegisterName::PendingInterruption,
+                u64::from(interruption).into(),
+            )
+            .map_err(UhRunVpError::EmulationState)?;
+
+        self.backing.halted = false;
+
+        tracing::trace!(vector, "interrupted");
+
+        self.backing.lapics.as_mut().unwrap()[vtl].acknowledge_interrupt(vector);
+        Ok(())
+    }
+
+    fn handle_init(&mut self, vtl: Vtl) -> Result<(), UhRunVpError> {
+        assert_eq!(vtl, Vtl::Vtl0);
+        let vp_info = self.inner.vp_info;
+        let mut access = self.access_state(vtl);
+        vp::x86_init(&mut access, &vp_info).map_err(UhRunVpError::State)
+    }
+
+    fn handle_sipi(&mut self, vtl: Vtl, vector: u8) -> Result<(), UhRunVpError> {
+        assert_eq!(vtl, Vtl::Vtl0);
+        if self.backing.startup_suspend {
+            let address = (vector as u64) << 12;
+            let cs: hvdef::HvX64SegmentRegister = hvdef::HvX64SegmentRegister {
+                base: address,
+                limit: 0xffff,
+                selector: (address >> 4) as u16,
+                attributes: 0x9b,
+            };
+            self.runner
+                .set_vp_registers([
+                    (HvX64RegisterName::Cs, HvRegisterValue::from(cs)),
+                    (HvX64RegisterName::Rip, 0u64.into()),
+                ])
+                .map_err(UhRunVpError::EmulationState)?;
+            self.backing.startup_suspend = false;
+            self.backing.halted = false;
+        }
+        Ok(())
+    }
+
     fn handle_interrupt_deliverable_exit(
         &mut self,
         bus: &impl CpuIo,
@@ -393,7 +592,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         assert_eq!(
             message.deliverable_type,
-            hvdef::HvX64PendingInterruptionType::HV_X64_PENDING_INTERRUPT
+            HvX64PendingInterruptionType::HV_X64_PENDING_INTERRUPT
         );
 
         self.backing
@@ -614,13 +813,15 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         match message.header.intercept_access_type {
             HvInterceptAccessType::READ => {
                 let r = if let Some(lapics) = &mut self.backing.lapics {
-                    lapics[last_vtl].msr_read(
-                        self.partition,
-                        &mut self.runner,
-                        &self.vmtime,
-                        dev,
-                        msr,
-                    )
+                    lapics[last_vtl]
+                        .access(&mut UhApicClient {
+                            partition: self.partition,
+                            runner: &mut self.runner,
+                            vmtime: &self.vmtime,
+                            dev,
+                            vtl: last_vtl,
+                        })
+                        .msr_read(msr)
                 } else {
                     Err(MsrError::Unknown)
                 };
@@ -645,14 +846,15 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             HvInterceptAccessType::WRITE => {
                 let value = (message.rax & 0xffff_ffff) | (message.rdx << 32);
                 let r = if let Some(lapic) = &mut self.backing.lapics {
-                    lapic[last_vtl].msr_write(
-                        self.partition,
-                        &mut self.runner,
-                        &self.vmtime,
-                        dev,
-                        msr,
-                        value,
-                    )
+                    lapic[last_vtl]
+                        .access(&mut UhApicClient {
+                            partition: self.partition,
+                            runner: &mut self.runner,
+                            vmtime: &self.vmtime,
+                            dev,
+                            vtl: last_vtl,
+                        })
+                        .msr_write(msr, value)
                 } else {
                     Err(MsrError::Unknown)
                 };
@@ -709,8 +911,8 @@ impl UhProcessor<'_, HypervisorBackedX86> {
     }
 
     fn handle_halt(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let last_vtl = self.last_vtl();
-        self.backing.lapics.as_mut().unwrap()[last_vtl].halt();
+        assert_eq!(self.last_vtl(), Vtl::Vtl0);
+        self.backing.halted = true;
         Ok(())
     }
 
@@ -1149,26 +1351,28 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
 
     fn lapic_read(&mut self, address: u64, data: &mut [u8]) {
         let last_vtl = self.vp.last_vtl();
-        self.vp.backing.lapics.as_mut().unwrap()[last_vtl].mmio_read(
-            self.vp.partition,
-            &mut self.vp.runner,
-            &self.vp.vmtime,
-            self.devices,
-            address,
-            data,
-        );
+        self.vp.backing.lapics.as_mut().unwrap()[last_vtl]
+            .access(&mut UhApicClient {
+                partition: self.vp.partition,
+                runner: &mut self.vp.runner,
+                vmtime: &self.vp.vmtime,
+                dev: self.devices,
+                vtl: last_vtl,
+            })
+            .mmio_read(address, data);
     }
 
     fn lapic_write(&mut self, address: u64, data: &[u8]) {
         let last_vtl = self.vp.last_vtl();
-        self.vp.backing.lapics.as_mut().unwrap()[last_vtl].mmio_write(
-            self.vp.partition,
-            &mut self.vp.runner,
-            &self.vp.vmtime,
-            self.devices,
-            address,
-            data,
-        );
+        self.vp.backing.lapics.as_mut().unwrap()[last_vtl]
+            .access(&mut UhApicClient {
+                partition: self.vp.partition,
+                runner: &mut self.vp.runner,
+                vmtime: &self.vp.vmtime,
+                dev: self.devices,
+                vtl: last_vtl,
+            })
+            .mmio_write(address, data);
     }
 }
 
@@ -1546,6 +1750,55 @@ impl<T> hv1_hypercall::SetVpRegisters for UhHypercallHandler<'_, '_, T, Hypervis
         }
 
         Ok(())
+    }
+}
+
+struct UhApicClient<'a, 'b, T> {
+    partition: &'a UhPartitionInner,
+    runner: &'a mut ProcessorRunner<'b, MshvX64>,
+    dev: &'a T,
+    vmtime: &'a VmTimeAccess,
+    vtl: Vtl,
+}
+
+impl<T: CpuIo> ApicClient for UhApicClient<'_, '_, T> {
+    fn cr8(&mut self) -> u32 {
+        self.runner
+            .get_vp_register(HvX64RegisterName::Cr8)
+            .unwrap()
+            .as_u32()
+    }
+
+    fn set_cr8(&mut self, value: u32) {
+        self.runner
+            .set_vp_register(HvX64RegisterName::Cr8, value.into())
+            .unwrap();
+    }
+
+    fn set_apic_base(&mut self, value: u64) {
+        self.runner
+            .set_vp_register(HvX64RegisterName::ApicBase, value.into())
+            .unwrap();
+    }
+
+    fn wake(&mut self, vp_index: VpIndex) {
+        self.partition
+            .vp(vp_index)
+            .unwrap()
+            .wake(self.vtl, WakeReason::INTCON);
+    }
+
+    fn eoi(&mut self, vector: u8) {
+        debug_assert_eq!(self.vtl, Vtl::Vtl0);
+        self.dev.handle_eoi(vector.into())
+    }
+
+    fn now(&mut self) -> VmTime {
+        self.vmtime.now()
+    }
+
+    fn pull_offload(&mut self) -> ([u32; 8], [u32; 8]) {
+        unreachable!()
     }
 }
 
