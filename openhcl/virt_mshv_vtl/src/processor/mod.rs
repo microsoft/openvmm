@@ -224,7 +224,7 @@ mod private {
         /// message slot.
         ///
         /// This is used for hypervisor-managed and untrusted SINTs.
-        fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
+        fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, vtl: Vtl, sints: u16);
 
         /// The VTL that was running when the VP exited into VTL2, with the
         /// exception of a successful vtl switch, where it will return the VTL
@@ -836,7 +836,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                             #[cfg(guest_arch = "aarch64")]
                             let sint_reg =
                                 HvArm64RegisterName(HvArm64RegisterName::Sint0.0 + sint as u32);
-                            self.runner.get_vp_register(sint_reg).unwrap().as_u64()
+                            self.runner.get_vp_register(sint_reg, vtl).unwrap().as_u64()
                         };
                         masked_sints |= (HvSynicSint::from(sint_msr).masked() as u16) << sint;
                     }
@@ -911,7 +911,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         };
 
         if sints & untrusted_sints != 0 {
-            T::request_untrusted_sint_readiness(self, sints & untrusted_sints);
+            T::request_untrusted_sint_readiness(self, vtl, sints & untrusted_sints);
         }
     }
 
@@ -1202,7 +1202,7 @@ impl<T: CpuIo, B: Backing> Arm64RegisterState for UhHypercallHandler<'_, '_, T, 
     fn pc(&mut self) -> u64 {
         self.vp
             .runner
-            .get_vp_register(HvArm64RegisterName::XPc)
+            .get_vp_register(HvArm64RegisterName::XPc, self.vp.last_vtl())
             .expect("get vp register cannot fail")
             .as_u64()
     }
@@ -1210,14 +1210,17 @@ impl<T: CpuIo, B: Backing> Arm64RegisterState for UhHypercallHandler<'_, '_, T, 
     fn set_pc(&mut self, pc: u64) {
         self.vp
             .runner
-            .set_vp_register(HvArm64RegisterName::XPc, pc.into())
+            .set_vp_register(HvArm64RegisterName::XPc, pc.into(), self.vp.last_vtl())
             .expect("set vp register cannot fail");
     }
 
     fn x(&mut self, n: u8) -> u64 {
         self.vp
             .runner
-            .get_vp_register(HvArm64RegisterName(HvArm64RegisterName::X0.0 + n as u32))
+            .get_vp_register(
+                HvArm64RegisterName(HvArm64RegisterName::X0.0 + n as u32),
+                self.vp.last_vtl(),
+            )
             .expect("get vp register cannot fail")
             .as_u64()
     }
@@ -1228,6 +1231,7 @@ impl<T: CpuIo, B: Backing> Arm64RegisterState for UhHypercallHandler<'_, '_, T, 
             .set_vp_register(
                 HvArm64RegisterName(HvArm64RegisterName::X0.0 + n as u32),
                 v.into(),
+                self.vp.last_vtl(),
             )
             .expect("set vp register cannot fail")
     }
