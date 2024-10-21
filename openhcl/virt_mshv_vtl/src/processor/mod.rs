@@ -681,7 +681,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 }
 
                 // TODO WHP GUEST VSM: This should be next_vtl
-                if T::halt_in_usermode(self, Vtl::Vtl0) {
+                if T::halt_in_usermode(self, GuestVtl::Vtl0) {
                     break Poll::Pending;
                 } else {
                     return <Result<_, VpHaltReason<_>>>::Ok(()).into();
