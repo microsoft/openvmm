@@ -1148,7 +1148,7 @@ impl OpenParams {
 /// A channel action, sent to the device when a channel state changes.
 #[derive(Debug)]
 pub enum Action {
-    Open(OpenParams),
+    Open(OpenParams, VersionInfo),
     Close,
     Gpadl(GpadlId, u16, Vec<u64>),
     TeardownGpadl {
@@ -1287,6 +1287,11 @@ impl Server {
             })
             .collect()
     }
+
+    /// Checks whether the state is connected and the specified feature flags are supported..
+    pub fn check_feature_flags(&self, flags: impl Fn(FeatureFlags) -> bool) -> bool {
+        self.state.check_feature_flags(flags)
+    }
 }
 
 impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
@@ -1386,11 +1391,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 ChannelState::ClosingReopen { request, .. } => {
                     self.notifier.notify(
                         offer_id,
-                        Action::Open(OpenParams::from_request(
-                            &info,
-                            &request,
-                            channel.handled_monitor_id(),
-                        )),
+                        Action::Open(
+                            OpenParams::from_request(&info, &request, channel.handled_monitor_id()),
+                            self.inner.state.get_version().expect("must be connected"),
+                        ),
                     );
                     channel.state = ChannelState::Opening {
                         request,
@@ -1400,11 +1404,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 ChannelState::Opening { request, .. } => {
                     self.notifier.notify(
                         offer_id,
-                        Action::Open(OpenParams::from_request(
-                            &info,
-                            &request,
-                            channel.handled_monitor_id(),
-                        )),
+                        Action::Open(
+                            OpenParams::from_request(&info, &request, channel.handled_monitor_id()),
+                            self.inner.state.get_version().expect("must be connected"),
+                        ),
                     );
                 }
                 ChannelState::Open { .. } => {
@@ -2553,11 +2556,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         let info = channel.info.as_ref().expect("assigned");
         self.notifier.notify(
             offer_id,
-            Action::Open(OpenParams::from_request(
-                info,
-                input,
-                channel.handled_monitor_id(),
-            )),
+            Action::Open(
+                OpenParams::from_request(info, input, channel.handled_monitor_id()),
+                self.inner.state.get_version().expect("must be connected"),
+            ),
         );
     }
 
@@ -4083,7 +4085,7 @@ mod tests {
 
         let (id, action) = recv.recv().unwrap();
         assert_eq!(id, offer_id);
-        let Action::Open(op) = action else {
+        let Action::Open(op, _) = action else {
             panic!("unexpected action: {:?}", action);
         };
         assert_eq!(op.open_data.ring_gpadl_id, GpadlId(1));

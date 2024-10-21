@@ -118,9 +118,10 @@ impl<T: Any> IntoAny for T {
 /// Resources used by the device to communicate with the guest.
 #[derive(Debug, Default)]
 pub struct DeviceResources {
-    pub(crate) ring_memory: GuestMemory,
-    /// Guest memory access.
-    pub guest_memory: GuestMemory,
+    /// Untrusted guest memory access.
+    pub untrusted_memory: GuestMemory,
+    /// Trusted guest memory access.
+    pub trusted_memory: Option<GuestMemory>,
     /// A map providing access to GPADLs.
     pub gpadl_map: GpadlMapView,
     /// The control object for enabling subchannels.
@@ -367,8 +368,8 @@ async fn offer_generic(
 
     let (subchannel_enable_send, subchannel_enable_recv) = mesh::channel();
     channel.install(DeviceResources {
-        ring_memory: offer_result.ring_mem,
-        guest_memory: offer_result.guest_mem,
+        untrusted_memory: offer_result.untrusted_memory,
+        trusted_memory: offer_result.trusted_memory,
         gpadl_map: gpadl_map.clone().view(),
         channels: resources,
         channel_control: ChannelControl {

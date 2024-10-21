@@ -33,9 +33,9 @@ pub struct OfferInput {
 #[derive(Debug)]
 pub struct OfferResources {
     /// Guest memory access for ring buffers.
-    pub ring_mem: GuestMemory,
+    pub untrusted_memory: GuestMemory,
     /// Guest memory access.
-    pub guest_mem: GuestMemory,
+    pub trusted_memory: Option<GuestMemory>,
 }
 
 /// A request from the VMBus control plane.
@@ -160,6 +160,12 @@ pub struct OpenRequest {
     pub open_data: OpenData,
     /// The interrupt used to signal the guest.
     pub interrupt: Interrupt,
+    /// Indicates if the current guest supports the use of confidential ring
+    /// buffers.
+    pub use_confidential_ring: bool,
+    /// Indicates if the current guest supports the use of confidential external
+    /// memory.
+    pub use_confidential_external_memory: bool,
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Protobuf)]

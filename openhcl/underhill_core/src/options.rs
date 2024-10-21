@@ -34,7 +34,7 @@ pub struct Options {
     pub vmbus_enable_mnf: Option<bool>,
 
     /// (OPENHCL_VMBUS_FORCE_CONF_EXT_MEM=1)
-    /// Force the use of confidential external memory for all non-relay vmbus channels. Fo testing
+    /// Force the use of confidential external memory for all non-relay vmbus channels. For testing
     /// purposes only.
     pub vmbus_force_confidential_external_memory: bool,
 
@@ -156,7 +156,7 @@ impl Options {
         };
         let vmbus_force_confidential_external_memory =
             legacy_openhcl_env("OPENHCL_VMBUS_FORCE_CONF_EXT_MEM").is_some()
-                && parse_env_bool("UNDERHILL_VMBUS_FORCE_CONF_EXT_MEM");
+                && parse_env_bool("OPENHCL_VMBUS_FORCE_CONF_EXT_MEM");
         let cmdline_append =
             legacy_openhcl_env("OPENHCL_CMDLINE_APPEND").map(|x| x.to_string_lossy().into_owned());
         let force_load_vtl0_image = legacy_openhcl_env("OPENHCL_FORCE_LOAD_VTL0_IMAGE")

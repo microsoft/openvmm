@@ -640,7 +640,7 @@ struct Channel {
     gpadls: Arc<GpadlMap>,
     guest_to_host_event: Arc<ChannelEvent>,
     guest_event_port: Box<dyn GuestEventPort>,
-    confidential_ring: bool,
+    flags: protocol::OfferFlags,
 }
 
 enum ChannelState {
@@ -656,7 +656,7 @@ enum ChannelState {
 impl ServerTask {
     fn handle_offer(&mut self, mut info: OfferInfo) -> anyhow::Result<()> {
         let key = info.params.key();
-        let confidential = info.params.flags.confidential_ring_buffer();
+        let flags = info.params.flags;
 
         // Disable mnf if the synic doesn't support it or it's not enabled in this server.
         if info.params.use_mnf
@@ -687,7 +687,7 @@ impl ServerTask {
                 guest_to_host_event: Arc::new(ChannelEvent(info.event)),
                 guest_event_port,
                 seq: id,
-                confidential_ring: confidential,
+                flags,
             },
         );
 
@@ -816,10 +816,17 @@ impl ServerTask {
         }
 
         let open_request = params.map(|params| {
-            let (_, interrupt) = self.inner.open_channel(offer_id, &params);
+            let supports_confidential_channels = self
+                .server
+                .check_feature_flags(|flags| flags.confidential_channels());
+            let (channel, interrupt) = self.inner.open_channel(offer_id, &params);
             OpenRequest {
                 open_data: params.open_data,
                 interrupt,
+                use_confidential_ring: supports_confidential_channels
+                    && channel.flags.confidential_ring_buffer(),
+                use_confidential_external_memory: supports_confidential_channels
+                    && channel.flags.confidential_external_memory(),
             }
         });
         let result = RestoreResult {
@@ -1146,7 +1153,7 @@ impl channels::Notifier for ServerTaskInner {
         }
 
         let response = match action {
-            channels::Action::Open(open_params) => {
+            channels::Action::Open(open_params, version) => {
                 let (channel, interrupt) = self.open_channel(offer_id, &open_params);
                 handle(
                     offer_id,
@@ -1155,6 +1162,12 @@ impl channels::Notifier for ServerTaskInner {
                     OpenRequest {
                         open_data: open_params.open_data,
                         interrupt,
+                        use_confidential_ring: version.feature_flags.confidential_channels()
+                            && channel.flags.confidential_ring_buffer(),
+                        use_confidential_external_memory: version
+                            .feature_flags
+                            .confidential_channels()
+                            && channel.flags.confidential_external_memory(),
                     },
                     ChannelResponse::Open,
                 )
@@ -1272,7 +1285,7 @@ impl channels::Notifier for ServerTaskInner {
         let channel = self.channels.get(&offer_id).expect("should exist");
         let mut resp = req.respond();
         if let ChannelState::Open { open_params, .. } = &channel.state {
-            let mem = if channel.confidential_ring && self.trusted_gm.is_some() {
+            let mem = if channel.flags.confidential_ring_buffer() && self.trusted_gm.is_some() {
                 self.trusted_gm.as_ref().unwrap()
             } else {
                 &self.gm
@@ -1476,22 +1489,14 @@ impl VmbusServerControl {
         let (send, recv) = mesh::oneshot();
         self.send.send(OfferRequest::Offer(offer_info, send));
         recv.await.flatten()?;
-        let confidential_mem = if self.trusted_mem.is_some() {
-            self.trusted_mem.as_ref().unwrap()
-        } else {
-            &self.mem
-        };
-
         Ok(OfferResources {
-            ring_mem: if flags.confidential_ring_buffer() {
-                confidential_mem.clone()
+            untrusted_memory: self.mem.clone(),
+            trusted_memory: if flags.confidential_ring_buffer()
+                || flags.confidential_external_memory()
+            {
+                self.trusted_mem.clone()
             } else {
-                self.mem.clone()
-            },
-            guest_mem: if flags.confidential_external_memory() {
-                confidential_mem.clone()
-            } else {
-                self.mem.clone()
+                None
             },
         })
     }

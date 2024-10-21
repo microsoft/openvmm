@@ -1489,7 +1489,15 @@ impl StorageDevice {
         let channel = gpadl_channel(&driver, &self.resources, open_request, channel_index)
             .context("failed to create vmbus channel")?;
 
-        let mem = self.resources.guest_memory.clone();
+        let mem = if open_request.use_confidential_external_memory {
+            self.resources
+                .trusted_memory
+                .as_ref()
+                .expect("trusted memory should be present if confidential memory is requested")
+                .clone()
+        } else {
+            self.resources.untrusted_memory.clone()
+        };
         let channel_control = self.resources.channel_control.clone();
 
         tracing::debug!(

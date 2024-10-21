@@ -52,7 +52,8 @@ pub struct Offer {
     open_recv: mesh::Receiver<OpenMessage>,
     gpadl_map: GpadlMapView,
     event: Notify,
-    guest_mem: GuestMemory,
+    untrusted_guest_mem: GuestMemory,
+    trusted_guest_mem: Option<GuestMemory>,
     _server_request_send: mesh::Sender<ChannelServerRequest>,
 }
 
@@ -85,7 +86,8 @@ impl Offer {
         });
 
         let offer = Self {
-            guest_mem: result.ring_mem,
+            untrusted_guest_mem: result.untrusted_memory,
+            trusted_guest_mem: result.trusted_memory,
             task,
             open_recv,
             gpadl_map,
@@ -160,7 +162,13 @@ impl Offer {
         let message = self.open_recv.next().await.ok_or(Error::Revoked)?;
 
         let (in_ring, out_ring) = make_rings(
-            &self.guest_mem,
+            if message.open_request.use_confidential_ring {
+                self.trusted_guest_mem
+                    .as_ref()
+                    .expect("trusted memory should be set if confidential ring is requested")
+            } else {
+                &self.untrusted_guest_mem
+            },
             &self.gpadl_map,
             &message.open_request.open_data,
         )?;

@@ -1318,7 +1318,15 @@ impl Nic {
         let worker = Worker {
             channel_idx,
             target_vp: open_request.open_data.target_vp,
-            mem: self.resources.guest_memory.clone(),
+            mem: if open_request.use_confidential_external_memory {
+                self.resources
+                    .trusted_memory
+                    .as_ref()
+                    .expect("trusted memory should be present if confidential memory is requested")
+                    .clone()
+            } else {
+                self.resources.untrusted_memory.clone()
+            },
             channel: NetChannel {
                 adapter: self.adapter.clone(),
                 queue,
@@ -1502,9 +1510,16 @@ impl Nic {
                     let version = check_version(version)
                         .ok_or(NetRestoreError::UnsupportedVersion(version))?;
 
+                    let request = requests[0].as_ref().unwrap();
                     let buffers = Arc::new(ChannelBuffers {
                         version,
-                        mem: self.resources.guest_memory.clone(),
+                        mem: if request.use_confidential_external_memory {
+                            self.resources.trusted_memory.as_ref().expect(
+                                "trusted memory should be present if confidential memory is requested"
+                            ).clone()
+                        } else {
+                            self.resources.untrusted_memory.clone()
+                        },
                         recv_buffer: ReceiveBuffer::new(
                             &self.resources.gpadl_map,
                             receive_buffer.gpadl_id,
