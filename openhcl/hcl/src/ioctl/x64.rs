@@ -68,7 +68,7 @@ impl ProcessorRunner<'_, MshvX64> {
     /// Returns the last VTL according to the register page.
     pub fn reg_page_vtl(&self) -> Option<GuestVtl> {
         self.reg_page()
-            .map(|reg_page| reg_page.vtl.try_into().unwrap())
+            .and_then(|reg_page| reg_page.vtl.try_into().ok())
     }
 
     /// Returns a reference to the current VTL's CPU context.
