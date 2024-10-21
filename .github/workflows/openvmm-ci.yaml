@@ -1159,7 +1159,7 @@ jobs:
     - name: unpack openvmm-deps archive
       run: flowey e 11 flowey_lib_hvlite::download_openvmm_deps 0
       shell: bash
-    - name: extract X64 sysroot.tar.gz
+    - name: symlink X64 openhcl sysroot
       run: flowey e 11 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 1
       shell: bash
     - name: cargo build openhcl_boot
@@ -1183,7 +1183,7 @@ jobs:
     - name: 🌼 write_into Var
       run: flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 16
       shell: bash
-    - name: extract Aarch64 sysroot.tar.gz
+    - name: symlink Aarch64 openhcl sysroot
       run: flowey e 11 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
       shell: bash
     - name: cargo build openvmm_hcl
@@ -1622,7 +1622,7 @@ jobs:
     - name: unpack openvmm-deps archive
       run: flowey e 12 flowey_lib_hvlite::download_openvmm_deps 0
       shell: bash
-    - name: extract X64 sysroot.tar.gz
+    - name: symlink X64 openhcl sysroot
       run: flowey e 12 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
       shell: bash
     - name: cargo build openvmm_hcl
@@ -2923,7 +2923,7 @@ jobs:
     - name: unpack openvmm-deps archive
       run: flowey e 15 flowey_lib_hvlite::download_openvmm_deps 0
       shell: bash
-    - name: extract X64 sysroot.tar.gz
+    - name: symlink X64 openhcl sysroot
       run: flowey e 15 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 1
       shell: bash
     - name: unpack Microsoft.WSL.LxUtil.x64.zip
@@ -2971,7 +2971,7 @@ jobs:
     - name: cargo clippy
       run: flowey e 15 flowey_lib_common::run_cargo_clippy 1
       shell: bash
-    - name: extract Aarch64 sysroot.tar.gz
+    - name: symlink Aarch64 openhcl sysroot
       run: flowey e 15 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
       shell: bash
     - name: cargo build xtask
