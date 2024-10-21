@@ -3,7 +3,7 @@
 [package]
 name = "xtask"
 edition = "2021"
-rust-version = "1.81"
+rust-version = "1.82"
 
 [dependencies]
 vmm_test_images = { workspace = true, features = ["clap"] }

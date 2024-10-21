@@ -54,7 +54,7 @@
       "flowey_lib_common::install_rust": [
         "{\"AutoInstall\":true}",
         "{\"IgnoreVersion\":false}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::use_gh_cli": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_common::download_gh_release:2:flowey_lib_common/src/download_gh_release.rs:160:26\",\"is_secret\":false}}",
@@ -159,7 +159,7 @@
         "{\"GetRustupToolchain\":{\"backing_var\":\"flowey_lib_common::run_cargo_doc:0:flowey_lib_common/src/run_cargo_doc.rs:113:34\",\"is_secret\":false}}",
         "{\"IgnoreVersion\":false}",
         "{\"InstallTargetTriple\":\"x86_64-pc-windows-msvc\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::run_cargo_doc": [
         "{\"cargo_cmd\":{\"backing_var\":\"flowey_lib_hvlite::build_rustdoc:3:flowey_lib_hvlite/src/build_rustdoc.rs:83:33\",\"is_secret\":false},\"in_folder\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_rustdoc:1:flowey_lib_hvlite/src/build_rustdoc.rs:61:37\"},\"is_secret\":false},\"packages\":[{\"document_private_items\":false,\"kind\":{\"Workspace\":{\"exclude\":[\"vmfirmwareigvm_dll\"]}},\"no_deps\":true},{\"document_private_items\":false,\"kind\":{\"NoStdCrate\":\"guest_test_uefi\"},\"no_deps\":true}],\"target_triple\":\"x86_64-pc-windows-msvc\"}"
@@ -285,7 +285,7 @@
         "{\"GetRustupToolchain\":{\"backing_var\":\"flowey_lib_common::run_cargo_doc:0:flowey_lib_common/src/run_cargo_doc.rs:113:34\",\"is_secret\":false}}",
         "{\"IgnoreVersion\":false}",
         "{\"InstallTargetTriple\":\"x86_64-unknown-linux-gnu\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::run_cargo_doc": [
         "{\"cargo_cmd\":{\"backing_var\":\"flowey_lib_hvlite::build_rustdoc:3:flowey_lib_hvlite/src/build_rustdoc.rs:83:33\",\"is_secret\":false},\"in_folder\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_rustdoc:1:flowey_lib_hvlite/src/build_rustdoc.rs:61:37\"},\"is_secret\":false},\"packages\":[{\"document_private_items\":false,\"kind\":{\"Workspace\":{\"exclude\":[\"vmfirmwareigvm_dll\"]}},\"no_deps\":true},{\"document_private_items\":false,\"kind\":{\"NoStdCrate\":\"guest_test_uefi\"},\"no_deps\":true}],\"target_triple\":\"x86_64-unknown-linux-gnu\"}"
@@ -406,7 +406,7 @@
         "{\"GetRustupToolchain\":{\"backing_var\":\"flowey_lib_common::run_cargo_build:0:flowey_lib_common/src/run_cargo_build.rs:100:34\",\"is_secret\":false}}",
         "{\"IgnoreVersion\":false}",
         "{\"InstallTargetTriple\":\"x86_64-pc-windows-msvc\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::run_cargo_build": [
         "{\"crate_name\":\"xtask\",\"extra_env\":{\"backing_var\":{\"Inline\":{}},\"is_secret\":false},\"features\":[],\"in_folder\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:1:flowey_lib_hvlite/src/run_cargo_build.rs:310:37\"},\"is_secret\":false},\"out_name\":\"xtask\",\"output\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:2:flowey_lib_hvlite/src/run_cargo_build.rs:404:35\",\"is_secret\":false},\"output_kind\":\"Bin\",\"pre_build_deps\":[{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:0:flowey_lib_hvlite/src/run_cargo_build.rs:308:18\"},\"is_secret\":false}],\"profile\":{\"Custom\":\"xtask\"},\"target\":\"x86_64-pc-windows-msvc\"}"
@@ -523,7 +523,7 @@
         "{\"GetRustupToolchain\":{\"backing_var\":\"flowey_lib_common::run_cargo_build:0:flowey_lib_common/src/run_cargo_build.rs:100:34\",\"is_secret\":false}}",
         "{\"IgnoreVersion\":false}",
         "{\"InstallTargetTriple\":\"x86_64-unknown-linux-gnu\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::run_cargo_build": [
         "{\"crate_name\":\"xtask\",\"extra_env\":{\"backing_var\":{\"Inline\":{}},\"is_secret\":false},\"features\":[],\"in_folder\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:1:flowey_lib_hvlite/src/run_cargo_build.rs:310:37\"},\"is_secret\":false},\"out_name\":\"xtask\",\"output\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:2:flowey_lib_hvlite/src/run_cargo_build.rs:404:35\",\"is_secret\":false},\"output_kind\":\"Bin\",\"pre_build_deps\":[{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:0:flowey_lib_hvlite/src/run_cargo_build.rs:308:18\"},\"is_secret\":false}],\"profile\":{\"Custom\":\"xtask\"},\"target\":\"x86_64-unknown-linux-gnu\"}"
@@ -653,7 +653,7 @@
         "{\"InstallTargetTriple\":\"aarch64-pc-windows-msvc\"}",
         "{\"InstallTargetTriple\":\"aarch64-pc-windows-msvc\"}",
         "{\"InstallTargetTriple\":\"aarch64-pc-windows-msvc\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::run_cargo_build": [
         "{\"crate_name\":\"igvmfilegen\",\"extra_env\":{\"backing_var\":{\"Inline\":{}},\"is_secret\":false},\"features\":[],\"in_folder\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:1:flowey_lib_hvlite/src/run_cargo_build.rs:310:37\"},\"is_secret\":false},\"out_name\":\"igvmfilegen\",\"output\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:2:flowey_lib_hvlite/src/run_cargo_build.rs:404:35\",\"is_secret\":false},\"output_kind\":\"Bin\",\"pre_build_deps\":[{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:0:flowey_lib_hvlite/src/run_cargo_build.rs:308:18\"},\"is_secret\":false}],\"profile\":\"Debug\",\"target\":\"aarch64-pc-windows-msvc\"}",
@@ -822,7 +822,7 @@
         "{\"InstallTargetTriple\":\"aarch64-pc-windows-msvc\"}",
         "{\"InstallTargetTriple\":\"aarch64-pc-windows-msvc\"}",
         "{\"InstallTargetTriple\":\"aarch64-pc-windows-msvc\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::run_cargo_build": [
         "{\"crate_name\":\"openvmm\",\"extra_env\":{\"backing_var\":{\"Inline\":{}},\"is_secret\":false},\"features\":[],\"in_folder\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:1:flowey_lib_hvlite/src/run_cargo_build.rs:310:37\"},\"is_secret\":false},\"out_name\":\"openvmm\",\"output\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:2:flowey_lib_hvlite/src/run_cargo_build.rs:404:35\",\"is_secret\":false},\"output_kind\":\"Bin\",\"pre_build_deps\":[{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:0:flowey_lib_hvlite/src/run_cargo_build.rs:308:18\"},\"is_secret\":false},{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openvmm:0:flowey_lib_hvlite/src/build_openvmm.rs:50:17\"},\"is_secret\":false},{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openvmm:1:flowey_lib_hvlite/src/build_openvmm.rs:75:37\"},\"is_secret\":false}],\"profile\":\"Debug\",\"target\":\"aarch64-pc-windows-msvc\"}",
@@ -982,7 +982,7 @@
         "{\"InstallTargetTriple\":\"x86_64-pc-windows-msvc\"}",
         "{\"InstallTargetTriple\":\"x86_64-pc-windows-msvc\"}",
         "{\"InstallTargetTriple\":\"x86_64-pc-windows-msvc\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::run_cargo_build": [
         "{\"crate_name\":\"igvmfilegen\",\"extra_env\":{\"backing_var\":{\"Inline\":{}},\"is_secret\":false},\"features\":[],\"in_folder\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:1:flowey_lib_hvlite/src/run_cargo_build.rs:310:37\"},\"is_secret\":false},\"out_name\":\"igvmfilegen\",\"output\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:2:flowey_lib_hvlite/src/run_cargo_build.rs:404:35\",\"is_secret\":false},\"output_kind\":\"Bin\",\"pre_build_deps\":[{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:0:flowey_lib_hvlite/src/run_cargo_build.rs:308:18\"},\"is_secret\":false}],\"profile\":\"Debug\",\"target\":\"x86_64-pc-windows-msvc\"}",
@@ -1152,7 +1152,7 @@
         "{\"InstallTargetTriple\":\"x86_64-pc-windows-msvc\"}",
         "{\"InstallTargetTriple\":\"x86_64-pc-windows-msvc\"}",
         "{\"InstallTargetTriple\":\"x86_64-pc-windows-msvc\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::run_cargo_build": [
         "{\"crate_name\":\"openvmm\",\"extra_env\":{\"backing_var\":{\"Inline\":{}},\"is_secret\":false},\"features\":[],\"in_folder\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:1:flowey_lib_hvlite/src/run_cargo_build.rs:310:37\"},\"is_secret\":false},\"out_name\":\"openvmm\",\"output\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:2:flowey_lib_hvlite/src/run_cargo_build.rs:404:35\",\"is_secret\":false},\"output_kind\":\"Bin\",\"pre_build_deps\":[{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:0:flowey_lib_hvlite/src/run_cargo_build.rs:308:18\"},\"is_secret\":false},{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openvmm:0:flowey_lib_hvlite/src/build_openvmm.rs:50:17\"},\"is_secret\":false},{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_openvmm:1:flowey_lib_hvlite/src/build_openvmm.rs:75:37\"},\"is_secret\":false}],\"profile\":\"Debug\",\"target\":\"x86_64-pc-windows-msvc\"}",
@@ -1327,7 +1327,7 @@
         "{\"InstallTargetTriple\":\"aarch64-unknown-linux-gnu\"}",
         "{\"InstallTargetTriple\":\"aarch64-unknown-linux-gnu\"}",
         "{\"InstallTargetTriple\":\"aarch64-unknown-uefi\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::run_cargo_build": [
         "{\"crate_name\":\"guest_test_uefi\",\"extra_env\":{\"backing_var\":{\"Inline\":{}},\"is_secret\":false},\"features\":[],\"in_folder\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:1:flowey_lib_hvlite/src/run_cargo_build.rs:310:37\"},\"is_secret\":false},\"out_name\":\"guest_test_uefi\",\"output\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:2:flowey_lib_hvlite/src/run_cargo_build.rs:404:35\",\"is_secret\":false},\"output_kind\":\"Bin\",\"pre_build_deps\":[{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:0:flowey_lib_hvlite/src/run_cargo_build.rs:308:18\"},\"is_secret\":false}],\"profile\":\"Debug\",\"target\":\"aarch64-unknown-uefi\"}",
@@ -1546,7 +1546,7 @@
         "{\"InstallTargetTriple\":\"x86_64-unknown-linux-gnu\"}",
         "{\"InstallTargetTriple\":\"x86_64-unknown-linux-gnu\"}",
         "{\"InstallTargetTriple\":\"x86_64-unknown-uefi\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::run_cargo_build": [
         "{\"crate_name\":\"guest_test_uefi\",\"extra_env\":{\"backing_var\":{\"Inline\":{}},\"is_secret\":false},\"features\":[],\"in_folder\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:1:flowey_lib_hvlite/src/run_cargo_build.rs:310:37\"},\"is_secret\":false},\"out_name\":\"guest_test_uefi\",\"output\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:2:flowey_lib_hvlite/src/run_cargo_build.rs:404:35\",\"is_secret\":false},\"output_kind\":\"Bin\",\"pre_build_deps\":[{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:0:flowey_lib_hvlite/src/run_cargo_build.rs:308:18\"},\"is_secret\":false}],\"profile\":\"Debug\",\"target\":\"x86_64-unknown-uefi\"}",
@@ -1771,7 +1771,7 @@
         "{\"InstallTargetTriple\":\"aarch64-unknown-linux-musl\"}",
         "{\"InstallTargetTriple\":\"aarch64-unknown-linux-musl\"}",
         "{\"InstallTargetTriple\":\"x86_64-unknown-linux-gnu\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::run_cargo_build": [
         "{\"crate_name\":\"igvmfilegen\",\"extra_env\":{\"backing_var\":{\"Inline\":{}},\"is_secret\":false},\"features\":[],\"in_folder\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:1:flowey_lib_hvlite/src/run_cargo_build.rs:310:37\"},\"is_secret\":false},\"out_name\":\"igvmfilegen\",\"output\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:2:flowey_lib_hvlite/src/run_cargo_build.rs:404:35\",\"is_secret\":false},\"output_kind\":\"Bin\",\"pre_build_deps\":[{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:0:flowey_lib_hvlite/src/run_cargo_build.rs:308:18\"},\"is_secret\":false}],\"profile\":\"Release\",\"target\":\"x86_64-unknown-linux-gnu\"}",
@@ -1978,7 +1978,7 @@
         "{\"InstallTargetTriple\":\"x86_64-unknown-linux-musl\"}",
         "{\"InstallTargetTriple\":\"x86_64-unknown-linux-musl\"}",
         "{\"InstallTargetTriple\":\"x86_64-unknown-none\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::run_cargo_build": [
         "{\"crate_name\":\"igvmfilegen\",\"extra_env\":{\"backing_var\":{\"Inline\":{}},\"is_secret\":false},\"features\":[],\"in_folder\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:1:flowey_lib_hvlite/src/run_cargo_build.rs:310:37\"},\"is_secret\":false},\"out_name\":\"igvmfilegen\",\"output\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:2:flowey_lib_hvlite/src/run_cargo_build.rs:404:35\",\"is_secret\":false},\"output_kind\":\"Bin\",\"pre_build_deps\":[{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_build:0:flowey_lib_hvlite/src/run_cargo_build.rs:308:18\"},\"is_secret\":false}],\"profile\":\"Release\",\"target\":\"x86_64-unknown-linux-gnu\"}",
@@ -2214,7 +2214,7 @@
         "{\"InstallTargetTriple\":\"x86_64-pc-windows-msvc\"}",
         "{\"InstallTargetTriple\":\"x86_64-pc-windows-msvc\"}",
         "{\"InstallTargetTriple\":\"x86_64-pc-windows-msvc\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::junit_publish_test_results": [
         "{\"Register\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests:3:flowey_lib_hvlite/src/_jobs/build_and_run_nextest_unit_tests.rs:79:17\",\"is_secret\":false},\"junit_xml\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests:1:flowey_lib_hvlite/src/_jobs/build_and_run_nextest_unit_tests.rs:77:33\"},\"is_secret\":false},\"test_label\":\"x64-windows-unit-tests\"}}"
@@ -2400,7 +2400,7 @@
         "{\"InstallTargetTriple\":\"x86_64-unknown-linux-gnu\"}",
         "{\"InstallTargetTriple\":\"x86_64-unknown-linux-gnu\"}",
         "{\"InstallTargetTriple\":\"x86_64-unknown-linux-gnu\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::junit_publish_test_results": [
         "{\"Register\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests:3:flowey_lib_hvlite/src/_jobs/build_and_run_nextest_unit_tests.rs:79:17\",\"is_secret\":false},\"junit_xml\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests:1:flowey_lib_hvlite/src/_jobs/build_and_run_nextest_unit_tests.rs:77:33\"},\"is_secret\":false},\"test_label\":\"x64-linux-unit-tests\"}}"
@@ -2606,7 +2606,7 @@
         "{\"InstallTargetTriple\":\"x86_64-unknown-none\"}",
         "{\"InstallTargetTriple\":\"x86_64-unknown-uefi\"}",
         "{\"InstallTargetTriple\":\"x86_64-unknown-uefi\"}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::junit_publish_test_results": [
         "{\"Register\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests:3:flowey_lib_hvlite/src/_jobs/build_and_run_nextest_unit_tests.rs:79:17\",\"is_secret\":false},\"junit_xml\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests:1:flowey_lib_hvlite/src/_jobs/build_and_run_nextest_unit_tests.rs:77:33\"},\"is_secret\":false},\"test_label\":\"x64-linux-musl-unit-tests\"}}"
@@ -2764,7 +2764,7 @@
         "{\"AutoInstall\":true}",
         "{\"EnsureInstalled\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm:1:flowey_lib_hvlite/src/_jobs/test_local_flowey_build_igvm.rs:30:32\",\"is_secret\":false}}",
         "{\"IgnoreVersion\":false}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::use_gh_cli": [
         "{\"WithAuth\":{\"AuthToken\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36\"},\"is_secret\":true}}}"
@@ -2840,7 +2840,7 @@
       "flowey_lib_common::install_rust": [
         "{\"AutoInstall\":true}",
         "{\"IgnoreVersion\":false}",
-        "{\"Version\":\"1.81.0\"}"
+        "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_common::use_gh_cli": [
         "{\"WithAuth\":{\"AuthToken\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:94:36\"},\"is_secret\":true}}}"
