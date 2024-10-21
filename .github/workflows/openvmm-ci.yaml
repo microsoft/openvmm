@@ -3391,7 +3391,7 @@ jobs:
       shell: bash
       name: 🌼 Write to 'floweyvar4'
     - id: flowey_lib_common__gh_task_azure_login__1
-      uses: Azure/login@v2.2.0
+      uses: Azure/login@v2
       with:
         client-id: ${{ env.floweyvar2 }}
         subscription-id: ${{ env.floweyvar3 }}
@@ -3755,7 +3755,7 @@ jobs:
       shell: bash
       name: 🌼 Write to 'floweyvar4'
     - id: flowey_lib_common__gh_task_azure_login__1
-      uses: Azure/login@v2.2.0
+      uses: Azure/login@v2
       with:
         client-id: ${{ env.floweyvar2 }}
         subscription-id: ${{ env.floweyvar3 }}
@@ -4117,7 +4117,7 @@ jobs:
       shell: bash
       name: 🌼 Write to 'floweyvar4'
     - id: flowey_lib_common__gh_task_azure_login__1
-      uses: Azure/login@v2.2.0
+      uses: Azure/login@v2
       with:
         client-id: ${{ env.floweyvar2 }}
         subscription-id: ${{ env.floweyvar3 }}
