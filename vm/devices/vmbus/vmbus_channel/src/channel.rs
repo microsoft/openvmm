@@ -272,6 +272,14 @@ impl<T: ?Sized> std::fmt::Debug for ChannelHandle<T> {
     }
 }
 
+impl<T: ?Sized> ChannelHandle<T> {
+    /// Revokes the channel, returning a generic device if the VMBus server is
+    /// still running.
+    pub async fn revoke_generic(self) -> Option<Box<dyn VmbusDevice>> {
+        self.0.revoke().await
+    }
+}
+
 impl<T: 'static + VmbusDevice> ChannelHandle<T> {
     /// Revokes the channel, returning it if the VMBus server is still running.
     pub async fn revoke(self) -> Option<T> {

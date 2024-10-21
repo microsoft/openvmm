@@ -2889,6 +2889,7 @@ dependencies = [
  "hyperv_ic_resources",
  "inspect",
  "mesh",
+ "pal_async",
  "task_control",
  "thiserror",
  "tracing",
@@ -7610,6 +7611,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "futures",
+ "futures-concurrency",
  "guid",
  "hcl",
  "hvdef",

@@ -15,7 +15,9 @@ use crate::ring_buffer::MemoryBlockRingBuffer;
 use anyhow::anyhow;
 use anyhow::Context;
 use anyhow::Result;
+use futures::FutureExt;
 use futures::StreamExt;
+use futures_concurrency::future::Race;
 use guid::Guid;
 use hcl::vmbus::HclVmbus;
 use inspect::Inspect;
@@ -63,11 +65,6 @@ use vmcore::save_restore::SavedStateBlob;
 use vmcore::save_restore::SavedStateRoot;
 use zerocopy::FromZeroes;
 
-pub enum OfferResponse {
-    Ignore,
-    Open,
-}
-
 pub trait SimpleVmbusClientDevice {
     /// The saved state type.
     type SavedState: SavedStateRoot + Send + Sync;
@@ -82,7 +79,7 @@ pub trait SimpleVmbusClientDevice {
     fn instance_id(&self) -> Guid;
 
     /// Respond to a new channel offer for a device matching instance_id().
-    fn offer(&self, offer: &vmbus_core::protocol::OfferChannel) -> OfferResponse;
+    fn offer(&self, offer: &vmbus_core::protocol::OfferChannel);
 
     /// Open successful for the channel number `channel_idx`.
     ///
@@ -137,11 +134,34 @@ pub trait SaveRestoreSimpleVmbusClientDevice: SimpleVmbusClientDevice {
     ) -> Result<Self::Runner>;
 }
 
+enum InterceptDeviceVmbusControlCommands {
+    Connect,
+    Disconnect,
+}
+
+pub struct InterceptDeviceVmbusControl {
+    send_control: mesh::Sender<InterceptDeviceVmbusControlCommands>,
+}
+
+impl InterceptDeviceVmbusControl {
+    pub fn connect(&self) {
+        self.send_control
+            .send(InterceptDeviceVmbusControlCommands::Connect);
+    }
+
+    pub fn disconnect(&self) {
+        self.send_control
+            .send(InterceptDeviceVmbusControlCommands::Disconnect);
+    }
+}
+
 #[derive(InspectMut)]
 pub struct SimpleVmbusClientDeviceWrapper<T: SimpleVmbusClientDeviceAsync> {
     instance_id: Guid,
     #[inspect(skip)]
     spawner: Arc<dyn SpawnDriver>,
+    #[inspect(skip)]
+    device_control: InterceptDeviceVmbusControl,
     #[inspect(mut)]
     vmbus_listener: TaskControl<SimpleVmbusClientDeviceTask<T>, SimpleVmbusClientDeviceTaskState>,
 }
@@ -155,15 +175,22 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceWrapper<T> {
     ) -> Result<Self> {
         let hcl_vmbus = Arc::new(HclVmbus::new().context("failed to open hcl_vmbus")?);
         let spawner = Arc::new(driver.clone());
+        // Create a new control to proxy the internal one. This will serve the
+        // dual purpose of allowing external control and detecting when the
+        // device should be stopped.
+        let (send_control, recv_control) = mesh::channel();
+        let device_control = InterceptDeviceVmbusControl { send_control };
         Ok(Self {
             instance_id: device.instance_id(),
+            spawner: spawner.clone(),
+            device_control,
             vmbus_listener: TaskControl::new(SimpleVmbusClientDeviceTask::new(
                 device,
+                recv_control,
                 hcl_vmbus,
-                spawner.clone(),
+                spawner,
                 vtl_protect,
             )),
-            spawner,
         })
     }
 
@@ -175,29 +202,45 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceWrapper<T> {
         mut self,
         driver: impl SpawnDriver,
         recv_relay: mesh::Receiver<InterceptChannelRequest>,
-    ) -> Result<mesh::OneshotSender<()>> {
+    ) -> Result<InterceptDeviceVmbusControl> {
         self.vmbus_listener.insert(
             &self.spawner,
             format!("{}", self.instance_id),
             SimpleVmbusClientDeviceTaskState {
+                connect_to_vmbus: false,
                 interrupt_event: None,
                 offer: None,
                 recv_relay,
                 vtl_pages: None,
             },
         );
-        let (driver_send, driver_recv) = mesh::oneshot();
+        let (send_control, recv_control) = mesh::channel();
         driver
             .spawn(
                 format!("vmbus_relay_device {}", self.instance_id),
-                async move {
-                    self.vmbus_listener.start();
-                    let _ = driver_recv.await;
-                    self.vmbus_listener.stop().await;
-                },
+                self.run_device_task(recv_control),
             )
             .detach();
-        Ok(driver_send)
+
+        Ok(InterceptDeviceVmbusControl { send_control })
+    }
+
+    async fn run_device_task(
+        mut self,
+        mut recv: mesh::Receiver<InterceptDeviceVmbusControlCommands>,
+    ) {
+        self.vmbus_listener.start();
+        loop {
+            let msg = recv.next().await;
+            if msg.is_none() {
+                break;
+            }
+            match msg.unwrap() {
+                InterceptDeviceVmbusControlCommands::Connect => self.device_control.connect(),
+                InterceptDeviceVmbusControlCommands::Disconnect => self.device_control.disconnect(),
+            }
+        }
+        self.vmbus_listener.stop().await;
     }
 }
 
@@ -221,6 +264,7 @@ impl<T: SimpleVmbusClientDeviceAsync> InspectTaskMut<T::Runner> for RelayDeviceT
 
 #[derive(InspectMut)]
 struct SimpleVmbusClientDeviceTaskState {
+    connect_to_vmbus: bool,
     interrupt_event: Option<RegisteredEvent>,
     offer: Option<OfferInfo>,
     #[inspect(skip)]
@@ -230,6 +274,7 @@ struct SimpleVmbusClientDeviceTaskState {
 
 struct SimpleVmbusClientDeviceTask<T: SimpleVmbusClientDeviceAsync> {
     device: TaskControl<RelayDeviceTask<T>, T::Runner>,
+    recv_control: mesh::Receiver<InterceptDeviceVmbusControlCommands>,
     hcl_vmbus: Arc<HclVmbus>,
     saved_state: Option<T::SavedState>,
     spawner: Arc<dyn SpawnDriver>,
@@ -265,12 +310,14 @@ impl<T: SimpleVmbusClientDeviceAsync> InspectTaskMut<SimpleVmbusClientDeviceTask
 impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
     pub fn new(
         device: T,
+        recv_control: mesh::Receiver<InterceptDeviceVmbusControlCommands>,
         hcl_vmbus: Arc<HclVmbus>,
         spawner: Arc<dyn SpawnDriver>,
         vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
     ) -> Self {
         Self {
             device: TaskControl::new(RelayDeviceTask(device)),
+            recv_control,
             hcl_vmbus,
             saved_state: None,
             spawner,
@@ -299,31 +346,30 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         offer: OfferInfo,
         state: &mut SimpleVmbusClientDeviceTaskState,
     ) -> Result<()> {
-        tracing::info!(?offer, "matching channel offered");
-
         if offer.offer.is_dedicated != 1 {
             tracing::warn!(offer = ?offer.offer, "All offers should be dedicated with Win8+ host")
         }
 
-        if matches!(
-            self.device.task_mut().0.offer(&offer.offer),
-            OfferResponse::Ignore
-        ) {
+        state.offer = Some(offer);
+        self.device
+            .task_mut()
+            .0
+            .offer(&state.offer.as_ref().unwrap().offer);
+        if !state.connect_to_vmbus {
             return Ok(());
         }
 
-        let connection_id = Self::get_redirected_connection_id(offer.offer.connection_id);
+        let connection_id =
+            Self::get_redirected_connection_id(state.offer.as_ref().unwrap().offer.connection_id);
         let interrupt_event = RegisteredEvent::new(self.spawner.as_ref(), self.hcl_vmbus.clone())
             .context("create event")?;
 
         let (memory, ring_gpadl_id) = self
-            .reserve_memory(state, &offer.request_send, 4)
+            .reserve_memory(state, 4)
             .await
             .context("reserve memory")?;
-        state.offer = Some(offer);
-        let offer = state.offer.as_ref().unwrap();
         self.open_channel(
-            &offer.request_send,
+            &state.offer.as_ref().unwrap().request_send,
             ring_gpadl_id,
             interrupt_event.get_flag_index(),
             connection_id.0,
@@ -345,7 +391,10 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             self.device
                 .task_mut()
                 .0
-                .open(offer.offer.subchannel_index, channel)
+                .open(
+                    state.offer.as_ref().unwrap().offer.subchannel_index,
+                    channel,
+                )
                 .context("device open callback")?
         };
         state.interrupt_event = Some(interrupt_event);
@@ -431,7 +480,6 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
     async fn reserve_memory(
         &mut self,
         state: &mut SimpleVmbusClientDeviceTaskState,
-        request_send: &mesh::Sender<ChannelRequest>,
         page_count: usize,
     ) -> Result<(MemoryBlock, GpadlId)> {
         // Incoming and outgoing rings require a minimum of two pages apiece:
@@ -453,7 +501,11 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             .collect();
 
         let gpadl_id = GpadlId(state.vtl_pages.as_ref().unwrap().pfns()[1] as u32);
-        let success = request_send
+        let success = state
+            .offer
+            .as_ref()
+            .unwrap()
+            .request_send
             .call(
                 ChannelRequest::Gpadl,
                 GpadlRequest {
@@ -578,16 +630,46 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         };
     }
 
+    async fn handle_connect_request(&mut self, state: &mut SimpleVmbusClientDeviceTaskState) {
+        if state.connect_to_vmbus {
+            return;
+        }
+
+        state.connect_to_vmbus = true;
+        self.handle_start(state).await;
+    }
+
+    async fn handle_disconnect_request(&mut self, state: &mut SimpleVmbusClientDeviceTaskState) {
+        if !state.connect_to_vmbus {
+            return;
+        }
+
+        state.connect_to_vmbus = false;
+        self.handle_stop(state).await;
+    }
+
     /// Handle vmbus messages from the host and control messages from the
     /// device wrapper.
     pub async fn process_messages(&mut self, state: &mut SimpleVmbusClientDeviceTaskState) {
         loop {
-            let msg = state.recv_relay.select_next_some().await;
+            enum Message {
+                Relay(InterceptChannelRequest),
+                Control(InterceptDeviceVmbusControlCommands),
+            }
+            let msg = (
+                state.recv_relay.select_next_some().map(Message::Relay),
+                self.recv_control.select_next_some().map(Message::Control),
+            )
+                .race()
+                .await;
             match msg {
-                InterceptChannelRequest::Client(ClientNotification::Offer(offer)) => {
+                Message::Relay(InterceptChannelRequest::Client(ClientNotification::Offer(
+                    offer,
+                ))) => {
                     // Any extraneous offer notifications (e.g. from a request offers
                     // query) are ignored.
                     if !self.device.is_running() {
+                        tracing::info!(?offer, "matching channel offered");
                         if let Err(err) = self.handle_offer(offer, state).await {
                             tracing::error!(
                                 error = err.as_ref() as &dyn std::error::Error,
@@ -596,23 +678,31 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
                         }
                     }
                 }
-                InterceptChannelRequest::Client(ClientNotification::Revoke(_)) => {
+                Message::Relay(InterceptChannelRequest::Client(ClientNotification::Revoke(_))) => {
                     self.handle_revoke(state).await;
                 }
-                InterceptChannelRequest::Client(ClientNotification::HvsockConnectResult(_)) => {
+                Message::Relay(InterceptChannelRequest::Client(
+                    ClientNotification::HvsockConnectResult(_),
+                )) => {
                     tracing::error!("Unexpected hvsock notification");
                 }
-                InterceptChannelRequest::Start => {
+                Message::Relay(InterceptChannelRequest::Start) => {
                     self.handle_start(state).await;
                 }
-                InterceptChannelRequest::Stop(rpc) => {
+                Message::Relay(InterceptChannelRequest::Stop(rpc)) => {
                     rpc.handle(|()| self.handle_stop(state)).await;
                 }
-                InterceptChannelRequest::Save(rpc) => {
+                Message::Relay(InterceptChannelRequest::Save(rpc)) => {
                     rpc.handle_sync(|()| self.handle_save());
                 }
-                InterceptChannelRequest::Restore(saved_state) => {
+                Message::Relay(InterceptChannelRequest::Restore(saved_state)) => {
                     self.handle_restore(&saved_state);
+                }
+                Message::Control(InterceptDeviceVmbusControlCommands::Connect) => {
+                    self.handle_connect_request(state).await;
+                }
+                Message::Control(InterceptDeviceVmbusControlCommands::Disconnect) => {
+                    self.handle_disconnect_request(state).await;
                 }
             }
         }
