@@ -74,17 +74,17 @@ impl FlowNode for Node {
             path: v,
         });
 
-        let extract_archive_deps = crate::_util::extract::extract_archive_if_new_deps(ctx);
+        let extract_zip_deps = crate::_util::extract::extract_zip_if_new_deps(ctx);
         ctx.emit_rust_step("unpack protoc", |ctx| {
-            let extract_archive_deps = extract_archive_deps.clone().claim(ctx);
+            let extract_zip_deps = extract_zip_deps.clone().claim(ctx);
             let get_reqs = get_reqs.claim(ctx);
             let protoc_zip = protoc_zip.claim(ctx);
             move |rt| {
                 let protoc_zip = rt.read(protoc_zip);
 
-                let extract_dir = crate::_util::extract::extract_archive_if_new(
+                let extract_dir = crate::_util::extract::extract_zip_if_new(
                     rt,
-                    extract_archive_deps,
+                    extract_zip_deps,
                     &protoc_zip,
                     &tag,
                 )?;

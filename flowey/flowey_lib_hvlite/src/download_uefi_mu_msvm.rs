@@ -53,8 +53,7 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let extract_archive_deps =
-            flowey_lib_common::_util::extract::extract_archive_if_new_deps(ctx);
+        let extract_zip_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
 
         for (arch, out_vars) in reqs {
             let file_name = match arch {
@@ -83,19 +82,18 @@ impl FlowNode for Node {
                     )
                 },
                 |ctx| {
-                    let extract_archive_deps = extract_archive_deps.clone().claim(ctx);
+                    let extract_zip_deps = extract_zip_deps.clone().claim(ctx);
                     let out_vars = out_vars.claim(ctx);
                     let mu_msvm_zip = mu_msvm_zip.claim(ctx);
                     move |rt| {
                         let mu_msvm_zip = rt.read(mu_msvm_zip);
 
-                        let extract_dir =
-                            flowey_lib_common::_util::extract::extract_archive_if_new(
-                                rt,
-                                extract_archive_deps,
-                                &mu_msvm_zip,
-                                &zip_file_version,
-                            )?;
+                        let extract_dir = flowey_lib_common::_util::extract::extract_zip_if_new(
+                            rt,
+                            extract_zip_deps,
+                            &mu_msvm_zip,
+                            &zip_file_version,
+                        )?;
 
                         let msvm_fd = extract_dir.join("FV/MSVM.fd");
 

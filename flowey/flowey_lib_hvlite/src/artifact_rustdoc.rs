@@ -8,7 +8,6 @@
 /// Publish the artifact.
 pub mod publish {
     use flowey::node::prelude::*;
-    use flowey_lib_common::_util::bsdtar_name;
 
     flowey_request! {
         pub struct Request {
@@ -40,8 +39,9 @@ pub mod publish {
                 |rt| {
                     let rustdocs_dir = rt.read(rustdocs_dir);
                     let sh = xshell::Shell::new()?;
-                    let bsdtar = bsdtar_name(rt);
-                    xshell::cmd!(sh, "{bsdtar} -acf rustdoc.zip {rustdocs_dir}").run()?;
+                    // use in-box tar, which supports zip. works for all
+                    // windows builds past Windows 10 build 17063
+                    xshell::cmd!(sh, "tar -a -c -f rustdoc.zip {rustdocs_dir}").run()?;
                     Ok(sh.current_dir().join("rustdoc.zip"))
                 }
             });

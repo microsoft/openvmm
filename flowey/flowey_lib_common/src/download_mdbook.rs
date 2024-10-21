@@ -66,17 +66,17 @@ impl FlowNode for Node {
             path: v,
         });
 
-        let extract_archive_deps = crate::_util::extract::extract_archive_if_new_deps(ctx);
+        let extract_zip_deps = crate::_util::extract::extract_zip_if_new_deps(ctx);
         ctx.emit_rust_step("unpack mdbook", |ctx| {
-            let extract_archive_deps = extract_archive_deps.clone().claim(ctx);
+            let extract_zip_deps = extract_zip_deps.clone().claim(ctx);
             let get_mdbook = get_mdbook.claim(ctx);
             let mdbook_zip = mdbook_zip.claim(ctx);
             move |rt| {
                 let mdbook_zip = rt.read(mdbook_zip);
 
-                let extract_dir = crate::_util::extract::extract_archive_if_new(
+                let extract_dir = crate::_util::extract::extract_zip_if_new(
                     rt,
-                    extract_archive_deps,
+                    extract_zip_deps,
                     &mdbook_zip,
                     &tag,
                 )?;

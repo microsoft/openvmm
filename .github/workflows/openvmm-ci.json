@@ -42,7 +42,7 @@
         "{\"RegisterRepo\":{\"allow_persist_credentials\":false,\"depth\":1,\"pre_run_deps\":[],\"repo_id\":\"hvlite\",\"repo_src\":\"GithubSelf\"}}"
       ],
       "flowey_lib_common::install_apt_pkg": [
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_mdbook:1:flowey_lib_common/src/download_mdbook.rs:69:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_mdbook:1:flowey_lib_common/src/download_mdbook.rs:69:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
         "{\"AutoInstall\":true}",
@@ -128,7 +128,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"Microsoft.WSL.LxUtil.x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:83:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
+        "{\"file_name\":\"Microsoft.WSL.LxUtil.x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:82:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
         "{\"file_name\":\"protoc-27.1-win64.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_protoc:0:flowey_lib_common/src/download_protoc.rs:69:30\",\"is_secret\":false},\"repo_name\":\"protobuf\",\"repo_owner\":\"protocolbuffers\",\"tag\":\"v27.1\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -143,8 +143,8 @@
         "{\"RegisterRepo\":{\"allow_persist_credentials\":false,\"depth\":1,\"pre_run_deps\":[],\"repo_id\":\"hvlite\",\"repo_src\":\"GithubSelf\"}}"
       ],
       "flowey_lib_common::install_apt_pkg": [
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:68:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:67:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
         "{\"AutoInstall\":true}",
@@ -254,7 +254,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"Microsoft.WSL.LxUtil.x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:83:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
+        "{\"file_name\":\"Microsoft.WSL.LxUtil.x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:82:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
         "{\"file_name\":\"protoc-27.1-linux-x86_64.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_protoc:0:flowey_lib_common/src/download_protoc.rs:69:30\",\"is_secret\":false},\"repo_name\":\"protobuf\",\"repo_owner\":\"protocolbuffers\",\"tag\":\"v27.1\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -269,8 +269,8 @@
         "{\"RegisterRepo\":{\"allow_persist_credentials\":false,\"depth\":1,\"pre_run_deps\":[],\"repo_id\":\"hvlite\",\"repo_src\":\"GithubSelf\"}}"
       ],
       "flowey_lib_common::install_apt_pkg": [
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:68:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:67:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
         "{\"AutoInstall\":true}",
@@ -391,7 +391,7 @@
         "{\"RegisterRepo\":{\"allow_persist_credentials\":false,\"depth\":1,\"pre_run_deps\":[],\"repo_id\":\"hvlite\",\"repo_src\":\"GithubSelf\"}}"
       ],
       "flowey_lib_common::install_apt_pkg": [
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
         "{\"AutoInstall\":true}",
@@ -508,7 +508,7 @@
       ],
       "flowey_lib_common::install_apt_pkg": [
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_split_debug_info:0:flowey_lib_hvlite/src/run_split_debug_info.rs:36:17\",\"is_secret\":false},\"package_names\":[\"binutils-x86-64-linux-gnu\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
         "{\"AutoInstall\":true}",
@@ -633,7 +633,7 @@
         "{\"RegisterRepo\":{\"allow_persist_credentials\":false,\"depth\":1,\"pre_run_deps\":[],\"repo_id\":\"hvlite\",\"repo_src\":\"GithubSelf\"}}"
       ],
       "flowey_lib_common::install_apt_pkg": [
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_and_test_vmgs_lib:0:flowey_lib_hvlite/src/build_and_test_vmgs_lib.rs:53:17\",\"is_secret\":false},\"package_names\":[\"libssl-dev\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_vmgstool:0:flowey_lib_hvlite/src/build_vmgstool.rs:47:37\",\"is_secret\":false},\"package_names\":[\"libssl-dev\"]}}"
       ],
@@ -785,7 +785,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"Microsoft.WSL.LxUtil.AARCH64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:83:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
+        "{\"file_name\":\"Microsoft.WSL.LxUtil.AARCH64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:82:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
         "{\"file_name\":\"protoc-27.1-win64.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_protoc:0:flowey_lib_common/src/download_protoc.rs:69:30\",\"is_secret\":false},\"repo_name\":\"protobuf\",\"repo_owner\":\"protocolbuffers\",\"tag\":\"v27.1\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -800,8 +800,8 @@
         "{\"RegisterRepo\":{\"allow_persist_credentials\":false,\"depth\":1,\"pre_run_deps\":[],\"repo_id\":\"hvlite\",\"repo_src\":\"GithubSelf\"}}"
       ],
       "flowey_lib_common::install_apt_pkg": [
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:68:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:67:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_openvmm:0:flowey_lib_hvlite/src/build_openvmm.rs:51:17\",\"is_secret\":false},\"package_names\":[\"libssl-dev\",\"build-essential\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
@@ -962,7 +962,7 @@
       ],
       "flowey_lib_common::install_apt_pkg": [
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_and_test_vmgs_lib:3:flowey_lib_hvlite/src/build_and_test_vmgs_lib.rs:100:21\",\"is_secret\":false},\"package_names\":[\"clang\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_and_test_vmgs_lib:0:flowey_lib_hvlite/src/build_and_test_vmgs_lib.rs:53:17\",\"is_secret\":false},\"package_names\":[\"libssl-dev\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_vmgstool:0:flowey_lib_hvlite/src/build_vmgstool.rs:47:37\",\"is_secret\":false},\"package_names\":[\"libssl-dev\"]}}"
       ],
@@ -1115,7 +1115,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"Microsoft.WSL.LxUtil.x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:83:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
+        "{\"file_name\":\"Microsoft.WSL.LxUtil.x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:82:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
         "{\"file_name\":\"protoc-27.1-win64.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_protoc:0:flowey_lib_common/src/download_protoc.rs:69:30\",\"is_secret\":false},\"repo_name\":\"protobuf\",\"repo_owner\":\"protocolbuffers\",\"tag\":\"v27.1\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -1130,8 +1130,8 @@
         "{\"RegisterRepo\":{\"allow_persist_credentials\":false,\"depth\":1,\"pre_run_deps\":[],\"repo_id\":\"hvlite\",\"repo_src\":\"GithubSelf\"}}"
       ],
       "flowey_lib_common::install_apt_pkg": [
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:68:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:67:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_openvmm:0:flowey_lib_hvlite/src/build_openvmm.rs:51:17\",\"is_secret\":false},\"package_names\":[\"libssl-dev\",\"build-essential\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
@@ -1278,7 +1278,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"Microsoft.WSL.LxUtil.AARCH64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:83:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
+        "{\"file_name\":\"Microsoft.WSL.LxUtil.AARCH64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:82:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
         "{\"file_name\":\"protoc-27.1-linux-x86_64.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_protoc:0:flowey_lib_common/src/download_protoc.rs:69:30\",\"is_secret\":false},\"repo_name\":\"protobuf\",\"repo_owner\":\"protocolbuffers\",\"tag\":\"v27.1\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -1303,8 +1303,8 @@
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:25:flowey_lib_hvlite/src/run_cargo_build.rs:355:41\",\"is_secret\":false},\"package_names\":[\"gcc-aarch64-linux-gnu\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:28:flowey_lib_hvlite/src/run_cargo_build.rs:355:41\",\"is_secret\":false},\"package_names\":[\"gcc-aarch64-linux-gnu\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:4:flowey_lib_hvlite/src/run_cargo_build.rs:355:41\",\"is_secret\":false},\"package_names\":[\"gcc-aarch64-linux-gnu\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:68:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:67:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_openvmm:0:flowey_lib_hvlite/src/build_openvmm.rs:51:17\",\"is_secret\":false},\"package_names\":[\"libssl-dev\",\"build-essential\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_and_test_vmgs_lib:0:flowey_lib_hvlite/src/build_and_test_vmgs_lib.rs:53:17\",\"is_secret\":false},\"package_names\":[\"libssl-dev\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_vmgstool:0:flowey_lib_hvlite/src/build_vmgstool.rs:47:37\",\"is_secret\":false},\"package_names\":[\"libssl-dev\"]}}"
@@ -1497,7 +1497,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"Microsoft.WSL.LxUtil.x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:83:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
+        "{\"file_name\":\"Microsoft.WSL.LxUtil.x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:82:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
         "{\"file_name\":\"protoc-27.1-linux-x86_64.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_protoc:0:flowey_lib_common/src/download_protoc.rs:69:30\",\"is_secret\":false},\"repo_name\":\"protobuf\",\"repo_owner\":\"protocolbuffers\",\"tag\":\"v27.1\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -1518,8 +1518,8 @@
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_split_debug_info:6:flowey_lib_hvlite/src/run_split_debug_info.rs:36:17\",\"is_secret\":false},\"package_names\":[\"binutils-x86-64-linux-gnu\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_openvmm:2:flowey_lib_hvlite/src/build_openvmm.rs:89:68\",\"is_secret\":false},\"package_names\":[\"build-essential\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_and_test_vmgs_lib:3:flowey_lib_hvlite/src/build_and_test_vmgs_lib.rs:100:21\",\"is_secret\":false},\"package_names\":[\"clang\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:68:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:67:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_openvmm:0:flowey_lib_hvlite/src/build_openvmm.rs:51:17\",\"is_secret\":false},\"package_names\":[\"libssl-dev\",\"build-essential\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_and_test_vmgs_lib:0:flowey_lib_hvlite/src/build_and_test_vmgs_lib.rs:53:17\",\"is_secret\":false},\"package_names\":[\"libssl-dev\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_vmgstool:0:flowey_lib_hvlite/src/build_vmgstool.rs:47:37\",\"is_secret\":false},\"package_names\":[\"libssl-dev\"]}}"
@@ -1722,9 +1722,9 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.6-dev-arm64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:3:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:107:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-dev/6.6.51.6\"}",
-        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-arm64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:1:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:107:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
-        "{\"file_name\":\"RELEASE-AARCH64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:65:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
+        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.6-dev-arm64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:3:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:106:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-dev/6.6.51.6\"}",
+        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-arm64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:1:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:106:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
+        "{\"file_name\":\"RELEASE-AARCH64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:64:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
         "{\"file_name\":\"openvmm-deps.aarch64.0.1.0-20241014.2.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:2:flowey_lib_hvlite/src/download_openvmm_deps.rs:110:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241014.2\"}",
         "{\"file_name\":\"openvmm-deps.x86_64.0.1.0-20241014.2.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:1:flowey_lib_hvlite/src/download_openvmm_deps.rs:90:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241014.2\"}",
         "{\"file_name\":\"protoc-27.1-linux-x86_64.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_protoc:0:flowey_lib_common/src/download_protoc.rs:69:30\",\"is_secret\":false},\"repo_name\":\"protobuf\",\"repo_owner\":\"protocolbuffers\",\"tag\":\"v27.1\"}"
@@ -1749,10 +1749,10 @@
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:18:flowey_lib_hvlite/src/run_cargo_build.rs:355:41\",\"is_secret\":false},\"package_names\":[\"gcc-aarch64-linux-gnu\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:22:flowey_lib_hvlite/src/run_cargo_build.rs:355:41\",\"is_secret\":false},\"package_names\":[\"gcc-aarch64-linux-gnu\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_cargo_build:8:flowey_lib_hvlite/src/run_cargo_build.rs:355:41\",\"is_secret\":false},\"package_names\":[\"gcc-aarch64-linux-gnu\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:0:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:78:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:0:flowey_lib_hvlite/src/download_openvmm_deps.rs:81:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:0:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:57:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:0:flowey_lib_hvlite/src/download_openvmm_deps.rs:81:13\",\"is_secret\":false},\"package_names\":[\"lbzip2\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:0:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:0:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:56:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:0:flowey_lib_hvlite/src/build_openhcl_initrd.rs:62:26\",\"is_secret\":false},\"package_names\":[\"python3\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
@@ -1848,8 +1848,8 @@
       "flowey_lib_hvlite::download_openvmm_deps": [
         "{\"GetOpenhclCpioShell\":[\"Aarch64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:2:flowey_lib_hvlite/src/build_openhcl_initrd.rs:98:21\",\"is_secret\":false}]}",
         "{\"GetOpenhclCpioShell\":[\"Aarch64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:4:flowey_lib_hvlite/src/build_openhcl_initrd.rs:98:21\",\"is_secret\":false}]}",
-        "{\"GetOpenhclSysroot\":[\"Aarch64\",{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot:1:flowey_lib_hvlite/src/init_openvmm_magicpath_openhcl_sysroot.rs:52:39\",\"is_secret\":false}]}",
-        "{\"GetOpenhclSysroot\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot:3:flowey_lib_hvlite/src/init_openvmm_magicpath_openhcl_sysroot.rs:52:39\",\"is_secret\":false}]}",
+        "{\"GetOpenhclSysroot\":[\"Aarch64\",{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot:1:flowey_lib_hvlite/src/init_openvmm_magicpath_openhcl_sysroot.rs:52:46\",\"is_secret\":false}]}",
+        "{\"GetOpenhclSysroot\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot:3:flowey_lib_hvlite/src/init_openvmm_magicpath_openhcl_sysroot.rs:52:46\",\"is_secret\":false}]}",
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
@@ -1929,10 +1929,10 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.6-dev-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:5:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:107:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-dev/6.6.51.6\"}",
-        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-cvm-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:3:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:107:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
-        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:1:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:107:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
-        "{\"file_name\":\"RELEASE-X64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:65:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
+        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.6-dev-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:5:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:106:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-dev/6.6.51.6\"}",
+        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-cvm-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:3:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:106:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
+        "{\"file_name\":\"Microsoft.OHCL.Kernel.6.6.51.2-main-x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:1:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:106:21\",\"is_secret\":false},\"repo_name\":\"OHCL-Linux-Kernel\",\"repo_owner\":\"microsoft\",\"tag\":\"rolling-lts/hcl-main/6.6.51.2\"}",
+        "{\"file_name\":\"RELEASE-X64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:64:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
         "{\"file_name\":\"openvmm-deps.x86_64.0.1.0-20241014.2.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:1:flowey_lib_hvlite/src/download_openvmm_deps.rs:90:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241014.2\"}",
         "{\"file_name\":\"protoc-27.1-linux-x86_64.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_protoc:0:flowey_lib_common/src/download_protoc.rs:69:30\",\"is_secret\":false},\"repo_name\":\"protobuf\",\"repo_owner\":\"protocolbuffers\",\"tag\":\"v27.1\"}"
       ],
@@ -1956,10 +1956,10 @@
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_split_debug_info:4:flowey_lib_hvlite/src/run_split_debug_info.rs:36:17\",\"is_secret\":false},\"package_names\":[\"binutils-x86-64-linux-gnu\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_split_debug_info:6:flowey_lib_hvlite/src/run_split_debug_info.rs:36:17\",\"is_secret\":false},\"package_names\":[\"binutils-x86-64-linux-gnu\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_split_debug_info:8:flowey_lib_hvlite/src/run_split_debug_info.rs:36:17\",\"is_secret\":false},\"package_names\":[\"binutils-x86-64-linux-gnu\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:0:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:78:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:0:flowey_lib_hvlite/src/download_openvmm_deps.rs:81:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:0:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:57:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:0:flowey_lib_hvlite/src/download_openvmm_deps.rs:81:13\",\"is_secret\":false},\"package_names\":[\"lbzip2\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openhcl_kernel_package:0:flowey_lib_hvlite/src/download_openhcl_kernel_package.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:0:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:56:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:0:flowey_lib_hvlite/src/build_openhcl_initrd.rs:62:26\",\"is_secret\":false},\"package_names\":[\"python3\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
@@ -2080,7 +2080,7 @@
         "{\"GetOpenhclCpioShell\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:4:flowey_lib_hvlite/src/build_openhcl_initrd.rs:98:21\",\"is_secret\":false}]}",
         "{\"GetOpenhclCpioShell\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:6:flowey_lib_hvlite/src/build_openhcl_initrd.rs:98:21\",\"is_secret\":false}]}",
         "{\"GetOpenhclCpioShell\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::build_openhcl_initrd:8:flowey_lib_hvlite/src/build_openhcl_initrd.rs:98:21\",\"is_secret\":false}]}",
-        "{\"GetOpenhclSysroot\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot:1:flowey_lib_hvlite/src/init_openvmm_magicpath_openhcl_sysroot.rs:52:39\",\"is_secret\":false}]}",
+        "{\"GetOpenhclSysroot\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot:1:flowey_lib_hvlite/src/init_openvmm_magicpath_openhcl_sysroot.rs:52:46\",\"is_secret\":false}]}",
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
@@ -2171,8 +2171,8 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"Microsoft.WSL.LxUtil.AARCH64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:3:flowey_lib_hvlite/src/download_lxutil.rs:83:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
-        "{\"file_name\":\"Microsoft.WSL.LxUtil.x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:83:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
+        "{\"file_name\":\"Microsoft.WSL.LxUtil.AARCH64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:3:flowey_lib_hvlite/src/download_lxutil.rs:82:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
+        "{\"file_name\":\"Microsoft.WSL.LxUtil.x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:82:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
         "{\"file_name\":\"protoc-27.1-win64.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_protoc:0:flowey_lib_common/src/download_protoc.rs:69:30\",\"is_secret\":false},\"repo_name\":\"protobuf\",\"repo_owner\":\"protocolbuffers\",\"tag\":\"v27.1\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -2187,8 +2187,8 @@
         "{\"RegisterRepo\":{\"allow_persist_credentials\":false,\"depth\":1,\"pre_run_deps\":[],\"repo_id\":\"hvlite\",\"repo_src\":\"GithubSelf\"}}"
       ],
       "flowey_lib_common::install_apt_pkg": [
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:68:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:67:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
         "{\"AutoInstall\":true}",
@@ -2348,8 +2348,8 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"Microsoft.WSL.LxUtil.AARCH64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:3:flowey_lib_hvlite/src/download_lxutil.rs:83:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
-        "{\"file_name\":\"Microsoft.WSL.LxUtil.x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:83:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
+        "{\"file_name\":\"Microsoft.WSL.LxUtil.AARCH64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:3:flowey_lib_hvlite/src/download_lxutil.rs:82:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
+        "{\"file_name\":\"Microsoft.WSL.LxUtil.x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:82:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
         "{\"file_name\":\"protoc-27.1-linux-x86_64.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_protoc:0:flowey_lib_common/src/download_protoc.rs:69:30\",\"is_secret\":false},\"repo_name\":\"protobuf\",\"repo_owner\":\"protocolbuffers\",\"tag\":\"v27.1\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -2368,8 +2368,8 @@
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_split_debug_info:2:flowey_lib_hvlite/src/run_split_debug_info.rs:36:17\",\"is_secret\":false},\"package_names\":[\"binutils-x86-64-linux-gnu\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_split_debug_info:4:flowey_lib_hvlite/src/run_split_debug_info.rs:36:17\",\"is_secret\":false},\"package_names\":[\"binutils-x86-64-linux-gnu\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_split_debug_info:6:flowey_lib_hvlite/src/run_split_debug_info.rs:36:17\",\"is_secret\":false},\"package_names\":[\"binutils-x86-64-linux-gnu\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:68:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:67:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:1:flowey_lib_hvlite/src/_jobs/check_clippy.rs:110:37\",\"is_secret\":false},\"package_names\":[\"libssl-dev\",\"gcc-aarch64-linux-gnu\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:8:flowey_lib_hvlite/src/_jobs/check_clippy.rs:110:37\",\"is_secret\":false},\"package_names\":[\"libssl-dev\",\"gcc-aarch64-linux-gnu\"]}}"
       ],
@@ -2550,8 +2550,8 @@
       "flowey_lib_common::download_gh_release": [
         "{\"file_name\":\"openvmm-deps.aarch64.0.1.0-20241014.2.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:2:flowey_lib_hvlite/src/download_openvmm_deps.rs:110:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241014.2\"}",
         "{\"file_name\":\"openvmm-deps.x86_64.0.1.0-20241014.2.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:1:flowey_lib_hvlite/src/download_openvmm_deps.rs:90:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241014.2\"}",
-        "{\"file_name\":\"Microsoft.WSL.LxUtil.AARCH64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:3:flowey_lib_hvlite/src/download_lxutil.rs:83:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
-        "{\"file_name\":\"Microsoft.WSL.LxUtil.x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:83:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
+        "{\"file_name\":\"Microsoft.WSL.LxUtil.AARCH64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:3:flowey_lib_hvlite/src/download_lxutil.rs:82:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
+        "{\"file_name\":\"Microsoft.WSL.LxUtil.x64.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:1:flowey_lib_hvlite/src/download_lxutil.rs:82:34\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release\"}",
         "{\"file_name\":\"protoc-27.1-linux-x86_64.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_protoc:0:flowey_lib_common/src/download_protoc.rs:69:30\",\"is_secret\":false},\"repo_name\":\"protobuf\",\"repo_owner\":\"protocolbuffers\",\"tag\":\"v27.1\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -2569,9 +2569,9 @@
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_split_debug_info:0:flowey_lib_hvlite/src/run_split_debug_info.rs:36:17\",\"is_secret\":false},\"package_names\":[\"binutils-x86-64-linux-gnu\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_split_debug_info:2:flowey_lib_hvlite/src/run_split_debug_info.rs:36:17\",\"is_secret\":false},\"package_names\":[\"binutils-x86-64-linux-gnu\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::run_split_debug_info:4:flowey_lib_hvlite/src/run_split_debug_info.rs:36:17\",\"is_secret\":false},\"package_names\":[\"binutils-x86-64-linux-gnu\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:68:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:0:flowey_lib_hvlite/src/download_openvmm_deps.rs:81:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:0:flowey_lib_hvlite/src/download_openvmm_deps.rs:81:13\",\"is_secret\":false},\"package_names\":[\"lbzip2\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_protoc:1:flowey_lib_common/src/download_protoc.rs:77:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_lxutil:0:flowey_lib_hvlite/src/download_lxutil.rs:67:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:2:flowey_lib_hvlite/src/_jobs/check_clippy.rs:110:37\",\"is_secret\":false},\"package_names\":[\"libssl-dev\",\"gcc-aarch64-linux-gnu\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
@@ -2672,8 +2672,8 @@
         "{\"Version\":[\"Main\",\"6.6.51.2\"]}"
       ],
       "flowey_lib_hvlite::download_openvmm_deps": [
-        "{\"GetOpenhclSysroot\":[\"Aarch64\",{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot:1:flowey_lib_hvlite/src/init_openvmm_magicpath_openhcl_sysroot.rs:52:39\",\"is_secret\":false}]}",
-        "{\"GetOpenhclSysroot\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot:3:flowey_lib_hvlite/src/init_openvmm_magicpath_openhcl_sysroot.rs:52:39\",\"is_secret\":false}]}",
+        "{\"GetOpenhclSysroot\":[\"Aarch64\",{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot:1:flowey_lib_hvlite/src/init_openvmm_magicpath_openhcl_sysroot.rs:52:46\",\"is_secret\":false}]}",
+        "{\"GetOpenhclSysroot\":[\"X86_64\",{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot:3:flowey_lib_hvlite/src/init_openvmm_magicpath_openhcl_sysroot.rs:52:46\",\"is_secret\":false}]}",
         "{\"Version\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_hvlite::download_uefi_mu_msvm": [
@@ -2753,7 +2753,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"RELEASE-X64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:65:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
+        "{\"file_name\":\"RELEASE-X64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:64:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
         "{\"file_name\":\"openvmm-deps.x86_64.0.1.0-20241014.2.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:1:flowey_lib_hvlite/src/download_openvmm_deps.rs:90:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -2771,9 +2771,9 @@
         "{\"RegisterRepo\":{\"allow_persist_credentials\":false,\"depth\":1,\"pre_run_deps\":[],\"repo_id\":\"hvlite\",\"repo_src\":\"GithubSelf\"}}"
       ],
       "flowey_lib_common::install_apt_pkg": [
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:0:flowey_lib_hvlite/src/download_openvmm_deps.rs:81:13\",\"is_secret\":false},\"package_names\":[\"lbzip2\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_azcopy:2:flowey_lib_common/src/download_azcopy.rs:67:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:0:flowey_lib_hvlite/src/download_openvmm_deps.rs:81:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:0:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:57:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:0:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:56:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
         "{\"AutoInstall\":true}",
@@ -2903,7 +2903,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"RELEASE-X64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:65:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
+        "{\"file_name\":\"RELEASE-X64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:64:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
         "{\"file_name\":\"openvmm-deps.x86_64.0.1.0-20241014.2.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:1:flowey_lib_hvlite/src/download_openvmm_deps.rs:90:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -2921,9 +2921,9 @@
         "{\"RegisterRepo\":{\"allow_persist_credentials\":false,\"depth\":1,\"pre_run_deps\":[],\"repo_id\":\"hvlite\",\"repo_src\":\"GithubSelf\"}}"
       ],
       "flowey_lib_common::install_apt_pkg": [
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:0:flowey_lib_hvlite/src/download_openvmm_deps.rs:81:13\",\"is_secret\":false},\"package_names\":[\"lbzip2\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_azcopy:2:flowey_lib_common/src/download_azcopy.rs:67:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:0:flowey_lib_hvlite/src/download_openvmm_deps.rs:81:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:0:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:57:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:0:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:56:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
         "{\"AutoInstall\":true}",
@@ -3053,7 +3053,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"RELEASE-X64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:65:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
+        "{\"file_name\":\"RELEASE-X64-artifacts.zip\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:1:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:64:35\",\"is_secret\":false},\"repo_name\":\"mu_msvm\",\"repo_owner\":\"microsoft\",\"tag\":\"v24.0.2\"}",
         "{\"file_name\":\"openvmm-deps.x86_64.0.1.0-20241014.2.tar.bz2\",\"path\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:1:flowey_lib_hvlite/src/download_openvmm_deps.rs:90:21\",\"is_secret\":false},\"repo_name\":\"openvmm-deps\",\"repo_owner\":\"microsoft\",\"tag\":\"0.1.0-20241014.2\"}"
       ],
       "flowey_lib_common::download_mdbook": [
@@ -3071,9 +3071,9 @@
         "{\"RegisterRepo\":{\"allow_persist_credentials\":false,\"depth\":1,\"pre_run_deps\":[],\"repo_id\":\"hvlite\",\"repo_src\":\"GithubSelf\"}}"
       ],
       "flowey_lib_common::install_apt_pkg": [
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:0:flowey_lib_hvlite/src/download_openvmm_deps.rs:81:13\",\"is_secret\":false},\"package_names\":[\"lbzip2\"]}}",
         "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_azcopy:2:flowey_lib_common/src/download_azcopy.rs:67:36\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_openvmm_deps:0:flowey_lib_hvlite/src/download_openvmm_deps.rs:81:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:0:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:57:13\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_hvlite::download_uefi_mu_msvm:0:flowey_lib_hvlite/src/download_uefi_mu_msvm.rs:56:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
         "{\"AutoInstall\":true}",

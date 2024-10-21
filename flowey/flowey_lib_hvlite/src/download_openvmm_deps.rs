@@ -77,8 +77,8 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let extract_archive_deps =
-            flowey_lib_common::_util::extract::extract_archive_if_new_deps(ctx);
+        let extract_tar_bz2_deps =
+            flowey_lib_common::_util::extract::extract_tar_bz2_if_new_deps(ctx);
 
         let openvmm_deps_tar_bz2_x64 = if linux_test_initrd.contains_key(&OpenvmmDepsArch::X86_64)
             || linux_test_kernel.contains_key(&OpenvmmDepsArch::X86_64)
@@ -120,7 +120,7 @@ impl FlowNode for Node {
         };
 
         ctx.emit_rust_step("unpack openvmm-deps archive", |ctx| {
-            let extract_archive_deps = extract_archive_deps.claim(ctx);
+            let extract_tar_bz2_deps = extract_tar_bz2_deps.claim(ctx);
             let openvmm_deps_tar_bz2_x64 = openvmm_deps_tar_bz2_x64.claim(ctx);
             let openvmm_deps_tar_bz2_aarch64 = openvmm_deps_tar_bz2_aarch64.claim(ctx);
 
@@ -133,9 +133,9 @@ impl FlowNode for Node {
                 let extract_dir_x64 = openvmm_deps_tar_bz2_x64
                     .map(|file| {
                         let file = rt.read(file);
-                        flowey_lib_common::_util::extract::extract_archive_if_new(
+                        flowey_lib_common::_util::extract::extract_tar_bz2_if_new(
                             rt,
-                            extract_archive_deps.clone(),
+                            extract_tar_bz2_deps.clone(),
                             &file,
                             &version,
                         )
@@ -144,9 +144,9 @@ impl FlowNode for Node {
                 let extract_dir_aarch64 = openvmm_deps_tar_bz2_aarch64
                     .map(|file| {
                         let file = rt.read(file);
-                        flowey_lib_common::_util::extract::extract_archive_if_new(
+                        flowey_lib_common::_util::extract::extract_tar_bz2_if_new(
                             rt,
-                            extract_archive_deps.clone(),
+                            extract_tar_bz2_deps.clone(),
                             &file,
                             &version,
                         )
@@ -184,14 +184,7 @@ impl FlowNode for Node {
                 }
 
                 for (arch, vars) in openhcl_sysroot {
-                    // Extract the internal sysroot archive, rather than just
-                    // handing it out as a file.
-                    let path = flowey_lib_common::_util::extract::extract_archive_if_new(
-                        rt,
-                        extract_archive_deps.clone(),
-                        &base_dir(arch).join("sysroot.tar.gz"),
-                        &version,
-                    )?;
+                    let path = base_dir(arch).join("sysroot.tar.gz");
                     rt.write_all(vars, &path)
                 }
 
