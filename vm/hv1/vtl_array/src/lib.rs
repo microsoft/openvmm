@@ -71,17 +71,17 @@ where
     }
 }
 
-impl<T, const N: usize> Index<Vtl> for VtlArray<T, N> {
+impl<T, V: Into<Vtl>, const N: usize> Index<V> for VtlArray<T, N> {
     type Output = T;
 
-    fn index(&self, index: Vtl) -> &Self::Output {
-        &self.data[index as usize]
+    fn index(&self, index: V) -> &Self::Output {
+        &self.data[index.into() as usize]
     }
 }
 
-impl<T, const N: usize> IndexMut<Vtl> for VtlArray<T, N> {
-    fn index_mut(&mut self, index: Vtl) -> &mut Self::Output {
-        &mut self.data[index as usize]
+impl<T, V: Into<Vtl>, const N: usize> IndexMut<V> for VtlArray<T, N> {
+    fn index_mut(&mut self, index: V) -> &mut Self::Output {
+        &mut self.data[index.into() as usize]
     }
 }
 
@@ -134,12 +134,12 @@ impl VtlSet {
     }
 
     /// Returns true if the given [`Vtl`] is set.
-    pub fn is_set(&self, vtl: Vtl) -> bool {
-        self.bits[vtl as usize]
+    pub fn is_set<V: Into<Vtl>>(&self, vtl: V) -> bool {
+        self.bits[vtl.into() as usize]
     }
 
     /// Returns true if the given [`Vtl`] is not set.
-    pub fn is_clear(&self, vtl: Vtl) -> bool {
+    pub fn is_clear<V: Into<Vtl>>(&self, vtl: V) -> bool {
         !self.is_set(vtl)
     }
 

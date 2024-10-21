@@ -28,6 +28,7 @@ mod mapping {
     use hcl::ioctl::MshvHvcall;
     use hcl::ioctl::MshvVtl;
     use hcl::ioctl::MshvVtlLow;
+    use hcl::GuestVtl;
     use hvdef::hypercall::AcceptMemoryType;
     use hvdef::hypercall::HostVisibilityType;
     use hvdef::hypercall::HvInputVtl;
@@ -940,14 +941,14 @@ mod mapping {
             Ok(())
         }
 
-        fn default_vtl_protections(&self, vtl: Vtl) -> Option<HvMapGpaFlags> {
-            self.acceptor.default_vtl_protections(vtl)
+        fn default_vtl_protections(&self, vtl: GuestVtl) -> Option<HvMapGpaFlags> {
+            self.acceptor.default_vtl_protections(vtl.into())
         }
 
         fn change_default_vtl_protections(
             &self,
             vtl_protections: HvMapGpaFlags,
-            vtl: Vtl,
+            vtl: GuestVtl,
         ) -> Result<(), HvError> {
             // Prevent visibility changes while VTL protections are being
             // applied.
@@ -961,7 +962,7 @@ mod mapping {
             let inner = self.inner.lock();
 
             self.acceptor
-                .update_default_vtl_protections(vtl_protections, vtl);
+                .update_default_vtl_protections(vtl_protections, vtl.into());
 
             for ram_range in self.layout.ram().iter() {
                 let mut protect_start = ram_range.range.start();
@@ -980,7 +981,7 @@ mod mapping {
                             self.acceptor
                                 .apply_default_vtl_protections(
                                     MemoryRange::new(protect_start..end_address),
-                                    vtl,
+                                    vtl.into(),
                                 )
                                 .expect("applying vtl 1 protections should succeed");
                         }
@@ -996,7 +997,7 @@ mod mapping {
                     self.acceptor
                         .apply_default_vtl_protections(
                             MemoryRange::new(protect_start..end_address),
-                            vtl,
+                            vtl.into(),
                         )
                         .expect("applying vtl 1 protections should succeed");
                 }

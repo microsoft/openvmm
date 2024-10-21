@@ -7,6 +7,7 @@
 use crate::processor::mshv::x64::HypervisorBackedX86;
 use crate::processor::UhProcessor;
 use crate::processor::UhRunVpError;
+use crate::GuestVtl;
 use crate::UhPartitionInner;
 use crate::WakeReason;
 use hcl::ioctl::x64::MshvX64;
@@ -18,7 +19,6 @@ use hvdef::HvX64PendingEventReg0;
 use hvdef::HvX64PendingInterruptionRegister;
 use hvdef::HvX64PendingInterruptionType;
 use hvdef::HvX64RegisterName;
-use hvdef::Vtl;
 use inspect::Inspect;
 use virt::io::CpuIo;
 use virt::x86::MsrError;
@@ -36,20 +36,20 @@ use x86defs::RFlags;
 pub(super) struct UhApicState {
     lapic: LocalApic,
     #[inspect(debug)]
-    vtl: Vtl,
+    vtl: GuestVtl,
     pub(super) halted: bool,
     pub(super) startup_suspend: bool,
     nmi_pending: bool,
 }
 
 impl UhApicState {
-    pub fn new(lapic: LocalApic, vtl: Vtl, vp_info: &VpInfo) -> Self {
+    pub fn new(lapic: LocalApic, vtl: GuestVtl, vp_info: &VpInfo) -> Self {
         Self {
             lapic,
             vtl,
             halted: false,
             nmi_pending: false,
-            startup_suspend: vtl == Vtl::Vtl0 && !vp_info.is_bsp(),
+            startup_suspend: vtl == GuestVtl::Vtl0 && !vp_info.is_bsp(),
         }
     }
 
@@ -261,7 +261,11 @@ impl UhApicState {
 
 impl UhProcessor<'_, HypervisorBackedX86> {
     /// Returns true if the VP is ready to run, false if it is halted.
-    pub(super) fn poll_apic(&mut self, vtl: Vtl, scan_irr: bool) -> Result<bool, UhRunVpError> {
+    pub(super) fn poll_apic(
+        &mut self,
+        vtl: GuestVtl,
+        scan_irr: bool,
+    ) -> Result<bool, UhRunVpError> {
         let Some(lapics) = self.backing.lapics.as_mut() else {
             return Ok(true);
         };
@@ -312,13 +316,13 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         Ok(true)
     }
 
-    fn handle_init(&mut self, vtl: Vtl) -> Result<(), UhRunVpError> {
+    fn handle_init(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
         let vp_info = self.inner.vp_info;
-        let mut access = self.access_state(vtl);
+        let mut access = self.access_state(vtl.into());
         virt::x86::vp::x86_init(&mut access, &vp_info).map_err(UhRunVpError::State)
     }
 
-    fn handle_sipi(&mut self, vtl: Vtl, vector: u8) -> Result<(), UhRunVpError> {
+    fn handle_sipi(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
         let lapic = &mut self.backing.lapics.as_mut().unwrap()[vtl];
         if lapic.startup_suspend {
             let address = (vector as u64) << 12;
@@ -346,7 +350,7 @@ struct UhApicClient<'a, 'b, T> {
     runner: &'a mut ProcessorRunner<'b, MshvX64>,
     dev: &'a T,
     vmtime: &'a VmTimeAccess,
-    vtl: Vtl,
+    vtl: GuestVtl,
 }
 
 impl<T: CpuIo> ApicClient for UhApicClient<'_, '_, T> {
@@ -377,7 +381,7 @@ impl<T: CpuIo> ApicClient for UhApicClient<'_, '_, T> {
     }
 
     fn eoi(&mut self, vector: u8) {
-        debug_assert_eq!(self.vtl, Vtl::Vtl0);
+        debug_assert_eq!(self.vtl, GuestVtl::Vtl0);
         self.dev.handle_eoi(vector.into())
     }
 

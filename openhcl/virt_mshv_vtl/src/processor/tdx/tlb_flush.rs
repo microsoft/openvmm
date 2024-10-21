@@ -6,8 +6,8 @@ use crate::TdxBacked;
 use crate::UhProcessor;
 use hcl::ioctl::tdx::Tdx;
 use hcl::ioctl::ProcessorRunner;
+use hcl::GuestVtl;
 use hvdef::hypercall::HvGvaRange;
-use hvdef::Vtl;
 use inspect::Inspect;
 use std::collections::VecDeque;
 use std::num::Wrapping;
@@ -67,7 +67,7 @@ impl TdxFlushState {
 
 impl UhProcessor<'_, TdxBacked> {
     /// Completes any pending TLB flush activity on the current VP.
-    pub(super) fn do_tlb_flush(&mut self, target_vtl: Vtl) {
+    pub(super) fn do_tlb_flush(&mut self, target_vtl: GuestVtl) {
         let partition_flush_state = self.backing.shared.flush_state[target_vtl].read();
 
         // NOTE: It is theoretically possible that we haven't run in so long that the
@@ -114,7 +114,7 @@ impl UhProcessor<'_, TdxBacked> {
     /// Performs any TLB flush by list that may be required. Returns true
     /// if successful, false if a flush entire is required instead.
     fn try_flush_list(
-        target_vtl: Vtl,
+        target_vtl: GuestVtl,
         partition_flush_state: &TdxPartitionFlushState,
         gva_list_count: &mut Wrapping<usize>,
         runner: &mut ProcessorRunner<'_, Tdx>,
@@ -151,7 +151,7 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn do_flush_list(
-        target_vtl: Vtl,
+        target_vtl: GuestVtl,
         flush_addrs: &[HvGvaRange],
         runner: &mut ProcessorRunner<'_, Tdx>,
         flush_page: &shared_pool_alloc::SharedPoolHandle,

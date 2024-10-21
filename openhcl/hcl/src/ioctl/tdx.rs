@@ -11,9 +11,9 @@ use super::ProcessorRunner;
 use crate::protocol::tdx_tdg_vp_enter_exit_info;
 use crate::protocol::tdx_vp_context;
 use crate::protocol::tdx_vp_state;
+use crate::GuestVtl;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
-use hvdef::Vtl;
 use memory_range::MemoryRange;
 use sidecar_client::SidecarVp;
 use std::os::fd::AsRawFd;
@@ -142,11 +142,10 @@ impl ProcessorRunner<'_, Tdx> {
         &mut self.tdx_vp_context_mut().entry_rcx
     }
 
-    fn vmcs_field_code(field: VmcsField, vtl: Vtl) -> TdxExtendedFieldCode {
+    fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
         let class_code = match vtl {
-            Vtl::Vtl0 => TdVpsClassCode::VMCS_1,
-            Vtl::Vtl1 => TdVpsClassCode::VMCS_2,
-            Vtl::Vtl2 => unimplemented!(),
+            GuestVtl::Vtl0 => TdVpsClassCode::VMCS_1,
+            GuestVtl::Vtl1 => TdVpsClassCode::VMCS_2,
         };
         let field_size = match field.field_width() {
             x86defs::vmx::FieldWidth::Width16 => x86defs::tdx::FieldSize::Size16Bit,
@@ -161,7 +160,7 @@ impl ProcessorRunner<'_, Tdx> {
             .with_field_size(field_size)
     }
 
-    fn write_vmcs(&mut self, vtl: Vtl, field: VmcsField, mask: u64, value: u64) -> u64 {
+    fn write_vmcs(&mut self, vtl: GuestVtl, field: VmcsField, mask: u64, value: u64) -> u64 {
         tdcall_vp_wr(
             &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
             Self::vmcs_field_code(field, vtl),
@@ -171,7 +170,7 @@ impl ProcessorRunner<'_, Tdx> {
         .expect("fatal vmcs access failure")
     }
 
-    fn read_vmcs(&self, vtl: Vtl, field: VmcsField) -> u64 {
+    fn read_vmcs(&self, vtl: GuestVtl, field: VmcsField) -> u64 {
         tdcall_vp_rd(
             &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
             Self::vmcs_field_code(field, vtl),
@@ -186,7 +185,7 @@ impl ProcessorRunner<'_, Tdx> {
     ///
     /// Panics if the field is not a 64-bit field, or if there is an error in
     /// the TDX module when writing the field.
-    pub fn write_vmcs64(&mut self, vtl: Vtl, field: VmcsField, mask: u64, value: u64) -> u64 {
+    pub fn write_vmcs64(&mut self, vtl: GuestVtl, field: VmcsField, mask: u64, value: u64) -> u64 {
         assert!(matches!(
             field.field_width(),
             x86defs::vmx::FieldWidth::WidthNatural | x86defs::vmx::FieldWidth::Width64
@@ -198,7 +197,7 @@ impl ProcessorRunner<'_, Tdx> {
     ///
     /// Panics if the field is not a 64-bit field, or if there is an error in
     /// the TDX module when reading the field.
-    pub fn read_vmcs64(&self, vtl: Vtl, field: VmcsField) -> u64 {
+    pub fn read_vmcs64(&self, vtl: GuestVtl, field: VmcsField) -> u64 {
         assert!(matches!(
             field.field_width(),
             x86defs::vmx::FieldWidth::WidthNatural | x86defs::vmx::FieldWidth::Width64
@@ -213,7 +212,7 @@ impl ProcessorRunner<'_, Tdx> {
     ///
     /// Panics if the field is not a 32-bit field, or if there is an error in
     /// the TDX module when writing the field.
-    pub fn write_vmcs32(&mut self, vtl: Vtl, field: VmcsField, mask: u32, value: u32) -> u32 {
+    pub fn write_vmcs32(&mut self, vtl: GuestVtl, field: VmcsField, mask: u32, value: u32) -> u32 {
         assert_eq!(field.field_width(), x86defs::vmx::FieldWidth::Width32);
         self.write_vmcs(vtl, field, mask.into(), value.into()) as u32
     }
@@ -222,7 +221,7 @@ impl ProcessorRunner<'_, Tdx> {
     ///
     /// Panics if the field is not a 32-bit field, or if there is an error in
     /// the TDX module when reading the field.
-    pub fn read_vmcs32(&self, vtl: Vtl, field: VmcsField) -> u32 {
+    pub fn read_vmcs32(&self, vtl: GuestVtl, field: VmcsField) -> u32 {
         assert_eq!(field.field_width(), x86defs::vmx::FieldWidth::Width32);
         self.read_vmcs(vtl, field) as u32
     }
@@ -234,7 +233,7 @@ impl ProcessorRunner<'_, Tdx> {
     ///
     /// Panics if the field is not a 16-bit field, or if there is an error in
     /// the TDX module when writing the field.
-    pub fn write_vmcs16(&mut self, vtl: Vtl, field: VmcsField, mask: u16, value: u16) -> u16 {
+    pub fn write_vmcs16(&mut self, vtl: GuestVtl, field: VmcsField, mask: u16, value: u16) -> u16 {
         assert_eq!(field.field_width(), x86defs::vmx::FieldWidth::Width16);
         self.write_vmcs(vtl, field, mask.into(), value.into()) as u16
     }
@@ -243,7 +242,7 @@ impl ProcessorRunner<'_, Tdx> {
     ///
     /// Panics if the field is not a 16-bit field, or if there is an error in
     /// the TDX module when reading the field.
-    pub fn read_vmcs16(&self, vtl: Vtl, field: VmcsField) -> u16 {
+    pub fn read_vmcs16(&self, vtl: GuestVtl, field: VmcsField) -> u16 {
         assert_eq!(field.field_width(), x86defs::vmx::FieldWidth::Width16);
         self.read_vmcs(vtl, field) as u16
     }
@@ -254,11 +253,10 @@ impl ProcessorRunner<'_, Tdx> {
     /// the word.
     ///
     /// Panics if there is an error in the TDX module when writing the word.
-    pub fn write_msr_bitmap(&self, vtl: Vtl, i: u32, mask: u64, word: u64) -> u64 {
+    pub fn write_msr_bitmap(&self, vtl: GuestVtl, i: u32, mask: u64, word: u64) -> u64 {
         let class_code = match vtl {
-            Vtl::Vtl0 => TdVpsClassCode::MSR_BITMAPS_1,
-            Vtl::Vtl1 => TdVpsClassCode::MSR_BITMAPS_2,
-            Vtl::Vtl2 => unimplemented!(),
+            GuestVtl::Vtl0 => TdVpsClassCode::MSR_BITMAPS_1,
+            GuestVtl::Vtl1 => TdVpsClassCode::MSR_BITMAPS_2,
         };
         let field_code = TdxExtendedFieldCode::new()
             .with_context_code(TdxContextCode::TD_VCPU)
@@ -278,11 +276,10 @@ impl ProcessorRunner<'_, Tdx> {
     /// Sets the L2_CTLS field of the VP.
     ///
     /// Returns the old value of the field.
-    pub fn set_l2_ctls(&self, vtl: Vtl, value: TdxL2Ctls) -> Result<TdxL2Ctls, TdCallResult> {
+    pub fn set_l2_ctls(&self, vtl: GuestVtl, value: TdxL2Ctls) -> Result<TdxL2Ctls, TdCallResult> {
         let field_code = match vtl {
-            Vtl::Vtl0 => x86defs::tdx::TDX_FIELD_CODE_L2_CTLS_VM1,
-            Vtl::Vtl1 => x86defs::tdx::TDX_FIELD_CODE_L2_CTLS_VM2,
-            Vtl::Vtl2 => unimplemented!(),
+            GuestVtl::Vtl0 => x86defs::tdx::TDX_FIELD_CODE_L2_CTLS_VM1,
+            GuestVtl::Vtl1 => x86defs::tdx::TDX_FIELD_CODE_L2_CTLS_VM2,
         };
         tdcall_vp_wr(
             &mut MshvVtlTdcall(&self.hcl.mshv_vtl),

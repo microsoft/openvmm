@@ -34,6 +34,7 @@ use super::UhPartitionInner;
 use super::UhVpInner;
 use crate::BackingShared;
 use crate::GuestVsmState;
+use crate::GuestVtl;
 use crate::WakeReason;
 use guestmem::GuestMemory;
 use hcl::ioctl;
@@ -129,7 +130,7 @@ struct VtlsTlbLocked {
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 impl VtlsTlbLocked {
-    fn get(&self, requesting_vtl: Vtl, target_vtl: Vtl) -> bool {
+    fn get(&self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
         match requesting_vtl {
             Vtl::Vtl0 => unreachable!(),
             Vtl::Vtl1 => self.vtl1[target_vtl],
@@ -137,7 +138,7 @@ impl VtlsTlbLocked {
         }
     }
 
-    fn set(&mut self, requesting_vtl: Vtl, target_vtl: Vtl, value: bool) {
+    fn set(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl, value: bool) {
         match requesting_vtl {
             Vtl::Vtl0 => unreachable!(),
             Vtl::Vtl1 => self.vtl1[target_vtl] = value,
@@ -160,9 +161,9 @@ mod private {
     use crate::processor::UhProcessor;
     use crate::BackingShared;
     use crate::Error;
+    use crate::GuestVtl;
     use crate::UhPartitionInner;
     use hcl::ioctl::ProcessorRunner;
-    use hvdef::Vtl;
     use inspect::InspectMut;
     use std::future::Future;
     use virt::io::CpuIo;
@@ -198,7 +199,7 @@ mod private {
 
         fn access_vp_state<'a, 'p>(
             this: &'a mut UhProcessor<'p, Self>,
-            vtl: Vtl,
+            vtl: GuestVtl,
         ) -> Self::StateAccess<'p, 'a>;
 
         fn run_vp(
@@ -210,7 +211,7 @@ mod private {
         /// Returns true if the VP is ready to run the given VTL, false if it is halted.
         fn poll_apic(
             this: &mut UhProcessor<'_, Self>,
-            vtl: Vtl,
+            vtl: GuestVtl,
             scan_irr: bool,
         ) -> Result<bool, UhRunVpError>;
 
@@ -229,11 +230,11 @@ mod private {
         /// The VTL that was running when the VP exited into VTL2, with the
         /// exception of a successful vtl switch, where it will return the VTL
         /// that will run on VTL 2 exit.
-        fn last_vtl(this: &UhProcessor<'_, Self>) -> Vtl;
+        fn last_vtl(this: &UhProcessor<'_, Self>) -> GuestVtl;
 
         /// Copies shared registers (per VSM TLFS spec) from the last VTL to
         /// the target VTL that will become active.
-        fn switch_vtl_state(this: &mut UhProcessor<'_, Self>, target_vtl: Vtl);
+        fn switch_vtl_state(this: &mut UhProcessor<'_, Self>, target_vtl: GuestVtl);
 
         fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
     }
@@ -322,13 +323,13 @@ impl UhVpInner {
     }
 
     /// Queues a message for sending, optionally alerting the hypervisor if the queue is empty.
-    pub fn post_message(&self, vtl: Vtl, sint: u8, message: &HvMessage) {
+    pub fn post_message(&self, vtl: GuestVtl, sint: u8, message: &HvMessage) {
         if self.message_queues[vtl].enqueue_message(sint, message) {
             self.wake(vtl, WakeReason::MESSAGE_QUEUES);
         }
     }
 
-    pub fn wake(&self, vtl: Vtl, reason: WakeReason) {
+    pub fn wake(&self, vtl: GuestVtl, reason: WakeReason) {
         let reason = u64::from(reason.0) << (vtl as u8 * 32);
         if self.wake_reasons.fetch_or(reason, Ordering::Release) & reason == 0 {
             if let Some(waker) = &*self.waker.read() {
@@ -449,13 +450,13 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         T::inspect_extra(self, resp);
     }
 
-    fn update_synic(&mut self, vtl: Vtl, untrusted_synic: bool) {
+    fn update_synic(&mut self, vtl: GuestVtl, untrusted_synic: bool) {
         loop {
             let hv = self.hv[vtl].as_mut().unwrap();
 
             let ref_time_now = hv.ref_time_now();
             let synic = if untrusted_synic {
-                debug_assert_eq!(vtl, Vtl::Vtl0);
+                debug_assert_eq!(vtl, GuestVtl::Vtl0);
                 self.untrusted_synic.as_mut().unwrap()
             } else {
                 &mut hv.synic
@@ -488,9 +489,9 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
     fn handle_debug_exception(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
         // FUTURE: Underhill does not yet support VTL1 so this is only tested with VTL0.
-        if self.last_vtl() == Vtl::Vtl0 {
+        if self.last_vtl() == GuestVtl::Vtl0 {
             let debug_regs: virt::x86::vp::DebugRegisters = self
-                .access_state(Vtl::Vtl0)
+                .access_state(GuestVtl::Vtl0)
                 .debug_regs()
                 .expect("register query should not fail");
 
@@ -651,12 +652,12 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 };
 
                 if self.untrusted_synic.is_some() {
-                    self.update_synic(Vtl::Vtl0, true);
+                    self.update_synic(GuestVtl::Vtl0, true);
                 }
 
                 // TODO CVM GUEST VSM: Split ready into two to track per-vtl
                 let mut ready = false;
-                for vtl in [Vtl::Vtl1, Vtl::Vtl0] {
+                for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
                     // Process interrupts.
                     if self.hv(vtl).is_some() {
                         self.update_synic(vtl, false);
@@ -707,7 +708,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
     fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
         if self.inner.wake_reasons.load(Ordering::Relaxed) != 0 {
             let scan_irr = self.handle_wake()?;
-            for vtl in [Vtl::Vtl1, Vtl::Vtl0] {
+            for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
                 if scan_irr[vtl] {
                     T::poll_apic(self, vtl, true)?;
                 }
@@ -717,7 +718,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
-        T::access_vp_state(self, vtl)
+        T::access_vp_state(self, vtl.try_into().unwrap())
     }
 
     fn vtl_inspectable(&self, vtl: Vtl) -> bool {
@@ -761,7 +762,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         let hv = {
             let vtl0_hv = partition.hv.as_ref().map(|hv| {
                 hv.add_vp(
-                    partition.gm[Vtl::Vtl0].clone(),
+                    partition.gm[GuestVtl::Vtl0].clone(),
                     vp_info.base.vp_index,
                     Vtl::Vtl0,
                 )
@@ -812,8 +813,8 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         let wake_reasons_raw = self.inner.wake_reasons.swap(0, Ordering::SeqCst);
         let wake_reasons_vtl: [WakeReason; 2] = zerocopy::transmute!(wake_reasons_raw);
         for (vtl, wake_reasons) in [
-            (Vtl::Vtl1, wake_reasons_vtl[1]),
-            (Vtl::Vtl0, wake_reasons_vtl[0]),
+            (GuestVtl::Vtl1, wake_reasons_vtl[1]),
+            (GuestVtl::Vtl0, wake_reasons_vtl[0]),
         ] {
             if wake_reasons.message_queues() {
                 let pending_sints = self.inner.message_queues[vtl].pending_sints();
@@ -863,12 +864,12 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                         "starting vp with initial registers"
                     );
                     hv1_emulator::hypercall::set_x86_vp_context(
-                        &mut self.access_state(vtl),
+                        &mut self.access_state(vtl.into()),
                         &context,
                     )
                     .map_err(UhRunVpError::State)?;
 
-                    if vtl == Vtl::Vtl1 {
+                    if vtl == GuestVtl::Vtl1 {
                         assert!(self.partition.is_hardware_isolated());
                         // Should not have already initialized the hv emulator for this vtl
                         assert!(self.hv(vtl).is_none());
@@ -879,14 +880,14 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                                 .as_ref()
                                 .expect("has an hv emulator")
                                 .add_vp(
-                                    self.partition.gm[Vtl::Vtl1].clone(),
+                                    self.partition.gm[GuestVtl::Vtl1].clone(),
                                     self.vp_index(),
                                     Vtl::Vtl1,
                                 ),
                         );
                         self.cvm_guest_vsm = Some(GuestVsmVpState {
                             // TODO CVM GUEST VSM: Revisit during AP startup if this is correct
-                            current_vtl: Vtl::Vtl0,
+                            current_vtl: GuestVtl::Vtl0,
                         })
                     }
                 }
@@ -896,7 +897,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         Ok(wake_reasons_vtl.map(|w| w.intcon()).into())
     }
 
-    fn request_sint_notifications(&mut self, vtl: Vtl, sints: u16) {
+    fn request_sint_notifications(&mut self, vtl: GuestVtl, sints: u16) {
         if sints == 0 {
             return;
         }
@@ -1035,7 +1036,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         )
     }
 
-    fn last_vtl(&self) -> Vtl {
+    fn last_vtl(&self) -> GuestVtl {
         T::last_vtl(self)
     }
 
@@ -1044,16 +1045,16 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         &self.partition.gm[self.last_vtl()]
     }
 
-    fn hv(&self, vtl: Vtl) -> Option<&ProcessorVtlHv> {
+    fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
         self.hv[vtl].as_ref()
     }
 
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    fn hv_mut(&mut self, vtl: Vtl) -> Option<&mut ProcessorVtlHv> {
+    fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
         self.hv[vtl].as_mut()
     }
 
-    fn deliver_synic_messages(&mut self, vtl: Vtl, sints: u16) {
+    fn deliver_synic_messages(&mut self, vtl: GuestVtl, sints: u16) {
         let proxied_sints = self.hv(vtl).map_or(!0, |hv| hv.synic.proxied_sints());
         let pending_sints =
             self.inner.message_queues[vtl].post_pending_messages(sints, |sint, message| {
@@ -1090,7 +1091,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    fn switch_vtl(&mut self, target_vtl: Vtl) {
+    fn switch_vtl(&mut self, target_vtl: GuestVtl) {
         T::switch_vtl_state(self, target_vtl);
 
         self.runner.set_exit_vtl(target_vtl);
@@ -1153,6 +1154,15 @@ struct UhHypercallHandler<'a, 'b, T, B: Backing> {
     trusted: bool,
 }
 
+impl<T, B: Backing> UhHypercallHandler<'_, '_, T, B> {
+    fn target_vtl_no_higher(&self, target_vtl: Vtl) -> Result<GuestVtl, HvError> {
+        if Vtl::from(self.vp.last_vtl()) < target_vtl {
+            return Err(HvError::AccessDenied);
+        }
+        Ok(target_vtl.try_into().unwrap())
+    }
+}
+
 impl<T, B: Backing> hv1_hypercall::GetVpIndexFromApicId for UhHypercallHandler<'_, '_, T, B> {
     fn get_vp_index_from_apic_id(
         &mut self,
@@ -1167,9 +1177,7 @@ impl<T, B: Backing> hv1_hypercall::GetVpIndexFromApicId for UhHypercallHandler<'
             return Err((HvError::InvalidPartitionId, 0));
         }
 
-        if self.vp.last_vtl() < target_vtl {
-            return Err((HvError::AccessDenied, 0));
-        }
+        let _target_vtl = self.target_vtl_no_higher(target_vtl).map_err(|e| (e, 0))?;
 
         #[cfg(guest_arch = "aarch64")]
         if true {
@@ -1260,10 +1268,7 @@ impl<T, B: Backing> hv1_hypercall::StartVirtualProcessor<hvdef::hypercall::Initi
             return Err(HvError::InvalidVpIndex);
         }
 
-        if self.vp.last_vtl() < target_vtl {
-            return Err(HvError::AccessDenied);
-        }
-
+        let target_vtl = self.target_vtl_no_higher(target_vtl)?;
         let target_vp = &self.vp.partition.vps[target_vp as usize];
 
         // TODO CVM GUEST VSM: probably some validation on vtl1_enabled
@@ -1282,8 +1287,12 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::PostMessage for UhHypercallHandler<'_,
             "handling post message intercept"
         );
 
-        self.bus
-            .post_synic_message(self.vp.last_vtl(), connection_id, self.trusted, message)
+        self.bus.post_synic_message(
+            self.vp.last_vtl().into(),
+            connection_id,
+            self.trusted,
+            message,
+        )
     }
 }
 
@@ -1292,7 +1301,7 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::SignalEvent for UhHypercallHandler<'_,
         tracing::trace!(connection_id, "handling signal event intercept");
 
         self.bus
-            .signal_synic_event(self.vp.last_vtl(), connection_id, flag)
+            .signal_synic_event(self.vp.last_vtl().into(), connection_id, flag)
     }
 }
 

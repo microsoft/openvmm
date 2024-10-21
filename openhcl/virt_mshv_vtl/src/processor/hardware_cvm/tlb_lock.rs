@@ -4,6 +4,7 @@
 
 use crate::HardwareIsolatedBacking;
 use crate::UhProcessor;
+use hcl::GuestVtl;
 use hvdef::Vtl;
 use std::sync::atomic::Ordering;
 
@@ -11,7 +12,7 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
     /// Causes the specified VTL on the current VP to wait on all TLB locks.
     /// This is typically used to synchronize VTL permission changes with
     /// concurrent instruction emulation.
-    pub fn set_wait_for_tlb_locks(&mut self, target_vtl: Vtl) {
+    pub fn set_wait_for_tlb_locks(&mut self, target_vtl: GuestVtl) {
         // Capture the set of VPs that are currently holding the TLB lock. Only
         // those VPs that hold the lock at this point can block progress, because
         // any VP that acquires the lock after this point is guaranteed to see
@@ -61,8 +62,8 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
     }
 
     /// Lock the TLB of the target VTL on the current VP.
-    pub fn set_tlb_lock(&mut self, requesting_vtl: Vtl, target_vtl: Vtl) {
-        debug_assert!(requesting_vtl > target_vtl);
+    pub fn set_tlb_lock(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) {
+        debug_assert!(requesting_vtl > Vtl::from(target_vtl));
 
         self.partition.cvm.as_ref().unwrap().tlb_locked_vps[target_vtl]
             .set_aliased(self.vp_index().index() as usize, true);
@@ -73,7 +74,7 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
     pub fn unlock_tlb_lock(&mut self, unlocking_vtl: Vtl) {
         debug_assert!(unlocking_vtl != Vtl::Vtl0);
         let self_index = self.vp_index().index() as usize;
-        for &target_vtl in &[Vtl::Vtl1, Vtl::Vtl0][(2 - unlocking_vtl as usize)..] {
+        for &target_vtl in &[GuestVtl::Vtl1, GuestVtl::Vtl0][(2 - unlocking_vtl as usize)..] {
             // If this VP hasn't taken a lock, no need to do anything.
             if self.vtls_tlb_locked.get(unlocking_vtl, target_vtl) {
                 self.vtls_tlb_locked.set(unlocking_vtl, target_vtl, false);
@@ -87,8 +88,8 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
                 // to see whether VTL 1 also holds a lock for VTL 0. If so, no
                 // wait can be unblocked until VTL 1 also releases its lock.
                 if unlocking_vtl == Vtl::Vtl2
-                    && target_vtl == Vtl::Vtl0
-                    && self.vtls_tlb_locked.get(Vtl::Vtl1, Vtl::Vtl0)
+                    && target_vtl == GuestVtl::Vtl0
+                    && self.vtls_tlb_locked.get(Vtl::Vtl1, GuestVtl::Vtl0)
                 {
                     return;
                 }
@@ -142,7 +143,7 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
     }
 
     /// Returns whether the VP should halt to wait for the TLB lock of the specified VTL.
-    pub fn should_halt_for_tlb_unlock(&mut self, target_vtl: Vtl) -> bool {
+    pub fn should_halt_for_tlb_unlock(&mut self, target_vtl: GuestVtl) -> bool {
         // No wait is required if this VP is not blocked on the TLB lock.
         if self.vtls_tlb_waiting[target_vtl] {
             // No wait is required unless this VP is blocked on another VP that

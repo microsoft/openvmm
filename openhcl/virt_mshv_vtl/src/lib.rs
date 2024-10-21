@@ -41,6 +41,7 @@ use bitvec::vec::BitVec;
 use guestmem::GuestMemory;
 use hcl::ioctl::Hcl;
 use hcl::ioctl::SetVsmPartitionConfigError;
+use hcl::GuestVtl;
 use hv1_emulator::hv::GlobalHv;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_emulator::synic::GlobalSynic;
@@ -402,7 +403,7 @@ impl virt::irqcon::ControlGic for UhPartitionInner {
                 .with_interrupt_type(hvdef::HvInterruptType::HvArm64InterruptTypeFixed),
             0,
             irq_id,
-            Vtl::Vtl0,
+            GuestVtl::Vtl0,
         ) {
             tracelimit::warn_ratelimited!(
                 error = &err as &dyn std::error::Error,
@@ -635,7 +636,8 @@ impl virt::Partition for UhPartition {
     }
 
     fn request_msi(&self, vtl: Vtl, request: MsiRequest) {
-        self.inner.request_msi(vtl, request)
+        self.inner
+            .request_msi(vtl.try_into().expect("higher vtl not configured"), request)
     }
 
     fn request_yield(&self, _vp_index: VpIndex) {
@@ -649,6 +651,7 @@ impl virt::X86Partition for UhPartition {
     }
 
     fn pulse_lint(&self, vp_index: VpIndex, vtl: Vtl, lint: u8) {
+        let vtl = GuestVtl::try_from(vtl).expect("higher vtl not configured");
         if let Some(apic) = &self.inner.lapic {
             apic[vtl].lint(vp_index, lint.into(), |vp_index| {
                 self.inner
@@ -721,6 +724,7 @@ impl UhPartitionInner {
 
 impl virt::Synic for UhPartition {
     fn post_message(&self, vtl: Vtl, vp_index: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
+        let vtl = GuestVtl::try_from(vtl).expect("higher vtl not configured");
         let Some(vp) = self.inner.vp(vp_index) else {
             tracelimit::warn_ratelimited!(
                 vp = vp_index.index(),
@@ -816,7 +820,7 @@ impl UhPartitionInner {
     pub(crate) fn synic_interrupt(
         &self,
         vp_index: VpIndex,
-        vtl: Vtl,
+        vtl: GuestVtl,
     ) -> impl '_ + hv1_emulator::RequestInterrupt {
         move |vector, auto_eoi| {
             self.lapic.as_ref().unwrap()[vtl].synic_interrupt(
@@ -832,7 +836,7 @@ impl UhPartitionInner {
     fn synic_interrupt(
         &self,
         _vp_index: VpIndex,
-        _vtl: Vtl,
+        _vtl: GuestVtl,
     ) -> impl '_ + hv1_emulator::RequestInterrupt {
         move |_, _| {}
     }
@@ -849,7 +853,7 @@ struct UhEventPortParams {
     vp: VpIndex,
     sint: u8,
     flag: u16,
-    vtl: Vtl,
+    vtl: GuestVtl,
 }
 
 impl vmcore::synic::GuestEventPort for UhEventPort {
@@ -912,6 +916,7 @@ impl vmcore::synic::GuestEventPort for UhEventPort {
     }
 
     fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) {
+        let vtl = GuestVtl::try_from(vtl).expect("higher vtl not configured");
         *self.params.lock() = Some(UhEventPortParams {
             vp: VpIndex::new(vp),
             sint,
@@ -934,6 +939,7 @@ impl virt::Hv1 for UhPartition {
 
 impl virt::DeviceBuilder for UhPartition {
     fn build(&self, vtl: Vtl, device_id: u64) -> Result<Self::Device, Self::Error> {
+        let vtl = GuestVtl::try_from(vtl).expect("higher vtl not configured");
         let device = self
             .inner
             .software_devices
@@ -967,7 +973,7 @@ impl virt::VtlMemoryProtection for UhPartition {
 
 struct UhInterruptTarget {
     partition: Arc<UhPartitionInner>,
-    vtl: Vtl,
+    vtl: GuestVtl,
 }
 
 impl pci_core::msi::MsiInterruptTarget for UhInterruptTarget {
@@ -979,7 +985,7 @@ impl pci_core::msi::MsiInterruptTarget for UhInterruptTarget {
 }
 
 impl UhPartitionInner {
-    fn request_msi(&self, vtl: Vtl, request: MsiRequest) {
+    fn request_msi(&self, vtl: GuestVtl, request: MsiRequest) {
         if let Some(lapic) = &self.lapic {
             tracing::trace!(?request, "interrupt");
             lapic[vtl].request_interrupt(request.address, request.data, |vp_index| {
@@ -1012,7 +1018,7 @@ impl IoApicRouting for UhPartitionInner {
     // The IO-APIC is always hooked up to VTL0.
     fn assert_irq(&self, irq: u8) {
         self.irq_routes
-            .assert_irq(irq, |request| self.request_msi(Vtl::Vtl0, request))
+            .assert_irq(irq, |request| self.request_msi(GuestVtl::Vtl0, request))
     }
 }
 
@@ -1104,14 +1110,14 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     ) -> HvRepResult;
 
     /// Gets the default protections/permissions for a VTL.
-    fn default_vtl_protections(&self, vtl: Vtl) -> Option<HvMapGpaFlags>;
+    fn default_vtl_protections(&self, vtl: GuestVtl) -> Option<HvMapGpaFlags>;
     /// Changes the default protections/permissions for a VTL. For VBS-isolated
     /// VMs, the protections apply to all vtls lower than the specified one. For
     /// hardware-isolated VMs, they apply just to the given vtl.
     fn change_default_vtl_protections(
         &self,
         protections: HvMapGpaFlags,
-        vtl: Vtl,
+        vtl: GuestVtl,
     ) -> Result<(), HvError>;
 }
 
@@ -1432,7 +1438,7 @@ impl UhPartition {
                 interrupt_targets: VtlArray::from_fn(|vtl| {
                     Arc::new(UhInterruptTarget {
                         partition: partition.clone(),
-                        vtl,
+                        vtl: vtl.try_into().unwrap(),
                     })
                 }),
             },
@@ -1530,7 +1536,7 @@ impl UhPartition {
                     let privs = result.eax as u64 | ((result.ebx as u64) << 32);
                     if hvdef::HvPartitionPrivilege::from(privs).access_vsm() {
                         let guest_vsm_config = hcl.get_guest_vsm_partition_config();
-                        guest_vsm_config.maximum_vtl() >= u8::from(Vtl::Vtl1)
+                        guest_vsm_config.maximum_vtl() >= u8::from(GuestVtl::Vtl1)
                     } else {
                         false
                     }
@@ -1550,7 +1556,7 @@ impl UhPartition {
         );
         if hvdef::HvPartitionPrivilege::from(privs.as_u64()).access_vsm() {
             let guest_vsm_config = hcl.get_guest_vsm_partition_config();
-            guest_vsm_config.maximum_vtl() >= u8::from(Vtl::Vtl1)
+            guest_vsm_config.maximum_vtl() >= u8::from(GuestVtl::Vtl1)
         } else {
             false
         }
@@ -1872,7 +1878,7 @@ pub struct VtlCrash {
     /// The VP that crashed.
     pub vp_index: VpIndex,
     /// The VTL that crashed.
-    pub last_vtl: Vtl,
+    pub last_vtl: GuestVtl,
     /// The crash control information.
     pub control: GuestCrashCtl,
     /// The crash parameters.
