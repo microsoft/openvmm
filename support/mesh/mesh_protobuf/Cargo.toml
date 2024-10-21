@@ -3,6 +3,7 @@
 [package]
 name = "mesh_protobuf"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 default = []

@@ -3,6 +3,7 @@
 [package]
 name = "sidecar"
 edition = "2021"
+rust-version.workspace = true
 
 [[bin]]
 name = "sidecar"

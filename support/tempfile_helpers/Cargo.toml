@@ -3,6 +3,7 @@
 [package]
 name = "tempfile_helpers"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 tempfile.workspace = true

@@ -3,6 +3,7 @@
 [package]
 name = "vtl2_settings_proto"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 pbjson.workspace = true

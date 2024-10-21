@@ -3,6 +3,7 @@
 [package]
 name = "debug_worker_defs"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 vmm_core_defs.workspace = true

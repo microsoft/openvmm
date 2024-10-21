@@ -3,6 +3,7 @@
 [package]
 name = "serial_16550"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 chipset_device.workspace = true

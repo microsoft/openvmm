@@ -3,6 +3,7 @@
 [package]
 name = "virt_support_gic"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 vm_topology.workspace = true

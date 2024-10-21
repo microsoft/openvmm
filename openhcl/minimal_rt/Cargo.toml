@@ -3,6 +3,7 @@
 [package]
 name = "minimal_rt"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 hvdef.workspace = true

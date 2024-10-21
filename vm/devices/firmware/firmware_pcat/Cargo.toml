@@ -3,6 +3,7 @@
 [package]
 name = "firmware_pcat"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 generation_id.workspace = true

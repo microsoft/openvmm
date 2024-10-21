@@ -3,6 +3,7 @@
 [package]
 name = "xsync"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true

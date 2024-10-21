@@ -3,6 +3,7 @@
 [package]
 name = "guest_emulation_transport"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 test_utilities = [ "guest_emulation_device" ]

@@ -3,6 +3,7 @@
 [package]
 name = "hv1_hypercall"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 hvdef.workspace = true

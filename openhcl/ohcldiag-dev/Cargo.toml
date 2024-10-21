@@ -3,6 +3,7 @@
 [package]
 name = "ohcldiag-dev"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 diag_client.workspace = true

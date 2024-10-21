@@ -4,6 +4,7 @@
 name = "fuzz_firmware_uefi"
 publish = false
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 uefi_nvram_specvars.workspace = true

@@ -3,6 +3,7 @@
 [package]
 name = "underhill_confidentiality"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 std = []

@@ -3,6 +3,7 @@
 [package]
 name = "vnc_worker"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 vnc.workspace = true

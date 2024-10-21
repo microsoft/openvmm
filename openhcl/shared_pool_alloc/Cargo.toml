@@ -3,6 +3,7 @@
 [package]
 name = "shared_pool_alloc"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 vfio = ["user_driver/vfio"]

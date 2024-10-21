@@ -3,6 +3,7 @@
 [package]
 name = "underhill_core"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 # Enable profiler support

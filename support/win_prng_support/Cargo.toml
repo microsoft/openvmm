@@ -3,6 +3,7 @@
 [package]
 name = "win_prng_support"
 edition = "2021"
+rust-version.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 widestring.workspace = true

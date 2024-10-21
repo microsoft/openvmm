@@ -3,6 +3,7 @@
 [package]
 name = "host_fdt_parser"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 std = ["fdt/std", "dep:tracing", "memory_range/std"]

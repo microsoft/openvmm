@@ -3,6 +3,7 @@
 [package]
 name = "igvmfilegen_config"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }

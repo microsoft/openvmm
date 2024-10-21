@@ -3,6 +3,7 @@
 [package]
 name = "sparse_mmap"
 edition = "2021"
+rust-version.workspace = true
 
 [build-dependencies]
 cc.workspace = true

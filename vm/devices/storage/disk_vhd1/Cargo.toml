@@ -3,6 +3,7 @@
 [package]
 name = "disk_vhd1"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 disk_file.workspace = true

@@ -3,6 +3,7 @@
 [package]
 name = "net_backend"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 net_backend_resources.workspace = true

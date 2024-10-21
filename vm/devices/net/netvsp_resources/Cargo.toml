@@ -3,6 +3,7 @@
 [package]
 name = "netvsp_resources"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 guid.workspace = true

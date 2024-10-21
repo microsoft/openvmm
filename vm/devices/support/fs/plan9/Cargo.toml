@@ -3,6 +3,7 @@
 [package]
 name = "plan9"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 lx.workspace = true

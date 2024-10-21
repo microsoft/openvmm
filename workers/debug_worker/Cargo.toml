@@ -3,6 +3,7 @@
 [package]
 name = "debug_worker"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 debug_worker_defs.workspace = true

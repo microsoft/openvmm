@@ -3,6 +3,7 @@
 [package]
 name = "net_dio"
 edition = "2021"
+rust-version.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 net_backend.workspace = true

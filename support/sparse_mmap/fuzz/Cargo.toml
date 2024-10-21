@@ -4,6 +4,7 @@
 name = "fuzz_sparse_mmap"
 publish = false
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 sparse_mmap.workspace = true

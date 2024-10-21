@@ -3,6 +3,7 @@
 [package]
 name = "x86emu"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 arbitrary = ["dep:arbitrary", "x86defs/arbitrary"]

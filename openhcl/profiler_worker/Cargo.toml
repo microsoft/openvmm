@@ -3,6 +3,7 @@
 [package]
 name = "profiler_worker"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 mesh = { workspace = true, features = ["socket2"] }

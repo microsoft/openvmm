@@ -4,6 +4,7 @@
 name = "fuzz_inspect"
 publish = false
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 inspect = { workspace = true, features = ["arbitrary", "initiate", "defer"] }

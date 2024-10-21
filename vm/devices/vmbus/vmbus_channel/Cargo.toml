@@ -3,6 +3,7 @@
 [package]
 name = "vmbus_channel"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 vmbus_core.workspace = true

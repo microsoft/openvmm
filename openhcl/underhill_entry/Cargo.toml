@@ -3,6 +3,7 @@
 [package]
 name = "underhill_entry"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 # Enable gdbstub support.

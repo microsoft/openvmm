@@ -3,6 +3,7 @@
 [package]
 name = "netvsp"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 net_backend.workspace = true

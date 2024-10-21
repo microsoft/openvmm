@@ -3,6 +3,7 @@
 [package]
 name = "test_with_tracing_macro"
 edition = "2021"
+rust-version.workspace = true
 
 [lib]
 proc-macro = true

@@ -3,6 +3,7 @@
 [package]
 name = "petri_artifact_resolver_openvmm_known_paths"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 petri_artifacts_vmm_test.workspace = true

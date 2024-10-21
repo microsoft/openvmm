@@ -3,6 +3,7 @@
 [package]
 name = "framebuffer"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 video_core.workspace = true

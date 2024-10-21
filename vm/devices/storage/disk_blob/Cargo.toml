@@ -3,6 +3,7 @@
 [package]
 name = "disk_blob"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 disk_backend.workspace = true

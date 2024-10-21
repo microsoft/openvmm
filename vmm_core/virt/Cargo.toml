@@ -3,6 +3,7 @@
 [package]
 name = "virt"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 aarch64defs.workspace = true

@@ -3,6 +3,7 @@
 [package]
 name = "inspect_proto"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 inspect = { workspace = true, features = ["initiate"] }

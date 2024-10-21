@@ -3,6 +3,7 @@
 [package]
 name = "underhill_attestation"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 # Enable locally compiling and statically linking a copy of OpenSSL.

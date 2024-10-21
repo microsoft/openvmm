@@ -3,6 +3,7 @@
 [package]
 name = "vmbus_serial_protocol"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 guid.workspace = true

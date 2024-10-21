@@ -3,6 +3,7 @@
 [package]
 name = "vmgs_broker"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 default = []
