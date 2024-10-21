@@ -721,8 +721,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         .unwrap();
 
         match x86defs::Exception(message.vector as u8) {
-            #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
-            x86defs::Exception::DEBUG => self.handle_debug_exception()?,
+            x86defs::Exception::DEBUG if cfg!(feature = "gdb") => self.handle_debug_exception()?,
             _ => tracing::error!("unexpected exception type {:#x?}", message.vector),
         }
         Ok(())

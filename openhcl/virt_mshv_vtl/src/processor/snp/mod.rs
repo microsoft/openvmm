@@ -1341,8 +1341,7 @@ impl UhProcessor<'_, SnpBacked> {
         stat.increment();
 
         // Process debug exceptions before handling other intercepts.
-        #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
-        if sev_error_code == SevExitCode::EXCP_DB {
+        if cfg!(feature = "gdb") && sev_error_code == SevExitCode::EXCP_DB {
             return self.handle_debug_exception();
         }
 

@@ -1134,8 +1134,12 @@ impl UhPartition {
         // intercept on behalf of the guest. In the future, Underhill should
         // register for these intercepts itself.
         if params.intercept_debug_exceptions {
+            if !cfg!(feature = "gdb") {
+                return Err(Error::InvalidDebugConfiguration);
+            }
+
             cfg_if::cfg_if! {
-                if #[cfg(all(feature = "gdb", guest_arch = "x86_64"))] {
+                if #[cfg(guest_arch = "x86_64")] {
                     let debug_exception_vector = 0x1;
                     hcl.register_intercept(
                         HvInterceptType::HvInterceptTypeException,

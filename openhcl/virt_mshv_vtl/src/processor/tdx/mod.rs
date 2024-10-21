@@ -1604,8 +1604,7 @@ impl UhProcessor<'_, TdxBacked> {
 
         // Breakpoint exceptions may return a non-fatal error.
         // We dispatch here to correctly increment the counter.
-        if breakpoint_debug_exception {
-            #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+        if cfg!(feature = "gdb") && breakpoint_debug_exception {
             self.handle_debug_exception()?;
         }
 

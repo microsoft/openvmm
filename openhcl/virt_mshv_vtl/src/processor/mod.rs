@@ -19,8 +19,6 @@ cfg_if::cfg_if! {
         use hvdef::HvX64SegmentRegister;
         use virt::x86::MsrError;
         use virt::vp::AccessVpState;
-        #[cfg(feature = "gdb")]
-        use virt::x86::HardwareBreakpoint;
     } else if #[cfg(guest_arch = "aarch64")] {
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
@@ -485,7 +483,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         }
     }
 
-    #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+    #[cfg(guest_arch = "x86_64")]
     fn handle_debug_exception(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
         // FUTURE: Underhill does not yet support VTL1 so this is only tested with VTL0.
         if self.last_vtl() == Vtl::Vtl0 {
@@ -514,7 +512,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                     UhRunVpError::UnexpectedDebugException(debug_regs.dr6),
                 ));
             }
-            let bp = HardwareBreakpoint::from_dr7(debug_regs.dr7, dr[i], i);
+            let bp = virt::x86::HardwareBreakpoint::from_dr7(debug_regs.dr7, dr[i], i);
 
             return Err(VpHaltReason::HwBreak(bp));
         }
