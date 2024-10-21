@@ -33,7 +33,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_openvmm_magicpath_lxutil::Node>();
         ctx.import::<crate::install_openvmm_rust_build_essential::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
-        ctx.import::<flowey_lib_common::install_apt_pkg::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::run_cargo_clippy::Node>();
     }
 
@@ -100,14 +100,14 @@ impl SimpleFlowNode for Node {
             );
         }
 
-        if matches!(flowey_platform, FlowPlatform::Linux)
+        if matches!(flowey_platform, FlowPlatform::Linux(_))
             && matches!(
                 target.architecture,
                 target_lexicon::Architecture::Aarch64(_)
             )
         {
             pre_build_deps.push(ctx.reqv(|v| {
-                flowey_lib_common::install_apt_pkg::Request::Install {
+                flowey_lib_common::install_dist_pkg::Request::Install {
                     package_names: vec!["libssl-dev".into(), "gcc-aarch64-linux-gnu".into()],
                     done: v,
                 }
@@ -124,7 +124,7 @@ impl SimpleFlowNode for Node {
             },
             platform: match flowey_platform {
                 FlowPlatform::Windows => CommonPlatform::WindowsMsvc,
-                FlowPlatform::Linux => CommonPlatform::LinuxGnu,
+                FlowPlatform::Linux(_) => CommonPlatform::LinuxGnu,
                 FlowPlatform::MacOs => CommonPlatform::MacOs,
                 platform => anyhow::bail!("unsupported platform {platform}"),
             },

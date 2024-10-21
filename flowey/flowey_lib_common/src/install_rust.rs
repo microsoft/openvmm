@@ -190,7 +190,7 @@ impl FlowNode for Node {
 
                             let sh = xshell::Shell::new()?;
                             match rt.platform() {
-                                FlowPlatform::Linux => {
+                                FlowPlatform::Linux(_) => {
                                     let interactive_prompt = Some("-y");
                                     let mut default_toolchain = Vec::new();
                                     if let Some(ver) = rust_toolchain {

@@ -51,7 +51,7 @@ impl SimpleFlowNode for Node {
         } = request;
 
         if !matches!(ctx.backend(), FlowBackend::Local)
-            && matches!(ctx.platform(), FlowPlatform::Linux)
+            && matches!(ctx.platform(), FlowPlatform::Linux(_))
         {
             pre_run_deps.push({
                 ctx.emit_rust_step("ensure /dev/kvm is accessible", |_| {

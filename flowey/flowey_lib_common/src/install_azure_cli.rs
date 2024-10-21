@@ -137,7 +137,7 @@ impl FlowNode for Node {
                                 xshell::cmd!(sh, "tar -xf az.zip").run()?;
                                 rt.write_all(get_az_cli, &az_dir.join("bin\\az.cmd"));
                             }
-                            FlowPlatform::Linux => {
+                            FlowPlatform::Linux(_) => {
                                 xshell::cmd!(
                                     sh,
                                     "curl -sL https://aka.ms/InstallAzureCLIDeb -o InstallAzureCLIDeb.sh"

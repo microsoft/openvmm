@@ -33,7 +33,7 @@ impl FlowNode for Node {
         for req in &requests {
             match req.arch {
                 CommonArch::X86_64 => {
-                    if matches!(ctx.platform(), FlowPlatform::Linux) {
+                    if matches!(ctx.platform(), FlowPlatform::Linux(_)) {
                         deps.extend_from_slice(&[ctx
                             .reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
                                 arch: OpenvmmSysrootArch::X64,
@@ -59,7 +59,7 @@ impl FlowNode for Node {
                     ]);
                 }
                 CommonArch::Aarch64 => {
-                    if matches!(ctx.platform(), FlowPlatform::Linux) {
+                    if matches!(ctx.platform(), FlowPlatform::Linux(_)) {
                         deps.extend_from_slice(&[ctx
                             .reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
                                 arch: OpenvmmSysrootArch::Aarch64,

@@ -53,6 +53,7 @@ pub mod user_facing {
     pub use crate::flowey_request;
     pub use crate::new_flow_node;
     pub use crate::new_simple_flow_node;
+    pub use crate::node::FlowPlatformLinuxDistro;
 
     /// Helper method to streamline request validation in cases where a value is
     /// expected to be identical across all incoming requests.
@@ -725,6 +726,17 @@ pub enum FlowPlatformKind {
     Unix,
 }
 
+/// The kind platform the flow is being running on, Windows or Unix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FlowPlatformLinuxDistro {
+    /// Fedora (including WSL2)
+    Fedora,
+    /// Ubuntu (including WSL2)
+    Ubuntu,
+    /// An unknown distribution
+    Unknown,
+}
+
 /// What platform the flow is being running on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
@@ -732,7 +744,7 @@ pub enum FlowPlatform {
     /// Windows
     Windows,
     /// Linux (including WSL2)
-    Linux,
+    Linux(FlowPlatformLinuxDistro),
     /// macOS
     MacOs,
 }
@@ -741,14 +753,14 @@ impl FlowPlatform {
     pub fn kind(&self) -> FlowPlatformKind {
         match self {
             Self::Windows => FlowPlatformKind::Windows,
-            Self::Linux | Self::MacOs => FlowPlatformKind::Unix,
+            Self::Linux(_) | Self::MacOs => FlowPlatformKind::Unix,
         }
     }
 
     fn as_str(&self) -> &'static str {
         match self {
             Self::Windows => "windows",
-            Self::Linux => "linux",
+            Self::Linux(_) => "linux",
             Self::MacOs => "macos",
         }
     }
