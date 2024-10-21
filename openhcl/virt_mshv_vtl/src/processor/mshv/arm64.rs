@@ -23,6 +23,7 @@ use aarch64emu::InterceptState;
 use hcl::ioctl;
 use hcl::ioctl::aarch64::MshvArm64;
 use hcl::ioctl::ProcessorRunner;
+use hcl::GuestVtl;
 use hvdef::hypercall;
 use hvdef::HvAarch64PendingEvent;
 use hvdef::HvArm64RegisterName;
@@ -127,7 +128,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
 
     fn access_vp_state<'a, 'p>(
         this: &'a mut UhProcessor<'p, Self>,
-        vtl: Vtl,
+        vtl: GuestVtl,
     ) -> Self::StateAccess<'p, 'a> {
         UhVpStateAccess::new(this, vtl)
     }
@@ -196,7 +197,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
 
     fn poll_apic(
         _this: &mut UhProcessor<'_, Self>,
-        _vtl: Vtl,
+        _vtl: GuestVtl,
         _scan_irr: bool,
     ) -> Result<bool, UhRunVpError> {
         Ok(true)
@@ -217,14 +218,14 @@ impl BackingPrivate for HypervisorBackedArm64 {
     /// The VTL that was running when the VP exited into VTL2, with the
     /// exception of a successful vtl switch, where it will return the VTL
     /// that will run on VTL 2 exit.
-    fn last_vtl(_this: &UhProcessor<'_, Self>) -> Vtl {
+    fn last_vtl(_this: &UhProcessor<'_, Self>) -> GuestVtl {
         // TODO ARM64
-        Vtl::Vtl0
+        GuestVtl::Vtl0
     }
 
     /// Copies shared registers (per VSM TLFS spec) from the last VTL to
     /// the target VTL that will become active.
-    fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: Vtl) {
+    fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: GuestVtl) {
         unreachable!("vtl switching should be managed by the hypervisor");
     }
 
@@ -251,7 +252,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
         self.backing.next_deliverability_notifications.set_sints(0);
 
         // These messages are always VTL0, as VTL1 does not own any VMBUS channels.
-        self.deliver_synic_messages(Vtl::Vtl0, message.deliverable_sints);
+        self.deliver_synic_messages(GuestVtl::Vtl0, message.deliverable_sints);
     }
 
     fn handle_hypercall_exit(
@@ -545,7 +546,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked>
         // Note: the restriction to VTL 1 support also means that for WHP, which doesn't support VTL 1
         // the HvCheckSparseGpaPageVtlAccess hypercall--which is unimplemented in whp--will never be made.
         if mode == emulate::TranslateMode::Execute
-            && self.vp.last_vtl() == Vtl::Vtl0
+            && self.vp.last_vtl() == GuestVtl::Vtl0
             && self.vp.vtl1_supported()
         {
             // Should always be called after translate gva with the tlb lock flag
@@ -569,7 +570,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked>
                 .vp
                 .partition
                 .hcl
-                .check_vtl_access(gpa, Vtl::Vtl0, flags)
+                .check_vtl_access(gpa, GuestVtl::Vtl0, flags)
                 .map_err(|e| EmuCheckVtlAccessError::Hypervisor(UhRunVpError::VtlAccess(e)))?;
 
             if let Some(ioctl::CheckVtlAccessResult { vtl, denied_flags }) = access_result {
@@ -644,7 +645,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked>
         let last_vtl = self.vp.last_vtl();
         self.vp
             .runner
-            .set_vp_registers_hvcall(last_vtl, regs)
+            .set_vp_registers_hvcall(last_vtl.into(), regs)
             .expect("set_vp_registers hypercall for setting pending event should not fail");
     }
 

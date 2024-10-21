@@ -10,6 +10,7 @@ use crate::validate_vtl_gpa_flags;
 use crate::GuestVsmState;
 use crate::GuestVsmVtl1State;
 use crate::GuestVsmVtl1StateInner;
+use crate::GuestVtl;
 use crate::HardwareIsolatedBacking;
 use crate::WakeReason;
 use hvdef::hypercall::HvFlushFlags;
@@ -27,7 +28,7 @@ use zerocopy::FromZeroes;
 #[derive(Inspect, InspectMut)]
 pub struct GuestVsmVpState {
     #[inspect(with = "|x| u8::from(*x)")]
-    pub current_vtl: Vtl,
+    pub current_vtl: GuestVtl,
 }
 
 impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
@@ -41,7 +42,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             return Err(HvError::InvalidPartitionId);
         }
 
-        if target_vtl != Vtl::Vtl1 {
+        let target_vtl = GuestVtl::try_from(target_vtl).map_err(|_| HvError::AccessDenied)?;
+        if target_vtl != GuestVtl::Vtl1 {
             return Err(HvError::AccessDenied);
         }
 
@@ -90,7 +92,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
 
         // Grant VTL 1 access to lower VTL memory
         tracing::info!("Granting VTL 1 access to lower VTL memory");
-        protector.change_default_vtl_protections(hvdef::HV_MAP_GPA_PERMISSIONS_ALL, Vtl::Vtl1)?;
+        protector
+            .change_default_vtl_protections(hvdef::HV_MAP_GPA_PERMISSIONS_ALL, GuestVtl::Vtl1)?;
 
         tracing::debug!("Successfully granted vtl 1 access to lower vtl memory");
 
@@ -114,7 +117,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             return Err(HvError::InvalidVpIndex);
         }
 
-        if vtl != Vtl::Vtl1 {
+        let vtl = GuestVtl::try_from(vtl).map_err(|_| HvError::InvalidParameter)?;
+        if vtl != GuestVtl::Vtl1 {
             return Err(HvError::InvalidParameter);
         }
 
@@ -136,7 +140,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             //
             // TODO GUEST_VSM: last_vtl currently always returns 0 (which is wrong),
             // so for any VP outside of the BSP, this will fail
-            if self.vp.last_vtl() < Vtl::Vtl1 {
+            if self.vp.last_vtl() < GuestVtl::Vtl1 {
                 if vtl1_state_inner.enabled_on_vp_count > 0 || vp_index != current_vp_index {
                     return Err(HvError::AccessDenied);
                 }
@@ -226,16 +230,12 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             return Err((HvError::AccessDenied, 0));
         }
 
-        if let Some(vtl) = vtl {
-            if vtl > self.vp.last_vtl() {
-                return Err((HvError::AccessDenied, 0));
-            }
-        }
+        let vtl = self
+            .target_vtl_no_higher(vtl.unwrap_or_else(|| self.vp.last_vtl().into()))
+            .map_err(|e| (e, 0))?;
 
         for (i, (&name, output)) in zip(registers, output).enumerate() {
-            *output = self
-                .get_vp_register(name, vtl.unwrap_or(self.vp.last_vtl()))
-                .map_err(|e| (e, i))?;
+            *output = self.get_vp_register(name, vtl).map_err(|e| (e, i))?;
         }
 
         Ok(())
@@ -244,7 +244,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     fn get_vp_register(
         &mut self,
         name: hvdef::HvRegisterName,
-        vtl: Vtl,
+        vtl: GuestVtl,
     ) -> HvResult<hvdef::HvRegisterValue> {
         match name.into() {
             hvdef::HvX64RegisterName::VsmCodePageOffsets => Ok(u64::from(
@@ -349,7 +349,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             .as_ref()
             .expect("has guest vsm state")
             .current_vtl
-            != Vtl::Vtl0
+            != GuestVtl::Vtl0
         {
             false
         } else if !*self.vp.inner.hcvm_vtl1_enabled.lock() {
@@ -363,12 +363,12 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     pub fn hcvm_vtl_call(&mut self) {
         tracing::trace!("handling vtl call");
 
-        self.vp.switch_vtl(Vtl::Vtl1);
+        self.vp.switch_vtl(GuestVtl::Vtl1);
         self.vp
             .cvm_guest_vsm
             .as_mut()
             .expect("has guest vsm state")
-            .current_vtl = Vtl::Vtl1;
+            .current_vtl = GuestVtl::Vtl1;
 
         // TODO GUEST_VSM: Force reevaluation of the VTL 1 APIC in case delivery of
         // low-priority interrupts was suppressed while in VTL 0.
@@ -395,7 +395,9 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
             return Err((HvError::InvalidVpIndex, 0));
         }
 
-        let target_vtl = vtl.unwrap_or(self.vp.last_vtl());
+        let target_vtl = vtl
+            .map_or_else(|| Ok(self.vp.last_vtl()), |vtl| vtl.try_into())
+            .map_err(|_| (HvError::InvalidParameter, 0))?;
 
         for (i, reg) in registers.iter().enumerate() {
             if reg.name == hvdef::HvX64RegisterName::VsmPartitionConfig.into() {
@@ -416,9 +418,9 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     fn set_vsm_partition_config(
         &mut self,
         value: HvRegisterVsmPartitionConfig,
-        vtl: Vtl,
+        vtl: GuestVtl,
     ) -> Result<(), HvError> {
-        if vtl != Vtl::Vtl1 {
+        if vtl != GuestVtl::Vtl1 {
             return Err(HvError::InvalidParameter);
         }
 
@@ -464,7 +466,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
         // Protections given to set_vsm_partition_config actually apply to VTLs lower
         // than the VTL specified as an argument for hardware CVMs.
-        let targeted_vtl = Vtl::Vtl0;
+        let targeted_vtl = GuestVtl::Vtl0;
 
         let protector = self
             .partition

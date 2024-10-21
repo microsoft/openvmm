@@ -4,6 +4,7 @@
 
 use crate::HypervisorBacked;
 use crate::UhProcessor;
+use hcl::GuestVtl;
 use hvdef::hypercall::HvInputVtl;
 use hvdef::HvAllArchRegisterName;
 use hvdef::Vtl;
@@ -23,7 +24,7 @@ impl<'a> UhProcessor<'a, HypervisorBacked> {
     }
 
     /// Lock the TLB of the target VTL on the current VP.
-    pub fn set_tlb_lock(&mut self, requesting_vtl: Vtl, target_vtl: Vtl) {
+    pub fn set_tlb_lock(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) {
         debug_assert_eq!(requesting_vtl, Vtl::Vtl2);
 
         if self.is_tlb_locked(requesting_vtl, target_vtl) {
@@ -44,7 +45,7 @@ impl<'a> UhProcessor<'a, HypervisorBacked> {
     }
 
     /// Check the status of the TLB lock of the target VTL on the current VP.
-    pub fn is_tlb_locked(&mut self, requesting_vtl: Vtl, target_vtl: Vtl) -> bool {
+    pub fn is_tlb_locked(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
         debug_assert_eq!(requesting_vtl, Vtl::Vtl2);
         let local_status = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
         // The hypervisor may lock the TLB without us knowing, but the inverse should never happen.
@@ -54,7 +55,7 @@ impl<'a> UhProcessor<'a, HypervisorBacked> {
         local_status
     }
 
-    fn is_tlb_locked_in_hypervisor(&self, target_vtl: Vtl) -> bool {
+    fn is_tlb_locked_in_hypervisor(&self, target_vtl: GuestVtl) -> bool {
         let name = HvAllArchRegisterName(
             HvAllArchRegisterName::VsmVpSecureConfigVtl0.0 + target_vtl as u32,
         );

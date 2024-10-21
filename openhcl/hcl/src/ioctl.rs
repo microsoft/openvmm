@@ -23,6 +23,7 @@ use crate::protocol::HCL_REG_PAGE_OFFSET;
 use crate::protocol::HCL_VMSA_GUEST_VSM_PAGE_OFFSET;
 use crate::protocol::HCL_VMSA_PAGE_OFFSET;
 use crate::protocol::MSHV_APIC_PAGE_OFFSET;
+use crate::GuestVtl;
 use hvdef::hypercall::AssertVirtualInterrupt;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvGpaRange;
@@ -1896,13 +1897,13 @@ impl<T: Backing> ProcessorRunner<'_, T> {
     }
 
     /// Sets the VTL that should be returned to when underhill exits
-    pub fn set_exit_vtl(&mut self, vtl: Vtl) {
+    pub fn set_exit_vtl(&mut self, vtl: GuestVtl) {
         // SAFETY: self.run is mapped, and the target_vtl field can only be
         // mutated or accessed by this object and only before the kernel is
         // invoked during `run`
         unsafe {
             let run_vtl = self.run.as_ref().target_vtl.target_vtl().unwrap();
-            assert!(run_vtl.is_none() || (run_vtl.unwrap() != vtl));
+            assert!(run_vtl.is_none() || (run_vtl.unwrap() != Vtl::from(vtl)));
             self.run.as_mut().target_vtl = vtl.into()
         }
     }
@@ -2105,7 +2106,7 @@ impl Hcl {
         interrupt_control: hvdef::HvInterruptControl,
         destination_address: u64,
         requested_vector: u32,
-        target_vtl: Vtl,
+        target_vtl: GuestVtl,
     ) -> Result<(), Error> {
         tracing::trace!(
             ?interrupt_control,
@@ -2698,7 +2699,7 @@ impl Hcl {
     pub fn check_vtl_access(
         &self,
         gpa: u64,
-        target_vtl: Vtl,
+        target_vtl: GuestVtl,
         flags: HvMapGpaFlags,
     ) -> Result<Option<CheckVtlAccessResult>, Error> {
         assert!(!self.is_hardware_isolated());
@@ -2801,7 +2802,7 @@ impl Hcl {
     /// Enables a vtl for the partition
     pub fn enable_partition_vtl(
         &self,
-        vtl: Vtl,
+        vtl: GuestVtl,
         flags: hvdef::hypercall::EnablePartitionVtlFlags,
     ) -> Result<(), HvError> {
         use hvdef::hypercall;
@@ -2829,7 +2830,7 @@ impl Hcl {
     pub fn enable_vp_vtl(
         &self,
         vp_index: u32,
-        vtl: Vtl,
+        vtl: GuestVtl,
         hv_vp_context: InitialVpContextX64,
     ) -> Result<(), HvError> {
         use hvdef::hypercall;
@@ -3016,14 +3017,13 @@ impl Hcl {
     /// Gets the permissions for a vtl.
     /// Currently unused, but available for debugging purposes
     #[cfg(debug_assertions)]
-    pub fn rmp_query(&self, gpa: u64, vtl: Vtl) -> x86defs::snp::SevRmpAdjust {
+    pub fn rmp_query(&self, gpa: u64, vtl: GuestVtl) -> x86defs::snp::SevRmpAdjust {
         use x86defs::snp::SevRmpAdjust;
 
         let page_count = 1u64;
         let flags = [u64::from(SevRmpAdjust::new().with_target_vmpl(match vtl {
-            Vtl::Vtl0 => 2,
-            Vtl::Vtl1 => 1,
-            Vtl::Vtl2 => unreachable!(),
+            GuestVtl::Vtl0 => 2,
+            GuestVtl::Vtl1 => 1,
         }))];
         let page_size = [0u64];
         let pages_processed = 0;

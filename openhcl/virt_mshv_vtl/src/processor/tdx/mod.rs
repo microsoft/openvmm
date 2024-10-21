@@ -13,6 +13,7 @@ use super::HardwareIsolatedBacking;
 use super::UhEmulationState;
 use super::UhHypercallHandler;
 use super::UhRunVpError;
+use crate::GuestVtl;
 use crate::UhPartitionInner;
 use crate::UhProcessor;
 use crate::WakeReason;
@@ -267,7 +268,8 @@ impl VirtualRegister {
 
         // If guest owned bits of the physical register have changed, then update
         // the guest owned bits of the physical field.
-        let old_physical_reg = runner.read_vmcs64(Vtl::Vtl0, self.register.physical_vmcs_field());
+        let old_physical_reg =
+            runner.read_vmcs64(GuestVtl::Vtl0, self.register.physical_vmcs_field());
 
         tracing::trace!(old_physical_reg, "old_physical_reg");
 
@@ -279,7 +281,7 @@ impl VirtualRegister {
             tracing::trace!(new_physical_reg, "new_physical_reg");
 
             runner.write_vmcs64(
-                Vtl::Vtl0,
+                GuestVtl::Vtl0,
                 self.register.physical_vmcs_field(),
                 !0,
                 new_physical_reg,
@@ -287,12 +289,12 @@ impl VirtualRegister {
         }
 
         self.shadow_value = value;
-        runner.write_vmcs64(Vtl::Vtl0, self.register.shadow_vmcs_field(), !0, value);
+        runner.write_vmcs64(GuestVtl::Vtl0, self.register.shadow_vmcs_field(), !0, value);
         Ok(())
     }
 
     fn read(&self, runner: &ProcessorRunner<'_, Tdx>) -> u64 {
-        let physical_reg = runner.read_vmcs64(Vtl::Vtl0, self.register.physical_vmcs_field());
+        let physical_reg = runner.read_vmcs64(GuestVtl::Vtl0, self.register.physical_vmcs_field());
 
         // Get the bits owned by the host from the shadow and the bits owned by the
         // guest from the physical value.
@@ -524,27 +526,27 @@ impl BackingPrivate for TdxBacked {
 
         params
             .runner
-            .set_l2_ctls(Vtl::Vtl0, controls)
+            .set_l2_ctls(GuestVtl::Vtl0, controls)
             .map_err(crate::Error::FailedToSetL2Ctls)?;
 
         // Set guest/host masks for CR0 and CR4. These enable shadowing these
         // registers since TDX requires certain bits to be set at all times.
         let initial_cr0 = params
             .runner
-            .read_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_CR0);
+            .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_CR0);
         assert_eq!(initial_cr0, X64_CR0_PE | X64_CR0_NE);
 
         // N.B. CR0.PE and CR0.PG are guest owned but still intercept when they
         // are changed for caching purposes and to ensure EFER is managed
         // properly due to the need to change execution state.
         params.runner.write_vmcs64(
-            Vtl::Vtl0,
+            GuestVtl::Vtl0,
             VmcsField::VMX_VMCS_CR0_READ_SHADOW,
             !0,
             X64_CR0_PE | X64_CR0_NE,
         );
         params.runner.write_vmcs64(
-            Vtl::Vtl0,
+            GuestVtl::Vtl0,
             VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK,
             !0,
             !ShadowedRegister::Cr0.guest_owned_mask() | X64_CR0_PE | X64_CR0_PG,
@@ -552,7 +554,7 @@ impl BackingPrivate for TdxBacked {
 
         let initial_cr4 = params
             .runner
-            .read_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_CR4);
+            .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_CR4);
         assert_eq!(initial_cr4, X64_CR4_MCE | X64_CR4_VMXE);
 
         // Allowed cr4 bits depend on the values allowed by the SEAM.
@@ -564,9 +566,9 @@ impl BackingPrivate for TdxBacked {
 
         params
             .runner
-            .write_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_CR4_READ_SHADOW, !0, 0);
+            .write_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_CR4_READ_SHADOW, !0, 0);
         params.runner.write_vmcs64(
-            Vtl::Vtl0,
+            GuestVtl::Vtl0,
             VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK,
             !0,
             !(ShadowedRegister::Cr4.guest_owned_mask() & allowed_cr4_bits),
@@ -580,7 +582,7 @@ impl BackingPrivate for TdxBacked {
             if word != u64::MAX {
                 params
                     .runner
-                    .write_msr_bitmap(Vtl::Vtl0, i as u32, !0, word);
+                    .write_msr_bitmap(GuestVtl::Vtl0, i as u32, !0, word);
             }
         }
 
@@ -599,7 +601,7 @@ impl BackingPrivate for TdxBacked {
         let overlays: Vec<_> = pfns.collect();
 
         let mut lapic =
-            params.partition.lapic.as_ref().unwrap()[Vtl::Vtl0].add_apic(params.vp_info);
+            params.partition.lapic.as_ref().unwrap()[GuestVtl::Vtl0].add_apic(params.vp_info);
 
         // Initialize APIC base to match the reset VM state.
         let apic_base = vp::Apic::at_reset(&params.partition.caps, params.vp_info).apic_base;
@@ -608,13 +610,16 @@ impl BackingPrivate for TdxBacked {
         // Cache the processor controls.
         let processor_controls = params
             .runner
-            .read_vmcs32(Vtl::Vtl0, VmcsField::VMX_VMCS_PROCESSOR_CONTROLS)
+            .read_vmcs32(GuestVtl::Vtl0, VmcsField::VMX_VMCS_PROCESSOR_CONTROLS)
             .into();
 
         // Cache the secondary processor controls.
         let secondary_processor_controls = params
             .runner
-            .read_vmcs32(Vtl::Vtl0, VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS)
+            .read_vmcs32(
+                GuestVtl::Vtl0,
+                VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS,
+            )
             .into();
 
         // TODO: This needs to come from a private pool
@@ -662,10 +667,10 @@ impl BackingPrivate for TdxBacked {
 
     fn access_vp_state<'a, 'p>(
         this: &'a mut UhProcessor<'p, Self>,
-        vtl: Vtl,
+        vtl: GuestVtl,
     ) -> Self::StateAccess<'p, 'a> {
         // TODO GUEST_VSM: VTL 1 access not supported yet.
-        assert_eq!(vtl, Vtl::Vtl0);
+        assert_eq!(vtl, GuestVtl::Vtl0);
         UhVpStateAccess::new(this, vtl)
     }
 
@@ -693,11 +698,11 @@ impl BackingPrivate for TdxBacked {
 
         let reg_count = if let Some(synic) = &mut this.untrusted_synic {
             synic.set_simp(
-                &this.partition.gm[Vtl::Vtl0],
+                &this.partition.gm[GuestVtl::Vtl0],
                 reg(pfns[UhDirectOverlay::Sipp as usize]),
             );
             synic.set_siefp(
-                &this.partition.gm[Vtl::Vtl0],
+                &this.partition.gm[GuestVtl::Vtl0],
                 reg(pfns[UhDirectOverlay::Sifp as usize]),
             );
             // Set the SIEFP in the hypervisor so that the hypervisor can
@@ -728,7 +733,7 @@ impl BackingPrivate for TdxBacked {
     // TODO TDX GUEST VSM
     fn poll_apic(
         this: &mut UhProcessor<'_, Self>,
-        _vtl: Vtl,
+        _vtl: GuestVtl,
         scan_irr: bool,
     ) -> Result<bool, UhRunVpError> {
         if !this.try_poll_apic(scan_irr)? {
@@ -759,13 +764,13 @@ impl BackingPrivate for TdxBacked {
         }
     }
 
-    fn last_vtl(this: &UhProcessor<'_, Self>) -> Vtl {
+    fn last_vtl(this: &UhProcessor<'_, Self>) -> GuestVtl {
         this.cvm_guest_vsm
             .as_ref()
-            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl)
+            .map_or(GuestVtl::Vtl0, |gvsm_state| gvsm_state.current_vtl)
     }
 
-    fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: Vtl) {
+    fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: GuestVtl) {
         todo!()
     }
 }
@@ -832,7 +837,7 @@ impl UhProcessor<'_, TdxBacked> {
         if self.backing.tpr_threshold != new_tpr_threshold {
             tracing::trace!(new_tpr_threshold, "setting tpr threshold");
             self.runner.write_vmcs32(
-                Vtl::Vtl0,
+                GuestVtl::Vtl0,
                 VmcsField::VMX_VMCS_TPR_THRESHOLD,
                 !0,
                 new_tpr_threshold.into(),
@@ -843,7 +848,7 @@ impl UhProcessor<'_, TdxBacked> {
         if self.backing.processor_controls != new_processor_controls {
             tracing::debug!(?new_processor_controls, "requesting window change");
             self.runner.write_vmcs32(
-                Vtl::Vtl0,
+                GuestVtl::Vtl0,
                 VmcsField::VMX_VMCS_PROCESSOR_CONTROLS,
                 !0,
                 new_processor_controls.into(),
@@ -885,7 +890,7 @@ impl UhProcessor<'_, TdxBacked> {
                 {
                     let tmr = tmr[0] as u64 | ((tmr[1] as u64) << 32);
                     if *eoi_exit != tmr {
-                        self.runner.write_vmcs64(Vtl::Vtl0, field, !0, tmr);
+                        self.runner.write_vmcs64(GuestVtl::Vtl0, field, !0, tmr);
                         *eoi_exit = tmr;
                     }
                 }
@@ -952,7 +957,7 @@ impl UhProcessor<'_, TdxBacked> {
         // Once for read and once for write.
         for offset in [0, 0x100] {
             self.runner.write_msr_bitmap(
-                Vtl::Vtl0,
+                GuestVtl::Vtl0,
                 offset + X2APIC_MSR_BASE / 64,
                 !0,
                 !offload_bitmap,
@@ -970,7 +975,7 @@ impl UhProcessor<'_, TdxBacked> {
                 .secondary_processor_controls
                 .set_virtual_interrupt_delivery(offload);
             self.runner.write_vmcs32(
-                Vtl::Vtl0,
+                GuestVtl::Vtl0,
                 VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS,
                 !0,
                 self.backing.secondary_processor_controls.into(),
@@ -1004,7 +1009,7 @@ impl UhProcessor<'_, TdxBacked> {
         // Ensure the interrupt is not blocked by RFLAGS.IF or interrupt shadow.
         let interruptibility: Interruptibility = self
             .runner
-            .read_vmcs32(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY)
+            .read_vmcs32(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY)
             .into();
 
         let rflags = RFlags::from(self.runner.tdx_enter_guest_state().rflags);
@@ -1044,7 +1049,7 @@ impl UhProcessor<'_, TdxBacked> {
 
         let interruptibility: Interruptibility = self
             .runner
-            .read_vmcs32(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY)
+            .read_vmcs32(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY)
             .into();
 
         if interruptibility.blocked_by_nmi()
@@ -1076,7 +1081,7 @@ impl UhProcessor<'_, TdxBacked> {
         if self.backing.startup_suspend {
             let address = (vector as u64) << 12;
             self.write_segment(
-                Vtl::Vtl0,
+                GuestVtl::Vtl0,
                 TdxSegmentReg::Cs,
                 SegmentRegister {
                     base: address,
@@ -1101,14 +1106,14 @@ impl UhProcessor<'_, TdxBacked> {
             );
 
             self.runner.write_vmcs32(
-                Vtl::Vtl0,
+                GuestVtl::Vtl0,
                 VmcsField::VMX_VMCS_ENTRY_INTERRUPT_INFO,
                 !0,
                 self.backing.interruption_information.into(),
             );
             if self.backing.interruption_information.deliver_error_code() {
                 self.runner.write_vmcs32(
-                    Vtl::Vtl0,
+                    GuestVtl::Vtl0,
                     VmcsField::VMX_VMCS_ENTRY_EXCEPTION_ERROR_CODE,
                     !0,
                     self.backing.exception_error_code,
@@ -1116,16 +1121,20 @@ impl UhProcessor<'_, TdxBacked> {
             }
             self.backing.interruption_set = true;
         } else if self.backing.interruption_set {
-            self.runner
-                .write_vmcs32(Vtl::Vtl0, VmcsField::VMX_VMCS_ENTRY_INTERRUPT_INFO, !0, 0);
+            self.runner.write_vmcs32(
+                GuestVtl::Vtl0,
+                VmcsField::VMX_VMCS_ENTRY_INTERRUPT_INFO,
+                !0,
+                0,
+            );
             self.backing.interruption_set = false;
         }
 
         // We're about to return to VTL 0, so do any pending flushes, unlock our
         // TLB locks, and wait for any others we're supposed to.
-        self.do_tlb_flush(Vtl::Vtl0);
+        self.do_tlb_flush(GuestVtl::Vtl0);
         self.unlock_tlb_lock(Vtl::Vtl2);
-        let tlb_halt = self.should_halt_for_tlb_unlock(Vtl::Vtl0);
+        let tlb_halt = self.should_halt_for_tlb_unlock(GuestVtl::Vtl0);
 
         self.runner
             .set_halted(self.backing.halted || self.backing.startup_suspend || tlb_halt);
@@ -1442,7 +1451,7 @@ impl UhProcessor<'_, TdxBacked> {
                 let mask = Interruptibility::new().with_blocked_by_sti(true);
                 let value = Interruptibility::new().with_blocked_by_sti(false);
                 self.runner.write_vmcs32(
-                    Vtl::Vtl0,
+                    GuestVtl::Vtl0,
                     VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY,
                     mask.into(),
                     value.into(),
@@ -1542,7 +1551,7 @@ impl UhProcessor<'_, TdxBacked> {
                             let old_interruptibility: Interruptibility = self
                                 .runner
                                 .write_vmcs32(
-                                    Vtl::Vtl0,
+                                    GuestVtl::Vtl0,
                                     VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY,
                                     mask.into(),
                                     value.into(),
@@ -1593,7 +1602,11 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.exit_stats.tdcall
             }
-            VmxExit::TRIPLE_FAULT => return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }),
+            VmxExit::TRIPLE_FAULT => {
+                return Err(VpHaltReason::TripleFault {
+                    vtl: self.last_vtl().into(),
+                })
+            }
             _ => {
                 return Err(VpHaltReason::Hypervisor(UhRunVpError::UnknownVmxExit(
                     exit_info.code().vmx_exit(),
@@ -1716,7 +1729,7 @@ impl UhProcessor<'_, TdxBacked> {
             }
             _ => {
                 self.untrusted_synic.as_mut().unwrap().write_nontimer_msr(
-                    &self.partition.gm[Vtl::Vtl0],
+                    &self.partition.gm[GuestVtl::Vtl0],
                     msr,
                     value,
                 )?;
@@ -1787,7 +1800,7 @@ impl UhProcessor<'_, TdxBacked> {
             x86defs::X86X_MSR_CR_PAT => {
                 let pat = self
                     .runner
-                    .read_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_PAT);
+                    .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_PAT);
                 Ok(pat)
             }
 
@@ -1825,7 +1838,7 @@ impl UhProcessor<'_, TdxBacked> {
             x86defs::X86X_MSR_SFMASK => state.msr_sfmask = value,
             x86defs::X86X_MSR_SYSENTER_CS => {
                 self.runner.write_vmcs32(
-                    Vtl::Vtl0,
+                    GuestVtl::Vtl0,
                     VmcsField::VMX_VMCS_GUEST_SYSENTER_CS_MSR,
                     !0,
                     value as u32,
@@ -1833,7 +1846,7 @@ impl UhProcessor<'_, TdxBacked> {
             }
             x86defs::X86X_MSR_SYSENTER_EIP => {
                 self.runner.write_vmcs64(
-                    Vtl::Vtl0,
+                    GuestVtl::Vtl0,
                     VmcsField::VMX_VMCS_GUEST_SYSENTER_EIP_MSR,
                     !0,
                     value,
@@ -1841,7 +1854,7 @@ impl UhProcessor<'_, TdxBacked> {
             }
             x86defs::X86X_MSR_SYSENTER_ESP => {
                 self.runner.write_vmcs64(
-                    Vtl::Vtl0,
+                    GuestVtl::Vtl0,
                     VmcsField::VMX_VMCS_GUEST_SYSENTER_ESP_MSR,
                     !0,
                     value,
@@ -1859,7 +1872,7 @@ impl UhProcessor<'_, TdxBacked> {
             x86defs::X86X_IA32_MSR_MISC_ENABLE => return Ok(()),
             x86defs::X86X_MSR_CR_PAT => {
                 self.runner
-                    .write_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_PAT, !0, value);
+                    .write_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_PAT, !0, value);
             }
 
             x86defs::X86X_MSR_MCG_STATUS => {
@@ -1892,7 +1905,7 @@ impl UhProcessor<'_, TdxBacked> {
 
     fn write_segment(
         &mut self,
-        vtl: Vtl,
+        vtl: GuestVtl,
         seg: TdxSegmentReg,
         reg: SegmentRegister,
     ) -> Result<(), vp_state::Error> {
@@ -1914,7 +1927,7 @@ impl UhProcessor<'_, TdxBacked> {
         Ok(())
     }
 
-    fn read_segment(&self, vtl: Vtl, seg: TdxSegmentReg) -> SegmentRegister {
+    fn read_segment(&self, vtl: GuestVtl, seg: TdxSegmentReg) -> SegmentRegister {
         let selector = self.runner.read_vmcs16(vtl, seg.selector());
         let base = self.runner.read_vmcs64(vtl, seg.base());
         let limit = self.runner.read_vmcs32(vtl, seg.limit());
@@ -1950,12 +1963,22 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         Ok(x86emu::CpuState {
             gps: enter_state.gps,
             segs: [
-                self.vp.read_segment(Vtl::Vtl0, TdxSegmentReg::Es).into(),
+                self.vp
+                    .read_segment(GuestVtl::Vtl0, TdxSegmentReg::Es)
+                    .into(),
                 cs.into(),
-                self.vp.read_segment(Vtl::Vtl0, TdxSegmentReg::Ss).into(),
-                self.vp.read_segment(Vtl::Vtl0, TdxSegmentReg::Ds).into(),
-                self.vp.read_segment(Vtl::Vtl0, TdxSegmentReg::Fs).into(),
-                self.vp.read_segment(Vtl::Vtl0, TdxSegmentReg::Gs).into(),
+                self.vp
+                    .read_segment(GuestVtl::Vtl0, TdxSegmentReg::Ss)
+                    .into(),
+                self.vp
+                    .read_segment(GuestVtl::Vtl0, TdxSegmentReg::Ds)
+                    .into(),
+                self.vp
+                    .read_segment(GuestVtl::Vtl0, TdxSegmentReg::Fs)
+                    .into(),
+                self.vp
+                    .read_segment(GuestVtl::Vtl0, TdxSegmentReg::Gs)
+                    .into(),
             ],
             rip: enter_state.rip,
             rflags: enter_state.rflags.into(),
@@ -2102,8 +2125,8 @@ impl TranslateGvaSupport for UhProcessor<'_, TdxBacked> {
         let efer = self.backing.efer;
         let cr3 = self
             .runner
-            .read_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_CR3);
-        let ss = self.read_segment(Vtl::Vtl0, TdxSegmentReg::Ss).into();
+            .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_CR3);
+        let ss = self.read_segment(GuestVtl::Vtl0, TdxSegmentReg::Ss).into();
         let rflags = self.runner.tdx_enter_guest_state().rflags;
         Ok(TranslationRegisters {
             cr0,
@@ -2230,7 +2253,7 @@ impl UhProcessor<'_, TdxBacked> {
         // Update the local value of EFER and the VMCS.
         self.backing.efer = efer;
         self.runner
-            .write_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_EFER, !0, efer);
+            .write_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_EFER, !0, efer);
         Ok(())
     }
 
@@ -2265,7 +2288,7 @@ impl UhProcessor<'_, TdxBacked> {
 
     fn write_table_register(
         &mut self,
-        vtl: Vtl,
+        vtl: GuestVtl,
         table: TdxTableReg,
         reg: TableRegister,
     ) -> Result<(), vp_state::Error> {
@@ -2276,7 +2299,7 @@ impl UhProcessor<'_, TdxBacked> {
         Ok(())
     }
 
-    fn read_table_register(&self, vtl: Vtl, table: TdxTableReg) -> TableRegister {
+    fn read_table_register(&self, vtl: GuestVtl, table: TdxTableReg) -> TableRegister {
         let base = self.runner.read_vmcs64(vtl, table.base_code());
         let limit = self.runner.read_vmcs32(vtl, table.limit_code());
 
@@ -2301,7 +2324,7 @@ impl UhProcessor<'_, TdxBacked> {
 
         let mut entry_controls = self
             .runner
-            .read_vmcs32(Vtl::Vtl0, VmcsField::VMX_VMCS_ENTRY_CONTROLS);
+            .read_vmcs32(GuestVtl::Vtl0, VmcsField::VMX_VMCS_ENTRY_CONTROLS);
         if lma {
             entry_controls |= VMX_ENTRY_CONTROL_LONG_MODE_GUEST;
         } else {
@@ -2309,7 +2332,7 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         self.runner.write_vmcs32(
-            Vtl::Vtl0,
+            GuestVtl::Vtl0,
             VmcsField::VMX_VMCS_ENTRY_CONTROLS,
             !0,
             entry_controls,
@@ -2339,7 +2362,7 @@ impl<T: CpuIo> ApicClient for TdxApicClient<'_, T> {
     }
 
     fn wake(&mut self, vp_index: VpIndex) {
-        self.partition.vps[vp_index.index() as usize].wake(Vtl::Vtl0, WakeReason::INTCON);
+        self.partition.vps[vp_index.index() as usize].wake(GuestVtl::Vtl0, WakeReason::INTCON);
     }
 
     fn eoi(&mut self, vector: u8) {
@@ -2463,24 +2486,28 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         tracing::trace!("not getting cr8, must read from apic page or apic tpr");
         let cr8 = 0;
 
-        let cs = self.vp.read_segment(Vtl::Vtl0, TdxSegmentReg::Cs);
-        let ds = self.vp.read_segment(Vtl::Vtl0, TdxSegmentReg::Ds);
-        let es = self.vp.read_segment(Vtl::Vtl0, TdxSegmentReg::Es);
-        let fs = self.vp.read_segment(Vtl::Vtl0, TdxSegmentReg::Fs);
-        let gs = self.vp.read_segment(Vtl::Vtl0, TdxSegmentReg::Gs);
-        let ss = self.vp.read_segment(Vtl::Vtl0, TdxSegmentReg::Ss);
-        let tr = self.vp.read_segment(Vtl::Vtl0, TdxSegmentReg::Tr);
-        let ldtr = self.vp.read_segment(Vtl::Vtl0, TdxSegmentReg::Ldtr);
+        let cs = self.vp.read_segment(GuestVtl::Vtl0, TdxSegmentReg::Cs);
+        let ds = self.vp.read_segment(GuestVtl::Vtl0, TdxSegmentReg::Ds);
+        let es = self.vp.read_segment(GuestVtl::Vtl0, TdxSegmentReg::Es);
+        let fs = self.vp.read_segment(GuestVtl::Vtl0, TdxSegmentReg::Fs);
+        let gs = self.vp.read_segment(GuestVtl::Vtl0, TdxSegmentReg::Gs);
+        let ss = self.vp.read_segment(GuestVtl::Vtl0, TdxSegmentReg::Ss);
+        let tr = self.vp.read_segment(GuestVtl::Vtl0, TdxSegmentReg::Tr);
+        let ldtr = self.vp.read_segment(GuestVtl::Vtl0, TdxSegmentReg::Ldtr);
 
-        let gdtr = self.vp.read_table_register(Vtl::Vtl0, TdxTableReg::Gdtr);
-        let idtr = self.vp.read_table_register(Vtl::Vtl0, TdxTableReg::Idtr);
+        let gdtr = self
+            .vp
+            .read_table_register(GuestVtl::Vtl0, TdxTableReg::Gdtr);
+        let idtr = self
+            .vp
+            .read_table_register(GuestVtl::Vtl0, TdxTableReg::Idtr);
 
         let cr0 = self.vp.read_cr0();
         let cr2 = self.vp.runner.tdx_vp_state().cr2;
         let cr3 = self
             .vp
             .runner
-            .read_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_CR3);
+            .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_CR3);
         let cr4 = self.vp.read_cr4();
 
         let efer = self.vp.backing.efer;
@@ -2583,21 +2610,28 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         enter_state.rflags = *rflags;
 
         // Set segment registers
-        self.vp.write_segment(Vtl::Vtl0, TdxSegmentReg::Cs, *cs)?;
-        self.vp.write_segment(Vtl::Vtl0, TdxSegmentReg::Ds, *ds)?;
-        self.vp.write_segment(Vtl::Vtl0, TdxSegmentReg::Es, *es)?;
-        self.vp.write_segment(Vtl::Vtl0, TdxSegmentReg::Fs, *fs)?;
-        self.vp.write_segment(Vtl::Vtl0, TdxSegmentReg::Gs, *gs)?;
-        self.vp.write_segment(Vtl::Vtl0, TdxSegmentReg::Ss, *ss)?;
-        self.vp.write_segment(Vtl::Vtl0, TdxSegmentReg::Tr, *tr)?;
         self.vp
-            .write_segment(Vtl::Vtl0, TdxSegmentReg::Ldtr, *ldtr)?;
+            .write_segment(GuestVtl::Vtl0, TdxSegmentReg::Cs, *cs)?;
+        self.vp
+            .write_segment(GuestVtl::Vtl0, TdxSegmentReg::Ds, *ds)?;
+        self.vp
+            .write_segment(GuestVtl::Vtl0, TdxSegmentReg::Es, *es)?;
+        self.vp
+            .write_segment(GuestVtl::Vtl0, TdxSegmentReg::Fs, *fs)?;
+        self.vp
+            .write_segment(GuestVtl::Vtl0, TdxSegmentReg::Gs, *gs)?;
+        self.vp
+            .write_segment(GuestVtl::Vtl0, TdxSegmentReg::Ss, *ss)?;
+        self.vp
+            .write_segment(GuestVtl::Vtl0, TdxSegmentReg::Tr, *tr)?;
+        self.vp
+            .write_segment(GuestVtl::Vtl0, TdxSegmentReg::Ldtr, *ldtr)?;
 
         // Set table registers
         self.vp
-            .write_table_register(Vtl::Vtl0, TdxTableReg::Gdtr, *gdtr)?;
+            .write_table_register(GuestVtl::Vtl0, TdxTableReg::Gdtr, *gdtr)?;
         self.vp
-            .write_table_register(Vtl::Vtl0, TdxTableReg::Idtr, *idtr)?;
+            .write_table_register(GuestVtl::Vtl0, TdxTableReg::Idtr, *idtr)?;
 
         self.vp.write_cr0(*cr0)?;
 
@@ -2607,7 +2641,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
 
         self.vp
             .runner
-            .write_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_CR3, !0, *cr3);
+            .write_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_CR3, !0, *cr3);
 
         self.vp.write_cr4(*cr4)?;
 
@@ -2634,7 +2668,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         let interruptibility: Interruptibility = self
             .vp
             .runner
-            .read_vmcs32(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY)
+            .read_vmcs32(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY)
             .into();
         Ok(vp::Activity {
             mp_state,
@@ -2669,7 +2703,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             .with_blocked_by_movss(interrupt_shadow)
             .with_blocked_by_nmi(nmi_masked);
         self.vp.runner.write_vmcs32(
-            Vtl::Vtl0,
+            GuestVtl::Vtl0,
             VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY,
             !0,
             interruptibility.into(),
@@ -2732,7 +2766,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         let msr_cr_pat = self
             .vp
             .runner
-            .read_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_PAT);
+            .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_PAT);
         Ok(vp::CacheControl {
             msr_cr_pat,
             msr_mtrr_def_type: 0, // TODO TDX: MTRRs
@@ -2749,9 +2783,12 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             fixed: _,
             variable: _,
         } = *value;
-        self.vp
-            .runner
-            .write_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_PAT, !0, msr_cr_pat);
+        self.vp.runner.write_vmcs64(
+            GuestVtl::Vtl0,
+            VmcsField::VMX_VMCS_GUEST_PAT,
+            !0,
+            msr_cr_pat,
+        );
         Ok(())
     }
 
@@ -2761,16 +2798,16 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         let sysenter_cs = self
             .vp
             .runner
-            .read_vmcs32(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_SYSENTER_CS_MSR)
+            .read_vmcs32(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_SYSENTER_CS_MSR)
             .into();
         let sysenter_eip = self
             .vp
             .runner
-            .read_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_SYSENTER_EIP_MSR);
+            .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_SYSENTER_EIP_MSR);
         let sysenter_esp = self
             .vp
             .runner
-            .read_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_SYSENTER_ESP_MSR);
+            .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_SYSENTER_ESP_MSR);
 
         Ok(vp::VirtualMsrs {
             kernel_gs_base: state.msr_kernel_gs_base,
@@ -2803,19 +2840,19 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         state.msr_sfmask = sfmask;
 
         self.vp.runner.write_vmcs32(
-            Vtl::Vtl0,
+            GuestVtl::Vtl0,
             VmcsField::VMX_VMCS_GUEST_SYSENTER_CS_MSR,
             !0,
             sysenter_cs as u32,
         );
         self.vp.runner.write_vmcs64(
-            Vtl::Vtl0,
+            GuestVtl::Vtl0,
             VmcsField::VMX_VMCS_GUEST_SYSENTER_EIP_MSR,
             !0,
             sysenter_eip,
         );
         self.vp.runner.write_vmcs64(
-            Vtl::Vtl0,
+            GuestVtl::Vtl0,
             VmcsField::VMX_VMCS_GUEST_SYSENTER_ESP_MSR,
             !0,
             sysenter_esp,
@@ -2843,7 +2880,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         let dr7 = self
             .vp
             .runner
-            .read_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_DR7);
+            .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_DR7);
 
         Ok(vp::DebugRegisters {
             dr0: values[0].as_u64(),
@@ -2877,7 +2914,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
 
         self.vp
             .runner
-            .write_vmcs64(Vtl::Vtl0, VmcsField::VMX_VMCS_GUEST_DR7, !0, dr7);
+            .write_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_DR7, !0, dr7);
 
         Ok(())
     }
@@ -3182,7 +3219,11 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
 }
 
 impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
-    pub fn wake_processors_for_tlb_flush(&mut self, _vtl: Vtl, processor_set: Option<Vec<u32>>) {
+    pub fn wake_processors_for_tlb_flush(
+        &mut self,
+        _vtl: GuestVtl,
+        processor_set: Option<Vec<u32>>,
+    ) {
         // TODO: Add additional checks? HCL checks that VP is active and in target VTL
         if let Some(processors) = processor_set {
             for vp in processors {

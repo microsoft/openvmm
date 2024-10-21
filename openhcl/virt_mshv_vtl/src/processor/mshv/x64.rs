@@ -25,6 +25,7 @@ use crate::Error;
 use crate::GuestVsmState;
 use crate::GuestVsmVtl1State;
 use crate::GuestVsmVtl1StateInner;
+use crate::GuestVtl;
 use hcl::ioctl;
 use hcl::ioctl::ApplyVtlProtectionsError;
 use hcl::protocol;
@@ -136,14 +137,14 @@ impl BackingPrivate for HypervisorBackedX86 {
                 .get_vp_register(HvX64RegisterName::ApicBase)
                 .unwrap()
                 .as_u64();
-            let mut lapic0 = arr[Vtl::Vtl0].add_apic(params.vp_info);
+            let mut lapic0 = arr[GuestVtl::Vtl0].add_apic(params.vp_info);
             lapic0.set_apic_base(apic_base).unwrap();
-            let mut lapic1 = arr[Vtl::Vtl1].add_apic(params.vp_info);
+            let mut lapic1 = arr[GuestVtl::Vtl1].add_apic(params.vp_info);
             lapic1.set_apic_base(apic_base).unwrap();
 
             [
-                apic::UhApicState::new(lapic0, Vtl::Vtl0, &params.vp_info.base),
-                apic::UhApicState::new(lapic1, Vtl::Vtl1, &params.vp_info.base),
+                apic::UhApicState::new(lapic0, GuestVtl::Vtl0, &params.vp_info.base),
+                apic::UhApicState::new(lapic1, GuestVtl::Vtl1, &params.vp_info.base),
             ]
             .into()
         });
@@ -162,9 +163,9 @@ impl BackingPrivate for HypervisorBackedX86 {
 
     fn access_vp_state<'a, 'p>(
         this: &'a mut UhProcessor<'p, Self>,
-        vtl: Vtl,
+        vtl: GuestVtl,
     ) -> Self::StateAccess<'p, 'a> {
-        assert_eq!(vtl, Vtl::Vtl0);
+        assert_eq!(vtl, GuestVtl::Vtl0);
         UhVpStateAccess::new(this, vtl)
     }
 
@@ -288,7 +289,7 @@ impl BackingPrivate for HypervisorBackedX86 {
 
     fn poll_apic(
         this: &mut UhProcessor<'_, Self>,
-        vtl: Vtl,
+        vtl: GuestVtl,
         scan_irr: bool,
     ) -> Result<bool, UhRunVpError> {
         this.poll_apic(vtl, scan_irr)
@@ -307,11 +308,13 @@ impl BackingPrivate for HypervisorBackedX86 {
     }
 
     // If there's no register page, assume only VTL0 is supported.
-    fn last_vtl(this: &UhProcessor<'_, Self>) -> Vtl {
-        this.runner.reg_page_vtl().unwrap_or(Vtl::Vtl0)
+    fn last_vtl(this: &UhProcessor<'_, Self>) -> GuestVtl {
+        this.runner
+            .reg_page_vtl()
+            .map_or(GuestVtl::Vtl0, |vtl| vtl.try_into().unwrap())
     }
 
-    fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: Vtl) {
+    fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: GuestVtl) {
         unreachable!("vtl switching should be managed by the hypervisor");
     }
 }
@@ -437,7 +440,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         self.backing.next_deliverability_notifications.set_sints(0);
 
         // These messages are always VTL0, as VTL1 does not own any VMBUS channels.
-        self.deliver_synic_messages(Vtl::Vtl0, message.deliverable_sints);
+        self.deliver_synic_messages(GuestVtl::Vtl0, message.deliverable_sints);
     }
 
     fn handle_hypercall_exit(
@@ -704,7 +707,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
     fn handle_unrecoverable_exception(&self) -> Result<(), VpHaltReason<UhRunVpError>> {
         Err(VpHaltReason::TripleFault {
-            vtl: self.last_vtl(),
+            vtl: self.last_vtl().into(),
         })
     }
 
@@ -784,9 +787,9 @@ impl UhProcessor<'_, HypervisorBackedX86> {
     fn set_vsm_partition_config(
         &mut self,
         value: HvRegisterVsmPartitionConfig,
-        vtl: Vtl,
+        vtl: GuestVtl,
     ) -> Result<(), HvError> {
-        if vtl != Vtl::Vtl1 {
+        if vtl != GuestVtl::Vtl1 {
             return Err(HvError::InvalidParameter);
         }
 
@@ -794,7 +797,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         let status: HvRegisterVsmPartitionStatus = self.partition.vsm_status();
 
-        let vtl1_enabled = VtlSet::from(status.enabled_vtl_set()).is_set(Vtl::Vtl1);
+        let vtl1_enabled = VtlSet::from(status.enabled_vtl_set()).is_set(GuestVtl::Vtl1);
         if !vtl1_enabled {
             return Err(HvError::InvalidVtlState);
         }
@@ -846,9 +849,10 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         // For VBS-isolated VMs, protections apply to VTLs lower than the one specified when
         // setting VsmPartitionConfig.
-        let mbec_enabled = VtlSet::from(status.mbec_enabled_vtl_set()).is_set(Vtl::Vtl0);
+        let mbec_enabled = VtlSet::from(status.mbec_enabled_vtl_set()).is_set(GuestVtl::Vtl0);
         let shadow_supervisor_stack_enabled =
-            VtlSet::from(status.supervisor_shadow_stack_enabled_vtl_set() as u16).is_set(Vtl::Vtl0);
+            VtlSet::from(status.supervisor_shadow_stack_enabled_vtl_set() as u16)
+                .is_set(GuestVtl::Vtl0);
 
         if !validate_vtl_gpa_flags(protections, mbec_enabled, shadow_supervisor_stack_enabled) {
             return Err(HvError::InvalidRegisterValue);
@@ -883,7 +887,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         }
 
         let hc_regs = [(HvX64RegisterName::VsmPartitionConfig, u64::from(value))];
-        self.runner.set_vp_registers_hvcall(vtl, hc_regs)?;
+        self.runner.set_vp_registers_hvcall(vtl.into(), hc_regs)?;
         guest_vsm.enable_vtl_protection = true;
 
         Ok(())
@@ -997,7 +1001,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         // Note: the restriction to VTL 1 support also means that for WHP, which doesn't support VTL 1
         // the HvCheckSparseGpaPageVtlAccess hypercall--which is unimplemented in whp--will never be made.
         if mode == virt_support_x86emu::emulate::TranslateMode::Execute
-            && self.vp.last_vtl() == Vtl::Vtl0
+            && self.vp.last_vtl() == GuestVtl::Vtl0
             && self.vp.vtl1_supported()
         {
             // Should always be called after translate gva with the tlb lock flag
@@ -1022,7 +1026,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
                 .vp
                 .partition
                 .hcl
-                .check_vtl_access(gpa, Vtl::Vtl0, flags)
+                .check_vtl_access(gpa, GuestVtl::Vtl0, flags)
                 .map_err(|e| EmuCheckVtlAccessError::Hypervisor(UhRunVpError::VtlAccess(e)))?;
 
             if let Some(ioctl::CheckVtlAccessResult { vtl, denied_flags }) = access_result {
@@ -1110,7 +1114,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
 
         self.vp
             .runner
-            .set_vp_registers_hvcall(last_vtl, regs)
+            .set_vp_registers_hvcall(last_vtl.into(), regs)
             .expect("set_vp_registers hypercall for setting pending event should not fail");
     }
 
@@ -1532,7 +1536,9 @@ impl<T> hv1_hypercall::SetVpRegisters for UhHypercallHandler<'_, '_, T, Hypervis
             return Err((HvError::InvalidVpIndex, 0));
         }
 
-        let target_vtl = vtl.unwrap_or(self.vp.last_vtl());
+        let target_vtl = self
+            .target_vtl_no_higher(vtl.unwrap_or(self.vp.last_vtl().into()))
+            .map_err(|e| (e, 0))?;
 
         for (i, reg) in registers.iter().enumerate() {
             if reg.name == HvX64RegisterName::VsmPartitionConfig.into() {
@@ -1553,6 +1559,7 @@ mod save_restore {
     use super::HypervisorBackedX86;
     use super::UhProcessor;
     use anyhow::Context;
+    use hcl::GuestVtl;
     use hvdef::HvInternalActivityRegister;
     use hvdef::HvX64RegisterName;
     use virt::irqcon::MsiRequest;
@@ -1818,7 +1825,7 @@ mod save_restore {
                     );
 
                     self.partition.request_msi(
-                        hvdef::Vtl::Vtl0,
+                        GuestVtl::Vtl0,
                         MsiRequest::new_x86(
                             virt::irqcon::DeliveryMode::INIT,
                             self.inner.vp_info.apic_id,
