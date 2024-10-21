@@ -1,16 +1,60 @@
+# TODO: Add additional installers for all prerequisites that get skipped if
+# the programs are already installed.
+
+# Known additional prerequisites on Windows:
+#   - Git and bash, both added to path
+#   - For running VMM tests, Hyper-V and WHP must be enabled
+#   - Visual Studio Build Tools
+#     - Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+#     - Microsoft.VisualStudio.Component.VC.Tools.ARM64
+#     - Microsoft.VisualStudio.Component.Windows11SDK.22621
+#     - Microsoft.VisualStudio.Component.VC.Llvm.Clang (added to path)
+
+#### Flowey Build Dependencies
+
+# Install rustup/cargo to a runner-specific directory to avoid
+# different runners simultaneously changing the same rust
+# installation and causing issues.
 - run: |
     set -x
+    echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+    echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+  if: runner.os == 'Linux'
+  name: Setup Environment Variables (Linux)
+  shell: bash
+
+- run: |
+    set -x
+    echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+    echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+  if: runner.os == 'Windows'
+  name: Setup Environment Variables (Windows)
+  shell: bash
+
+# On Linux, install gcc and rust to build flowey. 
+# In case there are multiple runners on the same system,
+# retry apt-get update failure in case another process has the lock
+# use DPkg::Lock::Timeout to wait for other installs to finish 
+# (doesn't seem to work for apt-get update)
+- run: |
+    set -x
+    i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+    sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    . "$CARGO_HOME/env"
+    echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
     rustup show
   if: runner.os == 'Linux'
   name: rustup (Linux)
   shell: bash
 
+# Building flowey on Windows requires MSVC from Visual Studio Build Tools,
+# but that currently needs to be preinstalled on the actions runner.
 - run: |
     set -x
     curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
     ./rustup-init.exe -y
-    echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+    echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
   if: runner.os == 'Windows' && runner.arch == 'X64'
   name: rustup (Windows X64)
   shell: bash
@@ -19,23 +63,16 @@
     set -x
     curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
     ./rustup-init.exe -y
-    echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+    echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
   if: runner.os == 'Windows' && runner.arch == 'ARM64'
   name: rustup (Windows ARM64)
   shell: bash
 
+#### Build Flowey
+
 - uses: actions/checkout@v4
   with:
     path: flowey_bootstrap
-
-# Authentication token used to download the crates are automatically checked into the index.
-# The token expires after 7 days, so this line pulls in a new token without updating the lock file.
-- name: Update Index
-  run: |
-    rustc -vV
-    cargo update --dry-run
-  working-directory: flowey_bootstrap
-  shell: bash
 
 # - CARGO_INCREMENTAL=0 - no need to waste time on incremental artifacts in CI
 # - RUSTC_BOOTSTRAP=1 + RUSTFLAGS="-Z threads=8" - use of the unstable parallel
