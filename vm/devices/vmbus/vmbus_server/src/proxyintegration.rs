@@ -210,6 +210,7 @@ impl ProxyTask {
             channel_type,
             use_mnf: (offer.ChannelFlags & VMBUS_CHANNEL_REQUEST_MONITORED_NOTIFICATION) != 0,
             offer_order: id.try_into().ok(),
+            allow_confidential_external_memory: false,
         };
         let (request_send, request_recv) = mesh::channel();
         let (server_request_send, server_request_recv) = mesh::channel();
