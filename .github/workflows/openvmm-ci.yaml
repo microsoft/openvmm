@@ -220,12 +220,12 @@ jobs:
       shell: bash
       name: 🌼 Write to 'floweyvar1'
     - id: flowey_lib_hvlite___jobs__build_and_publish_guide__2
-      uses: actions/upload-pages-artifact@v1
+      uses: actions/upload-pages-artifact@v3
       with:
         path: ${{ env.floweyvar1 }}
       name: Upload pages artifact
     - id: flowey_lib_hvlite___jobs__build_and_publish_guide__3
-      uses: actions/deploy-pages@v3
+      uses: actions/deploy-pages@v4
       name: Deploy to GitHub Pages
     - name: 🌼 write_into Var
       run: flowey.exe e 0 flowey_lib_hvlite::artifact_guide::publish 0

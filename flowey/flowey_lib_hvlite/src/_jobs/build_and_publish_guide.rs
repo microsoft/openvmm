@@ -49,12 +49,12 @@ impl SimpleFlowNode for Node {
 
         if deploy_github_pages && matches!(ctx.backend(), FlowBackend::Github) {
             let did_upload = ctx
-                .emit_gh_step("Upload pages artifact", "actions/upload-pages-artifact@v1")
+                .emit_gh_step("Upload pages artifact", "actions/upload-pages-artifact@v3")
                 .with("path", rendered_guide.map(ctx, |x| x.display().to_string()))
                 .finish(ctx);
 
             let did_deploy = ctx
-                .emit_gh_step("Deploy to GitHub Pages", "actions/deploy-pages@v3")
+                .emit_gh_step("Deploy to GitHub Pages", "actions/deploy-pages@v4")
                 .run_after(did_upload)
                 .finish(ctx);
 
