@@ -71,6 +71,7 @@ use vmbus_core::MaxVersionInfo;
 use vmbus_core::MonitorPageGpas;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::TaggedStream;
+use vmbus_core::VersionInfo;
 #[cfg(windows)]
 use vmbus_proxy::ProxyHandle;
 use vmbus_ring as ring;
@@ -816,18 +817,16 @@ impl ServerTask {
         }
 
         let open_request = params.map(|params| {
-            let supports_confidential_channels = self
-                .server
-                .check_feature_flags(|flags| flags.confidential_channels());
             let (channel, interrupt) = self.inner.open_channel(offer_id, &params);
-            OpenRequest {
-                open_data: params.open_data,
+            OpenRequest::new(
+                params.open_data,
                 interrupt,
-                use_confidential_ring: supports_confidential_channels
-                    && channel.flags.confidential_ring_buffer(),
-                use_confidential_external_memory: supports_confidential_channels
-                    && channel.flags.confidential_external_memory(),
-            }
+                self.server
+                    .get_version()
+                    .expect("must be connected")
+                    .feature_flags,
+                channel.flags,
+            )
         });
         let result = RestoreResult {
             open_request,
@@ -1159,16 +1158,12 @@ impl channels::Notifier for ServerTaskInner {
                     offer_id,
                     channel,
                     ChannelRequest::Open,
-                    OpenRequest {
-                        open_data: open_params.open_data,
+                    OpenRequest::new(
+                        open_params.open_data,
                         interrupt,
-                        use_confidential_ring: version.feature_flags.confidential_channels()
-                            && channel.flags.confidential_ring_buffer(),
-                        use_confidential_external_memory: version
-                            .feature_flags
-                            .confidential_channels()
-                            && channel.flags.confidential_external_memory(),
-                    },
+                        version.feature_flags,
+                        channel.flags,
+                    ),
                     ChannelResponse::Open,
                 )
             }
@@ -1281,11 +1276,17 @@ impl channels::Notifier for ServerTaskInner {
         }
     }
 
-    fn inspect(&self, offer_id: OfferId, req: inspect::Request<'_>) {
+    fn inspect(&self, version: Option<VersionInfo>, offer_id: OfferId, req: inspect::Request<'_>) {
         let channel = self.channels.get(&offer_id).expect("should exist");
         let mut resp = req.respond();
         if let ChannelState::Open { open_params, .. } = &channel.state {
-            let mem = if channel.flags.confidential_ring_buffer() && self.trusted_gm.is_some() {
+            let mem = if self.trusted_gm.is_some()
+                && channel.flags.confidential_ring_buffer()
+                && version
+                    .expect("must be connected")
+                    .feature_flags
+                    .confidential_channels()
+            {
                 self.trusted_gm.as_ref().unwrap()
             } else {
                 &self.gm
@@ -1761,7 +1762,7 @@ mod tests {
                     subchannel_index: 0,
                     use_mnf: false,
                     offer_order: None,
-                    allow_encrypted_memory: false,
+                    allow_confidential_external_memory: false,
                 },
             };
 

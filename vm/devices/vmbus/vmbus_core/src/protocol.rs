@@ -463,9 +463,9 @@ pub struct OfferChannel {
 #[mesh(transparent)]
 pub struct OfferFlags {
     pub enumerate_device_interface: bool, // 0x1
-    /// Indicates the channel can use an encrypted ring buffer on a hardware-isolated VM.
+    /// Indicates the channel must use an encrypted ring buffer on a hardware-isolated VM.
     pub confidential_ring_buffer: bool, // 0x2
-    /// Indicates the channel can use encrypted additional GPADLs and GPA direct ranges on a
+    /// Indicates the channel must use encrypted additional GPADLs and GPA direct ranges on a
     /// hardware-isolated VM.
     pub confidential_external_memory: bool, // 0x4
     #[bits(1)]

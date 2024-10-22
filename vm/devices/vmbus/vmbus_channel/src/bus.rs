@@ -12,6 +12,7 @@ use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::MeshPayload;
 use std::fmt::Display;
+use vmbus_core::protocol;
 use vmbus_core::protocol::GpadlId;
 use vmbus_core::protocol::UserDefinedData;
 use vmcore::interrupt::Interrupt;
@@ -197,12 +198,31 @@ pub struct OpenRequest {
     pub open_data: OpenData,
     /// The interrupt used to signal the guest.
     pub interrupt: Interrupt,
-    /// Indicates if the current guest supports the use of confidential ring
-    /// buffers.
+    /// Indicates if the currently connected vmbus client, as well as the channel the request is
+    /// for, supports the use of confidential ring buffers.
     pub use_confidential_ring: bool,
-    /// Indicates if the current guest supports the use of confidential external
-    /// memory.
+    /// Indicates if the currently connected vmbus client, as well as the channel the request is
+    /// for, supports the use of confidential external memory.
     pub use_confidential_external_memory: bool,
+}
+
+impl OpenRequest {
+    /// Creates a new `OpenRequest`.
+    pub fn new(
+        open_data: OpenData,
+        interrupt: Interrupt,
+        feature_flags: protocol::FeatureFlags,
+        offer_flags: protocol::OfferFlags,
+    ) -> Self {
+        Self {
+            open_data,
+            interrupt,
+            use_confidential_ring: feature_flags.confidential_channels()
+                && offer_flags.confidential_ring_buffer(),
+            use_confidential_external_memory: feature_flags.confidential_channels()
+                && offer_flags.confidential_external_memory(),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Protobuf)]
@@ -255,7 +275,7 @@ pub struct OfferParams {
     /// Indicates whether the channel supports using encrypted memory for any
     /// external GPADLs and GPA direct ranges. This is only used when hardware
     /// isolation is in use.
-    pub allow_encrypted_memory: bool,
+    pub allow_confidential_external_memory: bool,
 }
 
 impl OfferParams {

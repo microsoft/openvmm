@@ -185,7 +185,9 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
             )
             .child("channels", |req| {
                 let mut resp = req.respond();
-                self.inner.channels.inspect(self.notifier, &mut resp);
+                self.inner
+                    .channels
+                    .inspect(self.notifier, self.inner.get_version(), &mut resp);
                 for ((gpadl_id, offer_id), gpadl) in &self.inner.gpadls {
                     let channel = &self.inner.channels[*offer_id];
                     resp.field(
@@ -235,7 +237,8 @@ impl ConnectionState {
         matches!(self, ConnectionState::Connected(info) if info.version.version >= min_version)
     }
 
-    /// Checks whether the state is connected and the specified feature flags are supported..
+    /// Checks whether the state is connected and the specified predicate holds for the feature
+    /// flags.
     fn check_feature_flags(&self, flags: impl Fn(FeatureFlags) -> bool) -> bool {
         matches!(self, ConnectionState::Connected(info) if flags(info.version.feature_flags))
     }
@@ -575,7 +578,7 @@ impl From<OfferParams> for OfferParamsInternal {
         // memory is dependent on the device.
         let mut flags = OfferFlags::new()
             .with_confidential_ring_buffer(true)
-            .with_confidential_external_memory(value.allow_encrypted_memory);
+            .with_confidential_external_memory(value.allow_confidential_external_memory);
 
         match value.channel_type {
             ChannelType::Device { pipe_packets } => {
@@ -715,7 +718,8 @@ impl Channel {
             .field("target_vp", target_vp)
             .field("guest_specified_event_flag", event_flag)
             .field("guest_specified_connection_id", connection_id)
-            .field("reserved_connection_target", reserved_target);
+            .field("reserved_connection_target", reserved_target)
+            .binary("offer_flags", self.offer.flags.into_bits());
     }
 
     /// Returns the monitor ID only if it's being handled by this server.
@@ -898,7 +902,12 @@ fn channel_inspect_path(offer: &OfferParamsInternal, suffix: std::fmt::Arguments
 }
 
 impl ChannelList {
-    fn inspect(&self, notifier: &impl Notifier, resp: &mut inspect::Response<'_>) {
+    fn inspect(
+        &self,
+        notifier: &impl Notifier,
+        version: Option<VersionInfo>,
+        resp: &mut inspect::Response<'_>,
+    ) {
         for (offer_id, channel) in self.iter() {
             resp.child(
                 &channel_inspect_path(&channel.offer, format_args!("")),
@@ -910,7 +919,7 @@ impl ChannelList {
                     // the channel is revoked (and not reoffered) since in that
                     // case the caller won't recognize the channel ID.
                     if !matches!(channel.state, ChannelState::Revoked) {
-                        notifier.inspect(offer_id, resp.request());
+                        notifier.inspect(version, offer_id, resp.request());
                     }
                 },
             );
@@ -1202,8 +1211,8 @@ pub trait Notifier: Send {
     fn modify_connection(&mut self, request: ModifyConnectionRequest) -> anyhow::Result<()>;
 
     /// Inspects a channel.
-    fn inspect(&self, offer_id: OfferId, req: inspect::Request<'_>) {
-        let _ = (offer_id, req);
+    fn inspect(&self, version: Option<VersionInfo>, offer_id: OfferId, req: inspect::Request<'_>) {
+        let _ = (version, offer_id, req);
     }
 
     /// Sends a synic message to the guest.
@@ -1288,9 +1297,8 @@ impl Server {
             .collect()
     }
 
-    /// Checks whether the state is connected and the specified feature flags are supported..
-    pub fn check_feature_flags(&self, flags: impl Fn(FeatureFlags) -> bool) -> bool {
-        self.state.check_feature_flags(flags)
+    pub fn get_version(&self) -> Option<VersionInfo> {
+        self.state.get_version()
     }
 }
 

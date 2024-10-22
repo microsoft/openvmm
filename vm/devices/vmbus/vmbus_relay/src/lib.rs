@@ -884,7 +884,7 @@ impl RelayTask {
             // Preserve channel enumeration order from the host within the same
             // interface type.
             offer_order: Some(channel_id),
-            // Strip the confidential flags for relay channels if the host set it.
+            // Strip the confidential flags for relay channels if the host set them.
             flags: offer
                 .offer
                 .flags
