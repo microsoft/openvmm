@@ -152,11 +152,8 @@ impl Options {
                     .map_err(|x| anyhow::anyhow!("Error parsing vmbus max version: {}", x))
             })
             .transpose()?;
-        let vmbus_enable_mnf = if legacy_openhcl_env("OPENHCL_VMBUS_ENABLE_MNF").is_some() {
-            Some(parse_legacy_env_bool("OPENHCL_VMBUS_ENABLE_MNF"))
-        } else {
-            None
-        };
+        let vmbus_enable_mnf =
+            legacy_openhcl_env("OPENHCL_VMBUS_ENABLE_MNF").map(|v| parse_bool(Some(v)));
         let vmbus_force_confidential_external_memory =
             parse_env_bool("OPENHCL_VMBUS_FORCE_CONFIDENTIAL_EXTERNAL_MEMORY");
         let cmdline_append =
