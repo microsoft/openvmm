@@ -1584,6 +1584,7 @@ mod tests {
     use super::*;
     use pal_async::async_test;
     use parking_lot::Mutex;
+    use protocol::UserDefinedData;
     use vmbus_channel::bus::OfferParams;
     use vmbus_core::protocol::ChannelId;
     use vmbus_core::protocol::VmbusMessage;
@@ -1616,10 +1617,6 @@ mod tests {
             self.send_message_core(OutgoingMessage::new(&msg), true);
         }
 
-        fn send_message_with_data(&self, msg: impl VmbusMessage + AsBytes, data: &[u8]) {
-            self.send_message_core(OutgoingMessage::with_data(&msg, data), false);
-        }
-
         fn send_message_core(&self, msg: OutgoingMessage, trusted: bool) {
             self.inner
                 .lock()
@@ -1635,16 +1632,12 @@ mod tests {
 
     impl GuestEventPort for MockGuestPort {
         fn interrupt(&self) -> Interrupt {
-            todo!()
+            Interrupt::null()
         }
 
-        fn clear(&mut self) {
-            todo!()
-        }
+        fn clear(&mut self) {}
 
-        fn set(&mut self, _vtl: Vtl, _vp: u32, _sint: u8, _flag: u16) {
-            todo!()
-        }
+        fn set(&mut self, _vtl: Vtl, _vp: u32, _sint: u8, _flag: u16) {}
     }
 
     impl SynicPortAccess for MockSynic {
@@ -1699,6 +1692,15 @@ mod tests {
             rpc.complete(true);
         }
 
+        async fn handle_open(&mut self, f: fn(&OpenRequest)) {
+            let ChannelRequest::Open(rpc) = self.next_request().await else {
+                panic!("Wrong request");
+            };
+
+            f(&rpc.0);
+            rpc.complete(true);
+        }
+
         async fn handle_gpadl_teardown(&mut self) {
             let rpc = self.get_gpadl_teardown().await;
             rpc.complete(());
@@ -1725,6 +1727,7 @@ mod tests {
         vmbus: VmbusServer,
         synic: Arc<MockSynic>,
         message_recv: mesh::Receiver<Vec<u8>>,
+        trusted: bool,
     }
 
     impl TestEnv {
@@ -1740,10 +1743,15 @@ mod tests {
                 vmbus,
                 synic,
                 message_recv,
+                trusted: false,
             }
         }
 
-        async fn offer(&self) -> TestChannel {
+        async fn offer(&self, id: u32, allow_confidential_external_memory: bool) -> TestChannel {
+            let guid = Guid {
+                data1: id,
+                ..Guid::ZERO
+            };
             let (request_send, request_recv) = mesh::channel();
             let (server_request_send, server_request_recv) = mesh::channel();
             let offer = OfferInput {
@@ -1752,8 +1760,8 @@ mod tests {
                 server_request_recv,
                 params: OfferParams {
                     interface_name: "test".into(),
-                    instance_id: Guid::ZERO,
-                    interface_id: Guid::ZERO,
+                    instance_id: guid,
+                    interface_id: guid,
                     mmio_megabytes: 0,
                     mmio_megabytes_optional: 0,
                     channel_type: vmbus_channel::bus::ChannelType::Device {
@@ -1762,7 +1770,7 @@ mod tests {
                     subchannel_index: 0,
                     use_mnf: false,
                     offer_order: None,
-                    allow_confidential_external_memory: false,
+                    allow_confidential_external_memory,
                 },
             };
 
@@ -1774,6 +1782,50 @@ mod tests {
                 server_request_send,
                 _resources,
             }
+        }
+
+        async fn gpadl(&mut self, channel_id: u32, gpadl_id: u32, channel: &mut TestChannel) {
+            self.synic.send_message_core(
+                OutgoingMessage::with_data(
+                    &protocol::GpadlHeader {
+                        channel_id: ChannelId(channel_id),
+                        gpadl_id: GpadlId(gpadl_id),
+                        count: 1,
+                        len: 16,
+                    },
+                    [1u64, 0u64].as_bytes(),
+                ),
+                self.trusted,
+            );
+
+            channel.handle_gpadl().await;
+            self.expect_response(protocol::MessageType::GPADL_CREATED)
+                .await;
+        }
+
+        async fn open_channel(
+            &mut self,
+            channel_id: u32,
+            ring_gpadl_id: u32,
+            channel: &mut TestChannel,
+            f: fn(&OpenRequest),
+        ) {
+            self.gpadl(channel_id, ring_gpadl_id, channel).await;
+            self.synic.send_message_core(
+                OutgoingMessage::new(&protocol::OpenChannel {
+                    channel_id: ChannelId(channel_id),
+                    open_id: 0,
+                    ring_buffer_gpadl_id: GpadlId(ring_gpadl_id),
+                    target_vp: 0,
+                    downstream_ring_buffer_page_offset: 0,
+                    user_data: UserDefinedData::default(),
+                }),
+                self.trusted,
+            );
+
+            channel.handle_open(f).await;
+            self.expect_response(protocol::MessageType::OPEN_CHANNEL_RESULT)
+                .await;
         }
 
         async fn expect_response(&mut self, expected: protocol::MessageType) {
@@ -1792,7 +1844,7 @@ mod tests {
         }
 
         fn initiate_contact(
-            &self,
+            &mut self,
             version: protocol::Version,
             feature_flags: protocol::FeatureFlags,
             trusted: bool,
@@ -1808,19 +1860,23 @@ mod tests {
                 }),
                 trusted,
             );
+
+            self.trusted = trusted;
         }
 
-        async fn connect(&mut self, offer_count: u32) {
-            self.initiate_contact(
-                protocol::Version::Win10,
-                protocol::FeatureFlags::new(),
-                false,
-            );
+        async fn connect(
+            &mut self,
+            offer_count: u32,
+            feature_flags: protocol::FeatureFlags,
+            trusted: bool,
+        ) {
+            self.initiate_contact(protocol::Version::Copper, feature_flags, trusted);
 
             self.expect_response(protocol::MessageType::VERSION_RESPONSE)
                 .await;
 
-            self.synic.send_message(protocol::RequestOffers {});
+            self.synic
+                .send_message_core(OutgoingMessage::new(&protocol::RequestOffers {}), trusted);
 
             for _ in 0..offer_count {
                 self.expect_response(protocol::MessageType::OFFER_CHANNEL)
@@ -1839,24 +1895,12 @@ mod tests {
         //
         // If this test fails, it is more likely to hang than panic.
         let mut env = TestEnv::new(spawner);
-        let mut channel = env.offer().await;
+        let mut channel = env.offer(1, false).await;
         env.vmbus.start();
-        env.connect(1).await;
+        env.connect(1, protocol::FeatureFlags::new(), false).await;
 
         // Create a GPADL for the channel.
-        env.synic.send_message_with_data(
-            protocol::GpadlHeader {
-                channel_id: ChannelId(1),
-                gpadl_id: GpadlId(10),
-                count: 1,
-                len: 16,
-            },
-            [1u64, 0u64].as_bytes(),
-        );
-
-        channel.handle_gpadl().await;
-        env.expect_response(protocol::MessageType::GPADL_CREATED)
-            .await;
+        env.gpadl(1, 10, &mut channel).await;
 
         // Start tearing it down.
         env.synic.send_message(protocol::GpadlTeardown {
@@ -1903,16 +1947,19 @@ mod tests {
     #[async_test]
     async fn test_confidential_connection(spawner: impl Spawn) {
         let mut env = TestEnv::new(spawner);
-        // Add a regular bus child channel.
-        let _channel = env.offer().await;
+        // Add regular bus child channels, one of which supports confidential external memory.
+        let mut channel = env.offer(1, false).await;
+        let mut channel2 = env.offer(2, true).await;
 
         // Add a channel directly, like the relay would do.
-        let (request_send, _request_recv) = mesh::channel();
-        let (_server_request_send, server_request_recv) = mesh::channel();
-        let mut id = Guid::ZERO;
-        id.data1 = 1;
+        let (request_send, request_recv) = mesh::channel();
+        let (server_request_send, server_request_recv) = mesh::channel();
+        let id = Guid {
+            data1: 3,
+            ..Guid::ZERO
+        };
         let control = env.vmbus.control();
-        let _relay_channel = control
+        let relay_resources = control
             .offer_core(OfferInfo {
                 params: OfferParamsInternal {
                     interface_name: "test".into(),
@@ -1933,6 +1980,12 @@ mod tests {
             .await
             .unwrap();
 
+        let mut relay_channel = TestChannel {
+            request_recv,
+            server_request_send,
+            _resources: relay_resources,
+        };
+
         env.vmbus.start();
         env.initiate_contact(
             protocol::Version::Copper,
@@ -1945,15 +1998,95 @@ mod tests {
 
         env.synic.send_message_trusted(protocol::RequestOffers {});
 
-        // All offers added with add_child are confidential.
+        // All offers added with add_child have confidential ring support.
         let offer = env.get_response::<protocol::OfferChannel>().await;
         assert!(offer.flags.confidential_ring_buffer());
+        assert!(!offer.flags.confidential_external_memory());
+        let offer = env.get_response::<protocol::OfferChannel>().await;
+        assert!(offer.flags.confidential_ring_buffer());
+        assert!(offer.flags.confidential_external_memory());
 
         // The "relay" channel will not have its flags modified.
         let offer = env.get_response::<protocol::OfferChannel>().await;
         assert!(!offer.flags.confidential_ring_buffer());
+        assert!(!offer.flags.confidential_external_memory());
 
         env.expect_response(protocol::MessageType::ALL_OFFERS_DELIVERED)
             .await;
+
+        // Make sure that the correct confidential flags are set in the open request when opening
+        // the channels.
+        env.open_channel(1, 1, &mut channel, |request| {
+            assert!(request.use_confidential_ring);
+            assert!(!request.use_confidential_external_memory);
+        })
+        .await;
+
+        env.open_channel(2, 2, &mut channel2, |request| {
+            assert!(request.use_confidential_ring);
+            assert!(request.use_confidential_external_memory);
+        })
+        .await;
+
+        env.open_channel(3, 3, &mut relay_channel, |request| {
+            assert!(!request.use_confidential_ring);
+            assert!(!request.use_confidential_external_memory);
+        })
+        .await;
+    }
+
+    #[async_test]
+    async fn test_confidential_channels_unsupported(spawner: impl Spawn) {
+        let mut env = TestEnv::new(spawner);
+        let mut channel = env.offer(1, false).await;
+        let mut channel2 = env.offer(2, true).await;
+
+        env.vmbus.start();
+        env.connect(2, protocol::FeatureFlags::new(), true).await;
+
+        // Make sure that the correct confidential flags are always false when the client doesn't
+        // support confidential channels.
+        env.open_channel(1, 1, &mut channel, |request| {
+            assert!(!request.use_confidential_ring);
+            assert!(!request.use_confidential_external_memory);
+        })
+        .await;
+
+        env.open_channel(2, 2, &mut channel2, |request| {
+            assert!(!request.use_confidential_ring);
+            assert!(!request.use_confidential_external_memory);
+        })
+        .await;
+    }
+
+    #[async_test]
+    async fn test_confidential_channels_untrusted(spawner: impl Spawn) {
+        let mut env = TestEnv::new(spawner);
+        let mut channel = env.offer(1, false).await;
+        let mut channel2 = env.offer(2, true).await;
+
+        env.vmbus.start();
+        // Client claims to support confidential channels, but they can't be used because the
+        // connection is untrusted.
+        env.connect(
+            2,
+            protocol::FeatureFlags::new().with_confidential_channels(true),
+            false,
+        )
+        .await;
+
+        // Make sure that the correct confidential flags are always false when the client doesn't
+        // support confidential channels.
+        env.open_channel(1, 1, &mut channel, |request| {
+            assert!(!request.use_confidential_ring);
+            assert!(!request.use_confidential_external_memory);
+        })
+        .await;
+
+        env.open_channel(2, 2, &mut channel2, |request| {
+            assert!(!request.use_confidential_ring);
+            assert!(!request.use_confidential_external_memory);
+        })
+        .await;
     }
 }

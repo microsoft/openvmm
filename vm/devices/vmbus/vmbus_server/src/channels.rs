@@ -5234,6 +5234,12 @@ mod tests {
 
         env.offer(1); // non-confidential
         env.offer_with_flags(2, OfferFlags::new().with_confidential_ring_buffer(true));
+        env.offer_with_flags(
+            3,
+            OfferFlags::new()
+                .with_confidential_ring_buffer(true)
+                .with_confidential_external_memory(true),
+        );
 
         // Untrusted messages are rejected when the connection is trusted.
         let error = env
@@ -5265,6 +5271,15 @@ mod tests {
             OfferFlags::new().with_confidential_ring_buffer(true)
         );
 
+        let offer = env.notifier.get_message::<protocol::OfferChannel>();
+        assert_eq!(offer.channel_id, ChannelId(3));
+        assert_eq!(
+            offer.flags,
+            OfferFlags::new()
+                .with_confidential_ring_buffer(true)
+                .with_confidential_external_memory(true)
+        );
+
         env.notifier
             .check_message(OutgoingMessage::new(&protocol::AllOffersDelivered {}));
     }
@@ -5290,7 +5305,8 @@ mod tests {
             2,
             OfferFlags::new()
                 .with_named_pipe_mode(true)
-                .with_confidential_ring_buffer(true),
+                .with_confidential_ring_buffer(true)
+                .with_confidential_external_memory(true),
         );
 
         env.send_message(in_msg_ex(
@@ -5307,7 +5323,7 @@ mod tests {
             OfferFlags::new().with_enumerate_device_interface(true)
         );
 
-        // The confidential channel flag is not sent without the feature flag.
+        // The confidential channel flags are not sent without the feature flag.
         let offer = env.notifier.get_message::<protocol::OfferChannel>();
         assert_eq!(offer.channel_id, ChannelId(2));
         assert_eq!(offer.flags, OfferFlags::new().with_named_pipe_mode(true));
