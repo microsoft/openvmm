@@ -4,10 +4,10 @@
 //! (GitHub Actions only) Check that all dependent jobs prior to this job
 //! completed successfully, and in turn, succeeding / failing itself.
 //!
-//! Workaround for https://github.com/orgs/community/discussions/12395.
+//! Workaround for <https://github.com/orgs/community/discussions/12395>.
 //!
 //! Workaround itself required _another_ workaround, in order to deal with
-//! https://github.com/actions/runner/issues/2566.
+//! <https://github.com/actions/runner/issues/2566>.
 
 use flowey::node::prelude::*;
 
