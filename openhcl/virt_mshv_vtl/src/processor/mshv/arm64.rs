@@ -219,7 +219,11 @@ impl BackingPrivate for HypervisorBackedArm64 {
 
     /// Copies shared registers (per VSM TLFS spec) from the last VTL to
     /// the target VTL that will become active.
-    fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: GuestVtl) {
+    fn switch_vtl_state(
+        _this: &mut UhProcessor<'_, Self>,
+        _source_vtl: GuestVtl,
+        _target_vtl: GuestVtl,
+    ) {
         unreachable!("vtl switching should be managed by the hypervisor");
     }
 

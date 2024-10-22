@@ -373,7 +373,11 @@ impl BackingPrivate for HypervisorBackedX86 {
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
     }
 
-    fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: GuestVtl) {
+    fn switch_vtl_state(
+        _this: &mut UhProcessor<'_, Self>,
+        _source_vtl: GuestVtl,
+        _target_vtl: GuestVtl,
+    ) {
         unreachable!("vtl switching should be managed by the hypervisor");
     }
 }

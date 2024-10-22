@@ -234,9 +234,13 @@ mod private {
         /// This is used for hypervisor-managed and untrusted SINTs.
         fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
-        /// Copies shared registers (per VSM TLFS spec) from the last VTL to
+        /// Copies shared registers (per VSM TLFS spec) from the source VTL to
         /// the target VTL that will become active.
-        fn switch_vtl_state(this: &mut UhProcessor<'_, Self>, target_vtl: GuestVtl);
+        fn switch_vtl_state(
+            this: &mut UhProcessor<'_, Self>,
+            source_vtl: GuestVtl,
+            target_vtl: GuestVtl,
+        );
 
         /// Returns whether this VP should be put to sleep in usermode, or
         /// whether it's ready to proceed into the kernel.
@@ -928,7 +932,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                         );
                         self.cvm_guest_vsm = Some(GuestVsmVpState {
                             // TODO CVM GUEST VSM: Revisit during AP startup if this is correct
-                            last_vtl: None,
                             exit_vtl: GuestVtl::Vtl0,
                         })
                     }
@@ -1120,8 +1123,8 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    fn switch_vtl(&mut self, target_vtl: GuestVtl) {
-        T::switch_vtl_state(self, target_vtl);
+    fn switch_vtl(&mut self, source_vtl: GuestVtl, target_vtl: GuestVtl) {
+        T::switch_vtl_state(self, source_vtl, target_vtl);
     }
 }
 

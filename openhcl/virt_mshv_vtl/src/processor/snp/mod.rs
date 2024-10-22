@@ -391,15 +391,13 @@ impl BackingPrivate for SnpBacked {
             .expect("requesting deliverability is not a fallable operation");
     }
 
-    fn switch_vtl_state(this: &mut UhProcessor<'_, Self>, target_vtl: GuestVtl) {
-        let current_vtl = this
-            .cvm_guest_vsm
-            .as_ref()
-            .expect("has guest vsm state")
-            .last_vtl;
-
+    fn switch_vtl_state(
+        this: &mut UhProcessor<'_, Self>,
+        source_vtl: GuestVtl,
+        target_vtl: GuestVtl,
+    ) {
         let [vmsa0, vmsa1] = this.runner.vmsas_mut();
-        let (current_vmsa, mut target_vmsa) = match (current_vtl, target_vtl) {
+        let (current_vmsa, mut target_vmsa) = match (source_vtl, target_vtl) {
             (GuestVtl::Vtl0, GuestVtl::Vtl1) => (vmsa0, vmsa1),
             (GuestVtl::Vtl1, GuestVtl::Vtl0) => (vmsa1, vmsa0),
             _ => unreachable!(),
@@ -934,7 +932,6 @@ impl UhProcessor<'_, SnpBacked> {
         let lazy_eoi = self.sync_lazy_eoi(next_vtl);
 
         if let Some(gvsm_state) = self.cvm_guest_vsm.as_mut() {
-            gvsm_state.intercepted_vtl = None;
             gvsm_state.exit_vtl = next_vtl; // TODO GUEST VSM: update next_vtl based on interrupts
         }
 
@@ -942,17 +939,6 @@ impl UhProcessor<'_, SnpBacked> {
             .runner
             .run()
             .map_err(|err| VpHaltReason::Hypervisor(UhRunVpError::Run(err)))?;
-
-        // If VTL 2 entered due to an intercept, fix up the last vtl
-        let mut set_intercepted_vtl = || {
-            if let Some(gvsm_state) = self.cvm_guest_vsm.as_mut() {
-                gvsm_state.intercepted_vtl = Some(next_vtl);
-            }
-        };
-
-        if has_intercept {
-            set_intercepted_vtl();
-        }
 
         let entered_from_vtl = next_vtl;
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
@@ -1046,7 +1032,6 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::MSR => {
-                set_intercepted_vtl();
                 let is_write = vmsa.exit_info1() & 1 != 0;
                 let msr = vmsa.rcx() as u32;
 
@@ -1129,7 +1114,6 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::IOIO => {
-                set_intercepted_vtl();
                 let io_info = x86defs::snp::SevIoAccessInfo::from(vmsa.exit_info1() as u32);
                 if io_info.string_access() || io_info.rep_access() {
                     self.emulate(dev, false, entered_from_vtl).await?;
@@ -1161,7 +1145,6 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::VMMCALL => {
-                set_intercepted_vtl();
                 let is_64bit = self.long_mode(entered_from_vtl);
                 let guest_memory = &self.partition.gm[entered_from_vtl];
                 let handler = UhHypercallHandler {
@@ -1195,7 +1178,6 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::NPF if has_intercept => {
-                set_intercepted_vtl();
                 // Determine whether an NPF needs to be handled. If not, assume this fault is spurious
                 // and that the instruction can be retried. The intercept itself may be presented by the
                 // hypervisor as either a GPA intercept or an exception intercept.
@@ -1285,7 +1267,6 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::VMGEXIT if has_intercept => {
-                set_intercepted_vtl();
                 has_intercept = false;
                 match self.runner.exit_message().header.typ {
                     HvMessageType::HvMessageTypeX64SevVmgexitIntercept => {

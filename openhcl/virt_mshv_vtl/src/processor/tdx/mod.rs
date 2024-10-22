@@ -768,7 +768,11 @@ impl BackingPrivate for TdxBacked {
         }
     }
 
-    fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: GuestVtl) {
+    fn switch_vtl_state(
+        _this: &mut UhProcessor<'_, Self>,
+        _source_vtl: GuestVtl,
+        _target_vtl: GuestVtl,
+    ) {
         todo!()
     }
 }
@@ -1096,6 +1100,11 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     async fn run_vp_tdx(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
+        let next_vtl = self
+            .cvm_guest_vsm
+            .as_ref()
+            .map_or(GuestVtl::Vtl0, |gvsm_state| gvsm_state.exit_vtl);
+
         if self.backing.interruption_information.valid() {
             tracing::debug!(
                 vector = self.backing.interruption_information.vector(),
@@ -1146,18 +1155,13 @@ impl UhProcessor<'_, TdxBacked> {
             .run()
             .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?;
 
-        // TODO GUEST_VSM: set the last vtl
-
         *self.runner.tdx_vp_entry_flags_mut() = TdxVmFlags::new();
 
         if !has_intercept {
             return Ok(());
         }
 
-        let entered_from_vtl = self
-            .cvm_guest_vsm
-            .as_ref()
-            .map_or(GuestVtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
+        let entered_from_vtl = next_vtl;
 
         let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
 
