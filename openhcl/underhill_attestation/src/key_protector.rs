@@ -10,6 +10,8 @@ use crate::Keys;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use thiserror::Error;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
@@ -117,7 +119,7 @@ impl KeyProtectorExt for KeyProtector {
             }
 
             let rsa_unwrapped_key = if let Some(wrapped_des_key) = wrapped_des_key {
-                tracing::info!("wrapped key is present");
+                tracing::info!(CVM_ALLOWED, "wrapped key is present");
 
                 if wrapped_des_key.len() < modulus_size {
                     Err(GetKeysFromKeyProtectorError::InvalidWrappedDesKeySize {
@@ -134,7 +136,7 @@ impl KeyProtectorExt for KeyProtector {
                 .map_err(GetKeysFromKeyProtectorError::DesKeyRsaUnwrap)?
             } else {
                 // The DEK buffer should contain an RSA-wrapped key.
-                tracing::info!("found dek, index {}", ingress_idx);
+                tracing::info!(CVM_CONFIDENTIAL, "found dek, index {}", ingress_idx);
 
                 crypto::rsa_oaep_decrypt(
                     ingress_kek,
@@ -153,7 +155,7 @@ impl KeyProtectorExt for KeyProtector {
 
             if found_ingress_dek {
                 if use_des_key {
-                    tracing::info!("dek[{}] hold an AES-wrapped key", ingress_idx);
+                    tracing::info!(CVM_CONFIDENTIAL, "dek[{}] hold an AES-wrapped key", ingress_idx);
 
                     // The DEK buffer should contain an AES-wrapped key.
                     let dek_buffer = &self.dek[ingress_idx].dek_buffer;
@@ -170,7 +172,7 @@ impl KeyProtectorExt for KeyProtector {
                     }
                     ingress_key[..aes_unwrapped_key.len()].copy_from_slice(&aes_unwrapped_key);
                 } else {
-                    tracing::info!("dek[{}] hold an RSA-wrapped key", ingress_idx);
+                    tracing::info!(CVM_CONFIDENTIAL, "dek[{}] hold an RSA-wrapped key", ingress_idx);
 
                     ingress_key[..rsa_unwrapped_key.len()].copy_from_slice(&rsa_unwrapped_key);
                 }
@@ -186,7 +188,7 @@ impl KeyProtectorExt for KeyProtector {
         };
 
         if found_egress_dek {
-            tracing::info!("found egress dek");
+            tracing::info!(CVM_ALLOWED, "found egress dek");
 
             // Key rolling did not complete successfully last time (normally egress should be empty)
             let dek_buffer = self.dek[egress_idx].dek_buffer;
@@ -208,7 +210,7 @@ impl KeyProtectorExt for KeyProtector {
             };
             egress_key[..new_egress_key.len()].copy_from_slice(&new_egress_key);
         } else {
-            tracing::info!("there is no egress dek");
+            tracing::info!(CVM_ALLOWED, "there is no egress dek");
 
             // There is no egress DEK, so create a new key value and encrypt it.
             getrandom::getrandom(&mut egress_key).expect("rng failure");
@@ -237,7 +239,7 @@ impl KeyProtectorExt for KeyProtector {
             self.dek[egress_idx].dek_buffer[..new_egress_key.len()]
                 .copy_from_slice(&new_egress_key);
 
-            tracing::info!(
+            tracing::info!(CVM_CONFIDENTIAL,
                 "store new egress key to dek[{}], size {}",
                 egress_idx,
                 new_egress_key.len()

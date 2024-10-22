@@ -12,6 +12,7 @@ use crate::protocol::vmgs::HardwareKeyProtector;
 use openssl_kdf::kdf::Kbkdf;
 use thiserror::Error;
 use zerocopy::AsBytes;
+use cvm_tracing::CVM_ALLOWED;
 
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
@@ -140,7 +141,7 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
         )
         .map_err(HardwareKeySealingError::HmacAfterEncrypt)?;
 
-        tracing::info!("encrypt egress_key using hardware derived key");
+        tracing::info!(CVM_ALLOWED, "encrypt egress_key using hardware derived key");
 
         Ok(hardware_key_protector)
     }
@@ -170,7 +171,7 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
         }
         decrypted_ingress_key.copy_from_slice(&output[..vmgs::AES_GCM_KEY_LENGTH]);
 
-        tracing::info!("decrypt ingress_key using hardware derived key");
+        tracing::info!(CVM_ALLOWED, "decrypt ingress_key using hardware derived key");
 
         Ok(decrypted_ingress_key)
     }

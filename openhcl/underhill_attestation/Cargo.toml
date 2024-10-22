@@ -25,6 +25,7 @@ tdx_guest_device.workspace = true
 tee_call.workspace = true
 pal_async.workspace = true
 tracing.workspace = true
+cvm_tracing.workspace = true
 
 base64.workspace = true
 base64-serde.workspace = true

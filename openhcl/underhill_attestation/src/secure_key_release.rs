@@ -10,6 +10,7 @@ use crate::protocol;
 use crate::protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use crate::AttestationVmConfig;
 use crate::IgvmAttestRequestHelper;
+use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
@@ -153,6 +154,7 @@ pub async fn request_vmgs_encryption_keys(
                 wrapped_des_key: _,
             }) => {
                 tracing::warn!(
+                    CVM_ALLOWED,
                     retry = i,
                     "tenant wrapped vmgs key-encryption key is not released"
                 )
@@ -160,6 +162,7 @@ pub async fn request_vmgs_encryption_keys(
             Err(e) if i == (max_retry - 1) => Err(e)?,
             Err(e) => {
                 tracing::error!(
+                    CVM_ALLOWED,
                     retry = i,
                     error = &e as &dyn std::error::Error,
                     "tenant wrapped vmgs key-encryption key request failed",
@@ -177,7 +180,7 @@ pub async fn request_vmgs_encryption_keys(
                 .map_err(RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap)?,
         )
     } else {
-        tracing::warn!("tenant vmgs ingress key is not released");
+        tracing::warn!(CVM_ALLOWED, "tenant vmgs ingress key is not released");
         None
     };
 

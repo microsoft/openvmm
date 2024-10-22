@@ -25,6 +25,7 @@ pub use protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 
 use ::vmgs::EncryptionAlgorithm;
 use ::vmgs::Vmgs;
+use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::api::GspExtendedStatusFlags;
 use guest_emulation_transport::api::GuestStateProtection;
 use guest_emulation_transport::api::GuestStateProtectionById;
@@ -250,7 +251,7 @@ pub async fn initialize_platform_security(
     // If attestation is suppressed, return the `agent_data` that is required by
     // TPM AK cert request.
     if suppress_attestation {
-        tracing::info!("Attestation is suppressed, assuming unlocked vmgs and stateless tpm");
+        tracing::info!(CVM_ALLOWED, "Attestation is suppressed, assuming unlocked vmgs and stateless tpm");
 
         return Ok(PlatformAttestationData {
             host_attestation_settings: HostAttestationSettings {
@@ -366,7 +367,7 @@ pub async fn initialize_platform_security(
         refresh_tpm_seeds: { state_refresh_request_from_gsp | vm_id_changed },
     };
 
-    tracing::info!(
+    tracing::info!(CVM_ALLOWED,
         state_refresh_request_from_gsp,
         vm_id_changed,
         "determine if refreshing tpm seeds is needed"
@@ -404,12 +405,12 @@ async fn unlock_vmgs_data_store(
         egress: new_egress_key,
     }) = derived_keys
     else {
-        tracing::info!("Encryption disabled, skipping unlock vmgs data store");
+        tracing::info!(CVM_ALLOWED, "Encryption disabled, skipping unlock vmgs data store");
         return Ok(());
     };
 
     if new_ingress_key != new_egress_key {
-        tracing::trace!("EgressKey is different than IngressKey");
+        tracing::trace!(CVM_ALLOWED, "EgressKey is different than IngressKey");
         new_key = true;
     }
 
@@ -417,12 +418,12 @@ async fn unlock_vmgs_data_store(
     let mut old_index = 2;
     let mut provision = false;
     if vmgs_encrypted {
-        tracing::info!("Decrypting vmgs file...");
+        tracing::info!(CVM_ALLOWED, "Decrypting vmgs file...");
         match vmgs.unlock_with_encryption_key(&new_ingress_key).await {
             Ok(index) => old_index = index,
             Err(e) if new_key => {
                 // If last time is provisioning and we failed to persist KP then we'll come here.
-                tracing::trace!(
+                tracing::trace!(CVM_ALLOWED,
                     error = &e as &dyn std::error::Error,
                     "Unlock with ingress key error"
                 );
@@ -439,7 +440,7 @@ async fn unlock_vmgs_data_store(
         }
     } else {
         // The datastore is not encrypted which means it's during provision.
-        tracing::info!("vmgs data store is not encrypted, provisioning.");
+        tracing::info!(CVM_ALLOWED, "vmgs data store is not encrypted, provisioning.");
         provision = true;
     }
 
@@ -468,12 +469,12 @@ async fn unlock_vmgs_data_store(
                 // If last time we failed to remove old key then we'll come here.
                 // We have to remove old key before adding egress_key.
                 let key_index = if old_index == 0 { 1 } else { 0 };
-                tracing::trace!(key_index, "Remove old key...");
+                tracing::trace!(CVM_ALLOWED, key_index, "Remove old key...");
                 vmgs.remove_encryption_key(key_index)
                     .await
                     .map_err(UnlockVmgsDataStoreError::RemoveOldVmgsEncryptionKey)?;
 
-                tracing::trace!("Add egress_key again...");
+                tracing::trace!(CVM_ALLOWED, "Add egress_key again...");
                 vmgs.add_new_encryption_key(&new_egress_key, EncryptionAlgorithm::AES_GCM)
                     .await
                     .map_err(UnlockVmgsDataStoreError::AddNewVmgsEncryptionKeyAfterRemoval)?;
@@ -611,6 +612,7 @@ async fn get_derived_keys(
                 Err(e) => {
                     // non-fatal
                     tracing::warn!(
+                        CVM_ALLOWED,
                         error = &e as &dyn std::error::Error,
                         "failed to read HW_KEY_PROTECTOR from Vmgs"
                     );
@@ -629,6 +631,7 @@ async fn get_derived_keys(
                         Err(e) => {
                             // non-fatal
                             tracing::warn!(
+                                CVM_ALLOWED,
                                 error = &e as &dyn std::error::Error,
                                 "failed to derive hardware keys using HW_KEY_PROTECTOR",
                             );
@@ -656,7 +659,7 @@ async fn get_derived_keys(
             key_protector_settings.should_write_kp = false;
             key_protector_settings.use_hardware_unlock = true;
 
-            tracing::warn!("Using hardware based key derivation");
+            tracing::warn!(CVM_ALLOWED, "Using hardware based key derivation");
 
             return Ok(DerivedKeyResult {
                 derived_keys: Some(derived_keys),
@@ -681,7 +684,7 @@ async fn get_derived_keys(
             Err(GetDerivedKeysError::DisableVmgsEncryptionFailed)?
         }
 
-        tracing::trace!("No VMGS encryption used.");
+        tracing::trace!(CVM_ALLOWED, "No VMGS encryption used.");
 
         return Ok(DerivedKeyResult {
             derived_keys: None,
@@ -701,6 +704,7 @@ async fn get_derived_keys(
                     Err(e) => {
                         // non-fatal
                         tracing::warn!(
+                            CVM_ALLOWED,
                             error = &e as &dyn std::error::Error,
                             "failed to derive hardware keys"
                         );
@@ -714,7 +718,7 @@ async fn get_derived_keys(
 
     // Use tenant key (KEK only)
     if no_gsp && no_gsp_by_id {
-        tracing::trace!("No GSP used with SKR");
+        tracing::trace!(CVM_ALLOWED, "No GSP used with SKR");
 
         derived_keys.ingress = ingress_key;
         derived_keys.egress = egress_key;
@@ -727,7 +731,7 @@ async fn get_derived_keys(
                 .await
                 .map_err(GetDerivedKeysError::VmgsWriteHardwareKeyProtector)?;
 
-            tracing::info!("hardware key protector updated (no GSP used)");
+            tracing::info!(CVM_ALLOWED, "hardware key protector updated (no GSP used)");
         }
 
         return Ok(DerivedKeyResult {
@@ -745,7 +749,7 @@ async fn get_derived_keys(
                 .map_err(GetDerivedKeysError::GetDerivedKeyById)?;
 
         if no_kek && no_gsp {
-            tracing::trace!("Using GSP with ID.");
+            tracing::trace!(CVM_ALLOWED, "Using GSP with ID.");
 
             // Not required for Id protection
             key_protector_settings.should_write_kp = false;
@@ -760,7 +764,7 @@ async fn get_derived_keys(
 
         derived_keys.ingress = derived_keys_by_id.ingress;
 
-        tracing::trace!("Converting GSP method.");
+        tracing::trace!(CVM_ALLOWED, "Converting GSP method.");
     }
 
     let egress_seed;
@@ -800,7 +804,7 @@ async fn get_derived_keys(
         if gsp_response.decrypted_gsp[ingress_idx].length == 0
             && gsp_response.decrypted_gsp[egress_idx].length == 0
         {
-            tracing::trace!("Applying GSP.");
+            tracing::trace!(CVM_ALLOWED, "Applying GSP.");
 
             // VMGS has never had any GSP applied.
             // Leave ingress key untouched, derive egress key with new seed.
@@ -813,7 +817,7 @@ async fn get_derived_keys(
                 derived_keys.ingress = ingress_key;
             }
         } else {
-            tracing::trace!("Using GSP.");
+            tracing::trace!(CVM_ALLOWED, "Using GSP.");
 
             ingress_seed = Some(
                 gsp_response.decrypted_gsp[ingress_idx].buffer
@@ -864,7 +868,7 @@ async fn get_derived_keys(
                 .await
                 .map_err(GetDerivedKeysError::VmgsWriteHardwareKeyProtector)?;
 
-            tracing::info!("hardware key protector updated");
+            tracing::info!(CVM_ALLOWED, "hardware key protector updated");
         }
     }
 
