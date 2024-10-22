@@ -1318,15 +1318,7 @@ impl Nic {
         let worker = Worker {
             channel_idx,
             target_vp: open_request.open_data.target_vp,
-            mem: if open_request.use_confidential_external_memory {
-                self.resources
-                    .trusted_memory
-                    .as_ref()
-                    .expect("trusted memory should be present if confidential memory is requested")
-                    .clone()
-            } else {
-                self.resources.untrusted_memory.clone()
-            },
+            mem: self.resources.guest_memory(open_request).clone(),
             channel: NetChannel {
                 adapter: self.adapter.clone(),
                 queue,
@@ -1513,13 +1505,7 @@ impl Nic {
                     let request = requests[0].as_ref().unwrap();
                     let buffers = Arc::new(ChannelBuffers {
                         version,
-                        mem: if request.use_confidential_external_memory {
-                            self.resources.trusted_memory.as_ref().expect(
-                                "trusted memory should be present if confidential memory is requested"
-                            ).clone()
-                        } else {
-                            self.resources.untrusted_memory.clone()
-                        },
+                        mem: self.resources.guest_memory(request).clone(),
                         recv_buffer: ReceiveBuffer::new(
                             &self.resources.gpadl_map,
                             receive_buffer.gpadl_id,

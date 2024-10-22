@@ -119,15 +119,29 @@ impl<T: Any> IntoAny for T {
 #[derive(Debug, Default)]
 pub struct DeviceResources {
     /// Untrusted guest memory access.
-    pub untrusted_memory: GuestMemory,
+    pub(crate) untrusted_memory: GuestMemory,
     /// Trusted guest memory access.
-    pub trusted_memory: Option<GuestMemory>,
+    pub(crate) trusted_memory: Option<GuestMemory>,
     /// A map providing access to GPADLs.
     pub gpadl_map: GpadlMapView,
     /// The control object for enabling subchannels.
     pub channel_control: ChannelControl,
     /// The resources for each channel.
     pub channels: Vec<ChannelResources>,
+}
+
+impl DeviceResources {
+    /// Returns the `GuestMemory` to use based on the whether the open request
+    /// requests confidential memory.
+    pub fn guest_memory(&self, open_request: &OpenRequest) -> &GuestMemory {
+        if open_request.use_confidential_external_memory {
+            self.trusted_memory
+                .as_ref()
+                .expect("trusted memory should be present if confidential memory is requested")
+        } else {
+            &self.untrusted_memory
+        }
+    }
 }
 
 /// Resources used by an individual channel.
