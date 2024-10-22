@@ -49,6 +49,7 @@ pub struct MemoryMappings {
 }
 
 impl MemoryMappings {
+    /// Includes all VTL0 memory (trusted and untrusted).
     pub fn vtl0(&self) -> &GuestMemory {
         &self.vtl0_gm
     }
@@ -58,6 +59,7 @@ impl MemoryMappings {
     pub fn untrusted_dma_memory(&self) -> &GuestMemory {
         &self.untrusted_dma_memory
     }
+    /// Includes only trusted VTL0 memory.
     pub fn trusted_memory(&self) -> Option<&GuestMemory> {
         self.trusted_memory.as_ref()
     }

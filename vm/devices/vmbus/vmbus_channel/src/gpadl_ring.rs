@@ -216,14 +216,7 @@ pub fn gpadl_channel(
     channel_idx: u16,
 ) -> Result<RawAsyncChannel<GpadlRingMem>, Error> {
     let (in_ring, out_ring) = make_rings(
-        if open_request.use_confidential_ring {
-            resources
-                .trusted_memory
-                .as_ref()
-                .expect("trusted memory should be set if confidential ring is requested")
-        } else {
-            &resources.untrusted_memory
-        },
+        resources.offer_resources.ring_memory(open_request),
         &resources.gpadl_map,
         &open_request.open_data,
     )?;

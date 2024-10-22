@@ -102,10 +102,7 @@ impl MockVmbus {
 impl ParentBus for MockVmbus {
     async fn add_child(&self, request: OfferInput) -> anyhow::Result<OfferResources> {
         *(self.child_info.lock().await) = Some(request);
-        Ok(OfferResources {
-            untrusted_memory: self.memory.clone(),
-            trusted_memory: None,
-        })
+        Ok(OfferResources::new(self.memory.clone(), None))
     }
     fn clone_bus(&self) -> Box<dyn ParentBus> {
         Box::new(self.clone())

@@ -7,6 +7,7 @@ use crate::bus::ChannelRequest;
 use crate::bus::ChannelServerRequest;
 use crate::bus::OfferInput;
 use crate::bus::OfferParams;
+use crate::bus::OfferResources;
 use crate::bus::OpenRequest;
 use crate::bus::ParentBus;
 use crate::gpadl::GpadlMap;
@@ -18,7 +19,6 @@ use crate::ChannelClosed;
 use crate::RawAsyncChannel;
 use crate::SignalVmbusChannel;
 use futures::StreamExt;
-use guestmem::GuestMemory;
 use mesh::rpc::Rpc;
 use pal_async::driver::Driver;
 use pal_async::task::Spawn;
@@ -52,8 +52,7 @@ pub struct Offer {
     open_recv: mesh::Receiver<OpenMessage>,
     gpadl_map: GpadlMapView,
     event: Notify,
-    untrusted_guest_mem: GuestMemory,
-    trusted_guest_mem: Option<GuestMemory>,
+    offer_resources: OfferResources,
     _server_request_send: mesh::Sender<ChannelServerRequest>,
 }
 
@@ -86,8 +85,7 @@ impl Offer {
         });
 
         let offer = Self {
-            untrusted_guest_mem: result.untrusted_memory,
-            trusted_guest_mem: result.trusted_memory,
+            offer_resources: result,
             task,
             open_recv,
             gpadl_map,
@@ -162,13 +160,7 @@ impl Offer {
         let message = self.open_recv.next().await.ok_or(Error::Revoked)?;
 
         let (in_ring, out_ring) = make_rings(
-            if message.open_request.use_confidential_ring {
-                self.trusted_guest_mem
-                    .as_ref()
-                    .expect("trusted memory should be set if confidential ring is requested")
-            } else {
-                &self.untrusted_guest_mem
-            },
+            self.offer_resources.ring_memory(&message.open_request),
             &self.gpadl_map,
             &message.open_request.open_data,
         )?;

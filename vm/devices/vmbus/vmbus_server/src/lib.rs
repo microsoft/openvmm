@@ -1489,16 +1489,14 @@ impl VmbusServerControl {
         let (send, recv) = mesh::oneshot();
         self.send.send(OfferRequest::Offer(offer_info, send));
         recv.await.flatten()?;
-        Ok(OfferResources {
-            untrusted_memory: self.mem.clone(),
-            trusted_memory: if flags.confidential_ring_buffer()
-                || flags.confidential_external_memory()
-            {
+        Ok(OfferResources::new(
+            self.mem.clone(),
+            if flags.confidential_ring_buffer() || flags.confidential_external_memory() {
                 self.trusted_mem.clone()
             } else {
                 None
             },
-        })
+        ))
     }
 
     async fn offer(&self, request: OfferInput) -> anyhow::Result<OfferResources> {

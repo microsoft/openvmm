@@ -8,6 +8,7 @@ use crate::bus::ChannelServerRequest;
 use crate::bus::ModifyRequest;
 use crate::bus::OfferInput;
 use crate::bus::OfferParams;
+use crate::bus::OfferResources;
 use crate::bus::OpenRequest;
 use crate::bus::ParentBus;
 use crate::gpadl::GpadlMap;
@@ -17,7 +18,6 @@ use async_trait::async_trait;
 use futures::stream::select;
 use futures::stream::SelectAll;
 use futures::StreamExt;
-use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::rpc::FailableRpc;
@@ -118,30 +118,14 @@ impl<T: Any> IntoAny for T {
 /// Resources used by the device to communicate with the guest.
 #[derive(Debug, Default)]
 pub struct DeviceResources {
-    /// Untrusted guest memory access.
-    pub(crate) untrusted_memory: GuestMemory,
-    /// Trusted guest memory access.
-    pub(crate) trusted_memory: Option<GuestMemory>,
+    /// Memory resources for the offer.
+    pub offer_resources: OfferResources,
     /// A map providing access to GPADLs.
     pub gpadl_map: GpadlMapView,
     /// The control object for enabling subchannels.
     pub channel_control: ChannelControl,
     /// The resources for each channel.
     pub channels: Vec<ChannelResources>,
-}
-
-impl DeviceResources {
-    /// Returns the `GuestMemory` to use based on the whether the open request
-    /// requests confidential memory.
-    pub fn guest_memory(&self, open_request: &OpenRequest) -> &GuestMemory {
-        if open_request.use_confidential_external_memory {
-            self.trusted_memory
-                .as_ref()
-                .expect("trusted memory should be present if confidential memory is requested")
-        } else {
-            &self.untrusted_memory
-        }
-    }
 }
 
 /// Resources used by an individual channel.
@@ -382,8 +366,7 @@ async fn offer_generic(
 
     let (subchannel_enable_send, subchannel_enable_recv) = mesh::channel();
     channel.install(DeviceResources {
-        untrusted_memory: offer_result.untrusted_memory,
-        trusted_memory: offer_result.trusted_memory,
+        offer_resources: offer_result,
         gpadl_map: gpadl_map.clone().view(),
         channels: resources,
         channel_control: ChannelControl {

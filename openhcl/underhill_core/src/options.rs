@@ -33,9 +33,11 @@ pub struct Options {
     /// Enable handling of MNF in the Underhill vmbus server, instead of the host.
     pub vmbus_enable_mnf: Option<bool>,
 
-    /// (OPENHCL_VMBUS_FORCE_CONF_EXT_MEM=1)
+    /// (OPENHCL_VMBUS_FORCE_CONFIDENTIAL_EXTERNAL_MEMORY=1)
     /// Force the use of confidential external memory for all non-relay vmbus channels. For testing
     /// purposes only.
+    ///
+    /// N.B.: Not all vmbus devices support this feature, so enabling it may cause failures.
     pub vmbus_force_confidential_external_memory: bool,
 
     /// (OPENHCL_CMDLINE_APPEND=\<string\>)

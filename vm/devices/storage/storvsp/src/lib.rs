@@ -1506,7 +1506,10 @@ impl StorageDevice {
             controller,
             channel,
             channel_index,
-            self.resources.guest_memory(open_request).clone(),
+            self.resources
+                .offer_resources
+                .guest_memory(open_request)
+                .clone(),
             channel_control,
             self.io_queue_depth,
             self.protocol.clone(),

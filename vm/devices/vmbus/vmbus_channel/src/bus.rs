@@ -30,12 +30,49 @@ pub struct OfferInput {
 }
 
 /// Resources for an offered channel.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct OfferResources {
-    /// Guest memory access for ring buffers.
-    pub untrusted_memory: GuestMemory,
-    /// Guest memory access.
-    pub trusted_memory: Option<GuestMemory>,
+    /// Untrusted guest memory access.
+    untrusted_memory: GuestMemory,
+    /// Trusted guest memory access. This will be `None` unless running in a paravisor of a hardware
+    /// isolated VM.
+    trusted_memory: Option<GuestMemory>,
+}
+
+impl OfferResources {
+    /// Creates a new `OfferResources`.
+    pub fn new(untrusted_memory: GuestMemory, trusted_memory: Option<GuestMemory>) -> Self {
+        OfferResources {
+            untrusted_memory,
+            trusted_memory,
+        }
+    }
+
+    /// Returns the `GuestMemory` to use based on the whether the open request
+    /// requests confidential memory.
+    ///
+    /// The open request reflects both whether the device indicated it supports confidential
+    /// external memory when it was offered, and whether the currently connected vmbus client
+    /// supports it. As such, you must not attempt to get the guest memory until a channel is
+    /// opened, and you should not retain the guest memory after it is closed, as the client and
+    /// its capabilities may change across opens.
+    pub fn guest_memory(&self, open_request: &OpenRequest) -> &GuestMemory {
+        self.get_memory(open_request.use_confidential_external_memory)
+    }
+
+    pub(crate) fn ring_memory(&self, open_request: &OpenRequest) -> &GuestMemory {
+        self.get_memory(open_request.use_confidential_ring)
+    }
+
+    fn get_memory(&self, trusted: bool) -> &GuestMemory {
+        if trusted {
+            self.trusted_memory
+                .as_ref()
+                .expect("trusted memory should be present if confidential memory is requested")
+        } else {
+            &self.untrusted_memory
+        }
+    }
 }
 
 /// A request from the VMBus control plane.
