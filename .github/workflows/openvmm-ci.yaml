@@ -30,7 +30,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -39,7 +57,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -47,19 +65,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -260,7 +272,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -269,7 +299,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -277,19 +307,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -502,7 +526,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -511,7 +553,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -519,19 +561,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -944,7 +980,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -953,7 +1007,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -961,19 +1015,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -1386,7 +1434,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -1395,7 +1461,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -1403,19 +1469,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -1998,7 +2058,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -2007,7 +2085,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -2015,19 +2093,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -2341,7 +2413,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -2350,7 +2440,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -2358,19 +2448,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -2729,7 +2813,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -2738,7 +2840,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -2746,19 +2848,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -4207,7 +4303,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -4216,7 +4330,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -4224,19 +4338,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -4339,7 +4447,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -4348,7 +4474,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -4356,19 +4482,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -4638,7 +4758,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -4647,7 +4785,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -4655,19 +4793,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -4864,7 +4996,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -4873,7 +5023,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -4881,19 +5031,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -5102,7 +5246,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -5111,7 +5273,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -5119,19 +5281,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -5405,7 +5561,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -5414,7 +5588,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -5422,19 +5596,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -5723,7 +5891,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -5732,7 +5918,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -5740,19 +5926,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -6029,7 +6209,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -6038,7 +6236,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -6046,19 +6244,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
@@ -6355,7 +6547,25 @@ jobs:
       shell: bash
     - run: |
         set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}/cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Linux'
+      name: Setup Environment Variables (Linux)
+      shell: bash
+    - run: |
+        set -x
+        echo "RUSTUP_HOME=${{ runner.temp }}\\rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=${{ runner.temp }}\\cargo" >> "$GITHUB_ENV"
+      if: runner.os == 'Windows'
+      name: Setup Environment Variables (Windows)
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$CARGO_HOME/env"
+        echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
@@ -6364,7 +6574,7 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
       shell: bash
@@ -6372,19 +6582,13 @@ jobs:
         set -x
         curl -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
         ./rustup-init.exe -y
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+        echo "$CARGO_HOME\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
     - uses: actions/checkout@v4
       with:
         path: flowey_bootstrap
-    - name: Update Index
-      run: |
-        rustc -vV
-        cargo update --dry-run
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
