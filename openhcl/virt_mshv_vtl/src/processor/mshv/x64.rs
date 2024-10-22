@@ -219,9 +219,9 @@ impl BackingPrivate for HypervisorBackedX86 {
             let intercepted_vtl =
                 this.runner
                     .reg_page_vtl()
-                    .ok_or(VpHaltReason::InvalidVmState(
-                        UhRunVpError::InvalidInterceptedVtl,
-                    ))?;
+                    .map_err(|ioctl::x64::InterceptedVtlError(vtl)| {
+                        VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl(vtl))
+                    })?;
 
             let message_type = this.runner.exit_message().header.typ;
 

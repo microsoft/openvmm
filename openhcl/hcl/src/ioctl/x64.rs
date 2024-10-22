@@ -35,6 +35,11 @@ pub struct TranslateErrorX64 {
     pub event_info: hvdef::HvX64PendingEvent,
 }
 
+/// Result when the intercepted vtl is invalid.
+#[derive(Error, Debug)]
+#[error("retrieving the intercepted vtl returned an invalid vtl {0:?}")]
+pub struct InterceptedVtlError(pub Option<u8>);
+
 /// Runner backing for non-hardware-isolated X64 partitions.
 pub struct MshvX64 {
     reg_page: Option<NonNull<HvX64RegisterPage>>,
@@ -66,9 +71,9 @@ impl ProcessorRunner<'_, MshvX64> {
     }
 
     /// Returns the last VTL according to the register page.
-    pub fn reg_page_vtl(&self) -> Option<GuestVtl> {
-        self.reg_page()
-            .and_then(|reg_page| reg_page.vtl.try_into().ok())
+    pub fn reg_page_vtl(&self) -> Result<GuestVtl, InterceptedVtlError> {
+        let vtl = self.reg_page().ok_or(InterceptedVtlError(None))?.vtl;
+        vtl.try_into().map_err(|_| InterceptedVtlError(Some(vtl)))
     }
 
     /// Returns a reference to the current VTL's CPU context.

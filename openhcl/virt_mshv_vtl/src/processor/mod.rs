@@ -404,8 +404,8 @@ pub enum UhRunVpError {
     #[error("unexpected debug exception with dr6 value {0:#x}")]
     UnexpectedDebugException(u64),
     /// Handling an intercept on behalf of an invalid Lower VTL
-    #[error("invalid intercepted vtl")]
-    InvalidInterceptedVtl,
+    #[error("invalid intercepted vtl {0:?}")]
+    InvalidInterceptedVtl(Option<u8>),
 }
 
 /// Underhill processor run error

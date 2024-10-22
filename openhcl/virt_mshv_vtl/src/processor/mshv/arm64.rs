@@ -25,6 +25,7 @@ use hcl::ioctl;
 use hcl::ioctl::aarch64::MshvArm64;
 use hcl::ioctl::ProcessorRunner;
 use hcl::GuestVtl;
+use hcl::UnsupportedGuestVtl;
 use hvdef::hypercall;
 use hvdef::HvAarch64PendingEvent;
 use hvdef::HvArm64RegisterName;
@@ -226,8 +227,10 @@ impl BackingPrivate for HypervisorBackedArm64 {
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {
-    fn intercepted_vtl(message_header: &hvdef::HvArm64InterceptMessageHeader) -> Option<GuestVtl> {
-        message_header.execution_state.vtl().try_into().ok()
+    fn intercepted_vtl(
+        message_header: &hvdef::HvArm64InterceptMessageHeader,
+    ) -> Result<GuestVtl, UnsupportedGuestVtl> {
+        message_header.execution_state.vtl().try_into()
     }
 
     fn handle_synic_deliverable_exit(&mut self) {
@@ -263,9 +266,10 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "hypercall");
 
-        let intercepted_vtl = Self::intercepted_vtl(&message.header).ok_or(
-            VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl),
-        )?;
+        let intercepted_vtl =
+            Self::intercepted_vtl(&message.header).map_err(|UnsupportedGuestVtl(vtl)| {
+                VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl(Some(vtl)))
+            })?;
         let guest_memory = &self.partition.gm[intercepted_vtl];
         let smccc_convention = message.immediate == 0;
 
@@ -302,9 +306,10 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             interruption_pending: message.header.execution_state.interruption_pending(),
         };
 
-        let intercepted_vtl = Self::intercepted_vtl(&message.header).ok_or(
-            VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl),
-        )?;
+        let intercepted_vtl =
+            Self::intercepted_vtl(&message.header).map_err(|UnsupportedGuestVtl(vtl)| {
+                VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl(Some(vtl)))
+            })?;
         self.emulate(dev, &intercept_state, intercepted_vtl).await?;
         Ok(())
     }

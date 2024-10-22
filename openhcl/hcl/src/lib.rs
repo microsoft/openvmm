@@ -55,7 +55,7 @@ impl From<GuestVtl> for Vtl {
 /// The specified VTL is not supported in the current context.
 #[derive(Debug, Error)]
 #[error("unsupported guest VTL")]
-pub struct UnsupportedGuestVtl;
+pub struct UnsupportedGuestVtl(pub u8);
 
 impl TryFrom<Vtl> for GuestVtl {
     type Error = UnsupportedGuestVtl;
@@ -64,7 +64,7 @@ impl TryFrom<Vtl> for GuestVtl {
         Ok(match value {
             Vtl::Vtl0 => GuestVtl::Vtl0,
             Vtl::Vtl1 => GuestVtl::Vtl1,
-            _ => return Err(UnsupportedGuestVtl),
+            _ => return Err(UnsupportedGuestVtl(value.into())),
         })
     }
 }
@@ -76,7 +76,7 @@ impl TryFrom<u8> for GuestVtl {
         Ok(match value {
             0 => GuestVtl::Vtl0,
             1 => GuestVtl::Vtl1,
-            _ => return Err(UnsupportedGuestVtl),
+            _ => return Err(UnsupportedGuestVtl(value)),
         })
     }
 }
