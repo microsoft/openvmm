@@ -251,7 +251,10 @@ pub async fn initialize_platform_security(
     // If attestation is suppressed, return the `agent_data` that is required by
     // TPM AK cert request.
     if suppress_attestation {
-        tracing::info!(CVM_ALLOWED, "Attestation is suppressed, assuming unlocked vmgs and stateless tpm");
+        tracing::info!(
+            CVM_ALLOWED,
+            "Attestation is suppressed, assuming unlocked vmgs and stateless tpm"
+        );
 
         return Ok(PlatformAttestationData {
             host_attestation_settings: HostAttestationSettings {
@@ -268,14 +271,17 @@ pub async fn initialize_platform_security(
         AttestationType::Host | AttestationType::Unsupported => None,
     };
 
-    tracing::info!(CVM_ALLOWED, "Initializing platform type {:?}", attestation_type);
+    tracing::info!(
+        CVM_ALLOWED,
+        "Initializing platform type {:?}",
+        attestation_type
+    );
 
     let VmgsEncryptionKeys {
         ingress_rsa_kek,
         wrapped_des_key,
         tcb_version,
     } = if let Some(tee_call) = tee_call.as_ref() {
-
         tracing::info!(CVM_ALLOWED, "Retrieving key-encryption key");
 
         // Retrieve the tenant key via attestation
@@ -290,7 +296,6 @@ pub async fn initialize_platform_security(
         .await
         .map_err(ErrorInner::RequestVmgsEncryptionKeys)?
     } else {
-
         tracing::info!(CVM_ALLOWED, "Assuming no key-encryption key");
 
         // Attestation is unavailable, assume no tenant key
@@ -375,7 +380,8 @@ pub async fn initialize_platform_security(
         refresh_tpm_seeds: { state_refresh_request_from_gsp | vm_id_changed },
     };
 
-    tracing::info!(CVM_ALLOWED,
+    tracing::info!(
+        CVM_ALLOWED,
         state_refresh_request_from_gsp,
         vm_id_changed,
         "determine if refreshing tpm seeds is needed"
@@ -413,7 +419,10 @@ async fn unlock_vmgs_data_store(
         egress: new_egress_key,
     }) = derived_keys
     else {
-        tracing::info!(CVM_ALLOWED, "Encryption disabled, skipping unlock vmgs data store");
+        tracing::info!(
+            CVM_ALLOWED,
+            "Encryption disabled, skipping unlock vmgs data store"
+        );
         return Ok(());
     };
 
@@ -431,7 +440,8 @@ async fn unlock_vmgs_data_store(
             Ok(index) => old_index = index,
             Err(e) if new_key => {
                 // If last time is provisioning and we failed to persist KP then we'll come here.
-                tracing::trace!(CVM_ALLOWED,
+                tracing::trace!(
+                    CVM_ALLOWED,
                     error = &e as &dyn std::error::Error,
                     "Unlock with ingress key error"
                 );
@@ -448,7 +458,10 @@ async fn unlock_vmgs_data_store(
         }
     } else {
         // The datastore is not encrypted which means it's during provision.
-        tracing::info!(CVM_ALLOWED, "vmgs data store is not encrypted, provisioning.");
+        tracing::info!(
+            CVM_ALLOWED,
+            "vmgs data store is not encrypted, provisioning."
+        );
         provision = true;
     }
 
@@ -613,7 +626,6 @@ async fn get_derived_keys(
 
     // If sources of encryption used last are missing, attempt to unseal VMGS key with hardware key
     if (no_kek && found_dek) || (no_gsp && requires_gsp) || (no_gsp_by_id && requires_gsp_by_id) {
-
         tracing::info!("Unseal VMGS key-encryption key with hardware key");
         // If possible, get ingressKey from hardware sealed data
         let (hardware_key_protector, hardware_derived_keys) = if let Some(tee_call) = tee_call {

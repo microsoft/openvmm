@@ -117,8 +117,11 @@ pub async fn request_vmgs_encryption_keys(
     let mut timer = pal_async::timer::PolledTimer::new(&driver);
 
     for i in 0..max_retry {
-
-        tracing::info!(CVM_ALLOWED, attempt=i, "attempt to get VMGS key-encryption key");
+        tracing::info!(
+            CVM_ALLOWED,
+            attempt = i,
+            "attempt to get VMGS key-encryption key"
+        );
 
         // Get attestation report on each iteration. Failures here are fatal.
         let result = tee_call

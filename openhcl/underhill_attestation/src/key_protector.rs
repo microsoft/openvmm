@@ -7,11 +7,11 @@ use crate::crypto;
 use crate::protocol::vmgs::KeyProtector;
 use crate::protocol::vmgs::AES_GCM_KEY_LENGTH;
 use crate::Keys;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use thiserror::Error;
-use cvm_tracing::CVM_ALLOWED;
-use cvm_tracing::CVM_CONFIDENTIAL;
 
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
@@ -155,7 +155,11 @@ impl KeyProtectorExt for KeyProtector {
 
             if found_ingress_dek {
                 if use_des_key {
-                    tracing::info!(CVM_CONFIDENTIAL, "dek[{}] hold an AES-wrapped key", ingress_idx);
+                    tracing::info!(
+                        CVM_CONFIDENTIAL,
+                        "dek[{}] hold an AES-wrapped key",
+                        ingress_idx
+                    );
 
                     // The DEK buffer should contain an AES-wrapped key.
                     let dek_buffer = &self.dek[ingress_idx].dek_buffer;
@@ -172,7 +176,11 @@ impl KeyProtectorExt for KeyProtector {
                     }
                     ingress_key[..aes_unwrapped_key.len()].copy_from_slice(&aes_unwrapped_key);
                 } else {
-                    tracing::info!(CVM_CONFIDENTIAL, "dek[{}] hold an RSA-wrapped key", ingress_idx);
+                    tracing::info!(
+                        CVM_CONFIDENTIAL,
+                        "dek[{}] hold an RSA-wrapped key",
+                        ingress_idx
+                    );
 
                     ingress_key[..rsa_unwrapped_key.len()].copy_from_slice(&rsa_unwrapped_key);
                 }
@@ -239,7 +247,8 @@ impl KeyProtectorExt for KeyProtector {
             self.dek[egress_idx].dek_buffer[..new_egress_key.len()]
                 .copy_from_slice(&new_egress_key);
 
-            tracing::info!(CVM_CONFIDENTIAL,
+            tracing::info!(
+                CVM_CONFIDENTIAL,
                 "store new egress key to dek[{}], size {}",
                 egress_idx,
                 new_egress_key.len()

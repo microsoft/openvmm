@@ -9,10 +9,10 @@ use crate::crypto;
 use crate::protocol::igvm_attest;
 use crate::protocol::vmgs;
 use crate::protocol::vmgs::HardwareKeyProtector;
+use cvm_tracing::CVM_ALLOWED;
 use openssl_kdf::kdf::Kbkdf;
 use thiserror::Error;
 use zerocopy::AsBytes;
-use cvm_tracing::CVM_ALLOWED;
 
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
@@ -171,7 +171,10 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
         }
         decrypted_ingress_key.copy_from_slice(&output[..vmgs::AES_GCM_KEY_LENGTH]);
 
-        tracing::info!(CVM_ALLOWED, "decrypt ingress_key using hardware derived key");
+        tracing::info!(
+            CVM_ALLOWED,
+            "decrypt ingress_key using hardware derived key"
+        );
 
         Ok(decrypted_ingress_key)
     }

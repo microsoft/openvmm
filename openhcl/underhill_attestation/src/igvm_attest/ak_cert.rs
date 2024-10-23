@@ -6,8 +6,8 @@
 
 use crate::protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use crate::protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
-use zerocopy::FromBytes;
 use thiserror::Error;
+use zerocopy::FromBytes;
 
 #[derive(Debug, Error)]
 pub enum AkCertError {
