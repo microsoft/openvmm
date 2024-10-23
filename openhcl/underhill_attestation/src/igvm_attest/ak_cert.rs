@@ -12,15 +12,15 @@ use zerocopy::FromBytes;
 #[derive(Debug, Error)]
 pub enum AkCertError {
     #[error("AK cert response size is too small to parse")]
-    AkCertResponseSizeTooSmall,
+    SizeTooSmall,
     #[error(
         "AK cert response size {specified_size} specified in the header is larger then the actual size {size}"
     )]
-    AkCertResponseSizeMismatch { size: usize, specified_size: usize },
+    SizeMismatch { size: usize, specified_size: usize },
     #[error(
         "AK cert response header version {version} does match the expected version {expected_version}"
     )]
-    AkCertResponseHeaderVersionMismatch { version: u32, expected_version: u32 },
+    HeaderVersionMismatch { version: u32, expected_version: u32 },
 }
 
 /// Parse a `AK_CERT_REQUEST` response and return the payload (i.e., the AK cert).
@@ -30,19 +30,19 @@ pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
     const HEADER_SIZE: usize = size_of::<IgvmAttestAkCertResponseHeader>();
 
     let Some(header) = IgvmAttestAkCertResponseHeader::read_from_prefix(response) else {
-        Err(AkCertError::AkCertResponseSizeTooSmall)?
+        Err(AkCertError::SizeTooSmall)?
     };
 
     let size = header.data_size as usize;
     if size > response.len() {
-        Err(AkCertError::AkCertResponseSizeMismatch {
+        Err(AkCertError::SizeMismatch {
             size: response.len(),
             specified_size: size,
         })?
     }
 
     if header.version != AK_CERT_RESPONSE_HEADER_VERSION {
-        Err(AkCertError::AkCertResponseHeaderVersionMismatch {
+        Err(AkCertError::HeaderVersionMismatch {
             version: header.version,
             expected_version: AK_CERT_RESPONSE_HEADER_VERSION,
         })?
