@@ -578,8 +578,9 @@ impl HvTranslateGvaSupport for UhProcessor<'_, SnpBacked> {
     type Error = UhRunVpError;
     fn overlay_page(&self, vtl: GuestVtl) -> u64 {
         hvdef::hypercall::MsrHypercallContents::from(
-            self.hv(vtl)
-                .unwrap()
+            self.backing
+                .hv(vtl)
+                .expect("has an hv emulator")
                 .msr_read(hvdef::HV_X64_MSR_HYPERCALL)
                 .unwrap(),
         )
@@ -591,7 +592,7 @@ impl HvTranslateGvaSupport for UhProcessor<'_, SnpBacked> {
     }
 
     fn acquire_tlb_lock(&mut self, vtl: GuestVtl) {
-        self.set_tlb_lock(GuestVtl::Vtl2, vtl)
+        self.set_tlb_lock(Vtl::Vtl2, vtl)
     }
 
     fn registers(&mut self, vtl: GuestVtl) -> Result<TranslationRegisters, Self::Error> {
@@ -602,6 +603,7 @@ impl HvTranslateGvaSupport for UhProcessor<'_, SnpBacked> {
             efer: vmsa.efer(),
             cr3: vmsa.cr3(),
             rflags: vmsa.rflags(),
+            pat: Some(vmsa.pat()),
             ss: from_seg(hv_seg_from_snp(&vmsa.ss())),
             encryption_mode: virt::x86::translate::EncryptionMode::Vtom(
                 self.partition.caps.vtom.unwrap(),
@@ -619,11 +621,11 @@ impl<T: CpuIo> TranslateGvaSupport for UhEmulationState<'_, '_, T, SnpBacked> {
     }
 
     fn acquire_tlb_lock(&mut self) {
-        HvTranslateGvaSupport::acquire_tlb_lock(self, self.vtl);
+        HvTranslateGvaSupport::acquire_tlb_lock(self.vp, self.vtl);
     }
 
     fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
-        HvTranslateGvaSupport::registers(self, self.vtl)
+        HvTranslateGvaSupport::registers(self.vp, self.vtl)
     }
 }
 
@@ -2334,9 +2336,11 @@ impl<T> hv1_hypercall::TranslateVirtualAddressX64 for UhHypercallHandler<'_, '_,
         let target_vtl = control_flags
             .input_vtl()
             .target_vtl()?
-            .unwrap_or(self.vp.last_vtl());
+            .unwrap_or(self.intercepted_vtl.into())
+            .try_into()
+            .map_err(|_| HvError::InvalidParameter)?; // TODO: fix return code
 
-        if self.vp.last_vtl() <= target_vtl {
+        if self.intercepted_vtl <= target_vtl {
             return Err(HvError::AccessDenied);
         }
 

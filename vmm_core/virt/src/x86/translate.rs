@@ -34,6 +34,8 @@ pub struct TranslationRegisters {
     pub cr3: u64,
     /// RFLAGS
     pub rflags: u64,
+    /// PAT
+    pub pat: Option<u64>,
     /// SS
     pub ss: SegmentRegister,
     /// The way the processor uses to determine if an access is to encrypted
@@ -115,6 +117,35 @@ impl TranslateFlags {
     }
 }
 
+/// Result of translation
+pub struct TranslateResult {
+    /// The translated GPA.
+    pub gpa: u64,
+    /// The cache type of the translated page.
+    pub cache_type: Option<TranslateCacheType>,
+}
+
+/// Possible cache types of a translated page.
+pub enum TranslateCacheType {
+    Uncached,
+    WriteCombining,
+    WriteThrough,
+    WriteProtected,
+    WriteBack,
+}
+
+impl From<TranslateCacheType> for hvdef::HvCacheType {
+    fn from(value: TranslateCacheType) -> Self {
+        match value {
+            TranslateCacheType::Uncached => hvdef::HvCacheType::HvCacheTypeUncached,
+            TranslateCacheType::WriteCombining => hvdef::HvCacheType::HvCacheTypeWriteCombining,
+            TranslateCacheType::WriteThrough => hvdef::HvCacheType::HvCacheTypeWriteThrough,
+            TranslateCacheType::WriteProtected => hvdef::HvCacheType::HvCacheTypeWriteProtected,
+            TranslateCacheType::WriteBack => hvdef::HvCacheType::HvCacheTypeWriteBack,
+        }
+    }
+}
+
 /// Translation error.
 #[derive(Debug, Error)]
 pub enum Error {
@@ -154,7 +185,7 @@ pub fn translate_gva_to_gpa(
     gva: u64,
     registers: &TranslationRegisters,
     mut flags: TranslateFlags,
-) -> Result<u64, Error> {
+) -> Result<TranslateResult, Error> {
     tracing::trace!(gva, ?registers, ?flags, "translating gva");
 
     let long_mode = registers.efer & X64_EFER_LMA != 0;
@@ -163,7 +194,10 @@ pub fn translate_gva_to_gpa(
 
     // If paging is disabled, just return the GVA as the GPA.
     if registers.cr0 & X64_CR0_PG == 0 {
-        return Ok(gva);
+        return Ok(TranslateResult {
+            gpa: gva,
+            cache_type: Some(TranslateCacheType::WriteBack),
+        });
     }
 
     let address_bits;
@@ -219,6 +253,7 @@ pub fn translate_gva_to_gpa(
 
     let mut gpa_base = registers.cr3 & !0xfff;
     let mut remaining_bits: u32 = address_bits;
+    let mut cache_type: Option<TranslateCacheType> = None;
     loop {
         // Compute the PTE address.
         let pte_address = if large_pte {
@@ -359,6 +394,23 @@ pub fn translate_gva_to_gpa(
         }
 
         if done {
+            // TODO: check this
+            cache_type = registers.pat.map(|p| {
+                let pat_index = ((pte.cache_disable() as u64) << 1)
+                    | (pte.write_through() as u64)
+                    | if remaining_bits == 0 {
+                        (pte.pat() as u64) << 2
+                    } else {
+                        (pte.pfn() & 1) << 2
+                    };
+                match (p >> (pat_index * 8)) & 0xff {
+                    0 | 7 => TranslateCacheType::Uncached,
+                    1 => TranslateCacheType::WriteCombining,
+                    4 => TranslateCacheType::WriteThrough,
+                    5 => TranslateCacheType::WriteProtected,
+                    _ => TranslateCacheType::WriteBack,
+                }
+            });
             break;
         }
     }
@@ -366,7 +418,10 @@ pub fn translate_gva_to_gpa(
     // The bits that didn't get used for page table indexes form the offset into
     // the page (of whatever size).
     let address_mask = !0 << remaining_bits;
-    Ok((gpa_base & address_mask) | (gva & !address_mask))
+    Ok(TranslateResult {
+        gpa: (gpa_base & address_mask) | (gva & !address_mask),
+        cache_type,
+    })
 }
 
 /// Returns whether a virtual address is canonical. On x86-64, this means that

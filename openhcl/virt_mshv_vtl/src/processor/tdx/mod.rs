@@ -2245,6 +2245,11 @@ impl<T: CpuIo> TranslateGvaSupport for UhEmulationState<'_, '_, T, TdxBacked> {
             .vp
             .runner
             .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_CR3);
+        let pat = Some(
+            self.vp
+                .runner
+                .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_PAT),
+        );
         let ss = self
             .vp
             .read_segment(GuestVtl::Vtl0, TdxSegmentReg::Ss)
@@ -2255,6 +2260,7 @@ impl<T: CpuIo> TranslateGvaSupport for UhEmulationState<'_, '_, T, TdxBacked> {
             cr4,
             efer,
             cr3,
+            pat,
             ss,
             rflags,
             encryption_mode: self.vp.partition.caps.vtom.map_or(

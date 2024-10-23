@@ -143,10 +143,12 @@ pub fn emulate_translate_gva<T: TranslateGvaSupport>(
     let registers = support.registers()?;
 
     let r = match translate_gva_to_gpa(support.guest_memory(), gva, &registers, flags) {
-        Ok(gpa) => Ok(EmuTranslateResult {
-            gpa,
-            overlay_page: None,
-        }),
+        Ok(virt::x86::translate::TranslateResult { gpa, cache_type: _ }) => {
+            Ok(EmuTranslateResult {
+                gpa,
+                overlay_page: None,
+            })
+        }
         Err(err) => Err(EmuTranslateError {
             code: err.into(),
             event_info: None,
