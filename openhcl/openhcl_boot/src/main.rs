@@ -175,6 +175,9 @@ fn build_kernel_command_line(
         "clearcpuid=pcid",
         // Disable all attempts to use an IOMMU, including swiotlb.
         "iommu=off",
+        // Don't probe for a PCI bus. PCI devices currently come from VPCI. When
+        // this changes, we will explicitly enumerate a PCI bus via devicetree.
+        "pci=off",
     ];
 
     const AARCH64_KERNEL_PARAMETERS: &[&str] = &[];
