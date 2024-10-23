@@ -34,6 +34,7 @@ use super::UhVpInner;
 use crate::BackingShared;
 use crate::GuestVsmState;
 use crate::GuestVtl;
+use crate::UhCvmPartitionState;
 use crate::WakeReason;
 use guestmem::GuestMemory;
 use hcl::ioctl;
@@ -240,10 +241,8 @@ mod private {
 }
 
 pub struct BackingSharedParams<'a> {
-    #[cfg(guest_arch = "x86_64")]
-    pub(crate) cvm_state: Option<&'a crate::UhCvmPartitionState>,
-    #[cfg(not(guest_arch = "x86_64"))]
-    pub(crate) _phantom: &'a (),
+    pub(crate) _partition: &'a UhPartitionInner,
+    pub(crate) cvm_state: Option<UhCvmPartitionState>,
 }
 
 /// Processor backing.
@@ -256,8 +255,11 @@ pub trait Backing: BackingPrivate {
 
 impl<T: BackingPrivate> Backing for T {}
 
-/// Marker trait for processor backings that have hardware isolation support.
-pub trait HardwareIsolatedBacking: Backing {}
+/// Trait for processor backings that have hardware isolation support.
+pub trait HardwareIsolatedBacking: Backing {
+    /// Gets CVM specific partition state.
+    fn cvm_state(&self) -> &UhCvmPartitionState;
+}
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 #[derive(Inspect, Debug)]

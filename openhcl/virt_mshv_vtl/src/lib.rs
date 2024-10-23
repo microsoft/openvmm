@@ -206,9 +206,6 @@ struct UhPartitionInner {
     /// This is only set for TDX VMs. For SNP VMs, this is implemented by the
     /// hypervisor. For non-isolated VMs, this isn't a concept.
     untrusted_synic: Option<GlobalSynic>,
-    // TODO: move this into some per-backing state.
-    #[cfg(guest_arch = "x86_64")]
-    cvm: Option<UhCvmPartitionState>,
     guest_vsm: RwLock<GuestVsmState>,
     #[inspect(skip)]
     isolated_memory_protector: Option<Box<dyn ProtectIsolatedMemory>>,
@@ -275,7 +272,8 @@ impl From<EnterMode> for hcl::protocol::EnterMode {
 
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
-struct UhCvmPartitionState {
+/// Partition-wide state for CVMs.
+pub struct UhCvmPartitionState {
     #[inspect(skip)]
     cpuid: hardware_cvm::cpuid::CpuidResults,
     /// VPs that have locked their TLB.
@@ -1376,24 +1374,6 @@ impl UhPartition {
 
         let enter_modes = EnterModes::default();
 
-        #[cfg(guest_arch = "x86_64")]
-        let backing_shared_params = BackingSharedParams {
-            cvm_state: cvm_state.as_ref(),
-        };
-        let backing_shared = match isolation {
-            None | Some(IsolationType::Vbs) => BackingShared::Hypervisor,
-            #[cfg(guest_arch = "x86_64")]
-            Some(IsolationType::Snp) => BackingShared::Snp(Arc::new(SnpBacked::new_shared_state(
-                backing_shared_params,
-            )?)),
-            #[cfg(guest_arch = "x86_64")]
-            Some(IsolationType::Tdx) => BackingShared::Tdx(Arc::new(TdxBacked::new_shared_state(
-                backing_shared_params,
-            )?)),
-            #[cfg(guest_arch = "aarch64")]
-            _ => unimplemented!(),
-        };
-
         let partition = Arc::new(UhPartitionInner {
             hcl,
             vps,
@@ -1413,8 +1393,6 @@ impl UhPartition {
             isolation,
             hv,
             untrusted_synic,
-            #[cfg(guest_arch = "x86_64")]
-            cvm: cvm_state,
             guest_vsm: RwLock::new(vsm_state),
             isolated_memory_protector: params.isolated_memory_protector,
             shared_vis_pages_pool: params.shared_vis_pages_pool,
@@ -1426,6 +1404,23 @@ impl UhPartition {
             // Intercept all IOs unless opted out.
             partition.manage_io_port_intercept_region(0, !0, true);
         }
+
+        #[cfg(guest_arch = "x86_64")]
+        let backing_shared_params = BackingSharedParams {
+            cvm_state,
+            _partition: &partition,
+        };
+        let backing_shared = match isolation {
+            None | Some(IsolationType::Vbs) => BackingShared::Hypervisor,
+            #[cfg(guest_arch = "x86_64")]
+            Some(IsolationType::Snp) => BackingShared::Snp(Arc::new(SnpBacked::new_shared_state(
+                backing_shared_params,
+            )?)),
+            #[cfg(guest_arch = "x86_64")]
+            Some(IsolationType::Tdx) => BackingShared::Tdx(Arc::new(TdxBacked::new_shared_state(
+                backing_shared_params,
+            )?)),
+        };
 
         let vps = params
             .topology

@@ -15,6 +15,7 @@ use super::UhEmulationState;
 use super::UhHypercallHandler;
 use super::UhRunVpError;
 use crate::GuestVtl;
+use crate::UhCvmPartitionState;
 use crate::UhPartitionInner;
 use crate::UhProcessor;
 use crate::WakeReason;
@@ -461,11 +462,16 @@ enum UhDirectOverlay {
     Count,
 }
 
-impl HardwareIsolatedBacking for TdxBacked {}
+impl HardwareIsolatedBacking for TdxBacked {
+    fn cvm_state(&self) -> &UhCvmPartitionState {
+        &self.shared.cvm
+    }
+}
 
 /// Partition-wide shared data for TDX VPs.
 #[derive(Inspect)]
 pub struct TdxBackedShared {
+    cvm: UhCvmPartitionState,
     flush_state: VtlArray<RwLock<TdxPartitionFlushState>, 2>,
 }
 
@@ -474,10 +480,11 @@ impl BackingPrivate for TdxBacked {
     type BackingShared = TdxBackedShared;
 
     fn new_shared_state(
-        _params: BackingSharedParams<'_>,
+        params: BackingSharedParams<'_>,
     ) -> Result<Self::BackingShared, crate::Error> {
         Ok(TdxBackedShared {
             flush_state: VtlArray::from_fn(|_| RwLock::new(TdxPartitionFlushState::new())),
+            cvm: params.cvm_state.unwrap(),
         })
     }
 
@@ -1395,7 +1402,7 @@ impl UhProcessor<'_, TdxBacked> {
                     apic_id: self.inner.vp_info.apic_id,
                 };
 
-                let result = self.partition.cvm.as_ref().unwrap().cpuid.guest_result(
+                let result = self.backing.shared.cvm.cpuid.guest_result(
                     CpuidFunction(leaf),
                     subleaf,
                     &guest_state,

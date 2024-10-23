@@ -18,6 +18,7 @@ use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
 use crate::Error;
 use crate::GuestVtl;
+use crate::UhCvmPartitionState;
 use crate::UhPartitionInner;
 use crate::WakeReason;
 use guestmem::GuestMemory;
@@ -150,11 +151,16 @@ impl SnpBacked {
     }
 }
 
-impl HardwareIsolatedBacking for SnpBacked {}
+impl HardwareIsolatedBacking for SnpBacked {
+    fn cvm_state(&self) -> &UhCvmPartitionState {
+        &self.shared.cvm
+    }
+}
 
 /// Partition-wide shared data for SNP VPs.
 #[derive(Inspect)]
 pub struct SnpBackedShared {
+    cvm: UhCvmPartitionState,
     invlpgb_count_max: u16,
 }
 
@@ -163,19 +169,25 @@ impl BackingPrivate for SnpBacked {
     type BackingShared = SnpBackedShared;
 
     fn new_shared_state(params: BackingSharedParams<'_>) -> Result<Self::BackingShared, Error> {
-        let extended_address_space_sizes = params
-            .cvm_state
-            .unwrap()
+        let cvm = params.cvm_state.unwrap();
+        let extended_address_space_sizes = cvm
             .cpuid
             .registered_result(CpuidFunction::ExtendedAddressSpaceSizes, 0);
         let invlpgb_count_max =
             x86defs::cpuid::ExtendedAddressSpaceSizesEdx::from(extended_address_space_sizes.edx)
                 .invlpgb_count_max();
 
-        Ok(SnpBackedShared { invlpgb_count_max })
+        Ok(SnpBackedShared {
+            invlpgb_count_max,
+            cvm,
+        })
     }
 
     fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error> {
+        let crate::BackingShared::Snp(shared) = params.backing_shared else {
+            unreachable!()
+        };
+
         let pfns_handle = params
             .partition
             .shared_vis_pages_pool
@@ -201,20 +213,13 @@ impl BackingPrivate for SnpBacked {
         let overlays: Vec<_> = pfns.collect();
 
         let tsc_aux_virtualized = x86defs::cpuid::ExtendedSevFeaturesEax::from(
-            params
-                .partition
+            shared
                 .cvm
-                .as_ref()
-                .expect("has cvm state")
                 .cpuid
                 .registered_result(CpuidFunction::ExtendedSevFeatures, 0)
                 .eax,
         )
         .tsc_aux_virtualization();
-
-        let crate::BackingShared::Snp(shared) = params.backing_shared else {
-            unreachable!()
-        };
 
         let lapics = [
             SnpApicState {
@@ -1011,8 +1016,6 @@ impl UhProcessor<'_, SnpBacked> {
 
         let stat = match sev_error_code {
             SevExitCode::CPUID => {
-                let cvm = self.partition.cvm.as_ref().unwrap();
-
                 let guest_state = crate::hardware_cvm::cpuid::CpuidGuestState {
                     xfem: vmsa.xcr0(),
                     xss: vmsa.xss(),
@@ -1020,7 +1023,7 @@ impl UhProcessor<'_, SnpBacked> {
                     apic_id: self.inner.vp_info.apic_id,
                 };
 
-                let result = cvm.cpuid.guest_result(
+                let result = self.backing.shared.cvm.cpuid.guest_result(
                     CpuidFunction(vmsa.rax() as u32),
                     vmsa.rcx() as u32,
                     &guest_state,
