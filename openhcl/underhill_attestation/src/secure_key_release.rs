@@ -117,6 +117,9 @@ pub async fn request_vmgs_encryption_keys(
     let mut timer = pal_async::timer::PolledTimer::new(&driver);
 
     for i in 0..max_retry {
+
+        tracing::info!(CVM_ALLOWED, attempt=i, "attempt to get VMGS key-encryption key");
+
         // Get attestation report on each iteration. Failures here are fatal.
         let result = tee_call
             .get_attestation_report(&igvm_attest_request_helper.runtime_claims_hash)
@@ -156,7 +159,7 @@ pub async fn request_vmgs_encryption_keys(
                 tracing::warn!(
                     CVM_ALLOWED,
                     retry = i,
-                    "tenant wrapped vmgs key-encryption key is not released"
+                    "VMGS key-encryption key is not released"
                 )
             }
             Err(e) if i == (max_retry - 1) => Err(e)?,
@@ -165,7 +168,7 @@ pub async fn request_vmgs_encryption_keys(
                     CVM_ALLOWED,
                     retry = i,
                     error = &e as &dyn std::error::Error,
-                    "tenant wrapped vmgs key-encryption key request failed",
+                    "VMGS key-encryption key request failed",
                 )
             }
         }
