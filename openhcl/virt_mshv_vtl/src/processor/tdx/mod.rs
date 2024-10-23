@@ -1403,7 +1403,7 @@ impl UhProcessor<'_, TdxBacked> {
                     apic_id: self.inner.vp_info.apic_id,
                 };
 
-                let result = self.partition.cvm.as_ref().unwrap().cpuid.guest_result(
+                let result = self.backing.shared.cvm.cpuid.guest_result(
                     CpuidFunction(leaf),
                     subleaf,
                     &guest_state,

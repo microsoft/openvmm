@@ -227,7 +227,7 @@ impl BackingPrivate for HypervisorBackedX86 {
 
             let mut intercept_handler = InterceptHandler {
                 vp: this,
-                intercepted_vtl,
+                vtl: intercepted_vtl,
             };
 
             let stat = match message_type {
@@ -397,7 +397,7 @@ fn next_rip(value: &HvX64InterceptMessageHeader) -> u64 {
 
 struct InterceptHandler<'a, 'b> {
     vp: &'a mut UhProcessor<'b, HypervisorBackedX86>,
-    intercepted_vtl: GuestVtl,
+    vtl: GuestVtl,
 }
 
 impl InterceptHandler<'_, '_> {
@@ -480,12 +480,12 @@ impl InterceptHandler<'_, '_> {
         let is_64bit =
             message.header.execution_state.cr0_pe() && message.header.execution_state.efer_lma();
 
-        let guest_memory = &self.vp.partition.gm[self.intercepted_vtl];
+        let guest_memory = &self.vp.partition.gm[self.vtl];
         let handler = UhHypercallHandler {
             vp: self.vp,
             bus,
             trusted: false,
-            intercepted_vtl: self.intercepted_vtl,
+            intercepted_vtl: self.vtl,
         };
         UhHypercallHandler::MSHV_DISPATCHER.dispatch(
             guest_memory,
@@ -532,9 +532,7 @@ impl InterceptHandler<'_, '_> {
             }
         }
 
-        self.vp
-            .emulate(dev, interruption_pending, self.intercepted_vtl)
-            .await?;
+        self.vp.emulate(dev, interruption_pending, self.vtl).await?;
         Ok(())
     }
 
@@ -554,9 +552,7 @@ impl InterceptHandler<'_, '_> {
         let interruption_pending = message.header.execution_state.interruption_pending();
 
         if message.access_info.string_op() || message.access_info.rep_prefix() {
-            self.vp
-                .emulate(dev, interruption_pending, self.intercepted_vtl)
-                .await
+            self.vp.emulate(dev, interruption_pending, self.vtl).await
         } else {
             let next_rip = next_rip(&message.header);
             let access_size = message.access_info.access_size();
@@ -569,7 +565,7 @@ impl InterceptHandler<'_, '_> {
                 dev,
             )
             .await;
-            self.vp.set_rip(self.intercepted_vtl, next_rip)
+            self.vp.set_rip(self.vtl, next_rip)
         }
     }
 
@@ -629,7 +625,7 @@ impl InterceptHandler<'_, '_> {
         self.vp.runner.cpu_context_mut().gps[protocol::RCX] = ecx.into();
         self.vp.runner.cpu_context_mut().gps[protocol::RDX] = edx.into();
 
-        self.vp.set_rip(self.intercepted_vtl, next_rip)
+        self.vp.set_rip(self.vtl, next_rip)
     }
 
     fn handle_msr_intercept(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
@@ -645,7 +641,7 @@ impl InterceptHandler<'_, '_> {
         match message.header.intercept_access_type {
             HvInterceptAccessType::READ => {
                 let r = if let Some(lapics) = &mut self.vp.backing.lapics {
-                    lapics[self.intercepted_vtl].msr_read(
+                    lapics[self.vtl].msr_read(
                         self.vp.partition,
                         &mut self.vp.runner,
                         &self.vp.vmtime,
@@ -655,7 +651,7 @@ impl InterceptHandler<'_, '_> {
                 } else {
                     Err(MsrError::Unknown)
                 };
-                let r = r.or_else_if_unknown(|| self.vp.read_msr(msr, self.intercepted_vtl));
+                let r = r.or_else_if_unknown(|| self.vp.read_msr(msr, self.vtl));
 
                 let value = match r {
                     Ok(v) => v,
@@ -664,7 +660,7 @@ impl InterceptHandler<'_, '_> {
                         0
                     }
                     Err(MsrError::InvalidAccess) => {
-                        self.vp.inject_gpf(self.intercepted_vtl);
+                        self.vp.inject_gpf(self.vtl);
                         // Do not advance RIP.
                         return Ok(());
                     }
@@ -676,7 +672,7 @@ impl InterceptHandler<'_, '_> {
             HvInterceptAccessType::WRITE => {
                 let value = (message.rax & 0xffff_ffff) | (message.rdx << 32);
                 let r = if let Some(lapic) = &mut self.vp.backing.lapics {
-                    lapic[self.intercepted_vtl].msr_write(
+                    lapic[self.vtl].msr_write(
                         self.vp.partition,
                         &mut self.vp.runner,
                         &self.vp.vmtime,
@@ -687,15 +683,14 @@ impl InterceptHandler<'_, '_> {
                 } else {
                     Err(MsrError::Unknown)
                 };
-                let r =
-                    r.or_else_if_unknown(|| self.vp.write_msr(msr, value, self.intercepted_vtl));
+                let r = r.or_else_if_unknown(|| self.vp.write_msr(msr, value, self.vtl));
                 match r {
                     Ok(()) => {}
                     Err(MsrError::Unknown) => {
                         tracing::trace!(msr, value, "unknown msr write");
                     }
                     Err(MsrError::InvalidAccess) => {
-                        self.vp.inject_gpf(self.intercepted_vtl);
+                        self.vp.inject_gpf(self.vtl);
                         // Do not advance RIP.
                         return Ok(());
                     }
@@ -704,7 +699,7 @@ impl InterceptHandler<'_, '_> {
             _ => unreachable!(),
         }
 
-        self.vp.set_rip(self.intercepted_vtl, rip)
+        self.vp.set_rip(self.vtl, rip)
     }
 
     fn handle_eoi(&self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
@@ -720,12 +715,12 @@ impl InterceptHandler<'_, '_> {
 
     fn handle_unrecoverable_exception(&self) -> Result<(), VpHaltReason<UhRunVpError>> {
         Err(VpHaltReason::TripleFault {
-            vtl: self.intercepted_vtl.into(),
+            vtl: self.vtl.into(),
         })
     }
 
     fn handle_halt(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
-        self.vp.backing.lapics.as_mut().unwrap()[self.intercepted_vtl].halt();
+        self.vp.backing.lapics.as_mut().unwrap()[self.vtl].halt();
         Ok(())
     }
 
@@ -737,7 +732,7 @@ impl InterceptHandler<'_, '_> {
 
         match x86defs::Exception(message.vector as u8) {
             x86defs::Exception::DEBUG if cfg!(feature = "gdb") => {
-                self.vp.handle_debug_exception(self.intercepted_vtl)?
+                self.vp.handle_debug_exception(self.vtl)?
             }
             _ => tracing::error!("unexpected exception type {:#x?}", message.vector),
         }
