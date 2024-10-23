@@ -65,6 +65,7 @@ fn build_kernel_command_line(
     cmdline: &mut ArrayString<COMMAND_LINE_SIZE>,
     partition_info: &PartitionInfo,
     can_trust_host: bool,
+    sidecar: Option<&SidecarConfig<'_>>,
 ) -> Result<(), CommandLineTooLong> {
     // For reference:
     // https://www.kernel.org/doc/html/v5.15/admin-guide/kernel-parameters.html
@@ -212,6 +213,10 @@ fn build_kernel_command_line(
             "{}=1 ",
             underhill_confidentiality::OPENHCL_CONFIDENTIAL_ENV_VAR_NAME
         )?;
+    }
+
+    if let Some(sidecar) = sidecar {
+        write!(cmdline, "{} ", sidecar.kernel_command_line())?;
     }
 
     // If we're isolated we can't trust the host-provided cmdline
@@ -575,7 +580,14 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     );
 
     let mut cmdline = off_stack!(ArrayString<COMMAND_LINE_SIZE>, ArrayString::new_const());
-    build_kernel_command_line(&p, &mut cmdline, partition_info, can_trust_host).unwrap();
+    build_kernel_command_line(
+        &p,
+        &mut cmdline,
+        partition_info,
+        can_trust_host,
+        sidecar.as_ref(),
+    )
+    .unwrap();
 
     let mut fdt = off_stack!(Fdt, zeroed());
     fdt.header.len = fdt.data.len() as u32;
