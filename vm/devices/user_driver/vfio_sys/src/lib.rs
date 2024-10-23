@@ -13,6 +13,7 @@ use std::fs;
 use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::iter;
 use std::os::unix::prelude::*;
 use std::path::Path;
 use vfio_bindings::bindings::vfio::vfio_device_info;
@@ -390,6 +391,17 @@ impl AsRef<File> for Device {
 impl AsFd for Device {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.file.as_fd()
+    }
+}
+
+impl Drop for Device {
+    fn drop(&mut self) {
+        match self.map_msix(0, iter::empty::<pal_event::Event>()) {
+            Ok(_) => (),
+            Err(e) => {
+                tracing::error!("vfio_sys::Device::drop error calling map_msix: {:?}", e);
+            }
+        }
     }
 }
 

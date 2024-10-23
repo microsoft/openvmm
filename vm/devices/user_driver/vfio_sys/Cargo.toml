@@ -13,6 +13,7 @@ libc.workspace = true
 nix = { workspace = true, features = ["ioctl"] }
 tracing.workspace = true
 vfio-bindings.workspace = true
+pal_event.workspace = true
 
 [lints]
 workspace = true
