@@ -268,11 +268,16 @@ pub async fn initialize_platform_security(
         AttestationType::Host | AttestationType::Unsupported => None,
     };
 
+    tracing::info!(CVM_ALLOWED, "Initializing platform type {:?}", attestation_type);
+
     let VmgsEncryptionKeys {
         ingress_rsa_kek,
         wrapped_des_key,
         tcb_version,
     } = if let Some(tee_call) = tee_call.as_ref() {
+
+        tracing::info!(CVM_ALLOWED, "Retrieving key-encryption key");
+
         // Retrieve the tenant key via attestation
         secure_key_release::request_vmgs_encryption_keys(
             get,
@@ -285,6 +290,9 @@ pub async fn initialize_platform_security(
         .await
         .map_err(ErrorInner::RequestVmgsEncryptionKeys)?
     } else {
+
+        tracing::info!(CVM_ALLOWED, "Assuming no key-encryption key");
+
         // Attestation is unavailable, assume no tenant key
         VmgsEncryptionKeys::default()
     };
@@ -605,6 +613,8 @@ async fn get_derived_keys(
 
     // If sources of encryption used last are missing, attempt to unseal VMGS key with hardware key
     if (no_kek && found_dek) || (no_gsp && requires_gsp) || (no_gsp_by_id && requires_gsp_by_id) {
+
+        tracing::info!("Unseal VMGS key-encryption key with hardware key");
         // If possible, get ingressKey from hardware sealed data
         let (hardware_key_protector, hardware_derived_keys) = if let Some(tee_call) = tee_call {
             let hardware_key_protector = match vmgs::read_hardware_key_protector(vmgs).await {
