@@ -1420,6 +1420,8 @@ impl UhPartition {
             Some(IsolationType::Tdx) => BackingShared::Tdx(Arc::new(TdxBacked::new_shared_state(
                 backing_shared_params,
             )?)),
+            #[cfg(not(guest_arch = "x86_64"))]
+            _ => unreachable!(),
         };
 
         let vps = params
