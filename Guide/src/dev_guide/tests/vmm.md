@@ -39,7 +39,7 @@ and if the host machine OS and the guest machine OS are different, a setup
 is required for cross-building. The recommended approach is to use WSL2 and
 cross-compile using the freely available Microsoft Visual Studio Build Tools
 or Microsoft Visual Studio Community Edition as described in
-(\[WSL2] Cross Compiling from WSL2 to Windows)[../getting_started/suggested_dev_env.md#wsl2-cross-compiling-from-wsl2-to-windows]
+[\[WSL2\] Cross Compiling from WSL2 to Windows](../getting_started/suggested_dev_env.md#wsl2-cross-compiling-from-wsl2-to-windows)
 
 If that is not possible, here is another option that relies on [MinGW-w64](https://www.mingw-w64.org/)
 and doesn't require installing Windows:
