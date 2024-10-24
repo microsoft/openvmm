@@ -28,6 +28,7 @@ virt.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true
+futures-concurrency.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true

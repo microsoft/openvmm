@@ -46,6 +46,7 @@ use crate::reference_time::ReferenceTime;
 use crate::servicing;
 use crate::servicing::transposed::OptionServicingInitState;
 use crate::servicing::ServicingState;
+use crate::shutdown_relay::ShutdownRelayDevice;
 use crate::threadpool_vm_task_backend::ThreadpoolBackend;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
 use crate::vmgs::UnderhillVmgsNonVolatileStore;
@@ -136,6 +137,7 @@ use vm_topology::processor::aarch64::GicInfo;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
 use vm_topology::processor::VpInfo;
+use vmbus_relay_intercept_device::InterceptDeviceVmbusControl;
 use vmbus_relay_intercept_device::SimpleVmbusClientDeviceWrapper;
 use vmbus_server::VmbusServer;
 use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
@@ -226,7 +228,7 @@ async fn attach_simple_intercept_channel<
     driver_source: &VmTaskDriverSource,
     relay: &VmbusRelayHandle,
     device: SimpleVmbusClientDeviceWrapper<T>,
-) -> anyhow::Result<mesh::OneshotSender<()>> {
+) -> anyhow::Result<InterceptDeviceVmbusControl> {
     let (send, recv) = mesh::channel();
     relay.intercept_channel(device.instance_id(), send).await?;
     device.detach(driver_source.simple(), recv)
@@ -2693,8 +2695,6 @@ async fn new_underhill_vm(
         );
     }
 
-    let mut vmbus_intercept_devices = Vec::new();
-
     // TODO: Enable for isolated VMs.
     // Intercept shutdown device from VTL0 when the vmbus relay is active.
     // N.B. Skip enabling if restoring from a previous version that did not use
@@ -2706,26 +2706,39 @@ async fn new_underhill_vm(
     {
         let relay = host_vmbus_relay.as_ref().unwrap();
         let mut shutdown_guest = ShutdownGuestIc::new();
-        let recv_host_shutdown = shutdown_guest.get_shutdown_notifier();
-        let (send_guest_shutdown, recv_guest_shutdown) = mesh::channel();
-
-        // Expose a different shutdown device to the VTL0 guest.
-        vmbus_device_handles.push(
-            hyperv_ic_resources::shutdown::ShutdownIcHandle {
-                recv: recv_guest_shutdown,
-            }
-            .into_resource(),
-        );
+        let host_notification = shutdown_guest.get_shutdown_notifier();
+        let (guest_notifier, recv_guest_shutdown) = mesh::channel();
 
         let shutdown_guest = SimpleVmbusClientDeviceWrapper::new(
             driver_source.simple(),
             partition.clone(),
             shutdown_guest,
         )?;
-        vmbus_intercept_devices
-            .push(attach_simple_intercept_channel(&driver_source, relay, shutdown_guest).await?);
 
-        Some((recv_host_shutdown, send_guest_shutdown))
+        let host_client_control =
+            attach_simple_intercept_channel(&driver_source, relay, shutdown_guest).await?;
+
+        // Expose a different shutdown device to the VTL0 guest.
+        let vmbus = vmbus_server.as_ref().unwrap();
+        let vtl0_device = offer_vmbus_device_handle_unit(
+            &driver_source,
+            &state_units,
+            vmbus,
+            &resolver,
+            hyperv_ic_resources::shutdown::ShutdownIcHandle {
+                recv: recv_guest_shutdown,
+            }
+            .into_resource(),
+        )
+        .await?;
+
+        Some(ShutdownRelayDevice::new(
+            driver_source.clone(),
+            host_client_control,
+            host_notification,
+            guest_notifier,
+            vtl0_device,
+        ))
     } else {
         None
     };
@@ -2836,7 +2849,6 @@ async fn new_underhill_vm(
         vmbus_server,
         host_vmbus_relay,
         _vmbus_devices: vmbus_devices,
-        _vmbus_intercept_devices: vmbus_intercept_devices,
         _ide_accel_devices: ide_accel_devices,
         network_settings,
         shutdown_relay,

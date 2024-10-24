@@ -24,6 +24,8 @@ impl ResourceId<VmbusDeviceHandleKind> for ShutdownIcHandle {
 pub enum ShutdownRpc {
     /// Wait for the shutdown IC to be ready.
     WaitReady(Rpc<(), ()>),
+    /// Wait for the shutdown IC to be not ready.
+    WaitNotReady(Rpc<(), ()>),
     /// Send a shutdown request to the guest.
     Shutdown(Rpc<ShutdownParams, ShutdownResult>),
 }
@@ -38,7 +40,7 @@ pub struct ShutdownParams {
 }
 
 /// The shutdown type.
-#[derive(Debug, MeshPayload)]
+#[derive(Copy, Clone, Debug, MeshPayload)]
 pub enum ShutdownType {
     /// Power off the VM.
     PowerOff,
