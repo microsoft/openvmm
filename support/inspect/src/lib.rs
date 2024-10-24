@@ -1617,6 +1617,15 @@ pub struct AsHex<T>(pub T);
 
 hexbincount!(AsHex, into_hex, u8, u16, u32, u64, usize);
 
+impl<T> Inspect for AsHex<Wrapping<T>>
+where
+    for<'a> AsHex<&'a T>: Inspect,
+{
+    fn inspect(&self, req: Request<'_>) {
+        Inspect::inspect(&AsHex(&self.0 .0), req)
+    }
+}
+
 impl<T: Clone> Inspect for AsHex<&'_ T>
 where
     AsHex<T>: Inspect,
