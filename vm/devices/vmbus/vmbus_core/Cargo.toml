@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 hvdef.workspace = true
 inspect.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["inspect"] }
 mesh.workspace = true
 open_enum.workspace = true
 

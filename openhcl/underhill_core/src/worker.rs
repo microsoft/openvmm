@@ -256,6 +256,8 @@ pub struct UnderhillEnvCfg {
     pub vmbus_max_version: Option<u32>,
     /// Handle MNF in the Underhill vmbus server, rather than the host.
     pub vmbus_enable_mnf: Option<bool>,
+    /// Force the use of confidential external memory for all non-relay vmbus channels.
+    pub vmbus_force_confidential_external_memory: bool,
     /// Command line to append to VTL0 command line. Only used for linux direct.
     pub cmdline_append: Option<String>,
     /// (dev feature) Reformat VMGS file on boot
@@ -2531,13 +2533,14 @@ async fn new_underhill_vm(
         // N.B. The channel ID offset can break older Linux versions (that only support vmbus
         //      protocol V1 and Win7) because they don't support channel IDs above 255.
         let vmbus = VmbusServer::builder(&tp, synic.clone(), gm.untrusted_dma_memory().clone())
-            .trusted_gm(Some(gm.vtl0().clone()))
+            .trusted_gm(gm.trusted_memory().cloned())
             .hvsock_notify(hvsock_notify)
             .server_relay(server_relay)
             .enable_channel_id_offset(!with_vmbus_relay)
             .max_version(env_cfg.vmbus_max_version)
             .delay_max_version(firmware_type == FirmwareType::Uefi)
             .enable_mnf(enable_mnf)
+            .force_confidential_external_memory(env_cfg.vmbus_force_confidential_external_memory)
             .build()
             .context("failed to create vmbus server")?;
 

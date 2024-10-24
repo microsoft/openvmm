@@ -102,9 +102,7 @@ impl MockVmbus {
 impl ParentBus for MockVmbus {
     async fn add_child(&self, request: OfferInput) -> anyhow::Result<OfferResources> {
         *(self.child_info.lock().await) = Some(request);
-        Ok(OfferResources {
-            guest_mem: self.memory.clone(),
-        })
+        Ok(OfferResources::new(self.memory.clone(), None))
     }
     fn clone_bus(&self) -> Box<dyn ParentBus> {
         Box::new(self.clone())
@@ -429,6 +427,8 @@ impl TestNicDevice {
             },
             // The interrupt used to signal the guest.
             interrupt: host_to_guest_interrupt,
+            use_confidential_ring: false,
+            use_confidential_external_memory: false,
         };
 
         let open_response = self
@@ -535,6 +535,8 @@ impl TestNicDevice {
                                                     user_data: UserDefinedData::new_zeroed(),
                                                 },
                                                 interrupt: host_to_guest_interrupt.clone(),
+                                                use_confidential_external_memory: false,
+                                                use_confidential_ring: false,
                                             }),
                                             gpadls,
                                         })

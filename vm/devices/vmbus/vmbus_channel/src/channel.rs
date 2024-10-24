@@ -8,6 +8,7 @@ use crate::bus::ChannelServerRequest;
 use crate::bus::ModifyRequest;
 use crate::bus::OfferInput;
 use crate::bus::OfferParams;
+use crate::bus::OfferResources;
 use crate::bus::OpenRequest;
 use crate::bus::ParentBus;
 use crate::gpadl::GpadlMap;
@@ -17,7 +18,6 @@ use async_trait::async_trait;
 use futures::stream::select;
 use futures::stream::SelectAll;
 use futures::StreamExt;
-use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::rpc::FailableRpc;
@@ -118,8 +118,8 @@ impl<T: Any> IntoAny for T {
 /// Resources used by the device to communicate with the guest.
 #[derive(Debug, Default)]
 pub struct DeviceResources {
-    /// Guest memory access.
-    pub guest_memory: GuestMemory,
+    /// Memory resources for the offer.
+    pub offer_resources: OfferResources,
     /// A map providing access to GPADLs.
     pub gpadl_map: GpadlMapView,
     /// The control object for enabling subchannels.
@@ -366,7 +366,7 @@ async fn offer_generic(
 
     let (subchannel_enable_send, subchannel_enable_recv) = mesh::channel();
     channel.install(DeviceResources {
-        guest_memory: offer_result.guest_mem,
+        offer_resources: offer_result,
         gpadl_map: gpadl_map.clone().view(),
         channels: resources,
         channel_control: ChannelControl {

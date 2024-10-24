@@ -297,6 +297,7 @@ async fn launch_workers(
     let env_cfg = UnderhillEnvCfg {
         vmbus_max_version: opt.vmbus_max_version,
         vmbus_enable_mnf: opt.vmbus_enable_mnf,
+        vmbus_force_confidential_external_memory: opt.vmbus_force_confidential_external_memory,
         cmdline_append: opt.cmdline_append.clone(),
         reformat_vmgs: opt.reformat_vmgs,
         vtl0_starts_paused: opt.vtl0_starts_paused,

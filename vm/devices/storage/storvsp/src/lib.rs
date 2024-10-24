@@ -1489,7 +1489,6 @@ impl StorageDevice {
         let channel = gpadl_channel(&driver, &self.resources, open_request, channel_index)
             .context("failed to create vmbus channel")?;
 
-        let mem = self.resources.guest_memory.clone();
         let channel_control = self.resources.channel_control.clone();
 
         tracing::debug!(
@@ -1507,7 +1506,10 @@ impl StorageDevice {
             controller,
             channel,
             channel_index,
-            mem,
+            self.resources
+                .offer_resources
+                .guest_memory(open_request)
+                .clone(),
             channel_control,
             self.io_queue_depth,
             self.protocol.clone(),
