@@ -156,7 +156,7 @@ impl UhApicState {
         ];
         let mut values = [0u32.into(); NAMES.len()];
         runner
-            .get_vp_registers(NAMES, &mut values)
+            .get_vp_registers(NAMES, &mut values, self.vtl)
             .map_err(UhRunVpError::EmulationState)?;
 
         let &[rflags, cr8, interrupt_state, pending_interruption, pending_event] = &values;
@@ -195,6 +195,7 @@ impl UhApicState {
             .set_vp_register(
                 HvX64RegisterName::PendingInterruption,
                 u64::from(interruption).into(),
+                self.vtl,
             )
             .map_err(UhRunVpError::EmulationState)?;
 
@@ -218,7 +219,7 @@ impl UhApicState {
         ];
         let mut values = [0u32.into(); NAMES.len()];
         runner
-            .get_vp_registers(NAMES, &mut values)
+            .get_vp_registers(NAMES, &mut values, self.vtl)
             .map_err(UhRunVpError::EmulationState)?;
 
         let &[interrupt_state, pending_interruption, pending_event] = &values;
@@ -248,6 +249,7 @@ impl UhApicState {
             .set_vp_register(
                 HvX64RegisterName::PendingInterruption,
                 u64::from(interruption).into(),
+                self.vtl,
             )
             .map_err(UhRunVpError::EmulationState)?;
 
@@ -325,10 +327,13 @@ impl UhProcessor<'_, HypervisorBackedX86> {
                 attributes: 0x9b,
             };
             self.runner
-                .set_vp_registers([
-                    (HvX64RegisterName::Cs, HvRegisterValue::from(cs)),
-                    (HvX64RegisterName::Rip, 0u64.into()),
-                ])
+                .set_vp_registers(
+                    [
+                        (HvX64RegisterName::Cs, HvRegisterValue::from(cs)),
+                        (HvX64RegisterName::Rip, 0u64.into()),
+                    ],
+                    vtl,
+                )
                 .map_err(UhRunVpError::EmulationState)?;
             lapic.startup_suspend = false;
             lapic.halted = false;
@@ -348,20 +353,20 @@ struct UhApicClient<'a, 'b, T> {
 impl<T: CpuIo> ApicClient for UhApicClient<'_, '_, T> {
     fn cr8(&mut self) -> u32 {
         self.runner
-            .get_vp_register(HvX64RegisterName::Cr8)
+            .get_vp_register(HvX64RegisterName::Cr8, self.vtl)
             .unwrap()
             .as_u32()
     }
 
     fn set_cr8(&mut self, value: u32) {
         self.runner
-            .set_vp_register(HvX64RegisterName::Cr8, value.into())
+            .set_vp_register(HvX64RegisterName::Cr8, value.into(), self.vtl)
             .unwrap();
     }
 
     fn set_apic_base(&mut self, value: u64) {
         self.runner
-            .set_vp_register(HvX64RegisterName::ApicBase, value.into())
+            .set_vp_register(HvX64RegisterName::ApicBase, value.into(), self.vtl)
             .unwrap();
     }
 

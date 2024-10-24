@@ -325,6 +325,7 @@ impl super::private::BackingPrivate for Tdx {
         _runner: &mut ProcessorRunner<'_, Self>,
         _name: HvRegisterName,
         _value: HvRegisterValue,
+        _vtl: GuestVtl,
     ) -> Result<bool, super::Error> {
         Ok(false)
     }
@@ -336,6 +337,7 @@ impl super::private::BackingPrivate for Tdx {
     fn try_get_reg(
         _runner: &ProcessorRunner<'_, Self>,
         _name: HvRegisterName,
+        _vtl: GuestVtl,
     ) -> Result<Option<HvRegisterValue>, super::Error> {
         Ok(None)
     }
