@@ -476,9 +476,9 @@ impl LoadedVm {
         // capabilities_flags used to explicitly disable the feature
         // which is enabled by default.
         let nvme_keepalive = !capabilities_flags.disable_nvme_keepalive();
-        self.nvme_manager.as_mut().map(|m| {
+        if let Some(m) = self.nvme_manager.as_mut() {
             m.set_nvme_keepalive(nvme_keepalive);
-        });
+        }
 
         // Do everything before the log flush under a span.
         let mut state = async {

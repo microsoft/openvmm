@@ -289,7 +289,7 @@ fn shim_parameters(shim_params_raw_offset: isize) -> ShimParams {
 /// The maximum number of reserved memory ranges that we might use.
 ///
 /// 1. VTL2 parameter regions (could be up to 2).
-/// 2. Preserved DMA buffers and hardware queues. // YSP:
+/// 2. Preserved DMA buffers and hardware queues.
 /// 3. Sidecar image.
 /// 4. One reserved range per sidecar node.
 pub const MAX_RESERVED_MEM_RANGES: usize = 4 + sidecar_defs::MAX_NODES;

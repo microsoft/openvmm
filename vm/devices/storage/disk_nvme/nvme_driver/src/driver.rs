@@ -494,17 +494,18 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
-        let ns = Arc::new(Namespace::new(
-            &self.driver,
-            self.admin.as_ref().unwrap().clone(),
-            self.rescan_event.clone(),
-            self.identify.clone().unwrap(),
-            &self.io_issuers,
-            &self.device_id,
-            nsid,
-            None
-        )
-        .await?,
+        let ns = Arc::new(
+            Namespace::new(
+                &self.driver,
+                self.admin.as_ref().unwrap().clone(),
+                self.rescan_event.clone(),
+                self.identify.clone().unwrap(),
+                &self.io_issuers,
+                &self.device_id,
+                nsid,
+                None
+            )
+            .await?,
         );
         self.namespace = Some(ns.clone());
         Ok(ns)
@@ -1097,7 +1098,7 @@ pub struct NvmeDriverSavedState {
     /// IO queue states.
     #[mesh(3)]
     pub io: Vec<QueuePairSavedState>,
-    /// Copy of Identify Controller response.
+    /// Copy of the controller's IDENTIFY structure.
     #[mesh(4)]
     pub identify_ctrl: [u8; 4096],
     /// Device ID string.

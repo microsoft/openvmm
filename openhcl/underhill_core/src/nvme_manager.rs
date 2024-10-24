@@ -165,12 +165,12 @@ impl NvmeManager {
             // If nvme_keepalive was explicitly disabled,
             // return an error which is non-fatal indication
             // that there is no save data.
-            return Err(anyhow::Error::from(SaveRestoreError::ExplicitlyDisabled {}));
+            Err(anyhow::Error::from(SaveRestoreError::ExplicitlyDisabled {}))
         }
     }
 
     /// Restore NVMe manager's state after servicing.
-    pub async fn restore(
+    async fn restore(
         worker: &mut NvmeManagerWorker,
         dma_buffer: Arc<dyn VfioDmaBuffer>,
         saved_state: &NvmeSavedState,
@@ -181,6 +181,7 @@ impl NvmeManager {
         )
         .instrument(tracing::info_span!("nvme_worker_restore"))
         .await?;
+
         Ok(())
     }
 
@@ -526,7 +527,7 @@ pub struct NvmeSavedDiskConfig {
 #[derive(Protobuf)]
 #[mesh(package = "underhill")]
 pub struct NvmeDmaBufferSavedState {
-    /// GVA (TODO: or GPA?) of the DMA buffer assigned to NVMe device(s).
+    /// GVA of the DMA buffer assigned to NVMe device(s).
     #[mesh(1)]
     pub dma_base: u64,
     /// Total size of DMA buffer in bytes.

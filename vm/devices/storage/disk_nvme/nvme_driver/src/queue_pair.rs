@@ -735,11 +735,11 @@ pub struct QueuePairSavedState {
     #[mesh(7)]
     pub cq_addr: u64,
     #[mesh(8)]
-    pub base_mem: Option<u64>,          // TODO: Would it be better to store const u8* ?
+    pub base_mem: Option<u64>,
     #[mesh(9)]
-    pub mem_len: Option<usize>,         // TODO: Could be redundant with 'pfns'.
+    pub mem_len: Option<usize>,
     #[mesh(10)]
-    pub pfns: Option<Vec<u64>>,         // This could be a duplicate of the queue saved state.
+    pub pfns: Option<Vec<u64>>,
     #[mesh(11)]
     pub pending_cmds: Vec<PendingCommandSavedState>,
 }

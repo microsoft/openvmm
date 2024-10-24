@@ -229,8 +229,6 @@ pub struct ParsedDeviceTree<
     /// Entropy from the host to be used by the OpenHCL kernel
     #[cfg_attr(feature = "inspect", inspect(with = "Option::is_some"))]
     pub entropy: Option<ArrayVec<u8, MAX_ENTROPY_SIZE>>,
-    /// Count of DMA devices to be preserved during servicing.
-    pub preserve_dma_devices: Option<u32>,
     /// Preserved DMA memory size in pages.
     pub preserve_dma_mem_pages: Option<u64>,
 }
@@ -311,7 +309,6 @@ impl<
             gic: None,
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
-            preserve_dma_devices: None,
             preserve_dma_mem_pages: None,
         }
     }
@@ -514,14 +511,6 @@ impl<
                             }
                             // These parameters may not be present so it is not an error if they are missing.
                             "servicing" => {
-                                storage.preserve_dma_devices = match openhcl_child.find_property("dma-preserve-dev") {
-                                    Ok(dev) => {
-                                        dev
-                                            .map(|p| p.read_u32(0)
-                                                .expect("error reading dma property"))
-                                    },
-                                    Err(_) => None,
-                                };
                                 storage.preserve_dma_mem_pages = match openhcl_child.find_property("dma-preserve-pages") {
                                     Ok(pages) => {
                                         pages
@@ -723,7 +712,6 @@ impl<
             gic: _,
             memory_allocation_mode: _,
             entropy: _,
-            preserve_dma_devices: _,
             preserve_dma_mem_pages: _,
         } = storage;
 

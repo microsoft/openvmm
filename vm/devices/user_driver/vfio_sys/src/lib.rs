@@ -77,7 +77,7 @@ mod ioctl {
     );
     nix::ioctl_write_ptr_bad!(
         vfio_group_set_keep_alive,
-        request_code_none!(VFIO_TYPE, VFIO_PRIVATE_BASE + 0),
+        request_code_none!(VFIO_TYPE, VFIO_PRIVATE_BASE),
         c_char
     );
 }
