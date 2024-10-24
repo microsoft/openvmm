@@ -87,7 +87,7 @@ impl PendingCommands {
         respond: mesh::OneshotSender<spec::Completion>,
     ) {
         let entry = self.commands.vacant_entry();
-        assert!(entry.key() < Self::MAX_CIDS as usize);
+        assert!(entry.key() < Self::MAX_CIDS);
         assert_eq!(self.next_cid_high_bits % Self::CID_SEQ_OFFSET, Wrapping(0));
         let cid = entry.key() as u16 | self.next_cid_high_bits.0;
         self.next_cid_high_bits += Self::CID_SEQ_OFFSET;
