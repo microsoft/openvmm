@@ -156,4 +156,9 @@ impl MemoryBlock {
     pub fn offset_in_page(&self) -> u32 {
         self.base as u32 % PAGE_SIZE as u32
     }
+
+    /// Returns base address of the memory block.
+    pub fn base_va(&self) -> u64 {
+        self.base as u64
+    }
 }

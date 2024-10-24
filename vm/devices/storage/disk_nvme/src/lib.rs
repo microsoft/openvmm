@@ -23,17 +23,19 @@ use stackfuture::StackFuture;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
+use std::sync::Arc;
 
 #[derive(Debug, Inspect)]
 pub struct NvmeDisk {
+    /// NVMe namespace mapped to the disk representation.
     #[inspect(flatten)]
-    namespace: nvme_driver::Namespace,
+    namespace: Arc<nvme_driver::Namespace>,
     #[inspect(skip)]
     block_shift: u32,
 }
 
 impl NvmeDisk {
-    pub fn new(namespace: nvme_driver::Namespace) -> Self {
+    pub fn new(namespace: Arc<nvme_driver::Namespace>) -> Self {
         Self {
             block_shift: namespace.block_size().trailing_zeros(),
             namespace,
