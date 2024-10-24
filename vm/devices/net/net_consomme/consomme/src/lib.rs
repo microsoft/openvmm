@@ -21,6 +21,7 @@ mod dhcp;
 #[cfg_attr(unix, path = "dns_unix.rs")]
 #[cfg_attr(windows, path = "dns_windows.rs")]
 mod dns;
+mod icmp;
 mod tcp;
 mod udp;
 mod windows;
@@ -134,6 +135,7 @@ pub struct Consomme {
     recv: Option<mesh::Receiver<ConsommeMessage>>,
     tcp: tcp::Tcp,
     udp: udp::Udp,
+    icmp: icmp::Icmp,
 }
 
 impl Inspect for Consomme {
@@ -369,6 +371,7 @@ impl Consomme {
             recv: None,
             tcp: tcp::Tcp::new(),
             udp: udp::Udp::new(),
+            icmp: icmp::Icmp::new(),
         }
     }
 
@@ -380,6 +383,7 @@ impl Consomme {
             recv: Some(recv),
             tcp: tcp::Tcp::new(),
             udp: udp::Udp::new(),
+            icmp: icmp::Icmp::new(),
         };
         let control = ConsommeControl { send };
         (this, control)
@@ -440,6 +444,7 @@ impl<T: Client> Access<'_, T> {
         self.poll_udp(cx);
         self.poll_tcp(cx);
         self.poll_message(cx);
+        self.poll_icmp(cx);
     }
 
     /// Sends an Ethernet frame to the network.
@@ -524,6 +529,9 @@ impl<T: Client> Access<'_, T> {
         match ipv4.protocol() {
             IpProtocol::Tcp => self.handle_tcp(&addresses, inner, checksum)?,
             IpProtocol::Udp => self.handle_udp(frame, &addresses, inner, checksum)?,
+            IpProtocol::Icmp => {
+                self.handle_icmp(frame, &addresses, inner, checksum, ipv4.hop_limit())?
+            }
             p => return Err(DropReason::UnsupportedIpProtocol(p)),
         };
         Ok(())
