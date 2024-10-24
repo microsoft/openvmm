@@ -35,7 +35,6 @@ use crate::BackingShared;
 use crate::GuestVsmState;
 use crate::GuestVtl;
 use crate::WakeReason;
-use guestmem::GuestMemory;
 use hcl::ioctl;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::hv::ProcessorVtlHv;
@@ -226,11 +225,6 @@ mod private {
         /// This is used for hypervisor-managed and untrusted SINTs.
         fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
-        /// The VTL that was running when the VP exited into VTL2, with the
-        /// exception of a successful vtl switch, where it will return the VTL
-        /// that will run on VTL 2 exit.
-        fn last_vtl(this: &UhProcessor<'_, Self>) -> GuestVtl;
-
         /// Copies shared registers (per VSM TLFS spec) from the last VTL to
         /// the target VTL that will become active.
         fn switch_vtl_state(this: &mut UhProcessor<'_, Self>, target_vtl: GuestVtl);
@@ -409,6 +403,9 @@ pub enum UhRunVpError {
     HypercallRetry(#[source] guestmem::GuestMemoryError),
     #[error("unexpected debug exception with dr6 value {0:#x}")]
     UnexpectedDebugException(u64),
+    /// Handling an intercept on behalf of an invalid Lower VTL
+    #[error("invalid intercepted vtl {0:?}")]
+    InvalidInterceptedVtl(Option<u8>),
 }
 
 /// Underhill processor run error
@@ -496,9 +493,9 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn handle_debug_exception(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn handle_debug_exception(&mut self, vtl: GuestVtl) -> Result<(), VpHaltReason<UhRunVpError>> {
         // FUTURE: Underhill does not yet support VTL1 so this is only tested with VTL0.
-        if self.last_vtl() == GuestVtl::Vtl0 {
+        if vtl == GuestVtl::Vtl0 {
             let debug_regs: virt::x86::vp::DebugRegisters = self
                 .access_state(Vtl::Vtl0)
                 .debug_regs()
@@ -529,7 +526,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             return Err(VpHaltReason::HwBreak(bp));
         }
 
-        panic!("unexpected debug exception in VTL {:?}", self.last_vtl());
+        panic!("unexpected debug exception in VTL {:?}", vtl);
     }
 }
 
@@ -929,22 +926,22 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn write_msr(&mut self, msr: u32, value: u64) -> Result<(), MsrError> {
-        let last_vtl = self.last_vtl();
+    fn write_msr(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
         if msr & 0xf0000000 == 0x40000000 {
-            if let Some(hv) = self.hv_mut(last_vtl) {
+            if let Some(hv) = self.hv_mut(vtl) {
                 let r = hv.msr_write(msr, value);
                 if !matches!(r, Err(MsrError::Unknown)) {
                     return r;
                 }
             }
         }
+
         match msr {
             hvdef::HV_X64_MSR_GUEST_CRASH_CTL => {
                 self.crash_control = hvdef::GuestCrashCtl::from(value);
                 let crash = VtlCrash {
                     vp_index: self.vp_index(),
-                    last_vtl,
+                    last_vtl: vtl,
                     control: self.crash_control,
                     parameters: self.crash_reg,
                 };
@@ -965,10 +962,9 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn read_msr(&mut self, msr: u32) -> Result<u64, MsrError> {
-        let last_vtl = self.last_vtl();
+    fn read_msr(&mut self, msr: u32, vtl: GuestVtl) -> Result<u64, MsrError> {
         if msr & 0xf0000000 == 0x40000000 {
-            if let Some(hv) = &mut self.hv(last_vtl) {
+            if let Some(hv) = &mut self.hv(vtl) {
                 let r = hv.msr_read(msr);
                 if !matches!(r, Err(MsrError::Unknown)) {
                     return r;
@@ -994,17 +990,19 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         &mut self,
         devices: &D,
         interruption_pending: bool,
+        vtl: GuestVtl,
     ) -> Result<(), VpHaltReason<UhRunVpError>>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>:
             virt_support_x86emu::emulate::EmulatorSupport<Error = UhRunVpError>,
     {
-        let guest_memory = self.last_vtl_gm();
+        let guest_memory = &self.partition.gm[vtl];
         virt_support_x86emu::emulate::emulate(
             &mut UhEmulationState {
                 vp: &mut *self,
                 interruption_pending,
                 devices,
+                vtl,
             },
             guest_memory,
             devices,
@@ -1018,17 +1016,19 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         &mut self,
         devices: &D,
         intercept_state: &aarch64emu::InterceptState,
+        vtl: GuestVtl,
     ) -> Result<(), VpHaltReason<UhRunVpError>>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>:
             virt_support_aarch64emu::emulate::EmulatorSupport<Error = UhRunVpError>,
     {
-        let guest_memory = self.last_vtl_gm();
+        let guest_memory = &self.partition.gm[vtl];
         virt_support_aarch64emu::emulate::emulate(
             &mut UhEmulationState {
                 vp: &mut *self,
                 interruption_pending: intercept_state.interruption_pending,
                 devices,
+                vtl,
             },
             intercept_state,
             guest_memory,
@@ -1042,15 +1042,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             *self.partition.guest_vsm.read(),
             GuestVsmState::NotPlatformSupported
         )
-    }
-
-    fn last_vtl(&self) -> GuestVtl {
-        T::last_vtl(self)
-    }
-
-    /// Returns the guest memory object that should be used based on the last vtl
-    fn last_vtl_gm(&self) -> &'a GuestMemory {
-        &self.partition.gm[self.last_vtl()]
     }
 
     fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
@@ -1146,6 +1137,7 @@ struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing> {
     vp: &'a mut UhProcessor<'b, U>,
     interruption_pending: bool,
     devices: &'a T,
+    vtl: GuestVtl,
 }
 
 struct UhHypercallHandler<'a, 'b, T, B: Backing> {
@@ -1160,11 +1152,12 @@ struct UhHypercallHandler<'a, 'b, T, B: Backing> {
     /// This should always be false if hardware isolation is not in use, as the distinction does
     /// not exist in that case.
     trusted: bool,
+    intercepted_vtl: GuestVtl,
 }
 
 impl<T, B: Backing> UhHypercallHandler<'_, '_, T, B> {
     fn target_vtl_no_higher(&self, target_vtl: Vtl) -> Result<GuestVtl, HvError> {
-        if Vtl::from(self.vp.last_vtl()) < target_vtl {
+        if Vtl::from(self.intercepted_vtl) < target_vtl {
             return Err(HvError::AccessDenied);
         }
         Ok(target_vtl.try_into().unwrap())
@@ -1296,7 +1289,7 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::PostMessage for UhHypercallHandler<'_,
         );
 
         self.bus.post_synic_message(
-            self.vp.last_vtl().into(),
+            self.intercepted_vtl.into(),
             connection_id,
             self.trusted,
             message,
@@ -1309,7 +1302,7 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::SignalEvent for UhHypercallHandler<'_,
         tracing::trace!(connection_id, "handling signal event intercept");
 
         self.bus
-            .signal_synic_event(self.vp.last_vtl().into(), connection_id, flag)
+            .signal_synic_event(self.intercepted_vtl.into(), connection_id, flag)
     }
 }
 

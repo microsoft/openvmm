@@ -6,6 +6,7 @@
 use super::private::BackingPrivate;
 use super::BackingState;
 use super::Error;
+use super::GuestVtl;
 use super::HclVp;
 use super::NoRunner;
 use super::ProcessorRunner;
@@ -17,7 +18,6 @@ use hvdef::HvRegisterValue;
 use hvdef::HvX64RegisterName;
 use hvdef::HvX64RegisterPage;
 use hvdef::HypercallCode;
-use hvdef::Vtl;
 use hvdef::HV_PARTITION_ID_SELF;
 use hvdef::HV_VP_INDEX_SELF;
 use sidecar_client::SidecarVp;
@@ -34,6 +34,11 @@ pub struct TranslateErrorX64 {
     /// The event to inject.
     pub event_info: hvdef::HvX64PendingEvent,
 }
+
+/// Result when the intercepted vtl is invalid.
+#[derive(Error, Debug)]
+#[error("retrieving the intercepted vtl returned an invalid vtl {0:?}")]
+pub struct InterceptedVtlError(pub Option<u8>);
 
 /// Runner backing for non-hardware-isolated X64 partitions.
 pub struct MshvX64 {
@@ -66,9 +71,9 @@ impl ProcessorRunner<'_, MshvX64> {
     }
 
     /// Returns the last VTL according to the register page.
-    pub fn reg_page_vtl(&self) -> Option<Vtl> {
-        self.reg_page()
-            .map(|reg_page| reg_page.vtl.try_into().unwrap())
+    pub fn reg_page_vtl(&self) -> Result<GuestVtl, InterceptedVtlError> {
+        let vtl = self.reg_page().ok_or(InterceptedVtlError(None))?.vtl;
+        vtl.try_into().map_err(|_| InterceptedVtlError(Some(vtl)))
     }
 
     /// Returns a reference to the current VTL's CPU context.
