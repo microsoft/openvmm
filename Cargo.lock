@@ -6524,6 +6524,7 @@ version = "0.0.0"
 dependencies = [
  "base64 0.21.7",
  "base64-serde",
+ "cvm_tracing",
  "get_protocol",
  "getrandom",
  "guest_emulation_transport",

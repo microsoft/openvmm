@@ -10,6 +10,7 @@ use crate::protocol;
 use crate::protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use crate::AttestationVmConfig;
 use crate::IgvmAttestRequestHelper;
+use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
@@ -116,6 +117,12 @@ pub async fn request_vmgs_encryption_keys(
     let mut timer = pal_async::timer::PolledTimer::new(&driver);
 
     for i in 0..max_retry {
+        tracing::info!(
+            CVM_ALLOWED,
+            attempt = i,
+            "attempt to get VMGS key-encryption key"
+        );
+
         // Get attestation report on each iteration. Failures here are fatal.
         let result = tee_call
             .get_attestation_report(&igvm_attest_request_helper.runtime_claims_hash)
@@ -153,16 +160,18 @@ pub async fn request_vmgs_encryption_keys(
                 wrapped_des_key: _,
             }) => {
                 tracing::warn!(
+                    CVM_ALLOWED,
                     retry = i,
-                    "tenant wrapped vmgs key-encryption key is not released"
+                    "VMGS key-encryption key is not released"
                 )
             }
             Err(e) if i == (max_retry - 1) => Err(e)?,
             Err(e) => {
                 tracing::error!(
+                    CVM_ALLOWED,
                     retry = i,
                     error = &e as &dyn std::error::Error,
-                    "tenant wrapped vmgs key-encryption key request failed",
+                    "VMGS key-encryption key request failed",
                 )
             }
         }
@@ -177,7 +186,7 @@ pub async fn request_vmgs_encryption_keys(
                 .map_err(RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap)?,
         )
     } else {
-        tracing::warn!("tenant vmgs ingress key is not released");
+        tracing::warn!(CVM_ALLOWED, "tenant vmgs ingress key is not released");
         None
     };
 
