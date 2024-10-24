@@ -670,6 +670,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
             hv1_hypercall::HvFlushVirtualAddressSpace,
             hv1_hypercall::HvFlushVirtualAddressSpaceEx,
             hv1_hypercall::HvSetVpRegisters,
+            hv1_hypercall::HvModifyVtlProtectionMask,
         ],
     );
 

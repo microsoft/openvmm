@@ -43,6 +43,17 @@ impl<T, const N: usize> VtlArray<T, N> {
             data: core::array::from_fn(|i| f(Vtl::try_from(i as u8).unwrap())),
         }
     }
+
+    /// Maps over the vtl array using the raw underlying array
+    pub fn map<U, F>(self, f: F) -> VtlArray<U, N>
+    where
+        F: FnMut(T) -> U,
+    {
+        assert!(N > 0 && N <= 3);
+        VtlArray {
+            data: self.data.map(f),
+        }
+    }
 }
 
 impl<T> From<[T; 1]> for VtlArray<T, 1> {

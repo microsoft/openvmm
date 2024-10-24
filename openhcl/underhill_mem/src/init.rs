@@ -58,16 +58,16 @@ impl MemoryMappings {
     }
     pub fn isolated_memory_protector(
         &self,
-    ) -> anyhow::Result<Option<Box<dyn ProtectIsolatedMemory>>> {
+    ) -> anyhow::Result<Option<Arc<dyn ProtectIsolatedMemory>>> {
         match self.isolation {
             Some(IsolationType::Snp | IsolationType::Tdx) => {
                 Ok(self.shared.as_ref().map(|shared| {
-                    Box::new(HardwareIsolatedMemoryProtector::new(
+                    Arc::new(HardwareIsolatedMemoryProtector::new(
                         shared.clone(),
                         self.vtl0.clone(),
                         self.layout.clone(),
                         self.acceptor.as_ref().unwrap().clone(),
-                    )) as Box<dyn ProtectIsolatedMemory>
+                    )) as Arc<dyn ProtectIsolatedMemory>
                 }))
             }
             _ => Ok(None),
@@ -131,7 +131,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         tracing::debug!("Applying VTL0 protections");
         if hardware_isolated {
             for range in memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone()) {
-                acceptor.apply_default_vtl_protections(range, Vtl::Vtl0)?;
+                acceptor.apply_initial_lower_vtl_protections(range)?;
             }
         }
 
@@ -144,7 +144,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 // For VBS-isolated VMs, the VTL protections are set as
                 // part of the accept call.
                 acceptor
-                    .apply_default_vtl_protections(subrange, Vtl::Vtl0)
+                    .apply_initial_lower_vtl_protections(subrange)
                     .unwrap();
             }
         };

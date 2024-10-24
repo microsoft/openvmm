@@ -9,12 +9,14 @@ rust-version.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 guestmem.workspace = true
 hcl.workspace = true
+hv1_emulator.workspace = true
 hvdef.workspace = true
 memory_range.workspace = true
 underhill_threadpool.workspace = true
 virt_mshv_vtl.workspace = true
 vm_topology.workspace = true
 x86defs.workspace = true
+vtl_array.workspace = true
 
 inspect.workspace = true
 pal_async.workspace = true

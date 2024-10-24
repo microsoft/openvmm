@@ -1361,6 +1361,7 @@ impl VtlPartition {
                     vendor,
                     tsc_frequency,
                     ref_time,
+                    hypercall_page_protectors: vtl_array::VtlArray::from_fn(|_| None),
                 }))
             }
         } else {

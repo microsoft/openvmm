@@ -189,19 +189,25 @@ pub enum ApplyVtlProtectionsError {
     Hypervisor {
         range: MemoryRange,
         output: HypercallOutput,
+        #[source]
         hv_error: HvError,
         vtl: HvInputVtl,
     },
-    #[error("{failed_operation} when protecting pages {range} for vtl {vtl:?}")]
+    #[error(
+        "{failed_operation} when protecting pages {range} with {permissions:x?} for vtl {vtl:?}"
+    )]
     Snp {
+        #[source]
         failed_operation: snp::SnpPageError,
         range: MemoryRange,
+        permissions: x86defs::snp::SevRmpAdjust,
         vtl: HvInputVtl,
     },
-    #[error("tdcall failed with {error:?} when protecting pages {range} for vtl {vtl:?}")]
+    #[error("tdcall failed with {error:?} when protecting pages {range} with permissions {permissions:x?} for vtl {vtl:?}")]
     Tdx {
         error: TdCallResultCode,
         range: MemoryRange,
+        permissions: x86defs::tdx::TdgMemPageGpaAttr,
         vtl: HvInputVtl,
     },
     #[error("no valid protections for vtl {0:?}")]
@@ -346,7 +352,6 @@ mod ioctls {
     const MSHV_VTL_TDCALL: u16 = 0x32;
     const MSHV_VTL_READ_VMX_CR4_FIXED1: u16 = 0x33;
     const MSHV_VTL_GUEST_VSM_VMSA_PFN: u16 = 0x34;
-    #[cfg(debug_assertions)]
     const MSHV_VTL_RMPQUERY: u16 = 0x35;
     const MSHV_INVLPGB: u16 = 0x36;
     const MSHV_TLBSYNC: u16 = 0x37;
@@ -388,7 +393,6 @@ mod ioctls {
 
     #[repr(C, packed)]
     #[derive(Copy, Clone)]
-    #[cfg(debug_assertions)]
     pub struct mshv_rmpquery {
         /// Execute the rmpquery instruction on the set of memory pages specified
         pub start_pfn: ::std::os::raw::c_ulonglong,
@@ -502,7 +506,6 @@ mod ioctls {
         mshv_rmpadjust
     );
 
-    #[cfg(debug_assertions)]
     ioctl_write_ptr!(
         /// Executes the rmpquery instruction on a page range.
         hcl_rmpquery_pages,
