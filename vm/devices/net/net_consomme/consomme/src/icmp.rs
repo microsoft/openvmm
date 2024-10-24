@@ -1,5 +1,9 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // Copyright (C) Microsoft Corporation. All rights reserved.
 
+// UNSAFETY: needed to cast the socket buffer to `MaybeUninit`.
 #![allow(unsafe_code)]
 #![allow(clippy::undocumented_unsafe_blocks)]
 
@@ -109,6 +113,8 @@ impl IcmpConnection {
     }
 
     fn recv_from(socket: &mut Socket, buffer: *mut [u8]) -> std::io::Result<(usize, SockAddr)> {
+        // SAFETY: the underlying socket `recv` implementation promises
+        // not to write uninitialized bytes into the buffer.
         let buf = unsafe { &mut *(buffer as *mut [MaybeUninit<u8>]) };
         let (read_count, addr) = socket.recv_from(buf)?;
         Ok((read_count, addr))
@@ -148,8 +154,23 @@ impl<T: Client> Access<'_, T> {
         let conn = match entry {
             hash_map::Entry::Occupied(conn) => conn.into_mut(),
             hash_map::Entry::Vacant(e) => {
+                // Linux restricts opening of 'RAW' sockets without 'CAP_NET_RAW'
+                // permission. But, it allows user mode DGRAM + ICMP_PROTO sockets
+                // with the 'net.ip.ping_group_range' configuration, which is more
+                // permissive.
+                let socket_type = if cfg!(windows) {
+                    Type::RAW
+                } else {
+                    Type::DGRAM
+                };
                 let mut socket =
-                    Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)).unwrap();
+                    match Socket::new(Domain::IPV4, socket_type, Some(Protocol::ICMPV4)) {
+                        Err(e) => {
+                            tracing::error!("socket creation failed, {}", e);
+                            return Err(DropReason::Io(e));
+                        }
+                        Ok(s) => s,
+                    };
                 Self::bind(&mut socket, Ipv4Addr::UNSPECIFIED).map_err(DropReason::Io)?;
                 let socket =
                     PolledSocket::new(self.client.driver(), socket).map_err(DropReason::Io)?;
