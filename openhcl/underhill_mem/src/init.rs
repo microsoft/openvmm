@@ -39,7 +39,7 @@ pub struct MemoryMappings {
     #[inspect(skip)]
     untrusted_dma_memory: GuestMemory,
     #[inspect(skip)]
-    trusted_memory: Option<GuestMemory>,
+    private_vtl0_memory: Option<GuestMemory>,
     #[inspect(skip)]
     layout: MemoryLayout,
     #[inspect(skip)]
@@ -60,8 +60,8 @@ impl MemoryMappings {
         &self.untrusted_dma_memory
     }
     /// Includes only trusted VTL0 memory.
-    pub fn trusted_memory(&self) -> Option<&GuestMemory> {
-        self.trusted_memory.as_ref()
+    pub fn private_vtl0_memory(&self) -> Option<&GuestMemory> {
+        self.private_vtl0_memory.as_ref()
     }
     pub fn isolated_memory_protector(
         &self,
@@ -355,13 +355,13 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         )
         .context("failed to make shared guest memory")?;
 
-        let trusted_memory = GuestMemory::new("trusted", vtl0_mapping.clone());
+        let private_vtl0_memory = GuestMemory::new("trusted", vtl0_mapping.clone());
 
         MemoryMappings {
             vtl0: vtl0_mapping,
             vtl1: None,
             untrusted_dma_memory: shared_gm,
-            trusted_memory: Some(trusted_memory),
+            private_vtl0_memory: Some(private_vtl0_memory),
             shared: Some(shared_mapping),
             vtl0_gm,
             vtl1_gm,
@@ -435,7 +435,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             vtl1_gm,
             // Devices can only access VTL0 memory.
             untrusted_dma_memory: vtl0_gm,
-            trusted_memory: None,
+            private_vtl0_memory: None,
             acceptor: acceptor.map(Arc::new),
             layout: params.mem_layout.clone(),
             isolation: params.isolation,

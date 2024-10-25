@@ -37,15 +37,15 @@ pub struct OfferResources {
     untrusted_memory: GuestMemory,
     /// Trusted guest memory access. This will be `None` unless running in a paravisor of a hardware
     /// isolated VM.
-    trusted_memory: Option<GuestMemory>,
+    private_memory: Option<GuestMemory>,
 }
 
 impl OfferResources {
     /// Creates a new `OfferResources`.
-    pub fn new(untrusted_memory: GuestMemory, trusted_memory: Option<GuestMemory>) -> Self {
+    pub fn new(untrusted_memory: GuestMemory, private_memory: Option<GuestMemory>) -> Self {
         OfferResources {
             untrusted_memory,
-            trusted_memory,
+            private_memory,
         }
     }
 
@@ -67,7 +67,7 @@ impl OfferResources {
 
     fn get_memory(&self, trusted: bool) -> &GuestMemory {
         if trusted {
-            self.trusted_memory
+            self.private_memory
                 .as_ref()
                 .expect("trusted memory should be present if confidential memory is requested")
         } else {

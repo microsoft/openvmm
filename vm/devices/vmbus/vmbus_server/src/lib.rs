@@ -102,7 +102,7 @@ pub struct VmbusServerBuilder<'a, T: Spawn> {
     spawner: &'a T,
     synic: Arc<dyn SynicPortAccess>,
     gm: GuestMemory,
-    trusted_gm: Option<GuestMemory>,
+    private_gm: Option<GuestMemory>,
     vtl: Vtl,
     hvsock_notify: Option<HvsockServerChannelHalf>,
     server_relay: Option<VmbusServerChannelHalf>,
@@ -243,7 +243,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             spawner,
             synic,
             gm,
-            trusted_gm: None,
+            private_gm: None,
             vtl: Vtl::Vtl0,
             hvsock_notify: None,
             server_relay: None,
@@ -261,8 +261,8 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
     /// Sets a separate guest memory instance to use for channels that are confidential (non-relay
     /// channels in Underhill on a hardware isolated VM). This is not relevant for a non-Underhill
     /// VmBus server.
-    pub fn trusted_gm(mut self, trusted_gm: Option<GuestMemory>) -> Self {
-        self.trusted_gm = trusted_gm;
+    pub fn private_gm(mut self, private_gm: Option<GuestMemory>) -> Self {
+        self.private_gm = private_gm;
         self
     }
 
@@ -409,7 +409,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
         let (offer_send, offer_recv) = mesh::mpsc_channel();
         let control = Arc::new(VmbusServerControl {
             mem: self.gm.clone(),
-            trusted_mem: self.trusted_gm.clone(),
+            private_mem: self.private_gm.clone(),
             send: offer_send,
             use_event: self.synic.prefer_os_events(),
             force_confidential_external_memory: self.force_confidential_external_memory,
@@ -454,7 +454,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
 
         let inner = ServerTaskInner {
             gm: self.gm,
-            trusted_gm: self.trusted_gm,
+            private_gm: self.private_gm,
             vtl: self.vtl,
             redirect_vtl,
             message_target: ConnectionTarget {
@@ -605,7 +605,7 @@ struct ServerTask {
 
 struct ServerTaskInner {
     gm: GuestMemory,
-    trusted_gm: Option<GuestMemory>,
+    private_gm: Option<GuestMemory>,
     synic: Arc<dyn SynicPortAccess>,
     vtl: Vtl,
     redirect_vtl: Vtl,
@@ -1280,14 +1280,14 @@ impl channels::Notifier for ServerTaskInner {
         let channel = self.channels.get(&offer_id).expect("should exist");
         let mut resp = req.respond();
         if let ChannelState::Open { open_params, .. } = &channel.state {
-            let mem = if self.trusted_gm.is_some()
+            let mem = if self.private_gm.is_some()
                 && channel.flags.confidential_ring_buffer()
                 && version
                     .expect("must be connected")
                     .feature_flags
                     .confidential_channels()
             {
-                self.trusted_gm.as_ref().unwrap()
+                self.private_gm.as_ref().unwrap()
             } else {
                 &self.gm
             };
@@ -1476,7 +1476,7 @@ impl ServerTaskInner {
 #[derive(Clone)]
 pub struct VmbusServerControl {
     mem: GuestMemory,
-    trusted_mem: Option<GuestMemory>,
+    private_mem: Option<GuestMemory>,
     send: mesh::MpscSender<OfferRequest>,
     use_event: bool,
     force_confidential_external_memory: bool,
@@ -1493,7 +1493,7 @@ impl VmbusServerControl {
         Ok(OfferResources::new(
             self.mem.clone(),
             if flags.confidential_ring_buffer() || flags.confidential_external_memory() {
-                self.trusted_mem.clone()
+                self.private_mem.clone()
             } else {
                 None
             },
