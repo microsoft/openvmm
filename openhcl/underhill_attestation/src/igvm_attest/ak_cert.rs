@@ -10,6 +10,7 @@ use thiserror::Error;
 use zerocopy::FromBytes;
 
 #[derive(Debug, Error)]
+/// AkCertError is returned by parse_ak_cert_response() in emuplat/tpm.rs 
 pub enum AkCertError {
     #[error("AK cert response size is too small to parse")]
     SizeTooSmall,
