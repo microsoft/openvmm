@@ -9,8 +9,8 @@ use crate::protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
 use thiserror::Error;
 use zerocopy::FromBytes;
 
-#[derive(Debug, Error)]
 /// AkCertError is returned by parse_ak_cert_response() in emuplat/tpm.rs
+#[derive(Debug, Error)]
 pub enum AkCertError {
     #[error("AK cert response size is too small to parse")]
     SizeTooSmall,
