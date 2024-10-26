@@ -405,7 +405,7 @@ pub enum UhRunVpError {
     UnexpectedDebugException(u64),
     /// Handling an intercept on behalf of an invalid Lower VTL
     #[error("invalid intercepted vtl {0:?}")]
-    InvalidInterceptedVtl(Option<u8>),
+    InvalidInterceptedVtl(u8),
 }
 
 /// Underhill processor run error
@@ -1383,15 +1383,16 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::ModifyVtlProtectionMask
             let _target_vtl = self.target_vtl_no_higher(vtl).map_err(|e| (e, 0))?;
         }
 
-        let target_vtl = target_vtl.unwrap_or(self.vp.last_vtl().into());
-        if target_vtl == Vtl::Vtl0 {
+        let target_vtl = GuestVtl::try_from(target_vtl.unwrap_or(self.intercepted_vtl.into()))
+            .map_err(|_| (HvError::InvalidParameter, 0))?;
+        if target_vtl == GuestVtl::Vtl0 {
             return Err((HvError::InvalidParameter, 0));
         }
 
         // A VTL cannot change its own VTL permissions until it has enabled VTL protection and
         // configured default permissions. Higher VTLs are not under this restriction (as they may
         // need to apply default permissions before VTL protection is enabled).
-        if target_vtl == self.vp.last_vtl().into() {
+        if target_vtl == self.intercepted_vtl {
             if let Some(guest_vsm) = self.vp.partition.guest_vsm.read().get_vtl1() {
                 if !guest_vsm.enable_vtl_protection {
                     return Err((HvError::AccessDenied, 0));

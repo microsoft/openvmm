@@ -216,19 +216,10 @@ impl BackingPrivate for HypervisorBackedX86 {
         };
 
         if intercepted {
-            let intercepted_vtl =
-                this.runner
-                    .reg_page_vtl()
-                    .map_err(|ioctl::x64::InterceptedVtlError(vtl)| {
-                        VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl(vtl))
-                    })?;
-
             let message_type = this.runner.exit_message().header.typ;
 
-            let mut intercept_handler = InterceptHandler {
-                vp: this,
-                vtl: intercepted_vtl,
-            };
+            let mut intercept_handler =
+                InterceptHandler::new(this).map_err(VpHaltReason::InvalidVmState)?;
 
             let stat = match message_type {
                 HvMessageType::HvMessageTypeX64IoPortIntercept => {
@@ -400,7 +391,116 @@ struct InterceptHandler<'a, 'b> {
     vtl: GuestVtl,
 }
 
-impl InterceptHandler<'_, '_> {
+impl<'a, 'b> InterceptHandler<'a, 'b> {
+    fn new(vp: &'a mut UhProcessor<'b, HypervisorBackedX86>) -> Result<Self, UhRunVpError> {
+        let message_type = vp.runner.exit_message().header.typ;
+
+        let intercepted_vtl = match vp.runner.reg_page_vtl() {
+            Ok(vtl) => vtl,
+            Err(ioctl::x64::RegisterPageVtlError::InvalidVtl(vtl)) => {
+                return Err(UhRunVpError::InvalidInterceptedVtl(vtl))
+            }
+            Err(ioctl::x64::RegisterPageVtlError::NoRegisterPage) => {
+                if matches!(&message_type, &HvMessageType::HvMessageTypeX64ApicEoi) {
+                    // At the moment this is only used for the ioapic, so assume
+                    // that this is targeting VTL 0 for now. TODO: fix
+                    GuestVtl::Vtl0
+                } else {
+                    let message_header = match &message_type {
+                        &HvMessageType::HvMessageTypeX64IoPortIntercept => {
+                            &hvdef::HvX64IoPortInterceptMessage::ref_from_prefix(
+                                vp.runner.exit_message().payload(),
+                            )
+                            .unwrap()
+                            .header
+                        }
+                        &HvMessageType::HvMessageTypeUnmappedGpa
+                        | &HvMessageType::HvMessageTypeGpaIntercept => {
+                            &hvdef::HvX64MemoryInterceptMessage::ref_from_prefix(
+                                vp.runner.exit_message().payload(),
+                            )
+                            .unwrap()
+                            .header
+                        }
+                        &HvMessageType::HvMessageTypeUnacceptedGpa => {
+                            &hvdef::HvX64MemoryInterceptMessage::ref_from_prefix(
+                                vp.runner.exit_message().payload(),
+                            )
+                            .unwrap()
+                            .header
+                        }
+                        &HvMessageType::HvMessageTypeHypercallIntercept => {
+                            &hvdef::HvX64HypercallInterceptMessage::ref_from_prefix(
+                                vp.runner.exit_message().payload(),
+                            )
+                            .unwrap()
+                            .header
+                        }
+                        &HvMessageType::HvMessageTypeSynicSintDeliverable => {
+                            &hvdef::HvX64SynicSintDeliverableMessage::ref_from_prefix(
+                                vp.runner.exit_message().payload(),
+                            )
+                            .unwrap()
+                            .header
+                        }
+                        &HvMessageType::HvMessageTypeX64InterruptionDeliverable => {
+                            &hvdef::HvX64InterruptionDeliverableMessage::ref_from_prefix(
+                                vp.runner.exit_message().payload(),
+                            )
+                            .unwrap()
+                            .header
+                        }
+                        &HvMessageType::HvMessageTypeX64CpuidIntercept => {
+                            &hvdef::HvX64CpuidInterceptMessage::ref_from_prefix(
+                                vp.runner.exit_message().payload(),
+                            )
+                            .unwrap()
+                            .header
+                        }
+                        &HvMessageType::HvMessageTypeMsrIntercept => {
+                            &hvdef::HvX64MsrInterceptMessage::ref_from_prefix(
+                                vp.runner.exit_message().payload(),
+                            )
+                            .unwrap()
+                            .header
+                        }
+                        &HvMessageType::HvMessageTypeUnrecoverableException => {
+                            &hvdef::HvX64UnrecoverableExceptionMessage::ref_from_prefix(
+                                vp.runner.exit_message().payload(),
+                            )
+                            .unwrap()
+                            .header
+                        }
+                        &HvMessageType::HvMessageTypeX64Halt => {
+                            &hvdef::HvX64HaltMessage::ref_from_prefix(
+                                vp.runner.exit_message().payload(),
+                            )
+                            .unwrap()
+                            .header
+                        }
+                        &HvMessageType::HvMessageTypeExceptionIntercept => {
+                            &hvdef::HvX64ExceptionInterceptMessage::ref_from_prefix(
+                                vp.runner.exit_message().payload(),
+                            )
+                            .unwrap()
+                            .header
+                        }
+                        reason => unreachable!("unknown exit reason: {:#x?}", reason),
+                    };
+
+                    message_header.execution_state.vtl().try_into().map_err(
+                        |hcl::UnsupportedGuestVtl(vtl)| UhRunVpError::InvalidInterceptedVtl(vtl),
+                    )?
+                }
+            }
+        };
+
+        Ok(Self {
+            vp,
+            vtl: intercepted_vtl,
+        })
+    }
+
     fn handle_interrupt_deliverable_exit(
         &mut self,
         bus: &impl CpuIo,

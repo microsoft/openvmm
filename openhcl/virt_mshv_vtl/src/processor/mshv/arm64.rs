@@ -268,7 +268,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
 
         let intercepted_vtl =
             Self::intercepted_vtl(&message.header).map_err(|UnsupportedGuestVtl(vtl)| {
-                VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl(Some(vtl)))
+                VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl(vtl))
             })?;
         let guest_memory = &self.partition.gm[intercepted_vtl];
         let smccc_convention = message.immediate == 0;
@@ -308,7 +308,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
 
         let intercepted_vtl =
             Self::intercepted_vtl(&message.header).map_err(|UnsupportedGuestVtl(vtl)| {
-                VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl(Some(vtl)))
+                VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl(vtl))
             })?;
         self.emulate(dev, &intercept_state, intercepted_vtl).await?;
         Ok(())

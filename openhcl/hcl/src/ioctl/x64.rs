@@ -37,8 +37,13 @@ pub struct TranslateErrorX64 {
 
 /// Result when the intercepted vtl is invalid.
 #[derive(Error, Debug)]
-#[error("retrieving the intercepted vtl returned an invalid vtl {0:?}")]
-pub struct InterceptedVtlError(pub Option<u8>);
+#[allow(missing_docs)]
+pub enum RegisterPageVtlError {
+    #[error("no register page")]
+    NoRegisterPage,
+    #[error("invalid guest vtl {0}")]
+    InvalidVtl(u8),
+}
 
 /// Runner backing for non-hardware-isolated X64 partitions.
 pub struct MshvX64 {
@@ -71,9 +76,13 @@ impl ProcessorRunner<'_, MshvX64> {
     }
 
     /// Returns the last VTL according to the register page.
-    pub fn reg_page_vtl(&self) -> Result<GuestVtl, InterceptedVtlError> {
-        let vtl = self.reg_page().ok_or(InterceptedVtlError(None))?.vtl;
-        vtl.try_into().map_err(|_| InterceptedVtlError(Some(vtl)))
+    pub fn reg_page_vtl(&self) -> Result<GuestVtl, RegisterPageVtlError> {
+        let vtl = self
+            .reg_page()
+            .ok_or(RegisterPageVtlError::NoRegisterPage)?
+            .vtl;
+        vtl.try_into()
+            .map_err(|_| RegisterPageVtlError::InvalidVtl(vtl))
     }
 
     /// Returns a reference to the current VTL's CPU context.
