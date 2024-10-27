@@ -43,7 +43,7 @@ pub struct MemoryMappings {
     #[inspect(skip)]
     acceptor: Option<Arc<MemoryAcceptor>>,
     #[inspect(skip)]
-    isolation: Option<IsolationType>,
+    isolation: IsolationType,
 }
 
 impl MemoryMappings {
@@ -60,16 +60,14 @@ impl MemoryMappings {
         &self,
     ) -> anyhow::Result<Option<Arc<dyn ProtectIsolatedMemory>>> {
         match self.isolation {
-            Some(IsolationType::Snp | IsolationType::Tdx) => {
-                Ok(self.shared.as_ref().map(|shared| {
-                    Arc::new(HardwareIsolatedMemoryProtector::new(
-                        shared.clone(),
-                        self.vtl0.clone(),
-                        self.layout.clone(),
-                        self.acceptor.as_ref().unwrap().clone(),
-                    )) as Arc<dyn ProtectIsolatedMemory>
-                }))
-            }
+            IsolationType::Snp | IsolationType::Tdx => Ok(self.shared.as_ref().map(|shared| {
+                Arc::new(HardwareIsolatedMemoryProtector::new(
+                    shared.clone(),
+                    self.vtl0.clone(),
+                    self.layout.clone(),
+                    self.acceptor.as_ref().unwrap().clone(),
+                )) as Arc<dyn ProtectIsolatedMemory>
+            })),
             _ => Ok(None),
         }
     }
@@ -78,7 +76,7 @@ impl MemoryMappings {
 pub struct Init<'a> {
     pub tp: &'a AffinitizedThreadpool,
     pub processor_topology: &'a ProcessorTopology,
-    pub isolation: Option<IsolationType>,
+    pub isolation: IsolationType,
     pub vtl0_alias_map_bit: Option<u64>,
     pub vtom: Option<u64>,
     pub mem_layout: &'a MemoryLayout,
@@ -93,18 +91,15 @@ pub struct Init<'a> {
 pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
     let mut validated_ranges = Vec::new();
 
-    let acceptor = if let Some(isolation) = params.isolation {
-        Some(MemoryAcceptor::new(isolation)?)
+    let acceptor = if params.isolation.is_isolated() {
+        Some(MemoryAcceptor::new(params.isolation)?)
     } else {
         None
     };
 
-    let hardware_isolated = matches!(
-        params.isolation,
-        Some(IsolationType::Tdx) | Some(IsolationType::Snp)
-    );
+    let hardware_isolated = params.isolation.is_hardware_isolated();
 
-    if params.boot_init && params.isolation.is_none() {
+    if params.boot_init && !params.isolation.is_isolated() {
         // TODO: VTL 2 protections are applied in the boot shim for isolated
         // VMs. Since non-isolated VMs can undergo servicing and this is an
         // expensive operation, continue to apply protections here for now. In
@@ -122,7 +117,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
     }
 
     // Prepare VTL0 memory for mapping.
-    if params.boot_init && params.isolation.is_some() {
+    if params.boot_init && params.isolation.is_isolated() {
         let acceptor = acceptor.as_ref().unwrap();
         let ram = params.mem_layout.ram().iter().map(|r| r.range);
         let accepted_ranges = params.accepted_regions.iter().copied();
@@ -227,7 +222,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // the shared pool. This memory is not private to VTL2 and is expected
         // that devices will do DMA to them.
         let shared_offset = match params.isolation {
-            Some(IsolationType::Tdx) => {
+            IsolationType::Tdx => {
                 // Register memory just once, as shared memory. This
                 // registration will be used both to map pages as shared and as
                 // encrypted. If the kernel remaps a page into a kernel address,
@@ -249,7 +244,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 // accessors, or something.
                 0
             }
-            Some(IsolationType::Snp) => {
+            IsolationType::Snp => {
                 // SNP has two mappings for each shared page: one below and one
                 // above VTOM. So, unlike for TDX, for SNP we could choose to
                 // register memory twice, allowing the kernel to operate on
@@ -320,7 +315,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             None
         };
 
-        if params.isolation == Some(IsolationType::Snp) {
+        if params.isolation == IsolationType::Snp {
             // For SNP, zero any newly accepted private lower-vtl memory in case
             // the hypervisor decided to remap VTL 2 memory into lower-VTL GPA
             // space. This is safe to do after the vtl permissions have been

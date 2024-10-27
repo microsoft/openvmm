@@ -129,7 +129,7 @@ pub(crate) struct LoadedVm {
     /// The various guest memory objects.
     pub memory: underhill_mem::MemoryMappings,
     pub firmware_type: FirmwareType,
-    pub isolation: Option<IsolationType>,
+    pub isolation: IsolationType,
     // contain task handles which must be kept live
     pub _chipset_devices: ChipsetDevices,
     // keep the unit task alive
@@ -467,7 +467,7 @@ impl LoadedVm {
         deadline: std::time::Instant,
         capabilities_flags: SaveGuestVtl2StateFlags,
     ) -> anyhow::Result<ServicingState> {
-        if self.isolation.is_some() {
+        if self.isolation.is_isolated() {
             anyhow::bail!("Servicing is not yet supported for isolated VMs");
         }
         let nvme_keepalive = !capabilities_flags.disable_nvme_keepalive();

@@ -166,8 +166,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         // TODO GUEST_VSM: construct APIC (including overlays, vp assist page) for VTL 1
 
         // Register the VMSA with the hypervisor
-        let hv_vp_context = match self.vp.partition.isolation.expect("has isolation type") {
-            virt::IsolationType::Vbs => unreachable!(),
+        let hv_vp_context = match self.vp.partition.isolation {
+            virt::IsolationType::None | virt::IsolationType::Vbs => unreachable!(),
             virt::IsolationType::Snp => {
                 // For VTL 1, user mode needs to explicitly register the VMSA
                 // with the hypervisor via the EnableVpVtl hypercall.
@@ -423,7 +423,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             return Err(HvError::InvalidParameter);
         }
 
-        assert!(self.partition.isolation.is_some());
+        assert!(self.partition.isolation.is_isolated());
 
         // Features currently supported by openhcl.
         let allowed_bits = HvRegisterVsmPartitionConfig::new()

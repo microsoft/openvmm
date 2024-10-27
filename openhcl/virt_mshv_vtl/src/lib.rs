@@ -196,7 +196,7 @@ struct UhPartitionInner {
     lapic: Option<VtlArray<LocalApicSet, 2>>,
     #[inspect(skip)]
     vmtime: VmTimeSource,
-    isolation: Option<IsolationType>,
+    isolation: IsolationType,
     /// The emulated hypervisor state. This is only present for
     /// hardware-isolated VMs (and for software VMs in test environments).
     hv: Option<GlobalHv>,
@@ -586,7 +586,7 @@ impl UhPartition {
 
         *vsm_state = GuestVsmState::NotPlatformSupported;
 
-        if !self.inner.is_hardware_isolated() {
+        if !self.inner.isolation.is_hardware_isolated() {
             self.inner
                 .hcl
                 .set_guest_vsm_partition_config(false)
@@ -683,13 +683,6 @@ impl UhPartitionInner {
         self.vps.get(index.index() as usize)
     }
 
-    fn is_hardware_isolated(&self) -> bool {
-        matches!(
-            self.isolation,
-            Some(IsolationType::Snp | IsolationType::Tdx)
-        )
-    }
-
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
         let mut wake_vps = false;
         resp.field_mut(
@@ -763,7 +756,7 @@ impl virt::Synic for UhPartition {
         // TODO TDX TODO SNP: Disable monitor support for TDX and SNP as support
         // for VTL2 protections is needed to emulate this page, which is not
         // implemented yet.
-        if self.inner.is_hardware_isolated() {
+        if self.inner.isolation.is_hardware_isolated() {
             None
         } else {
             Some(self)
@@ -1035,8 +1028,8 @@ impl IoApicRouting for UhPartitionInner {
 fn set_vtl2_vsm_partition_config(hcl: &mut Hcl) -> Result<(), Error> {
     // Read available capabilities to determine what to enable.
     let caps = hcl.get_vsm_capabilities();
-    let hardware_isolated = hcl.is_hardware_isolated();
-    let isolated = hcl.isolation().is_some();
+    let hardware_isolated = hcl.isolation().is_hardware_isolated();
+    let isolated = hcl.isolation().is_isolated();
 
     let config = HvRegisterVsmPartitionConfig::new()
         .with_default_vtl_protection_mask(0xF)
@@ -1158,12 +1151,13 @@ impl UhPartition {
         params: UhPartitionNewParams<'_>,
     ) -> Result<(Self, Vec<UhProcessorBox>), Error> {
         let mut hcl = params.hcl;
-        let isolation = hcl.isolation().map(|isolation| match isolation {
+        let isolation = match hcl.isolation() {
+            hcl::ioctl::IsolationType::None => IsolationType::None,
             hcl::ioctl::IsolationType::Vbs => IsolationType::Vbs,
             hcl::ioctl::IsolationType::Snp => IsolationType::Snp,
             hcl::ioctl::IsolationType::Tdx => IsolationType::Tdx,
-        });
-        let is_hardware_isolated = hcl.is_hardware_isolated();
+        };
+        let is_hardware_isolated = isolation.is_hardware_isolated();
 
         // Intercept Debug Exceptions
         // TODO TDX: This currently works on TDX because all Underhill TDs today
@@ -1216,7 +1210,7 @@ impl UhPartition {
             }
         }
 
-        if isolation == Some(IsolationType::Snp) {
+        if isolation == IsolationType::Snp {
             // SNP VMs register for the #VC exception to support reflect-VC.
             hcl.register_intercept(
                 HvInterceptType::HvInterceptTypeException,
@@ -1385,7 +1379,7 @@ impl UhPartition {
         };
 
         let untrusted_synic = if params.handle_synic {
-            if matches!(isolation, Some(IsolationType::Tdx)) {
+            if matches!(isolation, IsolationType::Tdx) {
                 // Create a second synic to fully manage the untrusted SINTs
                 // here. At time of writing, the hypervisor does not support
                 // sharing the untrusted SINTs with the TDX L1. Even if it did,
@@ -1449,13 +1443,13 @@ impl UhPartition {
             _partition: &partition,
         };
         let backing_shared = match isolation {
-            None | Some(IsolationType::Vbs) => BackingShared::Hypervisor,
+            IsolationType::None | IsolationType::Vbs => BackingShared::Hypervisor,
             #[cfg(guest_arch = "x86_64")]
-            Some(IsolationType::Snp) => BackingShared::Snp(Arc::new(SnpBacked::new_shared_state(
+            IsolationType::Snp => BackingShared::Snp(Arc::new(SnpBacked::new_shared_state(
                 backing_shared_params,
             )?)),
             #[cfg(guest_arch = "x86_64")]
-            Some(IsolationType::Tdx) => BackingShared::Tdx(Arc::new(TdxBacked::new_shared_state(
+            IsolationType::Tdx => BackingShared::Tdx(Arc::new(TdxBacked::new_shared_state(
                 backing_shared_params,
             )?)),
             #[cfg(not(guest_arch = "x86_64"))]
@@ -1515,7 +1509,7 @@ impl UhPartition {
         // There is no way to provide a fast path for some hardware isolated
         // VM architectures. The devices that do use this facility are not
         // enabled on hardware isolated VMs.
-        assert!(!self.inner.hcl.is_hardware_isolated());
+        assert!(!self.inner.isolation.is_hardware_isolated());
 
         self.inner
             .manage_io_port_intercept_region(*range.start(), *range.end(), false);
@@ -1536,16 +1530,16 @@ impl UhPartition {
     #[cfg(guest_arch = "x86_64")]
     fn guest_vsm_available(
         env_cvm_guest_vsm: bool,
-        isolation: Option<IsolationType>,
+        isolation: IsolationType,
         cvm_cpuid: Option<&hardware_cvm::cpuid::CpuidResults>,
         hcl: &Hcl,
     ) -> bool {
         match isolation {
-            Some(IsolationType::Tdx) => false, // TODO TDX GUEST_VSM
-            Some(IsolationType::Snp) if !env_cvm_guest_vsm => false,
+            IsolationType::Tdx => false, // TODO TDX GUEST_VSM
+            IsolationType::Snp if !env_cvm_guest_vsm => false,
             _ => {
                 let page_protection_queryable = match isolation {
-                    Some(IsolationType::Snp) => {
+                    IsolationType::Snp => {
                         // Require RMP Query
                         if let Some(snp_cpuid) = &cvm_cpuid {
                             let rmp_query = x86defs::cpuid::ExtendedSevFeaturesEax::from(
@@ -1608,11 +1602,11 @@ impl UhPartition {
     /// Returns whether guest vsm should be exposed to the guest as available.
     fn construct_cvm_state(
         cvm_cpuid_info: Option<&[u8]>,
-        isolation: Option<IsolationType>,
+        isolation: IsolationType,
         vp_count: usize,
     ) -> Result<Option<UhCvmPartitionState>, Error> {
         let cvm_state = match isolation {
-            Some(IsolationType::Snp) => Some(UhCvmPartitionState {
+            IsolationType::Snp => Some(UhCvmPartitionState {
                 cpuid: hardware_cvm::cpuid::CpuidResults::new(
                     hardware_cvm::cpuid::CpuidResultsIsolationType::Snp {
                         cpuid_pages: cvm_cpuid_info.unwrap(),
@@ -1623,7 +1617,7 @@ impl UhPartition {
                     BitVec::repeat(false, vp_count).into_boxed_bitslice()
                 }),
             }),
-            Some(IsolationType::Tdx) => Some(UhCvmPartitionState {
+            IsolationType::Tdx => Some(UhCvmPartitionState {
                 cpuid: hardware_cvm::cpuid::CpuidResults::new(
                     hardware_cvm::cpuid::CpuidResultsIsolationType::Tdx,
                 )
@@ -1632,7 +1626,7 @@ impl UhPartition {
                     BitVec::repeat(false, vp_count).into_boxed_bitslice()
                 }),
             }),
-            Some(IsolationType::Vbs) | None => None,
+            IsolationType::Vbs | IsolationType::None => None,
         };
 
         Ok(cvm_state)
@@ -1646,7 +1640,7 @@ impl UhPartition {
         emulate_apic: bool,
         access_vsm: bool,
         vtom: Option<u64>,
-        isolation: Option<IsolationType>,
+        isolation: IsolationType,
         is_hardware_isolated: bool,
     ) -> CpuidLeafSet {
         let mut cpuid = CpuidLeafSet::new(Vec::new());
@@ -1675,7 +1669,7 @@ impl UhPartition {
         topology: &ProcessorTopology,
         cpuid: &CpuidLeafSet,
         cvm_cpuid: Option<&hardware_cvm::cpuid::CpuidResults>,
-        isolation: Option<IsolationType>,
+        isolation: IsolationType,
     ) -> virt::x86::X86PartitionCapabilities {
         let mut native_cpuid_fn;
         let mut cvm_cpuid_fn;
@@ -1711,12 +1705,12 @@ impl UhPartition {
         // Compute and validate capabilities.
         let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(topology, cpuid_fn);
         match isolation {
-            Some(IsolationType::Tdx) => {
+            IsolationType::Tdx => {
                 assert!(caps.vtom.is_some());
                 // TDX 1.5 requires EFER.NXE to be set to 1, so set it at RESET/INIT.
                 caps.nxe_forced_on = true;
             }
-            Some(IsolationType::Snp) => {
+            IsolationType::Snp => {
                 assert!(caps.vtom.is_some());
             }
             _ => {
@@ -1758,7 +1752,7 @@ impl UhPartition {
 
 #[cfg(guest_arch = "x86_64")]
 /// Gets the TSC frequency for the current platform.
-fn get_tsc_frequency(isolation: Option<IsolationType>) -> Result<u64, Error> {
+fn get_tsc_frequency(isolation: IsolationType) -> Result<u64, Error> {
     // Always get the frequency from the hypervisor. It's believed that, as long
     // as the hypervisor is behaving, it will provide the most precise and accurate frequency.
     let msr = MsrDevice::new(0).map_err(Error::OpenMsr)?;
@@ -1769,7 +1763,7 @@ fn get_tsc_frequency(isolation: Option<IsolationType>) -> Result<u64, Error> {
     // Get the hardware-advertised frequency and validate that the
     // hypervisor frequency is not too far off.
     let hw_info = match isolation {
-        Some(IsolationType::Tdx) => {
+        IsolationType::Tdx => {
             // TDX provides the TSC frequency via cpuid.
             let max_function = safe_x86_intrinsics::cpuid(
                 x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0,
@@ -1798,11 +1792,11 @@ fn get_tsc_frequency(isolation: Option<IsolationType>) -> Result<u64, Error> {
                 allowed_error,
             ))
         }
-        Some(IsolationType::Snp) => {
+        IsolationType::Snp => {
             // SNP currently does not provide the frequency.
             None
         }
-        Some(IsolationType::Vbs) | None => None,
+        IsolationType::Vbs | IsolationType::None => None,
     };
 
     if let Some((hw_frequency, allowed_error)) = hw_info {
@@ -1823,7 +1817,7 @@ fn get_tsc_frequency(isolation: Option<IsolationType>) -> Result<u64, Error> {
 
 impl UhPartitionInner {
     fn manage_io_port_intercept_region(&self, begin: u16, end: u16, active: bool) {
-        if self.hcl.is_hardware_isolated() {
+        if self.isolation.is_hardware_isolated() {
             return;
         }
 

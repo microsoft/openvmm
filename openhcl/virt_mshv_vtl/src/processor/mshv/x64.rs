@@ -802,7 +802,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             return Err(HvError::InvalidParameter);
         }
 
-        assert!(self.partition.isolation.is_some());
+        assert!(self.partition.isolation.is_isolated());
 
         let status: HvRegisterVsmPartitionStatus = self.partition.vsm_status();
 

@@ -193,7 +193,7 @@ pub fn read_vtl2_params(
     };
 
     let (cvm_cpuid_info, snp_secrets) = {
-        if hcl.isolation() == Some(hcl::ioctl::IsolationType::Snp) {
+        if isolation == hcl::ioctl::IsolationType::Snp {
             let mut cpuid_pages: Vec<u8> =
                 vec![0; (HV_PAGE_SIZE * PARAVISOR_CONFIG_CPUID_SIZE_PAGES) as usize];
             mapping
@@ -217,7 +217,7 @@ pub fn read_vtl2_params(
         }
     };
 
-    let accepted_regions = if hcl.isolation().is_some() {
+    let accepted_regions = if isolation.is_isolated() {
         parsed_openhcl_boot.accepted_ranges.clone()
     } else {
         Vec::new()

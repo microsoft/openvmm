@@ -733,7 +733,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
         match vtl {
             Vtl::Vtl0 => true,
             Vtl::Vtl1 => {
-                if self.partition.is_hardware_isolated() {
+                if self.partition.isolation.is_hardware_isolated() {
                     *self.inner.hcvm_vtl1_enabled.lock()
                 } else {
                     // TODO: when there's support for returning VTL 1 registers,
@@ -878,7 +878,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                     .map_err(UhRunVpError::State)?;
 
                     if vtl == GuestVtl::Vtl1 {
-                        assert!(self.partition.is_hardware_isolated());
+                        assert!(self.partition.isolation.is_hardware_isolated());
                         // Should not have already initialized the hv emulator for this vtl
                         assert!(self.hv(vtl).is_none());
 

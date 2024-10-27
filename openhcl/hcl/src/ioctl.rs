@@ -1291,7 +1291,7 @@ pub struct Hcl {
     supports_vtl_ret_action: bool,
     supports_register_page: bool,
     dr6_shared: bool,
-    isolation: Option<IsolationType>,
+    isolation: IsolationType,
     snp_register_bitmap: [u8; 64],
     sidecar: Option<SidecarClient>,
 }
@@ -1300,12 +1300,26 @@ pub struct Hcl {
 // TODO: Add guest_arch cfgs.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum IsolationType {
+    /// No isolation.
+    None,
     /// Hyper-V software isolation.
     Vbs,
     /// AMD SNP.
     Snp,
     /// Intel TDX.
     Tdx,
+}
+
+impl IsolationType {
+    /// Returns true if the isolation type is not `None`.
+    pub fn is_isolated(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// Returns whether the isolation type is hardware-backed.
+    pub fn is_hardware_isolated(&self) -> bool {
+        matches!(self, Self::Snp | Self::Tdx)
+    }
 }
 
 impl Hcl {
@@ -1395,13 +1409,13 @@ impl HclVp {
         hcl: &Hcl,
         vp: u32,
         map_reg_page: bool,
-        isolation_type: Option<IsolationType>,
+        isolation_type: IsolationType,
     ) -> Result<Self, Error> {
         let fd = &hcl.mshv_vtl.file;
         let run = MappedPage::new(fd, vp as i64).map_err(|e| Error::MmapVp(e, None))?;
 
         let backing = match isolation_type {
-            None | Some(IsolationType::Vbs) => BackingState::Mshv {
+            IsolationType::None | IsolationType::Vbs => BackingState::Mshv {
                 reg_page: if map_reg_page {
                     Some(
                         MappedPage::new(fd, HCL_REG_PAGE_OFFSET | vp as i64)
@@ -1411,13 +1425,13 @@ impl HclVp {
                     None
                 },
             },
-            Some(IsolationType::Snp) => BackingState::Snp {
+            IsolationType::Snp => BackingState::Snp {
                 vmsa: MappedPage::new(fd, HCL_VMSA_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
                 vmsa_vtl1: MappedPage::new(fd, HCL_VMSA_GUEST_VSM_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl1)))?,
             },
-            Some(IsolationType::Tdx) => BackingState::Tdx {
+            IsolationType::Tdx => BackingState::Tdx {
                 apic_page: MappedPage::new(fd, MSHV_APIC_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
             },
@@ -1949,41 +1963,38 @@ impl Hcl {
 
         // TODO SNP: When it's checked in, the isolation type should instead be queried
         // from the kernel.
-        let (isolation_type, hardware_isolated) = {
-            let isolation_type_raw = if cfg!(guest_arch = "x86_64") {
-                // xtask-fmt allow-target-arch cpu-intrinsic
-                #[cfg(target_arch = "x86_64")]
-                {
-                    let result = safe_x86_intrinsics::cpuid(
-                        hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION,
-                        0,
-                    );
-                    result.ebx & 0xF
+        let isolation = if cfg!(guest_arch = "x86_64") {
+            // xtask-fmt allow-target-arch cpu-intrinsic
+            #[cfg(target_arch = "x86_64")]
+            {
+                let result = safe_x86_intrinsics::cpuid(
+                    hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION,
+                    0,
+                );
+                match result.ebx & 0xF {
+                    0 => IsolationType::None,
+                    1 => IsolationType::Vbs,
+                    2 => IsolationType::Snp,
+                    3 => IsolationType::Tdx,
+                    ty => panic!("unknown isolation type {ty:#x}"),
                 }
-                // xtask-fmt allow-target-arch cpu-intrinsic
-                #[cfg(not(target_arch = "x86_64"))]
-                {
-                    0
-                }
-            } else {
-                0
-            };
-            match isolation_type_raw {
-                0 => (None, false),
-                1 => (Some(IsolationType::Vbs), false),
-                2 => (Some(IsolationType::Snp), true),
-                3 => (Some(IsolationType::Tdx), true),
-                _ => unreachable!(),
             }
+            // xtask-fmt allow-target-arch cpu-intrinsic
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                unreachable!()
+            }
+        } else {
+            IsolationType::None
         };
 
         // Override certain features for hardware isolated VMs.
         // TODO: vtl return actions are inhibited for hardware isolated VMs because they currently
         // are a pessimization since interrupt handling (and synic handling) are all done from
         // within VTL2. Future vtl return actions may be different, requiring granular handling.
-        let supports_vtl_ret_action = supports_vtl_ret_action && !hardware_isolated;
-        let supports_register_page = supports_register_page && !hardware_isolated;
-        let dr6_shared = dr6_shared && !hardware_isolated;
+        let supports_vtl_ret_action = supports_vtl_ret_action && !isolation.is_hardware_isolated();
+        let supports_register_page = supports_register_page && !isolation.is_hardware_isolated();
+        let dr6_shared = dr6_shared && !isolation.is_hardware_isolated();
         let snp_register_bitmap = [0u8; 64];
 
         Ok(Hcl {
@@ -1993,7 +2004,7 @@ impl Hcl {
             supports_vtl_ret_action,
             supports_register_page,
             dr6_shared,
-            isolation: isolation_type,
+            isolation,
             snp_register_bitmap,
             sidecar,
         })
@@ -2119,7 +2130,7 @@ impl Hcl {
             "requesting interrupt"
         );
 
-        assert!(!self.is_hardware_isolated());
+        assert!(!self.isolation.is_hardware_isolated());
 
         let request = AssertVirtualInterrupt {
             partition_id: HV_PARTITION_ID_SELF,
@@ -2171,7 +2182,7 @@ impl Hcl {
     }
 
     fn hvcall_signal_event_direct(&self, vp: u32, sint: u8, flag: u16) -> Result<bool, Error> {
-        assert!(!self.is_hardware_isolated());
+        assert!(!self.isolation.is_hardware_isolated());
 
         let signal_event_input = hvdef::hypercall::SignalEventDirect {
             target_partition: HV_PARTITION_ID_SELF,
@@ -2210,7 +2221,7 @@ impl Hcl {
     ) -> Result<(), HvError> {
         tracing::trace!(vp, sint, "posting message");
 
-        assert!(!self.is_hardware_isolated());
+        assert!(!self.isolation.is_hardware_isolated());
         let post_message = hvdef::hypercall::PostMessageDirect {
             partition_id: HV_PARTITION_ID_SELF,
             vp_index: vp,
@@ -2583,15 +2594,15 @@ impl Hcl {
         );
 
         match self.isolation {
-            None | Some(IsolationType::Vbs) => caps,
+            IsolationType::None | IsolationType::Vbs => caps,
             // TODO SNP: Return actions may be useful, but with alternate injection many of these need
             // cannot actually be processed by the hypervisor without returning to VTL2.
             // Filter them out for now.
-            Some(IsolationType::Snp) => hvdef::HvRegisterVsmCapabilities::new()
+            IsolationType::Snp => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available()),
             // TODO TDX: Figure out what these values should be.
-            Some(IsolationType::Tdx) => hvdef::HvRegisterVsmCapabilities::new()
+            IsolationType::Tdx => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available()),
         }
@@ -2636,7 +2647,7 @@ impl Hcl {
             .with_reserved(0);
 
         tracing::trace!(enable_guest_vsm, "set_guest_vsm_partition_config");
-        if self.is_hardware_isolated() {
+        if self.isolation.is_hardware_isolated() {
             unimplemented!("set_guest_vsm_partition_config");
         }
 
@@ -2655,7 +2666,7 @@ impl Hcl {
     #[cfg(guest_arch = "x86_64")]
     pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), HvError> {
         tracing::debug!(?port, "set_pm_timer_assist");
-        if self.is_hardware_isolated() {
+        if self.isolation.is_hardware_isolated() {
             if port.is_some() {
                 unimplemented!("set_pm_timer_assist");
             }
@@ -2690,7 +2701,7 @@ impl Hcl {
         map_flags: HvMapGpaFlags,
         target_vtl: HvInputVtl,
     ) -> Result<(), ApplyVtlProtectionsError> {
-        if self.is_hardware_isolated() {
+        if self.isolation.is_hardware_isolated() {
             // TODO SNP TODO TDX - required for vmbus relay monitor page support
             todo!();
         }
@@ -2706,7 +2717,7 @@ impl Hcl {
         target_vtl: GuestVtl,
         flags: HvMapGpaFlags,
     ) -> Result<Option<CheckVtlAccessResult>, Error> {
-        assert!(!self.is_hardware_isolated());
+        assert!(!self.isolation.is_hardware_isolated());
 
         let header = hvdef::hypercall::CheckSparseGpaPageVtlAccess {
             partition_id: HV_PARTITION_ID_SELF,
@@ -2874,16 +2885,8 @@ impl Hcl {
     }
 
     /// Returns the isolation type for the partition.
-    pub fn isolation(&self) -> Option<IsolationType> {
+    pub fn isolation(&self) -> IsolationType {
         self.isolation
-    }
-
-    /// Returns whether the partition is hardware isolated.
-    pub fn is_hardware_isolated(&self) -> bool {
-        matches!(
-            self.isolation,
-            Some(IsolationType::Snp | IsolationType::Tdx)
-        )
     }
 
     /// Reads MSR_IA32_VMX_CR4_FIXED1 in kernel mode.

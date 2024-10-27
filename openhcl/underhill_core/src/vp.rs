@@ -15,7 +15,7 @@ pub(crate) async fn spawn_vps(
     vps: Vec<virt_mshv_vtl::UhProcessorBox>,
     runners: Vec<vmm_core::partition_unit::VpRunner>,
     chipset: &vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
-    isolation: Option<hcl::ioctl::IsolationType>,
+    isolation: hcl::ioctl::IsolationType,
 ) -> anyhow::Result<()> {
     // Start the VP tasks on the thread pool.
     let _: Vec<()> =
@@ -32,7 +32,7 @@ struct VpSpawner {
     cpu: u32,
     chipset: vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
     runner: vmm_core::partition_unit::VpRunner,
-    isolation: Option<hcl::ioctl::IsolationType>,
+    isolation: hcl::ioctl::IsolationType,
 }
 
 impl VpSpawner {
@@ -41,7 +41,7 @@ impl VpSpawner {
         vp: virt_mshv_vtl::UhProcessorBox,
         chipset: vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
         runner: vmm_core::partition_unit::VpRunner,
-        isolation: Option<hcl::ioctl::IsolationType>,
+        isolation: hcl::ioctl::IsolationType,
     ) -> Self {
         // TODO: get CPU index for VP
         let cpu = vp.vp_index().index();
@@ -61,7 +61,7 @@ impl VpSpawner {
         } else {
             // The CPU is not online, so this should be a sidecar VP. Run the VP
             // remotely via the sidecar kernel.
-            if self.isolation.is_some() {
+            if self.isolation.is_isolated() {
                 anyhow::bail!(
                     "cpu {} is offline, but sidecar not supported for isolated VMs",
                     self.cpu
@@ -116,7 +116,7 @@ impl VpSpawner {
         save_on_cancel: bool,
     ) -> Option<vmcore::save_restore::SavedStateBlob> {
         let r = match self.isolation {
-            None | Some(hcl::ioctl::IsolationType::Vbs) => {
+            hcl::ioctl::IsolationType::None | hcl::ioctl::IsolationType::Vbs => {
                 self.run_backed_vp::<virt_mshv_vtl::HypervisorBacked>(
                     saved_state,
                     control,
@@ -125,12 +125,12 @@ impl VpSpawner {
                 .await
             }
             #[cfg(guest_arch = "x86_64")]
-            Some(hcl::ioctl::IsolationType::Snp) => {
+            hcl::ioctl::IsolationType::Snp => {
                 self.run_backed_vp::<virt_mshv_vtl::SnpBacked>(saved_state, control, save_on_cancel)
                     .await
             }
             #[cfg(guest_arch = "x86_64")]
-            Some(hcl::ioctl::IsolationType::Tdx) => {
+            hcl::ioctl::IsolationType::Tdx => {
                 self.run_backed_vp::<virt_mshv_vtl::TdxBacked>(saved_state, control, save_on_cancel)
                     .await
             }

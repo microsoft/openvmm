@@ -1164,13 +1164,13 @@ async fn new_underhill_vm(
 
     let mut hcl = hcl::ioctl::Hcl::new(sidecar).context("failed to open HCL driver")?;
     let isolation = hcl.isolation();
-    let hardware_isolated = hcl.is_hardware_isolated();
+    let hardware_isolated = isolation.is_hardware_isolated();
 
     let is_restoring = servicing_state.is_some();
     let servicing_state = OptionServicingInitState::from(servicing_state);
 
     assert!(
-        !(is_restoring && isolation.is_some()),
+        !(is_restoring && isolation.is_isolated()),
         "restoring an isolated VM is not yet supported"
     );
 
@@ -1240,8 +1240,9 @@ async fn new_underhill_vm(
     hcl.set_allowed_hypercalls(allowed_hypercalls.as_slice());
 
     // Read the initial configuration from the IGVM parameters.
-    let (runtime_params, measured_vtl2_info) = crate::loader::vtl2_config::read_vtl2_params(&hcl)
-        .context("failed to read load parameters")?;
+    let (runtime_params, measured_vtl2_info) =
+        crate::loader::vtl2_config::read_vtl2_params(isolation)
+            .context("failed to read load parameters")?;
 
     let boot_info = runtime_params.parsed_openhcl_boot();
 
@@ -1254,7 +1255,7 @@ async fn new_underhill_vm(
     // Determine the amount of shared memory to reserve from VTL0.
     let shared_pool_size = match isolation {
         #[cfg(guest_arch = "x86_64")]
-        Some(hcl::ioctl::IsolationType::Snp) => {
+        hcl::ioctl::IsolationType::Snp => {
             let cpu_bytes = boot_info.cpus.len() as u64
                 * virt_mshv_vtl::snp_shared_pages_required_per_cpu()
                 * hvdef::HV_PAGE_SIZE;
@@ -1262,7 +1263,7 @@ async fn new_underhill_vm(
             round_up_to_2mb(cpu_bytes + device_dma + attestation)
         }
         #[cfg(guest_arch = "x86_64")]
-        Some(hcl::ioctl::IsolationType::Tdx) => {
+        hcl::ioctl::IsolationType::Tdx => {
             let cpu_bytes = boot_info.cpus.len() as u64
                 * virt_mshv_vtl::tdx_shared_pages_required_per_cpu()
                 * hvdef::HV_PAGE_SIZE;
@@ -1327,7 +1328,7 @@ async fn new_underhill_vm(
     //
     // TODO: centralize cpuid querying logic.
     #[cfg(guest_arch = "x86_64")]
-    let x2apic = if hcl.is_hardware_isolated() {
+    let x2apic = if isolation.is_hardware_isolated() {
         // For hardware CVMs, always enable x2apic support at boot.
         vm_topology::processor::x86::X2ApicState::Enabled
     } else if safe_x86_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx
@@ -1519,10 +1520,10 @@ async fn new_underhill_vm(
     };
 
     let attestation_type = match isolation {
-        Some(hcl::ioctl::IsolationType::Snp) => underhill_attestation::AttestationType::Snp,
-        Some(hcl::ioctl::IsolationType::Tdx) => underhill_attestation::AttestationType::Tdx,
-        Some(hcl::ioctl::IsolationType::Vbs) => underhill_attestation::AttestationType::Unsupported, // TODO VBS
-        None => underhill_attestation::AttestationType::Host,
+        hcl::ioctl::IsolationType::Snp => underhill_attestation::AttestationType::Snp,
+        hcl::ioctl::IsolationType::Tdx => underhill_attestation::AttestationType::Tdx,
+        hcl::ioctl::IsolationType::Vbs => underhill_attestation::AttestationType::Unsupported, // TODO VBS
+        hcl::ioctl::IsolationType::None => underhill_attestation::AttestationType::Host,
     };
 
     // Decrypt VMGS state before the VMGS file is used for anything.
@@ -1553,7 +1554,7 @@ async fn new_underhill_vm(
             // responses via shared memory, which requires both `shared_vis_pages_pool` and
             // `gm.untrusted_dma_memory` to be available.
             let suppress_attestation = dps.general.suppress_attestation.unwrap_or_default();
-            if isolation.is_some() {
+            if isolation.is_isolated() {
                 validate_isolated_configuration(&dps)
                     .context("invalid host-provided configuration for isolated VM")?;
             }
@@ -2337,19 +2338,18 @@ async fn new_underhill_vm(
 
         let (get_attestation_report, request_ak_cert) = {
             // Ak cert renewal depends on the ability to get an attestation report
-            let get_attestation_report =
-                // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
-                if !matches!(isolation, Some(hcl::ioctl::IsolationType::Vbs)) {
-                    isolation.map(|_| {
-                        GetTpmGetAttestationReportHelperHandle::new(
-                            attestation_type,
-                            attestation_vm_config,
-                        )
-                        .into_resource()
-                    })
-                } else {
-                    None
-                };
+            // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
+            let get_attestation_report = if !matches!(isolation, hcl::ioctl::IsolationType::Vbs) {
+                Some(
+                    GetTpmGetAttestationReportHelperHandle::new(
+                        attestation_type,
+                        attestation_vm_config,
+                    )
+                    .into_resource(),
+                )
+            } else {
+                None
+            };
 
             // Always attempt AK cert and let TPM to decide the course of action
             // based on the response.
@@ -2804,7 +2804,7 @@ async fn new_underhill_vm(
             &runtime_params,
             load_kind,
             &dps,
-            isolation.is_some(),
+            isolation.is_isolated(),
         )
         .instrument(tracing::info_span!("load_firmware"))
         .await?;
