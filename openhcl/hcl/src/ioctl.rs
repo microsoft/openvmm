@@ -85,11 +85,11 @@ use zerocopy::FromZeroes;
 #[derive(Error, Debug)]
 #[allow(missing_docs)]
 pub enum Error {
-    #[error("open /dev/hcl")]
-    OpenHcl(#[source] io::Error),
-    #[error("open /dev/hcl_hvcall")]
-    OpenHclHvcall(#[source] io::Error),
-    #[error("open /dev/mshv_vtl_low")]
+    #[error("failed to open mshv device")]
+    OpenMshv(#[source] io::Error),
+    #[error("failed to open hvcall device")]
+    OpenHvcall(#[source] io::Error),
+    #[error("failed to open lower VTL memory device")]
     OpenGpa(#[source] io::Error),
     #[error("ReturnToLowerVtl")]
     ReturnToLowerVtl(#[source] nix::Error),
@@ -583,13 +583,13 @@ pub struct MshvVtlLow {
 impl MshvVtlLow {
     /// Opens the device.
     pub fn new() -> Result<Self, Error> {
-        let file = std::fs::OpenOptions::new()
+        let file = fs_err::OpenOptions::new()
             .read(true)
             .write(true)
             .open("/dev/mshv_vtl_low")
             .map_err(Error::OpenGpa)?;
 
-        Ok(Self { file })
+        Ok(Self { file: file.into() })
     }
 
     /// Gets the device file.
@@ -610,13 +610,13 @@ pub struct Mshv {
 impl Mshv {
     /// Opens the mshv device.
     pub fn new() -> Result<Self, Error> {
-        let file = std::fs::OpenOptions::new()
+        let file = fs_err::OpenOptions::new()
             .read(true)
             .write(true)
             .open("/dev/mshv")
-            .map_err(Error::OpenHcl)?;
+            .map_err(Error::OpenMshv)?;
 
-        Ok(Self { file })
+        Ok(Self { file: file.into() })
     }
 
     fn check_extension(&self, cap: u32) -> Result<bool, Error> {
@@ -671,13 +671,13 @@ pub struct MshvHvcall(File);
 impl MshvHvcall {
     /// Opens the device.
     pub fn new() -> Result<Self, Error> {
-        let file = std::fs::OpenOptions::new()
+        let file = fs_err::OpenOptions::new()
             .read(true)
             .write(true)
             .open("/dev/mshv_hvcall")
-            .map_err(Error::OpenHclHvcall)?;
+            .map_err(Error::OpenHvcall)?;
 
-        Ok(Self(file))
+        Ok(Self(file.into()))
     }
 
     /// Set allowed hypercalls.

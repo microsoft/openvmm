@@ -2406,6 +2406,7 @@ version = "0.0.0"
 dependencies = [
  "bitfield-struct",
  "build_rs_guest_arch",
+ "fs-err",
  "getrandom",
  "hvdef",
  "libc",
