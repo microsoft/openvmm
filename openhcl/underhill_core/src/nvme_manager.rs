@@ -112,21 +112,19 @@ impl NvmeManager {
             mem_next_offset: 0,
             nvme_keepalive: false, // Will be set to true after save completed.
         };
-        let task = driver.spawn(
-            "nvme-manager",
-            async move {
-                // Restore saved data (if present) before async worker thread runs.
-                if saved_state.is_some() {
-                    let _ = NvmeManager::restore(
-                        &mut worker,
-                        dma_buffer.clone(),
-                        saved_state.as_ref().unwrap())
-                    .instrument(tracing::info_span!("nvme_manager_restore"))
-                    .await;
-                };
-                worker.run(recv).await
-            }
-        );
+        let task = driver.spawn("nvme-manager", async move {
+            // Restore saved data (if present) before async worker thread runs.
+            if saved_state.is_some() {
+                let _ = NvmeManager::restore(
+                    &mut worker,
+                    dma_buffer.clone(),
+                    saved_state.as_ref().unwrap(),
+                )
+                .instrument(tracing::info_span!("nvme_manager_restore"))
+                .await;
+            };
+            worker.run(recv).await
+        });
         Self {
             task,
             client: NvmeManagerClient {
@@ -175,12 +173,10 @@ impl NvmeManager {
         dma_buffer: Arc<dyn VfioDmaBuffer>,
         saved_state: &NvmeSavedState,
     ) -> anyhow::Result<()> {
-        worker.restore(
-            dma_buffer,
-            &saved_state.nvme_state,
-        )
-        .instrument(tracing::info_span!("nvme_worker_restore"))
-        .await?;
+        worker
+            .restore(dma_buffer, &saved_state.nvme_state)
+            .instrument(tracing::info_span!("nvme_worker_restore"))
+            .await?;
 
         Ok(())
     }
@@ -327,16 +323,14 @@ impl NvmeManagerWorker {
         let driver = match self.devices.entry(pci_id.to_owned()) {
             hash_map::Entry::Occupied(entry) => {
                 let existing_driver = entry.into_mut();
-                let _ = existing_driver.attach()
-                    .instrument(tracing::info_span!(
-                    "nvme_driver_attach",
-                    pci_id = pci_id
-                ))
-                .await
-                .map_err(InnerError::Vfio);
+                let _ = existing_driver
+                    .attach()
+                    .instrument(tracing::info_span!("nvme_driver_attach", pci_id = pci_id))
+                    .await
+                    .map_err(InnerError::Vfio);
 
                 existing_driver
-            },
+            }
             hash_map::Entry::Vacant(entry) => {
                 let device = VfioDevice::new(
                     &self.driver_source,
@@ -351,24 +345,23 @@ impl NvmeManagerWorker {
                 // TODO: This is temporary way to obtain the DMA buffer size.
                 //       Alternatives: use VTL2 configuation data for fixed size
                 //       or for the target queue count.
-                let mem_required_size =
-                    nvme_driver::NvmeDriver::<VfioDevice>::required_dma_size(
-                        self.vp_count as usize + 1
-                    );
+                let mem_required_size = nvme_driver::NvmeDriver::<VfioDevice>::required_dma_size(
+                    self.vp_count as usize + 1,
+                );
                 let next_offset = self.mem_next_offset;
 
-                let driver =
-                    nvme_driver::NvmeDriver::new(
-                            &self.driver_source,
-                            self.vp_count,
-                            self.mem_block.subblock(next_offset, mem_required_size),
-                            device)
-                        .instrument(tracing::info_span!(
-                            "nvme_driver_init",
-                            pci_id = entry.key()
-                        ))
-                        .await
-                        .map_err(InnerError::DeviceInitFailed)?;
+                let driver = nvme_driver::NvmeDriver::new(
+                    &self.driver_source,
+                    self.vp_count,
+                    self.mem_block.subblock(next_offset, mem_required_size),
+                    device,
+                )
+                .instrument(tracing::info_span!(
+                    "nvme_driver_init",
+                    pci_id = entry.key()
+                ))
+                .await
+                .map_err(InnerError::DeviceInitFailed)?;
 
                 self.mem_next_offset += mem_required_size;
                 entry.insert(driver)
@@ -439,9 +432,7 @@ impl NvmeManagerWorker {
 
             // FIXME: Count for multiple drivers.
             let driver_block_len = self.mem_block.len();
-            let driver_mem_block = self
-                .mem_block
-                .subblock(0, driver_block_len);
+            let driver_mem_block = self.mem_block.subblock(0, driver_block_len);
             let nvme_driver = nvme_driver::NvmeDriver::restore(
                 &self.driver_source,
                 saved_state.cpu_count,

@@ -1620,7 +1620,6 @@ dependencies = [
  "hcl",
  "hvdef",
  "inspect",
- "libc",
  "parking_lot",
  "sparse_mmap",
  "thiserror 2.0.0",

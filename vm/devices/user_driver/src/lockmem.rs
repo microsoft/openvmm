@@ -163,7 +163,14 @@ impl crate::vfio::VfioDmaBuffer for LockedMemorySpawner {
     }
 
     /// Restore mapped DMA memory at the same physical location which was used before.
-    fn restore_dma_buffer(&self, addr: u64, len: usize, _pfns: &[u64]) -> anyhow::Result<crate::memory::MemoryBlock> {
-        Ok(crate::memory::MemoryBlock::new(LockedMemory::restore(addr, len)?))
+    fn restore_dma_buffer(
+        &self,
+        addr: u64,
+        len: usize,
+        _pfns: &[u64],
+    ) -> anyhow::Result<crate::memory::MemoryBlock> {
+        Ok(crate::memory::MemoryBlock::new(LockedMemory::restore(
+            addr, len,
+        )?))
     }
 }

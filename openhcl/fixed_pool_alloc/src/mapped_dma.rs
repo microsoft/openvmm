@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // Copyright (C) Microsoft Corporation. All rights reserved.
 
 //! Module for device dma support at fixed location.

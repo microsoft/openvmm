@@ -158,21 +158,9 @@ impl QueuePair {
     ) -> anyhow::Result<Self> {
         assert!(mem_block.len() >= Self::required_dma_size());
 
-        let (queue_handler, alloc, mem) = QueuePair::allocate(
-            qid,
-            sq_size,
-            cq_size,
-            mem_block,
-        )?;
+        let (queue_handler, alloc, mem) = QueuePair::allocate(qid, sq_size, cq_size, mem_block)?;
 
-        QueuePair::resume(
-            spawner,
-            interrupt,
-            registers,
-            mem,
-            alloc,
-            queue_handler
-        )
+        QueuePair::resume(spawner, interrupt, registers, mem, alloc, queue_handler)
     }
 
     /// Part of QueuePair initialization sequence which does memory allocations.
@@ -186,19 +174,14 @@ impl QueuePair {
         assert!(cq_size <= Self::MAX_CQSIZE);
 
         // The memory block is split contiguously: SQ, CQ, Data.
-        let sq = SubmissionQueue::new(
-            qid,
-            sq_size,
-            mem_block.subblock(0, Self::sq_size())
-        );
+        let sq = SubmissionQueue::new(qid, sq_size, mem_block.subblock(0, Self::sq_size()));
         let cq = CompletionQueue::new(
             qid,
             cq_size,
-            mem_block.subblock(Self::sq_size(), Self::cq_size())
+            mem_block.subblock(Self::sq_size(), Self::cq_size()),
         );
         let alloc: PageAllocator = PageAllocator::new(
-            mem_block
-                .subblock(Self::sq_size() + Self::cq_size(), Self::dma_data_size())
+            mem_block.subblock(Self::sq_size() + Self::cq_size(), Self::dma_data_size()),
         );
 
         let queue_handler = QueueHandler {
@@ -292,14 +275,7 @@ impl QueuePair {
 
         queue_handler.restore(saved_state)?;
 
-        QueuePair::resume(
-            spawner,
-            interrupt,
-            registers,
-            mem,
-            alloc,
-            queue_handler
-        )
+        QueuePair::resume(spawner, interrupt, registers, mem, alloc, queue_handler)
     }
 }
 
@@ -642,9 +618,7 @@ impl QueueHandler {
                 command,
                 cid: cmd.0 as u16,
             };
-            pending_cmds.push(
-                command,
-            );
+            pending_cmds.push(command);
         }
         // The data is collected from both QueuePair and QueueHandler.
         Ok(QueuePairSavedState {
@@ -663,17 +637,13 @@ impl QueueHandler {
     }
 
     /// Restore queue data after servicing.
-    pub fn restore(
-        &mut self,
-        saved_state: &QueuePairSavedState
-    ) -> anyhow::Result<()> {
+    pub fn restore(&mut self, saved_state: &QueuePairSavedState) -> anyhow::Result<()> {
         self.max_cids = saved_state.max_cids;
 
         // Restore pending commands.
         let mut pending: Vec<(usize, PendingCommand)> = Vec::new();
         for cmd in &saved_state.pending_cmds {
-            let (send, mut _recv) =
-                mesh::oneshot::<nvme_spec::Completion>();
+            let (send, mut _recv) = mesh::oneshot::<nvme_spec::Completion>();
             let pending_command = PendingCommand {
                 command: FromBytes::read_from_prefix(cmd.command.as_bytes()).unwrap(),
                 respond: send,

@@ -83,10 +83,7 @@ impl SubmissionQueue {
     }
 
     /// Restores queue data after servicing.
-    pub fn restore(
-        &mut self,
-        saved_state: &SubmissionQueueSavedState
-    ) -> anyhow::Result<()> {
+    pub fn restore(&mut self, saved_state: &SubmissionQueueSavedState) -> anyhow::Result<()> {
         self.sqid = saved_state.sqid;
         self.head = saved_state.head;
         self.tail = saved_state.tail;
@@ -161,10 +158,7 @@ impl CompletionQueue {
     }
 
     /// Restores queue data after servicing.
-    pub fn restore(
-        &mut self,
-        saved_state: &CompletionQueueSavedState
-    ) -> anyhow::Result<()> {
+    pub fn restore(&mut self, saved_state: &CompletionQueueSavedState) -> anyhow::Result<()> {
         self.cqid = saved_state.cqid;
         self.head = saved_state.head;
         self.committed_head = saved_state.committed_head;

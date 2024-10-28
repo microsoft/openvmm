@@ -9,9 +9,9 @@
 use crate::interrupt::DeviceInterrupt;
 use crate::interrupt::DeviceInterruptSource;
 use crate::memory::MemoryBlock;
+use crate::save_restore::VfioDeviceSavedState;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
-use crate::save_restore::VfioDeviceSavedState;
 use anyhow::Context;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -41,7 +41,12 @@ pub trait VfioDmaBuffer: 'static + Send + Sync {
     fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
 
     /// Restore a dma buffer in the predefined location with the given `len` in bytes.
-    fn restore_dma_buffer(&self, addr: u64, len: usize, pfns: &[u64]) -> anyhow::Result<MemoryBlock>;
+    fn restore_dma_buffer(
+        &self,
+        addr: u64,
+        len: usize,
+        pfns: &[u64],
+    ) -> anyhow::Result<MemoryBlock>;
 }
 
 /// A device backend accessed via VFIO.
@@ -146,9 +151,9 @@ impl VfioDevice {
         let info = self.device.region_info(n.into())?;
         let mapping = if addr_fixed.is_none() {
             self.device.map(info.offset, info.size as usize, true)?
-        }
-        else {
-            self.device.map_to(addr_fixed.unwrap(), info.offset, info.size as usize, true)?
+        } else {
+            self.device
+                .map_to(addr_fixed.unwrap(), info.offset, info.size as usize, true)?
         };
         sparse_mmap::initialize_try_copy();
         Ok(MappedRegionWithFallback {
@@ -490,7 +495,12 @@ impl crate::HostDmaAllocator for LockedMemoryAllocator {
         self.dma_buffer.create_dma_buffer(len)
     }
 
-    fn restore_dma_buffer(&mut self, _addr: u64, len: usize, _pfns: &[u64]) -> anyhow::Result<MemoryBlock> {
+    fn restore_dma_buffer(
+        &mut self,
+        _addr: u64,
+        len: usize,
+        _pfns: &[u64],
+    ) -> anyhow::Result<MemoryBlock> {
         // FIXME: Just using regular allocate until we have memory mapping restore.
         self.dma_buffer.create_dma_buffer(len)
     }

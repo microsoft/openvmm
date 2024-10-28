@@ -70,7 +70,12 @@ pub trait HostDmaAllocator: Send + Sync {
     fn reserve_dma_buffer(&self, offset: usize, len: usize) -> anyhow::Result<MemoryBlock>;
 
     /// Restore DMA bufer at pre-existing location.
-    fn restore_dma_buffer(&mut self, addr: u64, len: usize, pfns: &[u64]) -> anyhow::Result<MemoryBlock>;
+    fn restore_dma_buffer(
+        &mut self,
+        addr: u64,
+        len: usize,
+        pfns: &[u64],
+    ) -> anyhow::Result<MemoryBlock>;
 }
 
 pub mod save_restore {

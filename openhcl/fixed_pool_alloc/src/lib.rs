@@ -1,10 +1,12 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // Copyright (C) Microsoft Corporation. All rights reserved.
 
 //! This module implements a fixed memory allocator for allocating pages at specific location.
 
 #![cfg(unix)]
 #![warn(missing_docs)]
-
 // SAFETY: Send, Sync, and *nix calls mmap() mmunmap()
 //         all require unsafe keyword.
 #![allow(unsafe_code)]
@@ -188,7 +190,7 @@ impl FixedPoolAllocator {
                 tag: tag.clone(),
             })?;
 
-        let base_pfn= match inner.state.swap_remove(index) {
+        let base_pfn = match inner.state.swap_remove(index) {
             State::Free {
                 base_pfn: base,
                 size_pages: len,
@@ -220,11 +222,7 @@ impl FixedPoolAllocator {
 
     /// Allocate contiguous pool from starting PFN.
     /// This is still under research so mark it as a hack.
-    pub fn prealloc_at(
-        &self,
-        base_pfn: u64,
-        size_pages: u64,
-    ) -> Result<(), FixedPoolOutOfMemory> {
+    pub fn prealloc_at(&self, base_pfn: u64, size_pages: u64) -> Result<(), FixedPoolOutOfMemory> {
         let mut inner = self.inner.lock();
 
         inner.add(base_pfn, size_pages);
@@ -279,7 +277,12 @@ impl user_driver::vfio::VfioDmaBuffer for FixedPoolAllocator {
         }))
     }
 
-    fn restore_dma_buffer(&self, addr: u64, len: usize, pfns: &[u64]) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+    fn restore_dma_buffer(
+        &self,
+        addr: u64,
+        len: usize,
+        pfns: &[u64],
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
         if len == 0 {
             anyhow::bail!("allocation of size 0 not supported");
         }
@@ -300,7 +303,8 @@ impl user_driver::vfio::VfioDmaBuffer for FixedPoolAllocator {
             .context("failed to allocate fixed mem")?;
 
         let gpa_fd = hcl::ioctl::MshvVtlLow::new().context("failed to open gpa fd")?;
-        let mapping = sparse_mmap::SparseMapping::new_at(len, Some(addr)).context("failed to create mapping")?;
+        let mapping = sparse_mmap::SparseMapping::new_at(len, Some(addr))
+            .context("failed to create mapping")?;
 
         let gpa = alloc.base_pfn() * HV_PAGE_SIZE;
 

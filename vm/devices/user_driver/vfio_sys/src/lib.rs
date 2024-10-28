@@ -356,7 +356,13 @@ impl Device {
     }
 
     /// Attempts to map the region to the specific VA.
-    pub fn map_to(&self, addr: u64, offset: u64, len: usize, write: bool) -> anyhow::Result<MappedRegion> {
+    pub fn map_to(
+        &self,
+        addr: u64,
+        offset: u64,
+        len: usize,
+        write: bool,
+    ) -> anyhow::Result<MappedRegion> {
         let mut prot = libc::PROT_READ;
         if write {
             prot |= libc::PROT_WRITE;
