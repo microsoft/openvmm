@@ -2375,7 +2375,7 @@ impl Hcl {
     {
         use hvdef::hypercall;
 
-        assert!(!self.is_hardware_isolated());
+        assert!(!self.isolation.is_hardware_isolated());
         assert!(
             control_flags.input_vtl().use_target_vtl(),
             "did not specify a target VTL"
