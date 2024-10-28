@@ -221,9 +221,7 @@ impl IntoPipeline for CheckinGatesCli {
         }
 
         // emit consolidated gh pages publish job
-
-        // TEMP: should be CI
-        if matches!(config, PipelineConfig::Pr) {
+        if matches!(config, PipelineConfig::Ci) {
             let artifact_dir = if matches!(backend_hint, PipelineBackendHint::Local) {
                 let (publish, _use) = pipeline.new_artifact("gh-pages");
                 Some(publish)
