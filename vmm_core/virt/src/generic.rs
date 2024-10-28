@@ -134,7 +134,7 @@ pub struct ProtoPartitionConfig<'a> {
     /// Use the user-mode APIC emulator, if supported.
     pub user_mode_apic: bool,
     /// Isolation type for this partition.
-    pub isolation: Option<IsolationType>,
+    pub isolation: IsolationType,
 }
 
 /// Partition creation configuration.

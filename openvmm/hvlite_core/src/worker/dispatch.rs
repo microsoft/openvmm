@@ -762,7 +762,11 @@ impl InitializedVm {
                 hv_config,
                 vmtime: &vmtime_source,
                 user_mode_apic: cfg.hypervisor.user_mode_apic,
-                isolation: cfg.hypervisor.with_isolation.map(|typ| typ.into()),
+                isolation: cfg
+                    .hypervisor
+                    .with_isolation
+                    .map(|typ| typ.into())
+                    .unwrap_or(virt::IsolationType::None),
             })
             .context("failed to create the prototype partition")?;
 

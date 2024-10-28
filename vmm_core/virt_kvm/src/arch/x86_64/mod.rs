@@ -113,7 +113,7 @@ impl virt::Hypervisor for Kvm {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<Self::ProtoPartition<'a>, Self::Error> {
-        if config.isolation.is_some() {
+        if config.isolation.is_isolated() {
             return Err(KvmError::IsolationNotSupported);
         }
 
