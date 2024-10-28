@@ -77,6 +77,8 @@ impl ProcessorRunner<'_, MshvX64> {
 
     /// Returns the last VTL according to the register page.
     pub fn reg_page_vtl(&self) -> Result<GuestVtl, RegisterPageVtlError> {
+        // Note: if available, the register page is only valid if VTL 2 is
+        // handling an intercept.
         let vtl = self
             .reg_page()
             .ok_or(RegisterPageVtlError::NoRegisterPage)?

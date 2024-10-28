@@ -651,10 +651,9 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked>
             u128::from_ne_bytes(event_info.as_bytes().try_into().unwrap()),
         )];
 
-        let last_vtl = self.vtl;
         self.vp
             .runner
-            .set_vp_registers_hvcall(last_vtl.into(), regs)
+            .set_vp_registers_hvcall(self.vtl.into(), regs)
             .expect("set_vp_registers hypercall for setting pending event should not fail");
     }
 
