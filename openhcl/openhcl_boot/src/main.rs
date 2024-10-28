@@ -738,7 +738,7 @@ fn validate_vp_hw_ids(partition_info: &PartitionInfo) {
     vp_indexes.clear();
     if let Err(err) = hvcall().get_vp_index_from_hw_id(&hw_ids, &mut vp_indexes) {
         panic!(
-            "failed to get VP indexes from hardware ID {:#x}: {:?}",
+            "failed to get VP index for hardware ID {:#x}: {}",
             hw_ids[vp_indexes.len().min(hw_ids.len() - 1)],
             err
         );
@@ -749,7 +749,7 @@ fn validate_vp_hw_ids(partition_info: &PartitionInfo) {
         .find(|(i, &vp_index)| *i as u32 != vp_index)
     {
         panic!(
-            "CPU hardware ID {} does not correspond to VP index {}",
+            "CPU hardware ID {:#x} does not correspond to VP index {}",
             hw_ids[i], vp_index
         );
     }
