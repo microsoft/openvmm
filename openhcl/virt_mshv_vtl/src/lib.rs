@@ -278,6 +278,7 @@ pub struct UhCvmVpState {
     vtls_tlb_waiting: VtlArray<bool, 2>,
 }
 
+#[cfg(guest_arch = "x86_64")]
 impl UhCvmVpState {
     /// Creates a new CVM VP state.
     pub fn new() -> Self {
