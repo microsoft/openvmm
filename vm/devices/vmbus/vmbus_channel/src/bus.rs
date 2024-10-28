@@ -49,8 +49,8 @@ impl OfferResources {
         }
     }
 
-    /// Returns the `GuestMemory` to use based on the whether the open request
-    /// requests confidential memory.
+    /// Returns the `GuestMemory` to use based on the whether the open request requests confidential
+    /// memory.
     ///
     /// The open request reflects both whether the device indicated it supports confidential
     /// external memory when it was offered, and whether the currently connected vmbus client
@@ -65,11 +65,11 @@ impl OfferResources {
         self.get_memory(open_request.use_confidential_ring)
     }
 
-    fn get_memory(&self, trusted: bool) -> &GuestMemory {
-        if trusted {
+    fn get_memory(&self, private: bool) -> &GuestMemory {
+        if private {
             self.private_memory
                 .as_ref()
-                .expect("trusted memory should be present if confidential memory is requested")
+                .expect("private memory should be present if confidential memory is requested")
         } else {
             &self.untrusted_memory
         }
