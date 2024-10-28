@@ -267,7 +267,8 @@ impl HvCall {
         Ok(())
     }
 
-    /// Get the corresponding VP indices from a list of apic_ids.
+    /// Get the corresponding VP indices from a list of VP hardware IDs (APIC
+    /// IDs on x64, MPIDR on ARM64).
     pub fn get_vp_index_from_hw_id<const N: usize>(
         &mut self,
         hw_ids: &[HwId],
@@ -307,8 +308,12 @@ impl HvCall {
     }
 }
 
+/// The "hardware ID" used for [`HvCall::get_vp_index_from_hw_id`]. This is the
+/// APIC ID on x64.
 #[cfg(target_arch = "x86_64")]
 pub type HwId = u32;
 
+/// The "hardware ID" used for [`HvCall::get_vp_index_from_hw_id`]. This is the
+/// MPIDR on ARM64.
 #[cfg(target_arch = "aarch64")]
 pub type HwId = u64;

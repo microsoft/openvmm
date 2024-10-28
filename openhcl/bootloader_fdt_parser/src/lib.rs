@@ -135,7 +135,7 @@ pub enum MemoryAllocationMode {
 /// the host provided device tree.
 #[derive(Debug, Inspect, PartialEq, Eq)]
 pub struct ParsedBootDtInfo {
-    /// The cpus in the system. The index in the vector is also the Hyper-V VP
+    /// The cpus in the system. The index in the vector is also the mshv VP
     /// index.
     #[inspect(iter_by_index)]
     pub cpus: Vec<Cpu>,
