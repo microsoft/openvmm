@@ -87,7 +87,6 @@ pub struct SnpBacked {
     hv_sint_notifications: u16,
     general_stats: GeneralStats,
     exit_stats: ExitStats,
-    tsc_aux_virtualized: bool,
     shared: Arc<SnpBackedShared>,
 }
 
@@ -155,6 +154,7 @@ impl HardwareIsolatedBacking for SnpBacked {
 pub struct SnpBackedShared {
     cvm: UhCvmPartitionState,
     invlpgb_count_max: u16,
+    tsc_aux_virtualized: bool,
 }
 
 impl BackingPrivate for SnpBacked {
@@ -163,15 +163,22 @@ impl BackingPrivate for SnpBacked {
 
     fn new_shared_state(params: BackingSharedParams<'_>) -> Result<Self::BackingShared, Error> {
         let cvm = params.cvm_state.unwrap();
-        let extended_address_space_sizes = cvm
-            .cpuid
-            .registered_result(CpuidFunction::ExtendedAddressSpaceSizes, 0);
-        let invlpgb_count_max =
-            x86defs::cpuid::ExtendedAddressSpaceSizesEdx::from(extended_address_space_sizes.edx)
-                .invlpgb_count_max();
+        let invlpgb_count_max = x86defs::cpuid::ExtendedAddressSpaceSizesEdx::from(
+            cvm.cpuid
+                .registered_result(CpuidFunction::ExtendedAddressSpaceSizes, 0)
+                .edx,
+        )
+        .invlpgb_count_max();
+        let tsc_aux_virtualized = x86defs::cpuid::ExtendedSevFeaturesEax::from(
+            cvm.cpuid
+                .registered_result(CpuidFunction::ExtendedSevFeatures, 0)
+                .eax,
+        )
+        .tsc_aux_virtualization();
 
         Ok(SnpBackedShared {
             invlpgb_count_max,
+            tsc_aux_virtualized,
             cvm,
         })
     }
@@ -195,15 +202,6 @@ impl BackingPrivate for SnpBacked {
 
         let overlays: Vec<_> = pfns.collect();
 
-        let tsc_aux_virtualized = x86defs::cpuid::ExtendedSevFeaturesEax::from(
-            shared
-                .cvm
-                .cpuid
-                .registered_result(CpuidFunction::ExtendedSevFeatures, 0)
-                .eax,
-        )
-        .tsc_aux_virtualization();
-
         Ok(Self {
             lapics: params.lapics.unwrap(),
             direct_overlays_pfns: overlays.try_into().unwrap(),
@@ -211,7 +209,6 @@ impl BackingPrivate for SnpBacked {
             hv_sint_notifications: 0,
             general_stats: Default::default(),
             exit_stats: Default::default(),
-            tsc_aux_virtualized,
             shared: shared.clone(),
         })
     }
@@ -2027,7 +2024,7 @@ impl UhProcessor<'_, SnpBacked> {
             x86defs::X64_MSR_GS_BASE => vmsa.gs().base,
             x86defs::X64_MSR_KERNEL_GS_BASE => vmsa.kernel_gs_base(),
             x86defs::X86X_MSR_TSC_AUX => {
-                if self.backing.tsc_aux_virtualized {
+                if self.backing.shared.tsc_aux_virtualized {
                     vmsa.tsc_aux() as u64
                 } else {
                     return Err(MsrError::InvalidAccess);
@@ -2102,7 +2099,7 @@ impl UhProcessor<'_, SnpBacked> {
             }
             x86defs::X64_MSR_KERNEL_GS_BASE => vmsa.set_kernel_gs_base(value),
             x86defs::X86X_MSR_TSC_AUX => {
-                if self.backing.tsc_aux_virtualized {
+                if self.backing.shared.tsc_aux_virtualized {
                     vmsa.set_tsc_aux(value as u32);
                 } else {
                     return Err(MsrError::InvalidAccess);
