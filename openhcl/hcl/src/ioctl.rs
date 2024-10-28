@@ -1953,10 +1953,11 @@ impl Hcl {
         let mshv_fd = Mshv::new()?;
 
         // Validate the hypervisor's advertised isolation type matches the
-        // requested isolation type. In CVM scenarios, this is not trusted,
-        // so we still need the isolation type from the caller.
+        // requested isolation type. In CVM scenarios, this is not trusted, so
+        // we still need the isolation type from the caller.
         //
-        // FUTURE: the kernel driver should probably tell us this.
+        // FUTURE: the kernel driver should probably tell us this, especially
+        // since the kernel ABI is different for different isolation types.
         let supported_isolation = if cfg!(guest_arch = "x86_64") {
             // xtask-fmt allow-target-arch cpu-intrinsic
             #[cfg(target_arch = "x86_64")]
