@@ -192,7 +192,6 @@ struct UhPartitionInner {
     crash_notification_send: mesh::Sender<VtlCrash>,
     monitor_page: MonitorPage,
     software_devices: Option<ApicSoftwareDevices>,
-    // TODO: move this into some per-backing state.
     lapic: Option<VtlArray<LocalApicSet, 2>>,
     #[inspect(skip)]
     vmtime: VmTimeSource,
