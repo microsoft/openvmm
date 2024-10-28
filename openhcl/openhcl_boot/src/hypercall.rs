@@ -178,7 +178,7 @@ impl HvCall {
         header.write_to_prefix(Self::input_page().buffer.as_mut_slice());
         name.write_to_prefix(&mut Self::input_page().buffer[HEADER_SIZE..]);
 
-        let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallSetVpRegisters, Some(1));
+        let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallGetVpRegisters, Some(1));
         output.result()?;
         let value = hvdef::HvRegisterValue::read_from_prefix(&Self::output_page().buffer).unwrap();
 
