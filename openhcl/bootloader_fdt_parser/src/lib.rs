@@ -170,6 +170,9 @@ pub struct ParsedBootDtInfo {
     pub memory_allocation_mode: MemoryAllocationMode,
     /// The isolation type of the partition.
     pub isolation: IsolationType,
+    /// Parts of VTL2 memory to preserve during servicing.
+    #[inspect(iter_by_index)]
+    pub dma_preserve_ranges: Vec<MemoryRange>,
 }
 
 fn err_to_owned(e: fdt::parser::Error<'_>) -> anyhow::Error {
@@ -207,6 +210,7 @@ struct OpenhclInfo {
     vtl0_alias_map: Option<u64>,
     memory_allocation_mode: MemoryAllocationMode,
     isolation: IsolationType,
+    dma_preserve_ranges: Vec<MemoryRange>,
 }
 
 fn parse_memory_openhcl(node: &Node<'_>) -> anyhow::Result<AddressRange> {
@@ -379,6 +383,18 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         .transpose()
         .context("unable to read vtl0-alias-map")?;
 
+    // Report DMA preserve ranges in a separate vec, for convenience.
+    let dma_preserve_ranges = memory
+        .iter()
+        .filter_map(|entry| {
+            if entry.vtl_usage() == MemoryVtlType::VTL2_PRESERVED {
+                Some(*entry.range())
+            } else {
+                None
+            }
+        })
+        .collect();
+
     // Extract vmbus mmio information from the overall memory map.
     let vtl0_mmio = memory
         .iter()
@@ -400,6 +416,7 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         vtl0_alias_map,
         memory_allocation_mode,
         isolation,
+        dma_preserve_ranges,
     })
 }
 
@@ -493,6 +510,7 @@ impl ParsedBootDtInfo {
         let mut memory_allocation_mode = MemoryAllocationMode::Host;
         let mut isolation = IsolationType::None;
         let mut vtl2_reserved_range = MemoryRange::EMPTY;
+        let mut dma_preserve_ranges = Vec::new();
 
         let parser = Parser::new(raw)
             .map_err(err_to_owned)
@@ -567,6 +585,7 @@ impl ParsedBootDtInfo {
             memory_allocation_mode,
             isolation,
             vtl2_reserved_range,
+            dma_preserve_ranges,
         })
     }
 }

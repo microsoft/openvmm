@@ -144,7 +144,7 @@ impl SparseMapping {
                 )
             })?;
 
-        let libc_addr = fixed_addr.map_or(null_mut(), |a|{a as *mut c_void});
+        let libc_addr = fixed_addr.map_or(null_mut(), |a| a as *mut c_void);
         // SAFETY: calling mmap to allocate a new range.
         let address = unsafe {
             mmap(
@@ -233,7 +233,7 @@ impl SparseMapping {
             libc::PROT_READ
         };
 
-        // SAFETY: The flags passed in are guaranteed to be valid
+        // SAFETY: The flags passed in are guaranteed to be valid. MAP_SHARED is required.
         unsafe {
             self.mmap(
                 offset,

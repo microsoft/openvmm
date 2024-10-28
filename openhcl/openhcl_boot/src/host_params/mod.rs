@@ -81,6 +81,8 @@ pub struct PartitionInfo {
     pub entropy: Option<ArrayVec<u8, MAX_ENTROPY_SIZE>>,
     /// The VTL0 alias map physical address.
     pub vtl0_alias_map: Option<u64>,
+    /// Hint from Host on how many pages to preserve during servicing.
+    pub preserve_dma_4k_pages: Option<u64>,
 }
 
 impl PartitionInfo {
@@ -109,6 +111,7 @@ impl PartitionInfo {
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
             vtl0_alias_map: None,
+            preserve_dma_4k_pages: None,
         }
     }
 

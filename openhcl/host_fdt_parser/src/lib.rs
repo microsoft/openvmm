@@ -230,7 +230,7 @@ pub struct ParsedDeviceTree<
     #[cfg_attr(feature = "inspect", inspect(with = "Option::is_some"))]
     pub entropy: Option<ArrayVec<u8, MAX_ENTROPY_SIZE>>,
     /// Preserved DMA memory size in pages.
-    pub preserve_dma_mem_pages: Option<u64>,
+    pub preserve_dma_4k_pages: Option<u64>,
 }
 
 /// The memory allocation mode provided by the host. This determines how OpenHCL
@@ -309,7 +309,7 @@ impl<
             gic: None,
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
-            preserve_dma_mem_pages: None,
+            preserve_dma_4k_pages: None,
         }
     }
 
@@ -511,7 +511,7 @@ impl<
                             }
                             // These parameters may not be present so it is not an error if they are missing.
                             "servicing" => {
-                                storage.preserve_dma_mem_pages = match openhcl_child.find_property("dma-preserve-pages") {
+                                storage.preserve_dma_4k_pages = match openhcl_child.find_property("dma-preserve-pages") {
                                     Ok(pages) => {
                                         pages
                                             .map(|p| p.read_u64(0)
@@ -712,7 +712,7 @@ impl<
             gic: _,
             memory_allocation_mode: _,
             entropy: _,
-            preserve_dma_mem_pages: _,
+            preserve_dma_4k_pages: _,
         } = storage;
 
         *device_tree_size = parser.total_size;
