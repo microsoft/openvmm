@@ -64,10 +64,12 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 use virt::io::CpuIo;
+use virt::state::StateElement;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use virt_support_apic::LocalApic;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::vmtime::VmTimeAccess;
 use vtl_array::VtlArray;
@@ -153,8 +155,16 @@ impl VtlsTlbLocked {
     }
 }
 
+#[derive(Inspect)]
+pub struct LapicState {
+    lapic: LocalApic,
+    halted: bool,
+    startup_suspend: bool,
+}
+
 mod private {
     use super::vp_state;
+    use super::LapicState;
     use super::UhRunVpError;
     use crate::processor::UhProcessor;
     use crate::BackingShared;
@@ -169,9 +179,11 @@ mod private {
     use virt::StopVp;
     use virt::VpHaltReason;
     use vm_topology::processor::TargetVpInfo;
+    use vtl_array::VtlArray;
 
     pub struct BackingParams<'a, 'b, T: BackingPrivate> {
         pub(crate) partition: &'a UhPartitionInner,
+        pub(crate) lapics: Option<VtlArray<LapicState, 2>>,
         pub(crate) vp_info: &'a TargetVpInfo,
         pub(crate) runner: &'a mut ProcessorRunner<'b, T::HclBacking>,
         pub(crate) backing_shared: &'a BackingShared,
@@ -757,8 +769,31 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             .hcl
             .runner(inner.cpu_index, idle_control.is_none())
             .unwrap();
+
+        let lapics = partition.lapic.as_ref().map(|arr| {
+            let mut lapics = arr.each_ref().map(|apic_set| apic_set.add_apic(&vp_info));
+            // Initialize APIC base to match the reset VM state.
+            let apic_base = virt::vp::Apic::at_reset(&partition.caps, &vp_info).apic_base;
+            lapics
+                .each_mut()
+                .map(|lapic| lapic.set_apic_base(apic_base).unwrap());
+            // Only the VTL 0 BSP LAPIC should be in the startup suspend state.
+            let mut first = true;
+            let lapic_states = lapics.map(|lapic| {
+                let state = LapicState {
+                    lapic,
+                    halted: false,
+                    startup_suspend: first && !vp_info.base.is_bsp(),
+                };
+                first = false;
+                state
+            });
+            lapic_states.into()
+        });
+
         let backing = T::new(private::BackingParams {
             partition,
+            lapics,
             vp_info: &vp_info,
             runner: &mut runner,
             backing_shared,

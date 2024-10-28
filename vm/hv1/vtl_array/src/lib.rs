@@ -44,7 +44,7 @@ impl<T, const N: usize> VtlArray<T, N> {
         }
     }
 
-    /// Maps over the vtl array using the raw underlying array
+    /// Maps over the vtl array using the raw underlying array.
     pub fn map<U, F>(self, f: F) -> VtlArray<U, N>
     where
         F: FnMut(T) -> U,
@@ -53,6 +53,11 @@ impl<T, const N: usize> VtlArray<T, N> {
         VtlArray {
             data: self.data.map(f),
         }
+    }
+
+    /// Returns the raw underlying array.
+    pub fn into_inner(self) -> [T; N] {
+        self.data
     }
 }
 

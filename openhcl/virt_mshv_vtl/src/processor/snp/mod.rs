@@ -11,6 +11,7 @@ use super::vp_state::UhVpStateAccess;
 use super::BackingPrivate;
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
+use super::LapicState;
 use super::UhEmulationState;
 use super::UhRunVpError;
 use crate::devmsr;
@@ -50,7 +51,6 @@ use virt::VpHaltReason;
 use virt::VpIndex;
 use virt_support_apic::ApicClient;
 use virt_support_apic::ApicWork;
-use virt_support_apic::LocalApic;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
@@ -75,7 +75,7 @@ use zerocopy::FromZeroes;
 /// A backing for SNP partitions.
 #[derive(InspectMut)]
 pub struct SnpBacked {
-    lapics: VtlArray<SnpApicState, 2>,
+    lapics: VtlArray<LapicState, 2>,
     // TODO CVM GUEST VSM Do we need two sets of any other fields in here?
     /// PFNs used for overlays.
     #[inspect(iter_by_index)]
@@ -89,13 +89,6 @@ pub struct SnpBacked {
     exit_stats: ExitStats,
     tsc_aux_virtualized: bool,
     shared: Arc<SnpBackedShared>,
-}
-
-#[derive(Inspect)]
-pub struct SnpApicState {
-    lapic: LocalApic,
-    halted: bool,
-    startup_suspend: bool,
 }
 
 #[derive(Inspect, Default)]
@@ -200,16 +193,6 @@ impl BackingPrivate for SnpBacked {
             .map_err(Error::AllocateSharedVisOverlay)?;
         let pfns = pfns_handle.base_pfn()..pfns_handle.base_pfn() + pfns_handle.size_pages();
 
-        let mut lapic0 =
-            params.partition.lapic.as_ref().unwrap()[GuestVtl::Vtl0].add_apic(params.vp_info);
-        let mut lapic1 =
-            params.partition.lapic.as_ref().unwrap()[GuestVtl::Vtl1].add_apic(params.vp_info);
-
-        // Initialize APIC base to match the reset VM state.
-        let apic_base = vp::Apic::at_reset(&params.partition.caps, params.vp_info).apic_base;
-        lapic0.set_apic_base(apic_base).unwrap();
-        lapic1.set_apic_base(apic_base).unwrap();
-
         let overlays: Vec<_> = pfns.collect();
 
         let tsc_aux_virtualized = x86defs::cpuid::ExtendedSevFeaturesEax::from(
@@ -221,22 +204,8 @@ impl BackingPrivate for SnpBacked {
         )
         .tsc_aux_virtualization();
 
-        let lapics = [
-            SnpApicState {
-                lapic: lapic0,
-                halted: false,
-                startup_suspend: !params.vp_info.base.is_bsp(),
-            },
-            SnpApicState {
-                lapic: lapic1,
-                halted: false,
-                startup_suspend: false,
-            },
-        ]
-        .into();
-
         Ok(Self {
-            lapics,
+            lapics: params.lapics.unwrap(),
             direct_overlays_pfns: overlays.try_into().unwrap(),
             direct_overlay_pfns_handle: pfns_handle,
             hv_sint_notifications: 0,
