@@ -4442,9 +4442,7 @@ jobs:
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-rustdoc/
   job3:
     name: xtask fmt (windows)
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
+    runs-on: windows-latest
     permissions:
       contents: read
       id-token: write

@@ -235,7 +235,7 @@ impl IntoPipeline for CheckinGatesCli {
                 None
             };
 
-            pipeline
+            let job = pipeline
                 .new_job(FlowPlatform::Linux, FlowArch::X86_64, "publish openvmm.dev")
                 .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
                     FlowPlatform::Linux,
@@ -250,6 +250,8 @@ impl IntoPipeline for CheckinGatesCli {
                     },
                 )
                 .finish();
+
+            all_jobs.push(job);
         }
 
         // emit xtask fmt job
@@ -260,7 +262,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "xtask fmt (windows)",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+                .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
                     FlowPlatform::Windows,
                 ))
                 .dep_on(|ctx| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
