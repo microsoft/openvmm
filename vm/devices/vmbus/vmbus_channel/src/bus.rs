@@ -35,7 +35,7 @@ pub struct OfferInput {
 pub struct OfferResources {
     /// Untrusted guest memory access.
     untrusted_memory: GuestMemory,
-    /// Trusted guest memory access. This will be `None` unless running in a paravisor of a hardware
+    /// Private guest memory access. This will be `None` unless running in a paravisor of a hardware
     /// isolated VM.
     private_memory: Option<GuestMemory>,
 }
