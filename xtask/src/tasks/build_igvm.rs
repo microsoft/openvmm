@@ -174,7 +174,7 @@ impl Xtask for BuildIgvm {
         log::warn!("  NOTE: The new `xflowey build-igvm` command has DIFFERENT output filenames and directories!");
         log::warn!("");
         log::warn!("    Old: `target/x86_64-unknown-linux-musl/debug/underhill-cvm.bin`");
-        log::warn!("    New: `flowey-out/artifacts/build-igvm-msft/x64-cvm/openhcl-cvm-x64.bin`");
+        log::warn!("    New: `flowey-out/artifacts/build-igvm/x64-cvm/openhcl-cvm-x64.bin`");
         log::warn!("");
 
         anyhow::bail!("`cargo xtask build-igvm` has been deleted!");

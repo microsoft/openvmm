@@ -103,7 +103,7 @@ pub struct BuildIgvmCliCustomizations {
 
     /// Ensure perf tools are included in the release initrd.
     ///
-    /// Ensures that openvmm_hcl_msft is not stripped, so that perf tools work
+    /// Ensures that openvmm_hcl is not stripped, so that perf tools work
     /// correctly, and requires that the file be built in `--release` mode, so
     /// that perf numbers are more representative of production binaries.
     #[clap(long, requires = "release")]

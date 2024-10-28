@@ -180,7 +180,7 @@ pub mod resolve {
 
                         let Some(recipe) = super::filename_to_recipe(entry_file_stem) else {
                             anyhow::bail!(
-                                "unexpected file in openhcl_msft_igvm artifact folder: {}",
+                                "unexpected file in openhcl_igvm artifact folder: {}",
                                 entry.path().display()
                             );
                         };
