@@ -32,7 +32,7 @@ flowey_request! {
         pub interactive: bool,
         /// Extra parameters for building specialized initrd files.
         pub extra_params: Option<OpenhclInitrdExtraParams>,
-        /// Path sto rootfs.config files
+        /// Paths to rootfs.config files
         pub rootfs_config: Vec<ReadVar<PathBuf>>,
         /// Extra environment variables to set during the run (e.g: to
         /// interpolate paths into `rootfs.config`)
