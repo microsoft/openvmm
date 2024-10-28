@@ -1068,23 +1068,16 @@ fn vfio_dma_buffer(shared_vis_pages_pool: &Option<SharedPool>) -> Arc<dyn VfioDm
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 fn new_x86_topology(
-    hcl: &hcl::ioctl::Hcl,
     cpus: &[bootloader_fdt_parser::Cpu],
     x2apic: vm_topology::processor::x86::X2ApicState,
 ) -> anyhow::Result<ProcessorTopology<vm_topology::processor::x86::X86Topology>> {
     let vps = {
-        // TODO SNP: This should probably come via device params for SNP.
-        // Get vp indices that map to APIC IDs.
-        let vp_indices = hcl
-            .get_vp_index_from_apic_id(&cpus.iter().map(|cpu| cpu.reg as u32).collect::<Vec<_>>())
-            .context("failed to get VP indexes from APIC IDs")?;
-
-        let mut vps = vp_indices
+        let mut vps = cpus
             .iter()
-            .zip(cpus.iter())
+            .enumerate()
             .map(|(vp_index, cpu)| vm_topology::processor::x86::X86VpInfo {
                 base: VpInfo {
-                    vp_index: VpIndex::new(*vp_index),
+                    vp_index: VpIndex::new(vp_index as u32),
                     vnode: cpu.vnode,
                 },
                 apic_id: cpu.reg as u32,
@@ -1349,7 +1342,7 @@ async fn new_underhill_vm(
     };
 
     #[cfg(guest_arch = "x86_64")]
-    let processor_topology = new_x86_topology(&hcl, &boot_info.cpus, x2apic)
+    let processor_topology = new_x86_topology(&boot_info.cpus, x2apic)
         .context("failed to construct the processor topology")?;
 
     #[cfg(guest_arch = "aarch64")]

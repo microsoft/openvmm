@@ -4,6 +4,7 @@
 //! Hypercall infrastructure.
 
 use crate::single_threaded::SingleThreaded;
+use arrayvec::ArrayVec;
 use core::cell::RefCell;
 use core::cell::UnsafeCell;
 use core::mem::size_of;
@@ -12,6 +13,7 @@ use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
 use minimal_rt::arch::hypercall::invoke_hypercall;
 use zerocopy::AsBytes;
+use zerocopy::FromBytes;
 
 /// Page-aligned, page-sized buffer for use with hypercalls
 #[repr(C, align(4096))]
@@ -264,4 +266,49 @@ impl HvCall {
 
         Ok(())
     }
+
+    /// Get the corresponding VP indices from a list of apic_ids.
+    pub fn get_vp_index_from_hw_id<const N: usize>(
+        &mut self,
+        hw_ids: &[HwId],
+        output: &mut ArrayVec<u32, N>,
+    ) -> Result<(), hvdef::HvError> {
+        let header = hvdef::hypercall::GetVpIndexFromApicId {
+            partition_id: hvdef::HV_PARTITION_ID_SELF,
+            target_vtl: 2,
+            reserved: [0; 7],
+        };
+
+        // Split the call up to avoid exceeding the hypercall input/output size limits.
+        const MAX_PER_CALL: usize = 512;
+
+        for apic_ids in hw_ids.chunks(MAX_PER_CALL) {
+            header.write_to_prefix(Self::input_page().buffer.as_mut_slice());
+
+            // SAFETY: The input header and rep slice are the correct types for this hypercall.
+            //         The hypercall output is validated right after the hypercall is issued.
+            let r = self.dispatch_hvcall(
+                hvdef::HypercallCode::HvCallGetVpIndexFromApicId,
+                Some(apic_ids.len()),
+            );
+
+            let n = r.elements_processed() as usize;
+            output.extend(
+                u32::slice_from(&Self::output_page().buffer[..n * 4])
+                    .unwrap()
+                    .iter()
+                    .copied(),
+            );
+            r.result()?;
+            assert_eq!(n, apic_ids.len());
+        }
+
+        Ok(())
+    }
 }
+
+#[cfg(target_arch = "x86_64")]
+pub type HwId = u32;
+
+#[cfg(target_arch = "aarch64")]
+pub type HwId = u64;

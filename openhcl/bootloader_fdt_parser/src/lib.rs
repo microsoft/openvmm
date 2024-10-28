@@ -135,8 +135,8 @@ pub enum MemoryAllocationMode {
 /// the host provided device tree.
 #[derive(Debug, Inspect, PartialEq, Eq)]
 pub struct ParsedBootDtInfo {
-    /// The cpus in the system. Note that this is not sorted in any particular
-    /// order.
+    /// The cpus in the system. The index in the vector is also the Hyper-V VP
+    /// index.
     #[inspect(iter_by_index)]
     pub cpus: Vec<Cpu>,
     /// The physical address bits of the system. Today, this is only reported on aarch64.

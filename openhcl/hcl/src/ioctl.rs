@@ -64,7 +64,6 @@ use std::cell::RefCell;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io;
-use std::iter::zip;
 use std::marker::PhantomData;
 use std::os::unix::prelude::*;
 use std::ptr::addr_of;
@@ -2776,58 +2775,6 @@ impl Hcl {
 
         assert_eq!(status.elements_processed(), 1);
         Ok(None)
-    }
-
-    /// Get the corresponding VP indices from a list of apic_ids.
-    pub fn get_vp_index_from_apic_id(
-        &self,
-        apic_ids: &[u32],
-    ) -> Result<Vec<u32>, GetVpIndexFromApicIdError> {
-        let header = hvdef::hypercall::GetVpIndexFromApicId {
-            partition_id: HV_PARTITION_ID_SELF,
-            target_vtl: 2,
-            reserved: [0; 7],
-        };
-        // TODO SNP: This function is currently invoked, but is untrustworthy. Once the caller is
-        // updated to use other methods to obtain vp indices, add an assertion here to indicate that
-        // this function cannot be used with hardware isolated VMs.
-
-        let mut output: Vec<u32> = vec![0; apic_ids.len()];
-
-        // Split the call up to avoid exceeding the hypercall input/output size limits.
-        const MAX_PER_CALL: usize = 512;
-
-        for (apic_ids, output) in zip(
-            apic_ids.chunks(MAX_PER_CALL),
-            output.chunks_mut(MAX_PER_CALL),
-        ) {
-            // SAFETY: The input header and rep slice are the correct types for this hypercall.
-            //         The hypercall output is validated right after the hypercall is issued.
-            let status = unsafe {
-                self.mshv_hvcall
-                    .hvcall_rep(
-                        HypercallCode::HvCallGetVpIndexFromApicId,
-                        &header,
-                        HvcallRepInput::Elements(apic_ids),
-                        Some(output),
-                    )
-                    .expect("submitting hypercall should not fail")
-            };
-
-            status
-                .result()
-                .map_err(|e| GetVpIndexFromApicIdError::Hypervisor {
-                    hv_error: e,
-                    apic_id: apic_ids
-                        .get(status.elements_processed() as usize)
-                        .copied()
-                        .unwrap_or(!0),
-                })?;
-
-            assert_eq!(status.elements_processed(), apic_ids.len() as u16);
-        }
-
-        Ok(output)
     }
 
     /// Enables a vtl for the partition

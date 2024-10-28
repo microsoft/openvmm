@@ -564,6 +564,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         panic!("no cpus");
     }
 
+    validate_vp_hw_ids(partition_info);
+
     setup_vtl2_vp(partition_info);
     setup_vtl2_memory(&p, partition_info);
     verify_imported_regions_hash(&p);
@@ -705,6 +707,51 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         } else {
             panic!("unsupported arch")
         }
+    }
+}
+
+/// Ensure that mshv VP indexes for the CPUs listed in the partition info
+/// correspond to the N in the cpu@N devicetree node name. OpenVMM assumes that
+/// this will be the case.
+fn validate_vp_hw_ids(partition_info: &PartitionInfo) {
+    use host_params::MAX_CPU_COUNT;
+    use hypercall::HwId;
+
+    if partition_info.isolation.is_hardware_isolated() {
+        // TODO TDX SNP: we don't have a GHCB/GHCI page set up to communicate
+        // with the hypervisor here, so we can't easily perform the check. Since
+        // there is no security impact to this check, we can skip it for now; if
+        // the VM fails to boot, then this is due to a host contract violation.
+        //
+        // For TDX, we could use ENUM TOPOLOGY to validate that the TD VCPU
+        // indexes correspond to the APIC IDs in the right order. I am not
+        // certain if there are places where we depend on this mapping today.
+        return;
+    }
+
+    // Ensure the host and hypervisor agree on VP index ordering.
+
+    let mut hw_ids = off_stack!(ArrayVec<HwId, MAX_CPU_COUNT>, ArrayVec::new_const());
+    hw_ids.clear();
+    hw_ids.extend(partition_info.cpus.iter().map(|c| c.reg as _));
+    let mut vp_indexes = off_stack!(ArrayVec<HwId, MAX_CPU_COUNT>, ArrayVec::new_const());
+    vp_indexes.clear();
+    if let Err(err) = hvcall().get_vp_index_from_hw_id(&hw_ids, &mut vp_indexes) {
+        panic!(
+            "failed to get VP indexes from hardware ID {:#x}: {:?}",
+            hw_ids[vp_indexes.len().min(hw_ids.len() - 1)],
+            err
+        );
+    }
+    if let Some((i, &vp_index)) = vp_indexes
+        .iter()
+        .enumerate()
+        .find(|(i, &vp_index)| *i as u32 != vp_index)
+    {
+        panic!(
+            "CPU hardware ID {} does not correspond to VP index {}",
+            hw_ids[i], vp_index
+        );
     }
 }
 
