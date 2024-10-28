@@ -29,7 +29,6 @@ use zerocopy::FromZeroes;
 #[derive(Inspect, InspectMut)]
 pub struct GuestVsmVpState {
     // Used in VTL 2 exit code to determine which VTL to exit to.
-    #[inspect(with = "|x| u8::from(*x)")]
     pub exit_vtl: GuestVtl,
 }
 

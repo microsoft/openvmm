@@ -917,11 +917,11 @@ impl UhProcessor<'_, SnpBacked> {
         let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
 
         let halt = self.backing.lapics[next_vtl].halted
-            || self.backing.lapics[GuestVtl::Vtl0].startup_suspend // TODO GUEST VSM
+            || self.backing.lapics[next_vtl].startup_suspend // TODO GUEST VSM
             || tlb_halt;
 
-        if halt && next_vtl == GuestVtl::Vtl1 {
-            tracelimit::warn_ratelimited!("halting VTL 1, which will halt the guest");
+        if halt && next_vtl == GuestVtl::Vtl1 && !tlb_halt {
+            tracelimit::warn_ratelimited!("halting VTL 1, which might halt the guest");
         }
 
         self.runner.set_halted(halt);

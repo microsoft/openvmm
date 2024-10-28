@@ -11,6 +11,7 @@
 
 use hvdef::hypercall::HvInputVtl;
 use hvdef::Vtl;
+use inspect::Inspect;
 use thiserror::Error;
 
 pub mod ioctl;
@@ -23,7 +24,7 @@ pub mod vmsa;
 ///
 /// This is useful to use instead of [`Vtl`] to statically ensure that the VTL
 /// is not VTL2.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Inspect, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GuestVtl {
     /// VTL0
     Vtl0,

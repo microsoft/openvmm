@@ -2409,6 +2409,7 @@ dependencies = [
  "fs-err",
  "getrandom",
  "hvdef",
+ "inspect",
  "libc",
  "memory_range",
  "nix 0.26.4",
