@@ -1721,7 +1721,7 @@ impl UhProcessor<'_, TdxBacked> {
     fn read_tdvmcall_msr(&mut self, msr: u32, intercepted_vtl: GuestVtl) -> Result<u64, MsrError> {
         match msr {
             msr @ (hvdef::HV_X64_MSR_GUEST_OS_ID | hvdef::HV_X64_MSR_VP_INDEX) => {
-                self.hv(intercepted_vtl).unwrap().msr_read(msr)
+                self.hv[intercepted_vtl].as_ref().unwrap().msr_read(msr)
             }
             _ => self
                 .untrusted_synic
@@ -1738,8 +1738,8 @@ impl UhProcessor<'_, TdxBacked> {
         intercepted_vtl: GuestVtl,
     ) -> Result<(), MsrError> {
         match msr {
-            msr @ hvdef::HV_X64_MSR_GUEST_OS_ID => self
-                .hv_mut(intercepted_vtl)
+            msr @ hvdef::HV_X64_MSR_GUEST_OS_ID => self.hv[intercepted_vtl]
+                .as_mut()
                 .unwrap()
                 .msr_write(msr, value)?,
             _ => {

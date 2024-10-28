@@ -247,8 +247,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     ) -> HvResult<hvdef::HvRegisterValue> {
         match name.into() {
             hvdef::HvX64RegisterName::VsmCodePageOffsets => Ok(u64::from(
-                self.vp
-                    .hv(vtl)
+                self.vp.hv[vtl]
+                    .as_ref()
                     .expect("hv emulator exists for cvm")
                     .vsm_code_page_offsets(true),
             )

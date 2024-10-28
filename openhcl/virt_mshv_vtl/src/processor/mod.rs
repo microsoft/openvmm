@@ -674,7 +674,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
 
                 for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
                     // Process interrupts.
-                    if self.hv(vtl).is_some() {
+                    if self.hv[vtl].is_some() {
                         self.update_synic(vtl, false);
                     }
 
@@ -869,7 +869,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                         if pending_sints & (1 << sint) == 0 {
                             continue;
                         }
-                        let sint_msr = if let Some(hv) = &self.hv(vtl) {
+                        let sint_msr = if let Some(hv) = self.hv[vtl].as_ref() {
                             hv.synic.sint(sint)
                         } else {
                             #[cfg(guest_arch = "x86_64")]
@@ -913,7 +913,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                     if vtl == GuestVtl::Vtl1 {
                         assert!(self.partition.isolation.is_hardware_isolated());
                         // Should not have already initialized the hv emulator for this vtl
-                        assert!(self.hv(vtl).is_none());
+                        assert!(self.hv[vtl].is_none());
 
                         self.hv[vtl] = Some(
                             self.partition
@@ -964,7 +964,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg(guest_arch = "x86_64")]
     fn write_msr(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
         if msr & 0xf0000000 == 0x40000000 {
-            if let Some(hv) = self.hv_mut(vtl) {
+            if let Some(hv) = self.hv[vtl].as_mut() {
                 let r = hv.msr_write(msr, value);
                 if !matches!(r, Err(MsrError::Unknown)) {
                     return r;
@@ -1000,7 +1000,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg(guest_arch = "x86_64")]
     fn read_msr(&mut self, msr: u32, vtl: GuestVtl) -> Result<u64, MsrError> {
         if msr & 0xf0000000 == 0x40000000 {
-            if let Some(hv) = &mut self.hv(vtl) {
+            if let Some(hv) = self.hv[vtl].as_ref() {
                 let r = hv.msr_read(msr);
                 if !matches!(r, Err(MsrError::Unknown)) {
                     return r;
@@ -1080,17 +1080,10 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         )
     }
 
-    fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
-        self.hv[vtl].as_ref()
-    }
-
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
-        self.hv[vtl].as_mut()
-    }
-
     fn deliver_synic_messages(&mut self, vtl: GuestVtl, sints: u16) {
-        let proxied_sints = self.hv(vtl).map_or(!0, |hv| hv.synic.proxied_sints());
+        let proxied_sints = self.hv[vtl]
+            .as_ref()
+            .map_or(!0, |hv| hv.synic.proxied_sints());
         let pending_sints =
             self.inner.message_queues[vtl].post_pending_messages(sints, |sint, message| {
                 if proxied_sints & (1 << sint) != 0 {
