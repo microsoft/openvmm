@@ -5,14 +5,14 @@
     "0": {
       "flowey_lib_common::cache": [
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_cli:0:flowey_core/src/node.rs:884:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_cli:1:flowey_lib_common/src/download_gh_cli.rs:65:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-cli-2.52.0\"},\"is_secret\":false},\"label\":\"gh-cli\",\"restore_keys\":null}",
-        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:884:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:151:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-4cf4fb0324648d93\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
+        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:884:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:151:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-77bd52d77c7526ab\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
       ],
       "flowey_lib_common::cfg_cargo_common_flags": [
         "{\"SetLocked\":true}",
         "{\"SetVerbose\":{\"backing_var\":{\"RuntimeVar\":\"param0\"},\"is_secret\":false}}"
       ],
       "flowey_lib_common::copy_to_artifact_dir": [
-        "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_publish_from_guide\"},\"is_secret\":false},\"debug_label\":\"guide\",\"done\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:4:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:44:40\",\"is_secret\":false},\"files\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::artifact_guide::publish:0:flowey_lib_hvlite/src/artifact_guide.rs:34:40\"},\"is_secret\":false}}"
+        "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_publish_from_guide\"},\"is_secret\":false},\"debug_label\":\"guide\",\"done\":{\"backing_var\":\"start1\",\"is_secret\":false},\"files\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::artifact_guide::publish:0:flowey_lib_hvlite/src/artifact_guide.rs:34:40\"},\"is_secret\":false}}"
       ],
       "flowey_lib_common::download_azcopy": [
         "{\"Version\":\"10.26.0-20240731\"}"
@@ -28,7 +28,7 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"mdbook-v0.4.6-x86_64-pc-windows-msvc.zip\",\"path\":{\"backing_var\":\"flowey_lib_common::download_mdbook:0:flowey_lib_common/src/download_mdbook.rs:61:30\",\"is_secret\":false},\"repo_name\":\"mdBook\",\"repo_owner\":\"rust-lang\",\"tag\":\"v0.4.6\"}"
+        "{\"file_name\":\"mdbook-v0.4.6-x86_64-unknown-linux-gnu.tar.gz\",\"path\":{\"backing_var\":\"flowey_lib_common::download_mdbook:0:flowey_lib_common/src/download_mdbook.rs:61:30\",\"is_secret\":false},\"repo_name\":\"mdBook\",\"repo_owner\":\"rust-lang\",\"tag\":\"v0.4.6\"}"
       ],
       "flowey_lib_common::download_mdbook": [
         "{\"GetMdbook\":{\"backing_var\":\"flowey_lib_hvlite::build_guide:0:flowey_lib_hvlite/src/build_guide.rs:26:30\",\"is_secret\":false}}",
@@ -61,7 +61,7 @@
         "{\"WithAuth\":{\"AuthToken\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36\"},\"is_secret\":true}}}"
       ],
       "flowey_lib_hvlite::_jobs::build_and_publish_guide": [
-        "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_publish_from_guide\"},\"is_secret\":false},\"deploy_github_pages\":true,\"done\":{\"backing_var\":\"start1\",\"is_secret\":false}}"
+        "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_publish_from_guide\"},\"is_secret\":false},\"done\":{\"backing_var\":\"start1\",\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::_jobs::cfg_common": [
         "{\"deny_warnings\":true,\"local_only\":null,\"locked\":true,\"verbose\":{\"backing_var\":{\"RuntimeVar\":\"param0\"},\"is_secret\":false}}"
@@ -73,10 +73,10 @@
         "{}"
       ],
       "flowey_lib_hvlite::artifact_guide::publish": [
-        "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_publish_from_guide\"},\"is_secret\":false},\"done\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:4:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:44:40\",\"is_secret\":false},\"rendered_guide\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:3:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:39:34\"},\"is_secret\":false}}"
+        "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_publish_from_guide\"},\"is_secret\":false},\"done\":{\"backing_var\":\"start1\",\"is_secret\":false},\"rendered_guide\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:3:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:34:34\"},\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::build_guide": [
-        "{\"built_guide\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:3:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:39:34\",\"is_secret\":false},\"guide_source\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:1:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:37:14\"},\"is_secret\":false}}"
+        "{\"built_guide\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:3:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:34:34\",\"is_secret\":false},\"guide_source\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:1:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:32:14\"},\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::download_lxutil": [
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
@@ -94,7 +94,7 @@
         "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
-        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:0:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:36:14\",\"is_secret\":false}}",
+        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:0:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:31:14\",\"is_secret\":false}}",
         "{\"SetRepoId\":{\"backing_var\":{\"Inline\":\"hvlite\"},\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings": [
@@ -112,7 +112,7 @@
         "{\"SetVerbose\":{\"backing_var\":{\"RuntimeVar\":\"param0\"},\"is_secret\":false}}"
       ],
       "flowey_lib_common::copy_to_artifact_dir": [
-        "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_publish_from_x64-windows-rustdoc\"},\"is_secret\":false},\"debug_label\":\"rustdoc\",\"done\":{\"backing_var\":\"start2\",\"is_secret\":false},\"files\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::artifact_rustdoc::publish:1:flowey_lib_hvlite/src/artifact_rustdoc.rs:49:33\"},\"is_secret\":false}}"
+        "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_publish_from_x64-windows-rustdoc\"},\"is_secret\":false},\"debug_label\":\"rustdoc\",\"done\":{\"backing_var\":\"start2\",\"is_secret\":false},\"files\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::artifact_rustdoc::publish:1:flowey_lib_hvlite/src/artifact_rustdoc.rs:48:33\"},\"is_secret\":false}}"
       ],
       "flowey_lib_common::download_azcopy": [
         "{\"Version\":\"10.26.0-20240731\"}"
@@ -238,7 +238,7 @@
         "{\"SetVerbose\":{\"backing_var\":{\"RuntimeVar\":\"param0\"},\"is_secret\":false}}"
       ],
       "flowey_lib_common::copy_to_artifact_dir": [
-        "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_publish_from_x64-linux-rustdoc\"},\"is_secret\":false},\"debug_label\":\"rustdoc\",\"done\":{\"backing_var\":\"start3\",\"is_secret\":false},\"files\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::artifact_rustdoc::publish:1:flowey_lib_hvlite/src/artifact_rustdoc.rs:49:33\"},\"is_secret\":false}}"
+        "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_publish_from_x64-linux-rustdoc\"},\"is_secret\":false},\"debug_label\":\"rustdoc\",\"done\":{\"backing_var\":\"start3\",\"is_secret\":false},\"files\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::artifact_rustdoc::publish:1:flowey_lib_hvlite/src/artifact_rustdoc.rs:48:33\"},\"is_secret\":false}}"
       ],
       "flowey_lib_common::download_azcopy": [
         "{\"Version\":\"10.26.0-20240731\"}"
