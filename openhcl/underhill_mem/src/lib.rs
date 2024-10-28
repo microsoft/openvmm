@@ -613,7 +613,7 @@ mod mapping {
         /// Query the current permissions for a vtl on a page.
         fn vtl_permissions(&self, vtl: Vtl, gpa: u64) -> GpaVtlPermissions {
             match self.isolation {
-                IsolationType::Vbs => unimplemented!(),
+                IsolationType::None | IsolationType::Vbs => unimplemented!(),
                 IsolationType::Snp => {
                     // TODO CVM GUEST VSM: track the permissions directly in
                     // underhill. For now, use rmpquery.
@@ -1111,7 +1111,7 @@ mod mapping {
             }
 
             let current_permissions = match self.acceptor.isolation {
-                IsolationType::Vbs => unreachable!(),
+                IsolationType::None | IsolationType::Vbs => unreachable!(),
                 IsolationType::Snp => self
                     .acceptor
                     .vtl_permissions(vtl.into(), gpn * HV_PAGE_SIZE),
