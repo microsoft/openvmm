@@ -541,7 +541,8 @@ impl SimpleFlowNode for Node {
         openvmm_hcl_bin.write_into(ctx, built_openvmm_hcl, |x| x);
 
         let initrd = {
-            let rootfs_config = openvmm_repo_path.map(ctx, |p| p.join("openhcl/rootfs.config"));
+            let rootfs_config =
+                vec![openvmm_repo_path.map(ctx, |p| p.join("openhcl/rootfs.config"))];
             let openvmm_hcl_bin = openvmm_hcl_bin.map(ctx, |o| o.bin);
 
             ctx.reqv(|v| crate::build_openhcl_initrd::Request {

@@ -32,8 +32,8 @@ flowey_request! {
         pub interactive: bool,
         /// Extra parameters for building specialized initrd files.
         pub extra_params: Option<OpenhclInitrdExtraParams>,
-        /// Path to rootfs.config file
-        pub rootfs_config: ReadVar<PathBuf>,
+        /// Path sto rootfs.config files
+        pub rootfs_config: Vec<ReadVar<PathBuf>>,
         /// Extra environment variables to set during the run (e.g: to
         /// interpolate paths into `rootfs.config`)
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
@@ -100,6 +100,10 @@ impl FlowNode for Node {
                 })
             };
 
+            if rootfs_config.is_empty() {
+                anyhow::bail!("no rootfs files provided");
+            }
+
             ctx.emit_rust_step("building openhcl initrd", |ctx| {
                 pydeps.clone().claim(ctx);
                 let interactive_dep = interactive_dep.claim(ctx);
@@ -111,7 +115,10 @@ impl FlowNode for Node {
                 let initrd = initrd.claim(ctx);
                 move |rt| {
                     let interactive_dep = rt.read(interactive_dep);
-                    let rootfs_config = rt.read(rootfs_config);
+                    let rootfs_config = rootfs_config
+                        .into_iter()
+                        .map(|x| rt.read(x))
+                        .collect::<Vec<_>>();
                     let extra_env = extra_env.map(|x| rt.read(x));
                     let bin_openhcl = rt.read(bin_openhcl);
                     let openvmm_repo_path = rt.read(openvmm_repo_path);
@@ -174,6 +181,10 @@ impl FlowNode for Node {
                     // hash to stuff into the initrd.
                     sh.change_dir(openvmm_repo_path);
 
+                    let rootfs_config = rootfs_config
+                        .iter()
+                        .flat_map(|x| ["--rootfs-config".as_ref(), x.as_os_str()]);
+
                     xshell::cmd!(
                         sh,
                         "python3 openhcl/update-rootfs.py
@@ -182,7 +193,7 @@ impl FlowNode for Node {
                             --arch {rootfs_py_arch}
                             --package-root {kernel_package_root}
                             --kernel-modules {kernel_modules}
-                            --rootfs-config {rootfs_config}
+                            {rootfs_config...}
                             {initrd_contents...}
                         "
                     )
