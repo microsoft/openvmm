@@ -135,6 +135,11 @@ pub enum Error {
     Sidecar(#[source] sidecar_client::SidecarError),
     #[error("failed to open sidecar")]
     OpenSidecar(#[source] NewSidecarClientError),
+    #[error("mismatch between requested isolation type {requested:?} and supported isolation type {supported:?}")]
+    MismatchedIsolation {
+        supported: IsolationType,
+        requested: IsolationType,
+    },
 }
 
 /// Error for IOCTL errors specifically.
@@ -1947,8 +1952,42 @@ impl Hcl {
         // Open both mshv fds
         let mshv_fd = Mshv::new()?;
 
-        // FUTURE: validate that the requested isolation type matches what the
-        // kernel supports.
+        // Validate the hypervisor's advertised isolation type matches the
+        // requested isolation type. In CVM scenarios, this is not trusted,
+        // so we still need the isolation type from the caller.
+        //
+        // FUTURE: the kernel driver should probably tell us this.
+        let supported_isolation = if cfg!(guest_arch = "x86_64") {
+            // xtask-fmt allow-target-arch cpu-intrinsic
+            #[cfg(target_arch = "x86_64")]
+            {
+                let result = safe_x86_intrinsics::cpuid(
+                    hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION,
+                    0,
+                );
+                match result.ebx & 0xF {
+                    0 => IsolationType::None,
+                    1 => IsolationType::Vbs,
+                    2 => IsolationType::Snp,
+                    3 => IsolationType::Tdx,
+                    ty => panic!("unknown isolation type {ty:#x}"),
+                }
+            }
+            // xtask-fmt allow-target-arch cpu-intrinsic
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                unreachable!()
+            }
+        } else {
+            IsolationType::None
+        };
+
+        if isolation != supported_isolation {
+            return Err(Error::MismatchedIsolation {
+                supported: supported_isolation,
+                requested: isolation,
+            });
+        }
 
         let supports_vtl_ret_action = mshv_fd.check_extension(HCL_CAP_VTL_RETURN_ACTION)?;
         let supports_register_page = mshv_fd.check_extension(HCL_CAP_REGISTER_PAGE)?;
