@@ -12,6 +12,7 @@ use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
 use minimal_rt::arch::hypercall::invoke_hypercall;
 use zerocopy::AsBytes;
+use zerocopy::FromBytes;
 
 /// Page-aligned, page-sized buffer for use with hypercalls
 #[repr(C, align(4096))]
@@ -158,6 +159,30 @@ impl HvCall {
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallSetVpRegisters, Some(1));
 
         output.result()
+    }
+
+    /// Hypercall for setting a register to a value.
+    pub fn get_register(
+        &mut self,
+        name: hvdef::HvRegisterName,
+    ) -> Result<hvdef::HvRegisterValue, hvdef::HvError> {
+        const HEADER_SIZE: usize = size_of::<hvdef::hypercall::GetSetVpRegisters>();
+
+        let header = hvdef::hypercall::GetSetVpRegisters {
+            partition_id: hvdef::HV_PARTITION_ID_SELF,
+            vp_index: hvdef::HV_VP_INDEX_SELF,
+            target_vtl: HvInputVtl::CURRENT_VTL,
+            rsvd: [0; 3],
+        };
+
+        header.write_to_prefix(Self::input_page().buffer.as_mut_slice());
+        name.write_to_prefix(&mut Self::input_page().buffer[HEADER_SIZE..]);
+
+        let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallSetVpRegisters, Some(1));
+        output.result()?;
+        let value = hvdef::HvRegisterValue::read_from_prefix(&Self::output_page().buffer).unwrap();
+
+        Ok(value)
     }
 
     /// Hypercall to apply vtl protections to the pages from address start to end

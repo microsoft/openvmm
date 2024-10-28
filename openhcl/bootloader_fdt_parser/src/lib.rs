@@ -142,6 +142,8 @@ pub struct ParsedBootDtInfo {
     /// The physical address bits of the system. Today, this is only reported on aarch64.
     /// TODO: Could we also report this on x64, and in CVMs?
     pub physical_address_bits: Option<u8>,
+    /// The physical address of the VTL0 alias mapping, if one is configured.
+    pub vtl0_alias_map: Option<u64>,
     /// The memory ranges for VTL2 that were reported to the kernel. This is
     /// sorted in ascending order.
     #[inspect(iter_by_index)]
@@ -199,6 +201,7 @@ struct OpenhclInfo {
     config_ranges: Vec<MemoryRange>,
     partition_memory_map: Vec<AddressRange>,
     accepted_memory: Vec<MemoryRange>,
+    vtl0_alias_map: Option<u64>,
     memory_allocation_mode: MemoryAllocationMode,
     isolation: IsolationType,
 }
@@ -349,6 +352,11 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         })
         .collect();
 
+    let vtl0_alias_map = try_find_property(node, "vtl0-alias-map")
+        .map(|prop| prop.read_u64(0).map_err(err_to_owned))
+        .transpose()
+        .context("unable to read vtl0-alias-map")?;
+
     // Extract vmbus mmio information from the overall memory map.
     let vtl0_mmio = memory
         .iter()
@@ -366,6 +374,7 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         config_ranges,
         partition_memory_map: memory,
         accepted_memory,
+        vtl0_alias_map,
         memory_allocation_mode,
         isolation,
     })
@@ -457,6 +466,7 @@ impl ParsedBootDtInfo {
         let mut gic = None;
         let mut partition_memory_map = Vec::new();
         let mut accepted_ranges = Vec::new();
+        let mut vtl0_alias_map = None;
         let mut memory_allocation_mode = MemoryAllocationMode::Host;
         let mut isolation = IsolationType::None;
 
@@ -488,6 +498,7 @@ impl ParsedBootDtInfo {
                     config_ranges = info.config_ranges;
                     partition_memory_map = info.partition_memory_map;
                     accepted_ranges = info.accepted_memory;
+                    vtl0_alias_map = info.vtl0_alias_map;
                     memory_allocation_mode = info.memory_allocation_mode;
                     isolation = info.isolation;
                 }
@@ -516,6 +527,7 @@ impl ParsedBootDtInfo {
             vtl2_memory,
             partition_memory_map,
             physical_address_bits,
+            vtl0_alias_map,
             accepted_ranges,
             gic,
             memory_allocation_mode,
@@ -716,6 +728,11 @@ mod tests {
             }
         }
 
+        if let Some(data) = info.vtl0_alias_map {
+            let p_vtl0_alias_map = openhcl_builder.add_string("vtl0-alias-map")?;
+            openhcl_builder = openhcl_builder.add_u64(p_vtl0_alias_map, data)?;
+        }
+
         openhcl_builder = openhcl_builder
             .start_node("vmbus-vtl0")?
             .add_u32(p_address_cells, 2)?
@@ -848,6 +865,7 @@ mod tests {
                 MemoryRange::new(0x30000..0x40000),
             ],
             physical_address_bits: Some(48),
+            vtl0_alias_map: Some(1 << 48),
             gic: Some(GicInfo {
                 gic_distributor_base: 0x10000,
                 gic_redistributors_base: 0x20000,

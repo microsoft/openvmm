@@ -35,7 +35,6 @@ use crate::emuplat::tpm::resources::GetTpmGetAttestationReportHelperHandle;
 use crate::emuplat::tpm::resources::GetTpmRequestAkCertHelperHandle;
 use crate::emuplat::vga_proxy::UhRegisterHostIoFastPath;
 use crate::emuplat::EmuplatServicing;
-use crate::init::vtl0_alias_map_bit;
 use crate::loader::vtl0_config::MeasuredVtl0Info;
 use crate::loader::vtl2_config::RuntimeParameters;
 use crate::loader::LoadKind;
@@ -1198,7 +1197,7 @@ async fn new_underhill_vm(
     let sidecar = sidecar_client::SidecarClient::new(|cpu| tp.driver(cpu).clone())
         .context("failed to open sidecar device")?;
 
-    let mut hcl = hcl::ioctl::Hcl::new(isolation, sidecar).context("failed to open HCL driver")?;
+    let hcl = hcl::ioctl::Hcl::new(isolation, sidecar).context("failed to open HCL driver")?;
 
     // Set the hypercalls that this process will use.
     let mut allowed_hypercalls = vec![
@@ -1425,7 +1424,24 @@ async fn new_underhill_vm(
     };
 
     // Determine if the VTL0 alias map is in use.
-    let vtl0_alias_map_bit = vtl0_alias_map_bit(&mut hcl, &mem_layout);
+    let vtl0_alias_map_bit =
+        runtime_params
+            .parsed_openhcl_boot()
+            .vtl0_alias_map
+            .filter(|&alias_map| {
+                // TODO: Kernel won't support bits greater than 48. Need 5 level paging
+                //       or some other kernel changes. If possible, would be good to not
+                //       require 5 level paging and just further extend valid bits.
+                if alias_map <= 1 << 48 {
+                    tracing::info!(alias_map, "enabling alias map");
+                    true
+                } else {
+                    // BUGBUG: This needs to be fixed, but allow it with just an error
+                    // log for now.
+                    tracing::error!(alias_map, "alias map bit larger than supported");
+                    false
+                }
+            });
 
     let vtom = measured_vtl2_info.vtom_offset_bit.map(|n| 1u64 << n);
 

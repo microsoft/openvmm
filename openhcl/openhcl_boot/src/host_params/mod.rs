@@ -76,6 +76,8 @@ pub struct PartitionInfo {
     pub memory_allocation_mode: MemoryAllocationMode,
     /// Entropy from the host to be used by the OpenHCL kernel
     pub entropy: Option<ArrayVec<u8, MAX_ENTROPY_SIZE>>,
+    /// The VTL0 alias map physical address.
+    pub vtl0_alias_map: Option<u64>,
 }
 
 impl PartitionInfo {
@@ -102,6 +104,7 @@ impl PartitionInfo {
             gic: None,
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
+            vtl0_alias_map: None,
         }
     }
 

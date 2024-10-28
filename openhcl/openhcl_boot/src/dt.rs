@@ -245,7 +245,7 @@ pub fn write_dt(
         .add_u32(p_size_cells, 0)?;
 
     if cfg!(target_arch = "aarch64") {
-        let pa_bits = crate::arch::physical_address_bits();
+        let pa_bits = crate::arch::physical_address_bits(partition_info.isolation);
         let p_pa_bits = cpu_builder.add_string("pa_bits")?;
         cpu_builder = cpu_builder.add_u32(p_pa_bits, pa_bits.into())?;
     }
@@ -479,6 +479,11 @@ pub fn write_dt(
                 .add_u64(p_memory_size, memory_size)?
                 .add_u64(p_mmio_size, mmio_size)?;
         }
+    }
+
+    if let Some(data) = partition_info.vtl0_alias_map {
+        let p_vtl0_alias_map = openhcl_builder.add_string("vtl0-alias-map")?;
+        openhcl_builder = openhcl_builder.add_u64(p_vtl0_alias_map, data)?;
     }
 
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]

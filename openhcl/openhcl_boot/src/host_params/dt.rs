@@ -452,6 +452,7 @@ impl PartitionInfo {
             gic,
             memory_allocation_mode: _,
             entropy,
+            vtl0_alias_map: _,
         } = storage;
 
         *isolation = params.isolation_type;

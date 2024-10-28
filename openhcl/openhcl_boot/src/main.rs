@@ -545,6 +545,26 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         Err(e) => panic!("unable to read device tree params {}", e),
     };
 
+    // Fill out the non-devicetree derived parts of PartitionInfo.
+    if !p.isolation_type.is_hardware_isolated()
+        && hvdef::HvRegisterVsmCapabilities::from(
+            hvcall()
+                .get_register(hvdef::HvAllArchRegisterName::VsmCapabilities.into())
+                .expect("failed to query vsm capabilities")
+                .as_u64(),
+        )
+        .vtl0_alias_map_available()
+    {
+        // Disable the alias map on ARM because physical address size is not
+        // reliably reported. Since the position of the alias map bit is inferred
+        // from address size, the alias map is broken when the PA size is wrong.
+        // TODO: is this still true?
+        if !cfg!(target_arch = "aarch64") {
+            partition_info.vtl0_alias_map =
+                Some(1 << (arch::physical_address_bits(p.isolation_type) - 1));
+        }
+    }
+
     if can_trust_host {
         // Enable late log output if requested in the dynamic command line.
         // Confidential debug is only allowed in the static command line.
@@ -780,6 +800,7 @@ mod test {
             gic: None,
             memory_allocation_mode: host_fdt_parser::MemoryAllocationMode::Host,
             entropy: None,
+            vtl0_alias_map: None,
         }
     }
 

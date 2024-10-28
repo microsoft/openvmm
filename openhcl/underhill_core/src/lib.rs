@@ -11,7 +11,6 @@ mod diag;
 mod dispatch;
 mod emuplat;
 mod get_tracing;
-mod init;
 mod inspect_internal;
 mod inspect_proc;
 mod loader;
