@@ -734,7 +734,7 @@ fn validate_vp_hw_ids(partition_info: &PartitionInfo) {
     let mut hw_ids = off_stack!(ArrayVec<HwId, MAX_CPU_COUNT>, ArrayVec::new_const());
     hw_ids.clear();
     hw_ids.extend(partition_info.cpus.iter().map(|c| c.reg as _));
-    let mut vp_indexes = off_stack!(ArrayVec<HwId, MAX_CPU_COUNT>, ArrayVec::new_const());
+    let mut vp_indexes = off_stack!(ArrayVec<u32, MAX_CPU_COUNT>, ArrayVec::new_const());
     vp_indexes.clear();
     if let Err(err) = hvcall().get_vp_index_from_hw_id(&hw_ids, &mut vp_indexes) {
         panic!(
