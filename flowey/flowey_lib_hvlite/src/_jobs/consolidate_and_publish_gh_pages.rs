@@ -110,6 +110,8 @@ impl SimpleFlowNode for Node {
 
             let did_deploy = ctx
                 .emit_gh_step("Deploy to GitHub Pages", "actions/deploy-pages@v4")
+                .requires_permission(GhPermission::IdToken, GhPermissionValue::Write)
+                .requires_permission(GhPermission::Pages, GhPermissionValue::Write)
                 .run_after(did_upload)
                 .finish(ctx);
 

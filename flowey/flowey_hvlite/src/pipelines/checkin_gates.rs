@@ -176,10 +176,6 @@ impl IntoPipeline for CheckinGatesCli {
                     done: ctx.new_done_handle(),
                 },
             )
-            .gh_grant_permissions::<flowey_lib_hvlite::_jobs::build_and_publish_guide::Node>([(
-                GhPermission::Pages,
-                GhPermissionValue::Write,
-            )])
             .finish();
 
         all_jobs.push(job);
@@ -249,6 +245,10 @@ impl IntoPipeline for CheckinGatesCli {
                         done: ctx.new_done_handle(),
                     },
                 )
+                .gh_grant_permissions::<flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages::Node>([
+                    (GhPermission::IdToken, GhPermissionValue::Write),
+                    (GhPermission::Pages, GhPermissionValue::Write),
+                ])
                 .finish();
 
             all_jobs.push(job);

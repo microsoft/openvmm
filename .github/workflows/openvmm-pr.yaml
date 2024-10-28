@@ -24,7 +24,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      pages: write
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -736,6 +735,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pages: write
     needs:
     - job1
     - job2
