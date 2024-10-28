@@ -7,23 +7,26 @@
 
 #![cfg(unix)]
 #![warn(missing_docs)]
-// SAFETY: Send, Sync, and *nix calls mmap() mmunmap()
-//         all require unsafe keyword.
+// SAFETY: Send, Sync, and *nix calls mmap() munmap() require unsafe keyword.
 #![allow(unsafe_code)]
 
 mod mapped_dma;
 
 pub use mapped_dma::FixedDmaBuffer;
 
-#[cfg(feature = "vfio")]
 use anyhow::Context;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
+use memory_range::MemoryRange;
 use parking_lot::Mutex;
+use std::ffi::c_void;
 use std::num::NonZeroU64;
+use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use thiserror::Error;
-use vm_topology::memory::MemoryRangeWithNode;
+use user_driver::memory::MemoryBlock;
+use user_driver::vfio::VfioDmaBuffer;
+use user_driver::HostDmaAllocator;
 
 /// Error returned when unable to allocate memory.
 #[derive(Debug, Error)]
@@ -49,6 +52,75 @@ enum State {
         size_pages: u64,
         tag: String,
     },
+}
+
+// SAFETY: The result of mmap call is safe to share between threads.
+unsafe impl Send for FixedMapping {}
+// SAFETY: The result of mmap call is safe to share between threads.
+unsafe impl Sync for FixedMapping {}
+
+struct FixedMapping {
+    addr: *mut c_void,
+    len: usize,
+}
+
+impl FixedMapping {
+    fn new(len: usize) -> std::io::Result<Self> {
+        // SAFETY: calling mmap as documented to create a new mapping.
+        let addr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_LOCKED,
+                -1,
+                0,
+            )
+        };
+        if addr == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self { addr, len })
+    }
+
+    fn new_in(addr_fixed: u64, len: usize, file_mapping: impl AsRawFd) -> std::io::Result<Self> {
+        // SAFETY: addr_fixed and len are restored after servicing.
+        let addr = unsafe {
+            // MAP_UNINITIALIZED is documented but not defined in MapFlags.
+            // MAP_ANONYMOUS is documented as performing zeroinit. Otherwise, fd must be set.
+            libc::mmap(
+                addr_fixed as *mut c_void,
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_LOCKED | libc::MAP_FIXED,
+                file_mapping.as_raw_fd(),
+                0,
+            )
+        };
+        if addr == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self { addr, len })
+    }
+
+    fn lock(&self) -> std::io::Result<()> {
+        // SAFETY: calling mlock with a validated result of mmap.
+        if unsafe { libc::mlock(self.addr, self.len) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for FixedMapping {
+    fn drop(&mut self) {
+        if !self.addr.is_null() {
+            // SAFETY: The address and length are a valid mmap result.
+            unsafe {
+                libc::munmap(self.addr, self.len);
+            }
+        }
+    }
 }
 
 #[derive(Inspect, Debug)]
@@ -121,8 +193,6 @@ impl Drop for FixedPoolHandle {
 ///
 /// This struct is considered the "owner" of the pool allowing for save/restore.
 ///
-// TODO SNP: Implement save restore. This means additionally having some sort of
-// restore_alloc method that maps to an existing allocation.
 #[derive(Inspect)]
 pub struct FixedPool {
     #[inspect(flatten)]
@@ -131,15 +201,12 @@ pub struct FixedPool {
 
 impl FixedPool {
     /// Create a fixed pool allocator, with the specified memory.
-    ///
-    pub fn new(fixed_pool: &[MemoryRangeWithNode]) -> anyhow::Result<Self> {
+    pub fn new(fixed_pool: MemoryRange) -> anyhow::Result<Self> {
         let mut pages = Vec::new();
-        for range in fixed_pool {
-            pages.push(State::Free {
-                base_pfn: range.range.start() / HV_PAGE_SIZE,
-                size_pages: range.range.len() / HV_PAGE_SIZE,
-            });
-        }
+        pages.push(State::Free {
+            base_pfn: fixed_pool.start() / HV_PAGE_SIZE,
+            size_pages: fixed_pool.len() / HV_PAGE_SIZE,
+        });
 
         Ok(Self {
             inner: Arc::new(Mutex::new(FixedPoolInner { state: pages })),
@@ -164,10 +231,23 @@ pub struct FixedPoolAllocator {
 }
 
 impl FixedPoolAllocator {
+    /// Reserves fixed memory region for future allocations for DMA devices.
+    pub fn new(range: MemoryRange) -> anyhow::Result<Self> {
+        let mut pages = Vec::new();
+        pages.push(State::Free {
+            base_pfn: range.start() / HV_PAGE_SIZE,
+            size_pages: range.len() / HV_PAGE_SIZE,
+        });
+
+        Ok(Self {
+            inner: Arc::new(Mutex::new(FixedPoolInner { state: pages })),
+        })
+    }
+
     /// Allocate contiguous pages from the fixed pool with the given
     /// tag. If a contiguous region of free pages is not available, then an
     /// error is returned.
-    pub fn alloc(
+    fn alloc(
         &self,
         size_pages: NonZeroU64,
         tag: String,
@@ -220,20 +300,82 @@ impl FixedPoolAllocator {
         })
     }
 
-    /// Allocate contiguous pool from starting PFN.
-    /// This is still under research so mark it as a hack.
-    pub fn prealloc_at(&self, base_pfn: u64, size_pages: u64) -> Result<(), FixedPoolOutOfMemory> {
+    /// Restore allocation of the contiguous pages from the fixed pool.
+    /// If a contiguous region of free pages is not available, then an
+    /// error is returned.
+    fn restore(
+        &self,
+        req_pfn: u64,
+        req_pages: NonZeroU64,
+        tag: String,
+    ) -> Result<FixedPoolHandle, FixedPoolOutOfMemory> {
         let mut inner = self.inner.lock();
+        let req_pages = req_pages.get();
 
-        inner.add(base_pfn, size_pages);
+        let index = inner
+            .state
+            .iter()
+            .position(|state| match state {
+                State::Free {
+                    base_pfn: avail_pfn,
+                    size_pages: avail_pages,
+                } => {
+                    *avail_pages >= req_pages
+                        && *avail_pfn <= req_pfn
+                        && *avail_pfn + *avail_pages >= req_pfn + req_pages
+                }
+                State::Allocated { .. } => false,
+            })
+            .ok_or(FixedPoolOutOfMemory {
+                size: req_pages,
+                tag: tag.clone(),
+            })?;
 
-        Ok(())
+        let new_pfn = match inner.state.swap_remove(index) {
+            State::Free {
+                base_pfn: free_base,
+                size_pages: free_len,
+            } => {
+                // Push the requested block to the collection.
+                inner.state.push(State::Allocated {
+                    base_pfn: req_pfn,
+                    size_pages: req_pages,
+                    tag,
+                });
+
+                if free_len > req_pages {
+                    // Push back the left free range.
+                    if free_base < req_pfn {
+                        inner.state.push(State::Free {
+                            base_pfn: free_base,
+                            size_pages: req_pfn - free_base,
+                        });
+                    }
+                    // Push back the right free range.
+                    if req_pfn + req_pages < free_base + free_len {
+                        inner.state.push(State::Free {
+                            base_pfn: req_pfn + req_pages,
+                            size_pages: free_base + free_len - req_pfn - req_pages,
+                        })
+                    }
+                }
+                req_pfn
+            }
+            State::Allocated { .. } => unreachable!(),
+        };
+
+        Ok(FixedPoolHandle {
+            inner: self.inner.clone(),
+            base_pfn: new_pfn,
+            size_pages: req_pages,
+        })
     }
 }
 
-#[cfg(feature = "vfio")]
-impl user_driver::vfio::VfioDmaBuffer for FixedPoolAllocator {
-    fn create_dma_buffer(&self, len: usize) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+impl VfioDmaBuffer for FixedPoolAllocator {
+    /// prealloc_at must be called before calling 'create'.
+    fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
+        tracing::info!("YSP: CORRECT create_dma_buffer len={len:X}");
         if len == 0 {
             anyhow::bail!("allocation of size 0 not supported");
         }
@@ -243,46 +385,46 @@ impl user_driver::vfio::VfioDmaBuffer for FixedPoolAllocator {
         }
 
         let size_pages = len as u64 / HV_PAGE_SIZE;
-
-        // This is another hack until we have proper memory mapping.
-        // Assign from PFN 0x127000 upwards which is free on my test setup.
-        self.prealloc_at(0x127000, size_pages)?;
-
         let alloc = self
             .alloc(
                 size_pages.try_into().expect("already checked nonzero"),
-                "vfio dma".into(),
+                "mshv dma".into(),
             )
             .context("failed to allocate fixed mem")?;
-
         let gpa_fd = hcl::ioctl::MshvVtlLow::new().context("failed to open gpa fd")?;
         let mapping = sparse_mmap::SparseMapping::new(len).context("failed to create mapping")?;
-
         let gpa = alloc.base_pfn() * HV_PAGE_SIZE;
-
         // No need to set bit 63 because this buffer is visible to VTL2 only.
         let file_offset = gpa;
 
         tracing::trace!(gpa, file_offset, len, "mapping dma buffer");
         mapping
             .map_file(0, len, gpa_fd.get(), file_offset, true)
-            .context("unable to map allocation")?;
+            .context("sparse mapping failed")?;
 
         let pfns: Vec<_> = (alloc.base_pfn()..alloc.base_pfn() + alloc.size_pages).collect();
 
-        Ok(user_driver::memory::MemoryBlock::new(FixedDmaBuffer {
+        Ok(MemoryBlock::new(FixedDmaBuffer {
             mapping,
             _alloc: alloc,
             pfns,
         }))
     }
+}
 
+impl HostDmaAllocator for FixedPoolAllocator {
+    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
+        tracing::info!("YSP: CORRECT allocate_dma_buffer len={len:X}");
+        self.create_dma_buffer(len)
+    }
+
+    /// Restore contiguous buffer starting with given PFN.
+    /// YSP: TODO: Restore with the capacity.
     fn restore_dma_buffer(
         &self,
-        addr: u64,
         len: usize,
-        pfns: &[u64],
-    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+        _base_pfn: Option<u64>,
+    ) -> anyhow::Result<MemoryBlock> {
         if len == 0 {
             anyhow::bail!("allocation of size 0 not supported");
         }
@@ -292,22 +434,20 @@ impl user_driver::vfio::VfioDmaBuffer for FixedPoolAllocator {
         }
 
         let size_pages = len as u64 / HV_PAGE_SIZE;
-        assert_eq!(size_pages as usize, pfns.len());
 
-        self.prealloc_at(pfns[0], size_pages)?;
+        // Allocate from the previously reserved page range.
         let alloc = self
             .alloc(
                 size_pages.try_into().expect("already checked nonzero"),
-                "vfio dma".into(),
+                "mshv dma".into(),
             )
             .context("failed to allocate fixed mem")?;
 
         let gpa_fd = hcl::ioctl::MshvVtlLow::new().context("failed to open gpa fd")?;
-        let mapping = sparse_mmap::SparseMapping::new_at(len, Some(addr))
-            .context("failed to create mapping")?;
-
+        let addr = _base_pfn.map(|a| a * HV_PAGE_SIZE); // YSP: FIXME: check this
+        let mapping =
+            sparse_mmap::SparseMapping::new_at(len, addr).context("failed to create mapping")?;
         let gpa = alloc.base_pfn() * HV_PAGE_SIZE;
-
         // No need to set bit 63 because this buffer is visible to VTL2 only.
         let file_offset = gpa;
 
@@ -318,7 +458,7 @@ impl user_driver::vfio::VfioDmaBuffer for FixedPoolAllocator {
 
         let pfns: Vec<_> = (alloc.base_pfn()..alloc.base_pfn() + alloc.size_pages).collect();
 
-        Ok(user_driver::memory::MemoryBlock::new(FixedDmaBuffer {
+        Ok(MemoryBlock::new(FixedDmaBuffer {
             mapping,
             _alloc: alloc,
             pfns,
@@ -331,7 +471,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_basic_alloc() {
+    fn test_fixed_alloc() {
         let state = vec![State::Free {
             base_pfn: 10,
             size_pages: 20,
@@ -357,5 +497,99 @@ mod test {
 
         let inner = alloc.inner.lock();
         assert_eq!(inner.state.len(), 2);
+    }
+
+    #[test]
+    fn test_fixed_restore() {
+        let state = vec![State::Free {
+            base_pfn: 10,
+            size_pages: 12,
+        }];
+        let alloc = FixedPoolAllocator {
+            inner: Arc::new(Mutex::new(FixedPoolInner { state })),
+        };
+
+        let r1 = alloc
+            .restore(
+                13.try_into().unwrap(),
+                1.try_into().unwrap(),
+                "restore1".into(),
+            )
+            .unwrap();
+        assert_eq!(r1.base_pfn, 13);
+        assert_eq!(r1.size_pages, 1);
+
+        let r2 = alloc
+            .restore(
+                15.try_into().unwrap(),
+                2.try_into().unwrap(),
+                "restore2".into(),
+            )
+            .unwrap();
+        assert_eq!(r2.base_pfn, 15);
+        assert_eq!(r2.size_pages, 2);
+
+        let r3 = alloc
+            .restore(
+                18.try_into().unwrap(),
+                4.try_into().unwrap(),
+                "restore2".into(),
+            )
+            .unwrap();
+        assert_eq!(r3.base_pfn, 18);
+        assert_eq!(r3.size_pages, 4);
+
+        let r4 = alloc
+            .restore(
+                10.try_into().unwrap(),
+                3.try_into().unwrap(),
+                "restore2".into(),
+            )
+            .unwrap();
+        assert_eq!(r4.base_pfn, 10);
+        assert_eq!(r4.size_pages, 3);
+
+        let r5 = alloc
+            .restore(
+                14.try_into().unwrap(),
+                1.try_into().unwrap(),
+                "restore2".into(),
+            )
+            .unwrap();
+        assert_eq!(r5.base_pfn, 14);
+        assert_eq!(r5.size_pages, 1);
+
+        assert!(alloc
+            .restore(
+                5.try_into().unwrap(),
+                3.try_into().unwrap(),
+                "failed".into()
+            )
+            .is_err());
+        assert!(alloc
+            .restore(
+                100.try_into().unwrap(),
+                10.try_into().unwrap(),
+                "failed".into()
+            )
+            .is_err());
+        assert!(alloc
+            .restore(
+                12.try_into().unwrap(),
+                4.try_into().unwrap(),
+                "failed".into()
+            )
+            .is_err());
+
+        let inner = alloc.inner.lock();
+        assert_eq!(inner.state.len(), 6);
+        // Must be dropped to avoid deadlock after.
+        drop(inner);
+
+        drop(r1);
+        drop(r2);
+        drop(r3);
+        drop(r4);
+        drop(r5);
     }
 }

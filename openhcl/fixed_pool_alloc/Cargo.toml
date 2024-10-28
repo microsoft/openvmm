@@ -10,15 +10,14 @@ rust-version.workspace = true
 
 [features]
 vfio = ["user_driver/vfio"]
-nvme_keepalive = []
 
 [dependencies]
 hcl.workspace = true
-
+memory_range.workspace = true
 user_driver.workspace = true
-vm_topology.workspace = true
 hvdef.workspace = true
 sparse_mmap.workspace = true
+libc.workspace = true
 
 inspect.workspace = true
 

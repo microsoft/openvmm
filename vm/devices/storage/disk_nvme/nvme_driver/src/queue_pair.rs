@@ -141,12 +141,6 @@ impl QueuePair {
         PER_QUEUE_PAGES * PAGE_SIZE
     }
 
-    /// Return total DMA buffer size needed for the queue pair (all chunks are contiguous).
-    pub fn required_dma_size() -> usize {
-        // 4k for SQ + 4k for CQ + 256k for data.
-        QueuePair::sq_size() + QueuePair::cq_size() + QueuePair::dma_data_size()
-    }
-
     pub fn new(
         spawner: impl SpawnDriver,
         qid: u16,

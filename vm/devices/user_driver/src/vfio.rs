@@ -94,9 +94,9 @@ impl VfioDevice {
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
         dma_buffer: Arc<dyn VfioDmaBuffer>,
-        _saved_state: Option<&VfioDeviceSavedState>,
+        saved_state: Option<&VfioDeviceSavedState>,
     ) -> anyhow::Result<Self> {
-        let is_restoring = _saved_state.is_some();
+        let is_restoring = saved_state.is_some();
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
         // The vfio device attaches asynchronously after the PCI device is added,

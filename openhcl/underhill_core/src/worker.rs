@@ -1803,6 +1803,16 @@ async fn new_underhill_vm(
         crate::inspect_proc::periodic_telemetry_task(driver_source.simple()),
     );
 
+    // Allocate fixed pool for DMA-capable devices if size hint was provided by host,
+    // otherwise use default heap allocator.
+    // Contents of fixed pool will be preserved during servicing.
+    let fixed_mem_pool = if !runtime_params.dma_preserve_memory_map().is_empty() {
+        let pools = runtime_params.dma_preserve_memory_map().to_vec();
+        Some(FixedPool::new(pools)?)
+    } else {
+        None
+    };
+
     let nvme_manager = if env_cfg.nvme_vfio {
         let nvme_saved_state = servicing_state.nvme_state.unwrap_or(None);
         let shared_vis_pool_spawner = shared_vis_pages_pool
@@ -1826,6 +1836,8 @@ async fn new_underhill_vm(
             &driver_source,
             processor_topology.vp_count(),
             vfio_dma_buffer_spawner,
+            fixed_mem_pool,
+            servicing_state.nvme_state.unwrap_or(None),
         );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(

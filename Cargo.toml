@@ -283,7 +283,7 @@ tpm_resources = { path = "vm/devices/tpm_resources" }
 mcr_resources = { path = "vm/devices/mcr_resources" } # TODO MCR: move to closed-source
 uidevices = { path = "vm/devices/uidevices" }
 uidevices_resources = { path = "vm/devices/uidevices_resources" }
-user_driver = { path = "vm/devices/user_driver", features = ["nvme_keepalive"] }
+user_driver = { path = "vm/devices/user_driver" }
 video_core = { path = "vm/devices/video_core" }
 vga = { path = "vm/devices/vga" }
 vga_proxy = { path = "vm/devices/vga_proxy" }

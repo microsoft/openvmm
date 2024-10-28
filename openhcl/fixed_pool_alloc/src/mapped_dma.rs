@@ -5,7 +5,7 @@
 
 //! Module for device dma support at fixed location.
 
-// UNSAFETY: This is required to implement the MappedDmaTarget trait which
+// SAFETY: This is required to implement the MappedDmaTarget trait which
 // unsafe because of it's requirement for the implementer to keep the
 // `base()..len()` mapped for the lifetime of the struct.
 #![allow(unsafe_code)]
@@ -22,7 +22,7 @@ pub struct FixedDmaBuffer {
 }
 
 /// SAFETY: This struct keeps both the fixed memory region which the sparse
-/// mapping maps, along with the sparse mapping itself until the struct is drop,
+/// mapping maps, along with the sparse mapping itself until the struct is dropped,
 /// satisfying the trait.
 unsafe impl MappedDmaTarget for FixedDmaBuffer {
     fn base(&self) -> *const u8 {
