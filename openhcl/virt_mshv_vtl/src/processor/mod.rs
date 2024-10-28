@@ -18,6 +18,7 @@ cfg_if::cfg_if! {
         use hardware_cvm::GuestVsmVpState;
         use hvdef::HvX64RegisterName;
         use hvdef::HvX64SegmentRegister;
+        use virt::state::StateElement;
         use virt::x86::MsrError;
         use virt::vp::AccessVpState;
     } else if #[cfg(guest_arch = "aarch64")] {
@@ -64,7 +65,6 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 use virt::io::CpuIo;
-use virt::state::StateElement;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
@@ -164,7 +164,6 @@ pub struct LapicState {
 
 mod private {
     use super::vp_state;
-    use super::LapicState;
     use super::UhRunVpError;
     use crate::processor::UhProcessor;
     use crate::BackingShared;
@@ -179,11 +178,11 @@ mod private {
     use virt::StopVp;
     use virt::VpHaltReason;
     use vm_topology::processor::TargetVpInfo;
-    use vtl_array::VtlArray;
 
     pub struct BackingParams<'a, 'b, T: BackingPrivate> {
         pub(crate) partition: &'a UhPartitionInner,
-        pub(crate) lapics: Option<VtlArray<LapicState, 2>>,
+        #[cfg(guest_arch = "x86_64")]
+        pub(crate) lapics: Option<vtl_array::VtlArray<super::LapicState, 2>>,
         pub(crate) vp_info: &'a TargetVpInfo,
         pub(crate) runner: &'a mut ProcessorRunner<'b, T::HclBacking>,
         pub(crate) backing_shared: &'a BackingShared,
@@ -770,6 +769,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             .runner(inner.cpu_index, idle_control.is_none())
             .unwrap();
 
+        #[cfg(guest_arch = "x86_64")]
         let lapics = partition.lapic.as_ref().map(|arr| {
             let mut lapics = arr.each_ref().map(|apic_set| apic_set.add_apic(&vp_info));
             // Initialize APIC base to match the reset VM state.
@@ -793,6 +793,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
         let backing = T::new(private::BackingParams {
             partition,
+            #[cfg(guest_arch = "x86_64")]
             lapics,
             vp_info: &vp_info,
             runner: &mut runner,
