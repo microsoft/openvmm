@@ -452,10 +452,12 @@ pub fn write_dt(
 
     let p_isolation_type = openhcl_builder.add_string("isolation-type")?;
     let isolation_type = match partition_info.isolation {
-        IsolationType::Vbs => "vbs",
-        IsolationType::Snp => "snp",
-        IsolationType::Tdx => "tdx",
         IsolationType::None => "none",
+        IsolationType::Vbs => "vbs",
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Snp => "snp",
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Tdx => "tdx",
     };
     openhcl_builder = openhcl_builder.add_str(p_isolation_type, isolation_type)?;
 
