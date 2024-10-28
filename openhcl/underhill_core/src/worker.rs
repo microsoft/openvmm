@@ -2338,17 +2338,17 @@ async fn new_underhill_vm(
 
         let (get_attestation_report, request_ak_cert) = {
             // Ak cert renewal depends on the ability to get an attestation report
-            // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
-            let get_attestation_report = if !matches!(isolation, hcl::ioctl::IsolationType::Vbs) {
-                Some(
+            let get_attestation_report = match isolation {
+                hcl::ioctl::IsolationType::Snp | hcl::ioctl::IsolationType::Tdx => Some(
                     GetTpmGetAttestationReportHelperHandle::new(
                         attestation_type,
                         attestation_vm_config,
                     )
                     .into_resource(),
-                )
-            } else {
-                None
+                ),
+                // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
+                hcl::ioctl::IsolationType::Vbs => None,
+                hcl::ioctl::IsolationType::None => None,
             };
 
             // Always attempt AK cert and let TPM to decide the course of action
