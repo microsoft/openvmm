@@ -1933,7 +1933,7 @@ thread_local! {
 
 impl Hcl {
     /// Returns a new HCL instance.
-    pub fn new(sidecar: Option<SidecarClient>) -> Result<Hcl, Error> {
+    pub fn new(isolation: IsolationType, sidecar: Option<SidecarClient>) -> Result<Hcl, Error> {
         static SIGNAL_HANDLER_INIT: Once = Once::new();
         // SAFETY: The signal handler does not perform any actions that are forbidden
         // for signal handlers to perform, as it performs nothing.
@@ -1946,6 +1946,9 @@ impl Hcl {
 
         // Open both mshv fds
         let mshv_fd = Mshv::new()?;
+
+        // FUTURE: validate that the requested isolation type matches what the
+        // kernel supports.
 
         let supports_vtl_ret_action = mshv_fd.check_extension(HCL_CAP_VTL_RETURN_ACTION)?;
         let supports_register_page = mshv_fd.check_extension(HCL_CAP_REGISTER_PAGE)?;
@@ -1960,33 +1963,6 @@ impl Hcl {
 
         // Open the hypercall pseudo-device
         let mshv_hvcall = MshvHvcall::new()?;
-
-        // TODO SNP: When it's checked in, the isolation type should instead be queried
-        // from the kernel.
-        let isolation = if cfg!(guest_arch = "x86_64") {
-            // xtask-fmt allow-target-arch cpu-intrinsic
-            #[cfg(target_arch = "x86_64")]
-            {
-                let result = safe_x86_intrinsics::cpuid(
-                    hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION,
-                    0,
-                );
-                match result.ebx & 0xF {
-                    0 => IsolationType::None,
-                    1 => IsolationType::Vbs,
-                    2 => IsolationType::Snp,
-                    3 => IsolationType::Tdx,
-                    ty => panic!("unknown isolation type {ty:#x}"),
-                }
-            }
-            // xtask-fmt allow-target-arch cpu-intrinsic
-            #[cfg(not(target_arch = "x86_64"))]
-            {
-                unreachable!()
-            }
-        } else {
-            IsolationType::None
-        };
 
         // Override certain features for hardware isolated VMs.
         // TODO: vtl return actions are inhibited for hardware isolated VMs because they currently

@@ -13,6 +13,7 @@ use host_fdt_parser::MemoryEntry;
 use host_fdt_parser::VmbusInfo;
 use memory_range::subtract_ranges;
 use memory_range::MemoryRange;
+use shim_params::IsolationType;
 
 mod dt;
 mod mmio;
@@ -54,6 +55,8 @@ pub struct PartitionInfo {
     pub vtl2_config_region_reclaim: MemoryRange,
     /// The full memory map provided by the host.
     pub partition_ram: ArrayVec<MemoryEntry, MAX_PARTITION_RAM_RANGES>,
+    /// The partiton's isolation type.
+    pub isolation: IsolationType,
     /// The reg field in device tree for the BSP. This is either the apic_id on
     /// x64, or mpidr on aarch64.
     pub bsp_reg: u32,
@@ -83,6 +86,7 @@ impl PartitionInfo {
             vtl2_full_config_region: MemoryRange::EMPTY,
             vtl2_config_region_reclaim: MemoryRange::EMPTY,
             partition_ram: ArrayVec::new_const(),
+            isolation: IsolationType::None,
             bsp_reg: 0,
             cpus: ArrayVec::new_const(),
             vmbus_vtl2: VmbusInfo {

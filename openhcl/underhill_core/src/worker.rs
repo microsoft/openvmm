@@ -1156,15 +1156,20 @@ async fn new_underhill_vm(
         }
     }
 
-    let driver_source = VmTaskDriverSource::new(ThreadpoolBackend::new(tp.clone()));
+    // Read the initial configuration from the IGVM parameters.
+    let (runtime_params, measured_vtl2_info) =
+        crate::loader::vtl2_config::read_vtl2_params().context("failed to read load parameters")?;
 
-    // Try to open the sidecar device, if it is present.
-    let sidecar = sidecar_client::SidecarClient::new(|cpu| tp.driver(cpu).clone())
-        .context("failed to open sidecar device")?;
+    let isolation = match runtime_params.parsed_openhcl_boot().isolation {
+        bootloader_fdt_parser::IsolationType::None => hcl::ioctl::IsolationType::None,
+        bootloader_fdt_parser::IsolationType::Vbs => hcl::ioctl::IsolationType::Vbs,
+        bootloader_fdt_parser::IsolationType::Snp => hcl::ioctl::IsolationType::Snp,
+        bootloader_fdt_parser::IsolationType::Tdx => hcl::ioctl::IsolationType::Tdx,
+    };
 
-    let mut hcl = hcl::ioctl::Hcl::new(sidecar).context("failed to open HCL driver")?;
-    let isolation = hcl.isolation();
     let hardware_isolated = isolation.is_hardware_isolated();
+
+    let driver_source = VmTaskDriverSource::new(ThreadpoolBackend::new(tp.clone()));
 
     let is_restoring = servicing_state.is_some();
     let servicing_state = OptionServicingInitState::from(servicing_state);
@@ -1186,6 +1191,12 @@ async fn new_underhill_vm(
 
     let uevent_listener =
         Arc::new(UeventListener::new(tp.driver(0)).context("failed to start uevent listener")?);
+
+    // Try to open the sidecar device, if it is present.
+    let sidecar = sidecar_client::SidecarClient::new(|cpu| tp.driver(cpu).clone())
+        .context("failed to open sidecar device")?;
+
+    let mut hcl = hcl::ioctl::Hcl::new(isolation, sidecar).context("failed to open HCL driver")?;
 
     // Set the hypercalls that this process will use.
     let mut allowed_hypercalls = vec![
@@ -1238,11 +1249,6 @@ async fn new_underhill_vm(
     }
 
     hcl.set_allowed_hypercalls(allowed_hypercalls.as_slice());
-
-    // Read the initial configuration from the IGVM parameters.
-    let (runtime_params, measured_vtl2_info) =
-        crate::loader::vtl2_config::read_vtl2_params(isolation)
-            .context("failed to read load parameters")?;
 
     let boot_info = runtime_params.parsed_openhcl_boot();
 

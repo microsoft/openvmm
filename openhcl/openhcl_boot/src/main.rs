@@ -720,6 +720,7 @@ mod test {
     use super::x86_boot::build_e820_map;
     use super::x86_boot::E820Ext;
     use crate::dt::write_dt;
+    use crate::host_params::shim_params::IsolationType;
     use crate::host_params::PartitionInfo;
     use crate::host_params::MAX_CPU_COUNT;
     use crate::reserved_memory_regions;
@@ -763,6 +764,7 @@ mod test {
             vtl2_full_config_region: MemoryRange::EMPTY,
             vtl2_config_region_reclaim: MemoryRange::EMPTY,
             partition_ram: ArrayVec::new(),
+            isolation: IsolationType::None,
             bsp_reg: cpus[0].reg as u32,
             cpus,
             cmdline: ArrayString::new(),

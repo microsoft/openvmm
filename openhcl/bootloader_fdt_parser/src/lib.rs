@@ -94,6 +94,19 @@ impl AddressRange {
     }
 }
 
+/// The isolation type of the partition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect)]
+pub enum IsolationType {
+    /// No isolation.
+    None,
+    /// Hyper-V based isolation.
+    Vbs,
+    /// AMD SNP.
+    Snp,
+    /// Intel TDX.
+    Tdx,
+}
+
 /// The memory allocation mode provided by the host. This reports how the
 /// bootloader decided to provide memory for the kernel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect)]
@@ -151,6 +164,8 @@ pub struct ParsedBootDtInfo {
     pub gic: Option<GicInfo>,
     /// The memory allocation mode the bootloader decided to use.
     pub memory_allocation_mode: MemoryAllocationMode,
+    /// The isolation type of the partition.
+    pub isolation: IsolationType,
 }
 
 fn err_to_owned(e: fdt::parser::Error<'_>) -> anyhow::Error {
@@ -185,6 +200,7 @@ struct OpenhclInfo {
     partition_memory_map: Vec<AddressRange>,
     accepted_memory: Vec<MemoryRange>,
     memory_allocation_mode: MemoryAllocationMode,
+    isolation: IsolationType,
 }
 
 fn parse_memory_openhcl(node: &Node<'_>) -> anyhow::Result<AddressRange> {
@@ -280,6 +296,18 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         }
     }
 
+    let isolation = {
+        let prop = try_find_property(node, "isolation-type").context("missing isolation-type")?;
+
+        match prop.read_str().map_err(err_to_owned)? {
+            "none" => IsolationType::None,
+            "vbs" => IsolationType::Vbs,
+            "snp" => IsolationType::Snp,
+            "tdx" => IsolationType::Tdx,
+            ty => bail!("invalid isolation-type {ty}"),
+        }
+    };
+
     let memory_allocation_mode = {
         let prop = try_find_property(node, "memory-allocation-mode")
             .context("missing memory-allocation-mode")?;
@@ -339,6 +367,7 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         partition_memory_map: memory,
         accepted_memory,
         memory_allocation_mode,
+        isolation,
     })
 }
 
@@ -429,6 +458,7 @@ impl ParsedBootDtInfo {
         let mut partition_memory_map = Vec::new();
         let mut accepted_ranges = Vec::new();
         let mut memory_allocation_mode = MemoryAllocationMode::Host;
+        let mut isolation = IsolationType::None;
 
         let parser = Parser::new(raw)
             .map_err(err_to_owned)
@@ -459,6 +489,7 @@ impl ParsedBootDtInfo {
                     partition_memory_map = info.partition_memory_map;
                     accepted_ranges = info.accepted_memory;
                     memory_allocation_mode = info.memory_allocation_mode;
+                    isolation = info.isolation;
                 }
 
                 _ if child.name.starts_with("memory@") => {
@@ -488,6 +519,7 @@ impl ParsedBootDtInfo {
             accepted_ranges,
             gic,
             memory_allocation_mode,
+            isolation,
         })
     }
 }
@@ -655,6 +687,16 @@ mod tests {
         }
 
         let mut openhcl_builder = root_builder.start_node("openhcl")?;
+        let p_isolation_type = openhcl_builder.add_string("isolation-type")?;
+        openhcl_builder = openhcl_builder.add_str(
+            p_isolation_type,
+            match info.isolation {
+                IsolationType::None => "none",
+                IsolationType::Vbs => "vbs",
+                IsolationType::Snp => "snp",
+                IsolationType::Tdx => "tdx",
+            },
+        )?;
 
         let p_memory_allocation_mode = openhcl_builder.add_string("memory-allocation-mode")?;
         match info.memory_allocation_mode {
@@ -818,6 +860,7 @@ mod tests {
                 memory_size: 0x1000,
                 mmio_size: 0x2000,
             },
+            isolation: IsolationType::Vbs,
         };
 
         let dt = build_dt(&orig_info).unwrap();

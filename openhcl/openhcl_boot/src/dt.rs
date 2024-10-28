@@ -4,6 +4,7 @@
 //! Module used to write the device tree used by the OpenHCL kernel and
 //! usermode.
 
+use crate::host_params::shim_params::IsolationType;
 use crate::host_params::PartitionInfo;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::sidecar::SidecarConfig;
@@ -448,6 +449,15 @@ pub fn write_dt(
 
     // Add information used by openhcl usermode.
     let mut openhcl_builder = root_builder.start_node("openhcl")?;
+
+    let p_isolation_type = openhcl_builder.add_string("isolation-type")?;
+    let isolation_type = match partition_info.isolation {
+        IsolationType::Vbs => "vbs",
+        IsolationType::Snp => "snp",
+        IsolationType::Tdx => "tdx",
+        IsolationType::None => "none",
+    };
+    openhcl_builder = openhcl_builder.add_str(p_isolation_type, isolation_type)?;
 
     // Indicate what kind of memory allocation mode was done by the bootloader
     // to usermode.

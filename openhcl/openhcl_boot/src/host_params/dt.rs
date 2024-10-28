@@ -442,6 +442,7 @@ impl PartitionInfo {
             vtl2_full_config_region: vtl2_config_region,
             vtl2_config_region_reclaim: vtl2_config_region_reclaim_struct,
             partition_ram: _,
+            isolation,
             bsp_reg,
             cpus,
             vmbus_vtl0: _,
@@ -452,6 +453,8 @@ impl PartitionInfo {
             memory_allocation_mode: _,
             entropy,
         } = storage;
+
+        *isolation = params.isolation_type;
 
         *vtl2_config_region = MemoryRange::new(
             params.parameter_region_start
