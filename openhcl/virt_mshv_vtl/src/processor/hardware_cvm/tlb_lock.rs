@@ -20,7 +20,7 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
         // state that this VP has already flushed.
         let self_index = self.vp_index().index() as usize;
         let self_lock = &self.inner.tlb_lock_info[target_vtl];
-        for vp in self.backing.cvm_state().tlb_locked_vps[target_vtl]
+        for vp in self.backing.cvm_partition_state().tlb_locked_vps[target_vtl]
             .clone()
             .iter_ones()
         {
@@ -50,7 +50,7 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
             // the current VP was added to its blocked set. Check again to
             // see whether the TLB lock is still held, and if not, remove the
             // block.
-            if !self.backing.cvm_state().tlb_locked_vps[target_vtl][vp] {
+            if !self.backing.cvm_partition_state().tlb_locked_vps[target_vtl][vp] {
                 other_lock_blocked.set_aliased(self_index, false);
                 if self_lock.blocking_vps.set_aliased(vp, false) {
                     self_lock.blocking_vp_count.fetch_sub(1, Ordering::Relaxed);
@@ -59,14 +59,14 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
         }
 
         // Mark the target VTL as waiting for TLB locks.
-        self.vtls_tlb_waiting[target_vtl] = true;
+        self.backing.cvm_state_mut().vtls_tlb_waiting[target_vtl] = true;
     }
 
     /// Lock the TLB of the target VTL on the current VP.
     pub fn set_tlb_lock(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) {
         debug_assert!(requesting_vtl > Vtl::from(target_vtl));
 
-        self.backing.cvm_state().tlb_locked_vps[target_vtl]
+        self.backing.cvm_partition_state().tlb_locked_vps[target_vtl]
             .set_aliased(self.vp_index().index() as usize, true);
         self.vtls_tlb_locked.set(requesting_vtl, target_vtl, true);
     }
@@ -96,7 +96,8 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
                 }
 
                 // Now we can remove ourselves from the global TLB lock.
-                self.backing.cvm_state().tlb_locked_vps[target_vtl].set_aliased(self_index, false);
+                self.backing.cvm_partition_state().tlb_locked_vps[target_vtl]
+                    .set_aliased(self_index, false);
 
                 // Check to see whether any other VPs are waiting for this VP to release
                 // the TLB lock. Note that other processors may be in the process of
@@ -144,8 +145,9 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
 
     /// Returns whether the VP should halt to wait for the TLB lock of the specified VTL.
     pub fn should_halt_for_tlb_unlock(&mut self, target_vtl: GuestVtl) -> bool {
+        let vtl_tlb_waiting = &mut self.backing.cvm_state_mut().vtls_tlb_waiting[target_vtl];
         // No wait is required if this VP is not blocked on the TLB lock.
-        if self.vtls_tlb_waiting[target_vtl] {
+        if *vtl_tlb_waiting {
             // No wait is required unless this VP is blocked on another VP that
             // holds the TLB flush lock.
             let self_lock = &self.inner.tlb_lock_info[target_vtl];
@@ -160,7 +162,7 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
 
                 self_lock.sleeping.store(false, Ordering::Relaxed);
             }
-            self.vtls_tlb_waiting[target_vtl] = false;
+            *vtl_tlb_waiting = false;
         } else {
             debug_assert_eq!(
                 self.inner.tlb_lock_info[target_vtl]

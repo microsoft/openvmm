@@ -20,6 +20,7 @@ use crate::processor::UhProcessor;
 use crate::Error;
 use crate::GuestVtl;
 use crate::UhCvmPartitionState;
+use crate::UhCvmVpState;
 use crate::UhPartitionInner;
 use crate::WakeReason;
 use guestmem::GuestMemory;
@@ -87,6 +88,7 @@ pub struct SnpBacked {
     hv_sint_notifications: u16,
     general_stats: GeneralStats,
     exit_stats: ExitStats,
+    cvm: UhCvmVpState,
     shared: Arc<SnpBackedShared>,
 }
 
@@ -144,7 +146,11 @@ impl SnpBacked {
 }
 
 impl HardwareIsolatedBacking for SnpBacked {
-    fn cvm_state(&self) -> &UhCvmPartitionState {
+    fn cvm_state_mut(&mut self) -> &mut UhCvmVpState {
+        &mut self.cvm
+    }
+
+    fn cvm_partition_state(&self) -> &UhCvmPartitionState {
         &self.shared.cvm
     }
 }
@@ -209,6 +215,7 @@ impl BackingPrivate for SnpBacked {
             hv_sint_notifications: 0,
             general_stats: Default::default(),
             exit_stats: Default::default(),
+            cvm: UhCvmVpState::new(),
             shared: shared.clone(),
         })
     }

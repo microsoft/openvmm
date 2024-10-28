@@ -17,6 +17,7 @@ use super::UhHypercallHandler;
 use super::UhRunVpError;
 use crate::GuestVtl;
 use crate::UhCvmPartitionState;
+use crate::UhCvmVpState;
 use crate::UhPartitionInner;
 use crate::UhProcessor;
 use crate::WakeReason;
@@ -415,6 +416,7 @@ pub struct TdxBacked {
     enter_stats: EnterStats,
     exit_stats: ExitStats,
 
+    cvm: UhCvmVpState,
     shared: Arc<TdxBackedShared>,
 }
 
@@ -461,7 +463,11 @@ enum UhDirectOverlay {
 }
 
 impl HardwareIsolatedBacking for TdxBacked {
-    fn cvm_state(&self) -> &UhCvmPartitionState {
+    fn cvm_state_mut(&mut self) -> &mut UhCvmVpState {
+        &mut self.cvm
+    }
+
+    fn cvm_partition_state(&self) -> &UhCvmPartitionState {
         &self.shared.cvm
     }
 }
@@ -656,6 +662,7 @@ impl BackingPrivate for TdxBacked {
             flush_page,
             enter_stats: Default::default(),
             exit_stats: Default::default(),
+            cvm: UhCvmVpState::new(),
             shared: shared.clone(),
         })
     }

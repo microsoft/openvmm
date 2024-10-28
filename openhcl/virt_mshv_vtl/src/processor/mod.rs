@@ -106,9 +106,7 @@ pub struct UhProcessor<'a, T: Backing> {
     force_exit_sidecar: bool,
     /// The VTLs on this VP that are currently locked, per requesting VTL.
     vtls_tlb_locked: VtlsTlbLocked,
-    /// The VTLs on this VP waiting for TLB locks on other VPs.
-    // Only used on HCVM.
-    vtls_tlb_waiting: VtlArray<bool, 2>,
+    // TODO: Move this to a backing-specific field
     #[cfg(guest_arch = "x86_64")]
     cvm_guest_vsm: Option<GuestVsmVpState>,
 
@@ -270,8 +268,11 @@ impl<T: BackingPrivate> Backing for T {}
 /// Trait for processor backings that have hardware isolation support.
 pub trait HardwareIsolatedBacking: Backing {
     #[cfg(guest_arch = "x86_64")]
+    /// Gets CVM specific VP state.
+    fn cvm_state_mut(&mut self) -> &mut crate::UhCvmVpState;
+    #[cfg(guest_arch = "x86_64")]
     /// Gets CVM specific partition state.
-    fn cvm_state(&self) -> &crate::UhCvmPartitionState;
+    fn cvm_partition_state(&self) -> &crate::UhCvmPartitionState;
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
@@ -839,7 +840,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 vtl1: VtlArray::new(false),
                 vtl2: VtlArray::new(false),
             },
-            vtls_tlb_waiting: VtlArray::<_, 2>::new(false),
             #[cfg(guest_arch = "x86_64")]
             cvm_guest_vsm: None,
         };

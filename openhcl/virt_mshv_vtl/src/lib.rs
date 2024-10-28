@@ -272,6 +272,23 @@ impl From<EnterMode> for hcl::protocol::EnterMode {
 
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
+/// VP state for CVMs.
+pub struct UhCvmVpState {
+    /// The VTLs on this VP waiting for TLB locks on other VPs.
+    vtls_tlb_waiting: VtlArray<bool, 2>,
+}
+
+impl UhCvmVpState {
+    /// Creates a new CVM VP state.
+    pub fn new() -> Self {
+        Self {
+            vtls_tlb_waiting: VtlArray::new(false),
+        }
+    }
+}
+
+#[cfg(guest_arch = "x86_64")]
+#[derive(Inspect)]
 /// Partition-wide state for CVMs.
 pub struct UhCvmPartitionState {
     #[inspect(skip)]
