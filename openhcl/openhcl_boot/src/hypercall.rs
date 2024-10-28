@@ -283,14 +283,15 @@ impl HvCall {
         // Split the call up to avoid exceeding the hypercall input/output size limits.
         const MAX_PER_CALL: usize = 512;
 
-        for apic_ids in hw_ids.chunks(MAX_PER_CALL) {
+        for hw_ids in hw_ids.chunks(MAX_PER_CALL) {
             header.write_to_prefix(Self::input_page().buffer.as_mut_slice());
+            hw_ids.write_to_prefix(&mut Self::input_page().buffer[header.as_bytes().len()..]);
 
             // SAFETY: The input header and rep slice are the correct types for this hypercall.
             //         The hypercall output is validated right after the hypercall is issued.
             let r = self.dispatch_hvcall(
                 hvdef::HypercallCode::HvCallGetVpIndexFromApicId,
-                Some(apic_ids.len()),
+                Some(hw_ids.len()),
             );
 
             let n = r.elements_processed() as usize;
@@ -301,7 +302,7 @@ impl HvCall {
                     .copied(),
             );
             r.result()?;
-            assert_eq!(n, apic_ids.len());
+            assert_eq!(n, hw_ids.len());
         }
 
         Ok(())
