@@ -903,10 +903,7 @@ impl UhProcessor<'_, SnpBacked> {
     async fn run_vp_snp(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
         // TODO CVM GUEST VSM: actually check if there is an interrupt waiting
         // for VTL 1 and switch to it if there is
-        let next_vtl = self
-            .cvm_guest_vsm
-            .as_ref()
-            .map_or(GuestVtl::Vtl0, |gvsm_state| gvsm_state.exit_vtl);
+        let next_vtl = self.backing.cvm.exit_vtl;
 
         let mut vmsa = self.runner.vmsa_mut(next_vtl);
         let last_interrupt_ctrl = vmsa.v_intr_cntrl();
@@ -931,9 +928,7 @@ impl UhProcessor<'_, SnpBacked> {
         // Set the lazy EOI bit just before running.
         let lazy_eoi = self.sync_lazy_eoi(next_vtl);
 
-        if let Some(gvsm_state) = self.cvm_guest_vsm.as_mut() {
-            gvsm_state.exit_vtl = next_vtl; // TODO GUEST VSM: update next_vtl based on interrupts
-        }
+        // TODO GUEST VSM: update next_vtl based on interrupts
 
         let mut has_intercept = self
             .runner

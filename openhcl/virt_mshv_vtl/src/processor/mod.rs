@@ -15,7 +15,6 @@ cfg_if::cfg_if! {
         pub mod tdx;
 
         use crate::VtlCrash;
-        use hardware_cvm::GuestVsmVpState;
         use hvdef::HvX64RegisterName;
         use hvdef::HvX64SegmentRegister;
         use virt::state::StateElement;
@@ -106,9 +105,6 @@ pub struct UhProcessor<'a, T: Backing> {
     force_exit_sidecar: bool,
     /// The VTLs on this VP that are currently locked, per requesting VTL.
     vtls_tlb_locked: VtlsTlbLocked,
-    // TODO: Move this to a backing-specific field
-    #[cfg(guest_arch = "x86_64")]
-    cvm_guest_vsm: Option<GuestVsmVpState>,
 
     // Put the runner and backing at the end so that monomorphisms of functions
     // that don't access backing-specific state are more likely to be folded
@@ -844,8 +840,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 vtl1: VtlArray::new(false),
                 vtl2: VtlArray::new(false),
             },
-            #[cfg(guest_arch = "x86_64")]
-            cvm_guest_vsm: None,
         };
 
         T::init(&mut vp);
@@ -930,10 +924,8 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                                     Vtl::Vtl1,
                                 ),
                         );
-                        self.cvm_guest_vsm = Some(GuestVsmVpState {
-                            // TODO CVM GUEST VSM: Revisit during AP startup if this is correct
-                            exit_vtl: GuestVtl::Vtl0,
-                        })
+
+                        // TODO CVM GUEST VSM: Revisit during AP startup if we need to exit to VTL 1 here
                     }
                 }
             }

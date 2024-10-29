@@ -1100,10 +1100,7 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     async fn run_vp_tdx(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let next_vtl = self
-            .cvm_guest_vsm
-            .as_ref()
-            .map_or(GuestVtl::Vtl0, |gvsm_state| gvsm_state.exit_vtl);
+        let next_vtl = self.backing.cvm.exit_vtl;
 
         if self.backing.interruption_information.valid() {
             tracing::debug!(

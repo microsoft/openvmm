@@ -20,17 +20,9 @@ use hvdef::HvMapGpaFlags;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvResult;
 use hvdef::Vtl;
-use inspect::Inspect;
-use inspect::InspectMut;
 use std::iter::zip;
 use virt::io::CpuIo;
 use zerocopy::FromZeroes;
-
-#[derive(Inspect, InspectMut)]
-pub struct GuestVsmVpState {
-    // Used in VTL 2 exit code to determine which VTL to exit to.
-    pub exit_vtl: GuestVtl,
-}
 
 impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     pub fn hcvm_enable_partition_vtl(
@@ -356,11 +348,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         tracing::trace!("handling vtl call");
 
         self.vp.switch_vtl(self.intercepted_vtl, GuestVtl::Vtl1);
-        self.vp
-            .cvm_guest_vsm
-            .as_mut()
-            .expect("has guest vsm state")
-            .exit_vtl = GuestVtl::Vtl1;
+        self.vp.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
 
         // TODO GUEST_VSM: Force reevaluation of the VTL 1 APIC in case delivery of
         // low-priority interrupts was suppressed while in VTL 0.
