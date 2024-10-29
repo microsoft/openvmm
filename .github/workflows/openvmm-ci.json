@@ -5,7 +5,7 @@
     "0": {
       "flowey_lib_common::cache": [
         "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_cli:0:flowey_core/src/node.rs:884:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_cli:1:flowey_lib_common/src/download_gh_cli.rs:65:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-cli-2.52.0\"},\"is_secret\":false},\"label\":\"gh-cli\",\"restore_keys\":null}",
-        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:884:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:151:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-77bd52d77c7526ab\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
+        "{\"dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_common::download_gh_release:0:flowey_core/src/node.rs:884:34\"},\"is_secret\":false},\"hitvar\":{\"HitVar\":{\"backing_var\":\"flowey_lib_common::download_gh_release:1:flowey_lib_common/src/download_gh_release.rs:151:26\",\"is_secret\":false}},\"key\":{\"backing_var\":{\"Inline\":\"gh-release-download-2d4a36d8d4068e90\"},\"is_secret\":false},\"label\":\"gh-release-download\",\"restore_keys\":null}"
       ],
       "flowey_lib_common::cfg_cargo_common_flags": [
         "{\"SetLocked\":true}",
@@ -28,11 +28,21 @@
         "{\"Version\":\"2.52.0\"}"
       ],
       "flowey_lib_common::download_gh_release": [
-        "{\"file_name\":\"mdbook-v0.4.6-x86_64-unknown-linux-gnu.tar.gz\",\"path\":{\"backing_var\":\"flowey_lib_common::download_mdbook:0:flowey_lib_common/src/download_mdbook.rs:61:30\",\"is_secret\":false},\"repo_name\":\"mdBook\",\"repo_owner\":\"rust-lang\",\"tag\":\"v0.4.6\"}"
+        "{\"file_name\":\"mdbook-mermaid-v0.14.0-x86_64-unknown-linux-gnu.tar.gz\",\"path\":{\"backing_var\":\"flowey_lib_common::download_mdbook_mermaid:0:flowey_lib_common/src/download_mdbook_mermaid.rs:61:30\",\"is_secret\":false},\"repo_name\":\"mdbook-mermaid\",\"repo_owner\":\"badboy\",\"tag\":\"v0.14.0\"}",
+        "{\"file_name\":\"mdbook-v0.4.6-x86_64-unknown-linux-gnu.tar.gz\",\"path\":{\"backing_var\":\"flowey_lib_common::download_mdbook:0:flowey_lib_common/src/download_mdbook.rs:61:30\",\"is_secret\":false},\"repo_name\":\"mdBook\",\"repo_owner\":\"rust-lang\",\"tag\":\"v0.4.6\"}",
+        "{\"file_name\":\"mdbook-admonish-v1.18.0-x86_64-unknown-linux-gnu.tar.gz\",\"path\":{\"backing_var\":\"flowey_lib_common::download_mdbook_admonish:0:flowey_lib_common/src/download_mdbook_admonish.rs:61:30\",\"is_secret\":false},\"repo_name\":\"mdbook-admonish\",\"repo_owner\":\"tommilligan\",\"tag\":\"v1.18.0\"}"
       ],
       "flowey_lib_common::download_mdbook": [
-        "{\"GetMdbook\":{\"backing_var\":\"flowey_lib_hvlite::build_guide:0:flowey_lib_hvlite/src/build_guide.rs:26:30\",\"is_secret\":false}}",
+        "{\"GetMdbook\":{\"backing_var\":\"flowey_lib_hvlite::build_guide:0:flowey_lib_hvlite/src/build_guide.rs:28:30\",\"is_secret\":false}}",
         "{\"Version\":\"0.4.6\"}"
+      ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"GetMdbookAdmonish\":{\"backing_var\":\"flowey_lib_hvlite::build_guide:1:flowey_lib_hvlite/src/build_guide.rs:30:17\",\"is_secret\":false}}",
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"GetMdbookMermaid\":{\"backing_var\":\"flowey_lib_hvlite::build_guide:2:flowey_lib_hvlite/src/build_guide.rs:32:17\",\"is_secret\":false}}",
+        "{\"Version\":\"0.14.0\"}"
       ],
       "flowey_lib_common::download_protoc": [
         "{\"Version\":\"27.1\"}"
@@ -42,7 +52,9 @@
         "{\"RegisterRepo\":{\"allow_persist_credentials\":false,\"depth\":1,\"pre_run_deps\":[],\"repo_id\":\"hvlite\",\"repo_src\":\"GithubSelf\"}}"
       ],
       "flowey_lib_common::install_apt_pkg": [
-        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_mdbook:1:flowey_lib_common/src/download_mdbook.rs:69:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_mdbook:1:flowey_lib_common/src/download_mdbook.rs:69:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_mdbook_admonish:1:flowey_lib_common/src/download_mdbook_admonish.rs:69:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}",
+        "{\"Install\":{\"done\":{\"backing_var\":\"flowey_lib_common::download_mdbook_mermaid:1:flowey_lib_common/src/download_mdbook_mermaid.rs:69:32\",\"is_secret\":false},\"package_names\":[\"libarchive-tools\"]}}"
       ],
       "flowey_lib_common::install_azure_cli": [
         "{\"AutoInstall\":true}",
@@ -53,6 +65,7 @@
       ],
       "flowey_lib_common::install_rust": [
         "{\"AutoInstall\":true}",
+        "{\"EnsureInstalled\":{\"backing_var\":\"flowey_lib_hvlite::build_guide:6:flowey_lib_hvlite/src/build_guide.rs:38:37\",\"is_secret\":false}}",
         "{\"IgnoreVersion\":false}",
         "{\"Version\":\"1.82.0\"}"
       ],
@@ -73,10 +86,10 @@
         "{}"
       ],
       "flowey_lib_hvlite::artifact_guide::publish": [
-        "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_publish_from_guide\"},\"is_secret\":false},\"done\":{\"backing_var\":\"start1\",\"is_secret\":false},\"rendered_guide\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:3:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:34:34\"},\"is_secret\":false}}"
+        "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_publish_from_guide\"},\"is_secret\":false},\"done\":{\"backing_var\":\"start1\",\"is_secret\":false},\"rendered_guide\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:0:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:30:34\"},\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::build_guide": [
-        "{\"built_guide\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:3:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:34:34\",\"is_secret\":false},\"guide_source\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:1:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:32:14\"},\"is_secret\":false}}"
+        "{\"built_guide\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:0:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:30:34\",\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::download_lxutil": [
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
@@ -94,7 +107,7 @@
         "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
-        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_publish_guide:0:flowey_lib_hvlite/src/_jobs/build_and_publish_guide.rs:31:14\",\"is_secret\":false}}",
+        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_guide:3:flowey_lib_hvlite/src/build_guide.rs:35:14\",\"is_secret\":false}}",
         "{\"SetRepoId\":{\"backing_var\":{\"Inline\":\"hvlite\"},\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings": [
@@ -133,6 +146,12 @@
       ],
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
+      ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
       ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
@@ -260,6 +279,12 @@
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
       ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
+      ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
         "{\"Version\":\"27.1\"}"
@@ -373,6 +398,12 @@
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
       ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
+      ],
       "flowey_lib_common::download_protoc": [
         "{\"Version\":\"27.1\"}"
       ],
@@ -463,6 +494,12 @@
       ],
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
+      ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
       ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
@@ -579,6 +616,12 @@
       ],
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
+      ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
       ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
@@ -705,6 +748,12 @@
       ],
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
+      ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
       ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
@@ -873,6 +922,12 @@
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
       ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
+      ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
         "{\"Version\":\"27.1\"}"
@@ -1033,6 +1088,12 @@
       ],
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
+      ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
       ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
@@ -1203,6 +1264,12 @@
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
       ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
+      ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
         "{\"Version\":\"27.1\"}"
@@ -1365,6 +1432,12 @@
       ],
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
+      ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
       ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
@@ -1584,6 +1657,12 @@
       ],
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
+      ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
       ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
@@ -1814,6 +1893,12 @@
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
       ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
+      ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
         "{\"Version\":\"27.1\"}"
@@ -2020,6 +2105,12 @@
       ],
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
+      ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
       ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
@@ -2260,6 +2351,12 @@
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
       ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
+      ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
         "{\"Version\":\"27.1\"}"
@@ -2436,6 +2533,12 @@
       ],
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
+      ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
       ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
@@ -2639,6 +2742,12 @@
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
       ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
+      ],
       "flowey_lib_common::download_protoc": [
         "{\"Get\":{\"backing_var\":\"flowey_lib_hvlite::init_openvmm_magicpath_protoc:0:flowey_lib_hvlite/src/init_openvmm_magicpath_protoc.rs:24:30\",\"is_secret\":false}}",
         "{\"Version\":\"27.1\"}"
@@ -2841,6 +2950,12 @@
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
       ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
+      ],
       "flowey_lib_common::download_protoc": [
         "{\"Version\":\"27.1\"}"
       ],
@@ -2983,6 +3098,12 @@
       ],
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
+      ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
       ],
       "flowey_lib_common::download_protoc": [
         "{\"Version\":\"27.1\"}"
@@ -3127,6 +3248,12 @@
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
       ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
+      ],
       "flowey_lib_common::download_protoc": [
         "{\"Version\":\"27.1\"}"
       ],
@@ -3253,6 +3380,12 @@
       ],
       "flowey_lib_common::download_mdbook": [
         "{\"Version\":\"0.4.6\"}"
+      ],
+      "flowey_lib_common::download_mdbook_admonish": [
+        "{\"Version\":\"1.18.0\"}"
+      ],
+      "flowey_lib_common::download_mdbook_mermaid": [
+        "{\"Version\":\"0.14.0\"}"
       ],
       "flowey_lib_common::download_protoc": [
         "{\"Version\":\"27.1\"}"

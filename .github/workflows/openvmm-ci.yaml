@@ -107,38 +107,6 @@ jobs:
         )
         flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
-    - name: check if hvlite needs to be cloned
-      run: flowey e 0 flowey_lib_common::git_checkout 0
-      shell: bash
-    - run: |
-        flowey v 0 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' --write-to-gh-env FLOWEY_CONDITION
-      shell: bash
-      name: 🌼❓ Write to 'FLOWEY_CONDITION'
-    - run: |
-        flowey v 0 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar1 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar1'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: '1'
-        path: repo0
-        persist-credentials: ${{ env.floweyvar1 }}
-      name: checkout repo hvlite
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - run: ${{ github.workspace }}
-      shell: flowey v 0 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.workspace'
-    - name: report cloned repo directories
-      run: flowey e 0 flowey_lib_common::git_checkout 3
-      shell: bash
-    - name: resolve OpenVMM repo requests
-      run: flowey e 0 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-      shell: bash
-    - name: 🌼 write_into Var
-      run: flowey e 0 flowey_lib_hvlite::_jobs::build_and_publish_guide 0
-      shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 0 flowey_lib_common::download_gh_release 0
       shell: bash
@@ -212,8 +180,49 @@ jobs:
     - name: unpack mdbook
       run: flowey e 0 flowey_lib_common::download_mdbook 0
       shell: bash
-    - name: build HvLite guide (mdbook)
+    - name: unpack mdbook-admonish
+      run: flowey e 0 flowey_lib_common::download_mdbook_admonish 0
+      shell: bash
+    - name: unpack mdbook-mermaid
+      run: flowey e 0 flowey_lib_common::download_mdbook_mermaid 0
+      shell: bash
+    - name: check if hvlite needs to be cloned
+      run: flowey e 0 flowey_lib_common::git_checkout 0
+      shell: bash
+    - run: |
+        flowey v 0 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' --write-to-gh-env FLOWEY_CONDITION
+      shell: bash
+      name: 🌼❓ Write to 'FLOWEY_CONDITION'
+    - run: |
+        flowey v 0 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar1 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar1'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - id: flowey_lib_common__git_checkout__1
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: '1'
+        path: repo0
+        persist-credentials: ${{ env.floweyvar1 }}
+      name: checkout repo hvlite
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - run: ${{ github.workspace }}
+      shell: flowey v 0 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      name: 🌼 Read from 'github.workspace'
+    - name: report cloned repo directories
+      run: flowey e 0 flowey_lib_common::git_checkout 3
+      shell: bash
+    - name: resolve OpenVMM repo requests
+      run: flowey e 0 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: flowey e 0 flowey_lib_hvlite::build_guide 0
+      shell: bash
+    - name: install Rust
+      run: flowey e 0 flowey_lib_common::install_rust 0
+      shell: bash
+    - name: build HvLite guide (mdbook)
+      run: flowey e 0 flowey_lib_hvlite::build_guide 1
       shell: bash
     - name: 🌼 write_into Var
       run: flowey e 0 flowey_lib_hvlite::artifact_guide::publish 0

@@ -13,7 +13,7 @@ fn preserve_book_toml(f: impl FnOnce()) {
 
 macro_rules! do_install {
     ($cmd:expr, $args:expr) => {
-        std::process::Command::new($cmd)
+        std::process::Command::new(&$cmd)
             .args($args)
             .spawn()
             .unwrap()
@@ -30,23 +30,32 @@ fn main() {
 
     eprintln!("plugin={plugin}, args={args:?}");
 
+    let plugin_bin = {
+        if let Ok(path) = std::env::var(format!("SHIM_{}", plugin.replace('-', "_").to_uppercase()))
+        {
+            path
+        } else {
+            plugin.clone()
+        }
+    };
+
     match plugin.as_ref() {
         "mdbook-admonish" => {
             if !std::fs::exists("mdbook-admonish.css").unwrap() {
                 preserve_book_toml(|| {
-                    do_install!("mdbook-admonish", ["install"]);
+                    do_install!(plugin_bin, ["install"]);
                 })
             }
         }
         "mdbook-mermaid" => {
             if !std::fs::exists("mermaid.min.js").unwrap() {
-                do_install!("mdbook-mermaid", ["install"]);
+                do_install!(plugin_bin, ["install"]);
             }
         }
         other => panic!("unknown plugin '{other}'"),
     };
 
-    let status = std::process::Command::new(plugin)
+    let status = std::process::Command::new(plugin_bin)
         .args(args)
         .spawn()
         .unwrap()

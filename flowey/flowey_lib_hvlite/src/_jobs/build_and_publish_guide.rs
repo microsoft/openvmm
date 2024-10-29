@@ -27,14 +27,7 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params { artifact_dir, done } = request;
 
-        let guide_source = ctx
-            .reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir)
-            .map(ctx, |p| p.join("Guide"));
-
-        let rendered_guide = ctx.reqv(|v| crate::build_guide::Request {
-            guide_source,
-            built_guide: v,
-        });
+        let rendered_guide = ctx.reqv(|v| crate::build_guide::Request { built_guide: v });
 
         ctx.req(crate::artifact_guide::publish::Request {
             rendered_guide: rendered_guide.clone(),
