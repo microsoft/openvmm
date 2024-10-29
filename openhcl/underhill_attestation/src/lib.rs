@@ -260,13 +260,20 @@ pub async fn initialize_platform_security(
     suppress_attestation: bool,
     driver: LocalDriver,
 ) -> Result<PlatformAttestationData, Error> {
+
+    tracing::info!(CVM_ALLOWED,
+        attestation_type=?attestation_type,
+        secure_boot=attestation_vm_config.secure_boot,
+        tpm_enabled=attestation_vm_config.tpm_enabled,
+        tpm_persisted=attestation_vm_config.tpm_persisted,
+        "Reading security profile");
+
     // Read Security Profile from VMGS
     // Currently this only includes "Key Reference" data, which is not attested data, is opaque to the
     // Underhill, and is passed to the IGVMm agent outside of the report contents.
     let SecurityProfile { mut agent_data } =
         vmgs::read_security_profile(vmgs).await.map_err(|e| {
             Error::log_error_id(&e);
-            tracing::error!("failed to read security profile");
             AttestationErrorInner::ReadSecurityProfile(e)
         })?;
 
@@ -275,7 +282,7 @@ pub async fn initialize_platform_security(
     if suppress_attestation {
         tracing::info!(
             CVM_ALLOWED,
-            "Suppressing attestation, assuming unlocked vmgs and stateless tpm"
+            "Suppressing attestation"
         );
 
         return Ok(PlatformAttestationData {
@@ -292,12 +299,6 @@ pub async fn initialize_platform_security(
         AttestationType::Tdx => Some(Box::new(tee_call::TdxCall)),
         AttestationType::Host | AttestationType::Unsupported => None,
     };
-
-    tracing::info!(
-        CVM_ALLOWED,
-        "Initializing attestation config for platform type {:?}",
-        attestation_type
-    );
 
     let VmgsEncryptionKeys {
         ingress_rsa_kek,
@@ -318,7 +319,10 @@ pub async fn initialize_platform_security(
         .await
         .map_err(|e| {
             Error::log_error_id(&e);
-            tracing::error!("failed to retrieve key-encryption key. Error = {}", e);
+            tracing::error!(
+                attestation_type=?attestation_type,
+                agent_data=?agent_data,
+                "failed to retrieve key-encryption key");
             AttestationErrorInner::RequestVmgsEncryptionKeys(e)
         })?
     } else {
@@ -338,14 +342,13 @@ pub async fn initialize_platform_security(
     // Read Key Protector blob from VMGS
     tracing::info!(
         CVM_ALLOWED,
-        dek_minimal_size,
+        dek_minimal_size=dek_minimal_size,
         "Reading key protector from VMGS"
     );
     let mut key_protector = vmgs::read_key_protector(vmgs, dek_minimal_size)
         .await
         .map_err(|e| {
             Error::log_error_id(&e);
-            tracing::error!("failed to read key protector blob from VMGS. Error = {}", e);
             AttestationErrorInner::ReadKeyProtector(e)
         })?;
 
@@ -362,7 +365,6 @@ pub async fn initialize_platform_security(
         },
         Err(e) => {
             Error::log_error_id(&e);
-            tracing::error!("failed to read VM Id from VMGS. Error = {}", e);
             Err(AttestationErrorInner::ReadKeyProtectorById(e))
         }?,
     };
@@ -378,7 +380,7 @@ pub async fn initialize_platform_security(
 
     let vmgs_encrypted: bool = vmgs.get_encryption_algorithm() != EncryptionAlgorithm::NONE;
 
-    tracing::info!("Deriving keys. Tcb version is {:X?}", tcb_version);
+    tracing::info!(tcb_version=?tcb_version, "Deriving keys");
     let derived_keys_result = get_derived_keys(
         get,
         tee_call.as_deref(),
@@ -395,7 +397,9 @@ pub async fn initialize_platform_security(
     .await
     .map_err(|e| {
         Error::log_error_id(&e);
-        tracing::error!("failed to derive keys. Error = {}", e);
+        tracing::error!(
+            vmgs_encrypted=vmgs_encrypted,
+            "failed to derive keys");
         AttestationErrorInner::GetDerivedKeys(e)
     })?;
 
@@ -416,7 +420,6 @@ pub async fn initialize_platform_security(
             .await;
 
         Error::log_error_id(&e);
-        tracing::error!("failed to unlock VMGS. Error = {}", e);
         Err(AttestationErrorInner::UnlockVmgsDataStore(e))?
     }
 
@@ -430,8 +433,8 @@ pub async fn initialize_platform_security(
 
     tracing::info!(
         CVM_ALLOWED,
-        state_refresh_request_from_gsp,
-        vm_id_changed,
+        state_refresh_request_from_gsp=state_refresh_request_from_gsp,
+        vm_id_changed=vm_id_changed,
         "determine if refreshing tpm seeds is needed"
     );
 
@@ -442,10 +445,6 @@ pub async fn initialize_platform_security(
         Err(e) => {
             let return_e = AttestationErrorInner::ReadGuestSecretKey(e).into();
             Error::log_error_id(&return_e);
-            tracing::error!(
-                "failed to read secret key from unlocked VMGS. Error = {}",
-                return_e
-            );
             return Err(return_e);
         }
     };
