@@ -917,7 +917,7 @@ impl UhProcessor<'_, SnpBacked> {
         let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
 
         let halt = self.backing.lapics[next_vtl].halted
-            || self.backing.lapics[next_vtl].startup_suspend // TODO GUEST VSM
+            || self.backing.lapics[next_vtl].startup_suspend
             || tlb_halt;
 
         if halt && next_vtl == GuestVtl::Vtl1 && !tlb_halt {
