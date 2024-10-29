@@ -377,9 +377,8 @@ impl FixedPoolAllocator {
 }
 
 impl VfioDmaBuffer for FixedPoolAllocator {
-    /// prealloc_at must be called before calling 'create'.
+    /// Create new DMA buffer in heap memory.
     fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
-        tracing::info!("YSP: CORRECT create_dma_buffer len={len:X}");
         if len == 0 {
             anyhow::bail!("allocation of size 0 not supported");
         }
@@ -414,20 +413,13 @@ impl VfioDmaBuffer for FixedPoolAllocator {
             pfns,
         }))
     }
-}
 
-impl HostDmaAllocator for FixedPoolAllocator {
-    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
-        tracing::info!("YSP: CORRECT allocate_dma_buffer len={len:X}");
-        self.create_dma_buffer(len)
-    }
-
-    /// Restore contiguous buffer starting with given PFN.
-    /// YSP: TODO: Restore with the capacity.
+    /// Restore DMA buffer at the same location after servicing.
     fn restore_dma_buffer(
         &self,
+        addr_va: u64,
         len: usize,
-        _base_pfn: Option<u64>,
+        pfns: &[u64],
     ) -> anyhow::Result<MemoryBlock> {
         if len == 0 {
             anyhow::bail!("allocation of size 0 not supported");
@@ -438,6 +430,62 @@ impl HostDmaAllocator for FixedPoolAllocator {
         }
 
         let size_pages = len as u64 / HV_PAGE_SIZE;
+        assert_eq!(size_pages as usize, pfns.len());
+
+        // This is another hack until we have proper memory mapping.
+        let alloc = self
+            .alloc(
+                size_pages.try_into().expect("already checked nonzero"),
+                "mshv dma".into(),
+            )
+            .context("failed to allocate fixed mem")?;
+
+        let gpa_fd = hcl::ioctl::MshvVtlLow::new().context("failed to open gpa fd")?;
+        let mapping = sparse_mmap::SparseMapping::new_at(len, Some(addr_va))
+            .context("failed to create mapping")?;
+        let gpa = alloc.base_pfn() * HV_PAGE_SIZE;
+
+        // No need to set bit 63 because this buffer is visible to VTL2 only.
+        let file_offset = gpa;
+
+        tracing::trace!(gpa, file_offset, len, "mapping dma buffer");
+        mapping
+            .map_file(0, len, gpa_fd.get(), file_offset, true)
+            .context("unable to map allocation")?;
+
+        let pfns: Vec<_> = (alloc.base_pfn()..alloc.base_pfn() + alloc.size_pages).collect();
+
+        Ok(MemoryBlock::new(FixedDmaBuffer {
+            mapping,
+            _alloc: alloc,
+            pfns,
+        }))
+    }
+}
+
+impl HostDmaAllocator for FixedPoolAllocator {
+    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
+        self.create_dma_buffer(len)
+    }
+
+    /// Restore contiguous buffer starting with given PFN.
+    fn restore_dma_buffer(
+        &mut self,
+        addr_va: u64,
+        len: usize,
+        pfns: &[u64],
+    ) -> anyhow::Result<MemoryBlock> {
+        if len == 0 {
+            anyhow::bail!("allocation of size 0 not supported");
+        }
+
+        if len as u64 % HV_PAGE_SIZE != 0 {
+            anyhow::bail!("not a page-size multiple");
+        }
+
+        let size_pages = len as u64 / HV_PAGE_SIZE;
+        assert_eq!(size_pages as usize, pfns.len());
+        assert!(pfns.len() > 0);
 
         // Allocate from the previously reserved page range.
         let alloc = self
@@ -448,7 +496,7 @@ impl HostDmaAllocator for FixedPoolAllocator {
             .context("failed to allocate fixed mem")?;
 
         let gpa_fd = hcl::ioctl::MshvVtlLow::new().context("failed to open gpa fd")?;
-        let addr = _base_pfn.map(|a| a * HV_PAGE_SIZE); // YSP: FIXME: check this
+        let addr = Some(pfns[0] * HV_PAGE_SIZE);
         let mapping =
             sparse_mmap::SparseMapping::new_at(len, addr).context("failed to create mapping")?;
         let gpa = alloc.base_pfn() * HV_PAGE_SIZE;

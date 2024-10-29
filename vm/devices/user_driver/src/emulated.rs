@@ -264,10 +264,6 @@ impl HostDmaAllocator for EmulatedDmaAllocator {
         Ok(memory)
     }
 
-    fn reserve_dma_buffer(&self, _offset: usize, len: usize) -> anyhow::Result<MemoryBlock> {
-        self.allocate_dma_buffer(len)
-    }
-
     fn restore_dma_buffer(
         &mut self,
         _addr: u64,

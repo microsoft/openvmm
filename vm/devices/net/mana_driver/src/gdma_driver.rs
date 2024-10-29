@@ -211,7 +211,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
     }
 
     pub async fn new(driver: &impl Driver, mut device: T, num_vps: u32) -> anyhow::Result<Self> {
-        let bar0_mapping = device.map_bar(0)?;
+        let bar0_mapping = device.map_bar(0, None)?;
         // Only allocate the HWC interrupt now. Rest will be allocated later.
         let num_msix = 1;
         let mut interrupt0 = device.map_interrupt(0, 0)?;

@@ -108,11 +108,20 @@ impl NvmeManager {
             devices: HashMap::new(),
             vp_count,
             dma_buffer_spawner,
-            mem_block,
-            nvme_keepalive: false, // Will be set to true after save completed.
+            nvme_keepalive,
         };
         let task = driver.spawn("nvme-manager", async move {
             // Restore saved data (if present) before async worker thread runs.
+            // TODO: Check if indeed restore finishes before 'run'.
+            //saved_state.as_ref().map(|s| async move {
+            //    let _ = NvmeManager::restore(
+            //        &mut worker,
+            //        dma_buffer.clone(),
+            //        s,
+            //    )
+            //    .instrument(tracing::info_span!("nvme_manager_restore"))
+            //    .await;
+            //});
             if saved_state.is_some() {
                 let _ = NvmeManager::restore(
                     &mut worker,
@@ -129,7 +138,7 @@ impl NvmeManager {
             client: NvmeManagerClient {
                 sender: Arc::new(send),
             },
-            nvme_keepalive: true,
+            nvme_keepalive,
         }
     }
 
@@ -241,11 +250,6 @@ struct NvmeManagerWorker {
     #[inspect(skip)]
     dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
     vp_count: u32,
-    /// Contiguous DMA memory block to be sliced per queue.
-    #[inspect(skip)]
-    mem_block: MemoryBlock,
-    /// Next available offset to use.
-    mem_next_offset: usize,
     /// Bypass device shutdown.
     nvme_keepalive: bool,
 }
@@ -345,7 +349,6 @@ impl NvmeManagerWorker {
                 let driver = nvme_driver::NvmeDriver::new(
                     &self.driver_source,
                     self.vp_count,
-                    self.mem_block.subblock(next_offset, mem_required_size),
                     device,
                 )
                 .instrument(tracing::info_span!(
@@ -385,12 +388,6 @@ impl NvmeManagerWorker {
 
         let nvme_state = NvmeManagerSavedState {
             cpu_count: self.vp_count,
-            mem_buffer: Some(NvmeDmaBufferSavedState {
-                dma_base: self.mem_block.base_va(),
-                dma_size: self.mem_block.len(),
-                pfns: self.mem_block.pfns().to_vec(),
-            }),
-            mem_next_offset: self.mem_next_offset,
             nvme_disks,
         };
 
@@ -421,13 +418,10 @@ impl NvmeManagerWorker {
                 .instrument(tracing::info_span!("vfio_device_restore", pci_id = disk.pci_id.clone()))
                 .await?;
 
-            // YSP: FIXME: Count for multiple drivers.
-            let driver_block_len = self.mem_block.len();
-            let driver_mem_block = self.mem_block.subblock(0, driver_block_len);
             let nvme_driver = nvme_driver::NvmeDriver::restore(
                 &self.driver_source,
                 saved_state.cpu_count,
-                driver_mem_block,
+                dma_buffer.clone(),
                 vfio_device,
                 &disk.driver_state,
             )
@@ -436,7 +430,7 @@ impl NvmeManagerWorker {
 
             self.devices.insert(disk.pci_id.clone(), nvme_driver);
         }
-        self.mem_next_offset = saved_state.mem_next_offset;
+
         Ok(())
     }
 }
@@ -487,10 +481,7 @@ impl ResourceId<DiskHandleKind> for NvmeDiskConfig {
 pub struct NvmeManagerSavedState {
     #[mesh(1)]
     pub cpu_count: u32,
-    /// NVMe DMA buffer saved state.
     #[mesh(2)]
-    pub mem_buffer: Option<NvmeDmaBufferSavedState>,
-    #[mesh(3)]
     pub nvme_disks: Vec<NvmeSavedDiskConfig>,
 }
 
@@ -501,18 +492,4 @@ pub struct NvmeSavedDiskConfig {
     pub pci_id: String,
     #[mesh(2)]
     pub driver_state: nvme_driver::NvmeDriverSavedState,
-}
-
-#[derive(Protobuf)]
-#[mesh(package = "underhill")]
-pub struct NvmeDmaBufferSavedState {
-    /// GVA of the DMA buffer assigned to NVMe device(s).
-    #[mesh(1)]
-    pub dma_base: u64,
-    /// Total size of DMA buffer in bytes.
-    #[mesh(2)]
-    pub dma_size: usize,
-    /// List of PFNs for this DMA buffer.
-    #[mesh(3)]
-    pub pfns: Vec<u64>,
 }

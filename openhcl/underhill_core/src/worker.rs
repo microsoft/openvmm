@@ -41,7 +41,6 @@ use crate::loader::vtl2_config::RuntimeParameters;
 use crate::loader::LoadKind;
 use crate::nvme_manager::NvmeDiskConfig;
 use crate::nvme_manager::NvmeDiskResolver;
-use crate::nvme_manager::NvmeDmaBufferSavedState;
 use crate::nvme_manager::NvmeManager;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;

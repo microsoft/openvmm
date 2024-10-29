@@ -31,6 +31,7 @@ use std::num::Wrapping;
 use std::sync::Arc;
 use std::task::Poll;
 use thiserror::Error;
+use user_driver::HostDmaAllocator;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
@@ -129,7 +130,7 @@ impl QueuePair {
         PAGE_SIZE
     }
 
-    /// Return size in bytes for DMA transfer block.
+    /// Return size in bytes for DMA memory.
     fn dma_data_size() -> usize {
         const PER_QUEUE_PAGES: usize = 128;
         #[allow(clippy::assertions_on_constants)]
@@ -141,16 +142,24 @@ impl QueuePair {
         PER_QUEUE_PAGES * PAGE_SIZE
     }
 
+    /// Return total DMA buffer size needed for the queue pair (all chunks are contiguous).
+    pub fn required_dma_size() -> usize {
+        // 4k for SQ + 4k for CQ + 512k for data.
+        QueuePair::sq_size() + QueuePair::cq_size() + QueuePair::dma_data_size()
+    }
+
     pub fn new(
         spawner: impl SpawnDriver,
+        device: &impl DeviceBacking,
         qid: u16,
         sq_size: u16, // Requested SQ size in entries.
         cq_size: u16, // Requested CQ size in entries.
         interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
-        mem_block: MemoryBlock,
     ) -> anyhow::Result<Self> {
-        assert!(mem_block.len() >= Self::required_dma_size());
+        let mem_block = device
+            .host_allocator()
+            .allocate_dma_buffer(QueuePair::required_dma_size())?;
 
         let (queue_handler, alloc, mem) = QueuePair::allocate(qid, sq_size, cq_size, mem_block)?;
 
@@ -245,9 +254,9 @@ impl QueuePair {
         local_queue_data.sq_addr = self.sq_addr();
         local_queue_data.cq_addr = self.cq_addr();
 
-        local_queue_data.base_mem = Some(self.mem.base_va());
-        local_queue_data.mem_len = Some(self.mem.len());
-        local_queue_data.pfns = Some(self.mem.pfns().to_vec());
+        local_queue_data.base_va = self.mem.base_va();
+        local_queue_data.mem_len = self.mem.len();
+        local_queue_data.pfns = self.mem.pfns().to_vec();
 
         Ok(local_queue_data)
     }
@@ -620,13 +629,13 @@ impl QueueHandler {
             sq_state: self.sq.save(),
             cq_state: self.cq.save(),
             pending_cmds,
-            cpu: 0,         // Will be updated by the caller.
-            msix: 0,        // Will be updated by the caller.
-            sq_addr: 0,     // Will be updated by the caller.
-            cq_addr: 0,     // Will be updated by the caller.
-            base_mem: None, // Will be updated by the caller.
-            mem_len: None,  // Will be updated by the caller.
-            pfns: None,     // Will be updated by the caller.
+            cpu: 0,       // Will be updated by the caller.
+            msix: 0,      // Will be updated by the caller.
+            sq_addr: 0,   // Will be updated by the caller.
+            cq_addr: 0,   // Will be updated by the caller.
+            base_va: 0,   // Will be updated by the caller.
+            mem_len: 0,   // Will be updated by the caller.
+            pfns: vec![], // Will be updated by the caller.
         })
     }
 
@@ -699,11 +708,11 @@ pub struct QueuePairSavedState {
     #[mesh(7)]
     pub cq_addr: u64,
     #[mesh(8)]
-    pub base_mem: Option<u64>,
+    pub base_va: u64,
     #[mesh(9)]
-    pub mem_len: Option<usize>,
+    pub mem_len: usize,
     #[mesh(10)]
-    pub pfns: Option<Vec<u64>>,
+    pub pfns: Vec<u64>,
     #[mesh(11)]
     pub pending_cmds: Vec<PendingCommandSavedState>,
 }

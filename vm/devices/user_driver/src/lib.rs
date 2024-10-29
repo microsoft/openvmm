@@ -66,9 +66,6 @@ pub trait HostDmaAllocator: Send + Sync {
     /// Allocate a new block using default allocation strategy.
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
 
-    /// Reserve DMA bufer at specific offset within pre-allocated buffer.
-    fn reserve_dma_buffer(&self, offset: usize, len: usize) -> anyhow::Result<MemoryBlock>;
-
     /// Restore DMA bufer at pre-existing location.
     fn restore_dma_buffer(
         &mut self,
