@@ -426,8 +426,9 @@ impl ChangeDeviceState for NvmeController {
             msix: _,
             registers,
             qe_sizes,
-            workers: _, // TODO
+            workers,
         } = self;
+        workers.reset().await;
         cfg_space.reset();
         *registers = RegState::new();
         *qe_sizes.lock() = Default::default();
