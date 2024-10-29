@@ -36,16 +36,13 @@ pub fn check_crate_name_nodash(path: &Path) -> anyhow::Result<()> {
     {
         let props = metadata.as_table().context("invalid metadata format")?;
         for (k, v) in props.iter() {
-            match k {
-                "allow-dash-in-name" => {
-                    let is_bin = v
-                        .as_bool()
-                        .context("invalid type for allow-dash-in-name (must be bool)")?;
-                    if is_bin {
-                        return Ok(());
-                    }
+            if k == "allow-dash-in-name" {
+                let is_bin = v
+                    .as_bool()
+                    .context("invalid type for allow-dash-in-name (must be bool)")?;
+                if is_bin {
+                    return Ok(());
                 }
-                _ => anyhow::bail!("unknown metadata key: '{k}'"),
             }
         }
     }

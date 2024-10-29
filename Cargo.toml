@@ -41,7 +41,8 @@ members = [
   "vm/vmgs/vmgstool",
 ]
 exclude = [
-  "xsync"
+  "xsync",
+  "Guide/mdbook-openvmm-shim"
 ]
 
 [workspace.package]

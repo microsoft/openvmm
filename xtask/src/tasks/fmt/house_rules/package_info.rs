@@ -34,6 +34,23 @@ pub fn check_package_info(f: &Path, fix: bool) -> anyhow::Result<()> {
     let contents = fs_err::read_to_string(f)?;
     let mut parsed = contents.parse::<toml_edit::Document>()?;
 
+    let mut allow_missing_rust_version = false;
+    if let Some(metadata) = parsed
+        .get("package")
+        .and_then(|x| x.get("metadata"))
+        .and_then(|x| x.get("xtask"))
+        .and_then(|x| x.get("house-rules"))
+    {
+        let props = metadata.as_table().context("invalid metadata format")?;
+        for (k, v) in props.iter() {
+            if k == "allow-missing-rust-version" {
+                allow_missing_rust_version = v
+                    .as_bool()
+                    .context("invalid type for allow-dash-in-name (must be bool)")?;
+            }
+        }
+    }
+
     let Some(package) = parsed.get_mut("package") else {
         // workspace root, skip
         return Ok(());
@@ -51,7 +68,8 @@ pub fn check_package_info(f: &Path, fix: bool) -> anyhow::Result<()> {
     // Note careful use of non-short-circuiting or.
     let invalid = package.remove("authors").is_some()
         | package.remove("version").is_some()
-        | (old_rust_version.map(|o| o.to_string()) != Some(rust_version_field.to_string()));
+        | (!allow_missing_rust_version
+            && (old_rust_version.map(|o| o.to_string()) != Some(rust_version_field.to_string())));
 
     if invalid {
         if !fix {

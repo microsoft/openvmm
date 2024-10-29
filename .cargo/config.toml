@@ -2,8 +2,8 @@
 # Licensed under the MIT License.
 
 [alias]
-xtask = "run -p xtask --profile xtask --"
 xflowey = "run --quiet -p flowey_trampoline -- run -p flowey_hvlite --profile flowey -- pipeline run"
+xtask = "run -p xtask --profile xtask --"
 
 [env]
 # Use the packaged openssl libraries on musl targets.

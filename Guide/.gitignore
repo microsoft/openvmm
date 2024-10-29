@@ -1,3 +1,14 @@
 book
 obj
 _site
+
+# the shim has zero dependencies, and does not require a lockfile
+mdbook-openvmm-shim/Cargo.lock
+mdbook-openvmm-shim/target
+
+# rather than checking in the various html/js/css files that our preprocessors
+# require, we use a small `openvmm-mdbook-trampoline` shim to only add those files
+# to the `Guide` folder during build-time.
+mdbook-admonish.css
+mermaid-init.js
+mermaid.min.js

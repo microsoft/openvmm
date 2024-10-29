@@ -25,6 +25,8 @@ pub mod download_cargo_nextest;
 pub mod download_gh_cli;
 pub mod download_gh_release;
 pub mod download_mdbook;
+pub mod download_mdbook_admonish;
+pub mod download_mdbook_mermaid;
 pub mod download_nuget_exe;
 pub mod download_protoc;
 pub mod gh_download_azure_key_vault_secret;
