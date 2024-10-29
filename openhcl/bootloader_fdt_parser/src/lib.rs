@@ -493,14 +493,22 @@ impl ParsedBootDtInfo {
                 }
 
                 "openhcl" => {
-                    let info = parse_openhcl(&child)?;
-                    vtl0_mmio = info.vtl0_mmio;
-                    config_ranges = info.config_ranges;
-                    partition_memory_map = info.partition_memory_map;
-                    accepted_ranges = info.accepted_memory;
-                    vtl0_alias_map = info.vtl0_alias_map;
-                    memory_allocation_mode = info.memory_allocation_mode;
-                    isolation = info.isolation;
+                    let OpenhclInfo {
+                        vtl0_mmio: n_vtl0_mmio,
+                        config_ranges: n_config_ranges,
+                        partition_memory_map: n_partition_memory_map,
+                        accepted_memory: n_accepted_memory,
+                        vtl0_alias_map: n_vtl0_alias_map,
+                        memory_allocation_mode: n_memory_allocation_mode,
+                        isolation: n_isolation,
+                    } = parse_openhcl(&child)?;
+                    vtl0_mmio = n_vtl0_mmio;
+                    config_ranges = n_config_ranges;
+                    partition_memory_map = n_partition_memory_map;
+                    accepted_ranges = n_accepted_memory;
+                    vtl0_alias_map = n_vtl0_alias_map;
+                    memory_allocation_mode = n_memory_allocation_mode;
+                    isolation = n_isolation;
                 }
 
                 _ if child.name.starts_with("memory@") => {
