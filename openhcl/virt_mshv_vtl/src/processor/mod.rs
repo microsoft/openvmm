@@ -778,7 +778,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             lapics
                 .each_mut()
                 .map(|lapic| lapic.set_apic_base(apic_base).unwrap());
-            // Only the VTL 0 BSP LAPIC should be in the startup suspend state.
+            // Only the VTL 0 non-BSP LAPICs should be in the startup suspend state.
             let mut first = true;
             let lapic_states = lapics.map(|lapic| {
                 let state = LapicState {
