@@ -359,7 +359,11 @@ impl NvramServices {
                 .set_variable_ucs2(vendor, name, delete_attr.into(), data.to_vec())
                 .await;
 
-            let attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES_VOLATILE;
+            // TODO: For compatibility with older OpenHCL images that cannot handle a volatile
+            // variable, we still need to create with NV for now.  Once the above variable
+            // deletion code is deployed everywhere, replace with:
+            // let attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES_VOLATILE;
+            let attr = EfiVariableAttributes::DEFAULT_ATTRIBUTES;
             self.services
                 .set_variable_ucs2(vendor, name, attr.into(), data.to_vec())
                 .await
