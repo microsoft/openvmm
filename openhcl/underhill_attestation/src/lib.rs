@@ -260,7 +260,6 @@ pub async fn initialize_platform_security(
     suppress_attestation: bool,
     driver: LocalDriver,
 ) -> Result<PlatformAttestationData, Error> {
-
     tracing::info!(CVM_ALLOWED,
         attestation_type=?attestation_type,
         secure_boot=attestation_vm_config.secure_boot,
@@ -280,10 +279,7 @@ pub async fn initialize_platform_security(
     // If attestation is suppressed, return the `agent_data` that is required by
     // TPM AK cert request.
     if suppress_attestation {
-        tracing::info!(
-            CVM_ALLOWED,
-            "Suppressing attestation"
-        );
+        tracing::info!(CVM_ALLOWED, "Suppressing attestation");
 
         return Ok(PlatformAttestationData {
             host_attestation_settings: HostAttestationSettings {
@@ -342,7 +338,7 @@ pub async fn initialize_platform_security(
     // Read Key Protector blob from VMGS
     tracing::info!(
         CVM_ALLOWED,
-        dek_minimal_size=dek_minimal_size,
+        dek_minimal_size = dek_minimal_size,
         "Reading key protector from VMGS"
     );
     let mut key_protector = vmgs::read_key_protector(vmgs, dek_minimal_size)
@@ -397,9 +393,7 @@ pub async fn initialize_platform_security(
     .await
     .map_err(|e| {
         Error::log_error_id(&e);
-        tracing::error!(
-            vmgs_encrypted=vmgs_encrypted,
-            "failed to derive keys");
+        tracing::error!(vmgs_encrypted = vmgs_encrypted, "failed to derive keys");
         AttestationErrorInner::GetDerivedKeys(e)
     })?;
 
@@ -433,8 +427,8 @@ pub async fn initialize_platform_security(
 
     tracing::info!(
         CVM_ALLOWED,
-        state_refresh_request_from_gsp=state_refresh_request_from_gsp,
-        vm_id_changed=vm_id_changed,
+        state_refresh_request_from_gsp = state_refresh_request_from_gsp,
+        vm_id_changed = vm_id_changed,
         "determine if refreshing tpm seeds is needed"
     );
 
