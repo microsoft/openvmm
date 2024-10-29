@@ -20,9 +20,6 @@ openssl-vendored = ["underhill_attestation/openssl-vendored"]
 # Enable VPCI device support
 vpci = []
 
-# Enable NVMe-keepalive for servicing
-nvme_keepalive = []
-
 [target.'cfg(target_os = "linux")'.dependencies]
 vmotherboard = { workspace = true, features = [
     "encryption",
@@ -35,7 +32,7 @@ cvm_tracing.workspace = true
 diag_proto.workspace = true
 diag_server.workspace = true
 debug_worker_defs = { workspace = true, optional = true }
-fixed_pool_alloc =  { workspace = true, features = ["vfio", "nvme_keepalive"] }
+fixed_pool_alloc =  { workspace = true, features = ["vfio"] }
 page_pool_alloc =  { workspace = true, features = ["vfio"] }
 virt.workspace = true
 vmm_core.workspace = true

@@ -98,7 +98,7 @@ impl NvmeManager {
         driver_source: &VmTaskDriverSource,
         vp_count: u32,
         dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
-        mem_block: MemoryBlock,
+        nvme_keepalive: bool,
         saved_state: Option<NvmeSavedState>,
     ) -> Self {
         let (send, recv) = mesh::channel();

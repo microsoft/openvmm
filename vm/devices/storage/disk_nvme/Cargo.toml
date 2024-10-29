@@ -6,9 +6,6 @@ name = "disk_nvme"
 edition = "2021"
 rust-version.workspace = true
 
-[features]
-nvme_keepalive = []
-
 [target.'cfg(target_os = "linux")'.dependencies]
 disk_backend.workspace = true
 nvme_common.workspace = true

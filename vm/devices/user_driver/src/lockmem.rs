@@ -50,7 +50,6 @@ impl Mapping {
         Ok(Self { addr, len })
     }
 
-    #[cfg(feature = "nvme_keepalive")]
     fn new_in(addr_saved: u64, len: usize) -> std::io::Result<Self> {
         // SAFETY: No file descriptor is being passed.
         // addr is saved across servicing (unsafe).
@@ -160,17 +159,5 @@ pub struct LockedMemorySpawner;
 impl crate::vfio::VfioDmaBuffer for LockedMemorySpawner {
     fn create_dma_buffer(&self, len: usize) -> anyhow::Result<crate::memory::MemoryBlock> {
         Ok(crate::memory::MemoryBlock::new(LockedMemory::new(len)?))
-    }
-
-    /// Restore mapped DMA memory at the same physical location which was used before.
-    fn restore_dma_buffer(
-        &self,
-        addr: u64,
-        len: usize,
-        _pfns: &[u64],
-    ) -> anyhow::Result<crate::memory::MemoryBlock> {
-        Ok(crate::memory::MemoryBlock::new(LockedMemory::restore(
-            addr, len,
-        )?))
     }
 }

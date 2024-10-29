@@ -1620,12 +1620,13 @@ dependencies = [
  "hcl",
  "hvdef",
  "inspect",
+ "libc",
+ "memory_range",
  "parking_lot",
  "sparse_mmap",
  "thiserror 2.0.0",
  "tracing",
  "user_driver",
- "vm_topology",
 ]
 
 [[package]]
@@ -7334,6 +7335,7 @@ dependencies = [
  "bitvec",
  "build_rs_guest_arch",
  "cfg-if",
+ "fixed_pool_alloc",
  "fs-err",
  "guestmem",
  "hcl",

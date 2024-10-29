@@ -39,14 +39,6 @@ use zerocopy::FromBytes;
 pub trait VfioDmaBuffer: 'static + Send + Sync {
     /// Create a new DMA buffer of the given `len` bytes. Guaranteed to be zero-initialized.
     fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
-
-    /// Restore a dma buffer in the predefined location with the given `len` in bytes.
-    fn restore_dma_buffer(
-        &self,
-        addr: u64,
-        len: usize,
-        pfns: &[u64],
-    ) -> anyhow::Result<MemoryBlock>;
 }
 
 /// A device backend accessed via VFIO.

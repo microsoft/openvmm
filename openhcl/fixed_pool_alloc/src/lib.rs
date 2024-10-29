@@ -201,12 +201,14 @@ pub struct FixedPool {
 
 impl FixedPool {
     /// Create a fixed pool allocator, with the specified memory.
-    pub fn new(fixed_pool: MemoryRange) -> anyhow::Result<Self> {
+    pub fn new(fixed_pool: Vec<MemoryRange>) -> anyhow::Result<Self> {
         let mut pages = Vec::new();
-        pages.push(State::Free {
-            base_pfn: fixed_pool.start() / HV_PAGE_SIZE,
-            size_pages: fixed_pool.len() / HV_PAGE_SIZE,
-        });
+        for range in &fixed_pool {
+            pages.push(State::Free {
+                base_pfn: range.start() / HV_PAGE_SIZE,
+                size_pages: range.len() / HV_PAGE_SIZE,
+            });
+        }
 
         Ok(Self {
             inner: Arc::new(Mutex::new(FixedPoolInner { state: pages })),
@@ -232,12 +234,14 @@ pub struct FixedPoolAllocator {
 
 impl FixedPoolAllocator {
     /// Reserves fixed memory region for future allocations for DMA devices.
-    pub fn new(range: MemoryRange) -> anyhow::Result<Self> {
+    pub fn new(fixed_pool: Vec<MemoryRange>) -> anyhow::Result<Self> {
         let mut pages = Vec::new();
-        pages.push(State::Free {
-            base_pfn: range.start() / HV_PAGE_SIZE,
-            size_pages: range.len() / HV_PAGE_SIZE,
-        });
+        for range in &fixed_pool {
+            pages.push(State::Free {
+                base_pfn: range.start() / HV_PAGE_SIZE,
+                size_pages: range.len() / HV_PAGE_SIZE,
+            });
+        }
 
         Ok(Self {
             inner: Arc::new(Mutex::new(FixedPoolInner { state: pages })),

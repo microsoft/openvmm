@@ -1814,6 +1814,7 @@ async fn new_underhill_vm(
     };
 
     let nvme_manager = if env_cfg.nvme_vfio {
+        let nvme_keepalive = fixed_mem_pool.is_some();
         let nvme_saved_state = servicing_state.nvme_state.unwrap_or(None);
         let shared_vis_pool_spawner = shared_vis_pages_pool
             .as_ref()
@@ -1837,6 +1838,7 @@ async fn new_underhill_vm(
             processor_topology.vp_count(),
             vfio_dma_buffer_spawner,
             fixed_mem_pool,
+            nvme_keepalive,
             servicing_state.nvme_state.unwrap_or(None),
         );
 
