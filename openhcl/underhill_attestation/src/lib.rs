@@ -57,25 +57,16 @@ use zerocopy::FromZeroes;
 pub struct Error(AttestationErrorInner);
 
 impl Error {
-    fn log_attestation_error<T: Any + Debug>(filter: tracing::field::Empty, e: &T) {
+    fn log_error_id<T: Any + Debug>(e: &T) {
         let value_any = e as &dyn Any;
         let type_name = std::any::type_name::<T>();
 
         match value_any.downcast_ref::<String>() {
             Some(as_string) => {
-                tracing::error!(filter, "Unexpected string {:?}", as_string);
+                tracing::error!(CVM_ALLOWED, "Unexpected string {:?}", as_string);
             }
             None => {
-                tracing::error!(filter, "AttestationErrorId::{type_name}::{e:?}");
-            }
-        }
-
-        match value_any.downcast_ref::<AttestationErrorInner>() {
-            Some(attestation_error) => {
-                tracing::error!(filter, "Error message: {attestation_error}");
-            }
-            None => {
-                tracing::error!(filter, "Not of type AttestationErrorInner");
+                tracing::error!(CVM_ALLOWED, "AttestationErrorId::{type_name}::{e:?}");
             }
         }
     }
@@ -274,7 +265,7 @@ pub async fn initialize_platform_security(
     // Underhill, and is passed to the IGVMm agent outside of the report contents.
     let SecurityProfile { mut agent_data } =
         vmgs::read_security_profile(vmgs).await.map_err(|e| {
-            Error::log_attestation_error(CVM_ALLOWED, &e);
+            Error::log_error_id(&e);
             tracing::error!("failed to read security profile");
             AttestationErrorInner::ReadSecurityProfile(e)
         })?;
@@ -326,8 +317,8 @@ pub async fn initialize_platform_security(
         )
         .await
         .map_err(|e| {
-            Error::log_attestation_error(CVM_ALLOWED, &e);
-            tracing::error!("failed to retrieve key-encryption key");
+            Error::log_error_id(&e);
+            tracing::error!("failed to retrieve key-encryption key. Error = {}", e);
             AttestationErrorInner::RequestVmgsEncryptionKeys(e)
         })?
     } else {
@@ -353,8 +344,8 @@ pub async fn initialize_platform_security(
     let mut key_protector = vmgs::read_key_protector(vmgs, dek_minimal_size)
         .await
         .map_err(|e| {
-            Error::log_attestation_error(CVM_ALLOWED, &e);
-            tracing::error!("failed to read key protector blob from VMGS");
+            Error::log_error_id(&e);
+            tracing::error!("failed to read key protector blob from VMGS. Error = {}", e);
             AttestationErrorInner::ReadKeyProtector(e)
         })?;
 
@@ -370,8 +361,8 @@ pub async fn initialize_platform_security(
             found_id: false,
         },
         Err(e) => {
-            Error::log_attestation_error(CVM_ALLOWED, &e);
-            tracing::error!("failed to read VM Id from VMGS");
+            Error::log_error_id(&e);
+            tracing::error!("failed to read VM Id from VMGS. Error = {}", e);
             Err(AttestationErrorInner::ReadKeyProtectorById(e))
         }?,
     };
@@ -403,8 +394,8 @@ pub async fn initialize_platform_security(
     )
     .await
     .map_err(|e| {
-        Error::log_attestation_error(CVM_ALLOWED, &e);
-        tracing::error!("failed to derive keys");
+        Error::log_error_id(&e);
+        tracing::error!("failed to derive keys. Error = {}", e);
         AttestationErrorInner::GetDerivedKeys(e)
     })?;
 
@@ -424,8 +415,8 @@ pub async fn initialize_platform_security(
         get.event_log_fatal(guest_emulation_transport::api::EventLogId::ATTESTATION_FAILED)
             .await;
 
-        Error::log_attestation_error(CVM_ALLOWED, &e);
-        tracing::error!("failed to unlock VMGS");
+        Error::log_error_id(&e);
+        tracing::error!("failed to unlock VMGS. Error = {}", e);
         Err(AttestationErrorInner::UnlockVmgsDataStore(e))?
     }
 
@@ -450,8 +441,11 @@ pub async fn initialize_platform_security(
         Err(vmgs::ReadFromVmgsError::EntryNotFound(_)) => None,
         Err(e) => {
             let return_e = AttestationErrorInner::ReadGuestSecretKey(e).into();
-            Error::log_attestation_error(CVM_ALLOWED, &return_e);
-            tracing::error!("failed to read secret key from unlocked VMGS");
+            Error::log_error_id(&return_e);
+            tracing::error!(
+                "failed to read secret key from unlocked VMGS. Error = {}",
+                return_e
+            );
             return Err(return_e);
         }
     };
