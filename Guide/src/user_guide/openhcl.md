@@ -28,7 +28,7 @@ enabling several important Azure scenarios:
 To learn more about OpenHCL's architecture, please refer to
 [OpenHCL Architecture](../reference/architecture/openhcl.md).
 
-```admonish tip
+```admonish note
 _Note:_ As you explore the OpenVMM repo, you may find references to the term
 **Underhill**.
 
