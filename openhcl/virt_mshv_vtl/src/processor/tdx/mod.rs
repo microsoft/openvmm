@@ -1405,7 +1405,7 @@ impl UhProcessor<'_, TdxBacked> {
                     .get_vp_register(HvX64RegisterName::Xfem)
                     .map_err(|err| VpHaltReason::Hypervisor(UhRunVpError::EmulationState(err)))?
                     .as_u64();
-                let guest_state = crate::hardware_cvm::cpuid::CpuidGuestState {
+                let guest_state = crate::cvm_cpuid::CpuidGuestState {
                     xfem,
                     xss,
                     cr4: self.backing.cr4.read(&self.runner),

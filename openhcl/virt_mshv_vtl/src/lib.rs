@@ -12,7 +12,7 @@ mod devmsr;
 
 cfg_if::cfg_if!(
     if #[cfg(target_arch = "x86_64")] { // xtask-fmt allow-target-arch sys-crate
-        mod hardware_cvm;
+        mod cvm_cpuid;
         pub use processor::snp::shared_pages_required_per_cpu as snp_shared_pages_required_per_cpu;
         pub use processor::snp::SnpBacked;
         pub use processor::tdx::shared_pages_required_per_cpu as tdx_shared_pages_required_per_cpu;
@@ -123,7 +123,7 @@ pub enum Error {
     NewDevice(#[source] virt::x86::apic_software_device::DeviceIdInUse),
     #[error("failed to create cpuid tables for cvm")]
     #[cfg(guest_arch = "x86_64")]
-    CvmCpuid(#[source] hardware_cvm::cpuid::CpuidResultsError),
+    CvmCpuid(#[source] cvm_cpuid::CpuidResultsError),
     #[error("failed to update hypercall msr")]
     UpdateHypercallMsr,
     #[error("failed to update reference tsc msr")]
@@ -293,7 +293,7 @@ impl UhCvmVpState {
 /// Partition-wide state for CVMs.
 pub struct UhCvmPartitionState {
     #[inspect(skip)]
-    cpuid: hardware_cvm::cpuid::CpuidResults,
+    cpuid: cvm_cpuid::CpuidResults,
     /// VPs that have locked their TLB.
     #[inspect(
         with = "|arr| inspect::iter_by_index(arr.iter()).map_value(|bb| inspect::iter_by_index(bb.iter().map(|v| *v)))"
@@ -1548,7 +1548,7 @@ impl UhPartition {
     fn guest_vsm_available(
         env_cvm_guest_vsm: bool,
         isolation: IsolationType,
-        cvm_cpuid: Option<&hardware_cvm::cpuid::CpuidResults>,
+        cvm_cpuid: Option<&cvm_cpuid::CpuidResults>,
         hcl: &Hcl,
     ) -> bool {
         match isolation {
@@ -1624,21 +1624,17 @@ impl UhPartition {
     ) -> Result<Option<UhCvmPartitionState>, Error> {
         let cvm_state = match isolation {
             IsolationType::Snp => Some(UhCvmPartitionState {
-                cpuid: hardware_cvm::cpuid::CpuidResults::new(
-                    hardware_cvm::cpuid::CpuidResultsIsolationType::Snp {
-                        cpuid_pages: cvm_cpuid_info.unwrap(),
-                    },
-                )
+                cpuid: cvm_cpuid::CpuidResults::new(cvm_cpuid::CpuidResultsIsolationType::Snp {
+                    cpuid_pages: cvm_cpuid_info.unwrap(),
+                })
                 .map_err(Error::CvmCpuid)?,
                 tlb_locked_vps: VtlArray::from_fn(|_| {
                     BitVec::repeat(false, vp_count).into_boxed_bitslice()
                 }),
             }),
             IsolationType::Tdx => Some(UhCvmPartitionState {
-                cpuid: hardware_cvm::cpuid::CpuidResults::new(
-                    hardware_cvm::cpuid::CpuidResultsIsolationType::Tdx,
-                )
-                .map_err(Error::CvmCpuid)?,
+                cpuid: cvm_cpuid::CpuidResults::new(cvm_cpuid::CpuidResultsIsolationType::Tdx)
+                    .map_err(Error::CvmCpuid)?,
                 tlb_locked_vps: VtlArray::from_fn(|_| {
                     BitVec::repeat(false, vp_count).into_boxed_bitslice()
                 }),
@@ -1685,7 +1681,7 @@ impl UhPartition {
     fn construct_capabilities(
         topology: &ProcessorTopology,
         cpuid: &CpuidLeafSet,
-        cvm_cpuid: Option<&hardware_cvm::cpuid::CpuidResults>,
+        cvm_cpuid: Option<&cvm_cpuid::CpuidResults>,
         isolation: IsolationType,
     ) -> virt::x86::X86PartitionCapabilities {
         let mut native_cpuid_fn;
@@ -1700,7 +1696,7 @@ impl UhPartition {
                 let CpuidResult { eax, ebx, ecx, edx } = cvm_cpuid.guest_result(
                     x86defs::cpuid::CpuidFunction(leaf),
                     sub_leaf,
-                    &hardware_cvm::cpuid::CpuidGuestState {
+                    &cvm_cpuid::CpuidGuestState {
                         xfem: 1,
                         xss: 0,
                         cr4: 0,

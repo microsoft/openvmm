@@ -1004,7 +1004,7 @@ impl UhProcessor<'_, SnpBacked> {
 
         let stat = match sev_error_code {
             SevExitCode::CPUID => {
-                let guest_state = crate::hardware_cvm::cpuid::CpuidGuestState {
+                let guest_state = crate::cvm_cpuid::CpuidGuestState {
                     xfem: vmsa.xcr0(),
                     xss: vmsa.xss(),
                     cr4: vmsa.cr4(),
