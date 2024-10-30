@@ -79,7 +79,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
     ) -> anyhow::Result<()> {
         assert_eq!(config.len(), 1);
         let config = config.into_iter().next().unwrap();
-        let queue = Box::new(ConsommeQueue {
+        let mut queue = Box::new(ConsommeQueue {
             slot: self.consomme.clone(),
             consomme: self.consomme.lock().take(),
             state: QueueState {
@@ -92,6 +92,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             stats: Default::default(),
             driver: config.driver,
         });
+        queue.with_consomme(|c| c.refresh_driver());
         queues.push(queue);
         Ok(())
     }

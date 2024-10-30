@@ -267,6 +267,28 @@ impl<T: Client> Access<'_, T> {
         })
     }
 
+    pub(crate) fn refresh_tcp_driver(&mut self) {
+        self.inner.tcp.connections.retain(|_, conn| {
+            let Some(socket) = conn.socket.take() else {
+                return true;
+            };
+            let socket = socket.into_inner();
+            match PolledSocket::new(self.client.driver(), socket) {
+                Ok(socket) => {
+                    conn.socket = Some(socket);
+                    true
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = &err as &dyn std::error::Error,
+                        "failed to update driver for tcp connection"
+                    );
+                    false
+                }
+            }
+        })
+    }
+
     pub(crate) fn handle_tcp(
         &mut self,
         addresses: &Ipv4Addresses,

@@ -57,7 +57,7 @@ impl Inspect for Udp {
 }
 
 struct UdpConnection {
-    socket: PolledSocket<UdpSocket>,
+    socket: Option<PolledSocket<UdpSocket>>,
     guest_mac: EthernetAddress,
 }
 
@@ -82,13 +82,16 @@ impl UdpConnection {
         // results in latency problems, then we could try sizing this buffer
         // more carefully.
         while client.rx_mtu() > 0 {
-            match self
-                .socket
-                .poll_io(cx, InterestSlot::Read, PollEvents::IN, |socket| {
+            match self.socket.as_mut().unwrap().poll_io(
+                cx,
+                InterestSlot::Read,
+                PollEvents::IN,
+                |socket| {
                     socket
                         .get()
                         .recv_from(&mut eth.payload_mut()[IPV4_HEADER_LEN + UDP_HEADER_LEN..])
-                }) {
+                },
+            ) {
                 Poll::Ready(Ok((n, src_addr))) => {
                     let src_ip = if let IpAddr::V4(ip) = src_addr.ip() {
                         ip
@@ -132,6 +135,25 @@ impl<T: Client> Access<'_, T> {
         }
     }
 
+    pub(crate) fn refresh_udp_driver(&mut self) {
+        self.inner.udp.connections.retain(|_, conn| {
+            let socket = conn.socket.take().unwrap().into_inner();
+            match PolledSocket::new(self.client.driver(), socket) {
+                Ok(socket) => {
+                    conn.socket = Some(socket);
+                    true
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = &err as &dyn std::error::Error,
+                        "failed to update driver for udp connection"
+                    );
+                    false
+                }
+            }
+        });
+    }
+
     pub(crate) fn handle_udp(
         &mut self,
         frame: &EthernetRepr,
@@ -159,7 +181,7 @@ impl<T: Client> Access<'_, T> {
         };
 
         let conn = self.get_or_insert(guest_addr, None, Some(frame.src_addr))?;
-        match conn.socket.get().send_to(
+        match conn.socket.as_mut().unwrap().get().send_to(
             udp_packet.payload(),
             (Ipv4Addr::from(addresses.dst_addr), udp.dst_port),
         ) {
@@ -184,7 +206,7 @@ impl<T: Client> Access<'_, T> {
                 let socket =
                     PolledSocket::new(self.client.driver(), socket).map_err(DropReason::Io)?;
                 let conn = UdpConnection {
-                    socket,
+                    socket: Some(socket),
                     guest_mac: guest_mac.unwrap_or(self.inner.state.client_mac),
                 };
                 Ok(e.insert(conn))
