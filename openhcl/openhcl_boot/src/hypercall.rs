@@ -293,6 +293,10 @@ impl HvCall {
 
     /// Get the corresponding VP indices from a list of VP hardware IDs (APIC
     /// IDs on x64, MPIDR on ARM64).
+    ///
+    /// This always queries VTL0, since the hardware IDs are the same across the
+    /// VTLs in practice, and the hypercall only succeeds for VTL2 once VTL2 has
+    /// been enabled (which it might not be at this point).
     pub fn get_vp_index_from_hw_id<const N: usize>(
         &mut self,
         hw_ids: &[HwId],
@@ -300,7 +304,7 @@ impl HvCall {
     ) -> Result<(), hvdef::HvError> {
         let header = hvdef::hypercall::GetVpIndexFromApicId {
             partition_id: hvdef::HV_PARTITION_ID_SELF,
-            target_vtl: 2,
+            target_vtl: 0,
             reserved: [0; 7],
         };
 
