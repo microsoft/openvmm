@@ -302,6 +302,11 @@ pub struct UhCvmPartitionState {
         with = "|arr| inspect::iter_by_index(arr.iter()).map_value(|bb| inspect::iter_by_index(bb.iter().map(|v| *v)))"
     )]
     tlb_locked_vps: VtlArray<BitBox<AtomicU64>, 2>,
+    /// The current status of TLB locks, per-VP.
+    #[inspect(
+        with = "|vec| inspect::iter_by_index(vec.iter().map(|arr| inspect::iter_by_index(arr.iter())))"
+    )]
+    tlb_lock_info: Vec<VtlArray<TlbLockInfo, 2>>,
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
@@ -541,10 +546,6 @@ struct UhVpInner {
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
     hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<hvdef::hypercall::InitialVpContextX64>>>, 2>,
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
-    // TODO: move the below into some per-backing state, as it's only used on HCVM,
-    // but needs to be accessed by other VPs.
-    /// The current status of TLB locks.
-    tlb_lock_info: VtlArray<TlbLockInfo, 2>,
 }
 
 #[derive(Debug, Inspect)]
@@ -1265,7 +1266,7 @@ impl UhPartition {
                 // TODO: determine CPU index, which in theory could be different
                 // from the VP index.
                 let cpu_index = vp_info.base.vp_index.index();
-                UhVpInner::new(cpu_index, vp_info, params.topology.vp_count() as usize)
+                UhVpInner::new(cpu_index, vp_info)
             })
             .collect();
 
@@ -1625,25 +1626,32 @@ impl UhPartition {
         isolation: IsolationType,
         vp_count: usize,
     ) -> Result<Option<UhCvmPartitionState>, Error> {
-        let cvm_state = match isolation {
-            IsolationType::Snp => Some(UhCvmPartitionState {
-                cpuid: cvm_cpuid::CpuidResults::new(cvm_cpuid::CpuidResultsIsolationType::Snp {
+        let cpuid = match isolation {
+            IsolationType::Snp => Some(
+                cvm_cpuid::CpuidResults::new(cvm_cpuid::CpuidResultsIsolationType::Snp {
                     cpuid_pages: cvm_cpuid_info.unwrap(),
                 })
                 .map_err(Error::CvmCpuid)?,
-                tlb_locked_vps: VtlArray::from_fn(|_| {
-                    BitVec::repeat(false, vp_count).into_boxed_bitslice()
-                }),
-            }),
-            IsolationType::Tdx => Some(UhCvmPartitionState {
-                cpuid: cvm_cpuid::CpuidResults::new(cvm_cpuid::CpuidResultsIsolationType::Tdx)
+            ),
+            IsolationType::Tdx => Some(
+                cvm_cpuid::CpuidResults::new(cvm_cpuid::CpuidResultsIsolationType::Tdx)
                     .map_err(Error::CvmCpuid)?,
-                tlb_locked_vps: VtlArray::from_fn(|_| {
-                    BitVec::repeat(false, vp_count).into_boxed_bitslice()
-                }),
-            }),
+            ),
             IsolationType::Vbs | IsolationType::None => None,
         };
+
+        let cvm_state = cpuid.map(|cpuid| {
+            let tlb_lock_info = (0..vp_count)
+                .map(|_| VtlArray::from_fn(|_| TlbLockInfo::new(vp_count)))
+                .collect();
+            let tlb_locked_vps =
+                VtlArray::from_fn(|_| BitVec::repeat(false, vp_count).into_boxed_bitslice());
+            UhCvmPartitionState {
+                cpuid,
+                tlb_locked_vps,
+                tlb_lock_info,
+            }
+        });
 
         Ok(cvm_state)
     }

@@ -323,7 +323,7 @@ pub enum SidecarRemoveExit {
 
 impl UhVpInner {
     // Create a new vp's state.
-    pub fn new(cpu_index: u32, vp_info: TargetVpInfo, vp_count: usize) -> Self {
+    pub fn new(cpu_index: u32, vp_info: TargetVpInfo) -> Self {
         Self {
             wake_reasons: Default::default(),
             message_queues: VtlArray::from_fn(|_| MessageQueues::new()),
@@ -333,7 +333,6 @@ impl UhVpInner {
             hcvm_vtl1_enabled: Mutex::new(false),
             hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
             sidecar_exit_reason: Default::default(),
-            tlb_lock_info: VtlArray::<_, 2>::from_fn(|_| super::TlbLockInfo::new(vp_count)),
         }
     }
 
