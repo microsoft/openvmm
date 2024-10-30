@@ -22,6 +22,7 @@ mod mapping {
     use guestmem::GuestMemoryAccess;
     use guestmem::GuestMemoryBackingError;
     use guestmem::PAGE_SIZE;
+    use hcl::ioctl::snp::SnpPageError;
     use hcl::ioctl::AcceptPagesError;
     use hcl::ioctl::ApplyVtlProtectionsError;
     use hcl::ioctl::Mshv;
@@ -55,6 +56,14 @@ mod mapping {
     use x86defs::tdx::GpaVmAttributes;
     use x86defs::tdx::TdgMemPageAttrWriteR8;
     use x86defs::tdx::TdgMemPageGpaAttr;
+
+    /// Error querying vtl permissions on a page
+    #[allow(missing_docs)]
+    #[derive(Debug, Error)]
+    pub enum QueryVtlPermissionsError {
+        #[error("failed to query rmp permissions")]
+        Snp(#[source] SnpPageError),
+    }
 
     /// An implementation of a [`GuestMemoryAccess`] trait for Underhill VMs.
     #[derive(Debug, Inspect)]
@@ -611,20 +620,27 @@ mod mapping {
         }
 
         /// Query the current permissions for a vtl on a page.
-        fn vtl_permissions(&self, vtl: Vtl, gpa: u64) -> GpaVtlPermissions {
+        fn vtl_permissions(
+            &self,
+            vtl: Vtl,
+            gpa: u64,
+        ) -> Result<GpaVtlPermissions, QueryVtlPermissionsError> {
             match self.isolation {
                 IsolationType::None | IsolationType::Vbs => unimplemented!(),
                 IsolationType::Snp => {
                     // TODO CVM GUEST VSM: track the permissions directly in
                     // underhill. For now, use rmpquery.
                     assert!(self.isolation == IsolationType::Snp);
-                    let rmpadjust = self.mshv_vtl.rmpquery_page(
-                        gpa,
-                        vtl.try_into()
-                            .expect("only query non-VTL 2 permissions on hardware cvm"),
-                    );
+                    let rmpadjust = self
+                        .mshv_vtl
+                        .rmpquery_page(
+                            gpa,
+                            vtl.try_into()
+                                .expect("only query non-VTL 2 permissions on hardware cvm"),
+                        )
+                        .map_err(QueryVtlPermissionsError::Snp)?;
 
-                    GpaVtlPermissions::Snp(rmpadjust)
+                    Ok(GpaVtlPermissions::Snp(rmpadjust))
                 }
                 IsolationType::Tdx => todo!(),
             }
@@ -719,6 +735,7 @@ mod mapping {
         shared: Arc<GuestMemoryMapping>,
         encrypted: Arc<GuestMemoryMapping>,
         default_vtl_permissions: DefaultVtlPermissions,
+        vtl_protections_enabled: bool,
     }
 
     impl HardwareIsolatedMemoryProtector {
@@ -742,6 +759,7 @@ mod mapping {
                         vtl0: HV_MAP_GPA_PERMISSIONS_ALL,
                         vtl1: None,
                     },
+                    vtl_protections_enabled: false,
                 }),
                 layout,
                 acceptor,
@@ -1100,7 +1118,7 @@ mod mapping {
                 .iter()
                 .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE)));
 
-            let _lock = self.inner.lock();
+            let inner = self.inner.lock();
 
             let mut overlay = self.hypercall_overlay[vtl].lock();
 
@@ -1112,16 +1130,31 @@ mod mapping {
 
             let current_permissions = match self.acceptor.isolation {
                 IsolationType::None | IsolationType::Vbs => unreachable!(),
-                IsolationType::Snp => self
-                    .acceptor
-                    .vtl_permissions(vtl.into(), gpn * HV_PAGE_SIZE),
+                IsolationType::Snp => {
+                    if inner.vtl_protections_enabled {
+                        // Safe to assume that rmpquery is available because
+                        // guest vsm is only allowed if rmpquery is
+                        self.acceptor
+                            .vtl_permissions(vtl.into(), gpn * HV_PAGE_SIZE)
+                            .expect("able to query vtl protections")
+                    } else {
+                        // Since there's no VTL 1 and VTL 0 can't change its own
+                        // permissions, the permissions should be the same as
+                        // when VTL 2 initialized guest memory.
+                        GpaVtlPermissions::new(
+                            IsolationType::Snp,
+                            vtl.into(),
+                            HV_MAP_GPA_PERMISSIONS_ALL,
+                        )
+                    }
+                }
                 IsolationType::Tdx => {
                     // TODO TDX GUEST VSM: implement acceptor.vtl_permissions
-                    // For now, since guest vsm isn't enabled, this overlay can
-                    // only exist for VTL 0, which can't change its own
-                    // permissions. So assume that the permissions haven't
-                    // changed since VTL 2 initialized guest memory and they're
-                    // still all.
+                    // For now, since guest vsm isn't enabled (therefore no VTL
+                    // 1), and VTL 0 can't change its own permissions, the
+                    // permissions should be the same as when VTL 2 initialized
+                    // guest memory.
+
                     GpaVtlPermissions::new(
                         IsolationType::Tdx,
                         vtl.into(),
@@ -1159,6 +1192,10 @@ mod mapping {
             *overlay = None;
 
             // TODO CVM GUEST VSM: flush TLB
+        }
+
+        fn enable_vtl1_protections(&self) {
+            self.inner.lock().vtl_protections_enabled = true;
         }
     }
 }

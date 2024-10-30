@@ -545,8 +545,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
         protector.change_default_vtl_protections(targeted_vtl, protections)?;
 
-        // TODO GUEST VSM: actually use the enable_vtl_protection value
+        // TODO GUEST VSM: actually use the enable_vtl_protection value when
+        // deciding whether to check vtl access
         guest_vsm.enable_vtl_protection = value.enable_vtl_protection();
+        protector.enable_vtl1_protections();
 
         // Note: Zero memory on reset will happen regardless of this value,
         // since reset that involves resetting from UEFI isn't supported, and

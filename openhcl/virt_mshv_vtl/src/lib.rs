@@ -1206,6 +1206,9 @@ pub trait ProtectIsolatedMemory: Send + Sync {
 
     /// Disables the overlay for the hypercall code page for a target VTL.
     fn disable_hypercall_overlay(&self, vtl: GuestVtl);
+
+    /// Alerts the memory protector that vtl 1 can set protections on memory.
+    fn enable_vtl1_protections(&self);
 }
 
 /// A partially built partition. Used to allow querying partition capabilities

@@ -50,6 +50,8 @@ pub enum SnpPageError {
     Pvalidate(#[source] SnpError),
     #[error("rmpadjust failed")]
     Rmpadjust(#[source] SnpError),
+    #[error("rmpquery failed")]
+    Rmpquery(#[source] SnpError),
 }
 
 impl MshvVtl {
@@ -132,7 +134,8 @@ impl MshvVtl {
     }
 
     /// Gets the current vtl permissions for a page.
-    pub fn rmpquery_page(&self, gpa: u64, vtl: GuestVtl) -> SevRmpAdjust {
+    /// Use with caution: only supported on Genoa+
+    pub fn rmpquery_page(&self, gpa: u64, vtl: GuestVtl) -> Result<SevRmpAdjust, SnpPageError> {
         let page_count = 1u64;
         let mut flags = [u64::from(SevRmpAdjust::new().with_target_vmpl(match vtl {
             GuestVtl::Vtl0 => 2,
@@ -158,12 +161,14 @@ impl MshvVtl {
 
         // SAFETY: the input query is the correct type for this ioctl
         unsafe {
-            hcl_rmpquery_pages(self.file.as_raw_fd(), &query).expect("should always succeed");
+            hcl_rmpquery_pages(self.file.as_raw_fd(), &query)
+                .map_err(SnpError::Os)
+                .map_err(SnpPageError::Rmpquery)?;
         }
 
         assert!(pages_processed <= page_count);
 
-        SevRmpAdjust::from(flags[0])
+        Ok(SevRmpAdjust::from(flags[0]))
     }
 }
 
