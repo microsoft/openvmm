@@ -1010,7 +1010,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
     }
 
     fn import_vp_register(&mut self, register: R) -> anyhow::Result<()> {
-        if self.vtl < self.loader.max_vtl {
+        if self.vtl == self.loader.max_vtl {
             self.loader
                 .vp_context
                 .as_mut()
