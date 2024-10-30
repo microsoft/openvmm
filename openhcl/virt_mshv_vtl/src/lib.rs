@@ -548,6 +548,7 @@ struct UhVpInner {
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
 }
 
+#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
 #[derive(Debug, Inspect)]
 struct TlbLockInfo {
     /// The set of VPs that are waiting for this VP to release the TLB lock.
@@ -565,6 +566,7 @@ struct TlbLockInfo {
     sleeping: AtomicBool,
 }
 
+#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
 impl TlbLockInfo {
     fn new(vp_count: usize) -> Self {
         Self {
