@@ -3,14 +3,17 @@
 This page provides instructions for installing the necessary dependencies to
 build OpenVMM on Windows.
 
-> We _strongly_ suggest using [WSL2](./linux.md) for OpenVMM development, rather
-> than developing on Windows directly. Developing in WSL2 offers a smoother
-> development experience, while still allowing you to build and run OpenVMM on
-> Windows through the use of
-> [cross compilation](.//suggested_dev_env.md#wsl2-cross-compiling-from-wsl2-to-windows).
->
-> Additionally, it allows you to have a single clone of the OpenVMM repo
-> suitable for both OpenVMM and OpenHCL development.
+```admonish tip
+We _strongly_ suggest using [WSL2](./linux.md) for OpenVMM development, rather
+than developing on Windows directly.
+
+Developing in WSL2 offers a smoother development experience, while still
+allowing you to build and run OpenVMM on Windows through the use of
+[cross compilation](./suggested_dev_env.md#wsl2-cross-compiling-from-wsl2-to-windows).
+
+Additionally, it allows you to have a single clone of the OpenVMM repo
+suitable for both OpenVMM and OpenHCL development.
+```
 
 You must be running a recent version of Windows 11. Windows 10 is no longer
 supported as a development platform, due to needed WHP APIs.

@@ -20,15 +20,19 @@ runtime characteristics and user ergonomics are like, we currently suggest
 
 ## Examples
 
-> These examples all use `cargo run --`, with the assumption that you are a
-> developer building your own copy of OpenVMM locally!
->
-> To run these examples using a pre-compiled copy of OpenVMM, swap `cargo run
-> --` with `/path/to/openvmm`.
->
-> Moreover - these examples assume basic familiarity with the OpenVMM command
-> line, and willingness to deal with OpenVMM's various "rough edges" (as
-> described in [Getting Started: OpenVMM](../../openvmm.md#disclaimer)).
+```admonish warning
+These examples assume basic familiarity with the OpenVMM command line, and a
+willingness to deal with OpenVMM's various "rough edges" (as described in
+[Getting Started: OpenVMM](../../openvmm.md#disclaimer)).
+```
+
+```admonish tip
+These examples all use `cargo run --`, with the assumption that you are a
+developer building your own copy of OpenVMM locally!
+
+To run these examples using a pre-compiled copy of OpenVMM, swap `cargo run
+--` with `/path/to/openvmm`.
+```
 
 If you run into any issues, please refer to
 [OpenVMM: Troubleshooting](../../openvmm/troubleshooting.md), and/or

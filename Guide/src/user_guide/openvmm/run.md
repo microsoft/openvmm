@@ -32,11 +32,13 @@ on GitHub, and ensure it is in the same directory as `openvmm.exe`.
 
 ## Examples
 
-> These examples all use `cargo run --`, with the assumption that you are a
-> developer building your own copy of OpenVMM locally!
->
-> To run these examples using a pre-compiled copy of OpenVMM, swap `cargo run
-> --` with `/path/to/openvmm`.
+```admonish tip
+These examples all use `cargo run --`, with the assumption that you are a
+developer building your own copy of OpenVMM locally!
+
+To run these examples using a pre-compiled copy of OpenVMM, swap `cargo run
+--` with `/path/to/openvmm`.
+```
 
 If you run into any issues, please refer to [Troubleshooting](./troubleshooting.md).
 

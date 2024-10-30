@@ -4,11 +4,13 @@ When OpenHCL detects that it is running as a Confidential VM it will restrict th
 sends to the VM host. This is done in order to prevent any guest secrets from being leaked to the
 host.
 
-> Unless otherwise noted, all of the following restrictions only apply to
-> _release_ builds of OpenHCL for CVMs. The majority of these restrictions will
-> not apply to debug builds of OpenHCL.
->
-> This is controlled by the `enable_debug` flag in the IGVM JSON definition.
+```admonish info
+Unless otherwise noted, all of the following restrictions only apply to
+_release_ builds of OpenHCL for CVMs. The majority of these restrictions will
+not apply to debug builds of OpenHCL.
+
+This is controlled by the `enable_debug` flag in the IGVM JSON definition.
+```
 
 ## Simulating CVM restrictions
 
@@ -49,9 +51,13 @@ fn my_func() {
 }
 ```
 
-> Some of the tracing macros will not accept `cvm_tracing::CVM_ALLOWED` as an
-> argument, you will need to `use cvm_tracing::CVM_ALLOWED` and then use just
-> `CVM_ALLOWED`.
+```admonish tip
+Some of the tracing macros will not accept `cvm_tracing::CVM_ALLOWED` as an
+argument.
+
+Instead, you will need to `use cvm_tracing::CVM_ALLOWED`, and then use just
+`CVM_ALLOWED`.
+```
 
 ## ohcldiag-dev
 

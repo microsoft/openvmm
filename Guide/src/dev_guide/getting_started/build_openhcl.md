@@ -24,13 +24,15 @@ right binaries, downloading the right artifacts, etc... is neatly encapsulated
 behind a single `cargo xflowey build-igvm` command, which orchestrates the
 entire end-to-end OpenHCL build process.
 
-> NOTE: `cargo xflowey build-igvm` is designed to be used as part of the
-> developer inner-loop, and does _NOT_ have a stable CLI suitable for CI or any
-> other form of production automation!
->
-> In-tree pipelines and automation should interface with the underlying `flowey`
-> infrastructure that powers `cargo xflowey build-igvm`, _without_ relying on
-> the details of its CLI.
+```admonish attention
+`cargo xflowey build-igvm` is designed to be used as part of the
+developer inner-loop, and does _NOT_ have a stable CLI suitable for CI or any
+other form of production automation!
+
+In-tree pipelines and automation should interface with the underlying `flowey`
+infrastructure that powers `cargo xflowey build-igvm`, _without_ relying on
+the details of its CLI.
+```
 
 Using the `build-igvm` flow is as simple as running:
 

@@ -25,9 +25,11 @@ installation and set your password. You can open WSL by typing `wsl` or `bash`
 into Command Prompt or Powershell, or by opening the "Ubuntu" Windows Terminal
 profile that should have been created.
 
-> If you intend to cross-compile OpenVMM for Windows, please ensure you are
-> running a recent version of Windows 11. Windows 10 is no longer supported as a
-> development platform, due to needed WHP APIs.
+```admonish info
+If you intend to cross-compile OpenVMM for Windows, please ensure you are
+running a recent version of Windows 11. Windows 10 is no longer supported as a
+development platform, due to needed WHP APIs.
+```
 
 All subsequent commands on this page must be run within WSL2.
 

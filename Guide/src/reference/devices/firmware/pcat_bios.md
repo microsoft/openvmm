@@ -4,11 +4,13 @@ OpenVMM currently relies on proprietary Hyper-V "PCAT"[^pcat] BIOS firmware
 blobs in order to support booting and running various legacy x86 operating
 systems.
 
-> In the future, it would be great if OpenVMM could support alternative,
-> open-source x86 BIOS firmwares, such as [SeaBIOS].
->
-> Please reach out of if this is something you may be interested in helping out
-> with!
+```admonish question title="What about SeaBIOS, or other BIOS implementations?"
+In the future, it would be great if OpenVMM could support alternative,
+open-source x86 BIOS firmwares, such as [SeaBIOS].
+
+Please reach out of if this is something you may be interested in helping out
+with!
+```
 
 Two OpenVMM components work in tandem in order to load and run the BIOS:
 

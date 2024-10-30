@@ -3,11 +3,13 @@
 OpenVMM currently uses the `mu_msvm` UEFI firmware package in order to support
 booting and running modern EFI-boot capable operating systems.
 
-> In the future, it would be useful to also support alternative UEFI firmware
-> packages, such as [OVMF].
->
-> Please reach out of if this is something you may be interested in helping out
-> with!
+```admonish question title="What about OVMF, or other firmware packages?"
+In the future, it would be useful to also support alternative UEFI firmware
+packages, such as [OVMF].
+
+Please reach out of if this is something you may be interested in helping out
+with!
+```
 
 Two OpenVMM components work in tandem in order to load and run the `mu_msvm`
 UEFI firmware:

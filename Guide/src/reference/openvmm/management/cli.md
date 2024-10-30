@@ -1,10 +1,11 @@
 # CLI
 
-> Note: The following list is not exhaustive, and may be out of date. The most
-> up to date reference is always the code itself.
->
-> For a full list of command line arguments that can be passed to OpenVMM, run
-> `cargo run -- --help`.
+```admonish danger title="Disclaimer"
+The following list is not exhaustive, and may be out of date.
+
+The most up to date reference is always the [code itself](https://openvmm.dev/rustdoc/linux/hvlite_entry/struct.Options.html),
+as well as the generated CLI help (via `cargo run -- --help`).
+```
 
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
 * `--memory <SIZE>`: The VM's memory size. Defaults to 1GB.

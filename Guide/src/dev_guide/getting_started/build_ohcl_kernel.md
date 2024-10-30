@@ -1,10 +1,12 @@
 # Building a custom OpenHCL Linux Kernel
 
-> This step is NOT required in order to build OpenHCL!
->
-> Unless you have a specific reason, it is _strongly_ recommended to stick to
-> the pre-built Kernel image which is automatically downloaded as part of the
-> OpenHCL build process.
+```admonish note
+This step is NOT required in order to build OpenHCL!
+
+Unless you have a specific reason, it is _strongly_ recommended to stick to
+the pre-built Kernel image which is automatically downloaded as part of the
+OpenHCL build process.
+```
 
 ## Cloning the kernel repository
 
