@@ -43,6 +43,23 @@ over to it.
 
 Please follow the [official instructions](https://www.rust-lang.org/tools/install) to do so.
 
+## \[Linux] Additional Dependencies
+
+On Linux, there are various other dependencies you will need depending on what
+you're working on. On Debian-based distros such as Ubuntu, running the following
+command within WSL will install these dependencies.
+
+In the future, it is likely that this step will be folded into the
+`cargo xflowey restore-packages` command.
+
+```bash
+$ sudo apt install \
+  binutils              \
+  build-essential       \
+  gcc-aarch64-linux-gnu \
+  libssl-dev
+```
+
 ## Cloning the OpenVMM source
 
 **If using WSL2:** Do NOT clone the repo into Windows then try to access said
