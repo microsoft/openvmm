@@ -23,6 +23,7 @@ use hvdef::HvCacheType;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
 use hvdef::HvRegisterVsmPartitionConfig;
+use hvdef::HvRegisterVsmVpSecureVtlConfig;
 use hvdef::HvResult;
 use hvdef::HvVtlEntryReason;
 use hvdef::HvX64RegisterName;
@@ -317,6 +318,9 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 hvdef::HvRegisterVsmCapabilities::new().with_deny_lower_vtl_startup(true),
             )
             .into()),
+            HvX64RegisterName::VsmVpSecureConfigVtl0 => {
+                Ok(u64::from(self.vp.get_vsm_vp_secure_config_vtl0(vtl)?).into())
+            }
             HvX64RegisterName::VpAssistPage => Ok(self.vp.backing.cvm_state_mut().hv[vtl]
                 .vp_assist_page()
                 .into()),
@@ -546,6 +550,10 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             HvX64RegisterName::VsmPartitionConfig => self.vp.set_vsm_partition_config(
                 HvRegisterVsmPartitionConfig::from(reg.value.as_u64()),
                 vtl,
+            ),
+            HvX64RegisterName::VsmVpSecureConfigVtl0 => self.vp.set_vsm_vp_secure_config_vtl0(
+                vtl,
+                HvRegisterVsmVpSecureVtlConfig::from(reg.value.as_u64()),
             ),
             HvX64RegisterName::VpAssistPage => self.vp.backing.cvm_state_mut().hv[vtl]
                 .msr_write(hvdef::HV_X64_MSR_VP_ASSIST_PAGE, reg.value.as_u64())
@@ -861,9 +869,14 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
 
         // Only allowed from VTL 0
         if self.intercepted_vtl != GuestVtl::Vtl0 {
+            tracelimit::warn_ratelimited!(
+                "vtl call not allowed from vtl {:?}",
+                self.intercepted_vtl
+            );
             false
         } else if !*self.vp.inner.hcvm_vtl1_enabled.lock() {
             // VTL 1 must be enabled on the vp
+            tracelimit::warn_ratelimited!("vtl call not allowed because vtl 1 is not enabled");
             false
         } else {
             true
@@ -885,6 +898,13 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
 impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHandler<'_, '_, T, B> {
     fn is_vtl_return_allowed(&self) -> bool {
         tracing::trace!("checking if vtl return is allowed");
+
+        if self.intercepted_vtl != GuestVtl::Vtl1 {
+            tracelimit::warn_ratelimited!(
+                "vtl return not allowed from vtl {:?}",
+                self.intercepted_vtl
+            );
+        }
 
         // Only allowed from VTL 1
         self.intercepted_vtl != GuestVtl::Vtl0
@@ -1194,6 +1214,73 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         }
 
         Ok(reprocessing_required)
+    }
+
+    fn get_vsm_vp_secure_config_vtl0(
+        &mut self,
+        requesting_vtl: GuestVtl,
+    ) -> Result<HvRegisterVsmVpSecureVtlConfig, HvError> {
+        if requesting_vtl <= GuestVtl::Vtl0 {
+            return Err(HvError::AccessDenied);
+        }
+
+        if requesting_vtl != GuestVtl::Vtl1 {
+            return Err(HvError::InvalidParameter);
+        }
+
+        let target_vtl = GuestVtl::Vtl0;
+        let requesting_vtl = requesting_vtl.into();
+
+        let guest_vsm_lock = self.partition.guest_vsm.read();
+        let guest_vsm = guest_vsm_lock
+            .get_hardware_cvm()
+            .ok_or(HvError::InvalidVtlState)?;
+
+        let tlb_locked = self.is_tlb_locked(requesting_vtl, target_vtl);
+
+        Ok(HvRegisterVsmVpSecureVtlConfig::new()
+            .with_mbec_enabled(guest_vsm.mbec_enabled)
+            .with_tlb_locked(tlb_locked))
+    }
+
+    fn set_vsm_vp_secure_config_vtl0(
+        &mut self,
+        requesting_vtl: GuestVtl,
+        config: HvRegisterVsmVpSecureVtlConfig,
+    ) -> Result<(), HvError> {
+        if requesting_vtl <= GuestVtl::Vtl0 {
+            return Err(HvError::AccessDenied);
+        }
+
+        if requesting_vtl != GuestVtl::Vtl1 {
+            return Err(HvError::InvalidParameter);
+        }
+
+        if config.supervisor_shadow_stack_enabled() || config.hardware_hvpt_enabled() {
+            return Err(HvError::InvalidRegisterValue);
+        }
+
+        let target_vtl = GuestVtl::Vtl0;
+        let requesting_vtl = requesting_vtl.into();
+
+        let guest_vsm_lock = self.partition.guest_vsm.read();
+        let guest_vsm = guest_vsm_lock
+            .get_hardware_cvm()
+            .ok_or(HvError::InvalidVtlState)?;
+
+        // MBEC must always be enabled or disabled partition-wide.
+        if config.mbec_enabled() != guest_vsm.mbec_enabled {
+            return Err(HvError::InvalidRegisterValue);
+        }
+
+        let tlb_locked = self.is_tlb_locked(requesting_vtl, target_vtl);
+        match (tlb_locked, config.tlb_locked()) {
+            (true, false) => self.unlock_tlb_lock(requesting_vtl),
+            (false, true) => self.set_tlb_lock(requesting_vtl, target_vtl),
+            _ => (), // Nothing to do
+        };
+
+        Ok(())
     }
 }
 

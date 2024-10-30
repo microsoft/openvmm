@@ -400,6 +400,16 @@ impl GuestVsmState {
             _ => None,
         }
     }
+
+    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    fn get_hardware_cvm(&self) -> Option<&HardwareCvmVtl1State> {
+        match self {
+            GuestVsmState::Enabled {
+                vtl1: GuestVsmVtl1State::HardwareCvm { state },
+            } => Some(state),
+            _ => None,
+        }
+    }
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
