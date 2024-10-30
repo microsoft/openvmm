@@ -25,7 +25,7 @@ mod tcp;
 mod udp;
 mod windows;
 
-use inspect::Inspect;
+use inspect::InspectMut;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::driver::Driver;
@@ -136,11 +136,11 @@ pub struct Consomme {
     udp: udp::Udp,
 }
 
-impl Inspect for Consomme {
-    fn inspect(&self, req: inspect::Request<'_>) {
+impl InspectMut for Consomme {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.respond()
             .field("tcp", &self.tcp)
-            .field("udp", &self.udp);
+            .field_mut("udp", &mut self.udp);
     }
 }
 

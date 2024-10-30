@@ -687,6 +687,7 @@ dependencies = [
  "futures",
  "getrandom",
  "inspect",
+ "inspect_counters",
  "libc",
  "mesh",
  "pal_async",

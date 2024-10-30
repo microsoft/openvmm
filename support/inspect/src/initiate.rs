@@ -282,7 +282,7 @@ impl Node {
         self.compute_since(last, duration.as_secs_f64())
     }
 
-    /// Returns an object that implements [`std::fmt::Display`] to output JSON.
+    /// Returns an object that implements [`Display`](core::fmt::Display) to output JSON.
     pub fn json(&self) -> impl '_ + fmt::Display {
         JsonDisplay(self)
     }
@@ -408,7 +408,7 @@ impl<'a> InspectionBuilder<'a> {
 /// ```rust
 /// # use inspect::{Inspect, Request, Node, inspect, Value, ValueKind};
 /// # use futures::executor::block_on;
-/// # use std::time::Duration;
+/// # use core::time::Duration;
 /// struct Obj;
 /// impl Inspect for Obj {
 ///     fn inspect(&self, req: Request) {

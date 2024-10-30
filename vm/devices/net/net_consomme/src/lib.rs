@@ -59,8 +59,8 @@ impl ConsommeEndpoint {
 
 impl InspectMut for ConsommeEndpoint {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        if let Some(consomme) = &*self.consomme.lock() {
-            consomme.inspect(req);
+        if let Some(consomme) = &mut *self.consomme.lock() {
+            consomme.inspect_mut(req);
         }
     }
 }
@@ -126,7 +126,7 @@ pub struct ConsommeQueue {
 impl InspectMut for ConsommeQueue {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.respond()
-            .merge(self.consomme.as_ref().unwrap())
+            .merge(self.consomme.as_mut().unwrap())
             .field("rx_avail", self.state.rx_avail.len())
             .field("rx_ready", self.state.rx_ready.len())
             .field("tx_avail", self.state.tx_avail.len())
