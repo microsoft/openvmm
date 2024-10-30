@@ -176,16 +176,7 @@ impl<R: Debug + GuestArch> ImageLoad<R> for Loader<'_, R> {
             .context("unable to zero remaining import")
     }
 
-    fn import_vp_register(&mut self, vtl: Vtl, register: R) -> anyhow::Result<()> {
-        // Only importing to the max VTL for registers is currently allowed, as
-        // only one set of registers is stored.
-        if vtl != self.max_vtl {
-            anyhow::bail!(
-                "vtl specified {vtl:?} is not the max enabled vtl {:?}",
-                self.max_vtl
-            );
-        }
-
+    fn import_vp_register(&mut self, register: R) -> anyhow::Result<()> {
         let entry = self.regs.entry(std::mem::discriminant(&register));
         match entry {
             std::collections::hash_map::Entry::Occupied(_) => {
@@ -270,16 +261,11 @@ impl<R: Debug + GuestArch> ImageLoad<R> for Loader<'_, R> {
         }
     }
 
-    fn set_vp_context_page(
-        &mut self,
-        _vtl: Vtl,
-        _page_base: u64,
-        _acceptance: BootPageAcceptance,
-    ) -> anyhow::Result<()> {
+    fn set_vp_context_page(&mut self, _page_base: u64) -> anyhow::Result<()> {
         unimplemented!()
     }
 
-    fn vp_context_page(&self, _vtl: Vtl) -> anyhow::Result<u64> {
+    fn set_lower_vtl_context_page(&mut self, _page_base: u64) -> anyhow::Result<()> {
         unimplemented!()
     }
 
@@ -318,11 +304,9 @@ impl<R: Debug + GuestArch> ImageLoad<R> for Loader<'_, R> {
         _relocation_alignment: u64,
         _minimum_relocation_gpa: u64,
         _maximum_relocation_gpa: u64,
-        _is_vtl2: bool,
         _apply_rip_offset: bool,
         _apply_gdtr_offset: bool,
         _vp_index: u16,
-        _vtl: Vtl,
     ) -> anyhow::Result<()> {
         unimplemented!()
     }
@@ -333,7 +317,6 @@ impl<R: Debug + GuestArch> ImageLoad<R> for Loader<'_, R> {
         _size_pages: u64,
         _used_pages: u64,
         _vp_index: u16,
-        _vtl: Vtl,
     ) -> anyhow::Result<()> {
         unimplemented!()
     }

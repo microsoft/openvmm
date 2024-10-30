@@ -89,6 +89,8 @@ pub enum Error {
     UnsupportedGuestArch,
     #[error("igvm file does not support vbs")]
     NoVbsSupport,
+    #[error("vp context for lower VTL not supported")]
+    LowerVtlContext,
 }
 
 fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
@@ -995,6 +997,10 @@ fn load_igvm_x86(
                 ref registers,
                 compatibility_mask: _,
             } => {
+                if from_igvm_vtl(vtl) != max_vtl {
+                    return Err(Error::LowerVtlContext);
+                }
+
                 let mut cr3: Option<u64> = None;
                 let mut cr4: Option<u64> = None;
 
@@ -1097,7 +1103,7 @@ fn load_igvm_x86(
                     };
 
                     loader
-                        .import_vp_register(from_igvm_vtl(vtl), reloc_reg)
+                        .import_vp_register(reloc_reg)
                         .map_err(Error::Loader)?;
                 }
 

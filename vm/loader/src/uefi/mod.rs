@@ -356,7 +356,6 @@ pub mod x86_64 {
     use crate::importer::X86Register;
     use crate::uefi::get_sec_entry_point_offset;
     use crate::uefi::SEC_FIRMWARE_VOLUME_OFFSET;
-    use hvdef::Vtl;
     use hvdef::HV_PAGE_SIZE;
     use page_table::x64::align_up_to_page_size;
     use page_table::x64::build_page_tables_64;
@@ -523,7 +522,7 @@ pub mod x86_64 {
 
         let mut import_reg = |register| {
             importer
-                .import_vp_register(Vtl::Vtl0, register)
+                .import_vp_register(register)
                 .map_err(Error::Importer)
         };
 
@@ -666,10 +665,7 @@ pub mod x86_64 {
             // Supply the address of the parameter info block so it can be used
             // before PEI parses the config information.
             importer
-                .import_vp_register(
-                    Vtl::Vtl0,
-                    X86Register::R12(config_area_base_page * HV_PAGE_SIZE),
-                )
+                .import_vp_register(X86Register::R12(config_area_base_page * HV_PAGE_SIZE))
                 .map_err(Error::Importer)?;
 
             // Reserve two pages to hold CPUID information. The first CPUID page
@@ -708,19 +704,19 @@ pub mod x86_64 {
             // config block, since it has different memory protection properties.
             // The first page following the config block is chosen for the
             // allocation.
+            let vp_context_page_number = config_area_base_page + allocator.total() as u64;
             importer
-                .set_vp_context_page(
-                    Vtl::Vtl0,
-                    config_area_base_page + allocator.total() as u64,
-                    BootPageAcceptance::VpContext,
-                )
+                .set_vp_context_page(vp_context_page_number)
                 .map_err(Error::Importer)?;
-        }
 
-        // Obtain the page number used for the VP context.
-        parameter_info.vp_context_page_number = importer
-            .vp_context_page(Vtl::Vtl0)
-            .map_err(Error::Importer)?;
+            parameter_info.vp_context_page_number = vp_context_page_number;
+        } else {
+            // If this is not an SNP image, then the VP context page does not
+            // need to be reported to UEFI. Put in the TDX reset page value for
+            // consistency with old code; this probably is unnecessary (or the
+            // UEFI firmware should just be improved to not need this).
+            parameter_info.vp_context_page_number = 0xfffff;
+        }
 
         // Encode the total amount of pages used by all parameters.
         parameter_info.parameter_page_count = allocator.total();
@@ -844,7 +840,6 @@ pub mod aarch64 {
     use crate::importer::BootPageAcceptance;
     use crate::importer::ImageLoad;
     use aarch64defs::Cpsr64;
-    use hvdef::Vtl;
     use hvdef::HV_PAGE_SIZE;
     use zerocopy::AsBytes;
 
@@ -928,11 +923,7 @@ pub mod aarch64 {
 
         let total_size = blob_offset + blob_size;
 
-        let mut import_reg = |reg| {
-            importer
-                .import_vp_register(Vtl::Vtl0, reg)
-                .map_err(Error::Importer)
-        };
+        let mut import_reg = |reg| importer.import_vp_register(reg).map_err(Error::Importer);
 
         import_reg(Aarch64Register::Cpsr(
             Cpsr64::new().with_sp(true).with_el(1).into(),

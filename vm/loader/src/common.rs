@@ -8,7 +8,6 @@ use crate::importer::ImageLoad;
 use crate::importer::SegmentRegister;
 use crate::importer::TableRegister;
 use crate::importer::X86Register;
-use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use vm_topology::memory::MemoryLayout;
 use x86defs::GdtEntry;
@@ -63,7 +62,7 @@ pub fn import_default_gdt(
     )?;
 
     // Import GDTR and selectors.
-    let mut import_reg = |register| importer.import_vp_register(Vtl::Vtl0, register);
+    let mut import_reg = |register| importer.import_vp_register(register);
     import_reg(X86Register::Gdtr(TableRegister {
         base: gdt_page_base * HV_PAGE_SIZE,
         limit: (size_of::<GdtEntry>() * DEFAULT_GDT_COUNT - 1) as u16,

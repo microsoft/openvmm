@@ -421,7 +421,7 @@ pub fn load_linux_arm64(
 
     // Set the registers separately so they won't conflict with the UEFI boot when
     // `load_kernel_and_initrd_arm64` is used for VTL2 direct kernel boot.
-    loader::linux::set_direct_boot_registers_arm64(&mut loader, &load_info, hvdef::Vtl::Vtl0)
+    loader::linux::set_direct_boot_registers_arm64(&mut loader, &load_info)
         .map_err(Error::Loader)?;
 
     Ok(loader.initial_regs())

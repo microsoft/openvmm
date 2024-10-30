@@ -407,9 +407,7 @@ where
             1 << 48,
             true,
             true,
-            true,
             0, // BSP
-            Vtl::Vtl2,
         )?;
 
         // Tell the loader page table relocation information.
@@ -418,7 +416,6 @@ where
             page_table_region_size / HV_PAGE_SIZE,
             page_table.len() as u64 / HV_PAGE_SIZE,
             0,
-            Vtl::Vtl2,
         )?;
     }
 
@@ -519,7 +516,7 @@ where
 
     let mut import_reg = |register| {
         importer
-            .import_vp_register(Vtl::Vtl2, register)
+            .import_vp_register(register)
             .map_err(Error::Importer)
     };
 
@@ -652,7 +649,7 @@ where
         )?;
 
         let vmsa_page_base = config_region_page_base + PARAVISOR_CONFIG_VMSA_PAGE_INDEX;
-        importer.set_vp_context_page(Vtl::Vtl2, vmsa_page_base, BootPageAcceptance::VpContext)?;
+        importer.set_vp_context_page(vmsa_page_base)?;
     }
 
     // Load measured config.
@@ -694,7 +691,7 @@ where
         // state? Right now, UEFI is the only thing that actually sets VTL0 vp
         // context, but if PCAT/Linux did, this wouldn't work.
         importer
-            .set_vp_context_page(Vtl::Vtl0, vp_context_page, BootPageAcceptance::Exclusive)
+            .set_lower_vtl_context_page(vp_context_page)
             .map_err(Error::Importer)?;
     }
 
@@ -1057,7 +1054,7 @@ where
         // state? Right now, UEFI is the only thing that actually sets VTL0 vp
         // context, but if PCAT/Linux did, this wouldn't work.
         importer
-            .set_vp_context_page(Vtl::Vtl0, vp_context_page, BootPageAcceptance::Exclusive)
+            .set_lower_vtl_context_page(vp_context_page)
             .map_err(Error::Importer)?;
     }
 
@@ -1104,10 +1101,8 @@ where
             PARAVISOR_DEFAULT_MEMORY_BASE_ADDRESS,
             1 << 48,
             true,
-            true,
             false,
             0, // BSP
-            Vtl::Vtl2,
         )?;
 
         // Tell the loader page table relocation information.
@@ -1116,7 +1111,6 @@ where
             page_table_region_size / HV_PAGE_SIZE,
             page_tables.len() as u64 / HV_PAGE_SIZE,
             0,
-            Vtl::Vtl2,
         )?;
     }
 
@@ -1132,7 +1126,7 @@ where
 
     let mut import_reg = |register| {
         importer
-            .import_vp_register(Vtl::Vtl2, register)
+            .import_vp_register(register)
             .map_err(Error::Importer)
     };
 

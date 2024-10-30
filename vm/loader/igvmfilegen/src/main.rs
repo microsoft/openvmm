@@ -14,6 +14,8 @@ use anyhow::bail;
 use anyhow::Context;
 use clap::Parser;
 use file_loader::IgvmLoaderRegister;
+use file_loader::IgvmVtlLoader;
+use hvdef::Vtl;
 use igvm::IgvmFile;
 use igvm_defs::SnpPolicy;
 use igvm_defs::TdxPolicy;
@@ -211,10 +213,20 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
         let mut loader = IgvmLoader::<R>::new(with_paravisor, loader_isolation_type);
 
         // Load VTL0, then VTL2, if present.
-        let vtl0_load_info = load_vtl0(&mut loader, &config.vtl0, &resources)?;
+        let vtl0_load_info = load_image(
+            &mut loader.for_vtl(Vtl::Vtl0),
+            &config.vtl0,
+            &resources,
+            Vtl0LoadInfo::None,
+        )?;
 
         if config.max_vtl == 2 {
-            load_vtl2(&mut loader, &config.vtl2, &resources, vtl0_load_info)?;
+            load_image(
+                &mut loader.for_vtl(Vtl::Vtl2),
+                &config.vtl2,
+                &resources,
+                vtl0_load_info,
+            )?;
         }
 
         let igvm_output = loader
@@ -551,11 +563,12 @@ impl IgvmfilegenRegister for Aarch64Register {
     }
 }
 
-/// Load an image into VTL0.
-fn load_vtl0<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
-    loader: &mut IgvmLoader<R>,
+/// Load an image.
+fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
+    loader: &mut IgvmVtlLoader<'_, R>,
     config: &'a VtlConfig,
     resources: &'a Resources,
+    vtl0_load_info: Vtl0LoadInfo<'_>,
 ) -> anyhow::Result<Vtl0LoadInfo<'a>> {
     tracing::debug!(?config, "loading into VTL0");
 
@@ -616,34 +629,6 @@ fn load_vtl0<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
 
             Vtl0LoadInfo::Linux(command_line, load_info)
         }
-        VtlConfig::Underhill { .. } => {
-            bail!("underhill can only be loaded into VTL2")
-        }
-    };
-
-    Ok(load_info)
-}
-
-/// Load an image into VTL2.
-fn load_vtl2<R: IgvmfilegenRegister + GuestArch>(
-    loader: &mut IgvmLoader<R>,
-    config: &VtlConfig,
-    resources: &Resources,
-    vtl0_load_info: Vtl0LoadInfo<'_>,
-) -> anyhow::Result<()> {
-    tracing::debug!(
-        config = ?config,
-        load_info = ?&vtl0_load_info,
-        "Loading into VTL2 with VTL0 load info",
-    );
-
-    match config {
-        VtlConfig::None => {
-            // Nothing is loaded.
-        }
-        VtlConfig::Uefi { .. } => {
-            bail!("uefi can only be loaded into VTL0")
-        }
         VtlConfig::Underhill {
             command_line,
             static_command_line,
@@ -697,7 +682,7 @@ fn load_vtl2<R: IgvmfilegenRegister + GuestArch>(
                     supports_linux: None,
                 },
                 Vtl0LoadInfo::Uefi(load_info) => Vtl0Config {
-                    supports_pcat: loader.arch() == GuestArchKind::X86_64,
+                    supports_pcat: loader.loader().arch() == GuestArchKind::X86_64,
                     supports_uefi: Some(load_info),
                     supports_linux: None,
                 },
@@ -711,7 +696,7 @@ fn load_vtl2<R: IgvmfilegenRegister + GuestArch>(
                 },
             };
 
-            let command_line = if loader.confidential_debug() {
+            let command_line = if loader.loader().confidential_debug() {
                 tracing::info!("enabling underhill confidential debug environment flag");
                 format!(
                     "{command_line} {}=1",
@@ -739,11 +724,10 @@ fn load_vtl2<R: IgvmfilegenRegister + GuestArch>(
                 vtl0_load_config,
             )
             .context("underhill kernel loader")?;
-        }
-        VtlConfig::Linux { .. } => {
-            bail!("linux can only be loaded into vtl0")
-        }
-    }
 
-    Ok(())
+            Vtl0LoadInfo::None
+        }
+    };
+
+    Ok(load_info)
 }

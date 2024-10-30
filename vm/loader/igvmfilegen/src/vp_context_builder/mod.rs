@@ -7,7 +7,6 @@ pub mod snp;
 pub mod tdx;
 pub mod vbs;
 
-use hvdef::Vtl;
 use igvm::IgvmDirectiveHeader;
 use loader::importer::BootPageAcceptance;
 
@@ -33,15 +32,12 @@ pub trait VpContextBuilder {
     type Register;
 
     /// Import a register to the BSP at the given vtl.
-    fn import_vp_register(&mut self, vtl: Vtl, register: Self::Register);
+    fn import_vp_register(&mut self, register: Self::Register);
 
     /// Define the base of the GPA range to be used for architecture-specific VP context data.
-    fn set_vp_context_memory(&mut self, vtl: Vtl, page_base: u64, acceptance: BootPageAcceptance);
-
-    /// Obtain the page base of the GPA range to be used for architecture specific VP context data.
-    fn vp_context_page(&self, vtl: Vtl) -> anyhow::Result<u64>;
+    fn set_vp_context_memory(&mut self, page_base: u64);
 
     /// Finalize all VP context data. Returns architecture specific data that should be either imported
     /// into guest memory space or added directly to the IGVM file.
-    fn finalize(self: Box<Self>) -> Vec<VpContextState>;
+    fn finalize(&mut self, state: &mut Vec<VpContextState>);
 }

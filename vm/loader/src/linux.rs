@@ -18,7 +18,6 @@ use aarch64defs::TranslationControlEl1;
 use aarch64defs::TranslationGranule0;
 use aarch64defs::TranslationGranule1;
 use bitfield_struct::bitfield;
-use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use loader_defs::linux as defs;
 use page_table::x64::align_up_to_large_page_size;
@@ -392,7 +391,7 @@ pub fn load_config(
     // Set common X64 registers. Segments already set by default gdt.
     let mut import_reg = |register| {
         importer
-            .import_vp_register(Vtl::Vtl0, register)
+            .import_vp_register(register)
             .map_err(Error::Importer)
     };
 
@@ -672,13 +671,10 @@ where
 pub fn set_direct_boot_registers_arm64(
     importer: &mut impl ImageLoad<Aarch64Register>,
     load_info: &LoadInfo,
-    vtl: Vtl,
 ) -> Result<(), Error> {
-    assert!(vtl == Vtl::Vtl0);
-
     let mut import_reg = |register| {
         importer
-            .import_vp_register(vtl, register)
+            .import_vp_register(register)
             .map_err(Error::Importer)
     };
 
