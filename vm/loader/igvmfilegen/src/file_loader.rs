@@ -1017,6 +1017,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
                 .unwrap()
                 .import_vp_register(register);
         } else {
+            assert_eq!(self.vtl, Vtl::Vtl0);
             self.loader
                 .lower_vtl_context
                 .as_mut()
