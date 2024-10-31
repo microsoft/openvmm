@@ -12,6 +12,7 @@ use crate::memory::PAGE_SIZE;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use crate::HostDmaAllocator;
+use crate::vfio::VfioDmaBuffer;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
@@ -266,11 +267,22 @@ impl HostDmaAllocator for EmulatedDmaAllocator {
 
     fn restore_dma_buffer(
         &mut self,
-        _addr: u64,
         len: usize,
         _pfns: &[u64],
     ) -> anyhow::Result<MemoryBlock> {
         self.allocate_dma_buffer(len)
+    }
+}
+
+impl VfioDmaBuffer for EmulatedDmaAllocator {
+    fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
+        Ok(MemoryBlock::new(
+            self.shared_mem.alloc(len).context("out of memory")?,
+        ))
+    }
+
+    fn restore_dma_buffer(&self, len: usize, _pfns: &[u64]) -> anyhow::Result<MemoryBlock> {
+        self.create_dma_buffer(len)
     }
 }
 

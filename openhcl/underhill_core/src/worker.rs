@@ -117,7 +117,6 @@ use uevent::UeventListener;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::lockmem::LockedMemorySpawner;
-use user_driver::memory::MemoryBlock;
 use user_driver::vfio::VfioDmaBuffer;
 use virt::state::HvRegisterState;
 use virt::Partition;

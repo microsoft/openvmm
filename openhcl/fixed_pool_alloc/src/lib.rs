@@ -19,9 +19,7 @@ use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
-use std::ffi::c_void;
 use std::num::NonZeroU64;
-use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use thiserror::Error;
 use user_driver::memory::MemoryBlock;
@@ -52,75 +50,6 @@ enum State {
         size_pages: u64,
         tag: String,
     },
-}
-
-// SAFETY: The result of mmap call is safe to share between threads.
-unsafe impl Send for FixedMapping {}
-// SAFETY: The result of mmap call is safe to share between threads.
-unsafe impl Sync for FixedMapping {}
-
-struct FixedMapping {
-    addr: *mut c_void,
-    len: usize,
-}
-
-impl FixedMapping {
-    fn new(len: usize) -> std::io::Result<Self> {
-        // SAFETY: calling mmap as documented to create a new mapping.
-        let addr = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                len,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_LOCKED,
-                -1,
-                0,
-            )
-        };
-        if addr == libc::MAP_FAILED {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(Self { addr, len })
-    }
-
-    fn new_in(addr_fixed: u64, len: usize, file_mapping: impl AsRawFd) -> std::io::Result<Self> {
-        // SAFETY: addr_fixed and len are restored after servicing.
-        let addr = unsafe {
-            // MAP_UNINITIALIZED is documented but not defined in MapFlags.
-            // MAP_ANONYMOUS is documented as performing zeroinit. Otherwise, fd must be set.
-            libc::mmap(
-                addr_fixed as *mut c_void,
-                len,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_LOCKED | libc::MAP_FIXED,
-                file_mapping.as_raw_fd(),
-                0,
-            )
-        };
-        if addr == libc::MAP_FAILED {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(Self { addr, len })
-    }
-
-    fn lock(&self) -> std::io::Result<()> {
-        // SAFETY: calling mlock with a validated result of mmap.
-        if unsafe { libc::mlock(self.addr, self.len) } < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(())
-    }
-}
-
-impl Drop for FixedMapping {
-    fn drop(&mut self) {
-        if !self.addr.is_null() {
-            // SAFETY: The address and length are a valid mmap result.
-            unsafe {
-                libc::munmap(self.addr, self.len);
-            }
-        }
-    }
 }
 
 #[derive(Inspect, Debug)]
@@ -417,7 +346,6 @@ impl VfioDmaBuffer for FixedPoolAllocator {
     /// Restore DMA buffer at the same location after servicing.
     fn restore_dma_buffer(
         &self,
-        addr_va: u64,
         len: usize,
         pfns: &[u64],
     ) -> anyhow::Result<MemoryBlock> {
@@ -441,7 +369,7 @@ impl VfioDmaBuffer for FixedPoolAllocator {
             .context("failed to allocate fixed mem")?;
 
         let gpa_fd = hcl::ioctl::MshvVtlLow::new().context("failed to open gpa fd")?;
-        let mapping = sparse_mmap::SparseMapping::new_at(len, Some(addr_va))
+        let mapping = sparse_mmap::SparseMapping::new(len)
             .context("failed to create mapping")?;
         let gpa = alloc.base_pfn() * HV_PAGE_SIZE;
 
@@ -471,7 +399,6 @@ impl HostDmaAllocator for FixedPoolAllocator {
     /// Restore contiguous buffer starting with given PFN.
     fn restore_dma_buffer(
         &mut self,
-        addr_va: u64,
         len: usize,
         pfns: &[u64],
     ) -> anyhow::Result<MemoryBlock> {
@@ -496,9 +423,8 @@ impl HostDmaAllocator for FixedPoolAllocator {
             .context("failed to allocate fixed mem")?;
 
         let gpa_fd = hcl::ioctl::MshvVtlLow::new().context("failed to open gpa fd")?;
-        let addr = Some(pfns[0] * HV_PAGE_SIZE);
         let mapping =
-            sparse_mmap::SparseMapping::new_at(len, addr).context("failed to create mapping")?;
+            sparse_mmap::SparseMapping::new(len).context("failed to create mapping")?;
         let gpa = alloc.base_pfn() * HV_PAGE_SIZE;
         // No need to set bit 63 because this buffer is visible to VTL2 only.
         let file_offset = gpa;

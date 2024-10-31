@@ -4,12 +4,12 @@
 //! Implementation of an admin or IO queue pair.
 
 use super::spec;
+use crate::driver::save_restore::PendingCommandSavedState;
+use crate::driver::save_restore::QueuePairSavedState;
 use crate::page_allocator::PageAllocator;
 use crate::page_allocator::ScopedPages;
 use crate::queues::CompletionQueue;
-use crate::queues::CompletionQueueSavedState;
 use crate::queues::SubmissionQueue;
-use crate::queues::SubmissionQueueSavedState;
 use crate::registers::DeviceRegisters;
 use futures::StreamExt;
 use guestmem::ranges::PagedRange;
@@ -17,7 +17,6 @@ use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
 use inspect_counters::Counter;
-use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh::Cancel;
@@ -667,52 +666,4 @@ pub(crate) fn admin_cmd(opcode: spec::AdminOpcode) -> spec::Command {
         cdw0: spec::Cdw0::new().with_opcode(opcode.0),
         ..FromZeroes::new_zeroed()
     }
-}
-
-#[repr(C)]
-#[derive(Protobuf, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
-#[mesh(package = "underhill")]
-pub struct PendingCommandSavedState {
-    #[mesh(1)]
-    pub command: [u8; 64],
-    #[mesh(2)]
-    pub cid: u16,
-}
-
-impl From<&[u8]> for PendingCommandSavedState {
-    fn from(value: &[u8]) -> Self {
-        let mut command: [u8; 64] = [0; 64];
-        command.copy_from_slice(value);
-        let cid = ((command[0] as u16) << 8) | command[1] as u16;
-        Self { command, cid }
-    }
-}
-
-#[derive(Protobuf, Clone, Debug)]
-#[mesh(package = "underhill")]
-pub struct QueuePairSavedState {
-    #[mesh(1)]
-    /// Which CPU handles requests.
-    pub cpu: u32,
-    #[mesh(2)]
-    /// Interrupt vector (MSI-X)
-    pub msix: u32,
-    #[mesh(3)]
-    pub max_cids: usize,
-    #[mesh(4)]
-    pub sq_state: SubmissionQueueSavedState,
-    #[mesh(5)]
-    pub cq_state: CompletionQueueSavedState,
-    #[mesh(6)]
-    pub sq_addr: u64,
-    #[mesh(7)]
-    pub cq_addr: u64,
-    #[mesh(8)]
-    pub base_va: u64,
-    #[mesh(9)]
-    pub mem_len: usize,
-    #[mesh(10)]
-    pub pfns: Vec<u64>,
-    #[mesh(11)]
-    pub pending_cmds: Vec<PendingCommandSavedState>,
 }

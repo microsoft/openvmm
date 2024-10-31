@@ -17,7 +17,6 @@ use test_with_tracing::test;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
 use user_driver::DeviceBacking;
-use user_driver::HostDmaAllocator;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -72,12 +71,8 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         .unwrap();
 
     let device = EmulatedDevice::new(nvme, msi_set, mem);
-    let mem_block = device
-        .host_allocator()
-        .allocate_dma_buffer(payload_len)
-        .unwrap();
 
-    let mut driver = NvmeDriver::new(&driver_source, CPU_COUNT, mem_block, device)
+    let mut driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
         .await
         .unwrap();
 
@@ -185,12 +180,8 @@ async fn test_nvme_save_restore(driver: DefaultDriver) {
         .await
         .unwrap();
     let device = EmulatedDevice::new(nvme_ctrl, msi_x, emu_mem);
-    let mem_block = device
-        .host_allocator()
-        .allocate_dma_buffer(payload_len)
-        .unwrap();
 
-    let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, mem_block.clone(), device)
+    let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
         .await
         .unwrap();
 
@@ -216,10 +207,11 @@ async fn test_nvme_save_restore(driver: DefaultDriver) {
         },
     );
     let new_device = EmulatedDevice::new(new_nvme_ctrl, new_msi_x, new_emu_mem);
+    let allocator = Arc::new(new_device.host_allocator());
     let _new_nvme_driver = NvmeDriver::restore(
         &driver_source,
         CPU_COUNT,
-        mem_block.clone(),
+        allocator,
         new_device,
         &saved_state,
     )

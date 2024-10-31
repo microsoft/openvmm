@@ -4,14 +4,15 @@
 //! Implementation of the device driver core.
 
 use super::spec;
+use crate::driver::save_restore::QueuePairSavedState;
 use crate::queue_pair::admin_cmd;
 use crate::queue_pair::Issuer;
 use crate::queue_pair::QueuePair;
-use crate::queue_pair::QueuePairSavedState;
 use crate::registers::Bar0;
 use crate::registers::DeviceRegisters;
 use crate::Namespace;
 use crate::NamespaceError;
+use crate::NvmeDriverSavedState;
 use crate::RequestError;
 use crate::NVME_PAGE_SHIFT;
 use anyhow::Context as _;
@@ -598,7 +599,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .map(|a| {
                 // Restore memory block for admin queue pair.
                 let mem_block = dma_buffer
-                    .restore_dma_buffer(a.base_va, a.mem_len, a.pfns.as_slice())
+                    .restore_dma_buffer(a.mem_len, a.pfns.as_slice())
                     .expect("unable to restore mem block");
                 QueuePair::restore(driver.clone(), interrupt0, registers.clone(), mem_block, a)
                     .unwrap()
@@ -632,14 +633,12 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // Interrupt vector 0 is shared between Admin queue and I/O queue #1.
         let mut ioq: Vec<IoQueue> = Vec::new();
         for q_state in &saved_state.io {
-            // Using 1:1 mapping for SQ and CQ IDs.
-            let qid = q_state.sq_state.sqid;
             let interrupt = worker
                 .device
                 .map_interrupt(q_state.msix, q_state.cpu)
                 .context("failed to map interrupt")?;
 
-            let mem_block = dma_buffer.restore_dma_buffer(q_state.base_va, q_state.mem_len, q_state.pfns.as_slice())?;
+            let mem_block = dma_buffer.restore_dma_buffer(q_state.mem_len, q_state.pfns.as_slice())?;
             let q = IoQueue::restore(driver.clone(), interrupt, registers.clone(), mem_block, q_state)
                 .unwrap();
 
@@ -1007,38 +1006,128 @@ impl<T: DeviceBacking> InspectTask<WorkerState> for DriverWorkerTask<T> {
     }
 }
 
-/// Save/restore state for NVMe driver.
-#[derive(Protobuf, Clone, Debug)]
-#[mesh(package = "underhill")]
-pub struct NvmeDriverSavedState {
-    /// Namespace ID.
-    #[mesh(1)]
-    pub nsid: u32,
-    /// Admin queue state.
-    #[mesh(2)]
-    pub admin: Option<QueuePairSavedState>,
-    /// IO queue states.
-    #[mesh(3)]
-    pub io: Vec<QueuePairSavedState>,
-    /// Copy of the controller's IDENTIFY structure.
-    #[mesh(4)]
-    pub identify_ctrl: [u8; 4096],
-    /// Device ID string.
-    #[mesh(5)]
-    pub device_id: String,
-    /// Namespace data.
-    #[mesh(6)]
-    pub namespace: Option<crate::namespace::SavedNamespaceData>,
-    /// BAR0 mapping.
-    #[mesh(7)]
-    pub bar0_va: Option<u64>,
-    /// Queue size as determined by CAP.MQES.
-    #[mesh(8)]
-    pub qsize: u16,
-    /// Max number of IO queue pairs.
-    #[mesh(9)]
-    pub max_io_queues: u16,
-    /// State of the attached VFIO device.
-    #[mesh(10)]
-    pub vfio_state: VfioDeviceSavedState,
+pub mod save_restore {
+    use super::*;
+    //use vmcore::save_restore::RestoreError;
+    //use vmcore::save_restore::SaveError;
+    //use vmcore::save_restore::SaveRestore;
+
+    /// Save/restore state for NVMe driver.
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "underhill")]
+    pub struct NvmeDriverSavedState {
+        /// Namespace ID.
+        #[mesh(1)]
+        pub nsid: u32,
+        /// Admin queue state.
+        #[mesh(2)]
+        pub admin: Option<QueuePairSavedState>,
+        /// IO queue states.
+        #[mesh(3)]
+        pub io: Vec<QueuePairSavedState>,
+        /// Copy of the controller's IDENTIFY structure.
+        #[mesh(4)]
+        pub identify_ctrl: [u8; 4096],
+        /// Device ID string.
+        #[mesh(5)]
+        pub device_id: String,
+        /// Namespace data.
+        #[mesh(6)]
+        pub namespace: Option<crate::namespace::SavedNamespaceData>,
+        /// BAR0 mapping.
+        #[mesh(7)]
+        pub bar0_va: Option<u64>,
+        /// Queue size as determined by CAP.MQES.
+        #[mesh(8)]
+        pub qsize: u16,
+        /// Max number of IO queue pairs.
+        #[mesh(9)]
+        pub max_io_queues: u16,
+        /// State of the attached VFIO device.
+        #[mesh(10)]
+        pub vfio_state: VfioDeviceSavedState,
+    }
+
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "underhill")]
+    pub struct QueuePairSavedState {
+        #[mesh(1)]
+        /// Which CPU handles requests.
+        pub cpu: u32,
+        #[mesh(2)]
+        /// Interrupt vector (MSI-X)
+        pub msix: u32,
+        #[mesh(3)]
+        pub max_cids: usize,
+        #[mesh(4)]
+        pub sq_state: SubmissionQueueSavedState,
+        #[mesh(5)]
+        pub cq_state: CompletionQueueSavedState,
+        #[mesh(6)]
+        pub sq_addr: u64,
+        #[mesh(7)]
+        pub cq_addr: u64,
+        #[mesh(8)]
+        pub base_va: u64,
+        #[mesh(9)]
+        pub mem_len: usize,
+        #[mesh(10)]
+        pub pfns: Vec<u64>, // TODO: Check if region is contiguous and save 1st PFN only if true.
+        #[mesh(11)]
+        pub pending_cmds: Vec<PendingCommandSavedState>,
+    }
+
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "underhill")]
+    pub struct SubmissionQueueSavedState {
+        #[mesh(1)]
+        pub sqid: u16,
+        #[mesh(2)]
+        pub head: u32,
+        #[mesh(3)]
+        pub tail: u32,
+        #[mesh(4)]
+        pub committed_tail: u32,
+        #[mesh(5)]
+        pub len: u32,
+        #[mesh(6)]
+        pub pfns: Vec<u64>,  // TODO: Check if region is contiguous and save 1st PFN only if true.
+    }
+
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "underhill")]
+    pub struct CompletionQueueSavedState {
+        #[mesh(1)]
+        pub cqid: u16,
+        #[mesh(2)]
+        pub head: u32,
+        #[mesh(3)]
+        pub committed_head: u32,
+        #[mesh(4)]
+        pub len: u32,
+        #[mesh(5)]
+        /// NVMe completion tag.
+        pub phase: bool,
+        #[mesh(6)]
+        pub pfns: Vec<u64>,  // TODO: Check if region is contiguous and save 1st PFN only if true.
+    }
+
+    #[derive(Protobuf, Clone, Debug, FromBytes, FromZeroes)]
+    #[mesh(package = "underhill")]
+    pub struct PendingCommandSavedState {
+        #[mesh(1)]
+        pub command: [u8; 64],
+        #[mesh(2)]
+        pub cid: u16,
+    }
+
+    impl From<&[u8]> for PendingCommandSavedState {
+        fn from(value: &[u8]) -> Self {
+            let mut command: [u8; 64] = [0; 64];
+            command.copy_from_slice(value);
+            let cid = ((command[0] as u16) << 8) | command[1] as u16;
+            Self { command, cid }
+        }
+    }
+
 }

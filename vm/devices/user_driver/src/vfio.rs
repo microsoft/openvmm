@@ -43,7 +43,6 @@ pub trait VfioDmaBuffer: 'static + Send + Sync {
     /// Restore a dma buffer in the predefined location with the given `len` in bytes.
     fn restore_dma_buffer(
         &self,
-        addr_va: u64,
         len: usize,
         pfns: &[u64],
     ) -> anyhow::Result<MemoryBlock>;
@@ -492,7 +491,6 @@ impl crate::HostDmaAllocator for LockedMemoryAllocator {
 
     fn restore_dma_buffer(
         &mut self,
-        _addr_va: u64,
         len: usize,
         _pfns: &[u64],
     ) -> anyhow::Result<MemoryBlock> {

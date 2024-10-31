@@ -24,7 +24,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 use tracing::Instrument;
-use user_driver::memory::MemoryBlock;
 use user_driver::vfio::VfioDevice;
 use user_driver::vfio::VfioDmaBuffer;
 use vm_resource::kind::DiskHandleKind;

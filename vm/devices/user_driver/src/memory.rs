@@ -16,7 +16,7 @@ pub const PAGE_SIZE64: u64 = PAGE_SIZE as u64;
 
 /// A mapped buffer that can be accessed by the host or the device.
 ///
-/// SAFETY:
+/// # Safety
 /// The implementor must ensure that the VA region from `base()..base() + len()`
 /// remains mapped for the lifetime.
 pub unsafe trait MappedDmaTarget: Send + Sync {

@@ -41,6 +41,9 @@ use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 use std::sync::Arc;
 use vmcore::device_state::ChangeDeviceState;
+use vmcore::save_restore::SaveError;
+use vmcore::save_restore::SaveRestore;
+use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::vm_task::VmTaskDriverSource;
 
 /// An NVMe controller.
@@ -482,22 +485,17 @@ impl PciConfigSpace for NvmeController {
     }
 }
 
-mod save_restore {
-    use super::*;
-    use vmcore::save_restore::NoSavedState;
-    use vmcore::save_restore::RestoreError;
-    use vmcore::save_restore::SaveError;
-    use vmcore::save_restore::SaveRestore;
+impl SaveRestore for NvmeController {
+    type SavedState = SavedStateNotSupported;
 
-    impl SaveRestore for NvmeController {
-        type SavedState = NoSavedState;
+    fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+        Err(SaveError::NotSupported)
+    }
 
-        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            Ok(NoSavedState)
-        }
-
-        fn restore(&mut self, _state: Self::SavedState) -> Result<(), RestoreError> {
-            Ok(())
-        }
+    fn restore(
+        &mut self,
+        state: Self::SavedState,
+    ) -> Result<(), vmcore::save_restore::RestoreError> {
+        match state {}
     }
 }
