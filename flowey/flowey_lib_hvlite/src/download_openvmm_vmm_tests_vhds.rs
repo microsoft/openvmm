@@ -398,6 +398,7 @@ fn download_blobs_from_azure(
             {output_folder}
             --include-path {include_path}
             --overwrite true
+            --skip-version-check
         "
     )
     .run();
