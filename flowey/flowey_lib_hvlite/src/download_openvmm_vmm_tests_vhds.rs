@@ -410,14 +410,12 @@ fn download_blobs_from_azure(
         )
         .run()?;
         let dir_contents = sh.read_dir(sh.current_dir())?;
-        let log_file: PathBuf = dir_contents
-            .into_iter()
+        for log in dir_contents
+            .iter()
             .filter(|p| p.extension() == Some("log".as_ref()))
-            .take(1)
-            .collect();
-        let job_id = log_file.file_stem().unwrap();
-        xshell::cmd!(sh, "{azcopy_bin} jobs show {job_id} --with-status=Failed").run()?;
-        println!("{}", sh.read_file(log_file)?);
+        {
+            println!("{}:\n{}\n", log.display(), sh.read_file(log)?);
+        }
         return result.context("failed to download VMM test disk images");
     }
 
