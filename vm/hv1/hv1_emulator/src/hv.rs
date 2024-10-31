@@ -475,8 +475,7 @@ impl ProcessorVtlHv {
             + offset_of!(hvdef::HvVpAssistPage, vtl_control) as u64
             + offset_of!(HvVpVtlControl, entry_reason) as u64;
 
-        let v = reason.0;
-        self.guest_memory.write_plain(gpa, &v)
+        self.guest_memory.write_plain(gpa, &(reason.0))
     }
 }
 

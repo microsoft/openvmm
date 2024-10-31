@@ -2213,26 +2213,6 @@ impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt for UhHypercallHandler<'_,
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::VtlCall for UhHypercallHandler<'_, '_, T, SnpBacked> {
-    fn is_vtl_call_allowed(&self) -> bool {
-        self.hcvm_is_vtl_call_allowed()
-    }
-
-    fn vtl_call(&mut self) {
-        self.hcvm_vtl_call()
-    }
-}
-
-impl<T: CpuIo> hv1_hypercall::VtlReturn for UhHypercallHandler<'_, '_, T, SnpBacked> {
-    fn is_vtl_return_allowed(&self) -> bool {
-        self.hcvm_is_vtl_return_allowed()
-    }
-
-    fn vtl_return(&mut self, fast: bool) {
-        self.hcvm_vtl_return(fast)
-    }
-}
-
 impl<T: CpuIo> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, SnpBacked> {
     fn advance_ip(&mut self) {
         let is_64bit = self.vp.long_mode(self.intercepted_vtl);
