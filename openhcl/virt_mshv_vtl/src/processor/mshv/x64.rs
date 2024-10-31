@@ -1159,7 +1159,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             GuestVsmState::NotGuestEnabled => {
                 // TODO: check status
                 *guest_vsm_lock = GuestVsmState::Enabled {
-                    vtl1: GuestVsmVtl1State::SoftwareCvm {
+                    vtl1: GuestVsmVtl1State::VbsIsolated {
                         state: Default::default(),
                     },
                 };
@@ -1167,7 +1167,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             GuestVsmState::Enabled { vtl1: _ } => {}
         }
 
-        let guest_vsm = guest_vsm_lock.get_software_cvm_mut().unwrap();
+        let guest_vsm = guest_vsm_lock.get_vbs_isolated_mut().unwrap();
         let protections = HvMapGpaFlags::from(value.default_vtl_protection_mask() as u32);
 
         if value.reserved() != 0 {
@@ -1928,7 +1928,7 @@ impl<T> hv1_hypercall::ModifyVtlProtectionMask
                 .partition
                 .guest_vsm
                 .read()
-                .get_software_cvm()
+                .get_vbs_isolated()
                 .ok_or((HvError::AccessDenied, 0))?
                 .enable_vtl_protection
             {

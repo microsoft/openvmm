@@ -134,7 +134,7 @@ impl MshvVtl {
     }
 
     /// Gets the current vtl permissions for a page.
-    /// Use with caution: only supported on Genoa+
+    /// Note: only supported on Genoa+
     pub fn rmpquery_page(&self, gpa: u64, vtl: GuestVtl) -> Result<SevRmpAdjust, SnpPageError> {
         let page_count = 1u64;
         let mut flags = [u64::from(SevRmpAdjust::new().with_target_vmpl(match vtl {

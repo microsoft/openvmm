@@ -357,20 +357,20 @@ enum GuestVsmState {
 
 impl GuestVsmState {
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    fn get_software_cvm(&self) -> Option<&SoftwareCvmVtl1State> {
+    fn get_vbs_isolated(&self) -> Option<&VbsIsolatedVtl1State> {
         match self {
             GuestVsmState::Enabled {
-                vtl1: GuestVsmVtl1State::SoftwareCvm { state },
+                vtl1: GuestVsmVtl1State::VbsIsolated { state },
             } => Some(state),
 
             _ => None,
         }
     }
 
-    fn get_software_cvm_mut(&mut self) -> Option<&mut SoftwareCvmVtl1State> {
+    fn get_vbs_isolated_mut(&mut self) -> Option<&mut VbsIsolatedVtl1State> {
         match self {
             GuestVsmState::Enabled {
-                vtl1: GuestVsmVtl1State::SoftwareCvm { state },
+                vtl1: GuestVsmVtl1State::VbsIsolated { state },
             } => Some(state),
 
             _ => None,
@@ -393,12 +393,12 @@ impl GuestVsmState {
 #[inspect(external_tag)]
 enum GuestVsmVtl1State {
     HardwareCvm { state: HardwareCvmVtl1State },
-    SoftwareCvm { state: SoftwareCvmVtl1State },
+    VbsIsolated { state: VbsIsolatedVtl1State },
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 #[derive(Clone, Copy, Default, Inspect)]
-struct SoftwareCvmVtl1State {
+struct VbsIsolatedVtl1State {
     #[inspect(with = "|flags| flags.map(|f| inspect::AsHex(u32::from(f)))")]
     default_vtl_protections: Option<HvMapGpaFlags>,
     enable_vtl_protection: bool,
