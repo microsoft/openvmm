@@ -629,7 +629,8 @@ mod mapping {
                 IsolationType::None | IsolationType::Vbs => unimplemented!(),
                 IsolationType::Snp => {
                     // TODO CVM GUEST VSM: track the permissions directly in
-                    // underhill. For now, use rmpquery.
+                    // underhill. For now, use rmpquery--but note this is only
+                    // supported on Genoa+.
                     assert!(self.isolation == IsolationType::Snp);
                     let rmpadjust = self
                         .mshv_vtl
@@ -735,7 +736,7 @@ mod mapping {
         shared: Arc<GuestMemoryMapping>,
         encrypted: Arc<GuestMemoryMapping>,
         default_vtl_permissions: DefaultVtlPermissions,
-        vtl_protections_enabled: bool,
+        vtl1_protections_enabled: bool,
     }
 
     impl HardwareIsolatedMemoryProtector {
@@ -759,7 +760,7 @@ mod mapping {
                         vtl0: HV_MAP_GPA_PERMISSIONS_ALL,
                         vtl1: None,
                     },
-                    vtl_protections_enabled: false,
+                    vtl1_protections_enabled: false,
                 }),
                 layout,
                 acceptor,
@@ -1131,7 +1132,7 @@ mod mapping {
             let current_permissions = match self.acceptor.isolation {
                 IsolationType::None | IsolationType::Vbs => unreachable!(),
                 IsolationType::Snp => {
-                    if inner.vtl_protections_enabled {
+                    if inner.vtl1_protections_enabled {
                         // Safe to assume that rmpquery is available because
                         // guest vsm is only allowed if rmpquery is
                         self.acceptor
@@ -1195,7 +1196,11 @@ mod mapping {
         }
 
         fn enable_vtl1_protections(&self) {
-            self.inner.lock().vtl_protections_enabled = true;
+            self.inner.lock().vtl1_protections_enabled = true;
+        }
+
+        fn vtl1_protections_enabled(&self) -> bool {
+            self.inner.lock().vtl1_protections_enabled
         }
     }
 }

@@ -24,7 +24,6 @@ use crate::validate_vtl_gpa_flags;
 use crate::Error;
 use crate::GuestVsmState;
 use crate::GuestVsmVtl1State;
-use crate::GuestVsmVtl1StateInner;
 use crate::GuestVtl;
 use crate::UhPartitionInner;
 use crate::WakeReason;
@@ -1160,19 +1159,15 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             GuestVsmState::NotGuestEnabled => {
                 // TODO: check status
                 *guest_vsm_lock = GuestVsmState::Enabled {
-                    vtl1: GuestVsmVtl1State {
-                        enable_vtl_protection: false,
-                        inner: GuestVsmVtl1StateInner::SoftwareCvm {
-                            state: Default::default(),
-                        },
+                    vtl1: GuestVsmVtl1State::SoftwareCvm {
+                        state: Default::default(),
                     },
                 };
             }
             GuestVsmState::Enabled { vtl1: _ } => {}
         }
 
-        let guest_vsm = guest_vsm_lock.get_vtl1_mut().unwrap();
-        let guest_vsm_inner = guest_vsm.inner.get_software_cvm_mut().unwrap();
+        let guest_vsm = guest_vsm_lock.get_software_cvm_mut().unwrap();
         let protections = HvMapGpaFlags::from(value.default_vtl_protection_mask() as u32);
 
         if value.reserved() != 0 {
@@ -1212,12 +1207,12 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         }
 
         // Don't allow changing existing protections once set.
-        if let Some(current_protections) = guest_vsm_inner.default_vtl_protections {
+        if let Some(current_protections) = guest_vsm.default_vtl_protections {
             if protections != current_protections {
                 return Err(HvError::InvalidRegisterValue);
             }
         }
-        guest_vsm_inner.default_vtl_protections = Some(protections);
+        guest_vsm.default_vtl_protections = Some(protections);
 
         for ram_range in self.partition.lower_vtl_memory_layout.ram().iter() {
             self.partition
@@ -1896,6 +1891,65 @@ impl<T> hv1_hypercall::SetVpRegisters for UhHypercallHandler<'_, '_, T, Hypervis
                     .map_err(|e| (e, i))?;
             } else {
                 return Err((HvError::InvalidParameter, i));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl<T> hv1_hypercall::ModifyVtlProtectionMask
+    for UhHypercallHandler<'_, '_, T, HypervisorBackedX86>
+{
+    fn modify_vtl_protection_mask(
+        &mut self,
+        partition_id: u64,
+        _map_flags: HvMapGpaFlags,
+        target_vtl: Option<Vtl>,
+        gpa_pages: &[u64],
+    ) -> hvdef::HvRepResult {
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err((HvError::AccessDenied, 0));
+        }
+
+        let target_vtl = self
+            .target_vtl_no_higher(target_vtl.unwrap_or(self.intercepted_vtl.into()))
+            .map_err(|e| (e, 0))?;
+        if target_vtl == GuestVtl::Vtl0 {
+            return Err((HvError::InvalidParameter, 0));
+        }
+
+        // A VTL cannot change its own VTL permissions until it has enabled VTL protection and
+        // configured default permissions. Higher VTLs are not under this restriction (as they may
+        // need to apply default permissions before VTL protection is enabled).
+        if target_vtl == self.intercepted_vtl {
+            if !self
+                .vp
+                .partition
+                .guest_vsm
+                .read()
+                .get_software_cvm()
+                .ok_or((HvError::AccessDenied, 0))?
+                .enable_vtl_protection
+            {
+                return Err((HvError::AccessDenied, 0));
+            }
+        }
+
+        // TODO VBS GUEST VSM: verify this logic is correct
+        // TODO VBS GUEST VSM: validation on map_flags, similar to default
+        // protections mask changes
+        // Can receive an intercept on adjust permissions, and for isolated
+        // VMs if the page is unaccepted
+        if self.vp.partition.isolation.is_isolated() {
+            return Err((HvError::OperationDenied, 0));
+        } else {
+            if !gpa_pages.is_empty() {
+                if !self.vp.partition.is_gpa_lower_vtl_ram(gpa_pages[0]) {
+                    return Err((HvError::OperationDenied, 0));
+                } else {
+                    panic!("Should not be handling this hypercall for guest ram");
+                }
             }
         }
 

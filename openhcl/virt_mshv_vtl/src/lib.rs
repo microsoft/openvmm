@@ -357,61 +357,51 @@ enum GuestVsmState {
 
 impl GuestVsmState {
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    fn get_vtl1_mut(&mut self) -> Option<&mut GuestVsmVtl1State> {
+    fn get_software_cvm(&self) -> Option<&SoftwareCvmVtl1State> {
         match self {
-            GuestVsmState::Enabled { vtl1 } => Some(vtl1),
+            GuestVsmState::Enabled {
+                vtl1: GuestVsmVtl1State::SoftwareCvm { state },
+            } => Some(state),
+
             _ => None,
         }
     }
 
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    fn get_vtl1(&self) -> Option<&GuestVsmVtl1State> {
-        match self {
-            GuestVsmState::Enabled { vtl1 } => Some(vtl1),
-            _ => None,
-        }
-    }
-}
-
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-#[derive(Clone, Copy, Inspect)]
-/// Partition-wide guest vsm state for vtl 1. Only applies to CVMs.
-struct GuestVsmVtl1State {
-    enable_vtl_protection: bool,
-    inner: GuestVsmVtl1StateInner,
-}
-
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-#[derive(Clone, Copy, Inspect)]
-#[inspect(external_tag)]
-enum GuestVsmVtl1StateInner {
-    HardwareCvm { state: HardwareCvmVtl1State },
-    SoftwareCvm { state: SoftwareCvmVtl1State },
-}
-
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-impl GuestVsmVtl1StateInner {
     fn get_software_cvm_mut(&mut self) -> Option<&mut SoftwareCvmVtl1State> {
         match self {
-            GuestVsmVtl1StateInner::SoftwareCvm { state } => Some(state),
+            GuestVsmState::Enabled {
+                vtl1: GuestVsmVtl1State::SoftwareCvm { state },
+            } => Some(state),
+
             _ => None,
         }
     }
 
     fn get_hardware_cvm_mut(&mut self) -> Option<&mut HardwareCvmVtl1State> {
         match self {
-            GuestVsmVtl1StateInner::HardwareCvm { state } => Some(state),
+            GuestVsmState::Enabled {
+                vtl1: GuestVsmVtl1State::HardwareCvm { state },
+            } => Some(state),
+
             _ => None,
         }
     }
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+#[derive(Clone, Copy, Inspect)]
+#[inspect(external_tag)]
+enum GuestVsmVtl1State {
+    HardwareCvm { state: HardwareCvmVtl1State },
+    SoftwareCvm { state: SoftwareCvmVtl1State },
+}
+
+#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 #[derive(Clone, Copy, Default, Inspect)]
 struct SoftwareCvmVtl1State {
-    // TODO: inspect
-    #[inspect(skip)]
+    #[inspect(with = "|flags| flags.map(|f| inspect::AsHex(u32::from(f)))")]
     default_vtl_protections: Option<HvMapGpaFlags>,
+    enable_vtl_protection: bool,
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
@@ -1207,8 +1197,11 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// Disables the overlay for the hypercall code page for a target VTL.
     fn disable_hypercall_overlay(&self, vtl: GuestVtl);
 
-    /// Alerts the memory protector that vtl 1 can set protections on memory.
+    /// Alerts the memory protector that vtl 1 is ready to set protections on memory.
     fn enable_vtl1_protections(&self);
+
+    /// Whether VTL 1 can set protections on memory.
+    fn vtl1_protections_enabled(&self) -> bool;
 }
 
 /// A partially built partition. Used to allow querying partition capabilities
