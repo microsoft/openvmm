@@ -175,9 +175,9 @@ impl ConsommeState {
     pub fn new() -> Result<Self, Error> {
         let nameservers = dns::nameservers()?;
         Ok(Self {
-            gateway_ip: Ipv4Address::new(10, 1, 0, 1),
+            gateway_ip: Ipv4Address::new(10, 0, 0, 1),
             gateway_mac: EthernetAddress([0x52, 0x55, 10, 0, 0, 1]),
-            client_ip: Ipv4Address::new(10, 1, 0, 2),
+            client_ip: Ipv4Address::new(10, 0, 0, 2),
             client_mac: EthernetAddress([0x0, 0x0, 0x0, 0x0, 0x1, 0x0]),
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
