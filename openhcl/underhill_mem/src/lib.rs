@@ -631,7 +631,6 @@ mod mapping {
                     // TODO CVM GUEST VSM: track the permissions directly in
                     // underhill. For now, use rmpquery--but note this is only
                     // supported on Genoa+.
-                    assert!(self.isolation == IsolationType::Snp);
                     let rmpadjust = self
                         .mshv_vtl
                         .rmpquery_page(

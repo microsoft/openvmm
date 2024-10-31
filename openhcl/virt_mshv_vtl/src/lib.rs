@@ -367,6 +367,7 @@ impl GuestVsmState {
         }
     }
 
+    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     fn get_vbs_isolated_mut(&mut self) -> Option<&mut VbsIsolatedVtl1State> {
         match self {
             GuestVsmState::Enabled {
@@ -377,6 +378,7 @@ impl GuestVsmState {
         }
     }
 
+    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     fn get_hardware_cvm_mut(&mut self) -> Option<&mut HardwareCvmVtl1State> {
         match self {
             GuestVsmState::Enabled {
