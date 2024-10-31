@@ -519,7 +519,7 @@ fn vm_config_from_command_line(
         let nic_config = parse_endpoint(
             &NicConfigCli {
                 vtl: DeviceVtl::Vtl0,
-                endpoint: EndpointConfigCli::Consomme,
+                endpoint: EndpointConfigCli::Consomme { cidr: None },
                 max_queues: None,
                 underhill: false,
             },
@@ -1279,8 +1279,8 @@ fn parse_endpoint(
 ) -> anyhow::Result<NicConfig> {
     let _ = resources;
     let endpoint = match &cli_cfg.endpoint {
-        EndpointConfigCli::Consomme => {
-            net_backend_resources::consomme::ConsommeHandle.into_resource()
+        EndpointConfigCli::Consomme { cidr } => {
+            net_backend_resources::consomme::ConsommeHandle { cidr: cidr.clone() }.into_resource()
         }
         EndpointConfigCli::None => net_backend_resources::null::NullHandle.into_resource(),
         EndpointConfigCli::Dio { id } => {

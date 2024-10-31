@@ -46,7 +46,8 @@ async fn boot_openhcl_linux_mana_nic(config: PetriVmConfig) -> Result<(), anyhow
                 resource: GdmaDeviceHandle {
                     vports: vec![VportDefinition {
                         mac_address: [0x00, 0x15, 0x5D, 0x12, 0x12, 0x12].into(),
-                        endpoint: net_backend_resources::consomme::ConsommeHandle.into_resource(),
+                        endpoint: net_backend_resources::consomme::ConsommeHandle { cidr: None }
+                            .into_resource(),
                     }],
                 }
                 .into_resource(),

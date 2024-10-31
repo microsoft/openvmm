@@ -794,7 +794,7 @@ impl FromStr for SerialConfigCli {
 #[derive(Clone)]
 pub enum EndpointConfigCli {
     None,
-    Consomme,
+    Consomme { cidr: Option<String> },
     Dio { id: Option<String> },
     Tap { name: String },
 }
@@ -805,7 +805,9 @@ impl FromStr for EndpointConfigCli {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let ret = match s.split(':').collect::<Vec<_>>().as_slice() {
             ["none"] => EndpointConfigCli::None,
-            ["consomme"] => EndpointConfigCli::Consomme,
+            ["consomme", s @ ..] => EndpointConfigCli::Consomme {
+                cidr: s.first().map(|&s| s.to_owned()),
+            },
             ["dio", s @ ..] => EndpointConfigCli::Dio {
                 id: s.first().map(|s| (*s).to_owned()),
             },

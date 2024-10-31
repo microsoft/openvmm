@@ -34,7 +34,10 @@ pub mod consomme {
 
     /// Handle to a Consomme network endpoint.
     #[derive(MeshPayload)]
-    pub struct ConsommeHandle;
+    pub struct ConsommeHandle {
+        /// The CIDR of the network to use.
+        pub cidr: Option<String>,
+    }
 
     impl ResourceId<NetEndpointHandleKind> for ConsommeHandle {
         const ID: &'static str = "consomme";

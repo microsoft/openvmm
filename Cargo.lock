@@ -3921,6 +3921,7 @@ dependencies = [
  "net_backend_resources",
  "pal_async",
  "parking_lot",
+ "thiserror",
  "tracing",
  "vm_resource",
 ]
