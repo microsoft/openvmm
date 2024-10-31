@@ -106,6 +106,7 @@ impl FlowNode for Node {
                 ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
                     repo_owner: "microsoft".into(),
                     repo_name: "OHCL-Linux-Kernel".into(),
+                    needs_auth: false,
                     tag,
                     file_name: file_name.clone(),
                     path: v,

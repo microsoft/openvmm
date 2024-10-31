@@ -69,6 +69,7 @@ impl FlowNode for Node {
         let protoc_zip = ctx.reqv(|v| crate::download_gh_release::Request {
             repo_owner: "protocolbuffers".into(),
             repo_name: "protobuf".into(),
+            needs_auth: false,
             tag: tag.clone(),
             file_name: file_name.clone(),
             path: v,

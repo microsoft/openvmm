@@ -61,6 +61,7 @@ impl FlowNode for Node {
         let mdbook_zip = ctx.reqv(|v| crate::download_gh_release::Request {
             repo_owner: "badboy".into(),
             repo_name: "mdbook-mermaid".into(),
+            needs_auth: false,
             tag: tag.clone(),
             file_name: file_name.clone(),
             path: v,

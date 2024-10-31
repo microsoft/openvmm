@@ -64,6 +64,7 @@ impl FlowNode for Node {
             let mu_msvm_zip = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
                 repo_owner: "microsoft".into(),
                 repo_name: "mu_msvm".into(),
+                needs_auth: false,
                 tag: format!("v{version}"),
                 file_name: file_name.into(),
                 path: v,

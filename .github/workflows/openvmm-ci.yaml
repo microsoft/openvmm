@@ -111,32 +111,6 @@ jobs:
       run: flowey e 0 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey e 0 flowey_lib_common::cache 4
-      shell: bash
-    - run: |
-        flowey v 0 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-    - run: |
-        flowey v 0 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar5 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar5'
-    - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar4 }}
-        path: ${{ env.floweyvar5 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
-      shell: flowey v 0 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey e 0 flowey_lib_common::cache 6
-      shell: bash
-    - name: create gh cache dir
-      run: flowey e 0 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey e 0 flowey_lib_common::cache 0
       shell: bash
     - run: |
@@ -152,21 +126,12 @@ jobs:
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
       shell: flowey v 0 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__1.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey e 0 flowey_lib_common::cache 2
-      shell: bash
-    - name: installing gh
-      run: flowey e 0 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey v 0 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey e 0 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey e 0 flowey_lib_common::download_gh_release 1
@@ -231,9 +196,6 @@ jobs:
       run: flowey e 0 flowey_lib_common::copy_to_artifact_dir 0
       shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey e 0 flowey_lib_common::cache 7
-      shell: bash
-    - name: 'validate cache entry: gh-cli'
       run: flowey e 0 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish guide
@@ -343,16 +305,16 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey.exe v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey.exe v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar5'
+      name: 🌼 Write to 'floweyvar3'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar5 }}
+        persist-credentials: ${{ env.floweyvar3 }}
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
@@ -371,32 +333,6 @@ jobs:
       run: flowey.exe e 1 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey.exe e 1 flowey_lib_common::cache 4
-      shell: bash
-    - run: |
-        flowey.exe v 1 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar3 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar3'
-    - run: |
-        flowey.exe v 1 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-    - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar3 }}
-        path: ${{ env.floweyvar4 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
-      shell: flowey.exe v 1 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey.exe e 1 flowey_lib_common::cache 6
-      shell: bash
-    - name: create gh cache dir
-      run: flowey.exe e 1 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey.exe e 1 flowey_lib_common::cache 0
       shell: bash
     - run: |
@@ -412,21 +348,12 @@ jobs:
       with:
         key: ${{ env.floweyvar1 }}
         path: ${{ env.floweyvar2 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
       shell: flowey.exe v 1 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__1.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey.exe e 1 flowey_lib_common::cache 2
-      shell: bash
-    - name: installing gh
-      run: flowey.exe e 1 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey.exe v 1 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey.exe e 1 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey.exe e 1 flowey_lib_common::download_gh_release 1
@@ -470,11 +397,8 @@ jobs:
     - name: copying rustdoc to artifact dir
       run: flowey.exe e 1 flowey_lib_common::copy_to_artifact_dir 0
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey.exe e 1 flowey_lib_common::cache 3
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey.exe e 1 flowey_lib_common::cache 7
+      run: flowey.exe e 1 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish x64-windows-rustdoc
       uses: actions/upload-artifact@v4
@@ -604,32 +528,6 @@ jobs:
       run: flowey e 10 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey e 10 flowey_lib_common::cache 4
-      shell: bash
-    - run: |
-        flowey v 10 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar3 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar3'
-    - run: |
-        flowey v 10 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-    - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar3 }}
-        path: ${{ env.floweyvar4 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
-      shell: flowey v 10 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey e 10 flowey_lib_common::cache 6
-      shell: bash
-    - name: create gh cache dir
-      run: flowey e 10 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey e 10 flowey_lib_common::cache 0
       shell: bash
     - run: |
@@ -645,21 +543,12 @@ jobs:
       with:
         key: ${{ env.floweyvar1 }}
         path: ${{ env.floweyvar2 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
       shell: flowey v 10 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__1.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey e 10 flowey_lib_common::cache 2
-      shell: bash
-    - name: installing gh
-      run: flowey e 10 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey v 10 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey e 10 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey e 10 flowey_lib_common::download_gh_release 1
@@ -675,16 +564,16 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey v 10 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey v 10 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar5'
+      name: 🌼 Write to 'floweyvar3'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar5 }}
+        persist-credentials: ${{ env.floweyvar3 }}
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
@@ -825,11 +714,8 @@ jobs:
     - name: copying guest_test_uefi to artifact dir
       run: flowey e 10 flowey_lib_common::copy_to_artifact_dir 0
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey e 10 flowey_lib_common::cache 3
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey e 10 flowey_lib_common::cache 7
+      run: flowey e 10 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish aarch64-guest_test_uefi
       uses: actions/upload-artifact@v4
@@ -986,32 +872,6 @@ jobs:
       run: flowey e 11 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey e 11 flowey_lib_common::cache 8
-      shell: bash
-    - run: |
-        flowey v 11 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar5 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar5'
-    - run: |
-        flowey v 11 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar6 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar6'
-    - id: flowey_lib_common__cache__9
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar5 }}
-        path: ${{ env.floweyvar6 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
-      shell: flowey v 11 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__9.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey e 11 flowey_lib_common::cache 10
-      shell: bash
-    - name: create gh cache dir
-      run: flowey e 11 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey e 11 flowey_lib_common::cache 4
       shell: bash
     - run: |
@@ -1027,21 +887,12 @@ jobs:
       with:
         key: ${{ env.floweyvar3 }}
         path: ${{ env.floweyvar4 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
       shell: flowey v 11 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey e 11 flowey_lib_common::cache 6
-      shell: bash
-    - name: installing gh
-      run: flowey e 11 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey v 11 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey e 11 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey e 11 flowey_lib_common::download_gh_release 1
@@ -1057,16 +908,16 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey v 11 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar7 --is-raw-string
+        flowey v 11 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar5 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar7'
+      name: 🌼 Write to 'floweyvar5'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar7 }}
+        persist-credentials: ${{ env.floweyvar5 }}
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
@@ -1260,11 +1111,8 @@ jobs:
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 11 flowey_lib_common::cache 3
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey e 11 flowey_lib_common::cache 7
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey e 11 flowey_lib_common::cache 11
+      run: flowey e 11 flowey_lib_common::cache 7
       shell: bash
     - name: 🌼📦 Publish x64-guest_test_uefi
       uses: actions/upload-artifact@v4
@@ -1409,32 +1257,6 @@ jobs:
       run: flowey e 12 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey e 12 flowey_lib_common::cache 4
-      shell: bash
-    - run: |
-        flowey v 12 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar3 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar3'
-    - run: |
-        flowey v 12 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-    - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar3 }}
-        path: ${{ env.floweyvar4 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
-      shell: flowey v 12 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey e 12 flowey_lib_common::cache 6
-      shell: bash
-    - name: create gh cache dir
-      run: flowey e 12 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey e 12 flowey_lib_common::cache 0
       shell: bash
     - run: |
@@ -1450,21 +1272,12 @@ jobs:
       with:
         key: ${{ env.floweyvar1 }}
         path: ${{ env.floweyvar2 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
       shell: flowey v 12 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__1.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey e 12 flowey_lib_common::cache 2
-      shell: bash
-    - name: installing gh
-      run: flowey e 12 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey v 12 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey e 12 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey e 12 flowey_lib_common::download_gh_release 1
@@ -1489,16 +1302,16 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey v 12 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey v 12 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar5'
+      name: 🌼 Write to 'floweyvar3'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar5 }}
+        persist-credentials: ${{ env.floweyvar3 }}
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
@@ -1720,11 +1533,8 @@ jobs:
     - name: copying pipette to artifact dir
       run: flowey e 12 flowey_lib_common::copy_to_artifact_dir 2
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey e 12 flowey_lib_common::cache 3
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey e 12 flowey_lib_common::cache 7
+      run: flowey e 12 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish aarch64-linux-musl-pipette
       uses: actions/upload-artifact@v4
@@ -1849,32 +1659,6 @@ jobs:
       run: flowey e 13 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey e 13 flowey_lib_common::cache 4
-      shell: bash
-    - run: |
-        flowey v 13 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar3 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar3'
-    - run: |
-        flowey v 13 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-    - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar3 }}
-        path: ${{ env.floweyvar4 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
-      shell: flowey v 13 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey e 13 flowey_lib_common::cache 6
-      shell: bash
-    - name: create gh cache dir
-      run: flowey e 13 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey e 13 flowey_lib_common::cache 0
       shell: bash
     - run: |
@@ -1890,21 +1674,12 @@ jobs:
       with:
         key: ${{ env.floweyvar1 }}
         path: ${{ env.floweyvar2 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
       shell: flowey v 13 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__1.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey e 13 flowey_lib_common::cache 2
-      shell: bash
-    - name: installing gh
-      run: flowey e 13 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey v 13 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey e 13 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey e 13 flowey_lib_common::download_gh_release 1
@@ -1929,16 +1704,16 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey v 13 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey v 13 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar5'
+      name: 🌼 Write to 'floweyvar3'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar5 }}
+        persist-credentials: ${{ env.floweyvar3 }}
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
@@ -2322,11 +2097,8 @@ jobs:
     - name: copying pipette to artifact dir
       run: flowey e 13 flowey_lib_common::copy_to_artifact_dir 2
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey e 13 flowey_lib_common::cache 3
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey e 13 flowey_lib_common::cache 7
+      run: flowey e 13 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish x64-linux-musl-pipette
       uses: actions/upload-artifact@v4
@@ -2488,32 +2260,6 @@ jobs:
       run: flowey.exe e 14 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey.exe e 14 flowey_lib_common::cache 8
-      shell: bash
-    - run: |
-        flowey.exe v 14 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar6 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar6'
-    - run: |
-        flowey.exe v 14 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar7 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar7'
-    - id: flowey_lib_common__cache__9
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar6 }}
-        path: ${{ env.floweyvar7 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
-      shell: flowey.exe v 14 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__9.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey.exe e 14 flowey_lib_common::cache 10
-      shell: bash
-    - name: create gh cache dir
-      run: flowey.exe e 14 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey.exe e 14 flowey_lib_common::cache 4
       shell: bash
     - run: |
@@ -2529,21 +2275,12 @@ jobs:
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
       shell: flowey.exe v 14 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey.exe e 14 flowey_lib_common::cache 6
-      shell: bash
-    - name: installing gh
-      run: flowey.exe e 14 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey.exe v 14 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey.exe e 14 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey.exe e 14 flowey_lib_common::download_gh_release 1
@@ -2669,15 +2406,15 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey.exe v 14 'flowey_lib_common::junit_publish_test_results:2:flowey_lib_common/src/junit_publish_test_results.rs:105:42' --write-to-gh-env floweyvar8 --is-raw-string
+        flowey.exe v 14 'flowey_lib_common::junit_publish_test_results:2:flowey_lib_common/src/junit_publish_test_results.rs:105:42' --write-to-gh-env floweyvar6 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar8'
+      name: 🌼 Write to 'floweyvar6'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__junit_publish_test_results__2
       uses: actions/upload-artifact@v4
       with:
         name: x64-windows-unit-tests
-        path: ${{ env.floweyvar8 }}
+        path: ${{ env.floweyvar6 }}
       name: 'publish JUnit test results: x64-windows-unit-tests'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
@@ -2686,11 +2423,8 @@ jobs:
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 14 flowey_lib_common::cache 3
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey.exe e 14 flowey_lib_common::cache 7
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey.exe e 14 flowey_lib_common::cache 11
+      run: flowey.exe e 14 flowey_lib_common::cache 7
       shell: bash
   job15:
     name: clippy [linux, macos], unit tests [x64-linux]
@@ -2803,32 +2537,6 @@ jobs:
       run: flowey e 15 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey e 15 flowey_lib_common::cache 8
-      shell: bash
-    - run: |
-        flowey v 15 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar6 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar6'
-    - run: |
-        flowey v 15 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar7 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar7'
-    - id: flowey_lib_common__cache__9
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar6 }}
-        path: ${{ env.floweyvar7 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
-      shell: flowey v 15 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__9.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey e 15 flowey_lib_common::cache 10
-      shell: bash
-    - name: create gh cache dir
-      run: flowey e 15 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey e 15 flowey_lib_common::cache 4
       shell: bash
     - run: |
@@ -2844,21 +2552,12 @@ jobs:
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
       shell: flowey v 15 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey e 15 flowey_lib_common::cache 6
-      shell: bash
-    - name: installing gh
-      run: flowey e 15 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey v 15 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey e 15 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey e 15 flowey_lib_common::download_gh_release 1
@@ -3055,15 +2754,15 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey v 15 'flowey_lib_common::junit_publish_test_results:2:flowey_lib_common/src/junit_publish_test_results.rs:105:42' --write-to-gh-env floweyvar8 --is-raw-string
+        flowey v 15 'flowey_lib_common::junit_publish_test_results:2:flowey_lib_common/src/junit_publish_test_results.rs:105:42' --write-to-gh-env floweyvar6 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar8'
+      name: 🌼 Write to 'floweyvar6'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__junit_publish_test_results__2
       uses: actions/upload-artifact@v4
       with:
         name: x64-linux-unit-tests
-        path: ${{ env.floweyvar8 }}
+        path: ${{ env.floweyvar6 }}
       name: 'publish JUnit test results: x64-linux-unit-tests'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
@@ -3072,11 +2771,8 @@ jobs:
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 15 flowey_lib_common::cache 3
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey e 15 flowey_lib_common::cache 7
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey e 15 flowey_lib_common::cache 11
+      run: flowey e 15 flowey_lib_common::cache 7
       shell: bash
   job16:
     name: clippy [linux-musl, misc nostd], unit tests [x64-linux-musl]
@@ -3221,32 +2917,6 @@ jobs:
       run: flowey e 16 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey e 16 flowey_lib_common::cache 8
-      shell: bash
-    - run: |
-        flowey v 16 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar6 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar6'
-    - run: |
-        flowey v 16 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar7 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar7'
-    - id: flowey_lib_common__cache__9
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar6 }}
-        path: ${{ env.floweyvar7 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
-      shell: flowey v 16 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__9.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey e 16 flowey_lib_common::cache 10
-      shell: bash
-    - name: create gh cache dir
-      run: flowey e 16 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey e 16 flowey_lib_common::cache 4
       shell: bash
     - run: |
@@ -3262,21 +2932,12 @@ jobs:
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
       shell: flowey v 16 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey e 16 flowey_lib_common::cache 6
-      shell: bash
-    - name: installing gh
-      run: flowey e 16 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey v 16 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey e 16 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey e 16 flowey_lib_common::download_gh_release 1
@@ -3441,15 +3102,15 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey v 16 'flowey_lib_common::junit_publish_test_results:2:flowey_lib_common/src/junit_publish_test_results.rs:105:42' --write-to-gh-env floweyvar8 --is-raw-string
+        flowey v 16 'flowey_lib_common::junit_publish_test_results:2:flowey_lib_common/src/junit_publish_test_results.rs:105:42' --write-to-gh-env floweyvar6 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar8'
+      name: 🌼 Write to 'floweyvar6'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__junit_publish_test_results__2
       uses: actions/upload-artifact@v4
       with:
         name: x64-linux-musl-unit-tests
-        path: ${{ env.floweyvar8 }}
+        path: ${{ env.floweyvar6 }}
       name: 'publish JUnit test results: x64-linux-musl-unit-tests'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
@@ -3458,11 +3119,8 @@ jobs:
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 16 flowey_lib_common::cache 3
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey e 16 flowey_lib_common::cache 7
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey e 16 flowey_lib_common::cache 11
+      run: flowey e 16 flowey_lib_common::cache 7
       shell: bash
   job17:
     name: run vmm-tests [x64-windows-intel]
@@ -3573,32 +3231,6 @@ jobs:
       run: flowey.exe e 17 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey.exe e 17 flowey_lib_common::cache 12
-      shell: bash
-    - run: |
-        flowey.exe v 17 'flowey_lib_common::cache:26:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar9 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar9'
-    - run: |
-        flowey.exe v 17 'flowey_lib_common::cache:25:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar10 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar10'
-    - id: flowey_lib_common__cache__13
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar9 }}
-        path: ${{ env.floweyvar10 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__13.outputs.cache-hit }}
-      shell: flowey.exe v 17 'flowey_lib_common::cache:28:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__13.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey.exe e 17 flowey_lib_common::cache 14
-      shell: bash
-    - name: create gh cache dir
-      run: flowey.exe e 17 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey.exe e 17 flowey_lib_common::cache 8
       shell: bash
     - run: |
@@ -3614,21 +3246,12 @@ jobs:
       with:
         key: ${{ env.floweyvar7 }}
         path: ${{ env.floweyvar8 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
       shell: flowey.exe v 17 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__9.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey.exe e 17 flowey_lib_common::cache 10
-      shell: bash
-    - name: installing gh
-      run: flowey.exe e 17 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey.exe v 17 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey.exe e 17 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey.exe e 17 flowey_lib_common::download_gh_release 1
@@ -3783,16 +3406,13 @@ jobs:
       run: flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey.exe e 17 flowey_lib_common::cache 15
+      run: flowey.exe e 17 flowey_lib_common::cache 11
       shell: bash
     - name: 'validate cache entry: azcopy'
       run: flowey.exe e 17 flowey_lib_common::cache 3
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 17 flowey_lib_common::cache 7
-      shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey.exe e 17 flowey_lib_common::cache 11
       shell: bash
   job18:
     name: run vmm-tests [x64-windows-amd]
@@ -3903,32 +3523,6 @@ jobs:
       run: flowey.exe e 18 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey.exe e 18 flowey_lib_common::cache 12
-      shell: bash
-    - run: |
-        flowey.exe v 18 'flowey_lib_common::cache:26:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar9 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar9'
-    - run: |
-        flowey.exe v 18 'flowey_lib_common::cache:25:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar10 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar10'
-    - id: flowey_lib_common__cache__13
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar9 }}
-        path: ${{ env.floweyvar10 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__13.outputs.cache-hit }}
-      shell: flowey.exe v 18 'flowey_lib_common::cache:28:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__13.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey.exe e 18 flowey_lib_common::cache 14
-      shell: bash
-    - name: create gh cache dir
-      run: flowey.exe e 18 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey.exe e 18 flowey_lib_common::cache 8
       shell: bash
     - run: |
@@ -3944,21 +3538,12 @@ jobs:
       with:
         key: ${{ env.floweyvar7 }}
         path: ${{ env.floweyvar8 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
       shell: flowey.exe v 18 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__9.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey.exe e 18 flowey_lib_common::cache 10
-      shell: bash
-    - name: installing gh
-      run: flowey.exe e 18 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey.exe v 18 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey.exe e 18 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey.exe e 18 flowey_lib_common::download_gh_release 1
@@ -4113,16 +3698,13 @@ jobs:
       run: flowey.exe e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey.exe e 18 flowey_lib_common::cache 15
+      run: flowey.exe e 18 flowey_lib_common::cache 11
       shell: bash
     - name: 'validate cache entry: azcopy'
       run: flowey.exe e 18 flowey_lib_common::cache 3
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 18 flowey_lib_common::cache 7
-      shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey.exe e 18 flowey_lib_common::cache 11
       shell: bash
   job19:
     name: run vmm-tests [x64-linux]
@@ -4235,32 +3817,6 @@ jobs:
       run: flowey e 19 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey e 19 flowey_lib_common::cache 12
-      shell: bash
-    - run: |
-        flowey v 19 'flowey_lib_common::cache:26:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar9 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar9'
-    - run: |
-        flowey v 19 'flowey_lib_common::cache:25:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar10 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar10'
-    - id: flowey_lib_common__cache__13
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar9 }}
-        path: ${{ env.floweyvar10 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__13.outputs.cache-hit }}
-      shell: flowey v 19 'flowey_lib_common::cache:28:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__13.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey e 19 flowey_lib_common::cache 14
-      shell: bash
-    - name: create gh cache dir
-      run: flowey e 19 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey e 19 flowey_lib_common::cache 8
       shell: bash
     - run: |
@@ -4276,21 +3832,12 @@ jobs:
       with:
         key: ${{ env.floweyvar7 }}
         path: ${{ env.floweyvar8 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
       shell: flowey v 19 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__9.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey e 19 flowey_lib_common::cache 10
-      shell: bash
-    - name: installing gh
-      run: flowey e 19 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey v 19 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey e 19 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey e 19 flowey_lib_common::download_gh_release 1
@@ -4442,16 +3989,13 @@ jobs:
       run: flowey e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey e 19 flowey_lib_common::cache 15
+      run: flowey e 19 flowey_lib_common::cache 11
       shell: bash
     - name: 'validate cache entry: azcopy'
       run: flowey e 19 flowey_lib_common::cache 3
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 19 flowey_lib_common::cache 7
-      shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey e 19 flowey_lib_common::cache 11
       shell: bash
   job2:
     name: build and check docs [x64-linux]
@@ -4555,16 +4099,16 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey v 2 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey v 2 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar5'
+      name: 🌼 Write to 'floweyvar3'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar5 }}
+        persist-credentials: ${{ env.floweyvar3 }}
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
@@ -4583,32 +4127,6 @@ jobs:
       run: flowey e 2 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey e 2 flowey_lib_common::cache 4
-      shell: bash
-    - run: |
-        flowey v 2 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar3 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar3'
-    - run: |
-        flowey v 2 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-    - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar3 }}
-        path: ${{ env.floweyvar4 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
-      shell: flowey v 2 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey e 2 flowey_lib_common::cache 6
-      shell: bash
-    - name: create gh cache dir
-      run: flowey e 2 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey e 2 flowey_lib_common::cache 0
       shell: bash
     - run: |
@@ -4624,21 +4142,12 @@ jobs:
       with:
         key: ${{ env.floweyvar1 }}
         path: ${{ env.floweyvar2 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
       shell: flowey v 2 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__1.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey e 2 flowey_lib_common::cache 2
-      shell: bash
-    - name: installing gh
-      run: flowey e 2 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey v 2 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey e 2 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey e 2 flowey_lib_common::download_gh_release 1
@@ -4688,11 +4197,8 @@ jobs:
     - name: copying rustdoc to artifact dir
       run: flowey e 2 flowey_lib_common::copy_to_artifact_dir 0
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey e 2 flowey_lib_common::cache 3
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey e 2 flowey_lib_common::cache 7
+      run: flowey e 2 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish x64-linux-rustdoc
       uses: actions/upload-artifact@v4
@@ -5054,32 +4560,6 @@ jobs:
       run: flowey.exe e 4 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey.exe e 4 flowey_lib_common::cache 4
-      shell: bash
-    - run: |
-        flowey.exe v 4 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-    - run: |
-        flowey.exe v 4 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar5 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar5'
-    - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar4 }}
-        path: ${{ env.floweyvar5 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
-      shell: flowey.exe v 4 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey.exe e 4 flowey_lib_common::cache 6
-      shell: bash
-    - name: create gh cache dir
-      run: flowey.exe e 4 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey.exe e 4 flowey_lib_common::cache 0
       shell: bash
     - run: |
@@ -5095,21 +4575,12 @@ jobs:
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
       shell: flowey.exe v 4 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__1.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey.exe e 4 flowey_lib_common::cache 2
-      shell: bash
-    - name: installing gh
-      run: flowey.exe e 4 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey.exe v 4 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey.exe e 4 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey.exe e 4 flowey_lib_common::download_gh_release 1
@@ -5135,11 +4606,8 @@ jobs:
     - name: run xtask fmt
       run: flowey.exe e 4 flowey_lib_hvlite::_jobs::check_xtask_fmt 0
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey.exe e 4 flowey_lib_common::cache 3
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey.exe e 4 flowey_lib_common::cache 7
+      run: flowey.exe e 4 flowey_lib_common::cache 3
       shell: bash
   job5:
     name: xtask fmt (linux)
@@ -5278,32 +4746,6 @@ jobs:
       run: flowey e 5 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey e 5 flowey_lib_common::cache 4
-      shell: bash
-    - run: |
-        flowey v 5 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-    - run: |
-        flowey v 5 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar5 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar5'
-    - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar4 }}
-        path: ${{ env.floweyvar5 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
-      shell: flowey v 5 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey e 5 flowey_lib_common::cache 6
-      shell: bash
-    - name: create gh cache dir
-      run: flowey e 5 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey e 5 flowey_lib_common::cache 0
       shell: bash
     - run: |
@@ -5319,21 +4761,12 @@ jobs:
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
       shell: flowey v 5 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__1.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey e 5 flowey_lib_common::cache 2
-      shell: bash
-    - name: installing gh
-      run: flowey e 5 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey v 5 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey e 5 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey e 5 flowey_lib_common::download_gh_release 1
@@ -5371,11 +4804,8 @@ jobs:
     - name: run xtask fmt
       run: flowey e 5 flowey_lib_hvlite::_jobs::check_xtask_fmt 0
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey e 5 flowey_lib_common::cache 3
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey e 5 flowey_lib_common::cache 7
+      run: flowey e 5 flowey_lib_common::cache 3
       shell: bash
   job6:
     name: build artifacts (not for VMM tests) [aarch64-windows]
@@ -5494,16 +4924,16 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey.exe v 6 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey.exe v 6 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar5'
+      name: 🌼 Write to 'floweyvar3'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar5 }}
+        persist-credentials: ${{ env.floweyvar3 }}
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
@@ -5522,32 +4952,6 @@ jobs:
       run: flowey.exe e 6 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey.exe e 6 flowey_lib_common::cache 4
-      shell: bash
-    - run: |
-        flowey.exe v 6 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar3 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar3'
-    - run: |
-        flowey.exe v 6 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-    - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar3 }}
-        path: ${{ env.floweyvar4 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
-      shell: flowey.exe v 6 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey.exe e 6 flowey_lib_common::cache 6
-      shell: bash
-    - name: create gh cache dir
-      run: flowey.exe e 6 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey.exe e 6 flowey_lib_common::cache 0
       shell: bash
     - run: |
@@ -5563,21 +4967,12 @@ jobs:
       with:
         key: ${{ env.floweyvar1 }}
         path: ${{ env.floweyvar2 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
       shell: flowey.exe v 6 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__1.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey.exe e 6 flowey_lib_common::cache 2
-      shell: bash
-    - name: installing gh
-      run: flowey.exe e 6 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey.exe v 6 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey.exe e 6 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey.exe e 6 flowey_lib_common::download_gh_release 1
@@ -5654,11 +5049,8 @@ jobs:
     - name: copying igvmfilegen to artifact dir
       run: flowey.exe e 6 flowey_lib_common::copy_to_artifact_dir 0
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey.exe e 6 flowey_lib_common::cache 3
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey.exe e 6 flowey_lib_common::cache 7
+      run: flowey.exe e 6 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish aarch64-windows-igvmfilegen
       uses: actions/upload-artifact@v4
@@ -5789,32 +5181,6 @@ jobs:
       run: flowey.exe e 7 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey.exe e 7 flowey_lib_common::cache 8
-      shell: bash
-    - run: |
-        flowey.exe v 7 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar6 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar6'
-    - run: |
-        flowey.exe v 7 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar7 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar7'
-    - id: flowey_lib_common__cache__9
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar6 }}
-        path: ${{ env.floweyvar7 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
-      shell: flowey.exe v 7 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__9.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey.exe e 7 flowey_lib_common::cache 10
-      shell: bash
-    - name: create gh cache dir
-      run: flowey.exe e 7 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey.exe e 7 flowey_lib_common::cache 4
       shell: bash
     - run: |
@@ -5830,21 +5196,12 @@ jobs:
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
       shell: flowey.exe v 7 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey.exe e 7 flowey_lib_common::cache 6
-      shell: bash
-    - name: installing gh
-      run: flowey.exe e 7 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey.exe v 7 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey.exe e 7 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey.exe e 7 flowey_lib_common::download_gh_release 1
@@ -5973,11 +5330,8 @@ jobs:
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 7 flowey_lib_common::cache 3
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey.exe e 7 flowey_lib_common::cache 7
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey.exe e 7 flowey_lib_common::cache 11
+      run: flowey.exe e 7 flowey_lib_common::cache 7
       shell: bash
     - name: 🌼📦 Publish aarch64-windows-openvmm
       uses: actions/upload-artifact@v4
@@ -6111,16 +5465,16 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey.exe v 8 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey.exe v 8 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar5'
+      name: 🌼 Write to 'floweyvar3'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar5 }}
+        persist-credentials: ${{ env.floweyvar3 }}
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
@@ -6139,32 +5493,6 @@ jobs:
       run: flowey.exe e 8 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey.exe e 8 flowey_lib_common::cache 4
-      shell: bash
-    - run: |
-        flowey.exe v 8 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar3 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar3'
-    - run: |
-        flowey.exe v 8 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-    - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar3 }}
-        path: ${{ env.floweyvar4 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
-      shell: flowey.exe v 8 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey.exe e 8 flowey_lib_common::cache 6
-      shell: bash
-    - name: create gh cache dir
-      run: flowey.exe e 8 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey.exe e 8 flowey_lib_common::cache 0
       shell: bash
     - run: |
@@ -6180,21 +5508,12 @@ jobs:
       with:
         key: ${{ env.floweyvar1 }}
         path: ${{ env.floweyvar2 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
       shell: flowey.exe v 8 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__1.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey.exe e 8 flowey_lib_common::cache 2
-      shell: bash
-    - name: installing gh
-      run: flowey.exe e 8 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey.exe v 8 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey.exe e 8 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey.exe e 8 flowey_lib_common::download_gh_release 1
@@ -6274,11 +5593,8 @@ jobs:
     - name: copying ohcldiag-dev to artifact dir
       run: flowey.exe e 8 flowey_lib_common::copy_to_artifact_dir 1
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey.exe e 8 flowey_lib_common::cache 3
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey.exe e 8 flowey_lib_common::cache 7
+      run: flowey.exe e 8 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish x64-windows-igvmfilegen
       uses: actions/upload-artifact@v4
@@ -6409,32 +5725,6 @@ jobs:
       run: flowey.exe e 9 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
-      run: flowey.exe e 9 flowey_lib_common::cache 8
-      shell: bash
-    - run: |
-        flowey.exe v 9 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar6 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar6'
-    - run: |
-        flowey.exe v 9 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar7 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar7'
-    - id: flowey_lib_common__cache__9
-      uses: actions/cache@v4
-      with:
-        key: ${{ env.floweyvar6 }}
-        path: ${{ env.floweyvar7 }}
-      name: 'Restore cache: gh-release-download'
-    - run: ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
-      shell: flowey.exe v 9 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'steps.flowey_lib_common__cache__9.outputs.cache-hit'
-    - name: map Github cache-hit to flowey
-      run: flowey.exe e 9 flowey_lib_common::cache 10
-      shell: bash
-    - name: create gh cache dir
-      run: flowey.exe e 9 flowey_lib_common::download_gh_cli 0
-      shell: bash
-    - name: Pre-processing cache vars
       run: flowey.exe e 9 flowey_lib_common::cache 4
       shell: bash
     - run: |
@@ -6450,21 +5740,12 @@ jobs:
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
-      name: 'Restore cache: gh-cli'
+      name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
       shell: flowey.exe v 9 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'steps.flowey_lib_common__cache__5.outputs.cache-hit'
     - name: map Github cache-hit to flowey
       run: flowey.exe e 9 flowey_lib_common::cache 6
-      shell: bash
-    - name: installing gh
-      run: flowey.exe e 9 flowey_lib_common::download_gh_cli 1
-      shell: bash
-    - run: ${{ github.token }}
-      shell: flowey.exe v 9 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_lib_hvlite/src/_jobs/cfg_common.rs:92:36' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
-    - name: setup gh cli
-      run: flowey.exe e 9 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: download artifacts from github releases
       run: flowey.exe e 9 flowey_lib_common::download_gh_release 1
@@ -6593,11 +5874,8 @@ jobs:
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 9 flowey_lib_common::cache 3
       shell: bash
-    - name: 'validate cache entry: gh-cli'
-      run: flowey.exe e 9 flowey_lib_common::cache 7
-      shell: bash
     - name: 'validate cache entry: gh-release-download'
-      run: flowey.exe e 9 flowey_lib_common::cache 11
+      run: flowey.exe e 9 flowey_lib_common::cache 7
       shell: bash
     - name: 🌼📦 Publish x64-windows-openvmm
       uses: actions/upload-artifact@v4

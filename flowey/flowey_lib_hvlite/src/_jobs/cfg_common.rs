@@ -87,14 +87,6 @@ impl SimpleFlowNode for Node {
             ctx.req(flowey_lib_common::install_rust::Request::IgnoreVersion(
                 false,
             ));
-
-            {
-                let gh_token = ctx.get_gh_context_var(GhContextVar::GITHUB__TOKEN);
-
-                ctx.req(flowey_lib_common::use_gh_cli::Request::WithAuth(
-                    flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(gh_token),
-                ));
-            }
         } else if matches!(ctx.backend(), FlowBackend::Ado) {
             if local_only.is_some() {
                 anyhow::bail!("can only set `local_only` params when using Local backend");
