@@ -294,7 +294,7 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
         "emulated"
     }
 
-    fn map_bar(&mut self, n: u8, _addr_fixed: Option<u64>) -> anyhow::Result<Self::Registers> {
+    fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers> {
         Ok(Mapping {
             device: self.device.clone(),
             addr: (n as u64) << 32,

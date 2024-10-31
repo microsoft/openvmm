@@ -355,36 +355,6 @@ impl Device {
         Ok(MappedRegion { addr, len })
     }
 
-    /// Attempts to map the region to the specific VA.
-    pub fn map_to(
-        &self,
-        addr: u64,
-        offset: u64,
-        len: usize,
-        write: bool,
-    ) -> anyhow::Result<MappedRegion> {
-        let mut prot = libc::PROT_READ;
-        if write {
-            prot |= libc::PROT_WRITE;
-        }
-        // SAFETY: The file descriptor is valid and valid address is being passed.
-        // The result is being validated.
-        let addr = unsafe {
-            libc::mmap(
-                addr as *mut c_void,
-                len,
-                prot,
-                libc::MAP_SHARED,
-                self.file.as_raw_fd(),
-                offset as i64,
-            )
-        };
-        if addr == libc::MAP_FAILED {
-            return Err(std::io::Error::last_os_error()).context("failed to map region");
-        }
-        Ok(MappedRegion { addr, len })
-    }
-
     pub fn map_msix<I>(&self, start: u32, eventfd: I) -> anyhow::Result<()>
     where
         I: IntoIterator,

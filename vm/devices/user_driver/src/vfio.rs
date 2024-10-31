@@ -142,18 +142,13 @@ impl VfioDevice {
         })
     }
 
-    /// Maps PCI BAR[n] to VA space, optionally to a fixed address.
-    fn map_bar(&self, n: u8, addr_fixed: Option<u64>) -> anyhow::Result<MappedRegionWithFallback> {
+    /// Maps PCI BAR[n] to VA space.
+    fn map_bar(&self, n: u8) -> anyhow::Result<MappedRegionWithFallback> {
         if n >= 6 {
             anyhow::bail!("invalid bar");
         }
         let info = self.device.region_info(n.into())?;
-        let mapping = if addr_fixed.is_none() {
-            self.device.map(info.offset, info.size as usize, true)?
-        } else {
-            self.device
-                .map_to(addr_fixed.unwrap(), info.offset, info.size as usize, true)?
-        };
+        let mapping = self.device.map(info.offset, info.size as usize, true)?;
         sparse_mmap::initialize_try_copy();
         Ok(MappedRegionWithFallback {
             device: self.device.clone(),
@@ -189,8 +184,8 @@ impl DeviceBacking for VfioDevice {
         &self.pci_id
     }
 
-    fn map_bar(&mut self, n: u8, addr_fixed: Option<u64>) -> anyhow::Result<Self::Registers> {
-        (*self).map_bar(n, addr_fixed)
+    fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers> {
+        (*self).map_bar(n)
     }
 
     fn host_allocator(&self) -> Self::DmaAllocator {

@@ -37,7 +37,6 @@ use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::save_restore::VfioDeviceSavedState;
 use user_driver::DeviceBacking;
-use user_driver::DeviceRegisterIo;
 use user_driver::vfio::VfioDmaBuffer;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -63,10 +62,9 @@ pub struct NvmeDriver<T: DeviceBacking> {
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
     rescan_event: Arc<event_listener::Event>,
-    /// NVMe namespace associated with this driver (1:1).
+    /// NVMe namespaces associated with this driver (TODO: array).
     #[inspect(skip)]
     namespace: Option<Arc<Namespace>>,
-    bar0_va: Option<u64>,
     /// Keeps the controller connected (CSTS.RDY==1) while servicing.
     nvme_keepalive: bool,
 }
@@ -199,10 +197,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         let driver = driver_source.simple();
         let bar0 = Bar0(
             device
-                .map_bar(0, None)
+                .map_bar(0)
                 .context("failed to map device registers")?,
         );
-        let bar0_va = bar0.base_va();
 
         let cc = bar0.cc();
         if cc.en() || bar0.csts().rdy() {
@@ -251,7 +248,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             io_issuers,
             rescan_event: Default::default(),
             namespace: None,
-            bar0_va: Some(bar0_va),
             nvme_keepalive: false,
         })
     }
@@ -425,10 +421,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         // Pre-create the IO queue 1 for CPU 0. The other queues will be created
         // lazily. Numbering for I/O queues starts with 1 (0 is Admin).
-        let qid1 = worker.io.len() as u16 + 1;
-
         let issuer = worker
-            .create_io_queue(&mut state, qid1, 0)
+            .create_io_queue(&mut state, 0)
             .await
             .context("failed to create io queue 1")?;
 
@@ -520,7 +514,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             Some(ns) => Some(ns.save()?),
             None => None,
         };
-        save_state.bar0_va = self.bar0_va;
 
         Ok(save_state)
     }
@@ -540,9 +533,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     ) -> anyhow::Result<Self> {
         let driver = driver_source.simple();
         let bar0_mapping = device
-            .map_bar(0, saved_state.bar0_va)
+            .map_bar(0)
             .context("failed to map device registers")?;
-        let bar0_va = bar0_mapping.base_va();
         let bar0 = Bar0(bar0_mapping);
 
         // It is expected the device to be alive when restoring.
@@ -579,7 +571,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             io_issuers,
             rescan_event: Default::default(),
             namespace: None,
-            bar0_va: Some(bar0_va),
             nvme_keepalive: true,
         };
 
@@ -805,11 +796,8 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             return;
         }
 
-        // Provide next available queue ID.
-        let qid = self.io.len() as u16 + 1;
-
         let issuer = match self
-            .create_io_queue(state, qid, cpu)
+            .create_io_queue(state, cpu)
             .instrument(info_span!("create_nvme_io_queue", cpu))
             .await
         {
@@ -842,12 +830,13 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
     async fn create_io_queue(
         &mut self,
         state: &mut WorkerState,
-        qid: u16,
         cpu: u32,
     ) -> anyhow::Result<IoIssuer> {
         if self.io.len() >= state.max_io_queues as usize {
             anyhow::bail!("no more io queues available");
         }
+
+        let qid = self.io.len() as u16 + 1;
 
         tracing::debug!(cpu, qid, "creating io queue");
 
@@ -957,7 +946,6 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     identify_ctrl: [0; 4096],
                     device_id: "".to_string(),
                     namespace: None,
-                    bar0_va: None,
                     qsize: worker_state.qsize,
                     max_io_queues: worker_state.max_io_queues,
                     vfio_state: VfioDeviceSavedState {
@@ -987,7 +975,6 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             identify_ctrl: [0; 4096],  // Will be updated by the caller.
             device_id: "".to_string(), // Will be updated by the caller.
             namespace: None,           // Will be updated by the caller.
-            bar0_va: None,             // Will be updated by the caller.
             qsize: worker_state.qsize,
             max_io_queues: worker_state.max_io_queues,
             vfio_state: VfioDeviceSavedState {
@@ -1034,17 +1021,14 @@ pub mod save_restore {
         /// Namespace data.
         #[mesh(6)]
         pub namespace: Option<crate::namespace::SavedNamespaceData>,
-        /// BAR0 mapping.
-        #[mesh(7)]
-        pub bar0_va: Option<u64>,
         /// Queue size as determined by CAP.MQES.
-        #[mesh(8)]
+        #[mesh(7)]
         pub qsize: u16,
         /// Max number of IO queue pairs.
-        #[mesh(9)]
+        #[mesh(8)]
         pub max_io_queues: u16,
         /// State of the attached VFIO device.
-        #[mesh(10)]
+        #[mesh(9)]
         pub vfio_state: VfioDeviceSavedState,
     }
 

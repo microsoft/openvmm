@@ -29,8 +29,8 @@ pub trait DeviceBacking: 'static + Send + Inspect {
     /// Returns a device ID for diagnostics.
     fn id(&self) -> &str;
 
-    /// Maps a BAR, optionally to a predefined VA address.
-    fn map_bar(&mut self, n: u8, addr_fixed: Option<u64>) -> anyhow::Result<Self::Registers>;
+    /// Maps a BAR.
+    fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers>;
 
     /// Returns an object that can allocate host memory to be shared with the device.
     fn host_allocator(&self) -> Self::DmaAllocator;

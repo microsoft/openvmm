@@ -30,7 +30,7 @@ use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use boot_logger::LoggerType;
 use core::fmt::Write;
-use core::ops;
+use core::ops::Range;
 use dt::write_dt;
 use dt::BootTimes;
 use host_params::shim_params::IsolationType;
@@ -288,19 +288,19 @@ fn shim_parameters(shim_params_raw_offset: isize) -> ShimParams {
 }
 
 /// The maximum number of reserved memory ranges that we might use.
-///
-/// 1. VTL2 parameter regions (could be up to 2).
-/// 2. Preserved DMA buffers and hardware queues.
-/// 3. Sidecar image.
-/// 4. One reserved range per sidecar node.
-pub const MAX_RESERVED_MEM_RANGES: usize = 4 + sidecar_defs::MAX_NODES;
+/// See ReservedMemoryType definition for details.
+pub const MAX_RESERVED_MEM_RANGES: usize = 5 + sidecar_defs::MAX_NODES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReservedMemoryType {
+    /// VTL2 parameter regions (could be up to 2).
     Vtl2Config,
     Vtl2Reserved,
+    /// Sidecar image.
     SidecarImage,
+    /// A reserved range per sidecar node.
     SidecarNode,
+    /// Preserved DMA buffers and hardware queues.
     DmaBuffers,
 }
 
@@ -341,7 +341,7 @@ fn reserved_memory_regions(
     if !partition_info.vtl2_ram.is_empty() && (dma_4k_pages > 0) {
         let last_mem_entry = &partition_info.vtl2_ram[partition_info.vtl2_ram.len() - 1];
         if last_mem_entry.range.page_count_4k() > dma_4k_pages {
-            let reserved_dma = MemoryRange::from_4k_gpn_range(ops::Range {
+            let reserved_dma = MemoryRange::from_4k_gpn_range(Range {
                 start: last_mem_entry.range.end_4k_gpn() - dma_4k_pages,
                 end: last_mem_entry.range.end_4k_gpn(),
             });
