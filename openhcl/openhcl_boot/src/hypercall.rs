@@ -9,6 +9,7 @@ use core::cell::RefCell;
 use core::cell::UnsafeCell;
 use core::mem::size_of;
 use hvdef::hypercall::HvInputVtl;
+use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
 use minimal_rt::arch::hypercall::invoke_hypercall;
@@ -47,8 +48,10 @@ static HVCALL_INPUT: SingleThreaded<UnsafeCell<HvcallPage>> =
 static HVCALL_OUTPUT: SingleThreaded<UnsafeCell<HvcallPage>> =
     SingleThreaded(UnsafeCell::new(HvcallPage::new()));
 
-static HVCALL: SingleThreaded<RefCell<HvCall>> =
-    SingleThreaded(RefCell::new(HvCall { initialized: false }));
+static HVCALL: SingleThreaded<RefCell<HvCall>> = SingleThreaded(RefCell::new(HvCall {
+    initialized: false,
+    vtl: Vtl::Vtl0,
+}));
 
 /// Provides mechanisms to invoke hypercalls within the boot shim.
 /// Internally uses static buffers for the hypercall page, the input
@@ -56,6 +59,7 @@ static HVCALL: SingleThreaded<RefCell<HvCall>> =
 /// multi-threaded capacity (which the boot shim currently is not).
 pub struct HvCall {
     initialized: bool,
+    vtl: Vtl,
 }
 
 /// Returns an [`HvCall`] instance.
@@ -97,7 +101,17 @@ impl HvCall {
         // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
         let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
         crate::arch::hypercall::initialize(guest_os_id.into());
+
         self.initialized = true;
+
+        self.vtl = self
+            .get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into())
+            .map_or(Vtl::Vtl0, |status| {
+                hvdef::HvRegisterVsmVpStatus::from(status.as_u64())
+                    .active_vtl()
+                    .try_into()
+                    .unwrap()
+            });
     }
 
     /// Call before jumping to kernel.
@@ -106,6 +120,11 @@ impl HvCall {
             crate::arch::hypercall::uninitialize();
             self.initialized = false;
         }
+    }
+
+    /// Returns the environment's VTL.
+    pub fn vtl(&self) -> Vtl {
+        self.vtl
     }
 
     /// Makes a hypercall.

@@ -36,6 +36,7 @@ use host_params::shim_params::IsolationType;
 use host_params::shim_params::ShimParams;
 use host_params::PartitionInfo;
 use host_params::COMMAND_LINE_SIZE;
+use hvdef::Vtl;
 use loader_defs::linux::setup_data;
 use loader_defs::linux::SETUP_DTB;
 use loader_defs::shim::ShimParamsRaw;
@@ -552,6 +553,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     // Fill out the non-devicetree derived parts of PartitionInfo.
     if !p.isolation_type.is_hardware_isolated()
+        && hvcall().vtl() == Vtl::Vtl2
         && hvdef::HvRegisterVsmCapabilities::from(
             hvcall()
                 .get_register(hvdef::HvAllArchRegisterName::VsmCapabilities.into())
@@ -758,6 +760,13 @@ fn validate_vp_hw_ids(partition_info: &PartitionInfo) {
         // For TDX, we could use ENUM TOPOLOGY to validate that the TD VCPU
         // indexes correspond to the APIC IDs in the right order. I am not
         // certain if there are places where we depend on this mapping today.
+        return;
+    }
+
+    if hvcall().vtl() != Vtl::Vtl2 {
+        // If we're not using guest VSM, then the guest won't communicate
+        // directly with the hypervisor, so we can choose the VP indexes
+        // ourselves.
         return;
     }
 
