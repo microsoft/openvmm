@@ -180,7 +180,6 @@ impl BackingPrivate for HypervisorBackedX86 {
         this: &'a mut UhProcessor<'p, Self>,
         vtl: GuestVtl,
     ) -> Self::StateAccess<'p, 'a> {
-        assert_eq!(vtl, GuestVtl::Vtl0);
         UhVpStateAccess::new(this, vtl)
     }
 
@@ -441,7 +440,7 @@ fn next_rip(value: &HvX64InterceptMessageHeader) -> u64 {
 
 struct InterceptHandler<'a, 'b> {
     vp: &'a mut UhProcessor<'b, HypervisorBackedX86>,
-    vtl: GuestVtl,
+    intercepted_vtl: GuestVtl,
 }
 
 impl<'a, 'b> InterceptHandler<'a, 'b> {
@@ -550,7 +549,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
 
         Ok(Self {
             vp,
-            vtl: intercepted_vtl,
+            intercepted_vtl,
         })
     }
 
@@ -614,7 +613,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             .next_deliverability_notifications
             .set_sints(0);
 
-        // These messages are always VTL0, as VTL1 does not own any VMBUS channels.
+        // These messages are always delivered to VTL0, as VTL1 does not own any VMBUS channels.
         self.vp
             .deliver_synic_messages(GuestVtl::Vtl0, message.deliverable_sints);
     }
@@ -633,12 +632,12 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         let is_64bit =
             message.header.execution_state.cr0_pe() && message.header.execution_state.efer_lma();
 
-        let guest_memory = &self.vp.partition.gm[self.vtl];
+        let guest_memory = &self.vp.partition.gm[self.intercepted_vtl];
         let handler = UhHypercallHandler {
             vp: self.vp,
             bus,
             trusted: false,
-            intercepted_vtl: self.vtl,
+            intercepted_vtl: self.intercepted_vtl,
         };
         UhHypercallHandler::MSHV_DISPATCHER.dispatch(
             guest_memory,
@@ -685,7 +684,9 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             }
         }
 
-        self.vp.emulate(dev, interruption_pending, self.vtl).await?;
+        self.vp
+            .emulate(dev, interruption_pending, self.intercepted_vtl)
+            .await?;
         Ok(())
     }
 
@@ -705,7 +706,9 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         let interruption_pending = message.header.execution_state.interruption_pending();
 
         if message.access_info.string_op() || message.access_info.rep_prefix() {
-            self.vp.emulate(dev, interruption_pending, self.vtl).await
+            self.vp
+                .emulate(dev, interruption_pending, self.intercepted_vtl)
+                .await
         } else {
             let next_rip = next_rip(&message.header);
             let access_size = message.access_info.access_size();
@@ -718,7 +721,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                 dev,
             )
             .await;
-            self.vp.set_rip(self.vtl, next_rip)
+            self.vp.set_rip(self.intercepted_vtl, next_rip)
         }
     }
 
@@ -778,7 +781,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         self.vp.runner.cpu_context_mut().gps[protocol::RCX] = ecx.into();
         self.vp.runner.cpu_context_mut().gps[protocol::RDX] = edx.into();
 
-        self.vp.set_rip(self.vtl, next_rip)
+        self.vp.set_rip(self.intercepted_vtl, next_rip)
     }
 
     fn handle_msr_intercept(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
@@ -794,20 +797,20 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         match message.header.intercept_access_type {
             HvInterceptAccessType::READ => {
                 let r = if let Some(lapics) = &mut self.vp.backing.lapics {
-                    lapics[self.vtl]
+                    lapics[self.intercepted_vtl]
                         .lapic
                         .access(&mut UhApicClient {
                             partition: self.vp.partition,
                             runner: &mut self.vp.runner,
                             vmtime: &self.vp.vmtime,
                             dev,
-                            vtl: self.vtl,
+                            vtl: self.intercepted_vtl,
                         })
                         .msr_read(msr)
                 } else {
                     Err(MsrError::Unknown)
                 };
-                let r = r.or_else_if_unknown(|| self.vp.read_msr(msr, self.vtl));
+                let r = r.or_else_if_unknown(|| self.vp.read_msr(msr, self.intercepted_vtl));
 
                 let value = match r {
                     Ok(v) => v,
@@ -816,7 +819,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                         0
                     }
                     Err(MsrError::InvalidAccess) => {
-                        self.vp.inject_gpf(self.vtl);
+                        self.vp.inject_gpf(self.intercepted_vtl);
                         // Do not advance RIP.
                         return Ok(());
                     }
@@ -828,27 +831,28 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             HvInterceptAccessType::WRITE => {
                 let value = (message.rax & 0xffff_ffff) | (message.rdx << 32);
                 let r = if let Some(lapic) = &mut self.vp.backing.lapics {
-                    lapic[self.vtl]
+                    lapic[self.intercepted_vtl]
                         .lapic
                         .access(&mut UhApicClient {
                             partition: self.vp.partition,
                             runner: &mut self.vp.runner,
                             vmtime: &self.vp.vmtime,
                             dev,
-                            vtl: self.vtl,
+                            vtl: self.intercepted_vtl,
                         })
                         .msr_write(msr, value)
                 } else {
                     Err(MsrError::Unknown)
                 };
-                let r = r.or_else_if_unknown(|| self.vp.write_msr(msr, value, self.vtl));
+                let r =
+                    r.or_else_if_unknown(|| self.vp.write_msr(msr, value, self.intercepted_vtl));
                 match r {
                     Ok(()) => {}
                     Err(MsrError::Unknown) => {
                         tracing::trace!(msr, value, "unknown msr write");
                     }
                     Err(MsrError::InvalidAccess) => {
-                        self.vp.inject_gpf(self.vtl);
+                        self.vp.inject_gpf(self.intercepted_vtl);
                         // Do not advance RIP.
                         return Ok(());
                     }
@@ -857,7 +861,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             _ => unreachable!(),
         }
 
-        self.vp.set_rip(self.vtl, rip)
+        self.vp.set_rip(self.intercepted_vtl, rip)
     }
 
     fn handle_eoi(&self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
@@ -873,12 +877,12 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
 
     fn handle_unrecoverable_exception(&self) -> Result<(), VpHaltReason<UhRunVpError>> {
         Err(VpHaltReason::TripleFault {
-            vtl: self.vtl.into(),
+            vtl: self.intercepted_vtl.into(),
         })
     }
 
     fn handle_halt(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
-        self.vp.backing.lapics.as_mut().unwrap()[self.vtl].halted = true;
+        self.vp.backing.lapics.as_mut().unwrap()[self.intercepted_vtl].halted = true;
         Ok(())
     }
 
@@ -890,7 +894,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
 
         match x86defs::Exception(message.vector as u8) {
             x86defs::Exception::DEBUG if cfg!(feature = "gdb") => {
-                self.vp.handle_debug_exception(self.vtl)?
+                self.vp.handle_debug_exception(self.intercepted_vtl)?
             }
             _ => tracing::error!("unexpected exception type {:#x?}", message.vector),
         }
@@ -1376,7 +1380,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
                 .vp
                 .partition
                 .hcl
-                .check_vtl_access(gpa, GuestVtl::Vtl0, flags)
+                .check_vtl_access(gpa, self.vtl, flags)
                 .map_err(|e| EmuCheckVtlAccessError::Hypervisor(UhRunVpError::VtlAccess(e)))?;
 
             if let Some(ioctl::CheckVtlAccessResult { vtl, denied_flags }) = access_result {
