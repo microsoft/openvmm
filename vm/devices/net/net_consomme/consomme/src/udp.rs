@@ -187,10 +187,6 @@ impl<T: Client> Access<'_, T> {
             &checksum.caps(),
         )?;
 
-        if udp.src_port == 50015 {
-            tracing::info!(src = %addresses.src_addr, src_port = udp.src_port, dest = %addresses.dst_addr, dest_port = udp.dst_port, "packet");
-        }
-
         if addresses.dst_addr == self.inner.state.gateway_ip || addresses.dst_addr.is_broadcast() {
             if self.handle_gateway_udp(&udp_packet)? {
                 return Ok(());
