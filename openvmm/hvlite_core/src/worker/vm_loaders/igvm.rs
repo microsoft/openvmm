@@ -91,6 +91,8 @@ pub enum Error {
     NoVbsSupport,
     #[error("vp context for lower VTL not supported")]
     LowerVtlContext,
+    #[error("missing vtl2 required range")]
+    MissingVtl2RequiredRange,
 }
 
 fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
@@ -760,7 +762,7 @@ fn load_igvm_x86(
                 vtl2_protectable,
             } = *header
             {
-                if vtl2_protectable {
+                if vtl2_protectable || max_vtl == hvdef::Vtl::Vtl0 {
                     let base = relocate_gpa(gpa);
                     vtl2_ram_range = Some(MemoryRangeWithNode {
                         range: MemoryRange::new(base..base + number_of_bytes as u64),
@@ -771,7 +773,7 @@ fn load_igvm_x86(
             }
         }
 
-        let vtl2_range = vtl2_ram_range.expect("must have vtl2 required memory header");
+        let vtl2_range = vtl2_ram_range.ok_or(Error::MissingVtl2RequiredRange)?;
 
         // The Vtl2 ram range is only set when Vtl2 is not allocating ram
         // itself.

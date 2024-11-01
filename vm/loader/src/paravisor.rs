@@ -120,8 +120,6 @@ where
         shared_gpa_boundary_bits,
     } = importer.isolation_config();
 
-    assert!(paravisor_present);
-
     // If no explicit memory base is specified, load with relocation support.
     let with_relocation = memory_page_base.is_none() && isolation_type == IsolationType::None;
 
@@ -159,7 +157,11 @@ where
     importer.verify_startup_memory_available(
         memory_start_address / HV_PAGE_SIZE,
         memory_page_count,
-        StartupMemoryType::Vtl2ProtectableRam,
+        if paravisor_present {
+            StartupMemoryType::Vtl2ProtectableRam
+        } else {
+            StartupMemoryType::Ram
+        },
     )?;
 
     let kernel_acceptance = match isolation_type {
@@ -830,6 +832,8 @@ where
     assert!(!supports_pcat);
     assert!(supports_uefi.is_some() || supports_linux.is_some());
 
+    let paravisor_present = importer.isolation_config().paravisor_present;
+
     // If no explicit memory base is specified, load with relocation support.
     let with_relocation = memory_page_base.is_none();
 
@@ -853,7 +857,11 @@ where
     importer.verify_startup_memory_available(
         memory_start_address / HV_PAGE_SIZE,
         memory_page_count,
-        StartupMemoryType::Vtl2ProtectableRam,
+        if paravisor_present {
+            StartupMemoryType::Vtl2ProtectableRam
+        } else {
+            StartupMemoryType::Ram
+        },
     )?;
 
     tracing::trace!(memory_start_address, "loading the kernel");
