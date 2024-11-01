@@ -2613,7 +2613,7 @@ async fn connect_diag(
     Ok(diag_client)
 }
 
-/// An object that implements [`Inspect`] by sending an inspect request over
+/// An object that implements [`InspectMut`] by sending an inspect request over
 /// TTRPC to the guest (typically the paravisor running in VTL2), then stitching
 /// the response back into the inspect tree.
 ///
