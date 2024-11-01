@@ -6,13 +6,13 @@
 mod tlb_lock;
 
 use super::UhProcessor;
+use crate::processor::HardwareIsolatedBacking;
 use crate::processor::UhHypercallHandler;
 use crate::validate_vtl_gpa_flags;
 use crate::GuestVsmState;
 use crate::GuestVsmVtl1State;
 use crate::GuestVsmVtl1StateInner;
 use crate::GuestVtl;
-use crate::HardwareIsolatedBacking;
 use crate::WakeReason;
 use hvdef::hypercall::HvFlushFlags;
 use hvdef::HvError;

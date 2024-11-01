@@ -21,7 +21,6 @@ cfg_if::cfg_if!(
         use devmsr::MsrDevice;
         use processor::snp::SnpBackedShared;
         use processor::tdx::TdxBackedShared;
-        use processor::BackingSharedParams;
         use std::arch::x86_64::CpuidResult;
         use virt::CpuidLeaf;
     } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
@@ -32,7 +31,6 @@ cfg_if::cfg_if!(
 
 mod processor;
 pub use processor::Backing;
-use processor::HardwareIsolatedBacking;
 pub use processor::UhProcessor;
 
 use anyhow::Context as AnyhowContext;
@@ -76,6 +74,7 @@ use pal_async::driver::SpawnDriver;
 use pal_uring::IdleControl;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
+use processor::BackingSharedParams;
 use processor::SidecarExitReason;
 use sidecar_client::NewSidecarClientError;
 use std::ops::RangeInclusive;
@@ -230,6 +229,34 @@ enum BackingShared {
     Snp(#[inspect(flatten)] Arc<SnpBackedShared>),
     #[cfg(guest_arch = "x86_64")]
     Tdx(#[inspect(flatten)] Arc<TdxBackedShared>),
+}
+
+impl BackingShared {
+    fn new(
+        isolation: IsolationType,
+        backing_shared_params: BackingSharedParams,
+    ) -> Result<BackingShared, Error> {
+        Ok(match isolation {
+            IsolationType::None | IsolationType::Vbs => {
+                #[allow(irrefutable_let_patterns)]
+                let BackingSharedParams { cvm_state: None } = backing_shared_params
+                else {
+                    unreachable!()
+                };
+                BackingShared::Hypervisor
+            }
+            #[cfg(guest_arch = "x86_64")]
+            IsolationType::Snp => {
+                BackingShared::Snp(Arc::new(SnpBackedShared::new(backing_shared_params)?))
+            }
+            #[cfg(guest_arch = "x86_64")]
+            IsolationType::Tdx => {
+                BackingShared::Tdx(Arc::new(TdxBackedShared::new(backing_shared_params)?))
+            }
+            #[cfg(not(guest_arch = "x86_64"))]
+            _ => unreachable!(),
+        })
+    }
 }
 
 #[derive(InspectMut, Copy, Clone)]
@@ -1401,7 +1428,7 @@ impl<'a> UhProtoPartition<'a> {
             Mutex::new(CpuidLeafSet::new(Vec::new())),
         );
 
-        let vsm_state = if self.guest_vsm_available {
+        let vsm_state = if guest_vsm_available {
             if is_hardware_isolated {
                 tracing::warn!("Advertising guest vsm as being supported to the guest. This feature is in development, so the guest might crash.");
             }
@@ -1535,24 +1562,7 @@ impl<'a> UhProtoPartition<'a> {
             partition.manage_io_port_intercept_region(0, !0, true);
         }
 
-        #[cfg(guest_arch = "x86_64")]
-        let backing_shared_params = BackingSharedParams {
-            cvm_state,
-            _partition: &partition,
-        };
-        let backing_shared = match isolation {
-            IsolationType::None | IsolationType::Vbs => BackingShared::Hypervisor,
-            #[cfg(guest_arch = "x86_64")]
-            IsolationType::Snp => BackingShared::Snp(Arc::new(SnpBacked::new_shared_state(
-                backing_shared_params,
-            )?)),
-            #[cfg(guest_arch = "x86_64")]
-            IsolationType::Tdx => BackingShared::Tdx(Arc::new(TdxBacked::new_shared_state(
-                backing_shared_params,
-            )?)),
-            #[cfg(not(guest_arch = "x86_64"))]
-            _ => unreachable!(),
-        };
+        let backing_shared = BackingShared::new(isolation, BackingSharedParams { cvm_state })?;
 
         let vps = params
             .topology
@@ -1634,6 +1644,9 @@ impl UhProtoPartition<'_> {
         params: &UhPartitionNewParams<'_>,
         cvm_state: Option<&UhCvmPartitionState>,
     ) -> bool {
+        #[cfg(guest_arch = "aarch64")]
+        let _ = cvm_state;
+
         match params.isolation {
             IsolationType::None | IsolationType::Vbs => {}
             #[cfg(guest_arch = "x86_64")]
@@ -1669,10 +1682,12 @@ impl UhProtoPartition<'_> {
         };
 
         #[cfg(guest_arch = "aarch64")]
-        let privs = params.hcl.get_vp_register(
-            HvArm64RegisterName::PrivilegesAndFeaturesInfo,
-            HvInputVtl::CURRENT_VTL,
-        );
+        let privs = hcl
+            .get_vp_register(
+                HvArm64RegisterName::PrivilegesAndFeaturesInfo,
+                HvInputVtl::CURRENT_VTL,
+            )
+            .as_u64();
 
         if !hvdef::HvPartitionPrivilege::from(privs).access_vsm() {
             return false;

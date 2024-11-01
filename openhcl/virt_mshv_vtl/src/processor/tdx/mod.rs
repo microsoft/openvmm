@@ -479,18 +479,17 @@ pub struct TdxBackedShared {
     flush_state: VtlArray<RwLock<TdxPartitionFlushState>, 2>,
 }
 
-impl BackingPrivate for TdxBacked {
-    type HclBacking = Tdx;
-    type BackingShared = TdxBackedShared;
-
-    fn new_shared_state(
-        params: BackingSharedParams<'_>,
-    ) -> Result<Self::BackingShared, crate::Error> {
-        Ok(TdxBackedShared {
+impl TdxBackedShared {
+    pub fn new(params: BackingSharedParams) -> Result<Self, crate::Error> {
+        Ok(Self {
             flush_state: VtlArray::from_fn(|_| RwLock::new(TdxPartitionFlushState::new())),
             cvm: params.cvm_state.unwrap(),
         })
     }
+}
+
+impl BackingPrivate for TdxBacked {
+    type HclBacking = Tdx;
 
     fn new(params: super::private::BackingParams<'_, '_, Self>) -> Result<Self, crate::Error> {
         // TODO TDX: TDX shares the vp context page for xmm registers only. It

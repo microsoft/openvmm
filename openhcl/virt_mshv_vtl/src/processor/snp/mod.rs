@@ -163,11 +163,8 @@ pub struct SnpBackedShared {
     tsc_aux_virtualized: bool,
 }
 
-impl BackingPrivate for SnpBacked {
-    type HclBacking = hcl::ioctl::snp::Snp;
-    type BackingShared = SnpBackedShared;
-
-    fn new_shared_state(params: BackingSharedParams<'_>) -> Result<Self::BackingShared, Error> {
+impl SnpBackedShared {
+    pub fn new(params: BackingSharedParams) -> Result<Self, Error> {
         let cvm = params.cvm_state.unwrap();
         let invlpgb_count_max = x86defs::cpuid::ExtendedAddressSpaceSizesEdx::from(
             cvm.cpuid
@@ -182,12 +179,16 @@ impl BackingPrivate for SnpBacked {
         )
         .tsc_aux_virtualization();
 
-        Ok(SnpBackedShared {
+        Ok(Self {
             invlpgb_count_max,
             tsc_aux_virtualized,
             cvm,
         })
     }
+}
+
+impl BackingPrivate for SnpBacked {
+    type HclBacking = hcl::ioctl::snp::Snp;
 
     fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error> {
         let crate::BackingShared::Snp(shared) = params.backing_shared else {

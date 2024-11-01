@@ -105,14 +105,6 @@ struct ProcessorStatsArm64 {
 impl BackingPrivate for HypervisorBackedArm64 {
     type HclBacking = MshvArm64;
 
-    type BackingShared = ();
-
-    fn new_shared_state(
-        _params: crate::processor::BackingSharedParams<'_>,
-    ) -> Result<Self::BackingShared, Error> {
-        Ok(())
-    }
-
     fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error> {
         vp::Registers::at_reset(&params.partition.caps, params.vp_info);
         let _ = (params.runner, &params.backing_shared);

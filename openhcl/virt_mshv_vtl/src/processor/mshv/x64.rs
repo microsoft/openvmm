@@ -15,7 +15,6 @@ use super::super::BackingPrivate;
 use super::super::UhEmulationState;
 use super::super::UhRunVpError;
 use crate::processor::from_seg;
-use crate::processor::BackingSharedParams;
 use crate::processor::LapicState;
 use crate::processor::SidecarExitReason;
 use crate::processor::SidecarRemoveExit;
@@ -122,11 +121,6 @@ struct ProcessorStatsX86 {
 
 impl BackingPrivate for HypervisorBackedX86 {
     type HclBacking = MshvX64;
-    type BackingShared = ();
-
-    fn new_shared_state(_params: BackingSharedParams<'_>) -> Result<Self::BackingShared, Error> {
-        Ok(())
-    }
 
     fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error> {
         // Initialize shared register state to architectural state. The kernel

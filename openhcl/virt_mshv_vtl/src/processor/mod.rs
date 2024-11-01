@@ -183,13 +183,7 @@ mod private {
     }
 
     pub trait BackingPrivate: 'static + Sized + InspectMut + Sized {
-        type BackingShared;
-
         type HclBacking: hcl::ioctl::Backing;
-
-        fn new_shared_state(
-            params: super::BackingSharedParams<'_>,
-        ) -> Result<Self::BackingShared, Error>;
 
         fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error>;
 
@@ -249,28 +243,20 @@ mod private {
     }
 }
 
-pub struct BackingSharedParams<'a> {
-    pub(crate) _partition: &'a UhPartitionInner,
-    #[cfg(guest_arch = "x86_64")]
+pub struct BackingSharedParams {
     pub(crate) cvm_state: Option<crate::UhCvmPartitionState>,
 }
 
 /// Processor backing.
-pub trait Backing: BackingPrivate {
-    /// Construct a state object that should be shared amongst all VPs in the partition of this Backing.
-    fn new_shared_state(params: BackingSharedParams<'_>) -> Result<Self::BackingShared, Error> {
-        <Self as BackingPrivate>::new_shared_state(params)
-    }
-}
+pub trait Backing: BackingPrivate {}
 
 impl<T: BackingPrivate> Backing for T {}
 
 /// Trait for processor backings that have hardware isolation support.
+#[cfg(guest_arch = "x86_64")]
 pub trait HardwareIsolatedBacking: Backing {
-    #[cfg(guest_arch = "x86_64")]
     /// Gets CVM specific VP state.
     fn cvm_state_mut(&mut self) -> &mut crate::UhCvmVpState;
-    #[cfg(guest_arch = "x86_64")]
     /// Gets CVM specific partition state.
     fn cvm_partition_state(&self) -> &crate::UhCvmPartitionState;
 }
