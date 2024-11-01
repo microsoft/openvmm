@@ -122,6 +122,7 @@ use virt::VpIndex;
 use virt::X86Partition;
 use virt_mshv_vtl::UhPartition;
 use virt_mshv_vtl::UhPartitionNewParams;
+use virt_mshv_vtl::UhProtoPartition;
 use vm_loader::initial_regs::initial_regs;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::KeyboardInputHandleKind;
@@ -1155,10 +1156,10 @@ async fn new_underhill_vm(
         crate::loader::vtl2_config::read_vtl2_params().context("failed to read load parameters")?;
 
     let isolation = match runtime_params.parsed_openhcl_boot().isolation {
-        bootloader_fdt_parser::IsolationType::None => hcl::ioctl::IsolationType::None,
-        bootloader_fdt_parser::IsolationType::Vbs => hcl::ioctl::IsolationType::Vbs,
-        bootloader_fdt_parser::IsolationType::Snp => hcl::ioctl::IsolationType::Snp,
-        bootloader_fdt_parser::IsolationType::Tdx => hcl::ioctl::IsolationType::Tdx,
+        bootloader_fdt_parser::IsolationType::None => virt::IsolationType::None,
+        bootloader_fdt_parser::IsolationType::Vbs => virt::IsolationType::Vbs,
+        bootloader_fdt_parser::IsolationType::Snp => virt::IsolationType::Snp,
+        bootloader_fdt_parser::IsolationType::Tdx => virt::IsolationType::Tdx,
     };
 
     let hardware_isolated = isolation.is_hardware_isolated();
@@ -1186,37 +1187,6 @@ async fn new_underhill_vm(
     let uevent_listener =
         Arc::new(UeventListener::new(tp.driver(0)).context("failed to start uevent listener")?);
 
-    // Try to open the sidecar device, if it is present.
-    let sidecar = sidecar_client::SidecarClient::new(|cpu| tp.driver(cpu).clone())
-        .context("failed to open sidecar device")?;
-
-    let hcl = hcl::ioctl::Hcl::new(isolation, sidecar).context("failed to open HCL driver")?;
-
-    // Set the hypercalls that this process will use.
-    let mut allowed_hypercalls = vec![
-        hvdef::HypercallCode::HvCallGetVpRegisters,
-        hvdef::HypercallCode::HvCallSetVpRegisters,
-        hvdef::HypercallCode::HvCallInstallIntercept,
-        hvdef::HypercallCode::HvCallTranslateVirtualAddress,
-        hvdef::HypercallCode::HvCallPostMessageDirect,
-        hvdef::HypercallCode::HvCallSignalEventDirect,
-        hvdef::HypercallCode::HvCallModifyVtlProtectionMask,
-        hvdef::HypercallCode::HvCallTranslateVirtualAddressEx,
-        hvdef::HypercallCode::HvCallCheckSparseGpaPageVtlAccess,
-        hvdef::HypercallCode::HvCallAssertVirtualInterrupt,
-        hvdef::HypercallCode::HvCallGetVpIndexFromApicId,
-        hvdef::HypercallCode::HvCallAcceptGpaPages,
-        hvdef::HypercallCode::HvCallModifySparseGpaPageHostVisibility,
-    ];
-
-    if hardware_isolated {
-        allowed_hypercalls.extend(vec![
-            hvdef::HypercallCode::HvCallEnablePartitionVtl,
-            hvdef::HypercallCode::HvCallRetargetDeviceInterrupt,
-            hvdef::HypercallCode::HvCallEnableVpVtl,
-        ]);
-    }
-
     let use_mmio_hypercalls = dps.general.always_relay_host_mmio;
     // TODO: Centralize cpuid based feature determination.
     #[cfg(guest_arch = "x86_64")]
@@ -1235,15 +1205,6 @@ async fn new_underhill_vm(
             .use_hypercall_for_mmio_access()
         };
 
-    if use_mmio_hypercalls {
-        allowed_hypercalls.extend(vec![
-            hvdef::HypercallCode::HvCallMemoryMappedIoRead,
-            hvdef::HypercallCode::HvCallMemoryMappedIoWrite,
-        ]);
-    }
-
-    hcl.set_allowed_hypercalls(allowed_hypercalls.as_slice());
-
     let boot_info = runtime_params.parsed_openhcl_boot();
 
     // The amount of memory required by the GET igvm_attest request
@@ -1255,7 +1216,7 @@ async fn new_underhill_vm(
     // Determine the amount of shared memory to reserve from VTL0.
     let shared_pool_size = match isolation {
         #[cfg(guest_arch = "x86_64")]
-        hcl::ioctl::IsolationType::Snp => {
+        virt::IsolationType::Snp => {
             let cpu_bytes = boot_info.cpus.len() as u64
                 * virt_mshv_vtl::snp_shared_pages_required_per_cpu()
                 * hvdef::HV_PAGE_SIZE;
@@ -1263,7 +1224,7 @@ async fn new_underhill_vm(
             round_up_to_2mb(cpu_bytes + device_dma + attestation)
         }
         #[cfg(guest_arch = "x86_64")]
-        hcl::ioctl::IsolationType::Tdx => {
+        virt::IsolationType::Tdx => {
             let cpu_bytes = boot_info.cpus.len() as u64
                 * virt_mshv_vtl::tdx_shared_pages_required_per_cpu()
                 * hvdef::HV_PAGE_SIZE;
@@ -1444,6 +1405,25 @@ async fn new_underhill_vm(
         "vtom must be present if and only if hardware isolation is enabled"
     );
 
+    // Construct the underhill partition instance. This contains much of the configuration of the guest deposited by
+    // the host, along with additional device configuration and transports.
+    let params = UhPartitionNewParams {
+        lower_vtl_memory_layout: &mem_layout,
+        isolation,
+        topology: &processor_topology,
+        cvm_cpuid_info: runtime_params.cvm_cpuid_info(),
+        snp_secrets: runtime_params.snp_secrets(),
+        env_cvm_guest_vsm: env_cfg.cvm_guest_vsm,
+        vtom,
+        handle_synic: with_vmbus,
+        no_sidecar_hotplug: env_cfg.no_sidecar_hotplug,
+        use_mmio_hypercalls,
+        intercept_debug_exceptions: env_cfg.gdbstub,
+    };
+
+    let proto_partition = UhProtoPartition::new(params, |cpu| tp.driver(cpu).clone())
+        .context("failed to create prototype partition")?;
+
     let gm = underhill_mem::init(&underhill_mem::Init {
         tp,
         processor_topology: &processor_topology,
@@ -1454,11 +1434,11 @@ async fn new_underhill_vm(
         complete_memory_layout: &complete_memory_layout,
         boot_init,
         shared_pool: &shared_pool,
-        maximum_vtl: hcl
-            .get_guest_vsm_partition_config()
-            .maximum_vtl()
-            .try_into()
-            .unwrap(),
+        maximum_vtl: if proto_partition.guest_vsm_available() {
+            Vtl::Vtl1
+        } else {
+            Vtl::Vtl0
+        },
         vtl2_memory: runtime_params.vtl2_memory_map(),
         accepted_regions: measured_vtl2_info.accepted_regions(),
     })
@@ -1537,10 +1517,10 @@ async fn new_underhill_vm(
     };
 
     let attestation_type = match isolation {
-        hcl::ioctl::IsolationType::Snp => underhill_attestation::AttestationType::Snp,
-        hcl::ioctl::IsolationType::Tdx => underhill_attestation::AttestationType::Tdx,
-        hcl::ioctl::IsolationType::Vbs => underhill_attestation::AttestationType::Unsupported, // TODO VBS
-        hcl::ioctl::IsolationType::None => underhill_attestation::AttestationType::Host,
+        virt::IsolationType::Snp => underhill_attestation::AttestationType::Snp,
+        virt::IsolationType::Tdx => underhill_attestation::AttestationType::Tdx,
+        virt::IsolationType::Vbs => underhill_attestation::AttestationType::Unsupported, // TODO VBS
+        virt::IsolationType::None => underhill_attestation::AttestationType::Host,
     };
 
     // Decrypt VMGS state before the VMGS file is used for anything.
@@ -1660,36 +1640,24 @@ async fn new_underhill_vm(
         })
         .unwrap();
 
-    // Construct the underhill partition instance. This contains much of the configuration of the guest deposited by
-    // the host, along with additional device configuration and transports.
-    let params = UhPartitionNewParams {
-        lower_vtl_memory_layout: &mem_layout,
+    let late_params = virt_mshv_vtl::UhLateParams {
         gm: [
             gm.vtl0().clone(),
             gm.vtl1().cloned().unwrap_or(GuestMemory::empty()),
         ]
         .into(),
         untrusted_dma_memory: gm.untrusted_dma_memory().clone(),
-        hcl,
-        topology: &processor_topology,
         #[cfg(guest_arch = "x86_64")]
         cpuid,
         crash_notification_send,
         emulate_apic,
         vmtime: &vmtime_source,
-        cvm_cpuid_info: runtime_params.cvm_cpuid_info(),
-        snp_secrets: runtime_params.snp_secrets(),
-        env_cvm_guest_vsm: env_cfg.cvm_guest_vsm,
-        vtom,
         isolated_memory_protector: gm.isolated_memory_protector()?,
         shared_vis_pages_pool: shared_vis_pages_pool.as_ref().map(|p| p.allocator()),
-        handle_synic: with_vmbus,
-        no_sidecar_hotplug: env_cfg.no_sidecar_hotplug,
-        use_mmio_hypercalls,
-        intercept_debug_exceptions: env_cfg.gdbstub,
     };
 
-    let (partition, vps) = UhPartition::new(params)
+    let (partition, vps) = proto_partition
+        .build(late_params)
         .instrument(tracing::info_span!("new_uh_partition"))
         .await
         .context("failed to create partition")?;
@@ -2356,7 +2324,7 @@ async fn new_underhill_vm(
         let (get_attestation_report, request_ak_cert) = {
             // Ak cert renewal depends on the ability to get an attestation report
             let get_attestation_report = match isolation {
-                hcl::ioctl::IsolationType::Snp | hcl::ioctl::IsolationType::Tdx => Some(
+                virt::IsolationType::Snp | virt::IsolationType::Tdx => Some(
                     GetTpmGetAttestationReportHelperHandle::new(
                         attestation_type,
                         attestation_vm_config,
@@ -2364,8 +2332,8 @@ async fn new_underhill_vm(
                     .into_resource(),
                 ),
                 // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
-                hcl::ioctl::IsolationType::Vbs => None,
-                hcl::ioctl::IsolationType::None => None,
+                virt::IsolationType::Vbs => None,
+                virt::IsolationType::None => None,
             };
 
             // Always attempt AK cert and let TPM to decide the course of action

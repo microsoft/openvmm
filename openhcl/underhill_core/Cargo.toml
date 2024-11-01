@@ -32,7 +32,6 @@ cvm_tracing.workspace = true
 diag_proto.workspace = true
 diag_server.workspace = true
 debug_worker_defs = { workspace = true, optional = true }
-hcl.workspace = true
 shared_pool_alloc =  { workspace = true, features = ["vfio"] }
 virt.workspace = true
 vmm_core.workspace = true
@@ -78,7 +77,6 @@ scsi_core.workspace = true
 scsidisk.workspace = true
 scsidisk_resources.workspace = true
 serial_16550_resources.workspace = true
-sidecar_client.workspace = true
 storage_string.workspace = true
 storvsp.workspace = true
 storvsp_resources.workspace = true

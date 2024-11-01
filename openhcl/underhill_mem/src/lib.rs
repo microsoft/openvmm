@@ -24,7 +24,6 @@ mod mapping {
     use guestmem::PAGE_SIZE;
     use hcl::ioctl::AcceptPagesError;
     use hcl::ioctl::ApplyVtlProtectionsError;
-    use hcl::ioctl::IsolationType;
     use hcl::ioctl::Mshv;
     use hcl::ioctl::MshvHvcall;
     use hcl::ioctl::MshvVtl;
@@ -48,6 +47,7 @@ mod mapping {
     use std::ptr::NonNull;
     use std::sync::Arc;
     use thiserror::Error;
+    use virt::IsolationType;
     use virt_mshv_vtl::ProtectIsolatedMemory;
     use vm_topology::memory::MemoryLayout;
     use vtl_array::VtlArray;

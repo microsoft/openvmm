@@ -82,10 +82,22 @@ fn new_underhill_remote_console_cfg(
     framebuffer_gpa_base: Option<u64>,
 ) -> anyhow::Result<(UnderhillRemoteConsoleCfg, Option<FramebufferAccess>)> {
     if let Some(framebuffer_gpa_base) = framebuffer_gpa_base {
-        // Underhill accesses the framebuffer by using /dev/mshv_vtl_low to read from a second mapping
-        // placed after the end of RAM at a static location specified by the host
-        let gpa_fd = hcl::ioctl::MshvVtlLow::new()?;
-        let vram = sparse_mmap::new_mappable_from_file(gpa_fd.get(), true, false)?;
+        // Underhill accesses the framebuffer by using /dev/mshv_vtl_low to read
+        // from a second mapping placed after the end of RAM at a static
+        // location specified by the host.
+        //
+        // Open the file directly rather than use the `hcl` crate to avoid
+        // leaking `hcl` stuff into this crate.
+        //
+        // FUTURE: use an approach that doesn't require double mapping the
+        // framebuffer from the host.
+        let gpa_fd = fs_err::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/mshv_vtl_low")
+            .context("failed to open gpa device")?;
+
+        let vram = sparse_mmap::new_mappable_from_file(gpa_fd.file(), true, false)?;
         let (fb, fba) = framebuffer::framebuffer(vram, FRAMEBUFFER_SIZE, framebuffer_gpa_base)
             .context("allocating framebuffer")?;
         tracing::debug!("framebuffer_gpa_base: {:#x}", framebuffer_gpa_base);

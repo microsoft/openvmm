@@ -15,7 +15,7 @@ pub(crate) async fn spawn_vps(
     vps: Vec<virt_mshv_vtl::UhProcessorBox>,
     runners: Vec<vmm_core::partition_unit::VpRunner>,
     chipset: &vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
-    isolation: hcl::ioctl::IsolationType,
+    isolation: virt::IsolationType,
 ) -> anyhow::Result<()> {
     // Start the VP tasks on the thread pool.
     let _: Vec<()> =
@@ -32,7 +32,7 @@ struct VpSpawner {
     cpu: u32,
     chipset: vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
     runner: vmm_core::partition_unit::VpRunner,
-    isolation: hcl::ioctl::IsolationType,
+    isolation: virt::IsolationType,
 }
 
 impl VpSpawner {
@@ -41,7 +41,7 @@ impl VpSpawner {
         vp: virt_mshv_vtl::UhProcessorBox,
         chipset: vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
         runner: vmm_core::partition_unit::VpRunner,
-        isolation: hcl::ioctl::IsolationType,
+        isolation: virt::IsolationType,
     ) -> Self {
         // TODO: get CPU index for VP
         let cpu = vp.vp_index().index();
@@ -116,7 +116,7 @@ impl VpSpawner {
         save_on_cancel: bool,
     ) -> Option<vmcore::save_restore::SavedStateBlob> {
         let r = match self.isolation {
-            hcl::ioctl::IsolationType::None | hcl::ioctl::IsolationType::Vbs => {
+            virt::IsolationType::None | virt::IsolationType::Vbs => {
                 self.run_backed_vp::<virt_mshv_vtl::HypervisorBacked>(
                     saved_state,
                     control,
@@ -125,12 +125,12 @@ impl VpSpawner {
                 .await
             }
             #[cfg(guest_arch = "x86_64")]
-            hcl::ioctl::IsolationType::Snp => {
+            virt::IsolationType::Snp => {
                 self.run_backed_vp::<virt_mshv_vtl::SnpBacked>(saved_state, control, save_on_cancel)
                     .await
             }
             #[cfg(guest_arch = "x86_64")]
-            hcl::ioctl::IsolationType::Tdx => {
+            virt::IsolationType::Tdx => {
                 self.run_backed_vp::<virt_mshv_vtl::TdxBacked>(saved_state, control, save_on_cancel)
                     .await
             }
