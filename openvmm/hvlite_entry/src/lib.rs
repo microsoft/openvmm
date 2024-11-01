@@ -802,7 +802,13 @@ fn vm_config_from_command_line(
         };
     }
 
-    if opt.vtl2 && with_hv {
+    let openhcl_vtl = if opt.vtl2 {
+        DeviceVtl::Vtl2
+    } else {
+        DeviceVtl::Vtl0
+    };
+
+    if (opt.vtl2 || opt.openhcl_devices) && with_hv {
         let vtl2_settings = vtl2_settings_proto::Vtl2Settings {
             version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
             fixed: Some(Default::default()),
@@ -817,11 +823,11 @@ fn vm_config_from_command_line(
         resources.ged_rpc = Some(send);
         vmbus_devices.extend([
             (
-                DeviceVtl::Vtl2,
+                openhcl_vtl,
                 get_resources::gel::GuestEmulationLogHandle.into_resource(),
             ),
             (
-                DeviceVtl::Vtl2,
+                openhcl_vtl,
                 get_resources::ged::GuestEmulationDeviceHandle {
                     firmware: if opt.pcat {
                         get_resources::ged::GuestFirmwareConfig::Pcat {
@@ -1041,7 +1047,7 @@ fn vm_config_from_command_line(
     if let Some(path) = &opt.underhill_dump_path {
         let (resource, task) = spawn_dump_handler(&spawner, path.clone(), None);
         task.detach();
-        vmbus_devices.push((DeviceVtl::Vtl2, resource));
+        vmbus_devices.push((openhcl_vtl, resource));
     }
 
     #[cfg(guest_arch = "aarch64")]
@@ -1751,9 +1757,17 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         vm_rpc.call(VmRpc::Resume, ()).await?;
     }
 
-    let diag_inspector = opt
-        .vtl2
-        .then(|| DiagInspector::new(driver.clone(), vm_rpc.clone()));
+    let diag_inspector = (opt.vtl2 || opt.openhcl_devices).then(|| {
+        DiagInspector::new(
+            driver.clone(),
+            vm_rpc.clone(),
+            if opt.vtl2 {
+                DeviceVtl::Vtl2
+            } else {
+                DeviceVtl::Vtl0
+            },
+        )
+    });
 
     let (console_command_send, console_command_recv) = mesh::channel();
     let (inspect_completion_engine_send, inspect_completion_engine_recv) = mesh::channel();
@@ -2435,7 +2449,8 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 let r = async {
                     let start;
                     if user_mode_only {
-                        let diag = connect_vtl2_diag(driver.clone(), &vm_rpc).await?;
+                        let diag =
+                            connect_vtl2_diag(driver.clone(), &vm_rpc, DeviceVtl::Vtl2).await?;
                         start = Instant::now();
                         diag.restart().await?;
                     } else {
@@ -2586,6 +2601,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
 async fn connect_vtl2_diag(
     driver: impl Driver + Spawn,
     vm_rpc: &mesh::Sender<VmRpc>,
+    openhcl_vtl: DeviceVtl,
 ) -> anyhow::Result<diag_client::DiagClient> {
     let service_id = new_hvsock_service_id(1);
     let socket = vm_rpc
@@ -2594,7 +2610,7 @@ async fn connect_vtl2_diag(
             (
                 CancelContext::new().with_timeout(Duration::from_secs(2)),
                 service_id,
-                DeviceVtl::Vtl2,
+                openhcl_vtl,
             ),
         )
         .await?;
@@ -2613,11 +2629,15 @@ pub struct DiagInspector {
 }
 
 impl DiagInspector {
-    pub fn new(driver: DefaultDriver, vm_rpc: Arc<mesh::Sender<VmRpc>>) -> Self {
+    pub fn new(
+        driver: DefaultDriver,
+        vm_rpc: Arc<mesh::Sender<VmRpc>>,
+        openhcl_vtl: DeviceVtl,
+    ) -> Self {
         let (send, recv) = mesh::channel();
         let task = driver
             .clone()
-            .spawn("diag-inspect", Self::run(driver, vm_rpc, recv));
+            .spawn("diag-inspect", Self::run(driver, vm_rpc, recv, openhcl_vtl));
         Self { send, _task: task }
     }
 
@@ -2625,13 +2645,14 @@ impl DiagInspector {
         driver: DefaultDriver,
         vm_rpc: Arc<mesh::Sender<VmRpc>>,
         mut recv: mesh::Receiver<inspect::Deferred>,
+        openhcl_vtl: DeviceVtl,
     ) {
         let mut last_client = None;
         while let Some(deferred) = recv.next().await {
             let client = if let Some(client) = &mut last_client {
                 client
             } else {
-                match connect_vtl2_diag(driver.clone(), &vm_rpc).await {
+                match connect_vtl2_diag(driver.clone(), &vm_rpc, openhcl_vtl).await {
                     Ok(client) => last_client.insert(client),
                     Err(err) => {
                         deferred.complete_external(
