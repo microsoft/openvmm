@@ -65,7 +65,6 @@ use hvlite_defs::worker::VM_WORKER;
 use hvlite_helpers::crash_dump::spawn_dump_handler;
 use hvlite_helpers::disk::open_disk_type;
 use input_core::MultiplexedInputHandle;
-use inspect::Inspect;
 use inspect::InspectMut;
 use inspect::InspectionBuilder;
 use io::Read;
@@ -808,7 +807,7 @@ fn vm_config_from_command_line(
         DeviceVtl::Vtl0
     };
 
-    if (opt.vtl2 || opt.openhcl_devices) && with_hv {
+    if (opt.vtl2 || opt.get) && with_hv {
         let vtl2_settings = vtl2_settings_proto::Vtl2Settings {
             version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
             fixed: Some(Default::default()),
@@ -1535,9 +1534,9 @@ enum InteractiveCommand {
         /// The recursive depth limit.
         #[clap(short, long, requires("recursive"))]
         limit: Option<usize>,
-        /// Target Underhill running in VTL2.
-        #[clap(short, long)]
-        vtl2: bool,
+        /// Target the paravisor.
+        #[clap(short = 'v', long)]
+        paravisor: bool,
         /// The element path to inspect.
         element: Option<String>,
         /// Update the path with a new value.
@@ -1757,17 +1756,15 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         vm_rpc.call(VmRpc::Resume, ()).await?;
     }
 
-    let diag_inspector = (opt.vtl2 || opt.openhcl_devices).then(|| {
-        DiagInspector::new(
-            driver.clone(),
-            vm_rpc.clone(),
-            if opt.vtl2 {
-                DeviceVtl::Vtl2
-            } else {
-                DeviceVtl::Vtl0
-            },
-        )
-    });
+    let mut diag_inspector = DiagInspector::new(
+        driver.clone(),
+        vm_rpc.clone(),
+        if opt.vtl2 {
+            DeviceVtl::Vtl2
+        } else {
+            DeviceVtl::Vtl0
+        },
+    );
 
     let (console_command_send, console_command_recv) = mesh::channel();
     let (inspect_completion_engine_send, inspect_completion_engine_recv) = mesh::channel();
@@ -1792,9 +1789,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             )
             .unwrap();
 
-            let pool = DefaultPool::new();
             rl.set_helper(Some(interactive_console::HvLiteRustylineEditor {
-                driver: pool.driver(),
                 hvlite_inspect_req: Arc::new(inspect_completion_engine_send),
             }));
 
@@ -1924,7 +1919,9 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
 
     enum Event {
         Command((InteractiveCommand, mesh::OneshotSender<()>)),
-        InspectRequestFromCompletionEngine((DeviceVtl, String, mesh::OneshotSender<inspect::Node>)),
+        InspectRequestFromCompletionEngine(
+            (InspectTarget, String, mesh::OneshotSender<inspect::Node>),
+        ),
         Quit,
         Halt(vmm_core_defs::HaltReason),
         PulseSaveRestore,
@@ -1999,7 +1996,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                             &vm_worker,
                             vnc_worker.as_ref(),
                             gdb_worker.as_ref(),
-                            diag_inspector.as_ref(),
+                            &mut diag_inspector,
                         ));
                 let _ = CancelContext::new()
                     .with_timeout(Duration::from_secs(1))
@@ -2153,24 +2150,23 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         };
 
         fn inspect_obj<'a>(
-            vtl: DeviceVtl,
+            target: InspectTarget,
             mesh: &'a VmmMesh,
             vm_worker: &'a WorkerHandle,
             vnc_worker: Option<&'a WorkerHandle>,
             gdb_worker: Option<&'a WorkerHandle>,
-            diag_inspector: Option<&'a DiagInspector>,
+            diag_inspector: &'a mut DiagInspector,
         ) -> impl 'a + InspectMut {
-            inspect::adhoc(move |req| match vtl {
-                DeviceVtl::Vtl0 => {
+            inspect::adhoc_mut(move |req| match target {
+                InspectTarget::Host => {
                     let mut resp = req.respond();
                     resp.field("mesh", mesh)
                         .field("vm", vm_worker)
                         .field("vnc", vnc_worker)
                         .field("gdb", gdb_worker);
                 }
-                DeviceVtl::Vtl1 => {}
-                DeviceVtl::Vtl2 => {
-                    Inspect::inspect(&diag_inspector, req);
+                InspectTarget::Paravisor => {
+                    diag_inspector.inspect_mut(req);
                 }
             })
         }
@@ -2346,21 +2342,21 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             InteractiveCommand::Inspect {
                 recursive,
                 limit,
-                vtl2,
+                paravisor,
                 element,
                 update,
             } => {
                 let obj = inspect_obj(
-                    if vtl2 {
-                        DeviceVtl::Vtl2
+                    if paravisor {
+                        InspectTarget::Paravisor
                     } else {
-                        DeviceVtl::Vtl0
+                        InspectTarget::Host
                     },
                     mesh,
                     &vm_worker,
                     vnc_worker.as_ref(),
                     gdb_worker.as_ref(),
-                    diag_inspector.as_ref(),
+                    &mut diag_inspector,
                 );
 
                 if let Some(value) = update {
@@ -2449,8 +2445,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 let r = async {
                     let start;
                     if user_mode_only {
-                        let diag =
-                            connect_vtl2_diag(driver.clone(), &vm_rpc, DeviceVtl::Vtl2).await?;
+                        let diag = connect_diag(driver.clone(), &vm_rpc, DeviceVtl::Vtl2).await?;
                         start = Instant::now();
                         diag.restart().await?;
                     } else {
@@ -2598,7 +2593,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     Ok(())
 }
 
-async fn connect_vtl2_diag(
+async fn connect_diag(
     driver: impl Driver + Spawn,
     vm_rpc: &mesh::Sender<VmRpc>,
     openhcl_vtl: DeviceVtl,
@@ -2619,13 +2614,24 @@ async fn connect_vtl2_diag(
 }
 
 /// An object that implements [`Inspect`] by sending an inspect request over
-/// TTRPC to VTL2, then stitching the response back into the inspect tree.
+/// TTRPC to the guest (typically the paravisor running in VTL2), then stitching
+/// the response back into the inspect tree.
 ///
-/// This also caches the TTRPC connection to VTL2 so that only the first inspect
-/// request has to wait for the connection to be established.
-pub struct DiagInspector {
-    send: mesh::Sender<inspect::Deferred>,
-    _task: Task<()>,
+/// This also caches the TTRPC connection to the guest so that only the first
+/// inspect request has to wait for the connection to be established.
+pub struct DiagInspector(DiagInspectorInner);
+
+enum DiagInspectorInner {
+    NotStarted {
+        driver: DefaultDriver,
+        vm_rpc: Arc<mesh::Sender<VmRpc>>,
+        openhcl_vtl: DeviceVtl,
+    },
+    Started {
+        send: mesh::Sender<inspect::Deferred>,
+        _task: Task<()>,
+    },
+    Invalid,
 }
 
 impl DiagInspector {
@@ -2634,11 +2640,36 @@ impl DiagInspector {
         vm_rpc: Arc<mesh::Sender<VmRpc>>,
         openhcl_vtl: DeviceVtl,
     ) -> Self {
-        let (send, recv) = mesh::channel();
-        let task = driver
-            .clone()
-            .spawn("diag-inspect", Self::run(driver, vm_rpc, recv, openhcl_vtl));
-        Self { send, _task: task }
+        Self(DiagInspectorInner::NotStarted {
+            driver,
+            vm_rpc,
+            openhcl_vtl,
+        })
+    }
+
+    fn start(&mut self) -> &mesh::Sender<inspect::Deferred> {
+        loop {
+            match self.0 {
+                DiagInspectorInner::NotStarted { .. } => {
+                    let DiagInspectorInner::NotStarted {
+                        driver,
+                        vm_rpc,
+                        openhcl_vtl,
+                    } = std::mem::replace(&mut self.0, DiagInspectorInner::Invalid)
+                    else {
+                        unreachable!()
+                    };
+                    let (send, recv) = mesh::channel();
+                    let task = driver
+                        .clone()
+                        .spawn("diag-inspect", Self::run(driver, vm_rpc, recv, openhcl_vtl));
+
+                    self.0 = DiagInspectorInner::Started { send, _task: task };
+                }
+                DiagInspectorInner::Started { ref send, .. } => break send,
+                DiagInspectorInner::Invalid => unreachable!(),
+            }
+        }
     }
 
     async fn run(
@@ -2652,7 +2683,7 @@ impl DiagInspector {
             let client = if let Some(client) = &mut last_client {
                 client
             } else {
-                match connect_vtl2_diag(driver.clone(), &vm_rpc, openhcl_vtl).await {
+                match connect_diag(driver.clone(), &vm_rpc, openhcl_vtl).await {
                     Ok(client) => last_client.insert(client),
                     Err(err) => {
                         deferred.complete_external(
@@ -2691,10 +2722,15 @@ impl DiagInspector {
     }
 }
 
-impl Inspect for DiagInspector {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.send.send(req.defer());
+impl InspectMut for DiagInspector {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        self.start().send(req.defer());
     }
+}
+
+enum InspectTarget {
+    Host,
+    Paravisor,
 }
 
 mod interactive_console {
@@ -2705,10 +2741,13 @@ mod interactive_console {
     use rustyline::Validator;
 
     #[derive(Helper, Highlighter, Hinter, Validator)]
-    pub struct HvLiteRustylineEditor {
-        pub driver: pal_async::DefaultDriver,
+    pub(crate) struct HvLiteRustylineEditor {
         pub hvlite_inspect_req: std::sync::Arc<
-            mesh::Sender<(super::DeviceVtl, String, mesh::OneshotSender<inspect::Node>)>,
+            mesh::Sender<(
+                super::InspectTarget,
+                String,
+                mesh::OneshotSender<inspect::Node>,
+            )>,
         >,
     }
 
@@ -2767,7 +2806,11 @@ mod interactive_console {
 
     pub struct HvLiteComplete {
         hvlite_inspect_req: std::sync::Arc<
-            mesh::Sender<(super::DeviceVtl, String, mesh::OneshotSender<inspect::Node>)>,
+            mesh::Sender<(
+                super::InspectTarget,
+                String,
+                mesh::OneshotSender<inspect::Node>,
+            )>,
         >,
     }
 
@@ -2787,13 +2830,13 @@ mod interactive_console {
                         .unwrap_or(("", ctx.to_complete));
 
                     let node = {
-                        let vtl2 = {
+                        let paravisor = {
                             let raw_arg = ctx
                                 .matches
                                 .subcommand()
                                 .unwrap()
                                 .1
-                                .get_one::<String>("vtl2")
+                                .get_one::<String>("paravisor")
                                 .map(|x| x.as_str())
                                 .unwrap_or_default();
                             raw_arg == "true"
@@ -2801,10 +2844,10 @@ mod interactive_console {
 
                         let (tx, rx) = mesh::oneshot();
                         self.hvlite_inspect_req.send((
-                            if vtl2 {
-                                super::DeviceVtl::Vtl2
+                            if paravisor {
+                                super::InspectTarget::Paravisor
                             } else {
-                                super::DeviceVtl::Vtl0
+                                super::InspectTarget::Host
                             },
                             parent_path.to_owned(),
                             tx,

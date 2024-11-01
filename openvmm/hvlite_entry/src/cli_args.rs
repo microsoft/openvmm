@@ -83,13 +83,14 @@ pub struct Options {
 
     /// enable vtl2 - only supported in WHP and simulated without hypervisor support currently
     ///
-    /// Currently implies --openhcl-devices.
+    /// Currently implies --get.
     #[clap(long, requires("hv"))]
     pub vtl2: bool,
 
-    /// Add devices for using the OpenHCL paravisor to the highest enabled VTL.
-    #[clap(long)]
-    pub openhcl_devices: bool,
+    /// Add GET and related devices for using the OpenHCL paravisor to the
+    /// highest enabled VTL.
+    #[clap(long, requires("hv"))]
+    pub get: bool,
 
     /// disable the VTL0 alias map presented to VTL2 by default
     #[clap(long, requires("vtl2"))]
