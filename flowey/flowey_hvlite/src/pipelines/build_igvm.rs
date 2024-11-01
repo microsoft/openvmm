@@ -153,6 +153,10 @@ pub struct BuildIgvmCliCustomizations {
     #[clap(long)]
     pub custom_directory: Vec<PathBuf>,
 
+    /// Additional rootfs.config files to use to generate the initrd
+    #[clap(long)]
+    pub additional_rootfs: Vec<PathBuf>,
+
     /// (experimental) Include the AP kernel in the IGVM file
     #[clap(long)]
     pub with_sidecar: bool,
@@ -242,6 +246,7 @@ impl IntoPipeline for BuildIgvmCli {
                     custom_directory,
                     with_sidecar,
                     custom_sidecar,
+                    additional_rootfs,
                 },
         } = self;
 
@@ -306,6 +311,7 @@ impl IntoPipeline for BuildIgvmCli {
                         KernelPackageKindCli::CvmDev => OpenhclKernelPackage::CvmDev,
                     }),
                     with_sidecar,
+                    additional_rootfs,
                     override_openvmm_hcl_feature,
                     custom_sidecar,
                     override_manifest,
