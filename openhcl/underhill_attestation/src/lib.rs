@@ -367,8 +367,10 @@ pub async fn initialize_platform_security(
 
     // Check if the VM id has been changed since last boot with KP write
     let vm_id_changed = if key_protector_by_id.found_id {
+        tracing::info!("VM Id has changed since last boot");
         key_protector_by_id.inner.id_guid != bios_guid
     } else {
+        tracing::info!("First booting of the VM");
         // Previous id in KP not found means this is the first boot,
         // treat id as unchanged for this case.
         false
