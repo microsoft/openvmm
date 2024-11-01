@@ -1106,7 +1106,7 @@ fn set_vtl2_vsm_partition_config(hcl: &mut Hcl) -> Result<(), Error> {
         .map_err(Error::VsmPartitionConfig)
 }
 
-/// Configuration parameters supplied to [`UhPartition::new`].
+/// Configuration parameters supplied to [`UhProtoPartition::new`].
 ///
 /// These do not include runtime resources.
 pub struct UhPartitionNewParams<'a> {
