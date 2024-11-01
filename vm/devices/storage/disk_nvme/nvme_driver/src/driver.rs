@@ -62,9 +62,9 @@ pub struct NvmeDriver<T: DeviceBacking> {
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
     rescan_event: Arc<event_listener::Event>,
-    /// NVMe namespaces associated with this driver (TODO: array).
+    /// NVMe namespaces associated with this driver.
     #[inspect(skip)]
-    namespace: Option<Arc<Namespace>>,
+    namespace: Vec<Arc<Namespace>>,
     /// Keeps the controller connected (CSTS.RDY==1) while servicing.
     nvme_keepalive: bool,
 }
@@ -247,7 +247,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             driver,
             io_issuers,
             rescan_event: Default::default(),
-            namespace: None,
+            namespace: vec![],
             nvme_keepalive: false,
         })
     }
@@ -465,7 +465,12 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
-        let ns = Arc::new(
+        // Check if namespace was already added after restore.
+        if let Some(ns) = self.namespace.iter().find(|n| n.nsid() == nsid) {
+            return Ok(ns.clone());
+        }
+
+        let ns_new = Arc::new(
             Namespace::new(
                 &self.driver,
                 self.admin.as_ref().unwrap().clone(),
@@ -478,8 +483,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             )
             .await?,
         );
-        self.namespace = Some(ns.clone());
-        Ok(ns)
+
+        self.namespace.push(ns_new.clone());
+        Ok(ns_new)
     }
 
     /// Returns the number of CPUs that are in fallback mode (that are using a
@@ -508,12 +514,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .unwrap()
             .write_to(save_state.identify_ctrl.as_mut());
         save_state.device_id = self.device_id.clone();
-        save_state.nsid = self.namespace.as_ref().map_or(0, |ns| ns.nsid());
-        // Either 1 or 0 namespaces per driver.
-        save_state.namespace = match &self.namespace {
-            Some(ns) => Some(ns.save()?),
-            None => None,
-        };
+        for ns in &self.namespace {
+            save_state.namespace.push(ns.save()?);
+        }
 
         Ok(save_state)
     }
@@ -570,7 +573,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             driver: driver.clone(),
             io_issuers,
             rescan_event: Default::default(),
-            namespace: None,
+            namespace: vec![],
             nvme_keepalive: true,
         };
 
@@ -646,22 +649,17 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         worker.io = ioq;
 
         // Restore namespace(s).
-        this.namespace = match saved_state.namespace.as_ref() {
-            Some(n) => Some(Arc::new(Namespace::restore(
+        for ns in &saved_state.namespace {
+            this.namespace.push(Arc::new(Namespace::restore(
                 &driver,
                 admin.issuer().clone(),
                 this.rescan_event.clone(),
                 this.identify.clone().unwrap(),
                 &this.io_issuers,
                 this.device_id.as_ref(),
-                saved_state.nsid,
-                &n.identify_ns,
-                n,
-            )?)),
-            None => {
-                // No namespace was present/saved.
-                None
-            }
+                &ns.identify_ns,
+                ns,
+            )?));
         };
 
         task.insert(&this.driver, "nvme_worker", state);
@@ -942,10 +940,9 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                 NvmeDriverSavedState {
                     admin: None,
                     io: vec![],
-                    nsid: 0, // Invalid namespace ID per NVMe spec.
                     identify_ctrl: [0; 4096],
                     device_id: "".to_string(),
-                    namespace: None,
+                    namespace: vec![],
                     qsize: worker_state.qsize,
                     max_io_queues: worker_state.max_io_queues,
                     vfio_state: VfioDeviceSavedState {
@@ -971,10 +968,9 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         let save_state = NvmeDriverSavedState {
             admin: Some(admin),
             io,
-            nsid: 0,                   // Will be updated by the caller.
             identify_ctrl: [0; 4096],  // Will be updated by the caller.
             device_id: "".to_string(), // Will be updated by the caller.
-            namespace: None,           // Will be updated by the caller.
+            namespace: vec![],         // Will be updated by the caller.
             qsize: worker_state.qsize,
             max_io_queues: worker_state.max_io_queues,
             vfio_state: VfioDeviceSavedState {
@@ -1003,32 +999,29 @@ pub mod save_restore {
     #[derive(Protobuf, Clone, Debug)]
     #[mesh(package = "underhill")]
     pub struct NvmeDriverSavedState {
-        /// Namespace ID.
-        #[mesh(1)]
-        pub nsid: u32,
         /// Admin queue state.
-        #[mesh(2)]
+        #[mesh(1)]
         pub admin: Option<QueuePairSavedState>,
         /// IO queue states.
-        #[mesh(3)]
+        #[mesh(2)]
         pub io: Vec<QueuePairSavedState>,
         /// Copy of the controller's IDENTIFY structure.
-        #[mesh(4)]
+        #[mesh(3)]
         pub identify_ctrl: [u8; 4096],
         /// Device ID string.
-        #[mesh(5)]
+        #[mesh(4)]
         pub device_id: String,
         /// Namespace data.
-        #[mesh(6)]
-        pub namespace: Option<crate::namespace::SavedNamespaceData>,
+        #[mesh(5)]
+        pub namespace: Vec<crate::namespace::SavedNamespaceData>,
         /// Queue size as determined by CAP.MQES.
-        #[mesh(7)]
+        #[mesh(6)]
         pub qsize: u16,
         /// Max number of IO queue pairs.
-        #[mesh(8)]
+        #[mesh(7)]
         pub max_io_queues: u16,
         /// State of the attached VFIO device.
-        #[mesh(9)]
+        #[mesh(8)]
         pub vfio_state: VfioDeviceSavedState,
     }
 
