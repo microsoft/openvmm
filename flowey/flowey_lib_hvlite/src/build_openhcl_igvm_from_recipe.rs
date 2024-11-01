@@ -77,7 +77,7 @@ pub struct OpenhclIgvmRecipeDetailsLocalOnly {
     pub custom_uefi: Option<PathBuf>,
     pub custom_kernel: Option<PathBuf>,
     pub custom_sidecar: Option<PathBuf>,
-    pub additional_rootfs: Vec<PathBuf>,
+    pub custom_extra_rootfs: Vec<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -298,7 +298,7 @@ impl SimpleFlowNode for Node {
             custom_uefi,
             custom_kernel,
             custom_sidecar,
-            additional_rootfs,
+            custom_extra_rootfs,
         } = local_only.unwrap_or(OpenhclIgvmRecipeDetailsLocalOnly {
             openvmm_hcl_no_strip: false,
             openhcl_initrd_extra_params: None,
@@ -307,7 +307,7 @@ impl SimpleFlowNode for Node {
             custom_uefi: None,
             custom_kernel: None,
             custom_sidecar: None,
-            additional_rootfs: Vec::new(),
+            custom_extra_rootfs: Vec::new(),
         });
 
         let target = custom_target.unwrap_or(target);
@@ -547,7 +547,7 @@ impl SimpleFlowNode for Node {
             let rootfs_config = [openvmm_repo_path.map(ctx, |p| p.join("openhcl/rootfs.config"))]
                 .into_iter()
                 .chain(
-                    additional_rootfs
+                    custom_extra_rootfs
                         .into_iter()
                         .map(|p| ReadVar::from_static(p)),
                 )
