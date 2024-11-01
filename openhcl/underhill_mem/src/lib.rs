@@ -1194,7 +1194,7 @@ mod mapping {
             // TODO CVM GUEST VSM: flush TLB
         }
 
-        fn enable_vtl1_protections(&self) {
+        fn set_vtl1_protections_enabled(&self) {
             self.inner.lock().vtl1_protections_enabled = true;
         }
 

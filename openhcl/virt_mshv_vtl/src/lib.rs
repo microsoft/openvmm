@@ -1199,10 +1199,12 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// Disables the overlay for the hypercall code page for a target VTL.
     fn disable_hypercall_overlay(&self, vtl: GuestVtl);
 
-    /// Alerts the memory protector that vtl 1 is ready to set protections on memory.
-    fn enable_vtl1_protections(&self);
+    /// Alerts the memory protector that vtl 1 is ready to set vtl protections
+    /// on lower-vtl memory, and that these protections should be enforced.
+    fn set_vtl1_protections_enabled(&self);
 
-    /// Whether VTL 1 can set protections on memory.
+    /// Whether VTL 1 is prepared to modify vtl protections on lower-vtl memory,
+    /// and therefore whether these protections should be enforced.
     fn vtl1_protections_enabled(&self) -> bool;
 }
 
