@@ -124,6 +124,7 @@ impl HvCall {
 
     /// Returns the environment's VTL.
     pub fn vtl(&self) -> Vtl {
+        assert!(self.initialized);
         self.vtl
     }
 
@@ -253,7 +254,7 @@ impl HvCall {
             vp_index,
             // The VTL value here is just a u8 and not the otherwise usual
             // HvInputVtl value.
-            target_vtl: hvdef::Vtl::Vtl2.into(),
+            target_vtl: Vtl::Vtl2.into(),
             reserved: [0; 3],
             vp_vtl_context: zerocopy::FromZeroes::new_zeroed(),
         };
