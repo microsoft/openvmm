@@ -56,22 +56,6 @@ use zerocopy::FromZeroes;
 #[error(transparent)]
 pub struct Error(AttestationErrorInner);
 
-impl Error {
-    fn log_error_id<T: Any + Debug>(e: &T) {
-        let value_any = e as &dyn Any;
-        let type_name = std::any::type_name::<T>();
-
-        match value_any.downcast_ref::<String>() {
-            Some(as_string) => {
-                tracing::error!(CVM_ALLOWED, "Unexpected string {:?}", as_string);
-            }
-            None => {
-                tracing::error!(CVM_ALLOWED, "AttestationErrorId::{type_name}::{e:?}");
-            }
-        }
-    }
-}
-
 impl<T: Into<AttestationErrorInner>> From<T> for Error {
     fn from(value: T) -> Self {
         Self(value.into())
@@ -270,11 +254,9 @@ pub async fn initialize_platform_security(
     // Read Security Profile from VMGS
     // Currently this only includes "Key Reference" data, which is not attested data, is opaque to the
     // Underhill, and is passed to the IGVMm agent outside of the report contents.
-    let SecurityProfile { mut agent_data } =
-        vmgs::read_security_profile(vmgs).await.map_err(|e| {
-            Error::log_error_id(&e);
-            AttestationErrorInner::ReadSecurityProfile(e)
-        })?;
+    let SecurityProfile { mut agent_data } = vmgs::read_security_profile(vmgs)
+        .await
+        .map_err(AttestationErrorInner::ReadSecurityProfile)?;
 
     // If attestation is suppressed, return the `agent_data` that is required by
     // TPM AK cert request.
@@ -314,10 +296,8 @@ pub async fn initialize_platform_security(
         )
         .await
         .map_err(|e| {
-            Error::log_error_id(&e);
             tracing::error!(
                 attestation_type=?attestation_type,
-                agent_data=?agent_data,
                 "failed to retrieve key-encryption key");
             AttestationErrorInner::RequestVmgsEncryptionKeys(e)
         })?
@@ -343,10 +323,7 @@ pub async fn initialize_platform_security(
     );
     let mut key_protector = vmgs::read_key_protector(vmgs, dek_minimal_size)
         .await
-        .map_err(|e| {
-            Error::log_error_id(&e);
-            AttestationErrorInner::ReadKeyProtector(e)
-        })?;
+        .map_err(AttestationErrorInner::ReadKeyProtector)?;
 
     // Read VM id from VMGS
     tracing::info!(CVM_ALLOWED, "Reading VM ID from VMGS");
@@ -359,10 +336,7 @@ pub async fn initialize_platform_security(
             inner: protocol::vmgs::KeyProtectorById::new_zeroed(),
             found_id: false,
         },
-        Err(e) => {
-            Error::log_error_id(&e);
-            Err(AttestationErrorInner::ReadKeyProtectorById(e))
-        }?,
+        Err(e) => { Err(AttestationErrorInner::ReadKeyProtectorById(e)) }?,
     };
 
     // Check if the VM id has been changed since last boot with KP write
@@ -394,7 +368,6 @@ pub async fn initialize_platform_security(
     )
     .await
     .map_err(|e| {
-        Error::log_error_id(&e);
         tracing::error!(vmgs_encrypted = vmgs_encrypted, "failed to derive keys");
         AttestationErrorInner::GetDerivedKeys(e)
     })?;
@@ -415,7 +388,6 @@ pub async fn initialize_platform_security(
         get.event_log_fatal(guest_emulation_transport::api::EventLogId::ATTESTATION_FAILED)
             .await;
 
-        Error::log_error_id(&e);
         Err(AttestationErrorInner::UnlockVmgsDataStore(e))?
     }
 
@@ -440,7 +412,6 @@ pub async fn initialize_platform_security(
         Err(vmgs::ReadFromVmgsError::EntryNotFound(_)) => None,
         Err(e) => {
             let return_e = AttestationErrorInner::ReadGuestSecretKey(e).into();
-            Error::log_error_id(&return_e);
             return Err(return_e);
         }
     };
