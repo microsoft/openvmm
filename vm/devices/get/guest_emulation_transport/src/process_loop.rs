@@ -1815,6 +1815,7 @@ async fn request_igvm_attest(
     const ALLOCATED_SHARED_MEMORY_SIZE: usize =
         get_protocol::IGVM_ATTEST_MSG_SHARED_GPA * hvdef::HV_PAGE_SIZE_USIZE;
 
+    tracing::info!("Processing request_igvm_attest");
     let (Some(shared_pool_allocator), Some(shared_guest_memory)) =
         (&shared_pool_allocator, &shared_guest_memory)
     else {
@@ -1853,7 +1854,10 @@ async fn request_igvm_attest(
     };
 
     let response_length = response.length as usize;
-    if response_length > ALLOCATED_SHARED_MEMORY_SIZE {
+    if response_length == 0xFFFFFFFF {
+        tracing::error!("IGVM Agent returned an error");
+        return Ok(Err(IgvmAttestError::IgvmAgentGenericError));
+    } else if response_length > ALLOCATED_SHARED_MEMORY_SIZE {
         Err(FatalError::InvalidIgvmAttestResponseSize {
             response_size: response_length,
             maximum_size: ALLOCATED_SHARED_MEMORY_SIZE,

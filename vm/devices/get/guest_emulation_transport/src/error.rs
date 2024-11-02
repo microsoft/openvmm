@@ -78,6 +78,8 @@ pub enum IgvmAttestError {
         input_size: usize,
         expected_size: usize,
     },
+    #[error("IGVM agent returned an error")]
+    IgvmAgentGenericError,
 }
 
 pub(crate) trait TryIntoProtocolBool {
