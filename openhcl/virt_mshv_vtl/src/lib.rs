@@ -600,11 +600,18 @@ struct UhVpInner {
     hcvm_vtl1_enabled: Mutex<bool>,
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
-    hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<hvdef::hypercall::InitialVpContextX64>>>, 2>,
+    hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<StartEnableVtlVp>>>, 2>,
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
 }
 
 #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[derive(Debug, Inspect)]
+pub struct StartEnableVtlVp {
+    is_start: bool,
+    #[inspect(skip)] // TODO
+    context: hvdef::hypercall::InitialVpContextX64,
+}
+
 #[derive(Debug, Inspect)]
 struct TlbLockInfo {
     /// The set of VPs that are waiting for this VP to release the TLB lock.

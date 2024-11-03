@@ -233,6 +233,11 @@ mod private {
         /// This is used for hypervisor-managed and untrusted SINTs.
         fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
+        // TODO: try not to put this here
+        fn set_exit_vtl(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl) {
+            unimplemented!("set_exit_vtl not implemented");
+        }
+
         /// Returns whether this VP should be put to sleep in usermode, or
         /// whether it's ready to proceed into the kernel.
         fn halt_in_usermode(this: &mut UhProcessor<'_, Self>, target_vtl: GuestVtl) -> bool {
@@ -915,15 +920,18 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
             #[cfg(guest_arch = "x86_64")]
             if wake_reasons.hv_start_enable_vtl_vp() {
-                if let Some(context) = self.inner.hv_start_enable_vtl_vp[vtl].lock().take() {
+                if let Some(start_enable_vtl_state) =
+                    self.inner.hv_start_enable_vtl_vp[vtl].lock().take()
+                {
                     tracing::debug!(
                         vp_index = self.inner.cpu_index,
                         ?vtl,
                         "starting vp with initial registers"
                     );
+
                     hv1_emulator::hypercall::set_x86_vp_context(
                         &mut self.access_state(vtl.into()),
-                        &context,
+                        &(start_enable_vtl_state.context),
                     )
                     .map_err(UhRunVpError::State)?;
 
@@ -932,7 +940,27 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                         // Should have already initialized the hv emulator for this vtl
                         assert!(self.backing.hv(vtl).is_some());
 
-                        // TODO CVM GUEST VSM: Revisit during AP startup if we need to exit to VTL 1 here
+                        self.hv[vtl] = Some(
+                            self.partition
+                                .hv
+                                .as_ref()
+                                .expect("has an hv emulator")
+                                .add_vp(
+                                    self.partition.gm[GuestVtl::Vtl1].clone(),
+                                    self.vp_index(),
+                                    Vtl::Vtl1,
+                                ),
+                        );
+                    } else {
+                        if self.partition.isolation.is_hardware_isolated()
+                            && start_enable_vtl_state.is_start
+                            && *self.inner.hcvm_vtl1_enabled.lock()
+                        {
+                            // switch to vtl 1 TODO: using some kind of guest vsm support trait
+                            // might be better
+                            T::switch_vtl_state(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
+                            T::set_exit_vtl(self, GuestVtl::Vtl1);
+                        }
                     }
                 }
             }
@@ -1354,8 +1382,39 @@ impl<T, B: Backing> hv1_hypercall::StartVirtualProcessor<hvdef::hypercall::Initi
         let target_vtl = self.target_vtl_no_higher(target_vtl)?;
         let target_vp = &self.vp.partition.vps[target_vp as usize];
 
+        //
+        // The target VTL must have been enabled.  In addition, if lower VTL
+        // startup has been suppressed, then the request must be coming from a
+        // secure VTL.
+        //
+
+        if !*target_vp.hcvm_vtl1_enabled.lock() {
+            return Err(HvError::InvalidVpState);
+        }
+
+        if self.intercepted_vtl == GuestVtl::Vtl0
+            && self
+                .vp
+                .partition
+                .guest_vsm
+                .read()
+                .get_vtl1()
+                .map_or(false, |vtl1| {
+                    vtl1.inner
+                        .get_hardware_cvm()
+                        .map_or(false, |inner| inner.deny_lower_vtl_startup)
+                })
+        {
+            return Err(HvError::AccessDenied);
+        }
+
         // TODO CVM GUEST VSM: probably some validation on vtl1_enabled
-        *target_vp.hv_start_enable_vtl_vp[target_vtl].lock() = Some(Box::new(*vp_context));
+        let start_state = super::StartEnableVtlVp {
+            is_start: true,
+            context: *vp_context,
+        };
+
+        *target_vp.hv_start_enable_vtl_vp[target_vtl].lock() = Some(Box::new(start_state));
         target_vp.wake(target_vtl, WakeReason::HV_START_ENABLE_VP_VTL);
 
         Ok(())

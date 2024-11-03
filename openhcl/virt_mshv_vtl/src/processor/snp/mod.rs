@@ -506,6 +506,10 @@ impl BackingPrivate for SnpBacked {
         })
     }
 
+    fn set_exit_vtl(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
+        this.backing.cvm_state_mut().exit_vtl = vtl;
+    }
+
     fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {
         let vtl0_vmsa = this.runner.vmsa(GuestVtl::Vtl0);
         let vtl1_vmsa = if *this.inner.hcvm_vtl1_enabled.lock() {
@@ -694,6 +698,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
             hv1_hypercall::HvSetVpRegisters,
             hv1_hypercall::HvModifyVtlProtectionMask,
             hv1_hypercall::HvX64TranslateVirtualAddress,
+            hv1_hypercall::HvX64StartVirtualProcessor,
         ],
     );
 
@@ -2236,20 +2241,6 @@ impl<T: CpuIo> hv1_hypercall::EnablePartitionVtl for UhHypercallHandler<'_, '_, 
         flags: hvdef::hypercall::EnablePartitionVtlFlags,
     ) -> hvdef::HvResult<()> {
         self.hcvm_enable_partition_vtl(partition_id, target_vtl, flags)
-    }
-}
-
-impl<T: CpuIo> hv1_hypercall::EnableVpVtl<hvdef::hypercall::InitialVpContextX64>
-    for UhHypercallHandler<'_, '_, T, SnpBacked>
-{
-    fn enable_vp_vtl(
-        &mut self,
-        partition_id: u64,
-        vp_index: u32,
-        vtl: Vtl,
-        vp_context: &hvdef::hypercall::InitialVpContextX64,
-    ) -> hvdef::HvResult<()> {
-        self.hcvm_enable_vp_vtl(partition_id, vp_index, vtl, vp_context)
     }
 }
 
