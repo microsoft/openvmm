@@ -216,6 +216,17 @@ pub struct tdx_tdg_vp_enter_exit_info {
     pub r13: u64,
 }
 
+#[bitfield(u64)]
+#[derive(AsBytes, FromBytes, FromZeroes)]
+pub struct tdx_vp_state_flags {
+    /// Issue a cache flush for a WBINVD before calling VP.ENTER.
+    pub wbinvd: bool,
+    /// Issue a cache flush for a WBNOINVD before calling VP.ENTER.
+    pub wbnoinvd: bool,
+    #[bits(62)]
+    reserved: u64,
+}
+
 /// Additional VP state that is save/restored across TDG.VP.ENTER.
 #[repr(C)]
 #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
@@ -227,6 +238,7 @@ pub struct tdx_vp_state {
     pub msr_xss: u64,
     pub cr2: u64,
     pub msr_tsc_aux: u64,
+    pub flags: tdx_vp_state_flags,
 }
 
 #[repr(C)]
@@ -235,7 +247,7 @@ pub struct tdx_vp_context {
     pub exit_info: tdx_tdg_vp_enter_exit_info,
     pub pad1: [u8; 48],
     pub vp_state: tdx_vp_state,
-    pub pad2: [u8; 40],
+    pub pad2: [u8; 32],
     pub entry_rcx: x86defs::tdx::TdxVmFlags,
     pub gpr_list: x86defs::tdx::TdxL2EnterGuestState,
     pub pad3: [u8; 96],

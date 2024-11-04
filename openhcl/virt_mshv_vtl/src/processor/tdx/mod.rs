@@ -1529,8 +1529,14 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.exit_stats.xsetbv
             }
             VmxExit::WBINVD_INSTRUCTION => {
-                // TODO TDX: forward the request to the host via TD.VMCALL
-                // see HvlRequestCacheFlush
+                // Ask the kernel to flush the cache before issuing VP.ENTER.
+                let no_invalidate = exit_info.qualification() != 0;
+                if no_invalidate {
+                    self.runner.tdx_vp_state_mut().flags.set_wbnoinvd(true);
+                } else {
+                    self.runner.tdx_vp_state_mut().flags.set_wbinvd(true);
+                }
+
                 self.advance_to_next_instruction();
                 &mut self.backing.exit_stats.wbinvd
             }
