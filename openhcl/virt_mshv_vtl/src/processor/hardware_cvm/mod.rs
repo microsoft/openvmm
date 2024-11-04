@@ -25,6 +25,7 @@ use std::iter::zip;
 use virt::io::CpuIo;
 use virt::vp::AccessVpState;
 use virt::Processor;
+use vtl_array::VtlArray;
 use zerocopy::FromZeroes;
 
 impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
@@ -410,7 +411,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
         tracing::trace!("handling vtl call");
 
         B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl1);
-        self.vp.exit_vtl = GuestVtl::Vtl1;
+        self.vp.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
 
         self.vp.hv[GuestVtl::Vtl1]
             .as_ref()
@@ -434,7 +435,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
         self.vp.unlock_tlb_lock(Vtl::Vtl1);
 
         B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
-        self.vp.exit_vtl = GuestVtl::Vtl0;
+        self.vp.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl0;
 
         // TODO CVM GUEST_VSM:
         // - rewind interrupts
@@ -599,6 +600,33 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         guest_vsm.deny_lower_vtl_startup = value.deny_lower_vtl_startup();
 
         Ok(())
+    }
+
+    pub(crate) fn hcvm_handle_cross_vtl_interrupts(
+        &mut self,
+        interrupt_pending: VtlArray<Option<u8>, 2>,
+    ) {
+        match self.backing.cvm_state_mut().exit_vtl {
+            GuestVtl::Vtl0 => {
+                // Check for VTL preemption
+                if let Some(vector) = interrupt_pending[GuestVtl::Vtl1] {
+                    let priority = vector >> 4;
+                    // TODO actually check priority registers
+                    if priority > 0 {
+                        B::switch_vtl_state(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
+                        self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
+                        self.hv[GuestVtl::Vtl1]
+                            .as_ref()
+                            .unwrap()
+                            .set_return_reason(HvVtlEntryReason::INTERRUPT)
+                            .unwrap();
+                    }
+                }
+            }
+            GuestVtl::Vtl1 => {
+                // TODO: Check for VINA
+            }
+        }
     }
 }
 

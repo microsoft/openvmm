@@ -469,6 +469,14 @@ impl HardwareIsolatedBacking for TdxBacked {
     fn cvm_partition_state(&self) -> &UhCvmPartitionState {
         &self.shared.cvm
     }
+
+    fn switch_vtl_state(
+        _this: &mut UhProcessor<'_, Self>,
+        _source_vtl: GuestVtl,
+        _target_vtl: GuestVtl,
+    ) {
+        todo!()
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
@@ -730,8 +738,9 @@ impl BackingPrivate for TdxBacked {
         this: &mut UhProcessor<'_, Self>,
         dev: &impl CpuIo,
         _stop: &mut virt::StopVp<'_>,
+        interrupt_pending: VtlArray<Option<u8>, 2>,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        this.run_vp_tdx(dev).await
+        this.run_vp_tdx(dev, interrupt_pending).await
     }
 
     // TODO TDX GUEST VSM
@@ -764,14 +773,6 @@ impl BackingPrivate for TdxBacked {
         } else {
             tracelimit::error_ratelimited!("untrusted synic is not configured");
         }
-    }
-
-    fn switch_vtl_state(
-        _this: &mut UhProcessor<'_, Self>,
-        _source_vtl: GuestVtl,
-        _target_vtl: GuestVtl,
-    ) {
-        todo!()
     }
 }
 
@@ -1097,8 +1098,13 @@ impl UhProcessor<'_, TdxBacked> {
         }
     }
 
-    async fn run_vp_tdx(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let next_vtl = self.exit_vtl;
+    async fn run_vp_tdx(
+        &mut self,
+        dev: &impl CpuIo,
+        interrupt_pending: VtlArray<Option<u8>, 2>,
+    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+        self.hcvm_handle_cross_vtl_interrupts(interrupt_pending);
+        let next_vtl = self.backing.cvm_state_mut().exit_vtl;
 
         if self.backing.interruption_information.valid() {
             tracing::debug!(
