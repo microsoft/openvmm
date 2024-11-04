@@ -162,11 +162,7 @@ pub async fn request_vmgs_encryption_keys(
                 rsa_aes_wrapped_key: _,
                 wrapped_des_key: _,
             }) => {
-                tracing::warn!(
-                    CVM_ALLOWED,
-                    retry = i,
-                    "Attempt to get VMGS key-encryption failed"
-                )
+                tracing::warn!(CVM_ALLOWED, retry = i, "Failed to get VMGS key-encryption")
             }
             Err(e) if i == (max_retry - 1) => Err(e)?,
             Err(e) => {
