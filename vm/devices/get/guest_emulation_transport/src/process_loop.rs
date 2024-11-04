@@ -1816,7 +1816,6 @@ async fn request_igvm_attest(
         get_protocol::IGVM_ATTEST_MSG_SHARED_GPA * hvdef::HV_PAGE_SIZE_USIZE;
     const HOST_GENERIC_ERROR_CODE: usize = 0xFFFFFFFF;
 
-    tracing::info!("Processing request_igvm_attest");
     let (Some(shared_pool_allocator), Some(shared_guest_memory)) =
         (&shared_pool_allocator, &shared_guest_memory)
     else {

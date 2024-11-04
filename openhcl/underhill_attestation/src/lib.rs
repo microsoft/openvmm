@@ -296,9 +296,7 @@ pub async fn initialize_platform_security(
         )
         .await
         .map_err(|e| {
-            tracing::error!(
-                attestation_type=?attestation_type,
-                "failed to retrieve key-encryption key");
+            tracing::error!("failed to retrieve key-encryption key");
             AttestationErrorInner::RequestVmgsEncryptionKeys(e)
         })?
     } else {
@@ -341,8 +339,11 @@ pub async fn initialize_platform_security(
 
     // Check if the VM id has been changed since last boot with KP write
     let vm_id_changed = if key_protector_by_id.found_id {
-        tracing::info!("VM Id has changed since last boot");
-        key_protector_by_id.inner.id_guid != bios_guid
+        let changed = key_protector_by_id.inner.id_guid != bios_guid;
+        if changed {
+            tracing::info!("VM Id has changed since last boot");
+        };
+        changed
     } else {
         tracing::info!("First booting of the VM");
         // Previous id in KP not found means this is the first boot,
@@ -352,7 +353,7 @@ pub async fn initialize_platform_security(
 
     let vmgs_encrypted: bool = vmgs.get_encryption_algorithm() != EncryptionAlgorithm::NONE;
 
-    tracing::info!(tcb_version=?tcb_version, "Deriving keys");
+    tracing::info!(tcb_version=?tcb_version, vmgs_encrypted = vmgs_encrypted, "Deriving keys");
     let derived_keys_result = get_derived_keys(
         get,
         tee_call.as_deref(),
@@ -368,7 +369,7 @@ pub async fn initialize_platform_security(
     )
     .await
     .map_err(|e| {
-        tracing::error!(vmgs_encrypted = vmgs_encrypted, "failed to derive keys");
+        tracing::error!("failed to derive keys");
         AttestationErrorInner::GetDerivedKeys(e)
     })?;
 
@@ -410,10 +411,7 @@ pub async fn initialize_platform_security(
     let guest_secret_key = match vmgs::read_guest_secret_key(vmgs).await {
         Ok(data) => Some(data.guest_secret_key.to_vec()),
         Err(vmgs::ReadFromVmgsError::EntryNotFound(_)) => None,
-        Err(e) => {
-            let return_e = AttestationErrorInner::ReadGuestSecretKey(e).into();
-            return Err(return_e);
-        }
+        Err(e) => return Err(AttestationErrorInner::ReadGuestSecretKey(e).into()),
     };
 
     Ok(PlatformAttestationData {
