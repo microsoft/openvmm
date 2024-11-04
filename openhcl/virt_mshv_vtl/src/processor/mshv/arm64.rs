@@ -50,6 +50,7 @@ use virt_support_aarch64emu::emulate::EmuCheckVtlAccessError;
 use virt_support_aarch64emu::emulate::EmuTranslateError;
 use virt_support_aarch64emu::emulate::EmuTranslateResult;
 use virt_support_aarch64emu::emulate::EmulatorSupport;
+use vtl_array::VtlArray;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
@@ -131,6 +132,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
         this: &mut UhProcessor<'_, Self>,
         dev: &impl CpuIo,
         _stop: &mut virt::StopVp<'_>,
+        _interrupt_pending: VtlArray<Option<u8>, 2>,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
         if this.backing.deliverability_notifications
             != this.backing.next_deliverability_notifications
@@ -193,8 +195,8 @@ impl BackingPrivate for HypervisorBackedArm64 {
         _this: &mut UhProcessor<'_, Self>,
         _vtl: GuestVtl,
         _scan_irr: bool,
-    ) -> Result<(), UhRunVpError> {
-        Ok(())
+    ) -> Result<Option<u8>, UhRunVpError> {
+        Ok(None)
     }
 
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
@@ -207,16 +209,6 @@ impl BackingPrivate for HypervisorBackedArm64 {
         this.backing
             .next_deliverability_notifications
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
-    }
-
-    /// Copies shared registers (per VSM TLFS spec) from the last VTL to
-    /// the target VTL that will become active.
-    fn switch_vtl_state(
-        _this: &mut UhProcessor<'_, Self>,
-        _source_vtl: GuestVtl,
-        _target_vtl: GuestVtl,
-    ) {
-        unreachable!("vtl switching should be managed by the hypervisor");
     }
 
     fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
