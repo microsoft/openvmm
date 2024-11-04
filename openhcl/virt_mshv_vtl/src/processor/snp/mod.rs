@@ -931,7 +931,7 @@ impl UhProcessor<'_, SnpBacked> {
         interrupt_pending: VtlArray<Option<u8>, 2>,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
         self.hcvm_handle_cross_vtl_interrupts(interrupt_pending);
-        let next_vtl = self.backing.cvm_state_mut().exit_vtl;
+        let next_vtl = self.backing.cvm.exit_vtl;
 
         let mut vmsa = self.runner.vmsa_mut(next_vtl);
         let last_interrupt_ctrl = vmsa.v_intr_cntrl();

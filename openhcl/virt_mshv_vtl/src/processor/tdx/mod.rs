@@ -1130,7 +1130,7 @@ impl UhProcessor<'_, TdxBacked> {
         interrupt_pending: VtlArray<Option<u8>, 2>,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
         self.hcvm_handle_cross_vtl_interrupts(interrupt_pending);
-        let next_vtl = self.backing.cvm_state_mut().exit_vtl;
+        let next_vtl = self.backing.cvm.exit_vtl;
 
         if self.backing.interruption_information.valid() {
             tracing::debug!(
