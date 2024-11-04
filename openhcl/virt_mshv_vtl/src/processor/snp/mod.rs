@@ -321,7 +321,7 @@ impl BackingPrivate for SnpBacked {
         this: &mut UhProcessor<'_, Self>,
         vtl: GuestVtl,
         scan_irr: bool,
-    ) -> Result<(), UhRunVpError> {
+    ) -> Result<Option<u8>, UhRunVpError> {
         // Check for interrupt requests from the host.
         // TODO SNP GUEST VSM supporting VTL 1 proxy irrs requires kernel changes
         if vtl == GuestVtl::Vtl0 {
@@ -334,6 +334,7 @@ impl BackingPrivate for SnpBacked {
         // Clear any pending interrupt.
         this.runner.vmsa_mut(vtl).v_intr_cntrl_mut().set_irq(false);
 
+        let mut ret = None;
         let ApicWork {
             init,
             extint,
@@ -346,10 +347,14 @@ impl BackingPrivate for SnpBacked {
 
         if nmi {
             this.handle_nmi(vtl);
+            ret = Some(u8::MAX);
         }
 
         if let Some(vector) = interrupt {
             this.handle_interrupt(vtl, vector);
+            if ret.is_none() {
+                ret = Some(vector);
+            }
         }
 
         if extint {
@@ -371,7 +376,7 @@ impl BackingPrivate for SnpBacked {
             }
         }
 
-        Ok(())
+        Ok(ret)
     }
 
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {
@@ -920,9 +925,7 @@ impl UhProcessor<'_, SnpBacked> {
     }
 
     async fn run_vp_snp(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
-        // TODO CVM GUEST VSM: actually check if there is an interrupt waiting
-        // for VTL 1 and switch to it if there is
-        let next_vtl = self.backing.cvm.exit_vtl;
+        let next_vtl = self.exit_vtl;
 
         let mut vmsa = self.runner.vmsa_mut(next_vtl);
         let last_interrupt_ctrl = vmsa.v_intr_cntrl();
@@ -946,8 +949,6 @@ impl UhProcessor<'_, SnpBacked> {
 
         // Set the lazy EOI bit just before running.
         let lazy_eoi = self.sync_lazy_eoi(next_vtl);
-
-        // TODO GUEST VSM: update next_vtl based on interrupts
 
         let mut has_intercept = self
             .runner
