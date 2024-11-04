@@ -42,7 +42,6 @@ use hvdef::hypercall::HostVisibilityType;
 use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvSynicSint;
-use hvdef::HvVtlEntryReason;
 use hvdef::Vtl;
 use hvdef::NUM_SINTS;
 use inspect::Inspect;
@@ -102,8 +101,6 @@ pub struct UhProcessor<'a, T: Backing> {
     force_exit_sidecar: bool,
     /// The VTLs on this VP that are currently locked, per requesting VTL.
     vtls_tlb_locked: VtlsTlbLocked,
-    /// Used in VTL 2 exit code to determine which VTL to exit to.
-    exit_vtl: GuestVtl,
 
     // Put the runner and backing at the end so that monomorphisms of functions
     // that don't access backing-specific state are more likely to be folded
@@ -207,6 +204,7 @@ mod private {
             this: &mut UhProcessor<'_, Self>,
             dev: &impl CpuIo,
             stop: &mut StopVp<'_>,
+            interrupt_pending: VtlArray<Option<u8>, 2>,
         ) -> impl Future<Output = Result<(), VpHaltReason<UhRunVpError>>>;
 
         /// Process any pending APIC work. Returns the vector of the next
@@ -228,14 +226,6 @@ mod private {
         ///
         /// This is used for hypervisor-managed and untrusted SINTs.
         fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
-
-        /// Copies shared registers (per VSM TLFS spec) from the source VTL to
-        /// the target VTL that will become active.
-        fn switch_vtl_state(
-            this: &mut UhProcessor<'_, Self>,
-            source_vtl: GuestVtl,
-            target_vtl: GuestVtl,
-        );
 
         /// Returns whether this VP should be put to sleep in usermode, or
         /// whether it's ready to proceed into the kernel.
@@ -270,6 +260,13 @@ pub trait HardwareIsolatedBacking: Backing {
     fn cvm_state_mut(&mut self) -> &mut crate::UhCvmVpState;
     /// Gets CVM specific partition state.
     fn cvm_partition_state(&self) -> &crate::UhCvmPartitionState;
+    /// Copies shared registers (per VSM TLFS spec) from the source VTL to
+    /// the target VTL that will become active.
+    fn switch_vtl_state(
+        this: &mut UhProcessor<'_, Self>,
+        source_vtl: GuestVtl,
+        target_vtl: GuestVtl,
+    );
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
@@ -639,6 +636,8 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
         let mut first_scan_irr = true;
 
         loop {
+            let mut interrupt_pending: VtlArray<_, 2> = VtlArray::new(None);
+
             // Process VP activity and wait for the VP to be ready.
             poll_fn(|cx| loop {
                 stop.check()?;
@@ -669,7 +668,6 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     self.update_synic(GuestVtl::Vtl0, true);
                 }
 
-                let mut interrupt_pending: VtlArray<_, 2> = VtlArray::new(None);
                 for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
                     // Process interrupts.
                     if self.backing.hv(vtl).is_some() {
@@ -690,29 +688,8 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     }
                 }
 
-                match self.exit_vtl {
-                    GuestVtl::Vtl0 => {
-                        // Check for VTL preemption
-                        if let Some(vector) = interrupt_pending[GuestVtl::Vtl1] {
-                            let priority = vector >> 4;
-                            // TODO actually check priority registers
-                            if priority > 0 {
-                                T::switch_vtl_state(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
-                                self.exit_vtl = GuestVtl::Vtl1;
-                                self.hv[GuestVtl::Vtl1]
-                                    .as_ref()
-                                    .unwrap()
-                                    .set_return_reason(HvVtlEntryReason::INTERRUPT)
-                                    .unwrap();
-                            }
-                        }
-                    }
-                    GuestVtl::Vtl1 => {
-                        // TODO: Check for VINA
-                    }
-                }
-
-                if T::halt_in_usermode(self, self.exit_vtl) {
+                // TODO WHP GUEST VSM This should be next_vtl
+                if T::halt_in_usermode(self, GuestVtl::Vtl0) {
                     break Poll::Pending;
                 } else {
                     return <Result<_, VpHaltReason<_>>>::Ok(()).into();
@@ -736,7 +713,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     .into();
             }
 
-            T::run_vp(self, dev, &mut stop).await?;
+            T::run_vp(self, dev, &mut stop, interrupt_pending).await?;
             self.kernel_returns += 1;
         }
     }
@@ -849,7 +826,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 vtl1: VtlArray::new(false),
                 vtl2: VtlArray::new(false),
             },
-            exit_vtl: GuestVtl::Vtl0,
         };
 
         T::init(&mut vp);

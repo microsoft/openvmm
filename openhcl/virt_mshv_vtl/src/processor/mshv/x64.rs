@@ -182,6 +182,7 @@ impl BackingPrivate for HypervisorBackedX86 {
         this: &mut UhProcessor<'_, Self>,
         dev: &impl CpuIo,
         stop: &mut StopVp<'_>,
+        _interrupt_pending: VtlArray<Option<u8>, 2>,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
         if this.backing.deliverability_notifications
             != this.backing.next_deliverability_notifications
@@ -370,14 +371,6 @@ impl BackingPrivate for HypervisorBackedX86 {
         this.backing
             .next_deliverability_notifications
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
-    }
-
-    fn switch_vtl_state(
-        _this: &mut UhProcessor<'_, Self>,
-        _source_vtl: GuestVtl,
-        _target_vtl: GuestVtl,
-    ) {
-        unreachable!("vtl switching should be managed by the hypervisor");
     }
 
     fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
