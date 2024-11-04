@@ -33,6 +33,7 @@ use guest_emulation_transport::GuestEmulationTransportClient;
 use guid::Guid;
 use hardware_key_sealing::HardwareDerivedKeys;
 use hardware_key_sealing::HardwareKeyProtectorExt as _;
+use key_protector::GetKeysFromKeyProtectorError;
 use key_protector::KeyProtectorExt as _;
 use mesh::MeshPayload;
 use openssl::pkey::Private;
@@ -574,9 +575,27 @@ async fn get_derived_keys(
 
     // Handle key released via attestation process (tenant key) to get keys from KeyProtector
     let (ingress_key, egress_key, no_kek) = if let Some(ingress_kek) = ingress_rsa_kek {
-        let keys = key_protector
-            .unwrap_and_rotate_keys(ingress_kek, wrapped_des_key, ingress_idx, egress_idx)
-            .map_err(GetDerivedKeysError::GetKeysFromKeyProtector)?;
+        let keys = match key_protector.unwrap_and_rotate_keys(
+            ingress_kek,
+            wrapped_des_key,
+            ingress_idx,
+            egress_idx,
+        ) {
+            Ok(keys) => keys,
+            Err(e)
+                if matches!(
+                    e,
+                    GetKeysFromKeyProtectorError::DesKeyRsaUnwrap(_)
+                        | GetKeysFromKeyProtectorError::IngressDekRsaUnwrap(_)
+                ) =>
+            {
+                get.event_log(guest_emulation_transport::api::EventLogId::DEK_DECRYPTION_FAILED);
+                get.event_log_flush().await;
+
+                return Err(GetDerivedKeysError::GetKeysFromKeyProtector(e));
+            }
+            Err(e) => return Err(GetDerivedKeysError::GetKeysFromKeyProtector(e)),
+        };
         (keys.ingress, keys.egress, false)
     } else {
         ([0u8; AES_GCM_KEY_LENGTH], [0u8; AES_GCM_KEY_LENGTH], true)

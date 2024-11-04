@@ -187,6 +187,10 @@ pub async fn request_vmgs_encryption_keys(
         )
     } else {
         tracing::warn!(CVM_ALLOWED, "tenant vmgs ingress key is not released");
+
+        get.event_log(guest_emulation_transport::api::EventLogId::KEY_NOT_RELEASED);
+        get.event_log_flush().await;
+
         None
     };
 
