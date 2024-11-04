@@ -1745,16 +1745,17 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
     }
 
     fn activity(&mut self) -> Result<vp::Activity, Self::Error> {
-        let mp_state = if self.vp.backing.lapics[self.vtl].startup_suspend {
+        let lapic = &self.vp.backing.lapics[self.vtl];
+        let mp_state = if lapic.startup_suspend {
             vp::MpState::WaitForSipi
-        } else if self.vp.backing.lapics[self.vtl].halted {
+        } else if lapic.halted {
             vp::MpState::Halted
         } else {
             vp::MpState::Running
         };
         Ok(vp::Activity {
             mp_state,
-            nmi_pending: false,         // TODO SNP
+            nmi_pending: lapic.nmi_pending,
             nmi_masked: false,          // TODO SNP
             interrupt_shadow: false,    // TODO SNP
             pending_event: None,        // TODO SNP
@@ -1765,7 +1766,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
     fn set_activity(&mut self, value: &vp::Activity) -> Result<(), Self::Error> {
         let &vp::Activity {
             mp_state,
-            nmi_pending: _,          // TODO SNP
+            nmi_pending,
             nmi_masked: _,           // TODO SNP
             interrupt_shadow: _,     // TODO SNP
             pending_event: _,        // TODO SNP
@@ -1777,8 +1778,10 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
             vp::MpState::Halted => (true, false),
             vp::MpState::Idle => (false, false), // TODO SNP: idle support
         };
-        self.vp.backing.lapics[self.vtl].halted = halted;
-        self.vp.backing.lapics[self.vtl].startup_suspend = startup_suspend;
+        let lapic = &mut self.vp.backing.lapics[self.vtl];
+        lapic.halted = halted;
+        lapic.startup_suspend = startup_suspend;
+        lapic.nmi_pending = nmi_pending;
         Ok(())
     }
 

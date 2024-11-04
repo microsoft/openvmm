@@ -397,7 +397,6 @@ pub struct TdxBacked {
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
     eoi_exit_bitmap: [u64; 4],
     tpr_threshold: u8,
-    nmi_pending: bool,
     #[inspect(skip)]
     processor_controls: ProcessorControls,
     #[inspect(skip)]
@@ -650,7 +649,6 @@ impl BackingPrivate for TdxBacked {
             direct_overlay_pfns_handle: pfns_handle,
             lapic,
             eoi_exit_bitmap: [0; 4],
-            nmi_pending: false,
             tpr_threshold: 0,
             processor_controls,
             secondary_processor_controls,
@@ -813,8 +811,8 @@ impl UhProcessor<'_, TdxBacked> {
             .with_nmi_window_exiting(false)
             .with_interrupt_window_exiting(false);
 
-        self.backing.nmi_pending |= nmi;
-        if self.backing.nmi_pending {
+        self.backing.lapic.nmi_pending |= nmi;
+        if self.backing.lapic.nmi_pending {
             self.handle_nmi(&mut new_processor_controls);
         }
 
@@ -1222,7 +1220,7 @@ impl UhProcessor<'_, TdxBacked> {
                 INTERRUPT_TYPE_NMI => {
                     // This must be a pending NMI.
                     tracing::debug!("acknowledging NMI");
-                    self.backing.nmi_pending = false;
+                    self.backing.lapic.nmi_pending = false;
                 }
                 _ => {}
             }
@@ -2697,7 +2695,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             .into();
         Ok(vp::Activity {
             mp_state,
-            nmi_pending: self.vp.backing.nmi_pending,
+            nmi_pending: self.vp.backing.lapic.nmi_pending,
             nmi_masked: interruptibility.blocked_by_nmi(),
             interrupt_shadow: interruptibility.blocked_by_sti()
                 || interruptibility.blocked_by_movss(),
@@ -2723,7 +2721,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         };
         self.vp.backing.lapic.halted = halted;
         self.vp.backing.lapic.startup_suspend = startup_suspend;
-        self.vp.backing.nmi_pending = nmi_pending;
+        self.vp.backing.lapic.nmi_pending = nmi_pending;
         let interruptibility = Interruptibility::new()
             .with_blocked_by_movss(interrupt_shadow)
             .with_blocked_by_nmi(nmi_masked);

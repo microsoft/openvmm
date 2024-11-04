@@ -90,7 +90,6 @@ use zerocopy::FromZeroes;
 #[derive(InspectMut)]
 pub struct HypervisorBackedX86 {
     pub(super) lapics: Option<VtlArray<LapicState, 2>>,
-    nmi_pending: VtlArray<bool, 2>,
     // TODO WHP GUEST VSM: To be completely correct here, when emulating the APICs
     // we would need two sets of deliverability notifications too. However currently
     // we don't support VTL 1 on WHP, and on the hypervisor we don't emulate the APIC,
@@ -159,7 +158,6 @@ impl BackingPrivate for HypervisorBackedX86 {
 
         Ok(Self {
             lapics,
-            nmi_pending: VtlArray::new(false),
             deliverability_notifications: Default::default(),
             next_deliverability_notifications: Default::default(),
             stats: Default::default(),
@@ -320,8 +318,8 @@ impl BackingPrivate for HypervisorBackedX86 {
             interrupt,
         } = lapic.lapic.scan(&mut this.vmtime, scan_irr);
 
-        if nmi || this.backing.nmi_pending[vtl] {
-            this.backing.nmi_pending[vtl] = true;
+        if nmi || lapic.nmi_pending {
+            lapic.nmi_pending = true;
             this.handle_nmi(vtl)?;
         }
 
@@ -1019,8 +1017,9 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             )
             .map_err(UhRunVpError::EmulationState)?;
 
-        self.backing.lapics.as_mut().unwrap()[vtl].halted = false;
-        self.backing.nmi_pending[vtl] = false;
+        let lapic = &mut self.backing.lapics.as_mut().unwrap()[vtl];
+        lapic.halted = false;
+        lapic.nmi_pending = false;
 
         tracing::trace!("nmi");
 

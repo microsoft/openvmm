@@ -154,6 +154,7 @@ pub struct LapicState {
     lapic: LocalApic,
     halted: bool,
     startup_suspend: bool,
+    nmi_pending: bool,
 }
 
 mod private {
@@ -769,6 +770,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 let state = LapicState {
                     lapic,
                     halted: false,
+                    nmi_pending: false,
                     startup_suspend: first && !vp_info.base.is_bsp(),
                 };
                 first = false;
