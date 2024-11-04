@@ -82,7 +82,7 @@ enum ErrorInner {
 #[derive(Debug, Error)]
 enum GetDerivedKeysError {
     #[error("failed to get ingress/egress keys from the the key protector")]
-    GetKeysFromKeyProtector(#[source] key_protector::GetKeysFromKeyProtectorError),
+    GetKeysFromKeyProtector(#[source] GetKeysFromKeyProtectorError),
     #[error("failed to fetch GSP")]
     FetchGuestStateProtectionById(
         #[source] guest_emulation_transport::error::GuestStateProtectionByIdError,
