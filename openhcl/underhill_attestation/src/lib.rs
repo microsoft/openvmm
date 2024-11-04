@@ -44,7 +44,6 @@ use protocol::vmgs::SecurityProfile;
 use protocol::vmgs::AES_GCM_KEY_LENGTH;
 use secure_key_release::VmgsEncryptionKeys;
 use static_assertions::const_assert_eq;
-use std::any::Any;
 use std::fmt::Debug;
 use tee_call::TeeCall;
 use thiserror::Error;
