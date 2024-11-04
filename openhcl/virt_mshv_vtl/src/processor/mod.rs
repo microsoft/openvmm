@@ -44,6 +44,7 @@ use hvdef::hypercall::HostVisibilityType;
 use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvSynicSint;
+use hvdef::HvVtlEntryReason;
 use hvdef::Vtl;
 use hvdef::NUM_SINTS;
 use inspect::Inspect;
@@ -105,6 +106,8 @@ pub struct UhProcessor<'a, T: Backing> {
     force_exit_sidecar: bool,
     /// The VTLs on this VP that are currently locked, per requesting VTL.
     vtls_tlb_locked: VtlsTlbLocked,
+    /// Used in VTL 2 exit code to determine which VTL to exit to.
+    exit_vtl: GuestVtl,
 
     // Put the runner and backing at the end so that monomorphisms of functions
     // that don't access backing-specific state are more likely to be folded
@@ -206,12 +209,13 @@ mod private {
             stop: &mut StopVp<'_>,
         ) -> impl Future<Output = Result<(), VpHaltReason<UhRunVpError>>>;
 
-        /// Process any pending APIC work.
+        /// Process any pending APIC work. Returns the vector of the next
+        /// pending interrupt if there is one, or u8::MAX for an NMI.
         fn poll_apic(
             this: &mut UhProcessor<'_, Self>,
             vtl: GuestVtl,
             scan_irr: bool,
-        ) -> Result<(), UhRunVpError>;
+        ) -> Result<Option<u8>, UhRunVpError>;
 
         /// Requests the VP to exit when an external interrupt is ready to be
         /// delivered.
@@ -659,14 +663,16 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     self.update_synic(GuestVtl::Vtl0, true);
                 }
 
+                let mut interrupt_pending: VtlArray<_, 2> = VtlArray::new(None);
                 for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
                     // Process interrupts.
                     if self.hv[vtl].is_some() {
                         self.update_synic(vtl, false);
                     }
 
-                    T::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
-                        .map_err(VpHaltReason::Hypervisor)?;
+                    interrupt_pending[vtl] =
+                        T::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
+                            .map_err(VpHaltReason::Hypervisor)?;
                 }
                 first_scan_irr = false;
 
@@ -678,8 +684,29 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     }
                 }
 
-                // TODO WHP GUEST VSM: This should be next_vtl
-                if T::halt_in_usermode(self, GuestVtl::Vtl0) {
+                match self.exit_vtl {
+                    GuestVtl::Vtl0 => {
+                        // Check for VTL preemption
+                        if let Some(vector) = interrupt_pending[GuestVtl::Vtl1] {
+                            let priority = vector >> 4;
+                            // TODO actually check priority registers
+                            if priority > 0 {
+                                T::switch_vtl_state(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
+                                self.exit_vtl = GuestVtl::Vtl1;
+                                self.hv[GuestVtl::Vtl1]
+                                    .as_ref()
+                                    .unwrap()
+                                    .set_return_reason(HvVtlEntryReason::INTERRUPT)
+                                    .unwrap();
+                            }
+                        }
+                    }
+                    GuestVtl::Vtl1 => {
+                        // TODO: Check for VINA
+                    }
+                }
+
+                if T::halt_in_usermode(self, self.exit_vtl) {
                     break Poll::Pending;
                 } else {
                     return <Result<_, VpHaltReason<_>>>::Ok(()).into();
@@ -827,6 +854,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 vtl1: VtlArray::new(false),
                 vtl2: VtlArray::new(false),
             },
+            exit_vtl: GuestVtl::Vtl0,
         };
 
         T::init(&mut vp);

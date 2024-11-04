@@ -303,11 +303,12 @@ impl BackingPrivate for HypervisorBackedX86 {
         this: &mut UhProcessor<'_, Self>,
         vtl: GuestVtl,
         scan_irr: bool,
-    ) -> Result<(), UhRunVpError> {
+    ) -> Result<Option<u8>, UhRunVpError> {
         let Some(lapics) = this.backing.lapics.as_mut() else {
-            return Ok(());
+            return Ok(None);
         };
 
+        let mut ret = None;
         let lapic = &mut lapics[vtl];
         let ApicWork {
             init,
@@ -320,10 +321,14 @@ impl BackingPrivate for HypervisorBackedX86 {
         if nmi || lapic.nmi_pending {
             lapic.nmi_pending = true;
             this.handle_nmi(vtl)?;
+            ret = Some(u8::MAX);
         }
 
         if let Some(vector) = interrupt {
             this.handle_interrupt(vector, vtl)?;
+            if ret.is_none() {
+                ret = Some(vector);
+            }
         }
 
         if extint {
@@ -339,7 +344,7 @@ impl BackingPrivate for HypervisorBackedX86 {
             this.handle_sipi(vtl, vector)?;
         }
 
-        Ok(())
+        Ok(ret)
     }
 
     fn halt_in_usermode(this: &mut UhProcessor<'_, Self>, target_vtl: GuestVtl) -> bool {

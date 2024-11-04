@@ -739,7 +739,7 @@ impl BackingPrivate for TdxBacked {
         this: &mut UhProcessor<'_, Self>,
         _vtl: GuestVtl,
         scan_irr: bool,
-    ) -> Result<(), UhRunVpError> {
+    ) -> Result<Option<u8>, UhRunVpError> {
         if !this.try_poll_apic(scan_irr)? {
             tracing::info!("disabling APIC offload due to auto EOI");
             let page = zerocopy::transmute_mut!(this.runner.tdx_apic_page_mut());
@@ -750,7 +750,8 @@ impl BackingPrivate for TdxBacked {
             this.try_poll_apic(false)?;
         }
 
-        Ok(())
+        // TODO TDX GUEST VSM
+        Ok(None)
     }
 
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {
@@ -1097,7 +1098,7 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     async fn run_vp_tdx(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let next_vtl = self.backing.cvm.exit_vtl;
+        let next_vtl = self.exit_vtl;
 
         if self.backing.interruption_information.valid() {
             tracing::debug!(

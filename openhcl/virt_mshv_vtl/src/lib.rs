@@ -307,8 +307,6 @@ impl From<EnterMode> for hcl::protocol::EnterMode {
 pub struct UhCvmVpState {
     /// The VTLs on this VP waiting for TLB locks on other VPs.
     vtls_tlb_waiting: VtlArray<bool, 2>,
-    /// Used in VTL 2 exit code to determine which VTL to exit to.
-    exit_vtl: GuestVtl,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -317,7 +315,6 @@ impl UhCvmVpState {
     pub fn new() -> Self {
         Self {
             vtls_tlb_waiting: VtlArray::new(false),
-            exit_vtl: GuestVtl::Vtl0,
         }
     }
 }

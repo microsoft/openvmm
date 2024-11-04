@@ -410,20 +410,13 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
         tracing::trace!("handling vtl call");
 
         B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl1);
-        self.vp.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
+        self.vp.exit_vtl = GuestVtl::Vtl1;
 
-        // TODO GUEST VSM: reevaluate if the return reason should be set here or
-        // during VTL 2 exit handling
         self.vp.hv[GuestVtl::Vtl1]
             .as_ref()
             .unwrap()
             .set_return_reason(HvVtlEntryReason::VTL_CALL)
             .expect("setting return reason cannot fail");
-
-        // TODO GUEST_VSM: Force reevaluation of the VTL 1 APIC in case delivery of
-        // low-priority interrupts was suppressed while in VTL 0.
-
-        // TODO GUEST_VSM: Track which VTLs are runnable and mark VTL as runnable
     }
 }
 
@@ -441,7 +434,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
         self.vp.unlock_tlb_lock(Vtl::Vtl1);
 
         B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
-        self.vp.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl0;
+        self.vp.exit_vtl = GuestVtl::Vtl0;
 
         // TODO CVM GUEST_VSM:
         // - rewind interrupts
