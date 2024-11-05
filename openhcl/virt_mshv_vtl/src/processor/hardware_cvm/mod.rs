@@ -13,6 +13,7 @@ use crate::GuestVsmState;
 use crate::GuestVsmVtl1State;
 use crate::GuestVtl;
 use crate::WakeReason;
+use hv1_emulator::RequestInterrupt;
 use hvdef::hypercall::HvFlushFlags;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
@@ -427,12 +428,16 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
 
         self.vp.unlock_tlb_lock(Vtl::Vtl1);
 
+        let hv = self.vp.hv[GuestVtl::Vtl1].as_mut().unwrap();
+        if hv.synic.vina().auto_reset() {
+            hv.set_vina_asserted(false).unwrap();
+        }
+
         B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
         self.vp.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl0;
 
         // TODO CVM GUEST_VSM:
         // - rewind interrupts
-        // - reset VINA
 
         if !fast {
             let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
@@ -624,7 +629,33 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 }
             }
             GuestVtl::Vtl1 => {
-                // TODO: Check for VINA
+                // Check for VINA
+                if let Some(vector) = interrupt_pending[GuestVtl::Vtl0] {
+                    let priority = vector >> 4;
+                    if priority > 0 {
+                        let hv = self.hv[GuestVtl::Vtl1].as_mut().unwrap();
+                        if hv.synic.vina().enabled() && !hv.vina_asserted().unwrap() {
+                            let ppr = lapic_msr_read(
+                                self,
+                                GuestVtl::Vtl1,
+                                ApicRegister::PPR.0 as u32 + x86defs::apic::X2APIC_MSR_BASE,
+                            )
+                            .expect("reading PPR should never fail");
+                            let ppr_priority = ppr >> 4;
+                            if priority as u64 > ppr_priority {
+                                let vp_index = self.vp_index();
+                                let hv = self.hv[GuestVtl::Vtl1].as_mut().unwrap();
+                                hv.set_vina_asserted(true).unwrap();
+                                self.partition
+                                    .synic_interrupt(vp_index, GuestVtl::Vtl1)
+                                    .request_interrupt(
+                                        hv.synic.vina().vector().into(),
+                                        hv.synic.vina().auto_eoi(),
+                                    );
+                            }
+                        }
+                    }
+                }
             }
         }
     }
