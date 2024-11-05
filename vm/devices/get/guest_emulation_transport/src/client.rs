@@ -465,8 +465,14 @@ impl GuestEmulationTransportClient {
         self.control.call(msg::Msg::FlushWrites, ()).await
     }
 
-    /// Report the fatal event to the host and flush the event queue. This ensures all the
-    /// relevant events are sent to the host prior to OpenHCL teardown.
+    /// Report the fatal event to the host and flush the event queue.
+    ///
+    /// This function is asynchronous and is equivalent to the combination of
+    /// [`event_log`](Self::event_log) and [`event_log_flush`](Self::event_log_flush).
+    ///
+    /// Use this function to ensure all the events prior to the fatal event are sent to
+    /// the host before the OpenHCL tears down. For non-fatal event, use
+    /// [`event_log`](Self::event_log).
     pub async fn event_log_fatal(&self, event_log_id: crate::api::EventLogId) {
         self.control.notify(msg::Msg::EventLog(event_log_id));
         self.control.call(msg::Msg::FlushWrites, ()).await
