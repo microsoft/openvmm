@@ -250,10 +250,6 @@ impl QueuePair {
 
         // Add more data to the returned response.
         let mut local_queue_data = queue_data.unwrap();
-        local_queue_data.sq_addr = self.sq_addr();
-        local_queue_data.cq_addr = self.cq_addr();
-
-        local_queue_data.base_va = self.mem.base_va();
         local_queue_data.mem_len = self.mem.len();
         local_queue_data.pfns = self.mem.pfns().to_vec();
 
@@ -630,9 +626,6 @@ impl QueueHandler {
             pending_cmds,
             cpu: 0,       // Will be updated by the caller.
             msix: 0,      // Will be updated by the caller.
-            sq_addr: 0,   // Will be updated by the caller.
-            cq_addr: 0,   // Will be updated by the caller.
-            base_va: 0,   // Will be updated by the caller.
             mem_len: 0,   // Will be updated by the caller.
             pfns: vec![], // Will be updated by the caller.
         })

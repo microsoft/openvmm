@@ -9,7 +9,6 @@
 use crate::interrupt::DeviceInterrupt;
 use crate::interrupt::DeviceInterruptSource;
 use crate::memory::MemoryBlock;
-use crate::save_restore::VfioDeviceSavedState;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use anyhow::Context;
@@ -84,7 +83,7 @@ impl VfioDevice {
         pci_id: &str,
         dma_buffer: Arc<dyn VfioDmaBuffer>,
     ) -> anyhow::Result<Self> {
-        Self::restore(driver_source, pci_id, dma_buffer, None).await
+        Self::restore(driver_source, pci_id, dma_buffer, false).await
     }
 
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
@@ -93,9 +92,8 @@ impl VfioDevice {
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
         dma_buffer: Arc<dyn VfioDmaBuffer>,
-        saved_state: Option<&VfioDeviceSavedState>,
+        keepalive: bool,
     ) -> anyhow::Result<Self> {
-        let is_restoring = saved_state.is_some();
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
         // The vfio device attaches asynchronously after the PCI device is added,
@@ -120,7 +118,7 @@ impl VfioDevice {
         }
 
         container.set_iommu(IommuType::NoIommu)?;
-        if is_restoring {
+        if keepalive {
             // Prevent physical hardware interaction when restoring.
             group.set_keep_alive(path.file_name().unwrap().to_str().unwrap())?;
         }

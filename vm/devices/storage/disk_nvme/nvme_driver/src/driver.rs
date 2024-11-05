@@ -35,7 +35,6 @@ use tracing::Instrument;
 use user_driver::backoff::Backoff;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
-use user_driver::save_restore::VfioDeviceSavedState;
 use user_driver::DeviceBacking;
 use user_driver::vfio::VfioDmaBuffer;
 use vmcore::vm_task::VmTaskDriver;
@@ -156,7 +155,7 @@ struct IoIssuer {
 enum NvmeWorkerRequest {
     CreateIssuer(Rpc<u32, ()>),
     /// Save worker state.
-    Save(Rpc<(), NvmeDriverSavedState>),
+    Save(Rpc<(), anyhow::Result<NvmeDriverSavedState>>),
 }
 
 impl<T: DeviceBacking> NvmeDriver<T> {
@@ -502,28 +501,30 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     /// Saves the NVMe driver state during servicing.
     pub async fn save(&mut self) -> anyhow::Result<NvmeDriverSavedState> {
         self.nvme_keepalive = true;
-        let mut save_state = self
+        let save_state = match self
             .io_issuers
             .send
             .call(NvmeWorkerRequest::Save, ())
-            .await?;
+            .await? {
+                Ok(mut s) => {
+                    // Update other fields not accessible by worker task.
+                    self.identify
+                        .as_ref()
+                        .unwrap()
+                        .write_to(s.identify_ctrl.as_mut());
 
-        // Update other fields not accessible by worker task.
-        self.identify
-            .as_ref()
-            .unwrap()
-            .write_to(save_state.identify_ctrl.as_mut());
-        save_state.device_id = self.device_id.clone();
-        for ns in &self.namespace {
-            save_state.namespace.push(ns.save()?);
-        }
+                    s.device_id = self.device_id.clone();
+                    for ns in &self.namespace {
+                        s.namespace.push(ns.save()?);
+                    }
+                    Ok(s)
+                },
+                Err(e) => {
+                    Err(e)
+                },
+            };
 
-        Ok(save_state)
-    }
-
-    /// Attach to the backing device after restore.
-    pub async fn attach(&mut self) -> anyhow::Result<()> {
-        Ok(())
+        save_state
     }
 
     /// Restores NVMe driver state after servicing.
@@ -774,8 +775,7 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
                     }
                     Some(NvmeWorkerRequest::Save(rpc)) => {
                         rpc.handle(|_| {
-                            let save_state = self.save_wrapper(state);
-                            save_state
+                            self.save(state)
                         })
                         .await
                     }
@@ -932,28 +932,6 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         })
     }
 
-    /// Wrapper around save() to consume its response (for AsyncRun thread).
-    async fn save_wrapper(&mut self, worker_state: &mut WorkerState) -> NvmeDriverSavedState {
-        match self.save(worker_state).await {
-            Ok(state) => state,
-            Err(_) => {
-                NvmeDriverSavedState {
-                    admin: None,
-                    io: vec![],
-                    identify_ctrl: [0; 4096],
-                    device_id: "".to_string(),
-                    namespace: vec![],
-                    qsize: worker_state.qsize,
-                    max_io_queues: worker_state.max_io_queues,
-                    vfio_state: VfioDeviceSavedState {
-                        pci_id: "".to_string(), // Empty string on error.
-                        msix_info_count: 0,
-                    },
-                }
-            }
-        }
-    }
-
     /// Save NVMe driver state for servicing.
     pub async fn save(
         &mut self,
@@ -973,10 +951,6 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             namespace: vec![],         // Will be updated by the caller.
             qsize: worker_state.qsize,
             max_io_queues: worker_state.max_io_queues,
-            vfio_state: VfioDeviceSavedState {
-                pci_id: self.device.id().to_owned(),
-                msix_info_count: self.device.max_interrupt_count(),
-            },
         };
 
         Ok(save_state)
@@ -1020,9 +994,6 @@ pub mod save_restore {
         /// Max number of IO queue pairs.
         #[mesh(7)]
         pub max_io_queues: u16,
-        /// State of the attached VFIO device.
-        #[mesh(8)]
-        pub vfio_state: VfioDeviceSavedState,
     }
 
     #[derive(Protobuf, Clone, Debug)]
@@ -1041,16 +1012,10 @@ pub mod save_restore {
         #[mesh(5)]
         pub cq_state: CompletionQueueSavedState,
         #[mesh(6)]
-        pub sq_addr: u64,
-        #[mesh(7)]
-        pub cq_addr: u64,
-        #[mesh(8)]
-        pub base_va: u64,
-        #[mesh(9)]
         pub mem_len: usize,
-        #[mesh(10)]
+        #[mesh(7)]
         pub pfns: Vec<u64>, // TODO: Check if region is contiguous and save 1st PFN only if true.
-        #[mesh(11)]
+        #[mesh(8)]
         pub pending_cmds: Vec<PendingCommandSavedState>,
     }
 

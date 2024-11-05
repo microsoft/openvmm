@@ -73,17 +73,3 @@ pub trait HostDmaAllocator: Send + Sync {
         pfns: &[u64],
     ) -> anyhow::Result<MemoryBlock>;
 }
-
-pub mod save_restore {
-    use mesh::payload::Protobuf;
-
-    /// Saved state for the VFIO device user mode driver.
-    #[derive(Protobuf, Clone, Debug)]
-    #[mesh(package = "underhill")]
-    pub struct VfioDeviceSavedState {
-        #[mesh(1)]
-        pub pci_id: String,
-        #[mesh(2)]
-        pub msix_info_count: u32,
-    }
-}
