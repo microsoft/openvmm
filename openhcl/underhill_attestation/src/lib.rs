@@ -26,6 +26,7 @@ pub use protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use ::vmgs::EncryptionAlgorithm;
 use ::vmgs::Vmgs;
 use cvm_tracing::CVM_ALLOWED;
+use get_protocol::HOST_VMWP_ATTESTATION_GENERIC_ERROR_CODE;
 use guest_emulation_transport::api::GspExtendedStatusFlags;
 use guest_emulation_transport::api::GuestStateProtection;
 use guest_emulation_transport::api::GuestStateProtectionById;
@@ -294,10 +295,7 @@ pub async fn initialize_platform_security(
             driver,
         )
         .await
-        .map_err(|e| {
-            tracing::error!("failed to retrieve key-encryption key");
-            AttestationErrorInner::RequestVmgsEncryptionKeys(e)
-        })?
+        .map_err(AttestationErrorInner::RequestVmgsEncryptionKeys)?
     } else {
         tracing::info!(CVM_ALLOWED, "Key-encryption key retrieval not required");
 
@@ -509,7 +507,7 @@ async fn unlock_vmgs_data_store(
                 // If last time we failed to remove old key then we'll come here.
                 // We have to remove old key before adding egress_key.
                 let key_index = if old_index == 0 { 1 } else { 0 };
-                tracing::trace!(CVM_ALLOWED, key_index, "Remove old key...");
+                tracing::trace!(CVM_ALLOWED, key_index = key_index, "Remove old key...");
                 vmgs.remove_encryption_key(key_index)
                     .await
                     .map_err(UnlockVmgsDataStoreError::RemoveOldVmgsEncryptionKey)?;
