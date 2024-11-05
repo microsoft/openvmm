@@ -726,8 +726,8 @@ impl OffloadConfig {
         rndisprot::NdisOffload {
             header: rndisprot::NdisObjectHeader {
                 object_type: rndisprot::NdisObjectType::OFFLOAD,
-                revision: 1,
-                size: rndisprot::NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_1 as u16,
+                revision: 3,
+                size: rndisprot::NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_3 as u16,
             },
             checksum,
             lso_v2,
