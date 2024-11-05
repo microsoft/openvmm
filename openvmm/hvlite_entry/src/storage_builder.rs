@@ -28,7 +28,6 @@ use vtl2_settings_proto::storage_controller;
 use vtl2_settings_proto::Lun;
 use vtl2_settings_proto::StorageController;
 
-#[derive(Default)]
 pub(super) struct StorageBuilder {
     vtl0_ide_disks: Vec<IdeDeviceConfig>,
     vtl0_scsi_devices: Vec<ScsiDeviceAndPath>,
@@ -37,6 +36,7 @@ pub(super) struct StorageBuilder {
     vtl2_nvme_namespaces: Vec<NamespaceDefinition>,
     underhill_scsi_luns: Vec<Lun>,
     underhill_nvme_luns: Vec<Lun>,
+    openhcl_vtl: Option<DeviceVtl>,
 }
 
 #[derive(Copy, Clone)]
@@ -67,8 +67,17 @@ const UNDERHILL_VTL0_NVME_INSTANCE: Guid =
     Guid::from_static_str("09a59b81-2bf6-4164-81d7-3a0dc977ba65");
 
 impl StorageBuilder {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(openhcl_vtl: Option<DeviceVtl>) -> Self {
+        Self {
+            vtl0_ide_disks: Vec::new(),
+            vtl0_scsi_devices: Vec::new(),
+            vtl2_scsi_devices: Vec::new(),
+            vtl0_nvme_namespaces: Vec::new(),
+            vtl2_nvme_namespaces: Vec::new(),
+            underhill_scsi_luns: Vec::new(),
+            underhill_nvme_luns: Vec::new(),
+            openhcl_vtl,
+        }
     }
 
     pub fn has_vtl0_nvme(&self) -> bool {
@@ -210,19 +219,28 @@ impl StorageBuilder {
         is_dvd: bool,
         read_only: bool,
     ) -> anyhow::Result<()> {
+        let vtl = self.openhcl_vtl.context("openhcl not configured")?;
         let sub_device_path = self
-            .add_inner(DeviceVtl::Vtl2, source, kind, is_dvd, read_only)?
+            .add_inner(vtl, source, kind, is_dvd, read_only)?
             .context("source device not supported by underhill")?;
 
         let (device_type, device_path) = match source {
             DiskLocation::Ide(_, _) => anyhow::bail!("ide source not supported for Underhill"),
             DiskLocation::Scsi(_) => (
                 vtl2_settings_proto::physical_device::DeviceType::Vscsi,
-                SCSI_VTL2_INSTANCE_ID,
+                if vtl == DeviceVtl::Vtl2 {
+                    SCSI_VTL2_INSTANCE_ID
+                } else {
+                    SCSI_VTL0_INSTANCE_ID
+                },
             ),
             DiskLocation::Nvme(_) => (
                 vtl2_settings_proto::physical_device::DeviceType::Nvme,
-                NVME_VTL2_INSTANCE_ID,
+                if vtl == DeviceVtl::Vtl2 {
+                    NVME_VTL2_INSTANCE_ID
+                } else {
+                    NVME_VTL0_INSTANCE_ID
+                },
             ),
         };
 

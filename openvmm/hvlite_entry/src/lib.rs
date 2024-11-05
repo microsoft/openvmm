@@ -190,6 +190,12 @@ fn vm_config_from_command_line(
         .spawn(|| serial_pool.run())
         .unwrap();
 
+    let openhcl_vtl = if opt.vtl2 {
+        DeviceVtl::Vtl2
+    } else {
+        DeviceVtl::Vtl0
+    };
+
     let console_state: RefCell<Option<ConsoleState<'_>>> = RefCell::new(None);
     let setup_serial = |name: &str, cli_cfg, device| -> anyhow::Result<_> {
         Ok(match cli_cfg {
@@ -357,7 +363,7 @@ fn vm_config_from_command_line(
         "vmbus_com1",
     )? {
         vmbus_devices.push((
-            DeviceVtl::Vtl2,
+            openhcl_vtl,
             VmbusSerialDeviceHandle {
                 port: VmbusSerialPort::Com1,
                 backend: vmbus_com1_cfg,
@@ -376,7 +382,7 @@ fn vm_config_from_command_line(
         "vmbus_com2",
     )? {
         vmbus_devices.push((
-            DeviceVtl::Vtl2,
+            openhcl_vtl,
             VmbusSerialDeviceHandle {
                 port: VmbusSerialPort::Com2,
                 backend: vmbus_com2_cfg,
@@ -415,7 +421,9 @@ fn vm_config_from_command_line(
         );
     }
 
-    let mut storage = storage_builder::StorageBuilder::new();
+    let with_get = opt.get || opt.vtl2;
+
+    let mut storage = storage_builder::StorageBuilder::new(with_get.then_some(openhcl_vtl));
     for &cli_args::DiskCli {
         vtl,
         ref kind,
@@ -496,7 +504,7 @@ fn vm_config_from_command_line(
             if !opt.no_alias_map {
                 anyhow::bail!("must specify --no-alias-map to offer NICs to VTL2");
             }
-            let mana = mana_nics[2].get_or_insert_with(|| {
+            let mana = mana_nics[openhcl_vtl as usize].get_or_insert_with(|| {
                 let vpci_instance_id = Guid::new_random();
                 underhill_nics.push(vtl2_settings_proto::NicDeviceLegacy {
                     instance_id: vpci_instance_id.to_string(),
@@ -801,13 +809,7 @@ fn vm_config_from_command_line(
         };
     }
 
-    let openhcl_vtl = if opt.vtl2 {
-        DeviceVtl::Vtl2
-    } else {
-        DeviceVtl::Vtl0
-    };
-
-    if (opt.vtl2 || opt.get) && with_hv {
+    if with_get && with_hv {
         let vtl2_settings = vtl2_settings_proto::Vtl2Settings {
             version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
             fixed: Some(Default::default()),

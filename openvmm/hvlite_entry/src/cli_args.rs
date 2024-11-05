@@ -375,7 +375,7 @@ flags:
     pub internal_worker: Option<Option<String>>,
 
     /// redirect the VTL 0 vmbus control plane to a proxy in VTL 2.
-    #[clap(long)]
+    #[clap(long, requires("vtl2"))]
     pub vmbus_redirect: bool,
 
     /// limit the maximum protocol version allowed by vmbus; used for testing purposes
@@ -511,7 +511,7 @@ flags:
     pub battery: bool,
 
     /// set the uefi console mode
-    #[clap(long, requires("uefi"))]
+    #[clap(long)]
     pub uefi_console_mode: Option<UefiConsoleModeCli>,
 }
 
