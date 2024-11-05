@@ -24,8 +24,10 @@ use hvdef::Vtl;
 use std::iter::zip;
 use virt::io::CpuIo;
 use virt::vp::AccessVpState;
+use virt::x86::MsrError;
 use virt::Processor;
 use vtl_array::VtlArray;
+use x86defs::apic::ApicRegister;
 use zerocopy::FromZeroes;
 
 impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
@@ -605,21 +607,30 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     pub(crate) fn hcvm_handle_cross_vtl_interrupts(
         &mut self,
         interrupt_pending: VtlArray<Option<u8>, 2>,
+        lapic_msr_read: impl FnOnce(&mut Self, GuestVtl, u32) -> Result<u64, MsrError>,
     ) {
         match self.backing.cvm_state_mut().exit_vtl {
             GuestVtl::Vtl0 => {
                 // Check for VTL preemption
                 if let Some(vector) = interrupt_pending[GuestVtl::Vtl1] {
                     let priority = vector >> 4;
-                    // TODO actually check priority registers
                     if priority > 0 {
-                        B::switch_vtl_state(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
-                        self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
-                        self.hv[GuestVtl::Vtl1]
-                            .as_ref()
-                            .unwrap()
-                            .set_return_reason(HvVtlEntryReason::INTERRUPT)
-                            .unwrap();
+                        let ppr = lapic_msr_read(
+                            self,
+                            GuestVtl::Vtl1,
+                            ApicRegister::PPR.0 as u32 + x86defs::apic::X2APIC_MSR_BASE,
+                        )
+                        .expect("reading PPR should never fail");
+                        let ppr_priority = ppr >> 4;
+                        if priority as u64 > ppr_priority {
+                            B::switch_vtl_state(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
+                            self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
+                            self.hv[GuestVtl::Vtl1]
+                                .as_ref()
+                                .unwrap()
+                                .set_return_reason(HvVtlEntryReason::INTERRUPT)
+                                .unwrap();
+                        }
                     }
                 }
             }
