@@ -930,7 +930,18 @@ impl UhProcessor<'_, SnpBacked> {
         dev: &impl CpuIo,
         interrupt_pending: VtlArray<Option<u8>, 2>,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        self.hcvm_handle_cross_vtl_interrupts(interrupt_pending);
+        self.hcvm_handle_cross_vtl_interrupts(interrupt_pending, |this, vtl, msr| {
+            this.backing.lapics[vtl]
+                .lapic
+                .access(&mut SnpApicClient {
+                    partition: this.partition,
+                    vmsa: this.runner.vmsa_mut(vtl),
+                    dev,
+                    vmtime: &this.vmtime,
+                    vtl,
+                })
+                .msr_read(msr)
+        });
         let next_vtl = self.backing.cvm.exit_vtl;
 
         let mut vmsa = self.runner.vmsa_mut(next_vtl);

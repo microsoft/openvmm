@@ -1129,7 +1129,18 @@ impl UhProcessor<'_, TdxBacked> {
         dev: &impl CpuIo,
         interrupt_pending: VtlArray<Option<u8>, 2>,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        self.hcvm_handle_cross_vtl_interrupts(interrupt_pending);
+        self.hcvm_handle_cross_vtl_interrupts(interrupt_pending, |this, _vtl, msr| {
+            this.backing
+                .lapic
+                .lapic
+                .access(&mut TdxApicClient {
+                    partition: this.partition,
+                    dev,
+                    apic_page: zerocopy::transmute_mut!(this.runner.tdx_apic_page_mut()),
+                    vmtime: &this.vmtime,
+                })
+                .msr_read(msr)
+        });
         let next_vtl = self.backing.cvm.exit_vtl;
 
         if self.backing.interruption_information.valid() {
