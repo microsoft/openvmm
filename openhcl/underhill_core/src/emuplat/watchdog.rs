@@ -42,8 +42,8 @@ impl WatchdogPlatform for UnderhillWatchdog {
         // FUTURE: consider emitting different events for the UEFI watchdog vs.
         // the guest watchdog
         self.get
-            .event_log(get_protocol::EventLogId::WATCHDOG_TIMEOUT_RESET);
-        self.get.event_log_flush().await;
+            .event_log_and_flush(get_protocol::EventLogId::WATCHDOG_TIMEOUT_RESET)
+            .await;
 
         (self.on_timeout)()
     }

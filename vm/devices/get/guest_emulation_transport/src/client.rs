@@ -465,6 +465,12 @@ impl GuestEmulationTransportClient {
         self.control.call(msg::Msg::FlushWrites, ()).await
     }
 
+    /// Report the event to host and flush the event queue.
+    pub async fn event_log_and_flush(&self, event_log_id: crate::api::EventLogId) {
+        self.control.notify(msg::Msg::EventLog(event_log_id));
+        self.control.call(msg::Msg::FlushWrites, ()).await
+    }
+
     /// Retrieves the current time from the host.
     pub async fn host_time(&self) -> crate::api::Time {
         let response = self.control.call(msg::Msg::HostTime, ()).await;
