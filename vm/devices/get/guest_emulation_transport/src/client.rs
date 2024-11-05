@@ -448,7 +448,7 @@ impl GuestEmulationTransportClient {
     /// This function is non-blocking and does not wait for a response from the
     /// host.
     ///
-    /// When reporting fatal events (i.e: events which terminate underhill
+    /// When reporting fatal events (i.e: events which terminate OpenHCL
     /// execution entirely), the caller must also await-on
     /// [`event_log_flush`](Self::event_log_flush) in order to ensure all queued
     /// events has actually been sent to the host.
@@ -465,8 +465,9 @@ impl GuestEmulationTransportClient {
         self.control.call(msg::Msg::FlushWrites, ()).await
     }
 
-    /// Report the event to host and flush the event queue.
-    pub async fn event_log_and_flush(&self, event_log_id: crate::api::EventLogId) {
+    /// Report the fatal event to the host and flush the event queue. This ensures all the
+    /// relevant events are sent to the host prior to OpenHCL teardown.
+    pub async fn event_log_fatal(&self, event_log_id: crate::api::EventLogId) {
         self.control.notify(msg::Msg::EventLog(event_log_id));
         self.control.call(msg::Msg::FlushWrites, ()).await
     }

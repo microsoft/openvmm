@@ -367,7 +367,7 @@ pub async fn initialize_platform_security(
     )
     .await
     {
-        get.event_log_and_flush(guest_emulation_transport::api::EventLogId::ATTESTATION_FAILED)
+        get.event_log_fatal(guest_emulation_transport::api::EventLogId::ATTESTATION_FAILED)
             .await;
 
         Err(ErrorInner::UnlockVmgsDataStore(e))?
@@ -589,7 +589,7 @@ async fn get_derived_keys(
                         | GetKeysFromKeyProtectorError::IngressDekRsaUnwrap(_)
                 ) =>
             {
-                get.event_log_and_flush(
+                get.event_log_fatal(
                     guest_emulation_transport::api::EventLogId::DEK_DECRYPTION_FAILED,
                 )
                 .await;

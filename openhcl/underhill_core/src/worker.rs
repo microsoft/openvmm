@@ -1356,7 +1356,7 @@ async fn new_underhill_vm(
                             _ => EventLogId::VMGS_INIT_FAILED,
                         };
 
-                        get_client.event_log_and_flush(event_log_id).await;
+                        get_client.event_log_fatal(event_log_id).await;
                         return Err(err).context("fatal VMGS initialization error")?;
                     }
                 }
@@ -1895,7 +1895,7 @@ async fn new_underhill_vm(
                         Err(e) => {
                             tracing::error!("Failed to load custom UEFI vars");
                             get_client
-                                .event_log_and_flush(EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED)
+                                .event_log_fatal(EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED)
                                 .await;
                             return Err(e).context("failed to load custom UEFI variables");
                         }
