@@ -652,6 +652,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                                         hv.synic.vina().vector().into(),
                                         hv.synic.vina().auto_eoi(),
                                     );
+                                // We're about to return to the guest, so we need to
+                                // process the interrupt now. We're already past the update
+                                // loop in run_vp.
+                                self.update_synic(GuestVtl::Vtl1, false);
                             }
                         }
                     }
