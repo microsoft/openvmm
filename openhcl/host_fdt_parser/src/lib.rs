@@ -1068,7 +1068,12 @@ mod inspect_helpers {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+
     use super::*;
+    use alloc::format;
+    use alloc::vec;
+    use alloc::vec::Vec;
     use fdt::builder::Builder;
     use fdt::builder::BuilderConfig;
     use fdt::builder::Nest;
