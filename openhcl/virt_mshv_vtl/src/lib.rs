@@ -19,6 +19,7 @@ cfg_if::cfg_if!(
         pub use processor::tdx::TdxBacked;
         pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
         use devmsr::MsrDevice;
+        use hv1_emulator::hv::ProcessorVtlHv;
         use processor::snp::SnpBackedShared;
         use processor::tdx::TdxBackedShared;
         use std::arch::x86_64::CpuidResult;
@@ -42,7 +43,6 @@ use hcl::ioctl::Hcl;
 use hcl::ioctl::SetVsmPartitionConfigError;
 use hcl::GuestVtl;
 use hv1_emulator::hv::GlobalHv;
-use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::hv::VtlProtectHypercallOverlay;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_emulator::synic::GlobalSynic;

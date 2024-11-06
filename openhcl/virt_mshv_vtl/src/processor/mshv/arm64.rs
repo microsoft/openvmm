@@ -26,6 +26,8 @@ use hcl::ioctl::aarch64::MshvArm64;
 use hcl::ioctl::ProcessorRunner;
 use hcl::GuestVtl;
 use hcl::UnsupportedGuestVtl;
+use hv1_emulator::hv::ProcessorVtlHv;
+use hv1_emulator::synic::ProcessorSynic;
 use hvdef::hypercall;
 use hvdef::HvAarch64PendingEvent;
 use hvdef::HvArm64RegisterName;
@@ -108,6 +110,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
     fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error> {
         vp::Registers::at_reset(&params.partition.caps, params.vp_info);
         let _ = (params.runner, &params.backing_shared);
+        assert!(params.hv.is_none());
         Ok(Self {
             deliverability_notifications: Default::default(),
             next_deliverability_notifications: Default::default(),
@@ -220,6 +223,22 @@ impl BackingPrivate for HypervisorBackedArm64 {
     }
 
     fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
+
+    fn hv(&self, _vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
+        None
+    }
+
+    fn hv_mut(&mut self, _vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
+        None
+    }
+
+    fn untrusted_synic(&self) -> Option<&ProcessorSynic> {
+        None
+    }
+
+    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
+        None
+    }
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {

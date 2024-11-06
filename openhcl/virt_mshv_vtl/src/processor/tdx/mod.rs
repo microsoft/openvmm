@@ -1776,6 +1776,9 @@ impl UhProcessor<'_, TdxBacked> {
                 self.backing.cvm.hv[intercepted_vtl].msr_write(msr, value)?
             }
             _ => {
+                // If we get here we must have an untrusted synic, as otherwise
+                // we wouldn't be handling the TDVMCALL that ends up here. Therefore
+                // this is fine to unwrap.
                 self.backing
                     .untrusted_synic
                     .as_mut()

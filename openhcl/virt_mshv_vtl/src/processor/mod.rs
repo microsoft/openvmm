@@ -245,12 +245,8 @@ mod private {
         fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv>;
         fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv>;
 
-        fn untrusted_synic(&self) -> Option<&ProcessorSynic> {
-            None
-        }
-        fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
-            None
-        }
+        fn untrusted_synic(&self) -> Option<&ProcessorSynic>;
+        fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
     }
 }
 

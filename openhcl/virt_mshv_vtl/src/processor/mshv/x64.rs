@@ -33,6 +33,7 @@ use hcl::ioctl::ApplyVtlProtectionsError;
 use hcl::ioctl::ProcessorRunner;
 use hcl::protocol;
 use hv1_emulator::hv::ProcessorVtlHv;
+use hv1_emulator::synic::ProcessorSynic;
 use hvdef::hypercall;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvError;
@@ -380,6 +381,14 @@ impl BackingPrivate for HypervisorBackedX86 {
 
     fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
         self.hv.as_mut().map(|arr| &mut arr[vtl])
+    }
+
+    fn untrusted_synic(&self) -> Option<&ProcessorSynic> {
+        None
+    }
+
+    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
+        None
     }
 }
 
