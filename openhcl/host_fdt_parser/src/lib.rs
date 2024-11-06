@@ -8,7 +8,7 @@
 //! Notably, we search for IGVM specific extensions to nodes, defined here:
 //! [`igvm_defs::dt`].
 
-#![cfg_attr(not(any(test, feature = "std")), no_std)]
+#![no_std]
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -66,9 +66,7 @@ impl<'a> Display for Error<'a> {
     }
 }
 
-// TODO: Once core::error::Error is stablized, we can remove this feature gate.
-#[cfg(feature = "std")]
-impl<'a> std::error::Error for Error<'a> {}
+impl<'a> core::error::Error for Error<'a> {}
 
 #[derive(Debug)]
 enum ErrorKind<'a> {
@@ -501,7 +499,7 @@ impl<
                                     .data;
 
                                 if host_entropy.len() > MAX_ENTROPY_SIZE {
-                                    #[cfg(feature = "std")]
+                                    #[cfg(feature = "tracing")]
                                     tracing::warn!(
                                         entropy_len = host_entropy.len(),
                                         "Truncating host-provided entropy",
@@ -515,7 +513,7 @@ impl<
                                 storage.entropy = Some(entropy);
                             }
                             _ => {
-                                #[cfg(feature = "std")]
+                                #[cfg(feature = "tracing")]
                                 tracing::warn!(?openhcl_child.name, "Unrecognized OpenHCL child node");
                             }
                         }
@@ -733,7 +731,7 @@ fn parse_compatible<'a>(
     } else if compatible == "x86-pio-bus" {
         parse_io_bus(node, com3_serial)?;
     } else {
-        #[cfg(feature = "std")]
+        #[cfg(feature = "tracing")]
         tracing::warn!(?compatible, ?node.name,
             "Unrecognized compatible field",
         );
@@ -977,7 +975,7 @@ fn parse_io_bus<'a>(
         if compatible == "ns16550" && reg_base == COM3_REG_BASE {
             *com3_serial = true
         } else {
-            #[cfg(feature = "std")]
+            #[cfg(feature = "tracing")]
             tracing::warn!(?node.name, ?compatible, ?reg_base,
                 "unrecognized io bus child"
             );

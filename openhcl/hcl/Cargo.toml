@@ -7,7 +7,7 @@ edition = "2021"
 rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-hvdef = { workspace = true, features = ["std"] }
+hvdef.workspace = true
 pal.workspace = true
 memory_range.workspace = true
 sidecar_client.workspace = true

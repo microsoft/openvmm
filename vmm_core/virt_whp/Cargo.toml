@@ -14,7 +14,7 @@ aarch64defs.workspace = true
 chipset_device.workspace = true
 hv1_emulator.workspace = true
 hv1_hypercall.workspace = true
-hvdef = { workspace = true, features = ["std"] }
+hvdef.workspace = true
 pci_core.workspace = true
 memory_range = { workspace = true, features = ["inspect"] }
 vm_topology = { workspace = true, features = ["inspect"] }

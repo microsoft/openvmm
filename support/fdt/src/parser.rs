@@ -18,13 +18,12 @@ pub struct Error<'a>(ErrorKind<'a>);
 
 impl<'a> Display for Error<'a> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("{}", self.0))
+        self.0.fmt(f)
     }
 }
 
 // TODO: Once core::error::Error is stablized, we can remove this feature gate.
-#[cfg(feature = "std")]
-impl<'a> std::error::Error for Error<'a> {}
+impl<'a> core::error::Error for Error<'a> {}
 
 /// Types of errors when parsing a FDT.
 #[derive(Debug)]
@@ -736,9 +735,7 @@ impl<'a> Iterator for MemoryReserveIter<'a> {
     }
 }
 
-#[cfg(feature = "std")]
-// TODO: Once core::error::Error is stablized, we can remove this feature gate.
-impl std::error::Error for StringError {}
+impl core::error::Error for StringError {}
 
 /// Extract a string from bytes treated as a C String, stopping at the first null terminator.
 fn extract_str_from_bytes(bytes: &[u8]) -> Result<&str, StringError> {

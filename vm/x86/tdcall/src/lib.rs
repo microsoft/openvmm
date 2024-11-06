@@ -6,9 +6,6 @@
 #![no_std]
 #![warn(missing_docs)]
 
-#[cfg(feature = "std")]
-extern crate std;
-
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
 use x86defs::tdx::TdCallLeaf;

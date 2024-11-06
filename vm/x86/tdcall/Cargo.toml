@@ -8,8 +8,7 @@ rust-version.workspace = true
 
 [features]
 default = []
-std = []
-tracing = ["std", "dep:tracing"]
+tracing = ["dep:tracing"]
 
 [dependencies]
 hvdef.workspace = true

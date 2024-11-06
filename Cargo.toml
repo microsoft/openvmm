@@ -479,7 +479,7 @@ static_assertions = "1.1"
 syn = "2"
 target-lexicon = "0.12.13"
 tempfile = "3.2"
-thiserror = "1.0"
+thiserror = { version = "2", default-features = false }
 time = "0.3"
 toml_edit = "0.21"
 tracing = "0.1"

@@ -10,14 +10,14 @@ rust-version.workspace = true
 default = []
 
 alloc = []
-std = ["alloc", "dep:thiserror"]
+std = ["alloc"]
 
 [dependencies]
 open_enum.workspace = true
 
 bitfield-struct.workspace = true
 static_assertions.workspace = true
-thiserror = { optional = true, workspace = true }
+thiserror.workspace = true
 zerocopy.workspace = true
 
 [lints]

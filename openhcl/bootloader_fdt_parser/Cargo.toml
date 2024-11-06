@@ -7,7 +7,7 @@ edition = "2021"
 rust-version.workspace = true
 
 [dependencies]
-fdt = { workspace = true, features = ["std"] }
+fdt.workspace = true
 inspect.workspace = true
 loader_defs = { workspace = true, features = ["inspect"] }
 memory_range = { workspace = true, features = ["inspect"] }

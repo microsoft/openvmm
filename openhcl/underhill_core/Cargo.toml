@@ -158,7 +158,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_helpers.workspace = true
 serde_json.workspace = true
 socket2.workspace = true
-thiserror.workspace = true
+thiserror = { workspace = true, features = ["std"] }
 time = { workspace = true, features = ["macros"] }
 tracing-subscriber = { workspace = true, features = ["registry"] }
 tracing.workspace = true

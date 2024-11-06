@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 aarch64defs.workspace = true
-hvdef = { workspace = true, features = ["std"] }
+hvdef.workspace = true
 hv1_emulator.workspace = true
 hv1_hypercall.workspace = true
 virt.workspace = true

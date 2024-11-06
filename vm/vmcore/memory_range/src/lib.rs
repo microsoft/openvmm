@@ -8,9 +8,6 @@
 #![forbid(unsafe_code)]
 #![no_std]
 
-#[cfg(feature = "std")]
-extern crate std;
-
 use core::iter::Iterator;
 use core::iter::Peekable;
 use core::ops::Range;
@@ -61,13 +58,8 @@ impl TryFrom<Range<usize>> for MemoryRange {
 }
 
 /// Error returned by [`MemoryRange::try_new`].
-#[derive(Debug)]
-#[cfg_attr(
-    feature = "std",
-    derive(thiserror::Error),
-    error("unaligned or invalid memory range: {start:#x}-{end:#x}")
-)]
-#[cfg_attr(not(feature = "std"), allow(dead_code))]
+#[derive(Debug, thiserror::Error)]
+#[error("unaligned or invalid memory range: {start:#x}-{end:#x}")]
 pub struct InvalidMemoryRange {
     start: u64,
     end: u64,

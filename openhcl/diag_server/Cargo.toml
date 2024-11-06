@@ -32,7 +32,7 @@ net_packet_capture.workspace = true
 profiler_worker = { workspace = true, optional = true }
 socket2.workspace = true
 safe_x86_intrinsics.workspace = true
-hvdef = { workspace = true, features = ["std"] }
+hvdef.workspace = true
 
 [features]
 profiler = ["dep:profiler_worker"]

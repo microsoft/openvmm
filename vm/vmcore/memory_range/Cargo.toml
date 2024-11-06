@@ -7,15 +7,14 @@ edition = "2021"
 rust-version.workspace = true
 
 [features]
-inspect = ["dep:inspect", "std"]
-mesh = ["dep:mesh_protobuf", "std"]
-std = ["dep:thiserror"]
+inspect = ["dep:inspect"]
+mesh = ["dep:mesh_protobuf"]
 
 [dependencies]
 inspect = { workspace = true, optional = true }
 mesh_protobuf = { workspace = true, optional = true }
 
-thiserror = { workspace = true, optional = true }
+thiserror.workspace = true
 
 [lints]
 workspace = true
