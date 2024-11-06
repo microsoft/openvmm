@@ -3,7 +3,6 @@
 
 //! NVMe driver implementation.
 
-#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 mod driver;
@@ -12,6 +11,7 @@ mod page_allocator;
 mod queue_pair;
 mod queues;
 mod registers;
+mod store_fence;
 #[cfg(test)]
 mod tests;
 

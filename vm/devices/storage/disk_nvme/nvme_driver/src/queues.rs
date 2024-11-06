@@ -62,6 +62,7 @@ impl SubmissionQueue {
 
     pub fn commit<T: DeviceBacking>(&mut self, region: &DeviceRegisters<T>) {
         if self.tail != self.committed_tail {
+            crate::store_fence::store_fence();
             region.doorbell(self.sqid, false, self.tail);
             self.committed_tail = self.tail;
         }
@@ -112,6 +113,7 @@ impl CompletionQueue {
 
     pub fn commit<T: DeviceBacking>(&mut self, registers: &DeviceRegisters<T>) {
         if self.head != self.committed_head {
+            crate::store_fence::store_fence();
             registers.doorbell(self.cqid, true, self.head);
             self.committed_head = self.head;
         }
