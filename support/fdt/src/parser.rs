@@ -751,12 +751,17 @@ fn extract_str_from_bytes(bytes: &[u8]) -> Result<&str, StringError> {
 
 #[cfg(test)]
 mod test {
+    extern crate alloc;
+
     use super::*;
     use crate::builder::Builder;
     use crate::builder::BuilderConfig;
     use crate::builder::StringId;
     use crate::spec::ReserveEntry;
-    use std::vec;
+    use alloc::format;
+    use alloc::string::String;
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum DtProp {
