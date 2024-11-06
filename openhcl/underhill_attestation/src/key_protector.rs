@@ -249,9 +249,9 @@ impl KeyProtectorExt for KeyProtector {
 
             tracing::info!(
                 CVM_CONFIDENTIAL,
-                "store new egress key to dek[{}], size {}",
                 egress_idx = egress_idx,
-                egress_key_len = new_egress_key.len()
+                egress_key_len = new_egress_key.len(),
+                "store new egress key to dek"
             );
         }
 

@@ -26,7 +26,6 @@ pub use protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use ::vmgs::EncryptionAlgorithm;
 use ::vmgs::Vmgs;
 use cvm_tracing::CVM_ALLOWED;
-use get_protocol::HOST_VMWP_ATTESTATION_GENERIC_ERROR_CODE;
 use guest_emulation_transport::api::GspExtendedStatusFlags;
 use guest_emulation_transport::api::GuestStateProtection;
 use guest_emulation_transport::api::GuestStateProtectionById;
