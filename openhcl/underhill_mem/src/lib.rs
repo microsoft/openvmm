@@ -288,6 +288,7 @@ mod mapping {
                     MshvVtlWithPolicy {
                         mshv_vtl,
                         ignore_registration_failure: self.ignore_registration_failure,
+                        shared: self.shared,
                     },
                 ))
             } else {
@@ -308,6 +309,7 @@ mod mapping {
     struct MshvVtlWithPolicy {
         mshv_vtl: MshvVtl,
         ignore_registration_failure: bool,
+        shared: bool,
     }
 
     impl crate::registrar::RegisterMemory for MshvVtlWithPolicy {
@@ -315,7 +317,7 @@ mod mapping {
             &self,
             range: MemoryRange,
         ) -> Result<(), impl 'static + std::error::Error> {
-            match self.mshv_vtl.add_vtl0_memory(range) {
+            match self.mshv_vtl.add_vtl0_memory(range, self.shared) {
                 Ok(()) => Ok(()),
                 // TODO: remove this once the kernel driver tracks registration
                 Err(err) if self.ignore_registration_failure => {

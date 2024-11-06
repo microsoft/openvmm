@@ -651,9 +651,14 @@ pub struct MshvVtl {
 
 impl MshvVtl {
     /// Adds the VTL0 memory as a ZONE_DEVICE memory (I/O) to support DMA from the guest.
-    pub fn add_vtl0_memory(&self, mem_range: MemoryRange) -> Result<(), Error> {
+    pub fn add_vtl0_memory(&self, mem_range: MemoryRange, shared: bool) -> Result<(), Error> {
+        let flags = if shared {
+            MshvVtlLow::SHARED_MEMORY_FLAG / HV_PAGE_SIZE
+        } else {
+            0
+        };
         let ram_disposition = protocol::hcl_pfn_range_t {
-            start_pfn: mem_range.start_4k_gpn(),
+            start_pfn: mem_range.start_4k_gpn() | flags,
             last_pfn: mem_range.end_4k_gpn(),
         };
 
