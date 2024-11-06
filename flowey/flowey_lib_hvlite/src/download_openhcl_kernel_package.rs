@@ -86,7 +86,7 @@ impl FlowNode for Node {
             let tag = format!("rolling-lts/hcl-{kind_string}/{version}");
 
             let file_name = format!(
-                "Microsoft.OHCL.Kernel.{}-{}-{}.zip",
+                "Microsoft.OHCL.Kernel.{}-{}-{}.{}",
                 version,
                 match kind {
                     OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Dev => {
@@ -99,7 +99,15 @@ impl FlowNode for Node {
                 match arch {
                     OpenhclKernelPackageArch::X86_64 => "x64",
                     OpenhclKernelPackageArch::Aarch64 => "arm64",
-                }
+                },
+                match kind {
+                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => {
+                        "tar.gz"
+                    }
+                    OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => {
+                        "zip"
+                    }
+                },
             );
 
             let kernel_package_zip =
