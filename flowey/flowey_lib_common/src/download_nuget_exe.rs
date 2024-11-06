@@ -171,8 +171,11 @@ impl Node {
                 if !nuget_exe_path.exists() {
                     let nuget_install_latest_url =
                         "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe";
-                    xshell::cmd!(sh, "curl -o {nuget_exe_path} {nuget_install_latest_url}")
-                        .run()?;
+                    xshell::cmd!(
+                        sh,
+                        "curl --fail -o {nuget_exe_path} {nuget_install_latest_url}"
+                    )
+                    .run()?;
                 }
 
                 let write_mono_shim = || {

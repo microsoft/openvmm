@@ -201,7 +201,7 @@ impl FlowNode for Node {
 
                                     xshell::cmd!(
                                         sh,
-                                        "curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init.sh"
+                                        "curl --fail --proto =https --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init.sh"
                                     )
                                     .run()?;
                                     xshell::cmd!(sh, "chmod +x ./rustup-init.sh").run()?;
@@ -227,7 +227,7 @@ impl FlowNode for Node {
 
                                     xshell::cmd!(
                                         sh,
-                                        "curl -sSfLo rustup-init.exe https://win.rustup.rs/{arch} --output rustup-init"
+                                        "curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/{arch} --output rustup-init"
                                     ).run()?;
                                     xshell::cmd!(
                                         sh,

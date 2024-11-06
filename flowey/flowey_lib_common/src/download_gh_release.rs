@@ -247,7 +247,7 @@ fn download_all_reqs(
         } else {
             // FUTURE: parallelize curl invocations across all download_reqs
             for file in files.keys() {
-                xshell::cmd!(sh, "curl -L https://github.com/{repo_owner}/{repo_name}/releases/download/{tag}/{file} -o {file}").run()?;
+                xshell::cmd!(sh, "curl --fail -L https://github.com/{repo_owner}/{repo_name}/releases/download/{tag}/{file} -o {file}").run()?;
             }
         }
     }

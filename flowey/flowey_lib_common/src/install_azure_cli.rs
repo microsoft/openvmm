@@ -132,7 +132,7 @@ impl FlowNode for Node {
                                 sh.change_dir(&az_dir);
                                 xshell::cmd!(
                                     sh,
-                                    "curl -L https://aka.ms/installazurecliwindowszipx64 -o az.zip"
+                                    "curl --fail -L https://aka.ms/installazurecliwindowszipx64 -o az.zip"
                                 )
                                 .run()?;
                                 xshell::cmd!(sh, "tar -xf az.zip").run()?;
@@ -141,7 +141,7 @@ impl FlowNode for Node {
                             FlowPlatform::Linux(_) => {
                                 xshell::cmd!(
                                     sh,
-                                    "curl -sL https://aka.ms/InstallAzureCLIDeb -o InstallAzureCLIDeb.sh"
+                                    "curl --fail -sL https://aka.ms/InstallAzureCLIDeb -o InstallAzureCLIDeb.sh"
                                 )
                                 .run()?;
                                 xshell::cmd!(sh, "chmod +x ./InstallAzureCLIDeb.sh").run()?;
