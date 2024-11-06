@@ -6,6 +6,7 @@
 
 #![cfg(unix)]
 #![warn(missing_docs)]
+#![allow(unsafe_code)]
 
 mod device_dma;
 
@@ -265,6 +266,11 @@ impl user_driver::vfio::VfioDmaBuffer for SharedPoolAllocator {
         mapping
             .map_file(0, len, gpa_fd.get(), file_offset, true)
             .context("unable to map allocation")?;
+
+        // SAFETY: The previous call to memmap should have made exactly len bytes at offset 0 valid to read and write
+        unsafe {
+            std::ptr::write_bytes(mapping.as_ptr(), 0, len);
+        }
 
         let pfns: Vec<_> = (alloc.base_pfn()..alloc.base_pfn() + alloc.size_pages).collect();
 
