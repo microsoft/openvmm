@@ -42,6 +42,7 @@ use hcl::ioctl::Hcl;
 use hcl::ioctl::SetVsmPartitionConfigError;
 use hcl::GuestVtl;
 use hv1_emulator::hv::GlobalHv;
+use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::hv::VtlProtectHypercallOverlay;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_emulator::synic::GlobalSynic;
@@ -309,15 +310,18 @@ pub struct UhCvmVpState {
     vtls_tlb_waiting: VtlArray<bool, 2>,
     /// Used in VTL 2 exit code to determine which VTL to exit to.
     exit_vtl: GuestVtl,
+    /// Hypervisor enlightenment emulator state.
+    hv: VtlArray<ProcessorVtlHv, 2>,
 }
 
 #[cfg(guest_arch = "x86_64")]
 impl UhCvmVpState {
     /// Creates a new CVM VP state.
-    pub fn new() -> Self {
+    pub fn new(hv: VtlArray<ProcessorVtlHv, 2>) -> Self {
         Self {
             vtls_tlb_waiting: VtlArray::new(false),
             exit_vtl: GuestVtl::Vtl0,
+            hv,
         }
     }
 }

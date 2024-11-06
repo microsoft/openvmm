@@ -25,6 +25,7 @@ use crate::UhPartitionInner;
 use crate::WakeReason;
 use guestmem::GuestMemory;
 use hcl::vmsa::VmsaWrapper;
+use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_hypercall::HypercallIo;
 use hvdef::hypercall::HvFlushFlags;
 use hvdef::hypercall::HvGvaRange;
@@ -216,7 +217,7 @@ impl BackingPrivate for SnpBacked {
             hv_sint_notifications: 0,
             general_stats: Default::default(),
             exit_stats: Default::default(),
-            cvm: UhCvmVpState::new(),
+            cvm: UhCvmVpState::new(params.hv.unwrap()),
             shared: shared.clone(),
         })
     }
@@ -472,6 +473,14 @@ impl BackingPrivate for SnpBacked {
                     }
                 });
         });
+    }
+
+    fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
+        Some(&self.cvm.hv[vtl])
+    }
+
+    fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
+        Some(&mut self.cvm.hv[vtl])
     }
 }
 
@@ -894,11 +903,10 @@ impl UhProcessor<'_, SnpBacked> {
 
     #[must_use]
     fn sync_lazy_eoi(&mut self, vtl: GuestVtl) -> bool {
-        if let Some(hv) = &mut self.hv[vtl] {
-            if self.backing.lapics[vtl].lapic.is_lazy_eoi_pending() {
-                return hv.set_lazy_eoi();
-            }
+        if self.backing.lapics[vtl].lapic.is_lazy_eoi_pending() {
+            return self.backing.cvm.hv[vtl].set_lazy_eoi();
         }
+
         false
     }
 
@@ -978,12 +986,7 @@ impl UhProcessor<'_, SnpBacked> {
         vmsa.v_intr_cntrl_mut().set_irq(false);
 
         // Clear lazy EOI before processing the exit.
-        if lazy_eoi
-            && self.hv[entered_from_vtl]
-                .as_mut()
-                .map(|hv| hv.clear_lazy_eoi())
-                .unwrap_or(false)
-        {
+        if lazy_eoi && self.backing.cvm.hv[entered_from_vtl].clear_lazy_eoi() {
             self.backing.lapics[entered_from_vtl]
                 .lapic
                 .access(&mut SnpApicClient {

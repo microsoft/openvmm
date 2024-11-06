@@ -235,19 +235,14 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     ) -> HvResult<hvdef::HvRegisterValue> {
         match name.into() {
             HvX64RegisterName::VsmCodePageOffsets => Ok(u64::from(
-                self.vp.hv[vtl]
-                    .as_ref()
-                    .expect("hv emulator exists for cvm")
-                    .vsm_code_page_offsets(true),
+                self.vp.backing.cvm_state_mut().hv[vtl].vsm_code_page_offsets(true),
             )
             .into()),
             HvX64RegisterName::VsmCapabilities => Ok(u64::from(
                 hvdef::HvRegisterVsmCapabilities::new().with_deny_lower_vtl_startup(true),
             )
             .into()),
-            HvX64RegisterName::VpAssistPage => Ok(self.vp.hv[vtl]
-                .as_ref()
-                .expect("hv emulator exists for cvm")
+            HvX64RegisterName::VpAssistPage => Ok(self.vp.backing.cvm_state_mut().hv[vtl]
                 .vp_assist_page()
                 .into()),
             _ => {
@@ -371,9 +366,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
                         .map_err(|e| (e, i))?;
                 }
                 HvX64RegisterName::VpAssistPage => {
-                    self.vp.hv[target_vtl]
-                        .as_mut()
-                        .expect("has hv emulator")
+                    self.vp.backing.cvm_state_mut().hv[target_vtl]
                         .msr_write(hvdef::HV_X64_MSR_VP_ASSIST_PAGE, reg.value.as_u64())
                         .map_err(|_| (HvError::InvalidRegisterValue, 0))?;
                 }
@@ -414,9 +407,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
 
         // TODO GUEST VSM: reevaluate if the return reason should be set here or
         // during VTL 2 exit handling
-        self.vp.hv[GuestVtl::Vtl1]
-            .as_ref()
-            .unwrap()
+        self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
             .set_return_reason(HvVtlEntryReason::VTL_CALL)
             .expect("setting return reason cannot fail");
 
@@ -448,9 +439,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
         // - reset VINA
 
         if !fast {
-            let [rax, rcx] = self.vp.hv[GuestVtl::Vtl1]
-                .as_ref()
-                .unwrap()
+            let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
                 .return_registers()
                 .expect("getting return registers shouldn't fail");
             let mut vp_state = self.vp.access_state(Vtl::Vtl0);

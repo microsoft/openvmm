@@ -24,6 +24,8 @@ use crate::WakeReason;
 use hcl::ioctl::tdx::Tdx;
 use hcl::ioctl::ProcessorRunner;
 use hcl::protocol::tdx_tdg_vp_enter_exit_info;
+use hv1_emulator::hv::ProcessorVtlHv;
+use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::AsHandler;
 use hv1_hypercall::HypercallIo;
 use hvdef::hypercall::HvFlushFlags;
@@ -394,6 +396,7 @@ pub struct TdxBacked {
     direct_overlay_pfns_handle: shared_pool_alloc::SharedPoolHandle,
 
     lapic: LapicState,
+    untrusted_synic: Option<ProcessorSynic>,
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
     eoi_exit_bitmap: [u64; 4],
     tpr_threshold: u8,
@@ -641,6 +644,12 @@ impl BackingPrivate for TdxBacked {
         // TODO TDX GUEST VSM
         let [lapic, _] = params.lapics.unwrap().into_inner();
 
+        let untrusted_synic = params
+            .partition
+            .untrusted_synic
+            .as_ref()
+            .map(|synic| synic.add_vp(params.vp_info.base.vp_index));
+
         Ok(Self {
             efer: regs.efer,
             cr0: VirtualRegister::new(ShadowedRegister::Cr0, regs.cr0, None),
@@ -648,6 +657,7 @@ impl BackingPrivate for TdxBacked {
             direct_overlays_pfns: overlays.try_into().unwrap(),
             direct_overlay_pfns_handle: pfns_handle,
             lapic,
+            untrusted_synic,
             eoi_exit_bitmap: [0; 4],
             tpr_threshold: 0,
             processor_controls,
@@ -659,7 +669,7 @@ impl BackingPrivate for TdxBacked {
             flush_page,
             enter_stats: Default::default(),
             exit_stats: Default::default(),
-            cvm: UhCvmVpState::new(),
+            cvm: UhCvmVpState::new(params.hv.unwrap()),
             shared: shared.clone(),
         })
     }
@@ -700,7 +710,7 @@ impl BackingPrivate for TdxBacked {
             ),
         ];
 
-        let reg_count = if let Some(synic) = &mut this.untrusted_synic {
+        let reg_count = if let Some(synic) = &mut this.backing.untrusted_synic {
             synic.set_simp(
                 &this.partition.gm[GuestVtl::Vtl0],
                 reg(pfns[UhDirectOverlay::Sipp as usize]),
@@ -758,7 +768,7 @@ impl BackingPrivate for TdxBacked {
     }
 
     fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16) {
-        if let Some(synic) = &mut this.untrusted_synic {
+        if let Some(synic) = &mut this.backing.untrusted_synic {
             synic.request_sint_readiness(sints);
         } else {
             tracelimit::error_ratelimited!("untrusted synic is not configured");
@@ -771,6 +781,22 @@ impl BackingPrivate for TdxBacked {
         _target_vtl: GuestVtl,
     ) {
         todo!()
+    }
+
+    fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
+        Some(&self.cvm.hv[vtl])
+    }
+
+    fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
+        Some(&mut self.cvm.hv[vtl])
+    }
+
+    fn untrusted_synic(&self) -> Option<&ProcessorSynic> {
+        self.untrusted_synic.as_ref()
+    }
+
+    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
+        self.untrusted_synic.as_mut()
     }
 }
 
@@ -1615,7 +1641,7 @@ impl UhProcessor<'_, TdxBacked> {
             VmxExit::TDCALL => {
                 // If the proxy synic is local, then the host did not get this
                 // instruction, and we need to handle it.
-                if self.untrusted_synic.is_some() {
+                if self.backing.untrusted_synic.is_some() {
                     self.handle_tdvmcall(dev, intercepted_vtl);
                 }
                 &mut self.backing.exit_stats.tdcall
@@ -1728,9 +1754,10 @@ impl UhProcessor<'_, TdxBacked> {
     fn read_tdvmcall_msr(&mut self, msr: u32, intercepted_vtl: GuestVtl) -> Result<u64, MsrError> {
         match msr {
             msr @ (hvdef::HV_X64_MSR_GUEST_OS_ID | hvdef::HV_X64_MSR_VP_INDEX) => {
-                self.hv[intercepted_vtl].as_ref().unwrap().msr_read(msr)
+                self.backing.cvm.hv[intercepted_vtl].msr_read(msr)
             }
             _ => self
+                .backing
                 .untrusted_synic
                 .as_mut()
                 .unwrap()
@@ -1745,16 +1772,15 @@ impl UhProcessor<'_, TdxBacked> {
         intercepted_vtl: GuestVtl,
     ) -> Result<(), MsrError> {
         match msr {
-            msr @ hvdef::HV_X64_MSR_GUEST_OS_ID => self.hv[intercepted_vtl]
-                .as_mut()
-                .unwrap()
-                .msr_write(msr, value)?,
+            msr @ hvdef::HV_X64_MSR_GUEST_OS_ID => {
+                self.backing.cvm.hv[intercepted_vtl].msr_write(msr, value)?
+            }
             _ => {
-                self.untrusted_synic.as_mut().unwrap().write_nontimer_msr(
-                    &self.partition.gm[GuestVtl::Vtl0],
-                    msr,
-                    value,
-                )?;
+                self.backing
+                    .untrusted_synic
+                    .as_mut()
+                    .unwrap()
+                    .write_nontimer_msr(&self.partition.gm[GuestVtl::Vtl0], msr, value)?;
                 // Propagate sint MSR writes to the hypervisor as well
                 // so that the hypervisor can directly inject events.
                 if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
