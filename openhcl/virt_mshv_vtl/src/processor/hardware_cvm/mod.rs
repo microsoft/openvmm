@@ -428,7 +428,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
 
         self.vp.unlock_tlb_lock(Vtl::Vtl1);
 
-        let hv = self.vp.hv[GuestVtl::Vtl1].as_mut().unwrap();
+        let hv = &mut self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
         if hv.synic.vina().auto_reset() {
             hv.set_vina_asserted(false).unwrap();
         }
@@ -619,9 +619,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                         if priority as u64 > ppr_priority {
                             B::switch_vtl_state(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
                             self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
-                            self.hv[GuestVtl::Vtl1]
-                                .as_ref()
-                                .unwrap()
+                            self.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
                                 .set_return_reason(HvVtlEntryReason::INTERRUPT)
                                 .unwrap();
                         }
@@ -633,7 +631,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 if let Some(vector) = interrupt_pending[GuestVtl::Vtl0] {
                     let priority = vector >> 4;
                     if priority > 0 {
-                        let hv = self.hv[GuestVtl::Vtl1].as_mut().unwrap();
+                        let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
                         if hv.synic.vina().enabled() && !hv.vina_asserted().unwrap() {
                             let ppr = lapic_msr_read(
                                 self,
@@ -644,7 +642,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                             let ppr_priority = ppr >> 4;
                             if priority as u64 > ppr_priority {
                                 let vp_index = self.vp_index();
-                                let hv = self.hv[GuestVtl::Vtl1].as_mut().unwrap();
+                                let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
                                 hv.set_vina_asserted(true).unwrap();
                                 self.partition
                                     .synic_interrupt(vp_index, GuestVtl::Vtl1)
