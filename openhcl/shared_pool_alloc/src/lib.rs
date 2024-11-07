@@ -269,6 +269,7 @@ impl user_driver::vfio::VfioDmaBuffer for SharedPoolAllocator {
 
         // SAFETY: The previous call to memmap should have made exactly len bytes at offset 0 valid to read and write
         unsafe {
+            // It is a requirement of the VfioDmaBuffer trait that all allocated buffers be zeroed out
             std::ptr::write_bytes(mapping.as_ptr(), 0, len);
         }
 

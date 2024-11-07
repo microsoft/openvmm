@@ -10,6 +10,5 @@ mod gdma_driver;
 pub mod mana;
 pub mod queues;
 mod resources;
-mod store_fence;
 #[cfg(test)]
 mod tests;

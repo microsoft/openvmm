@@ -444,7 +444,7 @@ impl ReferenceTimeSource for TscReferenceTimeSource {
     fn now_100ns(&self) -> u64 {
         #[cfg(guest_arch = "x86_64")]
         {
-            let tsc = safe_x86_intrinsics::rdtsc();
+            let tsc = safe_intrinsics::rdtsc();
             ((self.tsc_scale as u128 * tsc as u128) >> 64) as u64
         }
 
@@ -1681,7 +1681,7 @@ impl UhProtoPartition<'_> {
 
         #[cfg(guest_arch = "x86_64")]
         let privs = {
-            let result = safe_x86_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
+            let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
             result.eax as u64 | ((result.ebx as u64) << 32)
         };
 
@@ -1767,7 +1767,7 @@ impl UhPartition {
                 isolation,
                 access_vsm,
                 is_hardware_isolated.then_some(&mut |leaf, sub_leaf| {
-                    let result = safe_x86_intrinsics::cpuid(leaf, sub_leaf);
+                    let result = safe_intrinsics::cpuid(leaf, sub_leaf);
                     [result.eax, result.ebx, result.ecx, result.edx]
                 }),
                 vtom,
@@ -1811,7 +1811,7 @@ impl UhPartition {
         } else {
             // Just use the native cpuid.
             native_cpuid_fn = |leaf, sub_leaf| {
-                let CpuidResult { eax, ebx, ecx, edx } = safe_x86_intrinsics::cpuid(leaf, sub_leaf);
+                let CpuidResult { eax, ebx, ecx, edx } = safe_intrinsics::cpuid(leaf, sub_leaf);
                 cpuid.result(leaf, sub_leaf, &[eax, ebx, ecx, edx])
             };
             &mut native_cpuid_fn
@@ -1880,16 +1880,14 @@ fn get_tsc_frequency(isolation: IsolationType) -> Result<u64, Error> {
     let hw_info = match isolation {
         IsolationType::Tdx => {
             // TDX provides the TSC frequency via cpuid.
-            let max_function = safe_x86_intrinsics::cpuid(
-                x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0,
-                0,
-            )
-            .eax;
+            let max_function =
+                safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0, 0)
+                    .eax;
 
             if max_function < x86defs::cpuid::CpuidFunction::CoreCrystalClockInformation.0 {
                 return Err(Error::BadCpuidTsc);
             }
-            let result = safe_x86_intrinsics::cpuid(
+            let result = safe_intrinsics::cpuid(
                 x86defs::cpuid::CpuidFunction::CoreCrystalClockInformation.0,
                 0,
             );

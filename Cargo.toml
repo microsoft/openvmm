@@ -86,7 +86,7 @@ cache_topology = { path = "support/cache_topology" }
 closeable_mutex = { path = "support/closeable_mutex" }
 ci_logger = { path = "support/ci_logger" }
 clap_dyn_complete = { path = "support/clap_dyn_complete" }
-safe_x86_intrinsics = { path = "support/safe_x86_intrinsics" }
+safe_intrinsics = { path = "support/safe_intrinsics" }
 debug_ptr = { path = "support/debug_ptr" }
 fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
