@@ -368,8 +368,6 @@ pub struct ParavisorMeasuredVtl2Config {
     /// Magic value. Must be [`Self::MAGIC`].
     pub magic: u64,
     /// The bit offset of vTOM, if non-zero.
-    ///
-    /// TODO: Only set on SNP, but should also be used for TDX.
     pub vtom_offset_bit: u8,
     /// Padding.
     pub padding: [u8; 7],
