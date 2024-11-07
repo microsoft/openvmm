@@ -119,7 +119,10 @@ impl<'a> Vtl2ParamsMap<'a> {
         let mapping =
             SparseMapping::new(size as usize).context("failed to create a sparse mapping")?;
 
-        let dev_mem = fs_err::File::open("/dev/mem")?;
+        let dev_mem = fs_err::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/mem")?;
         for range in config_ranges {
             mapping
                 .map_file(
