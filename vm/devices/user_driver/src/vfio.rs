@@ -40,11 +40,7 @@ pub trait VfioDmaBuffer: 'static + Send + Sync {
     fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
 
     /// Restore a dma buffer in the predefined location with the given `len` in bytes.
-    fn restore_dma_buffer(
-        &self,
-        len: usize,
-        pfns: &[u64],
-    ) -> anyhow::Result<MemoryBlock>;
+    fn restore_dma_buffer(&self, len: usize, pfns: &[u64]) -> anyhow::Result<MemoryBlock>;
 }
 
 /// A device backend accessed via VFIO.
@@ -479,15 +475,6 @@ pub struct LockedMemoryAllocator {
 
 impl crate::HostDmaAllocator for LockedMemoryAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
-        self.dma_buffer.create_dma_buffer(len)
-    }
-
-    fn restore_dma_buffer(
-        &mut self,
-        len: usize,
-        _pfns: &[u64],
-    ) -> anyhow::Result<MemoryBlock> {
-        // FIXME: Just using regular allocate until we have memory mapping restore.
         self.dma_buffer.create_dma_buffer(len)
     }
 }

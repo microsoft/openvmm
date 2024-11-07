@@ -30,14 +30,12 @@ use std::num::Wrapping;
 use std::sync::Arc;
 use std::task::Poll;
 use thiserror::Error;
-use user_driver::HostDmaAllocator;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
-use zerocopy::AsBytes;
-use zerocopy::FromBytes;
+use user_driver::HostDmaAllocator;
 use zerocopy::FromZeroes;
 
 /// Value for unused PRP entries, to catch/mitigate buffer size mismatches.
@@ -112,6 +110,39 @@ impl PendingCommands {
             "cid sequence number mismatch"
         );
         command.respond
+    }
+
+    /// Save pending commands into a buffer.
+    pub fn save(&self) -> PendingCommandsSavedState {
+        let mut commands = Vec::new();
+        // Convert Slab into Vec.
+        for cmd in &self.commands {
+            commands.push(cmd.1.command.clone());
+        }
+        PendingCommandsSavedState {
+            commands,
+            next_cid_high_bits: self.next_cid_high_bits.0,
+        }
+    }
+
+    /// Restore pending commands from the saved state.
+    pub fn restore(&mut self, saved_state: &PendingCommandsSavedState) -> anyhow::Result<()> {
+        let mut commands: Vec<(usize, PendingCommand)> = Vec::new();
+        for cmd in &saved_state.commands {
+            let (send, mut _recv) = mesh::oneshot::<nvme_spec::Completion>();
+            let pending_command = PendingCommand {
+                command: cmd.clone(),
+                respond: send,
+            };
+            // Remove high CID bits to be used as a key.
+            let cid = cmd.cdw0.cid() & Self::CID_KEY_MASK;
+            commands.push((cid as usize, pending_command));
+        }
+        // Re-create identical Slab where CIDs are correctly mapped.
+        self.commands = commands.into_iter().collect::<Slab<PendingCommand>>();
+        self.next_cid_high_bits = Wrapping(saved_state.next_cid_high_bits);
+
+        Ok(())
     }
 }
 

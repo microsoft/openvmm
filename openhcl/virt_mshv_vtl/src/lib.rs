@@ -223,8 +223,6 @@ struct UhPartitionInner {
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
     backing_shared: BackingShared,
-    #[inspect(skip)]
-    dma_pages_pool: Option<fixed_pool_alloc::FixedPoolAllocator>,
 }
 
 #[derive(Inspect)]
@@ -1613,7 +1611,6 @@ impl<'a> UhProtoPartition<'a> {
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
             backing_shared: BackingShared::new(isolation, BackingSharedParams { cvm_state })?,
-            dma_pages_pool: None,
         });
 
         if cfg!(guest_arch = "x86_64") {

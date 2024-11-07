@@ -1805,7 +1805,7 @@ async fn new_underhill_vm(
     // otherwise use default heap allocator.
     // Contents of fixed pool will be preserved during servicing.
     let fixed_mem_pool = if !runtime_params.dma_preserve_memory_map().is_empty() {
-        let pools = runtime_params.dma_preserve_memory_map().to_vec();
+        let pools = runtime_params.dma_preserve_memory_map();
         Some(FixedPool::new(pools)?)
     } else {
         None

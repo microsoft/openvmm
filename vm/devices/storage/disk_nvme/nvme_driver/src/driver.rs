@@ -35,8 +35,8 @@ use tracing::Instrument;
 use user_driver::backoff::Backoff;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
-use user_driver::DeviceBacking;
 use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DeviceBacking;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::AsBytes;
@@ -505,24 +505,23 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .io_issuers
             .send
             .call(NvmeWorkerRequest::Save, ())
-            .await? {
-                Ok(mut s) => {
-                    // Update other fields not accessible by worker task.
-                    self.identify
-                        .as_ref()
-                        .unwrap()
-                        .write_to(s.identify_ctrl.as_mut());
+            .await?
+        {
+            Ok(mut s) => {
+                // Update other fields not accessible by worker task.
+                self.identify
+                    .as_ref()
+                    .unwrap()
+                    .write_to(s.identify_ctrl.as_mut());
 
-                    s.device_id = self.device_id.clone();
-                    for ns in &self.namespace {
-                        s.namespace.push(ns.save()?);
-                    }
-                    Ok(s)
-                },
-                Err(e) => {
-                    Err(e)
-                },
-            };
+                s.device_id = self.device_id.clone();
+                for ns in &self.namespace {
+                    s.namespace.push(ns.save()?);
+                }
+                Ok(s)
+            }
+            Err(e) => Err(e),
+        };
 
         save_state
     }
@@ -598,7 +597,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     .expect("unable to restore mem block");
                 QueuePair::restore(driver.clone(), interrupt0, registers.clone(), mem_block, a)
                     .unwrap()
-            }).unwrap();
+            })
+            .unwrap();
 
         let admin = worker.admin.insert(admin);
 
@@ -633,9 +633,16 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 .map_interrupt(q_state.msix, q_state.cpu)
                 .context("failed to map interrupt")?;
 
-            let mem_block = dma_buffer.restore_dma_buffer(q_state.mem_len, q_state.pfns.as_slice())?;
-            let q = IoQueue::restore(driver.clone(), interrupt, registers.clone(), mem_block, q_state)
-                .unwrap();
+            let mem_block =
+                dma_buffer.restore_dma_buffer(q_state.mem_len, q_state.pfns.as_slice())?;
+            let q = IoQueue::restore(
+                driver.clone(),
+                interrupt,
+                registers.clone(),
+                mem_block,
+                q_state,
+            )
+            .unwrap();
 
             let issuer = IoIssuer {
                 issuer: q.queue.issuer().clone(),
@@ -661,7 +668,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 &ns.identify_ns,
                 ns,
             )?));
-        };
+        }
 
         task.insert(&this.driver, "nvme_worker", state);
         task.start();
@@ -773,12 +780,7 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
                     Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
                         rpc.handle(|cpu| self.create_io_issuer(state, cpu)).await
                     }
-                    Some(NvmeWorkerRequest::Save(rpc)) => {
-                        rpc.handle(|_| {
-                            self.save(state)
-                        })
-                        .await
-                    }
+                    Some(NvmeWorkerRequest::Save(rpc)) => rpc.handle(|_| self.save(state)).await,
                     None => break,
                 }
             }
@@ -965,9 +967,6 @@ impl<T: DeviceBacking> InspectTask<WorkerState> for DriverWorkerTask<T> {
 
 pub mod save_restore {
     use super::*;
-    //use vmcore::save_restore::RestoreError;
-    //use vmcore::save_restore::SaveError;
-    //use vmcore::save_restore::SaveRestore;
 
     /// Save/restore state for NVMe driver.
     #[derive(Protobuf, Clone, Debug)]
@@ -1033,7 +1032,7 @@ pub mod save_restore {
         #[mesh(5)]
         pub len: u32,
         #[mesh(6)]
-        pub pfns: Vec<u64>,  // TODO: Check if region is contiguous and save 1st PFN only if true.
+        pub pfns: Vec<u64>,
     }
 
     #[derive(Protobuf, Clone, Debug)]
@@ -1051,7 +1050,16 @@ pub mod save_restore {
         /// NVMe completion tag.
         pub phase: bool,
         #[mesh(6)]
-        pub pfns: Vec<u64>,  // TODO: Check if region is contiguous and save 1st PFN only if true.
+        pub pfns: Vec<u64>,
+    }
+
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "underhill")]
+    pub struct PendingCommandsSavedState {
+        #[mesh(1)]
+        pub commands: Vec<spec::Command>,
+        #[mesh(2)]
+        pub next_cid_high_bits: u16,
     }
 
     #[derive(Protobuf, Clone, Debug, FromBytes, FromZeroes)]
@@ -1062,14 +1070,4 @@ pub mod save_restore {
         #[mesh(2)]
         pub cid: u16,
     }
-
-    impl From<&[u8]> for PendingCommandSavedState {
-        fn from(value: &[u8]) -> Self {
-            let mut command: [u8; 64] = [0; 64];
-            command.copy_from_slice(value);
-            let cid = ((command[0] as u16) << 8) | command[1] as u16;
-            Self { command, cid }
-        }
-    }
-
 }

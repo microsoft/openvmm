@@ -14,12 +14,10 @@ anyhow.workspace = true
 hcl.workspace = true
 hvdef.workspace = true
 inspect.workspace = true
-libc.workspace = true
 memory_range.workspace = true
 parking_lot.workspace = true
 sparse_mmap.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 user_driver.workspace = true
 
 [lints]

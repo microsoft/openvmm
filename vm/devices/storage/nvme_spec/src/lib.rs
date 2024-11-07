@@ -12,6 +12,11 @@ pub mod nvm;
 
 use bitfield_struct::bitfield;
 use inspect::Inspect;
+use mesh::payload::encoding::Fixed32Field;
+use mesh::payload::encoding::FixedNumber;
+use mesh::payload::protofile::DescribeField;
+use mesh::payload::protofile::FieldType;
+use mesh::payload::Protobuf;
 use open_enum::open_enum;
 use storage_string::AsciiString;
 use zerocopy::AsBytes;

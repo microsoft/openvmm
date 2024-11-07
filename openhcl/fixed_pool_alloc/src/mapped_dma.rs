@@ -1,11 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// Copyright (C) Microsoft Corporation. All rights reserved.
-
 //! Module for device dma support at fixed location.
 
-// SAFETY: This is required to implement the MappedDmaTarget trait which
+// UNSAFETY: This is required to implement the MappedDmaTarget trait which
 // unsafe because of it's requirement for the implementer to keep the
 // `base()..len()` mapped for the lifetime of the struct.
 #![allow(unsafe_code)]

@@ -9,10 +9,10 @@ use crate::interrupt::DeviceInterruptSource;
 use crate::memory::MappedDmaTarget;
 use crate::memory::MemoryBlock;
 use crate::memory::PAGE_SIZE;
+use crate::vfio::VfioDmaBuffer;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use crate::HostDmaAllocator;
-use crate::vfio::VfioDmaBuffer;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
@@ -263,14 +263,6 @@ impl HostDmaAllocator for EmulatedDmaAllocator {
         let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);
         memory.as_slice().atomic_fill(0);
         Ok(memory)
-    }
-
-    fn restore_dma_buffer(
-        &mut self,
-        len: usize,
-        _pfns: &[u64],
-    ) -> anyhow::Result<MemoryBlock> {
-        self.allocate_dma_buffer(len)
     }
 }
 

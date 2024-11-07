@@ -65,11 +65,4 @@ pub trait DeviceRegisterIo: Send + Sync {
 pub trait HostDmaAllocator: Send + Sync {
     /// Allocate a new block using default allocation strategy.
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
-
-    /// Restore DMA bufer at pre-existing location.
-    fn restore_dma_buffer(
-        &mut self,
-        len: usize,
-        pfns: &[u64],
-    ) -> anyhow::Result<MemoryBlock>;
 }
