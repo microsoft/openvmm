@@ -14,6 +14,7 @@ use futures::StreamExt;
 use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use hvdef::HvError;
 use inspect::Inspect;
 use inspect_counters::Counter;
 use mesh::rpc::Rpc;
@@ -35,6 +36,7 @@ use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
 use user_driver::HostDmaAllocator;
+use virt_mshv_vtl::UhPartition;
 use zerocopy::FromZeroes;
 
 /// Value for unused PRP entries, to catch/mitigate buffer size mismatches.
@@ -124,6 +126,9 @@ impl QueuePair {
         cq_size: u16,
         mut interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        bounce_buffer_pages: u64,
+        io_threshold: Option<u32>,
+        partition: Option<Arc<UhPartition>>,
     ) -> anyhow::Result<Self> {
         let mem = device
             .host_allocator()
@@ -155,23 +160,26 @@ impl QueuePair {
             }
         });
 
-        const PER_QUEUE_PAGES: usize = 128;
-        #[allow(clippy::assertions_on_constants)]
-        const _: () = assert!(
-            PER_QUEUE_PAGES * PAGE_SIZE >= 128 * 1024 + PAGE_SIZE,
-            "not enough room for an ATAPI IO plus a PRP list"
-        );
+        // caller ensure the bounce_buffer_pages
+        const MIN_PER_QUEUE_PAGES: usize = (128 * 1024 + PAGE_SIZE) / PAGE_SIZE;
+        let buffer_size_pages = std::cmp::max(bounce_buffer_pages as usize, MIN_PER_QUEUE_PAGES);
         let alloc = PageAllocator::new(
             device
                 .host_allocator()
-                .allocate_dma_buffer(PER_QUEUE_PAGES * PAGE_SIZE)
+                .allocate_dma_buffer(buffer_size_pages * PAGE_SIZE)
                 .context("failed to allocate pages for queue requests")?,
         );
 
+        tracing::info!(qid, "creating queue pair end");
         Ok(Self {
             task,
             cancel,
-            issuer: Arc::new(Issuer { send, alloc }),
+            issuer: Arc::new(Issuer {
+                send,
+                alloc,
+                io_threshold,
+                partition,
+            }),
             mem,
         })
     }
@@ -206,6 +214,8 @@ pub enum RequestError {
     Memory(#[source] GuestMemoryError),
     #[error("i/o too large for double buffering")]
     TooLarge,
+    #[error("hv error")]
+    Hv(#[source] HvError),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -240,11 +250,24 @@ impl std::fmt::Display for NvmeError {
     }
 }
 
-#[derive(Debug, Inspect)]
+#[derive(Inspect)]
 pub struct Issuer {
     #[inspect(skip)]
     send: mesh::Sender<Req>,
     alloc: PageAllocator,
+    io_threshold: Option<u32>,
+    #[inspect(skip)]
+    partition: Option<Arc<UhPartition>>,
+}
+
+impl std::fmt::Debug for Issuer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Issuer")
+            .field("send", &self.send)
+            .field("alloc", &self.alloc)
+            .field("io_threshold", &self.io_threshold)
+            .finish()
+    }
 }
 
 impl Issuer {
@@ -280,43 +303,100 @@ impl Issuer {
             .probe_gpns(mem.gpns())
             .map_err(RequestError::Memory)?;
 
-        let prp = if mem
-            .gpns()
-            .iter()
-            .all(|&gpn| guest_memory.iova(gpn * PAGE_SIZE64).is_some())
+        // TODO: add check if the memeory if VA-backed.
+        let is_va_backed = false;
+        let (prp, is_memory_pinned) = if !is_va_backed
+            && mem
+                .gpns()
+                .iter()
+                .all(|&gpn| guest_memory.iova(gpn * PAGE_SIZE64).is_some())
         {
             // Guest memory is available to the device, so issue the IO directly.
-            self.make_prp(
-                mem.offset() as u64,
-                mem.gpns()
-                    .iter()
-                    .map(|&gpn| guest_memory.iova(gpn * PAGE_SIZE64).unwrap()),
+            (
+                self.make_prp(
+                    mem.offset() as u64,
+                    mem.gpns()
+                        .iter()
+                        .map(|&gpn| guest_memory.iova(gpn * PAGE_SIZE64).unwrap()),
+                )
+                .await,
+                false,
             )
-            .await
         } else {
-            tracing::debug!(opcode = opcode.0, size = mem.len(), "double buffering");
-
-            // Guest memory is not accessible by the device. Double buffer
-            // through an allocation.
-            let double_buffer_pages = double_buffer_pages.insert(
-                self.alloc
-                    .alloc_bytes(mem.len())
-                    .await
-                    .ok_or(RequestError::TooLarge)?,
-            );
-
-            if opcode.transfer_host_to_controller() {
-                double_buffer_pages
-                    .copy_from_guest_memory(guest_memory, mem)
-                    .map_err(RequestError::Memory)?;
+            // Guest memory is not accessible by the device.
+            // If guest memory is VA-backed, and IO size exceeds threshold, pin the memory.
+            let mut prp_result = None;
+            let mut is_pinned = false;
+            if let Some(io_threshold) = self.io_threshold {
+                if is_va_backed && self.partition.is_some() && mem.len() as u32 > io_threshold {
+                    self.partition
+                        .as_ref()
+                        .unwrap()
+                        .pin_gpa_ranges(&mem.memoryranges())
+                        .map_err(RequestError::Hv)?;
+                    is_pinned = true;
+                    prp_result = Some(
+                        self.make_prp(
+                            mem.offset() as u64,
+                            mem.gpns()
+                                .iter()
+                                .map(|&gpn| guest_memory.iova(gpn * PAGE_SIZE64).unwrap()),
+                        )
+                        .await,
+                    );
+                }
             }
 
-            self.make_prp(
-                0,
-                (0..double_buffer_pages.page_count())
-                    .map(|i| double_buffer_pages.physical_address(i)),
-            )
-            .await
+            if prp_result.is_none() {
+                // Guest memory is not accessible by the device. Double buffer through an allocation.
+                prp_result = match self.alloc.alloc_bytes(mem.len()).await {
+                    Some(pages) => {
+                        tracelimit::info_ratelimited!(
+                            opcode = opcode.0,
+                            size = mem.len(),
+                            "double buffering"
+                        );
+                        let double_buffer_pages = double_buffer_pages.insert(pages);
+                        if opcode.transfer_host_to_controller() {
+                            double_buffer_pages
+                                .copy_from_guest_memory(guest_memory, mem)
+                                .map_err(RequestError::Memory)?;
+                        }
+                        Some(
+                            self.make_prp(
+                                0,
+                                (0..double_buffer_pages.page_count())
+                                    .map(|i| double_buffer_pages.physical_address(i)),
+                            )
+                            .await,
+                        )
+                    }
+                    None => {
+                        // Allocation failed. If guest memory is VA-backed, pin the memory. Otherwise return error.
+                        if is_va_backed && self.partition.is_some() {
+                            self.partition
+                                .as_ref()
+                                .unwrap()
+                                .pin_gpa_ranges(&mem.memoryranges())
+                                .map_err(RequestError::Hv)?;
+                            is_pinned = true;
+                            Some(
+                                self.make_prp(
+                                    mem.offset() as u64,
+                                    mem.gpns()
+                                        .iter()
+                                        .map(|&gpn| guest_memory.iova(gpn * PAGE_SIZE64).unwrap()),
+                                )
+                                .await,
+                            )
+                        } else {
+                            return Err(RequestError::TooLarge);
+                        }
+                    }
+                }
+            }
+
+            (prp_result.unwrap(), is_pinned)
         };
 
         command.dptr = prp.dptr;
@@ -327,6 +407,14 @@ impl Issuer {
                     .copy_to_guest_memory(guest_memory, mem)
                     .map_err(RequestError::Memory)?;
             }
+        }
+
+        if is_memory_pinned {
+            self.partition
+                .as_ref()
+                .unwrap()
+                .unpin_gpa_ranges(&mem.memoryranges())
+                .map_err(RequestError::Hv)?;
         }
         r
     }

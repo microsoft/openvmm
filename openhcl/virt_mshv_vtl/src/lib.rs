@@ -1863,6 +1863,27 @@ impl UhPartition {
             );
         }
     }
+
+    /// Pins the specified guest physical address ranges in the hypervisor.
+    /// The memory ranges passed to this function must be VA backed memory.
+    /// If a partial failure occurs (i.e., some but not all the ranges were successfully pinned),
+    /// the function will automatically attempt to unpin any successfully pinned ranges.
+    /// This "rollback" behavior ensures that no partially pinned state remains, which
+    /// could otherwise lead to inconsistencies.
+    ///
+    pub fn pin_gpa_ranges(&self, ranges: &[MemoryRange]) -> Result<(), HvError> {
+        self.inner.hcl.pin_gpa_ranges(ranges)
+    }
+
+    /// Unpins the specified guest physical address ranges in the hypervisor.
+    /// The memory ranges passed to this function must be VA backed memory.
+    /// If a partial failure occurs (i.e., some but not all the ranges were successfully unpinned),
+    /// the function will automatically attempt to pin any successfully unpinned ranges. This "rollback"
+    /// behavior ensures that no partially unpinned state remains, which could otherwise lead to inconsistencies.
+    ///
+    pub fn unpin_gpa_ranges(&self, ranges: &[MemoryRange]) -> Result<(), HvError> {
+        self.inner.hcl.unpin_gpa_ranges(ranges)
+    }
 }
 
 #[cfg(guest_arch = "x86_64")]

@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 scsi_buffers.workspace = true
+hvdef.workspace = true
 
 guestmem.workspace = true
 vm_resource.workspace = true

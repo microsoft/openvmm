@@ -19,6 +19,7 @@ pub mod sync_wrapper;
 pub mod zerodisk;
 
 use guestmem::AccessError;
+use hvdef::HvError;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
 use stackfuture::StackFuture;
@@ -50,6 +51,8 @@ pub enum DiskError {
     ReservationConflict,
     #[error("unsupported eject")]
     UnsupportedEject,
+    #[error("failed to pin/unpin guest memory {0}")]
+    Hv(HvError),
 }
 
 /// Io error details

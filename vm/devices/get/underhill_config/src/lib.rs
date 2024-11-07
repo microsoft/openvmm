@@ -178,8 +178,14 @@ pub struct Vtl2SettingsFixed {
     pub scsi_sub_channels: u16,
     /// size of the io-uring submission queues
     pub io_ring_size: u32,
-    /// Max bounce buffer pages active per cpu
+    /// Max bounce buffer pages active per cpu for unaligned IOs
     pub max_bounce_buffer_pages: Option<u32>,
+    // DMA bounce buffer pages per queue
+    pub dma_bounce_buffer_pages_per_queue: Option<u64>,
+    // Threshold of io size in pages to use bounce buffer
+    pub dma_bounce_buffer_pages_per_io_threshold: Option<u32>,
+    // Max nvme drivers
+    pub max_nvme_drivers: Option<u32>,
 }
 
 #[derive(Debug, Clone, MeshPayload, Inspect)]

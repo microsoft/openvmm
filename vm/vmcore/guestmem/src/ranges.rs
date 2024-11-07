@@ -12,6 +12,7 @@ use super::MemoryWrite;
 use super::PAGE_SIZE;
 use super::PAGE_SIZE64;
 use crate::InvalidGpn;
+use memory_range::MemoryRange;
 
 /// A range of bytes in the guest address space.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -230,6 +231,14 @@ impl<'a> PagedRange<'a> {
     /// range.
     pub fn ranges(self) -> PagedRangeRangeIter<'a> {
         PagedRangeRangeIter(self)
+    }
+
+    /// Returns the range's list of page aligned memory ranges.
+    pub fn memoryranges(self) -> Vec<MemoryRange> {
+        self.gpns()
+            .iter()
+            .map(|&gpn| MemoryRange::new(gpn * PAGE_SIZE64..(gpn + 1) * PAGE_SIZE64))
+            .collect::<Vec<_>>()
     }
 }
 

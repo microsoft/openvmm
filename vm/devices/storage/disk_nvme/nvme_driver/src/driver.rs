@@ -30,6 +30,7 @@ use tracing::info_span;
 use tracing::Instrument;
 use user_driver::backoff::Backoff;
 use user_driver::DeviceBacking;
+use virt_mshv_vtl::UhPartition;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::AsBytes;
@@ -69,6 +70,10 @@ struct DriverWorkerTask<T: DeviceBacking> {
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
     recv: mesh::Receiver<CreateIssuer>,
+    dma_bounce_buffer_pages_per_queue: u64,
+    dma_bounce_buffer_pages_per_io_threshold: Option<u32>,
+    #[inspect(skip)]
+    partition: Option<Arc<UhPartition>>,
 }
 
 #[derive(Inspect)]
@@ -110,11 +115,21 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         driver_source: &VmTaskDriverSource,
         cpu_count: u32,
         device: T,
+        dma_bounce_buffer_pages_per_queue: u64,
+        dma_bounce_buffer_pages_per_io_threshold: Option<u32>,
+        partition: Option<Arc<UhPartition>>,
     ) -> anyhow::Result<Self> {
         let pci_id = device.id().to_owned();
-        let mut this = Self::new_disabled(driver_source, cpu_count, device)
-            .instrument(tracing::info_span!("nvme_new_disabled", pci_id))
-            .await?;
+        let mut this = Self::new_disabled(
+            driver_source,
+            cpu_count,
+            device,
+            dma_bounce_buffer_pages_per_queue,
+            dma_bounce_buffer_pages_per_io_threshold,
+            partition,
+        )
+        .instrument(tracing::info_span!("nvme_new_disabled", pci_id))
+        .await?;
         match this
             .enable(cpu_count as u16)
             .instrument(tracing::info_span!("nvme_enable", pci_id))
@@ -124,6 +139,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             Err(err) => {
                 tracing::error!(
                     error = err.as_ref() as &dyn std::error::Error,
+                    pci_id,
                     "device initialization failed, shutting down"
                 );
                 this.shutdown().await;
@@ -138,6 +154,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         driver_source: &VmTaskDriverSource,
         cpu_count: u32,
         mut device: T,
+        dma_bounce_buffer_pages_per_queue: u64,
+        dma_bounce_buffer_pages_per_io_threshold: Option<u32>,
+        partition: Option<Arc<UhPartition>>,
     ) -> anyhow::Result<Self> {
         let driver = driver_source.simple();
         let bar0 = Bar0(
@@ -186,6 +205,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 io: Vec::new(),
                 io_issuers: io_issuers.clone(),
                 recv,
+                dma_bounce_buffer_pages_per_queue,
+                dma_bounce_buffer_pages_per_io_threshold,
+                partition,
             })),
             admin: None,
             identify: None,
@@ -225,6 +247,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             admin_cqes,
             interrupt0,
             worker.registers.clone(),
+            worker.dma_bounce_buffer_pages_per_queue,
+            worker.dma_bounce_buffer_pages_per_io_threshold,
+            worker.partition.clone(),
         )
         .context("failed to create admin queue pair")?;
 
@@ -602,6 +627,9 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             state.qsize,
             interrupt,
             self.registers.clone(),
+            self.dma_bounce_buffer_pages_per_queue,
+            self.dma_bounce_buffer_pages_per_io_threshold,
+            self.partition.clone(),
         )
         .with_context(|| format!("failed to create io queue pair {qid}"))?;
 

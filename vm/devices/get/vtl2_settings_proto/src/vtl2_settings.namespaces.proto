@@ -27,6 +27,9 @@ message Vtl2SettingsFixed {
     optional uint32 io_ring_size = 2;
     // Specify the maximum number of bounce buffer pages allowed per cpu
     optional uint32 max_bounce_buffer_pages = 3;
+    optional uint64 dma_bounce_buffer_pages_per_queue = 4;
+    optional uint32 dma_bounce_buffer_pages_per_io_threshold = 5;
+    optional uint32 max_nvme_drivers = 6;
 }
 
 message Vtl2SettingsDynamic {

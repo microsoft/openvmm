@@ -1207,12 +1207,89 @@ async fn new_underhill_vm(
 
     let boot_info = runtime_params.parsed_openhcl_boot();
 
+    // Determine if x2apic is supported so that the topology matches
+    // reality.
+    //
+    // We don't know if x2apic is forced on, but currently it doesn't really
+    // matter because the topology's initial x2apic state is not currently
+    // used in Underhill.
+    //
+    // FUTURE: consider having Underhill decide whether x2apic is enabled at
+    // boot rather than allowing the host to make that decision. This would
+    // just require Underhill setting the apicbase register on the VPs
+    // before start.
+    //
+    // TODO: centralize cpuid querying logic.
+    #[cfg(guest_arch = "x86_64")]
+    let x2apic = if isolation.is_hardware_isolated() {
+        // For hardware CVMs, always enable x2apic support at boot.
+        vm_topology::processor::x86::X2ApicState::Enabled
+    } else if safe_x86_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx
+        & (1 << 21)
+        != 0
+    {
+        vm_topology::processor::x86::X2ApicState::Supported
+    } else {
+        vm_topology::processor::x86::X2ApicState::Unsupported
+    };
+
+    #[cfg(guest_arch = "x86_64")]
+    let processor_topology = new_x86_topology(&boot_info.cpus, x2apic)
+        .context("failed to construct the processor topology")?;
+
+    #[cfg(guest_arch = "aarch64")]
+    let processor_topology = new_aarch64_topology(
+        boot_info
+            .gic
+            .context("did not get gic state from bootloader")?,
+        &boot_info.cpus,
+    )
+    .context("failed to construct the processor topology")?;
+
     // The amount of memory required by the GET igvm_attest request
     let attestation = get_protocol::IGVM_ATTEST_MSG_SHARED_GPA as u64 * hvdef::HV_PAGE_SIZE;
 
-    // TODO: determine actual memory usage by NVME/MANA. hardcode as 10MB
-    let device_dma = 10 * 1024 * 1024;
+    const MIN_PER_QUEUE_PAGES: u64 = (128 * 1024 + hvdef::HV_PAGE_SIZE) / hvdef::HV_PAGE_SIZE;
+    const DEFAULT_DMA_BOUNCE_BUFFER_PAGES_PER_QUEUE: u64 = 128;
+    #[allow(clippy::assertions_on_constants)]
+    const _: () = assert!(
+        DEFAULT_DMA_BOUNCE_BUFFER_PAGES_PER_QUEUE >= MIN_PER_QUEUE_PAGES,
+        "not enough room for an ATAPI IO plus a PRP list"
+    );
 
+    const DEFAULT_NVME_DRIVERS: u32 = 8;
+    let (max_nvme_drivers, dma_bounce_buffer_pages_per_queue, dma_bounce_buffer_pages_per_io_threshold) = dps.general.vtl2_settings.as_ref().map_or(
+        (DEFAULT_NVME_DRIVERS, DEFAULT_DMA_BOUNCE_BUFFER_PAGES_PER_QUEUE, None),
+        |vtl2_settings| {
+            let original_dma_bounce_buffer_pages_per_queue = vtl2_settings
+                .fixed
+                .dma_bounce_buffer_pages_per_queue
+                .unwrap_or(DEFAULT_DMA_BOUNCE_BUFFER_PAGES_PER_QUEUE);
+
+            let dma_bounce_buffer_pages_per_queue = if original_dma_bounce_buffer_pages_per_queue < MIN_PER_QUEUE_PAGES {
+                tracing::warn!(
+                    "the value of dma_bounce_buffer_pages_per_queue ({}) is less than MIN_PER_QUEUE_PAGES ({})",
+                    original_dma_bounce_buffer_pages_per_queue, MIN_PER_QUEUE_PAGES
+                );
+                MIN_PER_QUEUE_PAGES
+            } else {
+                original_dma_bounce_buffer_pages_per_queue
+            };
+
+            (
+                vtl2_settings.fixed.max_nvme_drivers.unwrap_or(DEFAULT_NVME_DRIVERS),
+                dma_bounce_buffer_pages_per_queue,
+                vtl2_settings.fixed.dma_bounce_buffer_pages_per_io_threshold,
+            )
+        },
+    );
+
+    // TODO: determine actual memory usage by NVME/MANA. hardcode as 10MB
+    let device_dma = 10 * 1024 * 1024
+        + max_nvme_drivers as u64
+            * processor_topology.vp_count() as u64
+            * dma_bounce_buffer_pages_per_queue
+            * hvdef::HV_PAGE_SIZE;
     // Determine the amount of shared memory to reserve from VTL0.
     let shared_pool_size = match isolation {
         #[cfg(guest_arch = "x86_64")]
@@ -1274,45 +1351,6 @@ async fn new_underhill_vm(
         shared_pool_size,
         physical_address_size,
     )?;
-
-    // Determine if x2apic is supported so that the topology matches
-    // reality.
-    //
-    // We don't know if x2apic is forced on, but currently it doesn't really
-    // matter because the topology's initial x2apic state is not currently
-    // used in Underhill.
-    //
-    // FUTURE: consider having Underhill decide whether x2apic is enabled at
-    // boot rather than allowing the host to make that decision. This would
-    // just require Underhill setting the apicbase register on the VPs
-    // before start.
-    //
-    // TODO: centralize cpuid querying logic.
-    #[cfg(guest_arch = "x86_64")]
-    let x2apic = if isolation.is_hardware_isolated() {
-        // For hardware CVMs, always enable x2apic support at boot.
-        vm_topology::processor::x86::X2ApicState::Enabled
-    } else if safe_x86_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx
-        & (1 << 21)
-        != 0
-    {
-        vm_topology::processor::x86::X2ApicState::Supported
-    } else {
-        vm_topology::processor::x86::X2ApicState::Unsupported
-    };
-
-    #[cfg(guest_arch = "x86_64")]
-    let processor_topology = new_x86_topology(&boot_info.cpus, x2apic)
-        .context("failed to construct the processor topology")?;
-
-    #[cfg(guest_arch = "aarch64")]
-    let processor_topology = new_aarch64_topology(
-        boot_info
-            .gic
-            .context("did not get gic state from bootloader")?,
-        &boot_info.cpus,
-    )
-    .context("failed to construct the processor topology")?;
 
     let mut with_vmbus: bool = false;
     let mut with_vmbus_relay = false;
@@ -1737,6 +1775,9 @@ async fn new_underhill_vm(
             &driver_source,
             processor_topology.vp_count(),
             vfio_dma_buffer(&shared_vis_pages_pool),
+            dma_bounce_buffer_pages_per_queue,
+            dma_bounce_buffer_pages_per_io_threshold,
+            Some(partition.clone()),
         );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(

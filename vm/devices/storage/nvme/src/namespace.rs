@@ -228,6 +228,7 @@ fn map_disk_error(err: disk_backend::DiskError) -> NvmeError {
         disk_backend::DiskError::MemoryAccess(err) => {
             NvmeError::new(spec::Status::DATA_TRANSFER_ERROR, err)
         }
+        disk_backend::DiskError::Hv(_) => spec::Status::DATA_TRANSFER_ERROR.into(),
         disk_backend::DiskError::AbortDueToPreemptAndAbort => {
             NvmeError::new(spec::Status::COMMAND_ABORTED_DUE_TO_PREEMPT_AND_ABORT, err)
         }

@@ -16,6 +16,8 @@ task_control.workspace = true
 user_driver.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
+virt_mshv_vtl.workspace = true
+hvdef.workspace = true
 
 anyhow.workspace = true
 event-listener.workspace = true
@@ -25,6 +27,7 @@ safeatomic.workspace = true
 slab.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tracelimit.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]

@@ -947,6 +947,7 @@ impl SimpleScsiDisk {
                     | ScsiError::UnsupportedVpdPageCode(_)
                     | ScsiError::SrbError
                     | ScsiError::Disk(DiskError::InvalidInput)
+                    | ScsiError::Disk(DiskError::Hv(_))
                     | ScsiError::Disk(DiskError::MemoryAccess(_)) => ScsiResult {
                         scsi_status: ScsiStatus::CHECK_CONDITION,
                         srb_status: SrbStatus::INVALID_REQUEST,
@@ -1069,6 +1070,7 @@ impl SimpleScsiDisk {
                             },
                             DiskError::InvalidInput
                             | DiskError::MemoryAccess(_)
+                            | DiskError::Hv(_)
                             | DiskError::ReadOnly => unreachable!(), //handled above
                         }
                     }
