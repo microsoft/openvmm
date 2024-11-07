@@ -267,11 +267,8 @@ impl user_driver::vfio::VfioDmaBuffer for SharedPoolAllocator {
             .map_file(0, len, gpa_fd.get(), file_offset, true)
             .context("unable to map allocation")?;
 
-        // SAFETY: The previous call to memmap should have made exactly len bytes at offset 0 valid to read and write
-        unsafe {
-            // It is a requirement of the VfioDmaBuffer trait that all allocated buffers be zeroed out
-            std::ptr::write_bytes(mapping.as_ptr(), 0, len);
-        }
+        // It is a requirement of the VfioDmaBuffer trait that all allocated buffers be zeroed out
+        mapping.fill_at(0, 0, len);
 
         let pfns: Vec<_> = (alloc.base_pfn()..alloc.base_pfn() + alloc.size_pages).collect();
 
