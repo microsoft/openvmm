@@ -36,7 +36,7 @@ use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 
 pub trait VfioDmaBuffer: 'static + Send + Sync {
-    /// Create a new dma buffer with the given `len` in bytes.
+    /// Create a new dma buffer with the given `len` in bytes. This buffer must be zeroed out.
     fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
 }
 
