@@ -1853,7 +1853,7 @@ async fn request_igvm_attest(
     };
 
     let response_length = response.length as usize;
-    if response_length == get_protocol::HOST_VMWP_ATTESTATION_GENERIC_ERROR_CODE {
+    if response_length == get_protocol::IGVM_ATTEST_VMWP_GENERIC_ERROR_CODE {
         return Ok(Err(IgvmAttestError::IgvmAgentGenericError));
     } else if response_length > ALLOCATED_SHARED_MEMORY_SIZE {
         Err(FatalError::InvalidIgvmAttestResponseSize {

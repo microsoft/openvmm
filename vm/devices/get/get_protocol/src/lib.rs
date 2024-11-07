@@ -26,8 +26,6 @@ pub const MAX_HEADER_SIZE: usize = 256;
 // (required due to underlying vmbus pipe message size constraints)
 pub const MAX_PAYLOAD_SIZE: usize = 8192;
 
-pub const HOST_VMWP_ATTESTATION_GENERIC_ERROR_CODE: usize = 0xFFFFFFFF;
-
 const_assert!(MAX_MESSAGE_SIZE >= MAX_HEADER_SIZE + MAX_PAYLOAD_SIZE);
 
 /// {455C0F1B-D51B-40B1-BEAC-87377FE6E041}
@@ -585,6 +583,10 @@ pub const IGVM_ATTEST_MSG_REQ_REPORT_MAX_SIZE: usize = 4096;
 pub const IGVM_ATTEST_MSG_MAX_SHARED_GPA: usize = 16;
 /// Current return pages
 pub const IGVM_ATTEST_MSG_SHARED_GPA: usize = IGVM_ATTEST_MSG_MAX_SHARED_GPA;
+
+// Error from the VM worker process in the host when sending an
+// attestation request.
+pub const IGVM_ATTEST_VMWP_GENERIC_ERROR_CODE: usize = 0xFFFFFFFF;
 
 /// The response payload could be quite large, so pass host
 /// previously shared pages to use for response.
