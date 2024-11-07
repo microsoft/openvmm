@@ -364,10 +364,7 @@ pub async fn initialize_platform_security(
         tcb_version,
     )
     .await
-    .map_err(|e| {
-        tracing::error!("failed to derive keys");
-        AttestationErrorInner::GetDerivedKeys(e)
-    })?;
+    .map_err(AttestationErrorInner::GetDerivedKeys)?;
 
     // All Underhill VMs use VMGS encryption
     tracing::info!("Unlocking VMGS");
