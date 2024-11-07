@@ -197,8 +197,9 @@ cargo xtask install-git-hooks --pre-push --with-fmt=yes
 And you'll be all set!
 
 ```admonish success
-If you're worried about time, the `pre-push` hook should only takes ~5
-seconds to run locally. That's far better than sinking ~20+ mins of CI time!
+If you're worried about time, the `pre-push` hook should only take ~5
+seconds to run locally. That's far better than waiting ~20+ minutes only
+for CI to fail on your pull request.
 ```
 
 # \[WSL2] Cross Compiling from WSL2 to Windows
