@@ -159,7 +159,6 @@ impl Drop for Vtl2ParamsMap<'_> {
             .start();
 
         for range in self.ranges {
-            tracing::error!(?range, "zeroing");
             self.mapping
                 .fill_at((range.start() - base) as usize, 0, range.len() as usize)
                 .unwrap();
