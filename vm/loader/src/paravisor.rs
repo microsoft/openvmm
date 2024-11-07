@@ -658,6 +658,7 @@ where
     // The measured config is at page 0. Free pages start at page 1.
     let mut free_page = 1;
     let mut measured_config = ParavisorMeasuredVtl0Config {
+        magic: ParavisorMeasuredVtl0Config::MAGIC,
         ..FromZeroes::new_zeroed()
     };
 
@@ -759,7 +760,9 @@ where
         .map_err(Error::Importer)?;
 
     let vtl2_measured_config = ParavisorMeasuredVtl2Config {
+        magic: ParavisorMeasuredVtl2Config::MAGIC,
         vtom_offset_bit: shared_gpa_boundary_bits.unwrap_or(0),
+        padding: [0; 7],
     };
 
     importer
@@ -1038,6 +1041,7 @@ where
         .map_err(Error::Importer)?;
 
     let mut measured_config = ParavisorMeasuredVtl0Config {
+        magic: ParavisorMeasuredVtl0Config::MAGIC,
         ..FromZeroes::new_zeroed()
     };
 

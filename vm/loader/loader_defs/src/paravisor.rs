@@ -332,12 +332,19 @@ pub struct SupportedVtl0LoadInfo {
 #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
 #[cfg_attr(feature = "inspect", derive(Inspect))]
 pub struct ParavisorMeasuredVtl0Config {
+    /// Magic value. Must be [`Self::MAGIC`].
+    pub magic: u64,
     /// Supported VTL0 images.
     pub supported_vtl0: SupportedVtl0LoadInfo,
     /// If UEFI is supported, information about UEFI for VTL0.
     pub uefi_info: UefiInfo,
     /// If Linux is supported, information about Linux for VTL0.
     pub linux_info: LinuxInfo,
+}
+
+impl ParavisorMeasuredVtl0Config {
+    /// Magic value for the measured config, which is "OHCLVTL0".
+    pub const MAGIC: u64 = 0x4F48434C56544C30;
 }
 
 /// The physical page number for where the vtl 0 measured config is stored, x86_64.
@@ -358,8 +365,17 @@ pub const PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_AARCH64: u64 = 16 << (20 - 12
 #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
 #[cfg_attr(feature = "inspect", derive(Inspect))]
 pub struct ParavisorMeasuredVtl2Config {
+    /// Magic value. Must be [`Self::MAGIC`].
+    pub magic: u64,
     /// The bit offset of vTOM, if non-zero.
     ///
     /// TODO: Only set on SNP, but should also be used for TDX.
     pub vtom_offset_bit: u8,
+    /// Padding.
+    pub padding: [u8; 7],
+}
+
+impl ParavisorMeasuredVtl2Config {
+    /// Magic value for the measured config, which is "OHCLVTL2".
+    pub const MAGIC: u64 = 0x4F48434C56544C32;
 }
