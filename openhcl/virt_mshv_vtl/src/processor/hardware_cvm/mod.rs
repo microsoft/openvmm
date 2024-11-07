@@ -278,10 +278,12 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         }
     }
 
-    fn vp_state_error_to_hv_err(err: crate::processor::vp_state::Error) -> HvError {
+    fn reg_access_error_to_hv_err(err: crate::processor::vp_state::Error) -> HvError {
+        tracing::trace!(?err, "failed on register access");
+
         match err {
-            super::vp_state::Error::SetRegisters(_) => HvError::InvalidRegisterValue,
-            super::vp_state::Error::GetRegisters(_) => HvError::InvalidParameter,
+            super::vp_state::Error::SetRegisters(_) => HvError::OperationFailed,
+            super::vp_state::Error::GetRegisters(_) => HvError::OperationFailed,
             super::vp_state::Error::SetEfer(_, _) => HvError::InvalidRegisterValue,
             super::vp_state::Error::Unimplemented(_) => HvError::InvalidParameter,
             super::vp_state::Error::InvalidApicBase(_) => HvError::InvalidRegisterValue,
@@ -290,8 +292,8 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
 
     fn get_vp_register(
         &mut self,
-        name: hvdef::HvRegisterName,
         vtl: GuestVtl,
+        name: hvdef::HvRegisterName,
     ) -> HvResult<hvdef::HvRegisterValue> {
         self.validate_register_access(vtl, name)?;
         // TODO: when get vp register i.e. in access vp state gets refactored,
@@ -319,7 +321,11 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::SysenterEsp
             | HvX64RegisterName::Sfmask
             | HvX64RegisterName::KernelGsBase) => {
-                let msrs = self.vp.access_state(vtl.into()).virtual_msrs().unwrap();
+                let msrs = self
+                    .vp
+                    .access_state(vtl.into())
+                    .virtual_msrs()
+                    .map_err(Self::reg_access_error_to_hv_err)?;
                 match virt_msr {
                     HvX64RegisterName::Star => Ok(msrs.star.into()),
                     HvX64RegisterName::Lstar => Ok(msrs.lstar.into()),
@@ -332,14 +338,18 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     _ => unreachable!(),
                 }
             }
-            HvX64RegisterName::Xfem => {
-                Ok(self.vp.access_state(vtl.into()).xcr().unwrap().value.into())
-            }
+            HvX64RegisterName::Xfem => Ok(self
+                .vp
+                .access_state(vtl.into())
+                .xcr()
+                .map_err(Self::reg_access_error_to_hv_err)?
+                .value
+                .into()),
             HvX64RegisterName::TscAux => Ok(self
                 .vp
                 .access_state(vtl.into())
                 .tsc_aux()
-                .map_err(|_| HvError::InvalidParameter)?
+                .map_err(Self::reg_access_error_to_hv_err)?
                 .value
                 .into()),
             register @ (HvX64RegisterName::Efer
@@ -376,7 +386,11 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::R13
             | HvX64RegisterName::R14
             | HvX64RegisterName::R15) => {
-                let registers = self.vp.access_state(vtl.into()).registers().unwrap();
+                let registers = self
+                    .vp
+                    .access_state(vtl.into())
+                    .registers()
+                    .map_err(Self::reg_access_error_to_hv_err)?;
                 match register {
                     HvX64RegisterName::Efer => Ok(registers.efer.into()),
                     HvX64RegisterName::Cr0 => Ok(registers.cr0.into()),
@@ -444,7 +458,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     .vp
                     .access_state(vtl.into())
                     .debug_regs()
-                    .map_err(|_| HvError::InvalidParameter)?;
+                    .map_err(Self::reg_access_error_to_hv_err)?;
                 match debug_reg {
                     HvX64RegisterName::Dr0 => Ok(debug_regs.dr0.into()),
                     HvX64RegisterName::Dr1 => Ok(debug_regs.dr1.into()),
@@ -458,7 +472,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 .vp
                 .access_state(vtl.into())
                 .cache_control()
-                .unwrap()
+                .map_err(Self::reg_access_error_to_hv_err)?
                 .msr_cr_pat
                 .into()),
             _ => {
@@ -473,8 +487,8 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
 
     fn set_vp_register(
         &mut self,
-        reg: &hvdef::hypercall::HvRegisterAssoc,
         vtl: GuestVtl,
+        reg: &hvdef::hypercall::HvRegisterAssoc,
     ) -> HvResult<()> {
         self.validate_register_access(vtl, reg.name)?;
         // TODO CVM:
@@ -503,7 +517,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     .vp
                     .access_state(vtl.into())
                     .virtual_msrs()
-                    .map_err(Self::vp_state_error_to_hv_err)?;
+                    .map_err(Self::reg_access_error_to_hv_err)?;
                 match virt_msr {
                     HvX64RegisterName::Star => msrs.star = reg.value.as_u64(),
                     HvX64RegisterName::Cstar => msrs.cstar = reg.value.as_u64(),
@@ -517,7 +531,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 self.vp
                     .access_state(vtl.into())
                     .set_virtual_msrs(&msrs)
-                    .map_err(Self::vp_state_error_to_hv_err)?;
+                    .map_err(Self::reg_access_error_to_hv_err)?;
                 Ok(())
             }
             HvX64RegisterName::TscAux => {
@@ -526,7 +540,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     .set_tsc_aux(&virt::vp::TscAux {
                         value: reg.value.as_u64(),
                     })
-                    .map_err(Self::vp_state_error_to_hv_err)?;
+                    .map_err(Self::reg_access_error_to_hv_err)?;
                 Ok(())
             }
 
@@ -535,7 +549,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     .vp
                     .access_state(vtl.into())
                     .debug_regs()
-                    .map_err(Self::vp_state_error_to_hv_err)?;
+                    .map_err(Self::reg_access_error_to_hv_err)?;
                 match debug_reg {
                     HvX64RegisterName::Dr3 => debug_registers.dr3 = reg.value.as_u64(),
                     HvX64RegisterName::Dr7 => debug_registers.dr7 = reg.value.as_u64(),
@@ -545,7 +559,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 self.vp
                     .access_state(vtl.into())
                     .set_debug_regs(&debug_registers)
-                    .map_err(Self::vp_state_error_to_hv_err)?;
+                    .map_err(Self::reg_access_error_to_hv_err)?;
                 Ok(())
             }
             HvX64RegisterName::Pat => {
@@ -553,12 +567,12 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     .vp
                     .access_state(vtl.into())
                     .cache_control()
-                    .map_err(Self::vp_state_error_to_hv_err)?;
+                    .map_err(Self::reg_access_error_to_hv_err)?;
                 cache_control.msr_cr_pat = reg.value.as_u64();
                 self.vp
                     .access_state(vtl.into())
                     .set_cache_control(&cache_control)
-                    .map_err(Self::vp_state_error_to_hv_err)?;
+                    .map_err(Self::reg_access_error_to_hv_err)?;
                 Ok(())
             }
             register @ (HvX64RegisterName::Efer
@@ -575,7 +589,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     .vp
                     .access_state(vtl.into())
                     .registers()
-                    .map_err(Self::vp_state_error_to_hv_err)?;
+                    .map_err(Self::reg_access_error_to_hv_err)?;
                 match register {
                     HvX64RegisterName::Efer => registers.efer = reg.value.as_u64(),
                     HvX64RegisterName::Cr0 => registers.cr0 = reg.value.as_u64(),
@@ -598,7 +612,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 self.vp
                     .access_state(vtl.into())
                     .set_registers(&registers)
-                    .map_err(Self::vp_state_error_to_hv_err)?;
+                    .map_err(Self::reg_access_error_to_hv_err)?;
                 Ok(())
             }
             _ => {
@@ -718,7 +732,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::GetVpRegisters
             .map_err(|e| (e, 0))?;
 
         for (i, (&name, output)) in zip(registers, output).enumerate() {
-            *output = self.get_vp_register(name, vtl).map_err(|e| (e, i))?;
+            *output = self.get_vp_register(vtl, name).map_err(|e| (e, i))?;
         }
 
         Ok(())
@@ -748,7 +762,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
             .map_err(|_| (HvError::InvalidParameter, 0))?;
 
         for (i, reg) in registers.iter().enumerate() {
-            self.set_vp_register(reg, target_vtl).map_err(|e| (e, i))?;
+            self.set_vp_register(target_vtl, reg).map_err(|e| (e, i))?;
         }
 
         Ok(())
