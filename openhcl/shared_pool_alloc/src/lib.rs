@@ -6,7 +6,6 @@
 
 #![cfg(unix)]
 #![warn(missing_docs)]
-#![allow(unsafe_code)]
 
 mod device_dma;
 
@@ -268,7 +267,9 @@ impl user_driver::vfio::VfioDmaBuffer for SharedPoolAllocator {
             .context("unable to map allocation")?;
 
         // It is a requirement of the VfioDmaBuffer trait that all allocated buffers be zeroed out
-        mapping.fill_at(0, 0, len);
+        mapping
+            .fill_at(0, 0, len)
+            .context("failed to zero shared memory")?;
 
         let pfns: Vec<_> = (alloc.base_pfn()..alloc.base_pfn() + alloc.size_pages).collect();
 

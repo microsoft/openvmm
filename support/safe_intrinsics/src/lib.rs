@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Provides a safe wrapper around some x86-64 instructions.
+//! Provides a safe wrapper around some CPU instructions.
 //!
 //! This is needed because Rust's intrinsics are marked unsafe (despite
 //! these few being completely safe to invoke).
@@ -11,7 +11,7 @@
 #![allow(unsafe_code)]
 
 /// Invokes the cpuid instruction with input values `eax` and `ecx`.
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
+#[cfg(target_arch = "x86_64")] // xtask-fmt cpu-intrinsic
 pub fn cpuid(eax: u32, ecx: u32) -> core::arch::x86_64::CpuidResult {
     // SAFETY: this instruction is always safe to invoke. If the instruction is
     // for some reason not supported, the process will fault in an OS-specific
@@ -20,7 +20,7 @@ pub fn cpuid(eax: u32, ecx: u32) -> core::arch::x86_64::CpuidResult {
 }
 
 /// Invokes the rdtsc instruction.
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
+#[cfg(target_arch = "x86_64")] // xtask-fmt cpu-intrinsic
 pub fn rdtsc() -> u64 {
     // SAFETY: The tsc is safe to read.
     unsafe { core::arch::x86_64::_rdtsc() }
@@ -28,18 +28,17 @@ pub fn rdtsc() -> u64 {
 
 /// Emit a store fence to flush the processor's store buffer
 pub fn store_fence() {
-    #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
+    #[cfg(target_arch = "x86_64")] // xtask-fmt cpu-intrinsic
     {
         // SAFETY: this instruction has no safety requirements.
         unsafe { core::arch::x86_64::_mm_sfence() }
     }
-    #[cfg(target_arch = "aarch64")] // xtask-fmt allow-target-arch cpu-intrinsic
+    #[cfg(target_arch = "aarch64")] // xtask-fmt cpu-intrinsic
     {
         // SAFETY: this instruction has no safety requirements.
         unsafe { core::arch::asm!("dsb st", options(nostack)) };
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    // xtask-fmt allow-target-arch cpu-intrinsic
     {
         compile_error!("Unsupported architecture");
     }
