@@ -88,8 +88,8 @@ pub struct SnpBacked {
     direct_overlay_pfns_handle: shared_pool_alloc::SharedPoolHandle,
     #[inspect(hex)]
     hv_sint_notifications: u16,
-    general_stats: GeneralStats,
-    exit_stats: ExitStats,
+    general_stats: VtlArray<GeneralStats, 2>,
+    exit_stats: VtlArray<ExitStats, 2>,
     cvm: UhCvmVpState,
     shared: Arc<SnpBackedShared>,
 }
@@ -216,8 +216,8 @@ impl BackingPrivate for SnpBacked {
             direct_overlays_pfns: overlays.try_into().unwrap(),
             direct_overlay_pfns_handle: pfns_handle,
             hv_sint_notifications: 0,
-            general_stats: Default::default(),
-            exit_stats: Default::default(),
+            general_stats: VtlArray::from_fn(|_| Default::default()),
+            exit_stats: VtlArray::from_fn(|_| Default::default()),
             cvm: UhCvmVpState::new(params.hv.unwrap()),
             shared: shared.clone(),
         })
@@ -959,7 +959,9 @@ impl UhProcessor<'_, SnpBacked> {
 
         // TODO SNP: The guest busy bit needs to be tested and set atomically.
         if vmsa.v_intr_cntrl().guest_busy() {
-            self.backing.general_stats.guest_busy.increment();
+            self.backing.general_stats[entered_from_vtl]
+                .guest_busy
+                .increment();
             // Software interrupts/exceptions cannot be automatically re-injected, but RIP still
             // points to the instruction and the event should be re-generated when the
             // instruction is re-executed. Note that hardware does not provide instruction
@@ -985,7 +987,9 @@ impl UhProcessor<'_, SnpBacked> {
         vmsa.v_intr_cntrl_mut().set_guest_busy(true);
 
         if last_interrupt_ctrl.irq() && !vmsa.v_intr_cntrl().irq() {
-            self.backing.general_stats.int_ack.increment();
+            self.backing.general_stats[entered_from_vtl]
+                .int_ack
+                .increment();
             // The guest has acknowledged the interrupt.
             self.backing.lapics[entered_from_vtl]
                 .lapic
@@ -1037,7 +1041,7 @@ impl UhProcessor<'_, SnpBacked> {
                 vmsa.set_rcx(ecx.into());
                 vmsa.set_rdx(edx.into());
                 advance_to_next_instruction(&mut vmsa);
-                &mut self.backing.exit_stats.cpuid
+                &mut self.backing.exit_stats[entered_from_vtl].cpuid
             }
 
             SevExitCode::MSR => {
@@ -1116,9 +1120,9 @@ impl UhProcessor<'_, SnpBacked> {
                 }
 
                 if is_write {
-                    &mut self.backing.exit_stats.msr_write
+                    &mut self.backing.exit_stats[entered_from_vtl].msr_write
                 } else {
-                    &mut self.backing.exit_stats.msr_read
+                    &mut self.backing.exit_stats[entered_from_vtl].msr_read
                 }
             }
 
@@ -1150,7 +1154,7 @@ impl UhProcessor<'_, SnpBacked> {
                     vmsa.set_rax(rax);
                     advance_to_next_instruction(&mut vmsa);
                 }
-                &mut self.backing.exit_stats.ioio
+                &mut self.backing.exit_stats[entered_from_vtl].ioio
             }
 
             SevExitCode::VMMCALL => {
@@ -1169,7 +1173,7 @@ impl UhProcessor<'_, SnpBacked> {
                     guest_memory,
                     hv1_hypercall::X64RegisterIo::new(handler, is_64bit),
                 );
-                &mut self.backing.exit_stats.vmmcall
+                &mut self.backing.exit_stats[entered_from_vtl].vmmcall
             }
 
             SevExitCode::SHUTDOWN => {
@@ -1183,7 +1187,7 @@ impl UhProcessor<'_, SnpBacked> {
                 // hypervisor. This isn't pressing because the hypervisor
                 // currently doesn't do anything with these for guest VMs.
                 advance_to_next_instruction(&mut vmsa);
-                &mut self.backing.exit_stats.invd
+                &mut self.backing.exit_stats[entered_from_vtl].invd
             }
 
             SevExitCode::NPF if has_intercept => {
@@ -1224,19 +1228,19 @@ impl UhProcessor<'_, SnpBacked> {
                 if emulate {
                     has_intercept = false;
                     self.emulate(dev, false, entered_from_vtl).await?;
-                    &mut self.backing.exit_stats.npf
+                    &mut self.backing.exit_stats[entered_from_vtl].npf
                 } else {
-                    &mut self.backing.exit_stats.npf_spurious
+                    &mut self.backing.exit_stats[entered_from_vtl].npf_spurious
                 }
             }
 
-            SevExitCode::NPF => &mut self.backing.exit_stats.npf_no_intercept,
+            SevExitCode::NPF => &mut self.backing.exit_stats[entered_from_vtl].npf_no_intercept,
 
             SevExitCode::HLT => {
                 self.backing.lapics[entered_from_vtl].halted = true;
                 // RIP has already advanced. Clear interrupt shadow.
                 vmsa.v_intr_cntrl_mut().set_intr_shadow(false);
-                &mut self.backing.exit_stats.hlt
+                &mut self.backing.exit_stats[entered_from_vtl].hlt
             }
 
             SevExitCode::INVALID_VMCB => {
@@ -1250,7 +1254,7 @@ impl UhProcessor<'_, SnpBacked> {
                         .with_vector(x86defs::Exception::INVALID_OPCODE.0)
                         .with_valid(true),
                 );
-                &mut self.backing.exit_stats.invlpgb
+                &mut self.backing.exit_stats[entered_from_vtl].invlpgb
             }
 
             SevExitCode::RDPMC => {
@@ -1272,7 +1276,7 @@ impl UhProcessor<'_, SnpBacked> {
                     vmsa.set_rdx(0);
                     advance_to_next_instruction(&mut vmsa);
                 }
-                &mut self.backing.exit_stats.rdpmc
+                &mut self.backing.exit_stats[entered_from_vtl].rdpmc
             }
 
             SevExitCode::VMGEXIT if has_intercept => {
@@ -1284,12 +1288,12 @@ impl UhProcessor<'_, SnpBacked> {
                     }
                     _ => has_intercept = true,
                 }
-                &mut self.backing.exit_stats.vmgexit
+                &mut self.backing.exit_stats[entered_from_vtl].vmgexit
             }
 
             SevExitCode::NMI | SevExitCode::PAUSE | SevExitCode::SMI | SevExitCode::VMGEXIT => {
                 // Ignore intercept processing if the guest exited due to an automatic exit.
-                &mut self.backing.exit_stats.automatic_exit
+                &mut self.backing.exit_stats[entered_from_vtl].automatic_exit
             }
 
             SevExitCode::VINTR => {
@@ -1304,7 +1308,7 @@ impl UhProcessor<'_, SnpBacked> {
             SevExitCode::INTR => {
                 // No action is necessary after a physical interrupt intercept. A physical interrupt
                 // code is also used as a sentinel value to overwrite the previous error code.
-                &mut self.backing.exit_stats.intr
+                &mut self.backing.exit_stats[entered_from_vtl].intr
             }
 
             SevExitCode::XSETBV => {
@@ -1328,10 +1332,10 @@ impl UhProcessor<'_, SnpBacked> {
                             .with_valid(true),
                     );
                 }
-                &mut self.backing.exit_stats.xsetbv
+                &mut self.backing.exit_stats[entered_from_vtl].xsetbv
             }
 
-            SevExitCode::EXCP_DB => &mut self.backing.exit_stats.excp_db,
+            SevExitCode::EXCP_DB => &mut self.backing.exit_stats[entered_from_vtl].excp_db,
 
             _ => {
                 debug_assert!(
@@ -1339,7 +1343,7 @@ impl UhProcessor<'_, SnpBacked> {
                     "Received unexpected exit code {}",
                     vmsa.guest_error_code()
                 );
-                &mut self.backing.exit_stats.unexpected
+                &mut self.backing.exit_stats[entered_from_vtl].unexpected
             }
         };
         stat.increment();
@@ -1353,7 +1357,9 @@ impl UhProcessor<'_, SnpBacked> {
         // it may be a synthetic message that should be handled regardless of
         // the SNP exit code.
         if has_intercept {
-            self.backing.general_stats.synth_int.increment();
+            self.backing.general_stats[entered_from_vtl]
+                .synth_int
+                .increment();
             match self.runner.exit_message().header.typ {
                 HvMessageType::HvMessageTypeSynicSintDeliverable => {
                     self.handle_synic_deliverable_exit();
