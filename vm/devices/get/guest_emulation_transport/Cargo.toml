@@ -14,7 +14,7 @@ get_protocol.workspace = true
 guest_emulation_device = { workspace = true, optional = true }
 guestmem.workspace = true
 hvdef.workspace = true
-shared_pool_alloc.workspace = true
+page_pool_alloc.workspace = true
 underhill_config.workspace = true
 vmbus_async.workspace = true
 vmbus_ring.workspace = true

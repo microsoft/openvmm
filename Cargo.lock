@@ -2387,11 +2387,11 @@ dependencies = [
  "inspect",
  "inspect_counters",
  "mesh",
+ "page_pool_alloc",
  "pal_async",
  "parking_lot",
  "power_resources",
  "serde_json",
- "shared_pool_alloc",
  "test_with_tracing",
  "thiserror 2.0.0",
  "tracing",
@@ -4612,6 +4612,23 @@ name = "oversized_box"
 version = "0.0.0"
 
 [[package]]
+name = "page_pool_alloc"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "hcl",
+ "hvdef",
+ "inspect",
+ "memory_range",
+ "parking_lot",
+ "sparse_mmap",
+ "thiserror 2.0.0",
+ "tracing",
+ "user_driver",
+ "vm_topology",
+]
+
+[[package]]
 name = "page_table"
 version = "0.0.0"
 dependencies = [
@@ -5789,22 +5806,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shared_pool_alloc"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "hcl",
- "hvdef",
- "inspect",
- "parking_lot",
- "sparse_mmap",
- "thiserror 2.0.0",
- "tracing",
- "user_driver",
- "vm_topology",
-]
-
-[[package]]
 name = "shell-words"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6813,6 +6814,7 @@ dependencies = [
  "netvsp",
  "nvme_driver",
  "nvme_resources",
+ "page_pool_alloc",
  "pal",
  "pal_async",
  "pal_uring",
@@ -6827,7 +6829,6 @@ dependencies = [
  "serde_helpers",
  "serde_json",
  "serial_16550_resources",
- "shared_pool_alloc",
  "socket2",
  "sparse_mmap",
  "state_unit",
@@ -7316,13 +7317,13 @@ dependencies = [
  "libc",
  "memory_range",
  "mesh",
+ "page_pool_alloc",
  "pal",
  "pal_async",
  "pal_uring",
  "parking_lot",
  "pci_core",
  "safe_intrinsics",
- "shared_pool_alloc",
  "sidecar_client",
  "thiserror 2.0.0",
  "tracelimit",

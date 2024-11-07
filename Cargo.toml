@@ -153,9 +153,9 @@ host_fdt_parser = { path = "openhcl/host_fdt_parser" }
 kmsg_defs = { path = "openhcl/kmsg_defs" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
+page_pool_alloc = { path = "openhcl/page_pool_alloc" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
-shared_pool_alloc = { path = "openhcl/shared_pool_alloc" }
 underhill_attestation = { path = "openhcl/underhill_attestation" }
 underhill_confidentiality = { path = "openhcl/underhill_confidentiality" }
 underhill_core = { path = "openhcl/underhill_core" }
