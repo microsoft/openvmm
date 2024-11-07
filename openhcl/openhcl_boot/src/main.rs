@@ -123,8 +123,12 @@ fn build_kernel_command_line(
         "panic_print=0",
         // RELIABILITY: Reboot immediately on panic, no timeout.
         "panic=-1",
-        // RELIABILITY: Print processor context information on a fatal signal.
-        "print_fatal_signals=1",
+        // RELIABILITY: Don't print processor context information on a fatal
+        // signal. Our crash dump collection infrastructure seems reliable, and
+        // this information doesn't seem useful without a dump anyways.
+        // Additionally it may push important logs off the end of the kmsg
+        // page logged by the host.
+        "print_fatal_signals=0",
         // RELIABILITY: Unlimited logging to /dev/kmsg from userspace.
         "printk.devkmsg=on",
         // RELIABILITY: Reboot using a triple fault as the fastest method.
