@@ -477,7 +477,10 @@ impl LoadedVm {
         // which is enabled by default.
         let nvme_keepalive = !capabilities_flags.disable_nvme_keepalive();
         if let Some(m) = self.nvme_manager.as_mut() {
-            m.set_nvme_keepalive(nvme_keepalive);
+            // Only override if explicitly disabled from host.
+            if !nvme_keepalive {
+                m.override_nvme_keepalive_flag(nvme_keepalive);
+            }
         }
 
         // Do everything before the log flush under a span.

@@ -146,13 +146,12 @@ impl NvmeManager {
     }
 
     pub async fn shutdown(self) {
-        // Early return would be the fastest way to skip shutdown.
-        // Unfortunately, then there is no good way to prevent
-        // controller reset in the drop() fn if we early return here.
+        // Early return is faster way to skip shutdown.
+        // but we need to thoroughly test the data integrity.
         //
-        // TODO: Figure out how to uncomment this. Maybe just don't reset the ctrl in drop().
+        // TODO: Enable this when approved.
         //
-        // if nvme_keepalive == true { return }
+        // if self.nvme_keepalive { return }
         self.client.sender.send(Request::Shutdown {
             span: tracing::info_span!("shutdown_nvme_manager"),
             nvme_keepalive: self.nvme_keepalive,
@@ -188,8 +187,8 @@ impl NvmeManager {
         Ok(())
     }
 
-    /// Control servicing behavior: to keep the attached device intact or not.
-    pub fn set_nvme_keepalive(&mut self, nvme_keepalive: bool) {
+    /// Override (explicitly disable) the default behavior.
+    pub fn override_nvme_keepalive_flag(&mut self, nvme_keepalive: bool) {
         self.nvme_keepalive = nvme_keepalive;
     }
 }
