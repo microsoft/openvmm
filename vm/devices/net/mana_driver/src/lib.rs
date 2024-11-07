@@ -3,6 +3,7 @@
 
 //! A user-mode driver for MANA (Microsoft Azure Network Adapter) devices.
 
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 mod bnic_driver;

@@ -3,6 +3,7 @@
 
 //! NVMe driver implementation.
 
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 mod driver;
