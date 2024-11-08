@@ -369,6 +369,7 @@ fn map_nvme_error(err: nvme_driver::RequestError) -> DiskError {
             }
         }
         nvme_driver::RequestError::Memory(err) => DiskError::MemoryAccess(err.into()),
+        nvme_driver::RequestError::Hv(err) => DiskError::Hv(err),
         err @ nvme_driver::RequestError::TooLarge => {
             DiskError::Io(io::Error::new(io::ErrorKind::InvalidInput, err))
         }

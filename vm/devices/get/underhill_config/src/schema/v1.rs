@@ -528,6 +528,9 @@ impl ParseSchema<crate::Vtl2SettingsFixed> for Vtl2SettingsFixed {
             scsi_sub_channels: self.scsi_sub_channels.map_or(0, |x| x as u16),
             io_ring_size: self.io_ring_size.unwrap_or(256),
             max_bounce_buffer_pages: self.max_bounce_buffer_pages,
+            dma_bounce_buffer_pages_per_queue: self.dma_bounce_buffer_pages_per_queue,
+            dma_bounce_buffer_pages_per_io_threshold: self.dma_bounce_buffer_pages_per_io_threshold,
+            max_nvme_drivers: self.max_nvme_drivers,
         })
     }
 }

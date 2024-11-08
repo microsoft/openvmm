@@ -50,7 +50,9 @@ async fn test_nvme_driver(driver: DefaultDriver) {
 
     let device = EmulatedDevice::new(nvme, msi_set, mem);
 
-    let driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();
+    let driver = NvmeDriver::new(&driver_source, 64, device, 128, None, None)
+        .await
+        .unwrap();
 
     let namespace = driver.namespace(1).await.unwrap();
 

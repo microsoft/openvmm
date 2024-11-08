@@ -10,6 +10,7 @@ rust-version.workspace = true
 inspect.workspace = true
 pal_event.workspace = true
 sparse_mmap.workspace = true
+memory_range.workspace = true
 
 thiserror.workspace = true
 zerocopy.workspace = true

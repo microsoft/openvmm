@@ -1065,6 +1065,7 @@ dependencies = [
  "async-trait",
  "futures",
  "guestmem",
+ "hvdef",
  "inspect",
  "scsi_buffers",
  "stackfuture",
@@ -2352,6 +2353,7 @@ name = "guestmem"
 version = "0.0.0"
 dependencies = [
  "inspect",
+ "memory_range",
  "pal_event",
  "sparse_mmap",
  "thiserror 2.0.0",
@@ -4193,6 +4195,7 @@ dependencies = [
  "futures",
  "guestmem",
  "guid",
+ "hvdef",
  "inspect",
  "inspect_counters",
  "mesh",
@@ -4207,8 +4210,10 @@ dependencies = [
  "task_control",
  "test_with_tracing",
  "thiserror 2.0.0",
+ "tracelimit",
  "tracing",
  "user_driver",
+ "virt_mshv_vtl",
  "vmcore",
  "zerocopy",
 ]

@@ -24,6 +24,7 @@ use thiserror::Error;
 use tracing::Instrument;
 use user_driver::vfio::VfioDevice;
 use user_driver::vfio::VfioDmaBuffer;
+use virt_mshv_vtl::UhPartition;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceId;
@@ -83,6 +84,9 @@ impl NvmeManager {
         driver_source: &VmTaskDriverSource,
         vp_count: u32,
         dma_buffer: Arc<dyn VfioDmaBuffer>,
+        dma_bounce_buffer_pages_per_queue: u64,
+        dma_bounce_buffer_pages_per_io_threshold: Option<u32>,
+        partition: Option<Arc<UhPartition>>,
     ) -> Self {
         let (send, recv) = mesh::channel();
         let driver = driver_source.simple();
@@ -91,6 +95,9 @@ impl NvmeManager {
             devices: HashMap::new(),
             vp_count,
             dma_buffer,
+            dma_bounce_buffer_pages_per_queue,
+            dma_bounce_buffer_pages_per_io_threshold,
+            partition,
         };
         let task = driver.spawn("nvme-manager", async move { worker.run(recv).await });
         Self {
@@ -167,6 +174,9 @@ struct NvmeManagerWorker {
     #[inspect(skip)]
     dma_buffer: Arc<dyn VfioDmaBuffer>,
     vp_count: u32,
+    dma_bounce_buffer_pages_per_queue: u64,
+    dma_bounce_buffer_pages_per_io_threshold: Option<u32>,
+    partition: Option<Arc<UhPartition>>,
 }
 
 impl NvmeManagerWorker {
@@ -238,14 +248,20 @@ impl NvmeManagerWorker {
                         .await
                         .map_err(InnerError::Vfio)?;
 
-                let driver =
-                    nvme_driver::NvmeDriver::new(&self.driver_source, self.vp_count, device)
-                        .instrument(tracing::info_span!(
-                            "nvme_driver_init",
-                            pci_id = entry.key()
-                        ))
-                        .await
-                        .map_err(InnerError::DeviceInitFailed)?;
+                let driver = nvme_driver::NvmeDriver::new(
+                    &self.driver_source,
+                    self.vp_count,
+                    device,
+                    self.dma_bounce_buffer_pages_per_queue,
+                    self.dma_bounce_buffer_pages_per_io_threshold,
+                    self.partition.clone(),
+                )
+                .instrument(tracing::info_span!(
+                    "nvme_driver_init",
+                    pci_id = entry.key()
+                ))
+                .await
+                .map_err(InnerError::DeviceInitFailed)?;
 
                 entry.insert(driver)
             }
