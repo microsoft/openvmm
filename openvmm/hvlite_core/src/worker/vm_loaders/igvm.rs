@@ -26,7 +26,6 @@ use loader::importer::ImageLoad;
 use loader::importer::StartupMemoryType;
 use loader::importer::TableRegister;
 use loader::importer::X86Register;
-use memory_range::flatten_ranges;
 use memory_range::subtract_ranges;
 use memory_range::MemoryRange;
 use range_map_vec::RangeMap;
