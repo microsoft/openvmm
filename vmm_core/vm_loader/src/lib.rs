@@ -265,10 +265,6 @@ impl<R: Debug + GuestArch> ImageLoad<R> for Loader<'_, R> {
         unimplemented!()
     }
 
-    fn set_lower_vtl_context_page(&mut self, _page_base: u64) -> anyhow::Result<()> {
-        unimplemented!()
-    }
-
     fn create_parameter_area(
         &mut self,
         _page_base: u64,

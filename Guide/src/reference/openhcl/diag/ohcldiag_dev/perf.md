@@ -22,8 +22,8 @@ configuration file (openhcl-x64-dev.json). E.g. increase it to 524288 like:
 
 ```json
 {
-    "vtl2": {
-        "underhill": {
+    "image": {
+        "openhcl": {
             ....................
             "memory_page_count": 524288
         }
