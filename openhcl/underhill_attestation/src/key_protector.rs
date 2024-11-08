@@ -103,7 +103,9 @@ impl KeyProtectorExt for KeyProtector {
         let des_key = if found_ingress_dek || use_des_key {
             if found_ingress_dek && use_des_key {
                 // Validate the DEK format that expects to hold an AES-wrapped key.
-                if !self.dek[ingress_idx].dek_buffer[RSA_WRAPPED_AES_KEY_LENGTH..]
+                // Throw an error if there is non-zero bytes in the buffer beyond the expected AES-wrapped key length
+                // (`AES_WRAPPED_AES_KEY_LENGTH`).
+                if !self.dek[ingress_idx].dek_buffer[AES_WRAPPED_AES_KEY_LENGTH..]
                     .iter()
                     .all(|&x| x == 0)
                 {
@@ -168,12 +170,14 @@ impl KeyProtectorExt for KeyProtector {
                         &dek_buffer[..AES_WRAPPED_AES_KEY_LENGTH],
                     )
                     .map_err(GetKeysFromKeyProtectorError::IngressDekAesUnwrap)?;
+
                     if aes_unwrapped_key.len() != AES_GCM_KEY_LENGTH {
                         Err(GetKeysFromKeyProtectorError::InvalidAesUnwrapOutputSize {
                             output_size: aes_unwrapped_key.len(),
                             expected_size: AES_GCM_KEY_LENGTH,
                         })?
                     }
+
                     ingress_key[..aes_unwrapped_key.len()].copy_from_slice(&aes_unwrapped_key);
                 } else {
                     tracing::info!(
@@ -297,8 +301,10 @@ mod tests {
         assert!(result.is_ok());
         let rsa_wrapped_dek = result.unwrap();
 
-        const INGRESS_INDEX: usize = 0;
-        const EGRESS_INDEX: usize = 1;
+        // Test key rotation for first boot
+
+        let ingress_index = 0;
+        let egress_index = 1;
 
         let mut data = [0u8; crate::protocol::vmgs::KEY_PROTECTOR_SIZE];
         data[..rsa_wrapped_dek.len()].copy_from_slice(&rsa_wrapped_dek);
@@ -307,26 +313,33 @@ mod tests {
         assert!(result.is_some());
         let mut key_protector = result.unwrap();
         assert_eq!(
-            key_protector.dek[INGRESS_INDEX]
+            key_protector.dek[ingress_index]
                 .dek_buffer
                 .iter()
                 .all(|&x| x == 0),
             false
         );
         assert_eq!(
-            key_protector.dek[EGRESS_INDEX]
+            key_protector.dek[egress_index]
                 .dek_buffer
                 .iter()
                 .all(|&x| x == 0),
             true
         );
 
-        let result = key_protector.unwrap_and_rotate_keys(&kek, None, INGRESS_INDEX, EGRESS_INDEX);
+        let result = key_protector.unwrap_and_rotate_keys(&kek, None, ingress_index, egress_index);
         assert!(result.is_ok());
         let keys = result.unwrap();
         assert_eq!(keys.ingress, dek);
         assert_eq!(
-            key_protector.dek[EGRESS_INDEX]
+            key_protector.dek[ingress_index]
+                .dek_buffer
+                .iter()
+                .all(|&x| x == 0),
+            false
+        );
+        assert_eq!(
+            key_protector.dek[egress_index]
                 .dek_buffer
                 .iter()
                 .all(|&x| x == 0),
@@ -335,7 +348,41 @@ mod tests {
 
         let result = crypto::rsa_oaep_decrypt(
             &kek,
-            &key_protector.dek[EGRESS_INDEX].dek_buffer[..kek.size() as usize],
+            &key_protector.dek[egress_index].dek_buffer[..kek.size() as usize],
+            crypto::RsaOaepHashAlgorithm::Sha256,
+        );
+        assert!(result.is_ok());
+        let plaintext = result.unwrap();
+        assert_eq!(plaintext, keys.egress);
+        let key_egress_first_boot = keys.egress;
+
+        // Test key rotation for reboot
+
+        let ingress_index = 1;
+        let egress_index = 0;
+
+        let result = key_protector.unwrap_and_rotate_keys(&kek, None, ingress_index, egress_index);
+        assert!(result.is_ok());
+        let keys = result.unwrap();
+        assert_eq!(keys.ingress, key_egress_first_boot);
+        assert_eq!(
+            key_protector.dek[ingress_index]
+                .dek_buffer
+                .iter()
+                .all(|&x| x == 0),
+            false
+        );
+        assert_eq!(
+            key_protector.dek[egress_index]
+                .dek_buffer
+                .iter()
+                .all(|&x| x == 0),
+            false
+        );
+
+        let result = crypto::rsa_oaep_decrypt(
+            &kek,
+            &key_protector.dek[egress_index].dek_buffer[..kek.size() as usize],
             crypto::RsaOaepHashAlgorithm::Sha256,
         );
         assert!(result.is_ok());
@@ -362,8 +409,10 @@ mod tests {
         assert!(result.is_ok());
         let rsa_wrapped_des = result.unwrap();
 
-        const INGRESS_INDEX: usize = 0;
-        const EGRESS_INDEX: usize = 1;
+        // Test key rotation for first boot
+
+        let ingress_index = 0;
+        let egress_index = 1;
 
         let mut data = [0u8; crate::protocol::vmgs::KEY_PROTECTOR_SIZE];
         data[..aes_wrapped_dek.len()].copy_from_slice(&aes_wrapped_dek);
@@ -372,14 +421,14 @@ mod tests {
         assert!(result.is_some());
         let mut key_protector = result.unwrap();
         assert_eq!(
-            key_protector.dek[INGRESS_INDEX]
+            key_protector.dek[ingress_index]
                 .dek_buffer
                 .iter()
                 .all(|&x| x == 0),
             false
         );
         assert_eq!(
-            key_protector.dek[EGRESS_INDEX]
+            key_protector.dek[egress_index]
                 .dek_buffer
                 .iter()
                 .all(|&x| x == 0),
@@ -389,14 +438,21 @@ mod tests {
         let result = key_protector.unwrap_and_rotate_keys(
             &kek,
             Some(rsa_wrapped_des.as_ref()),
-            INGRESS_INDEX,
-            EGRESS_INDEX,
+            ingress_index,
+            egress_index,
         );
         assert!(result.is_ok());
         let keys = result.unwrap();
         assert_eq!(keys.ingress, dek);
         assert_eq!(
-            key_protector.dek[EGRESS_INDEX]
+            key_protector.dek[ingress_index]
+                .dek_buffer
+                .iter()
+                .all(|&x| x == 0),
+            false
+        );
+        assert_eq!(
+            key_protector.dek[egress_index]
                 .dek_buffer
                 .iter()
                 .all(|&x| x == 0),
@@ -410,7 +466,50 @@ mod tests {
 
         let result = crypto::aes_key_unwrap_with_padding(
             &des_key,
-            &key_protector.dek[EGRESS_INDEX].dek_buffer[..AES_WRAPPED_AES_KEY_LENGTH],
+            &key_protector.dek[egress_index].dek_buffer[..AES_WRAPPED_AES_KEY_LENGTH],
+        );
+        assert!(result.is_ok());
+        let unwrapped_key = result.unwrap();
+        assert_eq!(unwrapped_key, keys.egress);
+        let key_egress_first_boot = keys.egress;
+
+        // Test key rotation for reboot
+
+        let ingress_index = 1;
+        let egress_index = 0;
+
+        let result = key_protector.unwrap_and_rotate_keys(
+            &kek,
+            Some(rsa_wrapped_des.as_ref()),
+            ingress_index,
+            egress_index,
+        );
+        assert!(result.is_ok());
+        let keys = result.unwrap();
+        assert_eq!(keys.ingress, key_egress_first_boot);
+        assert_eq!(
+            key_protector.dek[ingress_index]
+                .dek_buffer
+                .iter()
+                .all(|&x| x == 0),
+            false
+        );
+        assert_eq!(
+            key_protector.dek[egress_index]
+                .dek_buffer
+                .iter()
+                .all(|&x| x == 0),
+            false
+        );
+
+        let result =
+            crypto::rsa_oaep_decrypt(&kek, &rsa_wrapped_des, crypto::RsaOaepHashAlgorithm::Sha256);
+        assert!(result.is_ok());
+        let des_key = result.unwrap();
+
+        let result = crypto::aes_key_unwrap_with_padding(
+            &des_key,
+            &key_protector.dek[egress_index].dek_buffer[..AES_WRAPPED_AES_KEY_LENGTH],
         );
         assert!(result.is_ok());
         let unwrapped_key = result.unwrap();
