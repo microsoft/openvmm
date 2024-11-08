@@ -684,9 +684,9 @@ fn load_uefi<R: IgvmfilegenRegister + GuestArch + 'static>(
     Ok(load_info)
 }
 
-fn load_linux<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
+fn load_linux<R: IgvmfilegenRegister + GuestArch + 'static>(
     loader: &mut IgvmVtlLoader<'_, R>,
-    config: &'a LinuxImage,
+    config: &LinuxImage,
     resources: &Resources,
 ) -> Result<loader::linux::LoadInfo, anyhow::Error> {
     let LinuxImage {

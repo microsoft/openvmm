@@ -128,7 +128,7 @@ impl<R: VbsRegister + GuestArch> IgvmVtlLoader<'_, R> {
         IgvmVtlLoader {
             loader: &mut *self.loader,
             vtl: Vtl::Vtl0,
-            vp_context: Some(VbsVpContext::new(self.vtl.into())),
+            vp_context: Some(VbsVpContext::new(self.vtl)),
         }
     }
 
@@ -498,7 +498,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
 
         match isolation_type {
             LoaderIsolationType::None | LoaderIsolationType::Vbs { .. } => {
-                vp_context_builder = Some(Box::new(VbsVpContext::<R>::new(max_vtl.into())));
+                vp_context_builder = Some(Box::new(VbsVpContext::<R>::new(max_vtl)));
 
                 // Add VBS platform header
                 let info = IGVM_VHS_SUPPORTED_PLATFORM {
