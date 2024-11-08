@@ -9,7 +9,6 @@ use crate::interrupt::DeviceInterruptSource;
 use crate::memory::MappedDmaTarget;
 use crate::memory::MemoryBlock;
 use crate::memory::PAGE_SIZE;
-use crate::vfio::VfioDmaBuffer;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use crate::HostDmaAllocator;
@@ -266,7 +265,8 @@ impl HostDmaAllocator for EmulatedDmaAllocator {
     }
 }
 
-impl VfioDmaBuffer for EmulatedDmaAllocator {
+#[cfg(target_os = "linux")]
+impl crate::vfio::VfioDmaBuffer for EmulatedDmaAllocator {
     fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
         Ok(MemoryBlock::new(
             self.shared_mem.alloc(len).context("out of memory")?,
