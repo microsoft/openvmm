@@ -21,6 +21,24 @@ If you're using a different development environment, we nonetheless suggest
 reading through this section, so you can enable similar settings in whatever
 editor / IDE you happen to be using.
 
+```admonish tip
+Just want the recommended editor settings? Put this in `openvmm/.vscode/settings.json`:
+
+```json
+{
+    "rust-analyzer.linkedProjects": [
+        "Cargo.toml",
+    ],
+    "rust-analyzer.cargo.targetDir": true,
+    "rust-analyzer.imports.granularity.group": "item",
+    "rust-analyzer.imports.group.enable": false,
+    "[rust]": {
+        "editor.formatOnSave": true
+    },
+}
+```
+```
+
 ### \[WSL2] Connecting to WSL using VSCode
 
 When using Visual Studio Code with WSL, be sure to use the

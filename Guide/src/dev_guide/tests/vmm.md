@@ -14,7 +14,15 @@ The OpenVMM repo contains a set of "heavyweight" VMM tests that fully boot a
 virtual machine and run validation against it. Unlike Unit tests, these are all
 centralized in a single top-level `vmm_tests` directory.
 
+The OpenVMM CI pipeline will run the full test suite; you'd typically run only
+the tests relevant to the changes you're working on.
+
 ### Running VMM Tests
+
+```admonish warning
+`cargo nextest run` won't rebuild any of your changes. Make sure you `cargo build`
+or `cargo xflowey igvm [RECIPE]` first!
+```
 
 VMM tests are run using standard Rust test infrastructure, and are invoked via
 `cargo test` / `cargo nextest`.
@@ -27,6 +35,32 @@ For example, to run a simple VMM test that simply boots using UEFI:
 
 ```bash
 cargo nextest run -p vmm_tests x86_64::uefi_x64_frontpage
+```
+
+And, for further example, to rebuild everything and run all the tests
+(see below for details on these steps):
+
+```bash
+# Install (most) of the dependencies; cargo nextest run may tell you
+# about other deps.
+rustup target add x86_64-unknown-uefi
+rustup target add x86_64-pc-windows-msvc
+sudo apt install clang-tools-14 lld-14
+
+cargo xtask guest-test download-image
+cargo xtask guest-test uefi --bootx64
+
+# Rebuild all, and run all tests
+cargo build --target x86_64-pc-windows-msvc -p pipette
+cargo build --target x86_64-unknown-linux-musl -p pipette
+
+cargo build --target x86_64-pc-windows-msvc -p openvmm
+
+cargo xflowey build-igvm x64-test-linux-direct
+cargo xflowey build-igvm x64-cvm
+cargo xflowey build-igvm x64
+
+cargo nextest run --target x86_64-pc-windows-msvc -p vmm_tests
 ```
 
 #### \[Linux] Cross-compiling `pipette.exe`
@@ -73,6 +107,7 @@ necessary artifacts. That said - test infrastructure is designed to report clear
 and actionable error messages whenever a required test artifact cannot be found,
 which provide detailed instructions on how to build / acquire the missing
 artifact.
+
 
 #### Printing logs for VMM Tests
 
