@@ -778,26 +778,9 @@ impl InitializedVm {
         } = &cfg.load_mode
         {
             match vtl2_base_address {
-                Vtl2BaseAddressType::File | Vtl2BaseAddressType::Absolute(_) => None,
-                Vtl2BaseAddressType::Vtl2Allocate { size } => {
-                    // Shouldn't we just remove this and let VTL2 fail? It can
-                    // fail after it boots if we want a clean error message.
-                    if let Ok(vtl2_size) = super::vm_loaders::igvm::vtl2_memory_info(
-                        igvm_file
-                            .as_ref()
-                            .expect("igvm file should be already parsed"),
-                    ) {
-                        // While VTL2 self allocation does not require a size, at
-                        // least validate the requested size we're going to pass to
-                        // vtl2 is at least as big as the file, as VTL2 will treat
-                        // it as invalid otherwise.
-                        if size.map(|size| size < vtl2_size.len()).unwrap_or(false) {
-                            anyhow::bail!("requested VTL2 size is smaller than the file size");
-                        }
-                    }
-
-                    None
-                }
+                Vtl2BaseAddressType::File
+                | Vtl2BaseAddressType::Absolute(_)
+                | Vtl2BaseAddressType::Vtl2Allocate { .. } => None,
                 Vtl2BaseAddressType::MemoryLayout { size } => {
                     let vtl2_range = super::vm_loaders::igvm::vtl2_memory_range(
                         physical_address_size,

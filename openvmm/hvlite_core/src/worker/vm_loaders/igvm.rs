@@ -26,6 +26,7 @@ use loader::importer::ImageLoad;
 use loader::importer::StartupMemoryType;
 use loader::importer::TableRegister;
 use loader::importer::X86Register;
+use memory_range::flatten_ranges;
 use memory_range::subtract_ranges;
 use memory_range::MemoryRange;
 use range_map_vec::RangeMap;
@@ -1236,7 +1237,7 @@ fn build_memory_map(
 
     for (range, r) in memory_range::walk_ranges(
         all_ram.iter().map(|r| (r.range, r.vnode)),
-        memory_range::flatten_equivalent_ranges(vtl2_protectable_ram.iter().map(|&r| (r, ()))),
+        memory_range::flatten_ranges(vtl2_protectable_ram.iter().copied()).map(|r| (r, ())),
     ) {
         match r {
             memory_range::RangeWalkResult::Neither => {}
