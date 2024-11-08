@@ -512,12 +512,12 @@ impl<
                             // These parameters may not be present so it is not an error if they are missing.
                             "servicing" => {
                                 storage.preserve_dma_4k_pages =
-                                    match openhcl_child.find_property("dma-preserve-pages") {
-                                        Ok(pages) => pages.map(|p| {
-                                            p.read_u64(0).expect("error reading dma property")
-                                        }),
-                                        Err(_) => None,
-                                    };
+                                    openhcl_child
+                                        .find_property("dma-preserve-pages")
+                                        .ok()
+                                        .flatten()
+                                        .map(|p| p.read_u64(0).ok())
+                                        .flatten();
                             }
                             _ => {
                                 #[cfg(feature = "tracing")]
