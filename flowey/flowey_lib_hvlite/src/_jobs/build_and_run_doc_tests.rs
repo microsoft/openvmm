@@ -53,7 +53,7 @@ impl SimpleFlowNode for Node {
                 };
 
                 sh.change_dir(rt.read(openvmm_repo_path));
-                xshell::cmd!(sh, "cargo test --doc --workspace --no-fast-fail --target {target} --profile {profile}").run()?;
+                xshell::cmd!(sh, "cargo test --doc --workspace --no-fail-fast --target {target} --profile {profile}").run()?;
 
                 Ok(())
             }
