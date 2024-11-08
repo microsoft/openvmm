@@ -1694,7 +1694,7 @@ pub mod steps {
             ///               .with("subscription-id", subscription_id)
             /// ```
             ///
-            /// ```text,ignore
+            /// ```text
             /// - name: Azure Login
             ///   uses: Azure/login@v2
             ///   with:
