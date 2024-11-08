@@ -406,6 +406,7 @@ impl NvmeManagerWorker {
             let nvme_driver = nvme_driver::NvmeDriver::restore(
                 &self.driver_source,
                 saved_state.cpu_count,
+                dma_buffer.clone(),
                 vfio_device,
                 &disk.driver_state,
             )

@@ -35,6 +35,7 @@ use tracing::Instrument;
 use user_driver::backoff::Backoff;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
+use user_driver::vfio::VfioDmaBuffer;
 use user_driver::DeviceBacking;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -529,6 +530,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
         cpu_count: u32,
+        dma_buffer: Arc<dyn VfioDmaBuffer>,
         mut device: T,
         saved_state: &NvmeDriverSavedState,
     ) -> anyhow::Result<Self> {

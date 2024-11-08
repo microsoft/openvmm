@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// Copyright (C) Microsoft Corporation. All rights reserved.
-
 //! This module implements a fixed memory allocator for allocating pages at specific location.
 
 #![cfg(unix)]
