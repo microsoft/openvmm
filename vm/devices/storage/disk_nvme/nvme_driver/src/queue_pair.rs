@@ -117,7 +117,7 @@ impl PendingCommands {
         let mut commands = Vec::new();
         // Convert Slab into Vec.
         for cmd in &self.commands {
-            commands.push(cmd.1.command.clone());
+            commands.push(cmd.1.command);
         }
         PendingCommandsSavedState {
             commands,
@@ -131,7 +131,7 @@ impl PendingCommands {
         for cmd in &saved_state.commands {
             let (send, mut _recv) = mesh::oneshot::<nvme_spec::Completion>();
             let pending_command = PendingCommand {
-                command: cmd.clone(),
+                command: *cmd,
                 respond: send,
             };
             // Remove high CID bits to be used as a key.
