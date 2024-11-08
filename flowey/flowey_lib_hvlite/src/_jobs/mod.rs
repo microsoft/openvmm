@@ -17,6 +17,7 @@ pub mod build_and_publish_pipette;
 pub mod build_and_publish_rustdoc;
 pub mod build_and_publish_vmgs_lib;
 pub mod build_and_publish_vmgstool;
+pub mod build_and_run_doc_tests;
 pub mod build_and_run_nextest_unit_tests;
 pub mod build_and_run_nextest_vmm_tests;
 pub mod cfg_common;

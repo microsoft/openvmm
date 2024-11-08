@@ -2299,6 +2299,9 @@
       "flowey_lib_common::run_cargo_nextest_run": [
         "{\"Run\":{\"config_file\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_nextest_run:1:flowey_lib_hvlite/src/run_cargo_nextest_run.rs:58:31\"},\"is_secret\":false},\"extra_env\":{\"backing_var\":{\"Inline\":{\"OPENVMM_LOG\":\"debug,mesh_node=info\",\"RUST_LOG\":\"trace,mesh_node=info\"}},\"is_secret\":false},\"friendly_name\":\"unit-tests\",\"nextest_filter_expr\":null,\"nextest_profile\":\"ci\",\"pre_run_deps\":[{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_nextest_unit_tests:2:flowey_lib_hvlite/src/build_nextest_unit_tests.rs:97:37\"},\"is_secret\":false},{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_nextest_unit_tests:4:flowey_lib_hvlite/src/build_nextest_unit_tests.rs:176:35\"},\"is_secret\":false}],\"results\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests:0:flowey_lib_hvlite/src/_jobs/build_and_run_nextest_unit_tests.rs:56:27\",\"is_secret\":false},\"run_ignored\":false,\"run_kind\":{\"BuildAndRun\":{\"extra_env\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_nextest_unit_tests:5:flowey_lib_hvlite/src/build_nextest_unit_tests.rs:212:36\"},\"is_secret\":false},\"features\":{\"Specific\":[\"ci\"]},\"no_default_features\":false,\"packages\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_nextest_unit_tests:3:flowey_core/src/node.rs:896:34\"},\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"x86_64-pc-windows-msvc\",\"unstable_panic_abort_tests\":null}},\"tool_config_files\":[],\"with_rlimit_unlimited_core_size\":true,\"working_dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_nextest_run:0:flowey_lib_hvlite/src/run_cargo_nextest_run.rs:55:37\"},\"is_secret\":false}}}"
       ],
+      "flowey_lib_hvlite::_jobs::build_and_run_doc_tests": [
+        "{\"done\":{\"backing_var\":\"start40\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"x86_64-pc-windows-msvc\"}"
+      ],
       "flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests": [
         "{\"artifact_dir\":null,\"done\":{\"backing_var\":\"start39\",\"is_secret\":false},\"fail_job_on_test_fail\":true,\"junit_test_label\":\"x64-windows-unit-tests\",\"nextest_profile\":\"Ci\",\"profile\":\"Debug\",\"target\":\"x86_64-pc-windows-msvc\",\"unstable_panic_abort_tests\":null}"
       ],
@@ -2345,6 +2348,7 @@
         "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
+        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_run_doc_tests:1:flowey_lib_hvlite/src/_jobs/build_and_run_doc_tests.rs:40:37\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:13:flowey_lib_hvlite/src/_jobs/check_clippy.rs:153:37\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:5:flowey_lib_hvlite/src/_jobs/check_clippy.rs:153:37\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_nextest_unit_tests:1:flowey_lib_hvlite/src/build_nextest_unit_tests.rs:93:37\",\"is_secret\":false}}",
@@ -2375,6 +2379,7 @@
         "{\"backing_var\":\"flowey_lib_hvlite::install_openvmm_rust_build_essential:1:flowey_lib_hvlite/src/install_openvmm_rust_build_essential.rs:34:17\",\"is_secret\":false}"
       ],
       "flowey_lib_hvlite::install_openvmm_rust_build_essential": [
+        "{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_run_doc_tests:0:flowey_lib_hvlite/src/_jobs/build_and_run_doc_tests.rs:39:34\",\"is_secret\":false}",
         "{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:10:flowey_lib_hvlite/src/_jobs/check_clippy.rs:112:33\",\"is_secret\":false}",
         "{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:2:flowey_lib_hvlite/src/_jobs/check_clippy.rs:112:33\",\"is_secret\":false}",
         "{\"backing_var\":\"flowey_lib_hvlite::build_nextest_unit_tests:2:flowey_lib_hvlite/src/build_nextest_unit_tests.rs:97:37\",\"is_secret\":false}",
@@ -2497,8 +2502,11 @@
       "flowey_lib_common::run_cargo_nextest_run": [
         "{\"Run\":{\"config_file\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_nextest_run:1:flowey_lib_hvlite/src/run_cargo_nextest_run.rs:58:31\"},\"is_secret\":false},\"extra_env\":{\"backing_var\":{\"Inline\":{\"OPENVMM_LOG\":\"debug,mesh_node=info\",\"RUST_LOG\":\"trace,mesh_node=info\"}},\"is_secret\":false},\"friendly_name\":\"unit-tests\",\"nextest_filter_expr\":null,\"nextest_profile\":\"ci\",\"pre_run_deps\":[{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_nextest_unit_tests:2:flowey_lib_hvlite/src/build_nextest_unit_tests.rs:97:37\"},\"is_secret\":false},{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_nextest_unit_tests:4:flowey_lib_hvlite/src/build_nextest_unit_tests.rs:176:35\"},\"is_secret\":false}],\"results\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests:0:flowey_lib_hvlite/src/_jobs/build_and_run_nextest_unit_tests.rs:56:27\",\"is_secret\":false},\"run_ignored\":false,\"run_kind\":{\"BuildAndRun\":{\"extra_env\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_nextest_unit_tests:5:flowey_lib_hvlite/src/build_nextest_unit_tests.rs:212:36\"},\"is_secret\":false},\"features\":\"All\",\"no_default_features\":false,\"packages\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_nextest_unit_tests:3:flowey_core/src/node.rs:896:34\"},\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-gnu\",\"unstable_panic_abort_tests\":null}},\"tool_config_files\":[],\"with_rlimit_unlimited_core_size\":true,\"working_dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_nextest_run:0:flowey_lib_hvlite/src/run_cargo_nextest_run.rs:55:37\"},\"is_secret\":false}}}"
       ],
+      "flowey_lib_hvlite::_jobs::build_and_run_doc_tests": [
+        "{\"done\":{\"backing_var\":\"start45\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-gnu\"}"
+      ],
       "flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests": [
-        "{\"artifact_dir\":null,\"done\":{\"backing_var\":\"start43\",\"is_secret\":false},\"fail_job_on_test_fail\":true,\"junit_test_label\":\"x64-linux-unit-tests\",\"nextest_profile\":\"Ci\",\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-gnu\",\"unstable_panic_abort_tests\":null}"
+        "{\"artifact_dir\":null,\"done\":{\"backing_var\":\"start44\",\"is_secret\":false},\"fail_job_on_test_fail\":true,\"junit_test_label\":\"x64-linux-unit-tests\",\"nextest_profile\":\"Ci\",\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-gnu\",\"unstable_panic_abort_tests\":null}"
       ],
       "flowey_lib_hvlite::_jobs::cfg_common": [
         "{\"deny_warnings\":true,\"local_only\":null,\"locked\":true,\"verbose\":{\"backing_var\":{\"RuntimeVar\":\"param0\"},\"is_secret\":false}}"
@@ -2510,9 +2518,9 @@
         "{}"
       ],
       "flowey_lib_hvlite::_jobs::check_clippy": [
-        "{\"also_check_misc_nostd_crates\":false,\"done\":{\"backing_var\":\"start42\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"aarch64-apple-darwin\"}",
-        "{\"also_check_misc_nostd_crates\":false,\"done\":{\"backing_var\":\"start41\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"aarch64-unknown-linux-gnu\"}",
-        "{\"also_check_misc_nostd_crates\":false,\"done\":{\"backing_var\":\"start40\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-gnu\"}"
+        "{\"also_check_misc_nostd_crates\":false,\"done\":{\"backing_var\":\"start43\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"aarch64-apple-darwin\"}",
+        "{\"also_check_misc_nostd_crates\":false,\"done\":{\"backing_var\":\"start42\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"aarch64-unknown-linux-gnu\"}",
+        "{\"also_check_misc_nostd_crates\":false,\"done\":{\"backing_var\":\"start41\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-gnu\"}"
       ],
       "flowey_lib_hvlite::build_nextest_unit_tests": [
         "{\"build_mode\":{\"ImmediatelyRun\":{\"nextest_profile\":\"Ci\",\"results\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests:0:flowey_lib_hvlite/src/_jobs/build_and_run_nextest_unit_tests.rs:56:27\",\"is_secret\":false}}},\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-gnu\",\"unstable_panic_abort_tests\":null}"
@@ -2545,6 +2553,7 @@
         "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
+        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_run_doc_tests:1:flowey_lib_hvlite/src/_jobs/build_and_run_doc_tests.rs:40:37\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:12:flowey_lib_hvlite/src/_jobs/check_clippy.rs:153:37\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:20:flowey_lib_hvlite/src/_jobs/check_clippy.rs:153:37\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:4:flowey_lib_hvlite/src/_jobs/check_clippy.rs:153:37\",\"is_secret\":false}}",
@@ -2578,6 +2587,7 @@
         "{\"backing_var\":\"flowey_lib_hvlite::install_openvmm_rust_build_essential:1:flowey_lib_hvlite/src/install_openvmm_rust_build_essential.rs:34:17\",\"is_secret\":false}"
       ],
       "flowey_lib_hvlite::install_openvmm_rust_build_essential": [
+        "{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_run_doc_tests:0:flowey_lib_hvlite/src/_jobs/build_and_run_doc_tests.rs:39:34\",\"is_secret\":false}",
         "{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:17:flowey_lib_hvlite/src/_jobs/check_clippy.rs:112:33\",\"is_secret\":false}",
         "{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:2:flowey_lib_hvlite/src/_jobs/check_clippy.rs:112:33\",\"is_secret\":false}",
         "{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:9:flowey_lib_hvlite/src/_jobs/check_clippy.rs:112:33\",\"is_secret\":false}",
@@ -2716,8 +2726,11 @@
       "flowey_lib_common::run_cargo_nextest_run": [
         "{\"Run\":{\"config_file\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_nextest_run:1:flowey_lib_hvlite/src/run_cargo_nextest_run.rs:58:31\"},\"is_secret\":false},\"extra_env\":{\"backing_var\":{\"Inline\":{\"OPENVMM_LOG\":\"debug,mesh_node=info\",\"RUST_LOG\":\"trace,mesh_node=info\"}},\"is_secret\":false},\"friendly_name\":\"unit-tests\",\"nextest_filter_expr\":null,\"nextest_profile\":\"ci\",\"pre_run_deps\":[{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_nextest_unit_tests:2:flowey_lib_hvlite/src/build_nextest_unit_tests.rs:97:37\"},\"is_secret\":false},{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_nextest_unit_tests:4:flowey_lib_hvlite/src/build_nextest_unit_tests.rs:176:35\"},\"is_secret\":false},{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_nextest_unit_tests:5:flowey_lib_hvlite/src/build_nextest_unit_tests.rs:186:25\"},\"is_secret\":false}],\"results\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests:0:flowey_lib_hvlite/src/_jobs/build_and_run_nextest_unit_tests.rs:56:27\",\"is_secret\":false},\"run_ignored\":false,\"run_kind\":{\"BuildAndRun\":{\"extra_env\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_nextest_unit_tests:6:flowey_lib_hvlite/src/build_nextest_unit_tests.rs:212:36\"},\"is_secret\":false},\"features\":\"All\",\"no_default_features\":false,\"packages\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::build_nextest_unit_tests:3:flowey_core/src/node.rs:896:34\"},\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-musl\",\"unstable_panic_abort_tests\":null}},\"tool_config_files\":[],\"with_rlimit_unlimited_core_size\":true,\"working_dir\":{\"backing_var\":{\"RuntimeVar\":\"flowey_lib_hvlite::run_cargo_nextest_run:0:flowey_lib_hvlite/src/run_cargo_nextest_run.rs:55:37\"},\"is_secret\":false}}}"
       ],
+      "flowey_lib_hvlite::_jobs::build_and_run_doc_tests": [
+        "{\"done\":{\"backing_var\":\"start49\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-musl\"}"
+      ],
       "flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests": [
-        "{\"artifact_dir\":null,\"done\":{\"backing_var\":\"start46\",\"is_secret\":false},\"fail_job_on_test_fail\":true,\"junit_test_label\":\"x64-linux-musl-unit-tests\",\"nextest_profile\":\"Ci\",\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-musl\",\"unstable_panic_abort_tests\":null}"
+        "{\"artifact_dir\":null,\"done\":{\"backing_var\":\"start48\",\"is_secret\":false},\"fail_job_on_test_fail\":true,\"junit_test_label\":\"x64-linux-musl-unit-tests\",\"nextest_profile\":\"Ci\",\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-musl\",\"unstable_panic_abort_tests\":null}"
       ],
       "flowey_lib_hvlite::_jobs::cfg_common": [
         "{\"deny_warnings\":true,\"local_only\":null,\"locked\":true,\"verbose\":{\"backing_var\":{\"RuntimeVar\":\"param0\"},\"is_secret\":false}}"
@@ -2729,8 +2742,8 @@
         "{}"
       ],
       "flowey_lib_hvlite::_jobs::check_clippy": [
-        "{\"also_check_misc_nostd_crates\":true,\"done\":{\"backing_var\":\"start45\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"aarch64-unknown-linux-musl\"}",
-        "{\"also_check_misc_nostd_crates\":true,\"done\":{\"backing_var\":\"start44\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-musl\"}"
+        "{\"also_check_misc_nostd_crates\":true,\"done\":{\"backing_var\":\"start47\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"aarch64-unknown-linux-musl\"}",
+        "{\"also_check_misc_nostd_crates\":true,\"done\":{\"backing_var\":\"start46\",\"is_secret\":false},\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-musl\"}"
       ],
       "flowey_lib_hvlite::build_nextest_unit_tests": [
         "{\"build_mode\":{\"ImmediatelyRun\":{\"nextest_profile\":\"Ci\",\"results\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests:0:flowey_lib_hvlite/src/_jobs/build_and_run_nextest_unit_tests.rs:56:27\",\"is_secret\":false}}},\"profile\":\"Debug\",\"target\":\"x86_64-unknown-linux-musl\",\"unstable_panic_abort_tests\":null}"
@@ -2765,6 +2778,7 @@
         "{\"Version\":\"24.0.2\"}"
       ],
       "flowey_lib_hvlite::git_checkout_openvmm_repo": [
+        "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_run_doc_tests:1:flowey_lib_hvlite/src/_jobs/build_and_run_doc_tests.rs:40:37\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:17:flowey_lib_hvlite/src/_jobs/check_clippy.rs:153:37\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:6:flowey_lib_hvlite/src/_jobs/check_clippy.rs:153:37\",\"is_secret\":false}}",
         "{\"GetRepoDir\":{\"backing_var\":\"flowey_lib_hvlite::build_nextest_unit_tests:1:flowey_lib_hvlite/src/build_nextest_unit_tests.rs:93:37\",\"is_secret\":false}}",
@@ -2800,6 +2814,7 @@
         "{\"backing_var\":\"flowey_lib_hvlite::install_openvmm_rust_build_essential:1:flowey_lib_hvlite/src/install_openvmm_rust_build_essential.rs:34:17\",\"is_secret\":false}"
       ],
       "flowey_lib_hvlite::install_openvmm_rust_build_essential": [
+        "{\"backing_var\":\"flowey_lib_hvlite::_jobs::build_and_run_doc_tests:0:flowey_lib_hvlite/src/_jobs/build_and_run_doc_tests.rs:39:34\",\"is_secret\":false}",
         "{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:14:flowey_lib_hvlite/src/_jobs/check_clippy.rs:112:33\",\"is_secret\":false}",
         "{\"backing_var\":\"flowey_lib_hvlite::_jobs::check_clippy:3:flowey_lib_hvlite/src/_jobs/check_clippy.rs:112:33\",\"is_secret\":false}",
         "{\"backing_var\":\"flowey_lib_hvlite::build_nextest_unit_tests:2:flowey_lib_hvlite/src/build_nextest_unit_tests.rs:97:37\",\"is_secret\":false}",
@@ -2896,7 +2911,7 @@
         "{}"
       ],
       "flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive": [
-        "{\"artifact_dir\":null,\"dep_artifact_dirs\":{\"artifact_dir_guest_test_uefi\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-guest_test_uefi\"},\"is_secret\":false},\"artifact_dir_openhcl_igvm_files\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-openhcl-igvm\"},\"is_secret\":false},\"artifact_dir_openvmm\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-windows-openvmm\"},\"is_secret\":false},\"artifact_dir_pipette_linux_musl\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-linux-musl-pipette\"},\"is_secret\":false},\"artifact_dir_pipette_windows\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-windows-pipette\"},\"is_secret\":false}},\"done\":{\"backing_var\":\"start47\",\"is_secret\":false},\"fail_job_on_test_fail\":true,\"junit_test_label\":\"x64-windows-intel-vmm-tests\",\"nextest_filter_expr\":\"all()\",\"nextest_profile\":\"Ci\",\"target\":\"x86_64-pc-windows-msvc\",\"vmm_tests_artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-windows-vmm-tests-archive\"},\"is_secret\":false}}"
+        "{\"artifact_dir\":null,\"dep_artifact_dirs\":{\"artifact_dir_guest_test_uefi\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-guest_test_uefi\"},\"is_secret\":false},\"artifact_dir_openhcl_igvm_files\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-openhcl-igvm\"},\"is_secret\":false},\"artifact_dir_openvmm\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-windows-openvmm\"},\"is_secret\":false},\"artifact_dir_pipette_linux_musl\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-linux-musl-pipette\"},\"is_secret\":false},\"artifact_dir_pipette_windows\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-windows-pipette\"},\"is_secret\":false}},\"done\":{\"backing_var\":\"start50\",\"is_secret\":false},\"fail_job_on_test_fail\":true,\"junit_test_label\":\"x64-windows-intel-vmm-tests\",\"nextest_filter_expr\":\"all()\",\"nextest_profile\":\"Ci\",\"target\":\"x86_64-pc-windows-msvc\",\"vmm_tests_artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-windows-vmm-tests-archive\"},\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::artifact_guest_test_uefi::resolve": [
         "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-guest_test_uefi\"},\"is_secret\":false},\"guest_test_uefi\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:5:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs:117:17\",\"is_secret\":false}}"
@@ -3039,7 +3054,7 @@
         "{}"
       ],
       "flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive": [
-        "{\"artifact_dir\":null,\"dep_artifact_dirs\":{\"artifact_dir_guest_test_uefi\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-guest_test_uefi\"},\"is_secret\":false},\"artifact_dir_openhcl_igvm_files\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-openhcl-igvm\"},\"is_secret\":false},\"artifact_dir_openvmm\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-windows-openvmm\"},\"is_secret\":false},\"artifact_dir_pipette_linux_musl\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-linux-musl-pipette\"},\"is_secret\":false},\"artifact_dir_pipette_windows\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-windows-pipette\"},\"is_secret\":false}},\"done\":{\"backing_var\":\"start48\",\"is_secret\":false},\"fail_job_on_test_fail\":true,\"junit_test_label\":\"x64-windows-amd-vmm-tests\",\"nextest_filter_expr\":\"all()\",\"nextest_profile\":\"Ci\",\"target\":\"x86_64-pc-windows-msvc\",\"vmm_tests_artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-windows-vmm-tests-archive\"},\"is_secret\":false}}"
+        "{\"artifact_dir\":null,\"dep_artifact_dirs\":{\"artifact_dir_guest_test_uefi\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-guest_test_uefi\"},\"is_secret\":false},\"artifact_dir_openhcl_igvm_files\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-openhcl-igvm\"},\"is_secret\":false},\"artifact_dir_openvmm\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-windows-openvmm\"},\"is_secret\":false},\"artifact_dir_pipette_linux_musl\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-linux-musl-pipette\"},\"is_secret\":false},\"artifact_dir_pipette_windows\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-windows-pipette\"},\"is_secret\":false}},\"done\":{\"backing_var\":\"start51\",\"is_secret\":false},\"fail_job_on_test_fail\":true,\"junit_test_label\":\"x64-windows-amd-vmm-tests\",\"nextest_filter_expr\":\"all()\",\"nextest_profile\":\"Ci\",\"target\":\"x86_64-pc-windows-msvc\",\"vmm_tests_artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-windows-vmm-tests-archive\"},\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::artifact_guest_test_uefi::resolve": [
         "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-guest_test_uefi\"},\"is_secret\":false},\"guest_test_uefi\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:5:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs:117:17\",\"is_secret\":false}}"
@@ -3182,7 +3197,7 @@
         "{}"
       ],
       "flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive": [
-        "{\"artifact_dir\":null,\"dep_artifact_dirs\":{\"artifact_dir_guest_test_uefi\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-guest_test_uefi\"},\"is_secret\":false},\"artifact_dir_openhcl_igvm_files\":null,\"artifact_dir_openvmm\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-linux-openvmm\"},\"is_secret\":false},\"artifact_dir_pipette_linux_musl\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-linux-musl-pipette\"},\"is_secret\":false},\"artifact_dir_pipette_windows\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-windows-pipette\"},\"is_secret\":false}},\"done\":{\"backing_var\":\"start49\",\"is_secret\":false},\"fail_job_on_test_fail\":true,\"junit_test_label\":\"x64-linux-vmm-tests\",\"nextest_filter_expr\":\"all() and not test(openhcl) and not test(pcat_x64)\",\"nextest_profile\":\"Ci\",\"target\":\"x86_64-unknown-linux-gnu\",\"vmm_tests_artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-linux-vmm-tests-archive\"},\"is_secret\":false}}"
+        "{\"artifact_dir\":null,\"dep_artifact_dirs\":{\"artifact_dir_guest_test_uefi\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-guest_test_uefi\"},\"is_secret\":false},\"artifact_dir_openhcl_igvm_files\":null,\"artifact_dir_openvmm\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-linux-openvmm\"},\"is_secret\":false},\"artifact_dir_pipette_linux_musl\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-linux-musl-pipette\"},\"is_secret\":false},\"artifact_dir_pipette_windows\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-windows-pipette\"},\"is_secret\":false}},\"done\":{\"backing_var\":\"start52\",\"is_secret\":false},\"fail_job_on_test_fail\":true,\"junit_test_label\":\"x64-linux-vmm-tests\",\"nextest_filter_expr\":\"all() and not test(openhcl) and not test(pcat_x64)\",\"nextest_profile\":\"Ci\",\"target\":\"x86_64-unknown-linux-gnu\",\"vmm_tests_artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-linux-vmm-tests-archive\"},\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::artifact_guest_test_uefi::resolve": [
         "{\"artifact_dir\":{\"backing_var\":{\"RuntimeVar\":\"artifact_use_from_x64-guest_test_uefi\"},\"is_secret\":false},\"guest_test_uefi\":{\"backing_var\":\"flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:5:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs:117:17\",\"is_secret\":false}}"
@@ -3301,7 +3316,7 @@
         "{}"
       ],
       "flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm": [
-        "{\"base_recipe\":\"X64\",\"done\":{\"backing_var\":\"start50\",\"is_secret\":false}}"
+        "{\"base_recipe\":\"X64\",\"done\":{\"backing_var\":\"start53\",\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::download_lxutil": [
         "{\"Version\":\"10.0.26100.1-240331-1435.ge-release\"}"
@@ -3371,7 +3386,7 @@
         "{\"Version\":\"1.82.0\"}"
       ],
       "flowey_lib_hvlite::_jobs::all_good_job": [
-        "{\"did_fail_env_var\":\"ANY_JOBS_FAILED\",\"done\":{\"backing_var\":\"start51\",\"is_secret\":false}}"
+        "{\"did_fail_env_var\":\"ANY_JOBS_FAILED\",\"done\":{\"backing_var\":\"start54\",\"is_secret\":false}}"
       ],
       "flowey_lib_hvlite::_jobs::cfg_common": [
         "{\"deny_warnings\":true,\"local_only\":null,\"locked\":true,\"verbose\":{\"backing_var\":{\"RuntimeVar\":\"param0\"},\"is_secret\":false}}"

@@ -242,7 +242,7 @@ async fn node_from_environment() -> anyhow::Result<Option<NodeResult>> {
 /// let mesh = Mesh::new("remote_mesh".to_string()).unwrap();
 /// let (send, recv) = mesh::channel();
 /// mesh.launch_host(ProcessConfig::new("test"), recv).await.unwrap();
-/// send.send(String::new("message for new process"));
+/// send.send(String::from("message for new process"));
 /// # })
 /// ```
 pub struct Mesh {

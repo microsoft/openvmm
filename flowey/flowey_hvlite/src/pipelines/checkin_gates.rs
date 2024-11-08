@@ -805,19 +805,27 @@ impl IntoPipeline for CheckinGatesCli {
             }
 
             if let Some((test_label, target, pub_unit_test_junit_xml)) = unit_test_target {
-                clippy_unit_test_job = clippy_unit_test_job.dep_on(|ctx| {
-                    flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests::Params {
-                        junit_test_label: test_label,
-                        nextest_profile:
-                            flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
-                        fail_job_on_test_fail: true,
-                        target,
-                        profile: CommonProfile::from_release(release),
-                        unstable_panic_abort_tests: None,
-                        artifact_dir: pub_unit_test_junit_xml.map(|x| ctx.publish_artifact(x)),
-                        done: ctx.new_done_handle(),
-                    }
-                });
+                clippy_unit_test_job = clippy_unit_test_job
+                    .dep_on(|ctx| {
+                        flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests::Params {
+                            junit_test_label: test_label,
+                            nextest_profile:
+                                flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
+                            fail_job_on_test_fail: true,
+                            target: target.clone(),
+                            profile: CommonProfile::from_release(release),
+                            unstable_panic_abort_tests: None,
+                            artifact_dir: pub_unit_test_junit_xml.map(|x| ctx.publish_artifact(x)),
+                            done: ctx.new_done_handle(),
+                        }
+                    })
+                    .dep_on(
+                        |ctx| flowey_lib_hvlite::_jobs::build_and_run_doc_tests::Params {
+                            target,
+                            profile: CommonProfile::from_release(release),
+                            done: ctx.new_done_handle(),
+                        },
+                    );
             }
 
             all_jobs.push(clippy_unit_test_job.finish());

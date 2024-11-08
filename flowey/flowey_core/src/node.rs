@@ -1683,18 +1683,18 @@ pub mod steps {
             /// Adds a parameter to the step, specified as a key-value pair corresponding
             /// to the param name and value. For example the following code generates the following yaml:
             ///
-            /// ```rust
+            /// ```rust,ignore
             /// let (client_id, write_client_id) = ctx.new_secret_var();
             /// let (tenant_id, write_tenant_id) = ctx.new_secret_var();
             /// let (subscription_id, write_subscription_id) = ctx.new_secret_var();
-            /// ... <insert rust step writing to each of those secrets>
+            /// // ... insert rust step writing to each of those secrets ...
             /// GhStepBuilder::new("Azure Login", "Azure/login@v2")
             ///               .with("client-id", client_id)
             ///               .with("tenant-id", tenant_id)
             ///               .with("subscription-id", subscription_id)
             /// ```
             ///
-            /// ```ignore
+            /// ```text,ignore
             /// - name: Azure Login
             ///   uses: Azure/login@v2
             ///   with:

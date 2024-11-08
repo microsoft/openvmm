@@ -2302,16 +2302,16 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey.exe v 14 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar1 --is-raw-string
+        flowey.exe v 14 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar6 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar1'
+      name: 🌼 Write to 'floweyvar6'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar1 }}
+        persist-credentials: ${{ env.floweyvar6 }}
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
@@ -2494,19 +2494,22 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey.exe v 14 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --write-to-gh-env floweyvar6 --is-raw-string
+        flowey.exe v 14 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --write-to-gh-env floweyvar1 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar6'
+      name: 🌼 Write to 'floweyvar1'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__publish_test_results__3
       uses: actions/upload-artifact@v4
       with:
         name: x64-windows-unit-tests-junit-xml
-        path: ${{ env.floweyvar6 }}
+        path: ${{ env.floweyvar1 }}
       name: 'publish test results: x64-windows-unit-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: flowey.exe e 14 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 1
+      shell: bash
+    - name: run doctests for x86_64-pc-windows-msvc
+      run: flowey.exe e 14 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 14 flowey_lib_common::cache 3
@@ -2665,16 +2668,16 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey v 15 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar1 --is-raw-string
+        flowey v 15 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar6 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar1'
+      name: 🌼 Write to 'floweyvar6'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar1 }}
+        persist-credentials: ${{ env.floweyvar6 }}
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
@@ -2864,19 +2867,22 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey v 15 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --write-to-gh-env floweyvar6 --is-raw-string
+        flowey v 15 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --write-to-gh-env floweyvar1 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar6'
+      name: 🌼 Write to 'floweyvar1'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__publish_test_results__3
       uses: actions/upload-artifact@v4
       with:
         name: x64-linux-unit-tests-junit-xml
-        path: ${{ env.floweyvar6 }}
+        path: ${{ env.floweyvar1 }}
       name: 'publish test results: x64-linux-unit-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: flowey e 15 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 1
+      shell: bash
+    - name: run doctests for x86_64-unknown-linux-gnu
+      run: flowey e 15 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 15 flowey_lib_common::cache 3
@@ -2994,16 +3000,16 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey v 16 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar1 --is-raw-string
+        flowey v 16 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar6 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar1'
+      name: 🌼 Write to 'floweyvar6'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar1 }}
+        persist-credentials: ${{ env.floweyvar6 }}
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
@@ -3231,19 +3237,22 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey v 16 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --write-to-gh-env floweyvar6 --is-raw-string
+        flowey v 16 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --write-to-gh-env floweyvar1 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar6'
+      name: 🌼 Write to 'floweyvar1'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__publish_test_results__3
       uses: actions/upload-artifact@v4
       with:
         name: x64-linux-musl-unit-tests-junit-xml
-        path: ${{ env.floweyvar6 }}
+        path: ${{ env.floweyvar1 }}
       name: 'publish test results: x64-linux-musl-unit-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: flowey e 16 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 1
+      shell: bash
+    - name: run doctests for x86_64-unknown-linux-musl
+      run: flowey e 16 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 16 flowey_lib_common::cache 3
