@@ -26,6 +26,7 @@ use loader::importer::ImageLoad;
 use loader::importer::StartupMemoryType;
 use loader::importer::TableRegister;
 use loader::importer::X86Register;
+use memory_range::subtract_ranges;
 use memory_range::MemoryRange;
 use range_map_vec::RangeMap;
 use std::collections::HashMap;
@@ -91,8 +92,8 @@ pub enum Error {
     NoVbsSupport,
     #[error("vp context for lower VTL not supported")]
     LowerVtlContext,
-    #[error("missing vtl2 required range")]
-    MissingVtl2RequiredRange,
+    #[error("missing required memory range {0}")]
+    MissingRequiredMemory(MemoryRange),
 }
 
 fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
@@ -289,21 +290,13 @@ pub fn vtl2_memory_range(
     Ok(MemoryRange::new(selected_addr..(selected_addr + size)))
 }
 
-/// The type of VTL2 ram range to be reported to the guest.
-#[derive(Clone, Debug)]
-enum Vtl2RamRange {
-    /// An explicit range in the memory map, marked as VTL2_PROTECTABLE.
-    Host(MemoryRangeWithNode),
-    /// No range, just a size hint and the device tree property that VTL2 should
-    /// allocate itself.
-    Vtl2Allocate(u64),
-}
-
 /// Build a device tree representing the whole guest partition.
 fn build_device_tree(
     processor_topology: &ProcessorTopology<X86Topology>,
     mem_layout: &MemoryLayout,
-    vtl2_ram_range: &Vtl2RamRange,
+    all_ram: &[MemoryRangeWithNode],
+    vtl2_protectable_ram: &[MemoryRange],
+    vtl2_base_address: Vtl2BaseAddressType,
     command_line: &str,
     with_vmbus_redirect: bool,
     com_serial: Option<SerialInformation>,
@@ -356,7 +349,7 @@ fn build_device_tree(
 
     let mut root = cpus.end_node()?;
 
-    let (memory_map, vnodes) = build_memory_map(vtl2_ram_range, mem_layout);
+    let (memory_map, vnodes) = build_memory_map(all_ram, vtl2_protectable_ram);
 
     // Build the memory entries in reverse order to require the underhill fdt
     // parser to sort them correctly.
@@ -476,11 +469,12 @@ fn build_device_tree(
     let p_mmio_size = root.add_string("mmio-size")?;
     let mut openhcl = root.start_node("openhcl")?;
 
-    let memory_allocation_mode = match vtl2_ram_range {
-        Vtl2RamRange::Host(_) => "host",
-        Vtl2RamRange::Vtl2Allocate(size) => {
-            // Encode the size at the expected property.
-            openhcl = openhcl.add_u64(p_memory_size, *size)?;
+    let memory_allocation_mode = match vtl2_base_address {
+        Vtl2BaseAddressType::Vtl2Allocate { size } => {
+            if let Some(size) = size {
+                // Encode the size at the expected property.
+                openhcl = openhcl.add_u64(p_memory_size, size)?;
+            }
 
             // TODO: allow configuring more mmio size, but report 128 MB for
             // now.
@@ -488,6 +482,7 @@ fn build_device_tree(
 
             "vtl2"
         }
+        _ => "host",
     };
 
     openhcl = openhcl.add_str(p_memory_allocation_mode, memory_allocation_mode)?;
@@ -749,43 +744,70 @@ fn load_igvm_x86(
         }
     };
 
-    // Do a first pass of the directive headers to search for needed headers. As
-    // currently only booting underhill is supported, there must be a
-    // RequiredMemory header that describes VTL2 ram.
-    let vtl2_ram_range = {
-        let mut vtl2_ram_range = None;
-        for header in igvm_file.directives() {
-            if let IgvmDirectiveHeader::RequiredMemory {
-                gpa,
-                compatibility_mask: _,
-                number_of_bytes,
-                vtl2_protectable,
-            } = *header
-            {
-                if vtl2_protectable || max_vtl == hvdef::Vtl::Vtl0 {
+    // Ensure required memory is present.
+    let required_ram = igvm_file.directives().iter().filter_map(|header| {
+        if let IgvmDirectiveHeader::RequiredMemory {
+            gpa,
+            compatibility_mask: _,
+            number_of_bytes,
+            vtl2_protectable: _,
+        } = *header
+        {
+            let base = relocate_gpa(gpa);
+            Some(MemoryRange::new(base..base + number_of_bytes as u64))
+        } else {
+            None
+        }
+    });
+
+    let mut all_ram = mem_layout
+        .ram()
+        .iter()
+        .cloned()
+        .chain(
+            mem_layout
+                .vtl2_range()
+                .map(|r| MemoryRangeWithNode { range: r, vnode: 0 }),
+        )
+        .collect::<Vec<_>>();
+
+    all_ram.sort_by_key(|r| r.range.start());
+
+    if let Some(range) = subtract_ranges(required_ram, all_ram.iter().map(|r| r.range)).next() {
+        return Err(Error::MissingRequiredMemory(range));
+    }
+
+    // Anything requested is VTL2 protectable.
+    let mut vtl2_protectable_ram = match vtl2_base_address {
+        Vtl2BaseAddressType::File
+        | Vtl2BaseAddressType::Absolute(_)
+        | Vtl2BaseAddressType::MemoryLayout { .. } => igvm_file
+            .directives()
+            .iter()
+            .filter_map(|header| {
+                if let IgvmDirectiveHeader::RequiredMemory {
+                    gpa,
+                    compatibility_mask: _,
+                    number_of_bytes,
+                    vtl2_protectable: true,
+                } = *header
+                {
                     let base = relocate_gpa(gpa);
-                    vtl2_ram_range = Some(MemoryRangeWithNode {
-                        range: MemoryRange::new(base..base + number_of_bytes as u64),
-                        vnode: 0, // TODO: HvLite is not numa-aware today, additional plumbing is required
-                    });
-                    break;
+                    Some(MemoryRange::new(base..base + number_of_bytes as u64))
+                } else {
+                    None
                 }
-            }
-        }
-
-        let vtl2_range = vtl2_ram_range.ok_or(Error::MissingVtl2RequiredRange)?;
-
-        // The Vtl2 ram range is only set when Vtl2 is not allocating ram
-        // itself.
-        match vtl2_base_address {
-            Vtl2BaseAddressType::File
-            | Vtl2BaseAddressType::Absolute(_)
-            | Vtl2BaseAddressType::MemoryLayout { .. } => Vtl2RamRange::Host(vtl2_range),
-            Vtl2BaseAddressType::Vtl2Allocate { size } => {
-                Vtl2RamRange::Vtl2Allocate(size.unwrap_or(vtl2_range.range.len()))
-            }
-        }
+            })
+            .collect::<Vec<_>>(),
+        Vtl2BaseAddressType::Vtl2Allocate { .. } => Vec::new(),
     };
+
+    // If an extra VTL2 range is provided, add it to the protectable list.
+    if let Some(range) = mem_layout.vtl2_range() {
+        vtl2_protectable_ram.push(range);
+    }
+
+    vtl2_protectable_ram.sort_by_key(|r| r.start());
 
     let mut page_table_cpu_state: Option<CpuPagingState> = None;
 
@@ -945,7 +967,7 @@ fn load_igvm_x86(
                 import_parameter(&mut parameter_areas, info, mmio_ranges.as_bytes())?;
             }
             IgvmDirectiveHeader::MemoryMap(ref info) => {
-                let (memory_map, _) = build_memory_map(&vtl2_ram_range, mem_layout);
+                let (memory_map, _) = build_memory_map(&all_ram, &vtl2_protectable_ram);
                 import_parameter(&mut parameter_areas, info, memory_map.as_bytes())?;
             }
             IgvmDirectiveHeader::CommandLine(ref info) => {
@@ -955,7 +977,9 @@ fn load_igvm_x86(
                 let dt = build_device_tree(
                     processor_topology,
                     mem_layout,
-                    &vtl2_ram_range,
+                    &all_ram,
+                    &vtl2_protectable_ram,
+                    vtl2_base_address,
                     &String::from_utf8_lossy(command_line.as_bytes()),
                     with_vmbus_redirect,
                     com_serial,
@@ -1204,71 +1228,36 @@ fn load_igvm_x86(
 /// layout and VTL2 ram range. Carry NUMA node information on the side for
 /// callers who want it.
 fn build_memory_map(
-    vtl2_ram_range: &Vtl2RamRange,
-    mem_layout: &MemoryLayout,
+    all_ram: &[MemoryRangeWithNode],
+    vtl2_protectable_ram: &[MemoryRange],
 ) -> (Vec<IGVM_VHS_MEMORY_MAP_ENTRY>, Vec<u32>) {
     let mut memory_map = Vec::new();
     let mut vnodes = Vec::new();
 
-    for mem in mem_layout.ram() {
-        if let Vtl2RamRange::Host(vtl2_ram_range) = &vtl2_ram_range {
-            if mem.range.contains(&vtl2_ram_range.range) {
-                // Split this range into a vtl0 range, and vtl2 range.
-                let lower_start = mem.range.start();
-                let lower_end = vtl2_ram_range.range.start();
-                if lower_end > lower_start {
-                    memory_map.push(memory_map_entry(&MemoryRange::new(lower_start..lower_end)));
-                    vnodes.push(mem.vnode);
-                }
-
-                // Add the VTL2 memory entry
+    for (range, r) in memory_range::walk_ranges(
+        all_ram.iter().map(|r| (r.range, r.vnode)),
+        memory_range::flatten_equivalent_ranges(vtl2_protectable_ram.iter().map(|&r| (r, ()))),
+    ) {
+        match r {
+            memory_range::RangeWalkResult::Neither => {}
+            memory_range::RangeWalkResult::Left(vnode) => {
+                memory_map.push(memory_map_entry(&range));
+                vnodes.push(vnode);
+            }
+            memory_range::RangeWalkResult::Right(()) => {
+                unreachable!("vtl2 protectable range not in all RAM")
+            }
+            memory_range::RangeWalkResult::Both(vnode, ()) => {
                 memory_map.push(IGVM_VHS_MEMORY_MAP_ENTRY {
-                    starting_gpa_page_number: vtl2_ram_range.range.start() / HV_PAGE_SIZE,
-                    number_of_pages: vtl2_ram_range.range.len() / HV_PAGE_SIZE,
+                    starting_gpa_page_number: range.start_4k_gpn(),
+                    number_of_pages: range.page_count_4k(),
                     entry_type: igvm_defs::MemoryMapEntryType::VTL2_PROTECTABLE,
                     flags: 0,
                     reserved: 0,
                 });
-                vnodes.push(vtl2_ram_range.vnode);
-
-                // Add the remaining VTL0 memory entry
-                let upper_start = vtl2_ram_range.range.end();
-                let upper_end = mem.range.end();
-                if upper_end > upper_start {
-                    memory_map.push(memory_map_entry(&MemoryRange::new(upper_start..upper_end)));
-                    vnodes.push(mem.vnode);
-                }
-
-                // Move to the next range.
-                continue;
+                vnodes.push(vnode);
             }
         }
-
-        memory_map.push(memory_map_entry(&mem.range));
-        vnodes.push(mem.vnode);
-    }
-
-    // If the memory layout base address type is used, the memory layout
-    // contains a specific VTL2 range that is not reported as part of the ram
-    // ranges. This is because VTL2 has it's own memory allocation dedicated to
-    // VTL2 in in this case.
-    if let Some(vtl2_range) = mem_layout.vtl2_range() {
-        let vtl2_ram_range = match vtl2_ram_range {
-            Vtl2RamRange::Host(vtl2_ram_range) => vtl2_ram_range,
-            Vtl2RamRange::Vtl2Allocate(_) => {
-                panic!("vtl2 range should be host with memlayout vtl2 special range")
-            }
-        };
-        assert!(vtl2_range.contains(&vtl2_ram_range.range));
-
-        memory_map.push(IGVM_VHS_MEMORY_MAP_ENTRY {
-            starting_gpa_page_number: vtl2_range.start() / HV_PAGE_SIZE,
-            number_of_pages: vtl2_range.len() / HV_PAGE_SIZE,
-            entry_type: igvm_defs::MemoryMapEntryType::VTL2_PROTECTABLE,
-            flags: 0,
-            reserved: 0,
-        });
-        vnodes.push(vtl2_ram_range.vnode);
     }
 
     assert_eq!(memory_map.len(), vnodes.len());

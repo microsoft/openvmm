@@ -246,10 +246,10 @@ pub enum MemoryAllocationMode {
     Vtl2 {
         /// The number of bytes VTL2 should allocate for memory for itself.
         /// Encoded as `openhcl/memory-size` in device tree.
-        memory_size: u64,
+        memory_size: Option<u64>,
         /// The number of bytes VTL2 should allocate for mmio for itself.
         /// Encoded as `openhcl/mmio-size` in device tree.
-        mmio_size: u64,
+        mmio_size: Option<u64>,
     },
 }
 
@@ -453,21 +453,15 @@ impl<
                             let memory_size = child
                                 .find_property("memory-size")
                                 .map_err(ErrorKind::Prop)?
-                                .ok_or(ErrorKind::PropMissing {
-                                    node_name: child.name,
-                                    prop_name: "memory-size",
-                                })?
-                                .read_u64(0)
+                                .map(|p| p.read_u64(0))
+                                .transpose()
                                 .map_err(ErrorKind::Prop)?;
 
                             let mmio_size = child
                                 .find_property("mmio-size")
                                 .map_err(ErrorKind::Prop)?
-                                .ok_or(ErrorKind::PropMissing {
-                                    node_name: child.name,
-                                    prop_name: "mmio-size",
-                                })?
-                                .read_u64(0)
+                                .map(|p| p.read_u64(0))
+                                .transpose()
                                 .map_err(ErrorKind::Prop)?;
 
                             storage.memory_allocation_mode = MemoryAllocationMode::Vtl2 {
@@ -1358,10 +1352,14 @@ mod tests {
                 mmio_size,
             } => {
                 // Encode the size at the expected property.
-                openhcl = openhcl
-                    .add_u64(p_memory_allocation_size, memory_size)
-                    .unwrap();
-                openhcl = openhcl.add_u64(p_mmio_allocation_size, mmio_size).unwrap();
+                if let Some(memory_size) = memory_size {
+                    openhcl = openhcl
+                        .add_u64(p_memory_allocation_size, memory_size)
+                        .unwrap();
+                }
+                if let Some(mmio_size) = mmio_size {
+                    openhcl = openhcl.add_u64(p_mmio_allocation_size, mmio_size).unwrap();
+                }
                 "vtl2"
             }
         };
@@ -1525,8 +1523,8 @@ mod tests {
             false,
             None,
             MemoryAllocationMode::Vtl2 {
-                memory_size: 1000 * 1024 * 1024, // 1000 MB
-                mmio_size: 128 * 1024 * 1024,    // 128 MB
+                memory_size: Some(1000 * 1024 * 1024), // 1000 MB
+                mmio_size: Some(128 * 1024 * 1024),    // 128 MB
             },
         );
 

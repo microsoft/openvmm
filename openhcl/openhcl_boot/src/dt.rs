@@ -474,10 +474,13 @@ pub fn write_dt(
         } => {
             let p_memory_size = openhcl_builder.add_string("memory-size")?;
             let p_mmio_size = openhcl_builder.add_string("mmio-size")?;
-            openhcl_builder = openhcl_builder
-                .add_str(p_memory_allocation_mode, "vtl2")?
-                .add_u64(p_memory_size, memory_size)?
-                .add_u64(p_mmio_size, mmio_size)?;
+            openhcl_builder = openhcl_builder.add_str(p_memory_allocation_mode, "vtl2")?;
+            if let Some(memory_size) = memory_size {
+                openhcl_builder = openhcl_builder.add_u64(p_memory_size, memory_size)?;
+            }
+            if let Some(mmio_size) = mmio_size {
+                openhcl_builder = openhcl_builder.add_u64(p_mmio_size, mmio_size)?;
+            }
         }
     }
 
