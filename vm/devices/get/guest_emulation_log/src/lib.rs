@@ -196,7 +196,7 @@ impl<T: RingMem + Unpin> GelChannel<T> {
                 Ok(data) => match &*data.level {
                     "ERROR" => {
                         tracing::error!(
-                            target: "underhill_log",
+                            target: "paravisor_log",
                             inner_target = &*data.target,
                             message = data.fields.message.as_deref(),
                             fields = %data.fields.extra,
@@ -205,7 +205,7 @@ impl<T: RingMem + Unpin> GelChannel<T> {
                     }
                     "WARN" => {
                         tracing::warn!(
-                            target: "underhill_log",
+                            target: "paravisor_log",
                             inner_target = &*data.target,
                             message = data.fields.message.as_deref(),
                             fields = %data.fields.extra,
@@ -214,7 +214,7 @@ impl<T: RingMem + Unpin> GelChannel<T> {
                     }
                     "INFO" => {
                         tracing::info!(
-                            target: "underhill_log",
+                            target: "paravisor_log",
                             inner_target = &*data.target,
                             message = data.fields.message.as_deref(),
                             fields = %data.fields.extra,
@@ -223,7 +223,7 @@ impl<T: RingMem + Unpin> GelChannel<T> {
                     }
                     "DEBUG" => {
                         tracing::debug!(
-                            target: "underhill_log",
+                            target: "paravisor_log",
                             inner_target = &*data.target,
                             message = data.fields.message.as_deref(),
                             fields = %data.fields.extra,
@@ -232,7 +232,7 @@ impl<T: RingMem + Unpin> GelChannel<T> {
                     }
                     "TRACE" => {
                         tracing::trace!(
-                            target: "underhill_log",
+                            target: "paravisor_log",
                             inner_target = &*data.target,
                             message = data.fields.message.as_deref(),
                             fields = %data.fields.extra,
@@ -241,7 +241,7 @@ impl<T: RingMem + Unpin> GelChannel<T> {
                     }
                     some_level => {
                         tracing::info!(
-                            target: "underhill_log",
+                            target: "paravisor_log",
                             inner_level = some_level,
                             inner_target = &*data.target,
                             message = data.fields.message.as_deref(),
@@ -252,7 +252,7 @@ impl<T: RingMem + Unpin> GelChannel<T> {
                 },
                 Err(err) => {
                     tracing::warn!(
-                        target: "underhill_log",
+                        target: "paravisor_log",
                         inner_level = ?header.level,
                         error = &err as &dyn std::error::Error,
                         message = String::from_utf8_lossy(message).as_ref(),
