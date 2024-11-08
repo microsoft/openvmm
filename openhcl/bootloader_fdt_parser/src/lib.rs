@@ -122,11 +122,11 @@ pub enum MemoryAllocationMode {
         /// The number of bytes VTL2 should allocate for memory for itself.
         /// Encoded as `openhcl/memory-size` in device tree.
         #[inspect(hex)]
-        memory_size: u64,
+        memory_size: Option<u64>,
         /// The number of bytes VTL2 should allocate for mmio for itself.
         /// Encoded as `openhcl/mmio-size` in device tree.
         #[inspect(hex)]
-        mmio_size: u64,
+        mmio_size: Option<u64>,
     },
 }
 
@@ -319,13 +319,13 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
             "host" => MemoryAllocationMode::Host,
             "vtl2" => {
                 let memory_size = try_find_property(node, "memory-size")
-                    .context("missing memory-size")?
-                    .read_u64(0)
+                    .map(|p| p.read_u64(0))
+                    .transpose()
                     .map_err(err_to_owned)?;
 
                 let mmio_size = try_find_property(node, "mmio-size")
-                    .context("missing mmio-size")?
-                    .read_u64(0)
+                    .map(|p| p.read_u64(0))
+                    .transpose()
                     .map_err(err_to_owned)?;
 
                 MemoryAllocationMode::Vtl2 {
@@ -729,10 +729,13 @@ mod tests {
             } => {
                 let p_memory_size = openhcl_builder.add_string("memory-size")?;
                 let p_mmio_size = openhcl_builder.add_string("mmio-size")?;
-                openhcl_builder = openhcl_builder
-                    .add_str(p_memory_allocation_mode, "vtl2")?
-                    .add_u64(p_memory_size, memory_size)?
-                    .add_u64(p_mmio_size, mmio_size)?;
+                openhcl_builder = openhcl_builder.add_str(p_memory_allocation_mode, "vtl2")?;
+                if let Some(memory_size) = memory_size {
+                    openhcl_builder = openhcl_builder.add_u64(p_memory_size, memory_size)?;
+                }
+                if let Some(mmio_size) = mmio_size {
+                    openhcl_builder = openhcl_builder.add_u64(p_mmio_size, mmio_size)?;
+                }
             }
         }
 
@@ -883,8 +886,8 @@ mod tests {
                 MemoryRange::new(0x1000000..0x1500000),
             ],
             memory_allocation_mode: MemoryAllocationMode::Vtl2 {
-                memory_size: 0x1000,
-                mmio_size: 0x2000,
+                memory_size: Some(0x1000),
+                mmio_size: Some(0x2000),
             },
             isolation: IsolationType::Vbs,
         };

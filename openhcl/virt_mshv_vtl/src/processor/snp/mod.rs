@@ -2072,7 +2072,7 @@ impl UhProcessor<'_, SnpBacked> {
             x86defs::X86X_MSR_SYSENTER_EIP => vmsa.sysenter_eip(),
             x86defs::X86X_MSR_XSS => vmsa.xss(),
             x86defs::X86X_AMD_MSR_VM_CR => 0,
-            x86defs::X86X_MSR_TSC => safe_x86_intrinsics::rdtsc(),
+            x86defs::X86X_MSR_TSC => safe_intrinsics::rdtsc(),
             x86defs::X86X_MSR_MC_UPDATE_PATCH_LEVEL => 0xffff_ffff,
             x86defs::X86X_MSR_MTRR_CAP => {
                 // Advertise the absence of MTRR capabilities, but include the availability of write

@@ -5,15 +5,11 @@
             "guest_svn": 1,
             "max_vtl": 2,
             "isolation_type": "none",
-            "vtl0": {
-                "uefi": {
-                    "config_type": "none"
-                }
-            },
-            "vtl2": {
-                "underhill": {
+            "image": {
+                "openhcl": {
                     "memory_page_count": 24576,
-                    "command_line": "console=null"
+                    "command_line": "console=null",
+                    "uefi": true
                 }
             }
         }

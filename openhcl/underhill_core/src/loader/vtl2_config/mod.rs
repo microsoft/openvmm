@@ -89,12 +89,15 @@ impl MeasuredVtl2Info {
 
 #[derive(Debug)]
 /// Map of the portion of memory that contains the VTL2 parameters.
-struct Vtl2ParamsMap {
+///
+/// On drop, this mapping zeroes out the specified config ranges.
+struct Vtl2ParamsMap<'a> {
     mapping: SparseMapping,
+    ranges: &'a [MemoryRange],
 }
 
-impl Vtl2ParamsMap {
-    fn new(config_ranges: &[MemoryRange]) -> anyhow::Result<Self> {
+impl<'a> Vtl2ParamsMap<'a> {
+    fn new(config_ranges: &'a [MemoryRange]) -> anyhow::Result<Self> {
         // No overlaps.
         // TODO: Move this check to host_fdt_parser?
         if let Some((l, r)) = config_ranges
@@ -116,7 +119,10 @@ impl Vtl2ParamsMap {
         let mapping =
             SparseMapping::new(size as usize).context("failed to create a sparse mapping")?;
 
-        let dev_mem = fs_err::File::open("/dev/mem")?;
+        let dev_mem = fs_err::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/mem")?;
         for range in config_ranges {
             mapping
                 .map_file(
@@ -124,12 +130,15 @@ impl Vtl2ParamsMap {
                     range.len() as usize,
                     dev_mem.file(),
                     range.start(),
-                    false,
+                    true,
                 )
                 .context("failed to memory map igvm parameters")?;
         }
 
-        Ok(Self { mapping })
+        Ok(Self {
+            mapping,
+            ranges: config_ranges,
+        })
     }
 
     fn read_at(&self, offset: usize, buf: &mut [u8]) -> anyhow::Result<()> {
@@ -138,6 +147,22 @@ impl Vtl2ParamsMap {
 
     fn read_plain<T: AsBytes + zerocopy::FromBytes>(&self, offset: usize) -> anyhow::Result<T> {
         Ok(self.mapping.read_plain(offset)?)
+    }
+}
+
+impl Drop for Vtl2ParamsMap<'_> {
+    fn drop(&mut self) {
+        let base = self
+            .ranges
+            .first()
+            .expect("already checked that there is at least one range")
+            .start();
+
+        for range in self.ranges {
+            self.mapping
+                .fill_at((range.start() - base) as usize, 0, range.len() as usize)
+                .unwrap();
+        }
     }
 }
 
@@ -227,6 +252,10 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
             (PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX * HV_PAGE_SIZE) as usize,
         )
         .context("failed to read measured vtl2 config")?;
+
+    drop(mapping);
+
+    assert_eq!(measured_config.magic, ParavisorMeasuredVtl2Config::MAGIC);
 
     let vtom_offset_bit = if measured_config.vtom_offset_bit == 0 {
         None

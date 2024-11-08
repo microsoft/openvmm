@@ -124,7 +124,7 @@ vmgs_broker = { workspace = true, features = ["encryption_ossl"] }
 vmgs_resources.workspace = true
 x86defs.workspace = true
 
-safe_x86_intrinsics.workspace = true
+safe_intrinsics.workspace = true
 debug_ptr.workspace = true
 guid.workspace = true
 inspect.workspace = true

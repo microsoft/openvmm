@@ -101,7 +101,6 @@ pub struct IgvmLoader<R: VbsRegister + GuestArch> {
     directives: Vec<IgvmDirectiveHeader>,
     page_data_directives: Vec<IgvmDirectiveHeader>,
     vp_context: Option<Box<dyn VpContextBuilder<Register = R>>>,
-    lower_vtl_context: Option<VbsVpContext<R>>,
     max_vtl: Vtl,
     parameter_areas: BTreeMap<(u64, u32), u32>,
     isolation_type: LoaderIsolationType,
@@ -112,11 +111,31 @@ pub struct IgvmLoader<R: VbsRegister + GuestArch> {
 pub struct IgvmVtlLoader<'a, R: VbsRegister + GuestArch> {
     loader: &'a mut IgvmLoader<R>,
     vtl: Vtl,
+    vp_context: Option<VbsVpContext<R>>,
 }
 
 impl<R: VbsRegister + GuestArch> IgvmVtlLoader<'_, R> {
     pub fn loader(&self) -> &IgvmLoader<R> {
         self.loader
+    }
+
+    /// Returns a loader for importing an inner image as part of the actual
+    /// (paravisor) image to load.
+    ///
+    /// Use `take_vp_context` on the returned loader to get the VP context that
+    /// the paravisor should load.
+    pub fn nested_loader(&mut self) -> IgvmVtlLoader<'_, R> {
+        IgvmVtlLoader {
+            loader: &mut *self.loader,
+            vtl: Vtl::Vtl0,
+            vp_context: Some(VbsVpContext::new(self.vtl)),
+        }
+    }
+
+    pub fn take_vp_context(&mut self) -> Vec<u8> {
+        self.vp_context
+            .take()
+            .map_or_else(Vec::new, |vp| vp.as_page())
     }
 }
 
@@ -479,7 +498,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
 
         match isolation_type {
             LoaderIsolationType::None | LoaderIsolationType::Vbs { .. } => {
-                vp_context_builder = Some(Box::new(VbsVpContext::<R>::new(max_vtl.into())));
+                vp_context_builder = Some(Box::new(VbsVpContext::<R>::new(max_vtl)));
 
                 // Add VBS platform header
                 let info = IGVM_VHS_SUPPORTED_PLATFORM {
@@ -502,12 +521,6 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
             }
         }
 
-        let lower_vtl_context_builder = if with_paravisor {
-            Some(VbsVpContext::new(Vtl::Vtl0.into()))
-        } else {
-            None
-        };
-
         IgvmLoader {
             accepted_ranges: RangeMap::new(),
             relocatable_regions: RangeMap::new(),
@@ -518,7 +531,6 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
             directives: Vec::new(),
             page_data_directives: Vec::new(),
             vp_context: vp_context_builder,
-            lower_vtl_context: lower_vtl_context_builder,
             max_vtl,
             parameter_areas: BTreeMap::new(),
             isolation_type,
@@ -570,9 +582,6 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
         // Finalize any VP state.
         let mut state = Vec::new();
         self.vp_context.take().unwrap().finalize(&mut state);
-        if let Some(mut context) = self.lower_vtl_context.take() {
-            context.finalize(&mut state);
-        }
 
         for context in state {
             match context {
@@ -765,10 +774,12 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
         }
     }
 
-    pub fn for_vtl(&mut self, vtl: Vtl) -> IgvmVtlLoader<'_, R> {
-        assert!(vtl <= self.max_vtl);
-        assert!(vtl == Vtl::Vtl0 || vtl == Vtl::Vtl2);
-        IgvmVtlLoader { loader: self, vtl }
+    pub fn loader(&mut self) -> IgvmVtlLoader<'_, R> {
+        IgvmVtlLoader {
+            vtl: self.max_vtl,
+            loader: self,
+            vp_context: None,
+        }
     }
 
     fn import_pages(
@@ -1010,19 +1021,14 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
     }
 
     fn import_vp_register(&mut self, register: R) -> anyhow::Result<()> {
-        if self.vtl == self.loader.max_vtl {
+        if let Some(vp_context) = &mut self.vp_context {
+            vp_context.import_vp_register(register)
+        } else {
             self.loader
                 .vp_context
                 .as_mut()
                 .unwrap()
                 .import_vp_register(register);
-        } else {
-            assert_eq!(self.vtl, Vtl::Vtl0);
-            self.loader
-                .lower_vtl_context
-                .as_mut()
-                .unwrap()
-                .import_vp_register(register)
         }
 
         Ok(())
@@ -1077,18 +1083,6 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
             .as_mut()
             .unwrap()
             .set_vp_context_memory(page_base);
-
-        Ok(())
-    }
-
-    fn set_lower_vtl_context_page(&mut self, page_base: u64) -> anyhow::Result<()> {
-        if self.vtl != Vtl::Vtl0 {
-            self.loader
-                .lower_vtl_context
-                .as_mut()
-                .unwrap()
-                .set_vp_context_memory(page_base);
-        }
 
         Ok(())
     }
@@ -1340,7 +1334,7 @@ mod tests {
             },
         );
         {
-            let mut loader = loader.for_vtl(Vtl::Vtl0);
+            let mut loader = loader.loader();
 
             let data = vec![0, 5];
             loader

@@ -49,7 +49,7 @@ parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-safe_x86_intrinsics.workspace = true
+safe_intrinsics.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

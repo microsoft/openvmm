@@ -1192,10 +1192,8 @@ async fn new_underhill_vm(
     #[cfg(guest_arch = "x86_64")]
     let use_mmio_hypercalls = use_mmio_hypercalls
         || hardware_isolated && {
-            let result = safe_x86_intrinsics::cpuid(
-                hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
-                0,
-            );
+            let result =
+                safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
             hvdef::HvEnlightenmentInformation::from(
                 result.eax as u128
                     | (result.ebx as u128) << 32
@@ -1259,7 +1257,7 @@ async fn new_underhill_vm(
     #[cfg(guest_arch = "x86_64")]
     let physical_address_size =
         virt::x86::max_physical_address_size_from_cpuid(&|leaf, sub_leaf| {
-            let result = safe_x86_intrinsics::cpuid(leaf, sub_leaf);
+            let result = safe_intrinsics::cpuid(leaf, sub_leaf);
             [result.eax, result.ebx, result.ecx, result.edx]
         });
 
@@ -1292,7 +1290,7 @@ async fn new_underhill_vm(
     let x2apic = if isolation.is_hardware_isolated() {
         // For hardware CVMs, always enable x2apic support at boot.
         vm_topology::processor::x86::X2ApicState::Enabled
-    } else if safe_x86_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx
+    } else if safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx
         & (1 << 21)
         != 0
     {
@@ -1719,11 +1717,15 @@ async fn new_underhill_vm(
         ))
     };
 
+    // ARM64 always bounces, as the OpenHCL kernel does not
+    // have access to VTL0 pages. Necessary until #273 is resolved.
+    let always_bounce = cfg!(guest_arch = "aarch64");
     resolver.add_async_resolver::<DiskHandleKind, _, OpenBlockDeviceConfig, _>(
         BlockDeviceResolver::new(
             Arc::new(tp.clone()),
             Some(uevent_listener.clone()),
             bounce_buffer_tracker,
+            always_bounce,
         ),
     );
 

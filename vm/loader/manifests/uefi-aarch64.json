@@ -5,12 +5,11 @@
             "guest_svn": 1,
             "max_vtl": 0,
             "isolation_type": "none",
-            "vtl0": {
+            "image": {
                 "uefi": {
                    "config_type": "none"
                 }
-            },
-            "vtl2": "none"
+            }
         }
     ]
 }

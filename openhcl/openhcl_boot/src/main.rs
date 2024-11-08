@@ -40,7 +40,7 @@ use hvdef::Vtl;
 use loader_defs::linux::setup_data;
 use loader_defs::linux::SETUP_DTB;
 use loader_defs::shim::ShimParamsRaw;
-use memory_range::flatten_equivalent_ranges;
+use memory_range::merge_adjacent_ranges;
 use memory_range::walk_ranges;
 use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
@@ -329,7 +329,7 @@ fn reserved_memory_regions(
     // implement that.
     let mut flattened = off_stack!(ArrayVec<(MemoryRange, ReservedMemoryType), MAX_RESERVED_MEM_RANGES>, ArrayVec::new_const());
     flattened.clear();
-    flattened.extend(flatten_equivalent_ranges(reserved.iter().copied()));
+    flattened.extend(merge_adjacent_ranges(reserved.iter().copied()));
     flattened
 }
 

@@ -413,6 +413,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
+    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
     permissions:
       contents: read
       id-token: write
@@ -836,6 +837,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
+    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
     permissions:
       contents: read
       id-token: write
@@ -1250,6 +1252,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
+    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
     permissions:
       contents: read
       id-token: write
@@ -2158,6 +2161,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
+    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
     permissions:
       contents: read
       id-token: write
@@ -2527,6 +2531,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
+    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
     permissions:
       contents: read
       id-token: write
@@ -3609,7 +3614,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu20.04-1TB-2
+    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
     permissions:
       contents: read
       id-token: write
@@ -3966,6 +3971,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
+    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
     permissions:
       contents: read
       id-token: write
@@ -4096,6 +4102,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
+    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
     permissions:
       contents: read
       id-token: write
@@ -4550,6 +4557,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
+    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
     permissions:
       contents: read
       id-token: write
@@ -5886,6 +5894,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
+    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
     permissions:
       contents: read
       id-token: write

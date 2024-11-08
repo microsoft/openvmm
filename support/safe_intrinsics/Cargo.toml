@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "safe_x86_intrinsics"
+name = "safe_intrinsics"
 edition = "2021"
 rust-version.workspace = true
 

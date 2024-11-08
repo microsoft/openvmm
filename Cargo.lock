@@ -1013,7 +1013,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "profiler_worker",
- "safe_x86_intrinsics",
+ "safe_intrinsics",
  "socket2",
  "tracing",
  "underhill_confidentiality",
@@ -2418,7 +2418,7 @@ dependencies = [
  "open_enum",
  "pal",
  "parking_lot",
- "safe_x86_intrinsics",
+ "safe_intrinsics",
  "sidecar_client",
  "signal-hook",
  "tdcall",
@@ -3474,6 +3474,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "pci_core",
+ "safe_intrinsics",
  "test_with_tracing",
  "tracing",
  "user_driver",
@@ -4201,6 +4202,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "pci_core",
+ "safe_intrinsics",
  "safeatomic",
  "scsi_buffers",
  "slab",
@@ -4318,7 +4320,7 @@ dependencies = [
  "memory_range",
  "minimal_rt",
  "minimal_rt_build",
- "safe_x86_intrinsics",
+ "safe_intrinsics",
  "sha2",
  "sidecar_defs",
  "tdcall",
@@ -5296,7 +5298,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f98d2aa92eebf49b69786be48e4477826b256916e84a57ff2a4f21923b48eb4c"
 
 [[package]]
-name = "safe_x86_intrinsics"
+name = "safe_intrinsics"
 version = "0.0.0"
 
 [[package]]
@@ -6669,7 +6671,7 @@ dependencies = [
  "pal_uring",
  "parking_lot",
  "profiler_worker",
- "safe_x86_intrinsics",
+ "safe_intrinsics",
  "scsi_buffers",
  "scsi_core",
  "scsidisk",
@@ -7102,7 +7104,7 @@ dependencies = [
  "pal_event",
  "parking_lot",
  "pci_core",
- "safe_x86_intrinsics",
+ "safe_intrinsics",
  "thiserror 2.0.0",
  "tracelimit",
  "tracing",
@@ -7171,7 +7173,7 @@ dependencies = [
  "pal_uring",
  "parking_lot",
  "pci_core",
- "safe_x86_intrinsics",
+ "safe_intrinsics",
  "shared_pool_alloc",
  "sidecar_client",
  "thiserror 2.0.0",
@@ -7480,7 +7482,7 @@ dependencies = [
  "inspect",
  "memory_range",
  "mesh_protobuf",
- "safe_x86_intrinsics",
+ "safe_intrinsics",
  "thiserror 2.0.0",
  "x86defs",
 ]

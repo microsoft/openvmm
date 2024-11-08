@@ -266,6 +266,11 @@ impl user_driver::vfio::VfioDmaBuffer for SharedPoolAllocator {
             .map_file(0, len, gpa_fd.get(), file_offset, true)
             .context("unable to map allocation")?;
 
+        // It is a requirement of the VfioDmaBuffer trait that all allocated buffers be zeroed out
+        mapping
+            .fill_at(0, 0, len)
+            .context("failed to zero shared memory")?;
+
         let pfns: Vec<_> = (alloc.base_pfn()..alloc.base_pfn() + alloc.size_pages).collect();
 
         Ok(user_driver::memory::MemoryBlock::new(SharedDmaBuffer {

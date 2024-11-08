@@ -488,9 +488,6 @@ where
     /// TODO: It probably makes sense to use a different acceptance type than the default one?
     fn set_vp_context_page(&mut self, page_base: u64) -> anyhow::Result<()>;
 
-    /// Notify the loader to deposit lower VTL context information at the given page.
-    fn set_lower_vtl_context_page(&mut self, page_base: u64) -> anyhow::Result<()>;
-
     /// Specify this region as relocatable.
     fn relocation_region(
         &mut self,

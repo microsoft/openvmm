@@ -26,6 +26,8 @@ parking_lot.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 
+safe_intrinsics.workspace = true
+
 [dev-dependencies]
 gdma.workspace = true
 pci_core.workspace = true

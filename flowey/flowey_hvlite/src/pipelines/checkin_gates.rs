@@ -881,7 +881,7 @@ impl IntoPipeline for CheckinGatesCli {
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk(),
+                gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted(),
                 label: "x64-linux",
                 target: CommonTriple::X86_64_LINUX_GNU,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,

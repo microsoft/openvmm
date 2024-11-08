@@ -80,6 +80,9 @@ impl MeasuredVtl0Info {
             .map_err(Error::GuestMemoryAccess)?;
         config_pages.push(PV_CONFIG_BASE_PAGE);
 
+        // Verify the magic field is set.
+        assert_eq!(measured_config.magic, ParavisorMeasuredVtl0Config::MAGIC);
+
         let supports_pcat = measured_config.supported_vtl0.pcat_supported();
 
         let supports_uefi = if measured_config.supported_vtl0.uefi_supported() {

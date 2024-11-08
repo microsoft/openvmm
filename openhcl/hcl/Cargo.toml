@@ -27,7 +27,7 @@ fs-err.workspace = true
 libc.workspace = true
 nix = { workspace = true, features = ["ioctl"] }
 bitfield-struct.workspace = true
-safe_x86_intrinsics.workspace = true
+safe_intrinsics.workspace = true
 open_enum.workspace = true
 getrandom.workspace = true
 

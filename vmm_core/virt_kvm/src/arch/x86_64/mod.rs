@@ -100,8 +100,8 @@ const GB_PAGE_FLAG: u32 = 1 << 26;
 
 /// Returns whether the host supports GB pages in the page table.
 fn gb_pages_supported() -> bool {
-    safe_x86_intrinsics::cpuid(0x80000000, 0).eax >= GB_PAGE_LEAF
-        && safe_x86_intrinsics::cpuid(GB_PAGE_LEAF, 0).edx & GB_PAGE_FLAG != 0
+    safe_intrinsics::cpuid(0x80000000, 0).eax >= GB_PAGE_LEAF
+        && safe_intrinsics::cpuid(GB_PAGE_LEAF, 0).edx & GB_PAGE_FLAG != 0
 }
 
 impl virt::Hypervisor for Kvm {

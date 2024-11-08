@@ -77,12 +77,16 @@ pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
     // Similar for the sidecar kernel. And minimal_rt provides the
     // (arch-specific) runtime for both of them.
     //
+    // safe_intrinsics performs architecture-specific operations that require
+    // the use of target_arch
+    //
     // the whp/kvm crates are inherently arch-specific, as they contain
     // low-level bindings to a particular platform's virtualization APIs
     if path.starts_with("guest_test_uefi")
         || path.starts_with("openhcl/openhcl_boot")
         || path.starts_with("openhcl/minimal_rt")
         || path.starts_with("openhcl/sidecar")
+        || path.starts_with("support/safe_intrinsics")
         || path.starts_with("vm/whp")
         || path.starts_with("vm/kvm")
     {
