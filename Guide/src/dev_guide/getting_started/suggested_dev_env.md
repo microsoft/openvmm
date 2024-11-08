@@ -23,6 +23,7 @@ editor / IDE you happen to be using.
 
 ```admonish tip
 Just want the recommended editor settings? Put this in `openvmm/.vscode/settings.json`:
+```
 
 ```json
 {
@@ -36,7 +37,6 @@ Just want the recommended editor settings? Put this in `openvmm/.vscode/settings
         "editor.formatOnSave": true
     },
 }
-```
 ```
 
 ### \[WSL2] Connecting to WSL using VSCode
