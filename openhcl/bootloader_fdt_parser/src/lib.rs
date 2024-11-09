@@ -945,9 +945,7 @@ mod tests {
             },
             isolation: IsolationType::Vbs,
             vtl2_reserved_range: MemoryRange::new(0x40000..0x50000),
-            dma_preserve_ranges: vec![
-                MemoryRange::new(0x1E000..0x20000),
-            ],
+            dma_preserve_ranges: vec![],
         };
 
         let dt = build_dt(&orig_info).unwrap();
