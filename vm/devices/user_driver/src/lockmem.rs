@@ -133,7 +133,6 @@ impl crate::vfio::VfioDmaBuffer for LockedMemorySpawner {
         len: usize,
         _pfns: &[u64],
     ) -> anyhow::Result<crate::memory::MemoryBlock> {
-        // TODO: With the recent change it may not work. Review.
         Ok(crate::memory::MemoryBlock::new(LockedMemory::new(len)?))
     }
 }

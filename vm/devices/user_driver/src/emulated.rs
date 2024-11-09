@@ -263,9 +263,15 @@ impl HostDmaAllocator for EmulatedDmaAllocator {
         memory.as_slice().atomic_fill(0);
         Ok(memory)
     }
+
+    fn attach_dma_buffer(&self, len: usize, _pfns: &[u64]) -> anyhow::Result<MemoryBlock> {
+        // For emulated allocator (unit tests) reuse the regular alloc.
+        self.allocate_dma_buffer(len)
+    }
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(feature = "vfio")]
 impl crate::vfio::VfioDmaBuffer for EmulatedDmaAllocator {
     fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
         Ok(MemoryBlock::new(

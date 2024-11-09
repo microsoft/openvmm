@@ -11,6 +11,7 @@ use crate::interrupt::DeviceInterruptSource;
 use crate::memory::MemoryBlock;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
+use crate::HostDmaAllocator;
 use anyhow::Context;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -473,8 +474,12 @@ pub struct LockedMemoryAllocator {
     dma_buffer: Arc<dyn VfioDmaBuffer>,
 }
 
-impl crate::HostDmaAllocator for LockedMemoryAllocator {
+impl HostDmaAllocator for LockedMemoryAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
         self.dma_buffer.create_dma_buffer(len)
+    }
+
+    fn attach_dma_buffer(&self, len: usize, pfns: &[u64]) -> anyhow::Result<MemoryBlock> {
+        self.dma_buffer.restore_dma_buffer(len, pfns)
     }
 }

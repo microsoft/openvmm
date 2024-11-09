@@ -16,7 +16,6 @@ use std::sync::Arc;
 use test_with_tracing::test;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
-use user_driver::DeviceBacking;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -207,14 +206,7 @@ async fn test_nvme_save_restore(driver: DefaultDriver) {
         },
     );
     let new_device = EmulatedDevice::new(new_nvme_ctrl, new_msi_x, new_emu_mem);
-    let allocator = Arc::new(new_device.host_allocator());
-    let _new_nvme_driver = NvmeDriver::restore(
-        &driver_source,
-        CPU_COUNT,
-        allocator,
-        new_device,
-        &saved_state,
-    )
-    .await
-    .unwrap();
+    let _new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, new_device, &saved_state)
+        .await
+        .unwrap();
 }
