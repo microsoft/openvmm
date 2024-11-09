@@ -264,6 +264,8 @@ plan9 = { path = "vm/devices/support/fs/plan9" }
 power_resources = { path = "vm/power_resources" }
 serial_16550 = { path = "vm/devices/serial/serial_16550" }
 serial_16550_resources = { path = "vm/devices/serial/serial_16550_resources" }
+serial_debugcon = { path = "vm/devices/serial/serial_debugcon" }
+serial_debugcon_resources = { path = "vm/devices/serial/serial_debugcon_resources" }
 serial_core = { path = "vm/devices/serial/serial_core" }
 serial_pl011 = { path = "vm/devices/serial/serial_pl011" }
 serial_pl011_resources = { path = "vm/devices/serial/serial_pl011_resources" }

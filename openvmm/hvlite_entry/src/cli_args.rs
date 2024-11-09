@@ -260,6 +260,10 @@ flags:
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com2_serial: Option<SerialConfigCli>,
 
+    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | term[=\<terminal emulator\>] | none))
+    #[clap(long, value_name = "SERIAL")]
+    pub debugcon: Option<DebugconSerialConfigCli>,
+
     /// boot UEFI firmware
     #[clap(long, short = 'e')]
     pub uefi: bool,
@@ -763,6 +767,30 @@ impl FromStr for FloppyDiskCli {
         }
 
         Ok(FloppyDiskCli { kind, read_only })
+    }
+}
+
+#[derive(Clone)]
+pub struct DebugconSerialConfigCli {
+    pub port: u16,
+    pub serial: SerialConfigCli,
+}
+
+impl FromStr for DebugconSerialConfigCli {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let Some((port, serial)) = s.split_once(',') else {
+            return Err("invalid format (missing comma between port and serial)".into());
+        };
+
+        let port: u16 = parse_number(port)
+            .map_err(|_| "could not parse port".to_owned())?
+            .try_into()
+            .map_err(|_| "port must be 16-bit")?;
+        let serial: SerialConfigCli = serial.parse()?;
+
+        Ok(Self { port, serial })
     }
 }
 

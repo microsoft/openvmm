@@ -22,6 +22,7 @@ use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
 use serial_core::resources::DisconnectedSerialBackendHandle;
+use serial_debugcon_resources::SerialDebugconDeviceHandle;
 use serial_pl011_resources::SerialPl011DeviceHandle;
 use std::iter::zip;
 use thiserror::Error;
@@ -43,6 +44,7 @@ pub struct VmManifestBuilder {
     framebuffer: bool,
     guest_watchdog: bool,
     psp: bool,
+    debugcon: Option<(Resource<SerialBackendHandle>, u16)>,
 }
 
 /// The VM's base chipset type, which determines the set of core devices (such
@@ -93,6 +95,8 @@ enum ErrorInner {
     UnsupportedArch,
     #[error("unsupported serial port count")]
     UnsupportedSerialCount,
+    #[error("unsupported debugcon architecture")]
+    UnsupportedDebugconArch,
     #[error("wait for RTS not supported with this serial type")]
     WaitForRtsNotSupported,
 }
@@ -112,6 +116,7 @@ impl VmManifestBuilder {
             framebuffer: false,
             guest_watchdog: false,
             psp: false,
+            debugcon: None,
         }
     }
 
@@ -134,6 +139,15 @@ impl VmManifestBuilder {
     /// until the guest has raised the RTS line.
     pub fn with_serial_wait_for_rts(mut self) -> Self {
         self.serial_wait_for_rts = true;
+        self
+    }
+
+    /// Enable the debugcon output-only serial device at the specified port,
+    /// backed by the given serial backend.
+    ///
+    /// Only supported on x86
+    pub fn with_debugcon(mut self, serial: Resource<SerialBackendHandle>, port: u16) -> Self {
+        self.debugcon = Some((serial, port));
         self
     }
 
@@ -195,6 +209,15 @@ impl VmManifestBuilder {
             chipset_devices: Vec::new(),
             chipset: BaseChipsetManifest::empty(),
         };
+
+        if let Some((backend, port)) = self.debugcon {
+            if matches!(self.arch, MachineArch::X86_64) {
+                result.attach_debugcon(port, backend);
+            } else {
+                return Err(ErrorInner::UnsupportedDebugconArch.into());
+            }
+        }
+
         match self.ty {
             BaseChipsetType::HypervGen1 => {
                 if self.arch != MachineArch::X86_64 {
@@ -402,6 +425,14 @@ impl VmChipsetResult {
             });
         }
         Ok(self)
+    }
+
+    fn attach_debugcon(&mut self, port: u16, backend: Resource<SerialBackendHandle>) -> &mut Self {
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: format!("debugcon-{port:#x?}"),
+            resource: SerialDebugconDeviceHandle { port, io: backend }.into_resource(),
+        });
+        self
     }
 
     fn attach_serial_16550(

@@ -41,6 +41,7 @@ disk_vhd1.workspace = true
 chipset.workspace = true
 missing_dev.workspace = true
 serial_16550.workspace = true
+serial_debugcon.workspace = true
 serial_pl011.workspace = true
 tpm = { workspace = true, optional = true, features = ["tpm"] }
 

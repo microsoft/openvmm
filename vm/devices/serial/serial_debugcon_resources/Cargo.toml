@@ -1,0 +1,15 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "serial_debugcon_resources"
+edition = "2021"
+rust-version.workspace = true
+
+[dependencies]
+vm_resource.workspace = true
+
+mesh.workspace = true
+
+[lints]
+workspace = true

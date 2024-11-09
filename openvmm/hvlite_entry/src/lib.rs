@@ -88,6 +88,7 @@ use pal_async::DefaultPool;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use serial_16550_resources::ComPort;
+use serial_core::resources::DisconnectedSerialBackendHandle;
 use serial_io::SerialIo;
 use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
@@ -393,6 +394,14 @@ fn vm_config_from_command_line(
     } else {
         false
     };
+    let debugcon_cfg = setup_serial(
+        "debugcon",
+        opt.debugcon
+            .clone()
+            .map(|cfg| cfg.serial)
+            .unwrap_or(SerialConfigCli::None),
+        "debugcon",
+    )?;
 
     let mut resources = VmResources::default();
     let mut console_str = "";
@@ -687,6 +696,12 @@ fn vm_config_from_command_line(
         let (tx, rx) = mesh::channel();
         tx.send(HostBatteryUpdate::default_present());
         chipset = chipset.with_battery(rx);
+    }
+    if let Some(cfg) = &opt.debugcon {
+        chipset = chipset.with_debugcon(
+            debugcon_cfg.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
+            cfg.port,
+        );
     }
 
     let VmChipsetResult {

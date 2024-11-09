@@ -2749,6 +2749,7 @@ dependencies = [
  "rustyline",
  "scsidisk_resources",
  "serial_16550_resources",
+ "serial_core",
  "serial_socket",
  "shell-words",
  "sparse_mmap",
@@ -4470,6 +4471,7 @@ dependencies = [
  "scsidisk",
  "serial_16550",
  "serial_core",
+ "serial_debugcon",
  "serial_pl011",
  "serial_socket",
  "storvsp",
@@ -5571,6 +5573,32 @@ dependencies = [
  "mesh",
  "pal_async",
  "parking_lot",
+ "vm_resource",
+]
+
+[[package]]
+name = "serial_debugcon"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "chipset_device",
+ "chipset_device_resources",
+ "futures",
+ "inspect",
+ "serial_core",
+ "serial_debugcon_resources",
+ "thiserror 2.0.0",
+ "tracelimit",
+ "tracing",
+ "vm_resource",
+ "vmcore",
+]
+
+[[package]]
+name = "serial_debugcon_resources"
+version = "0.0.0"
+dependencies = [
+ "mesh",
  "vm_resource",
 ]
 
@@ -7454,6 +7482,7 @@ dependencies = [
  "missing_dev_resources",
  "serial_16550_resources",
  "serial_core",
+ "serial_debugcon_resources",
  "serial_pl011_resources",
  "thiserror 2.0.0",
  "vm_resource",
