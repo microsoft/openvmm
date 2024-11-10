@@ -11,11 +11,12 @@ serial_core.workspace = true
 vm_resource.workspace = true
 
 inspect.workspace = true
-mesh.workspace = true
+mesh = { workspace = true, features = ["socket2"] }
 pal.workspace = true
 unix_socket = { workspace = true, features = ["mesh"] }
 pal_async.workspace = true
 futures.workspace = true
+socket2.workspace = true
 tracing.workspace = true
 
 [lints]

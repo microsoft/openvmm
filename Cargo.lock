@@ -5643,6 +5643,7 @@ dependencies = [
  "pal",
  "pal_async",
  "serial_core",
+ "socket2",
  "tracing",
  "unix_socket",
  "vm_resource",

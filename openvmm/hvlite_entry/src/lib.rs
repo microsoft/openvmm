@@ -238,6 +238,9 @@ fn vm_config_from_command_line(
             SerialConfigCli::Pipe(path) => {
                 Some(serial_io::bind_serial(&path).context("failed to bind serial")?)
             }
+            SerialConfigCli::Tcp(addr) => {
+                Some(serial_io::bind_tcp_serial(&addr).context("failed to bind serial")?)
+            }
             SerialConfigCli::NewConsole(app) => {
                 let path = console::random_console_path();
                 let config =
@@ -281,6 +284,7 @@ fn vm_config_from_command_line(
                     .detach();
                 Some(io.config)
             }
+            SerialConfigCli::Tcp(_addr) => anyhow::bail!("TCP virtio serial not supported"),
             SerialConfigCli::NewConsole(app) => {
                 let path = console::random_console_path();
 

@@ -30,7 +30,7 @@ vm_resource::register_static_resolvers! {
     serial_core::disconnected::resolver::DisconnectedSerialBackendResolver,
     #[cfg(windows)]
     serial_socket::windows::WindowsPipeSerialResolver,
-    serial_socket::unix::UnixStreamSerialResolver,
+    serial_socket::net::SocketSerialResolver,
 
     // Network backends
     net_backend::null::NullResolver,
