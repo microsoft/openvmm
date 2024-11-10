@@ -29,7 +29,12 @@ use std::task::Poll;
 use std::task::Waker;
 use vmcore::device_state::ChangeDeviceState;
 
-/// A Debugcon serial port emulator.
+// the bound here is entirely arbitrary. we pick a relatively large number, just
+// in case some guest decides to try and dump a _lot_ of data over the debugcon
+// all at once.
+const TX_BUFFER_MAX: usize = 1024 * 1024; // 1MB
+
+/// A debugcon serial port emulator.
 #[derive(InspectMut)]
 pub struct SerialDebugcon {
     // Fixed configuration
@@ -151,6 +156,11 @@ impl PortIoIntercept for SerialDebugcon {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
 
+        if self.tx_buffer.len() >= TX_BUFFER_MAX {
+            tracing::debug!("debugcon buffer overrun, dropping output data");
+            return IoResult::Ok;
+        }
+
         self.tx_buffer.push_back(data[0]);
 
         // HACK: work around the fact that in openvmm, the console is in raw mode.
@@ -173,21 +183,21 @@ impl PortIoIntercept for SerialDebugcon {
 
 mod save_restore {
     use crate::SerialDebugcon;
+    use vmcore::save_restore::NoSavedState;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;
-    use vmcore::save_restore::SavedStateNotSupported;
 
     impl SaveRestore for SerialDebugcon {
-        // This device should be constructed with `omit_saved_state`.
-        type SavedState = SavedStateNotSupported;
+        type SavedState = NoSavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            Err(SaveError::NotSupported)
+            Ok(NoSavedState)
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            match state {}
+            let NoSavedState = state;
+            Ok(())
         }
     }
 }

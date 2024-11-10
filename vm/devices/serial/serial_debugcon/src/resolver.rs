@@ -57,9 +57,6 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, SerialDebugconDeviceHandle>
             .map_err(ResolveDebugconError::ResolveBackend)?;
 
         let device = SerialDebugcon::new(resource.port, io.0.into_io());
-
-        input.configure.omit_saved_state();
-
         Ok(device.into())
     }
 }
