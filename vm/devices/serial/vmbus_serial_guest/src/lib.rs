@@ -208,7 +208,7 @@ impl VmbusSerialDriver {
     pub async fn drain_rx(&mut self) -> Result<(), Error> {
         poll_fn(|cx| {
             while self.rx_in_flight {
-                ready!(self.poll(cx))?;
+                ready!(self.poll_outer(cx))?;
             }
             Poll::Ready(Ok(()))
         })
@@ -246,12 +246,12 @@ impl VmbusSerialDriver {
         }
 
         // Poll once to get modem status, which the host should send right away.
-        poll_fn(|cx| self.poll(cx)).await?;
+        poll_fn(|cx| self.poll_outer(cx)).await?;
 
         Ok(())
     }
 
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), ErrorInner>> {
+    fn poll_outer(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), ErrorInner>> {
         if self.failed {
             Poll::Ready(Err(ErrorInner::FailedDevice))
         } else {
@@ -361,14 +361,14 @@ impl SerialIo for VmbusSerialDriver {
 
     fn poll_connect(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         while !self.connected {
-            ready!(self.poll(cx))?;
+            ready!(self.poll_outer(cx))?;
         }
         Poll::Ready(Ok(()))
     }
 
     fn poll_disconnect(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         while self.connected {
-            ready!(self.poll(cx))?;
+            ready!(self.poll_outer(cx))?;
         }
         Poll::Ready(Ok(()))
     }
@@ -385,7 +385,7 @@ impl AsyncRead for VmbusSerialDriver {
                 return Poll::Ready(Ok(0));
             }
             self.rx_waker = Some(cx.waker().clone());
-            ready!(self.poll(cx))?;
+            ready!(self.poll_outer(cx))?;
         }
         let n = buf.len().min(self.rx_buffer.len());
         for (s, d) in self.rx_buffer.drain(..n).zip(buf) {
@@ -403,7 +403,7 @@ impl AsyncWrite for VmbusSerialDriver {
     ) -> Poll<io::Result<usize>> {
         while self.tx_in_flight || self.failed {
             self.tx_waker = Some(cx.waker().clone());
-            ready!(self.poll(cx))?;
+            ready!(self.poll_outer(cx))?;
         }
         let buf = &buf[..buf.len().min(UART_MSG_MAX_PAYLOAD)];
         let mut request = protocol::TxDataAvailableMessage {
@@ -425,7 +425,7 @@ impl AsyncWrite for VmbusSerialDriver {
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         while self.tx_in_flight || self.failed {
-            ready!(self.poll(cx))?;
+            ready!(self.poll_outer(cx))?;
         }
         Poll::Ready(Ok(()))
     }

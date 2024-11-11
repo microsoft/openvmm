@@ -19,7 +19,7 @@ pub enum KDF {}
 
 pub enum KDF_CTX {}
 
-extern "C" {
+unsafe extern "C" {
     pub fn EVP_MD_get0_name(md: *const EVP_MD) -> *const c_char;
 }
 
@@ -31,7 +31,7 @@ pub const OSSL_PARAM_OCTET_STRING: c_uchar = 5;
 pub const OSSL_PARAM_UTF8_PTR: c_uchar = 6;
 pub const OSSL_PARAM_OCTET_PTR: c_uchar = 7;
 
-extern "C" {
+unsafe extern "C" {
     pub fn EVP_KDF_fetch(
         libctx: *mut OSSL_LIB_CTX,
         algorithm: *const c_char,

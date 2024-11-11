@@ -202,7 +202,7 @@ mod virtdisk {
     }
 
     #[link(name = "virtdisk")]
-    extern "system" {
+    unsafe extern "system" {
         pub fn OpenVirtualDisk(
             virtual_storage_type: &mut VIRTUAL_STORAGE_TYPE,
             path: *const u16,

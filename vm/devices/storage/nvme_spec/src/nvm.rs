@@ -349,7 +349,7 @@ pub struct Cdw11ReservationReport {
 #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
 pub struct ReservationReport {
     /// Generation
-    pub gen: u32,
+    pub generation: u32,
     /// Reservation type
     pub rtype: ReservationType,
     /// Number of registered controllers

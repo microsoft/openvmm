@@ -55,7 +55,7 @@ use x86defs::IdtEntry64;
 use x86defs::Pte;
 use zerocopy::FromZeroes;
 
-extern "C" {
+unsafe extern "C" {
     static IMAGE_PDE: Pte;
     fn irq_entry();
     fn exc_gpf();

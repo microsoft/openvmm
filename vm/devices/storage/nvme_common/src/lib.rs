@@ -97,7 +97,7 @@ pub fn from_nvme_reservation_report(
         .collect();
 
     let report = pr::ReservationReport {
-        generation: report_header.gen,
+        generation: report_header.generation,
         reservation_type,
         controllers,
         persist_through_power_loss: report_header.ptpls != 0,

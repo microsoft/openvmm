@@ -38,7 +38,7 @@ mod addr_space {
 
     const PAGE_SIZE: u64 = 0x1000;
 
-    extern "C" {
+    unsafe extern "C" {
         static __ehdr_start: u8;
     }
 

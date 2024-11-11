@@ -25,7 +25,7 @@ macro_rules! use_win10_prng_apis {
         $($crate::use_win10_prng_apis!(@x $lib);)*
     };
     (@x advapi32) => {
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub unsafe extern "system" fn SystemFunction036(data: *mut u8, len: u32) -> u8 {
             // SAFETY: passing through guarantees.
             unsafe { $crate::private::SystemFunction036(data, len) }
@@ -33,12 +33,12 @@ macro_rules! use_win10_prng_apis {
 
         /// If a call to SystemFunction036 is marked as a dllimport, then it may be an indirect call
         /// through __imp_SystemFunction036 instead.
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub static __imp_SystemFunction036: unsafe extern "system" fn(*mut u8, u32) -> u8 =
             SystemFunction036;
     };
     (@x bcrypt) => {
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(
             handle: *mut ::core::ffi::c_void,
             psz_alg_id: *mut u16,
@@ -56,7 +56,7 @@ macro_rules! use_win10_prng_apis {
             }
         }
 
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub unsafe extern "system" fn BCryptCloseAlgorithmProvider(
             handle: *mut ::core::ffi::c_void,
             flags: u32,
@@ -65,7 +65,7 @@ macro_rules! use_win10_prng_apis {
             unsafe { $crate::private::BCryptCloseAlgorithmProvider(handle, flags) }
         }
 
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub unsafe extern "system" fn BCryptGenRandom(
             algorithm: usize,
             data: *mut u8,
@@ -78,7 +78,7 @@ macro_rules! use_win10_prng_apis {
 
         /// If a call to BCryptGenRandom is marked as a dllimport, then it may be an indirect call
         /// through __imp_BCryptGenRandom instead.
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub static __imp_BCryptGenRandom: unsafe extern "system" fn(
             usize,
             *mut u8,
@@ -86,7 +86,7 @@ macro_rules! use_win10_prng_apis {
             u32,
         ) -> u32 = BCryptGenRandom;
 
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub static __imp_BCryptOpenAlgorithmProvider: unsafe extern "system" fn(
             *mut ::core::ffi::c_void,
             *mut u16,
@@ -94,7 +94,7 @@ macro_rules! use_win10_prng_apis {
             u32,
         ) -> u32 = BCryptOpenAlgorithmProvider;
 
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub static __imp_BCryptCloseAlgorithmProvider: unsafe extern "system" fn(
             *mut ::core::ffi::c_void,
             u32,
@@ -115,7 +115,7 @@ pub mod private {
     const BCRYPT_MAGIC_ALGORITHM_HANDLE: usize = 0x1234abcd;
 
     #[link(name = "ext-ms-win-cng-rng-l1-1-0")]
-    extern "C" {
+    unsafe extern "C" {
         /// The lowest-level PRNG API in Windows.
         fn ProcessPrng(data: *mut u8, len: usize) -> u32;
     }

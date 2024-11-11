@@ -65,7 +65,7 @@ impl HvfResult {
 }
 
 #[link(name = "Hypervisor", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     pub fn hv_vm_create(config: *const ()) -> HvfResult;
     pub fn hv_vm_destroy() -> HvfResult;
     pub fn hv_vm_map(addr: *mut c_void, ipa: u64, size: usize, flags: u64) -> HvfResult;
