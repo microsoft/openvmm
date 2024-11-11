@@ -103,7 +103,7 @@ impl KeyProtectorExt for KeyProtector {
         let des_key = if found_ingress_dek || use_des_key {
             if found_ingress_dek && use_des_key {
                 // Validate the DEK format that expects to hold an AES-wrapped key.
-                // Throw an error if there is non-zero byte in the buffer beyond the expected AES-wrapped key length
+                // Throw an error if there are non-zero bytes in the buffer beyond the expected AES-wrapped AES key length
                 // (`AES_WRAPPED_AES_KEY_LENGTH`).
                 if !self.dek[ingress_idx].dek_buffer[AES_WRAPPED_AES_KEY_LENGTH..]
                     .iter()
