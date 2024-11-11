@@ -31,4 +31,5 @@ pub mod consume_and_test_nextest_unit_tests_archive;
 pub mod consume_and_test_nextest_vmm_tests_archive;
 pub mod local_build_igvm;
 pub mod local_restore_packages;
+pub mod local_vmfirmwareigvm_dll_helper;
 pub mod test_local_flowey_build_igvm;
