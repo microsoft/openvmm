@@ -9,13 +9,23 @@ use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use std::path::PathBuf;
 
-/// Build OpenHCL IGVM files for local development. DO NOT USE IN CI.
+/// Encapsulate an existing pre-built IGVM file into *unsigned*
+/// `vmfirmwareigvm.dll` resource DLL.
+///
+/// Unlike `build-igvm`, this tool will NOT build OpenHCL from scratch. This
+/// tool streamlines the process of building the in-tree `vmfirmwareigvm_dll`
+/// crate (which requires setting various env vars, installing certain
+/// dependencies, etc...).
+///
+/// NOTE: This tool is primarily intended for use by Microsoft employees, as
+/// open-source deployments of OpenHCL typically load the IGVM file directly
+/// (rather than being encapsulated in a resource-DLL).
 #[derive(clap::Args)]
 pub struct CustomVmfirmwareigvmDllCli {
     /// Path to IGVM payload to encapsulate in the vmfirmwareigvm resource DLL.
     pub igvm_payload: PathBuf,
 
-    /// What architecture the DLL should be built for.
+    /// Architecture the DLL should be built for.
     ///
     /// Defaults to the current host architecture.
     #[clap(long)]
