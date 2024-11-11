@@ -3,7 +3,7 @@
 
 //! This module implements a fixed memory allocator for allocating pages at specific location.
 
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 #![warn(missing_docs)]
 
 mod mapped_dma;
