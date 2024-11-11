@@ -2452,17 +2452,16 @@ impl<T: RingMem> NetChannel<T> {
 
         #[repr(C)]
         #[derive(AsBytes)]
-        struct send_indirection_msg {
+        struct SendIndirectionMsg {
             pub message: protocol::Message5SendIndirectionTable,
             pub send_indirection_table:
                 [u32; VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES as usize],
         }
 
         // The offset to the send indirection table from the beginning of the NVSP message.
-        let send_indirection_table_offset =
-            offset_of!(send_indirection_msg, send_indirection_table)
-                + size_of::<protocol::MessageHeader>();
-        let mut data = send_indirection_msg {
+        let send_indirection_table_offset = offset_of!(SendIndirectionMsg, send_indirection_table)
+            + size_of::<protocol::MessageHeader>();
+        let mut data = SendIndirectionMsg {
             message: protocol::Message5SendIndirectionTable {
                 table_entry_count: VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES,
                 table_offset: send_indirection_table_offset as u32,
