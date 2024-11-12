@@ -577,6 +577,9 @@ deprecated-safe-2024 = "allow"
 tail-expr-drop-order = "allow"
 if-let-rescope = "allow"
 
+# Needed for linkme compatibility for now, https://github.com/dtolnay/linkme/issues/101
+unsafe-attr-outside-unsafe = "allow"
+
 unused_qualifications = "warn"
 
 # Code that needs unsafe should opt-in via a module-scoped allow.
