@@ -111,16 +111,6 @@ impl NvmeManager {
         };
         let task = driver.spawn("nvme-manager", async move {
             // Restore saved data (if present) before async worker thread runs.
-            // TODO: Check if indeed restore finishes before 'run'.
-            //saved_state.as_ref().map(|s| async move {
-            //    let _ = NvmeManager::restore(
-            //        &mut worker,
-            //        dma_buffer.clone(),
-            //        s,
-            //    )
-            //    .instrument(tracing::info_span!("nvme_manager_restore"))
-            //    .await;
-            //});
             if saved_state.is_some() {
                 let _ = NvmeManager::restore(&mut worker, saved_state.as_ref().unwrap())
                     .instrument(tracing::info_span!("nvme_manager_restore"))
@@ -145,7 +135,7 @@ impl NvmeManager {
         // Early return is faster way to skip shutdown.
         // but we need to thoroughly test the data integrity.
         //
-        // TODO: Enable this when approved.
+        // TODO: Enable this after discussed and approved.
         //
         // if self.nvme_keepalive { return }
         self.client.sender.send(Request::Shutdown {

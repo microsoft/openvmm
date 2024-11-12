@@ -337,7 +337,6 @@ fn reserved_memory_regions(
     let dma_4k_pages = partition_info.preserve_dma_4k_pages.unwrap_or(0);
     // If DMA reserved hint was provided by Host, allocate top of VTL2 memory range
     // for that purpose.
-    // TODO: NUMAs.
     if !partition_info.vtl2_ram.is_empty() && (dma_4k_pages > 0) {
         let last_mem_entry = &partition_info.vtl2_ram[partition_info.vtl2_ram.len() - 1];
         if last_mem_entry.range.page_count_4k() > dma_4k_pages {

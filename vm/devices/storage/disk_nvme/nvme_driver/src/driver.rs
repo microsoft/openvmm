@@ -1004,17 +1004,15 @@ pub mod save_restore {
         /// Interrupt vector (MSI-X)
         pub msix: u32,
         #[mesh(3)]
-        pub max_cids: usize,
-        #[mesh(4)]
         pub sq_state: SubmissionQueueSavedState,
-        #[mesh(5)]
+        #[mesh(4)]
         pub cq_state: CompletionQueueSavedState,
-        #[mesh(6)]
+        #[mesh(5)]
         pub mem_len: usize,
+        #[mesh(6)]
+        pub pfns: Vec<u64>,
         #[mesh(7)]
-        pub pfns: Vec<u64>, // TODO: Check if region is contiguous and save 1st PFN only if true.
-        #[mesh(8)]
-        pub pending_cmds: Vec<PendingCommandSavedState>,
+        pub pending_cmds: PendingCommandsSavedState,
     }
 
     #[derive(Protobuf, Clone, Debug)]

@@ -131,20 +131,33 @@ pub struct Aqa {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes, Inspect)]
+#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes, Inspect, Protobuf)]
+#[mesh(package = "underhill")]
 pub struct Command {
+    #[mesh(1, encoding = "Fixed32Field")]
     pub cdw0: Cdw0,
+    #[mesh(2)]
     pub nsid: u32,
+    #[mesh(3)]
     pub cdw2: u32,
+    #[mesh(4)]
     pub cdw3: u32,
+    #[mesh(5)]
     pub mptr: u64,
     #[inspect(iter_by_index)]
+    #[mesh(6)]
     pub dptr: [u64; 2],
+    #[mesh(7)]
     pub cdw10: u32,
+    #[mesh(8)]
     pub cdw11: u32,
+    #[mesh(9)]
     pub cdw12: u32,
+    #[mesh(10)]
     pub cdw13: u32,
+    #[mesh(11)]
     pub cdw14: u32,
+    #[mesh(12)]
     pub cdw15: u32,
 }
 
@@ -160,6 +173,21 @@ pub struct Cdw0 {
     #[bits(2)]
     pub psdt: u8,
     pub cid: u16,
+}
+
+impl DescribeField<Cdw0> for Fixed32Field {
+    const FIELD_TYPE: FieldType<'static> = FieldType::builtin("uint32");
+}
+
+impl FixedNumber for Cdw0 {
+    type Type = u32;
+    fn to_fixed(self) -> u32 {
+        self.into()
+    }
+
+    fn from_fixed(v: u32) -> Self {
+        Cdw0(v)
+    }
 }
 
 #[repr(C)]

@@ -1448,6 +1448,7 @@ async fn new_underhill_vm(
         use_mmio_hypercalls,
         intercept_debug_exceptions: env_cfg.gdbstub,
         hide_isolation,
+        dma_pages_pool: None,
     };
 
     let proto_partition = UhProtoPartition::new(params, |cpu| tp.driver(cpu).clone())

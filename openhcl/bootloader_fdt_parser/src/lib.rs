@@ -378,11 +378,6 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         reserved_range
     };
 
-    let vtl0_alias_map = try_find_property(node, "vtl0-alias-map")
-        .map(|prop| prop.read_u64(0).map_err(err_to_owned))
-        .transpose()
-        .context("unable to read vtl0-alias-map")?;
-
     // Report DMA preserve ranges in a separate vec, for convenience.
     let dma_preserve_ranges = memory
         .iter()
@@ -394,6 +389,11 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
             }
         })
         .collect();
+
+    let vtl0_alias_map = try_find_property(node, "vtl0-alias-map")
+        .map(|prop| prop.read_u64(0).map_err(err_to_owned))
+        .transpose()
+        .context("unable to read vtl0-alias-map")?;
 
     // Extract vmbus mmio information from the overall memory map.
     let vtl0_mmio = memory
@@ -544,6 +544,7 @@ impl ParsedBootDtInfo {
                         vtl0_alias_map: n_vtl0_alias_map,
                         memory_allocation_mode: n_memory_allocation_mode,
                         isolation: n_isolation,
+                        dma_preserve_ranges: n_dma_preserve_ranges,
                     } = parse_openhcl(&child)?;
                     vtl0_mmio = n_vtl0_mmio;
                     config_ranges = n_config_ranges;
@@ -553,6 +554,7 @@ impl ParsedBootDtInfo {
                     memory_allocation_mode = n_memory_allocation_mode;
                     isolation = n_isolation;
                     vtl2_reserved_range = n_vtl2_reserved_range;
+                    dma_preserve_ranges = n_dma_preserve_ranges;
                 }
 
                 _ if child.name.starts_with("memory@") => {

@@ -4,7 +4,7 @@
 //! Implementation of an admin or IO queue pair.
 
 use super::spec;
-use crate::driver::save_restore::PendingCommandSavedState;
+use crate::driver::save_restore::PendingCommandsSavedState;
 use crate::driver::save_restore::QueuePairSavedState;
 use crate::page_allocator::PageAllocator;
 use crate::page_allocator::ScopedPages;
@@ -639,22 +639,11 @@ impl QueueHandler {
 
     /// Save queue data for servicing.
     pub async fn save(&self) -> anyhow::Result<QueuePairSavedState> {
-        let mut pending_cmds: Vec<PendingCommandSavedState> = Vec::new();
-        for cmd in &self.commands {
-            let mut command: [u8; 64] = [0; 64];
-            command.copy_from_slice(cmd.1.command.as_bytes());
-            let command = PendingCommandSavedState {
-                command,
-                cid: cmd.0 as u16,
-            };
-            pending_cmds.push(command);
-        }
         // The data is collected from both QueuePair and QueueHandler.
         Ok(QueuePairSavedState {
-            max_cids: self.max_cids,
             sq_state: self.sq.save(),
             cq_state: self.cq.save(),
-            pending_cmds,
+            pending_cmds: self.commands.save(),
             cpu: 0,       // Will be updated by the caller.
             msix: 0,      // Will be updated by the caller.
             mem_len: 0,   // Will be updated by the caller.
@@ -664,20 +653,7 @@ impl QueueHandler {
 
     /// Restore queue data after servicing.
     pub fn restore(&mut self, saved_state: &QueuePairSavedState) -> anyhow::Result<()> {
-        self.max_cids = saved_state.max_cids;
-
-        // Restore pending commands.
-        let mut pending: Vec<(usize, PendingCommand)> = Vec::new();
-        for cmd in &saved_state.pending_cmds {
-            let (send, mut _recv) = mesh::oneshot::<nvme_spec::Completion>();
-            let pending_command = PendingCommand {
-                command: FromBytes::read_from_prefix(cmd.command.as_bytes()).unwrap(),
-                respond: send,
-            };
-            pending.push((cmd.cid as usize, pending_command));
-        }
-        self.commands = pending.into_iter().collect::<Slab<PendingCommand>>();
-
+        self.commands.restore(&saved_state.pending_cmds)?;
         self.sq.restore(&saved_state.sq_state)?;
         self.cq.restore(&saved_state.cq_state)?;
 
