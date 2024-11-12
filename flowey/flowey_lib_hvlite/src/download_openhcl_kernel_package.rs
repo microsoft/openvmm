@@ -110,7 +110,7 @@ impl FlowNode for Node {
                 },
             );
 
-            let kernel_package_zip =
+            let kernel_package_tar_gz =
                 ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
                     repo_owner: "microsoft".into(),
                     repo_name: "OHCL-Linux-Kernel".into(),
@@ -123,15 +123,15 @@ impl FlowNode for Node {
             ctx.emit_rust_step(format!("unpack {file_name}"), |ctx| {
                 let extract_zip_deps = extract_zip_deps.clone().claim(ctx);
                 let out_vars = out_vars.claim(ctx);
-                let kernel_package_zip = kernel_package_zip.claim(ctx);
+                let kernel_package_tar_gz = kernel_package_tar_gz.claim(ctx);
                 move |rt| {
-                    let kernel_package_zip = rt.read(kernel_package_zip);
+                    let kernel_package_tar_gz = rt.read(kernel_package_tar_gz);
 
                     let extract_dir = flowey_lib_common::_util::extract::extract_zip_if_new(
                         rt,
                         extract_zip_deps,
-                        &kernel_package_zip,
-                        &file_name, // filename currently includes version and arch
+                        &kernel_package_tar_gz,
+                        &file_name, // filename includes version and arch
                     )?;
 
                     let base_dir = std::env::current_dir()?;
