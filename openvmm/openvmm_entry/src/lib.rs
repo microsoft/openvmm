@@ -1657,7 +1657,7 @@ enum InteractiveCommand {
         file: Option<PathBuf>,
     },
 
-    /// Inject an artificial panic into HvLite
+    /// Inject an artificial panic into OpenVMM
     Panic,
 }
 
@@ -1802,7 +1802,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             }
 
             let mut rl = rustyline::Editor::<
-                interactive_console::HvLiteRustylineEditor,
+                interactive_console::OpenvmmRustylineEditor,
                 rustyline::history::FileHistory,
             >::with_config(
                 rustyline::Config::builder()
@@ -1811,19 +1811,19 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             )
             .unwrap();
 
-            rl.set_helper(Some(interactive_console::HvLiteRustylineEditor {
-                hvlite_inspect_req: Arc::new(inspect_completion_engine_send),
+            rl.set_helper(Some(interactive_console::OpenvmmRustylineEditor {
+                openvmm_inspect_req: Arc::new(inspect_completion_engine_send),
             }));
 
             let history_file = {
-                const HISTORY_FILE: &str = ".hvlite_history";
+                const HISTORY_FILE: &str = ".openvmm_history";
 
                 // using a `None` to kick off the `.or()` chain in order to make
                 // it a bit easier to visually inspect the fallback chain.
                 let history_folder = None
                     .or_else(dirs::state_dir)
                     .or_else(dirs::data_local_dir)
-                    .map(|path| path.join("hvlite"));
+                    .map(|path| path.join("openvmm"));
 
                 if let Some(history_folder) = history_folder {
                     if let Err(err) = std::fs::create_dir_all(&history_folder) {
@@ -1893,7 +1893,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                     if let Err(err) = rl.add_history_entry(&line) {
                         tracing::warn!(
                             err = &err as &dyn std::error::Error,
-                            "error adding to .hvlite_history"
+                            "error adding to .openvmm_history"
                         )
                     }
 
@@ -2763,8 +2763,8 @@ mod interactive_console {
     use rustyline::Validator;
 
     #[derive(Helper, Highlighter, Hinter, Validator)]
-    pub(crate) struct HvLiteRustylineEditor {
-        pub hvlite_inspect_req: std::sync::Arc<
+    pub(crate) struct OpenvmmRustylineEditor {
+        pub openvmm_inspect_req: std::sync::Arc<
             mesh::Sender<(
                 super::InspectTarget,
                 String,
@@ -2773,7 +2773,7 @@ mod interactive_console {
         >,
     }
 
-    impl rustyline::completion::Completer for HvLiteRustylineEditor {
+    impl rustyline::completion::Completer for OpenvmmRustylineEditor {
         type Candidate = String;
 
         fn complete(
@@ -2817,17 +2817,17 @@ mod interactive_console {
         }
     }
 
-    impl clap_dyn_complete::CustomCompleterFactory for &HvLiteRustylineEditor {
-        type CustomCompleter = HvLiteComplete;
+    impl clap_dyn_complete::CustomCompleterFactory for &OpenvmmRustylineEditor {
+        type CustomCompleter = OpenvmmComplete;
         async fn build(&self, _ctx: &clap_dyn_complete::RootCtx<'_>) -> Self::CustomCompleter {
-            HvLiteComplete {
-                hvlite_inspect_req: self.hvlite_inspect_req.clone(),
+            OpenvmmComplete {
+                openvmm_inspect_req: self.openvmm_inspect_req.clone(),
             }
         }
     }
 
-    pub struct HvLiteComplete {
-        hvlite_inspect_req: std::sync::Arc<
+    pub struct OpenvmmComplete {
+        openvmm_inspect_req: std::sync::Arc<
             mesh::Sender<(
                 super::InspectTarget,
                 String,
@@ -2836,7 +2836,7 @@ mod interactive_console {
         >,
     }
 
-    impl clap_dyn_complete::CustomCompleter for HvLiteComplete {
+    impl clap_dyn_complete::CustomCompleter for OpenvmmComplete {
         async fn complete(
             &self,
             ctx: &clap_dyn_complete::RootCtx<'_>,
@@ -2844,7 +2844,7 @@ mod interactive_console {
             arg_id: &str,
         ) -> Vec<String> {
             match (subcommand_path, arg_id) {
-                (["openvmm_entry", "inspect", "openvmm"], "element") => {
+                (["openvmm", "inspect"], "element") => {
                     let on_error = vec!["failed/to/connect".into()];
 
                     let (parent_path, to_complete) = (ctx.to_complete)
@@ -2865,7 +2865,7 @@ mod interactive_console {
                         };
 
                         let (tx, rx) = mesh::oneshot();
-                        self.hvlite_inspect_req.send((
+                        self.openvmm_inspect_req.send((
                             if paravisor {
                                 super::InspectTarget::Paravisor
                             } else {
