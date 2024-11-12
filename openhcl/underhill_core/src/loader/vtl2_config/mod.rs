@@ -91,14 +91,12 @@ impl MeasuredVtl2Info {
 /// Map of the portion of memory that contains the VTL2 parameters.
 ///
 /// On drop, this mapping zeroes out the specified config ranges.
-struct Vtl2ParamsMap<'a> {
+struct Vtl2ParamsMap {
     mapping: SparseMapping,
-    ranges: &'a [MemoryRange],
-    is_isolated: bool,
 }
 
-impl<'a> Vtl2ParamsMap<'a> {
-    fn new(config_ranges: &'a [MemoryRange], is_isolated: bool) -> anyhow::Result<Self> {
+impl<'a> Vtl2ParamsMap {
+    fn new(config_ranges: &'a [MemoryRange]) -> anyhow::Result<Self> {
         // No overlaps.
         // TODO: Move this check to host_fdt_parser?
         if let Some((l, r)) = config_ranges
@@ -136,11 +134,7 @@ impl<'a> Vtl2ParamsMap<'a> {
                 .context("failed to memory map igvm parameters")?;
         }
 
-        Ok(Self {
-            mapping,
-            ranges: config_ranges,
-            is_isolated,
-        })
+        Ok(Self { mapping })
     }
 
     fn read_at(&self, offset: usize, buf: &mut [u8]) -> anyhow::Result<()> {
@@ -152,36 +146,12 @@ impl<'a> Vtl2ParamsMap<'a> {
     }
 }
 
-impl Drop for Vtl2ParamsMap<'_> {
-    fn drop(&mut self) {
-        // The zeroing is only for servicing validation, so this is only needed
-        // for non-isolated VMs. Currently it breaks SNP-isolated VMs, so skip
-        // it for all isolated VMs for now.
-        if !self.is_isolated {
-            let base = self
-                .ranges
-                .first()
-                .expect("already checked that there is at least one range")
-                .start();
-
-            for range in self.ranges {
-                self.mapping
-                    .fill_at((range.start() - base) as usize, 0, range.len() as usize)
-                    .unwrap();
-            }
-        }
-    }
-}
-
 /// Reads the VTL 2 parameters from the vtl-boot-data region.
 pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info)> {
     let parsed_openhcl_boot = ParsedBootDtInfo::new().context("failed to parse openhcl_boot dt")?;
 
-    let mapping = Vtl2ParamsMap::new(
-        &parsed_openhcl_boot.config_ranges,
-        parsed_openhcl_boot.isolation != IsolationType::None,
-    )
-    .context("failed to map igvm parameters")?;
+    let mapping = Vtl2ParamsMap::new(&parsed_openhcl_boot.config_ranges)
+        .context("failed to map igvm parameters")?;
 
     // For the various ACPI tables, read the header to see how big the table
     // is, then read the exact table.
@@ -262,8 +232,6 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
             (PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX * HV_PAGE_SIZE) as usize,
         )
         .context("failed to read measured vtl2 config")?;
-
-    drop(mapping);
 
     assert_eq!(measured_config.magic, ParavisorMeasuredVtl2Config::MAGIC);
 
