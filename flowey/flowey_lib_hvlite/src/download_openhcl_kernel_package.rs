@@ -78,35 +78,35 @@ impl FlowNode for Node {
 
         for ((kind, arch), out_vars) in reqs {
             let version = versions.get(&kind).expect("checked above");
-            let kind_string = match kind {
-                OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => "main",
-                OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => "dev",
-            };
-
-            let tag = format!("rolling-lts/hcl-{kind_string}/{version}");
+            let tag = format!(
+                "rolling-lts/hcl-{}/{}",
+                match kind {
+                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => "main",
+                    OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => "dev",
+                },
+                version
+            );
 
             let file_name = format!(
-                "Microsoft.OHCL.Kernel.{}-{}-{}.{}",
+                "Microsoft.OHCL.Kernel{}.{}{}-{}.tar.gz",
+                match kind {
+                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => {
+                        ""
+                    }
+                    OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => {
+                        ".Dev"
+                    }
+                },
                 version,
                 match kind {
-                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Dev => {
-                        kind_string.to_string()
-                    }
-                    OpenhclKernelPackageKind::Cvm | OpenhclKernelPackageKind::CvmDev => {
-                        format!("{kind_string}-cvm")
-                    }
+                    OpenhclKernelPackageKind::Main => "-main",
+                    OpenhclKernelPackageKind::Cvm => "-main-cvm",
+                    OpenhclKernelPackageKind::Dev => "",
+                    OpenhclKernelPackageKind::CvmDev => "-cvm",
                 },
                 match arch {
                     OpenhclKernelPackageArch::X86_64 => "x64",
                     OpenhclKernelPackageArch::Aarch64 => "arm64",
-                },
-                match kind {
-                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => {
-                        "tar.gz"
-                    }
-                    OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => {
-                        "zip"
-                    }
                 },
             );
 
@@ -139,10 +139,6 @@ impl FlowNode for Node {
                     if cfg!(unix) {
                         #[cfg(unix)]
                         {
-                            // HACK: recursively chmod all the files, otherwise they all have 000 access.
-                            let sh = xshell::Shell::new()?;
-                            xshell::cmd!(sh, "chmod -R 755 {extract_dir}").run()?;
-
                             // HACK: recreate the layout used by nuget packages.
                             let nuget_path = "build/native/bin";
                             let metadata_file = "kernel_build_metadata.json";

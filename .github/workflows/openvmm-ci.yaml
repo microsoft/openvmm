@@ -1407,7 +1407,7 @@ jobs:
     - name: report built openhcl_boot
       run: flowey e 12 flowey_lib_hvlite::build_openhcl_boot 0
       shell: bash
-    - name: unpack Microsoft.OHCL.Kernel.6.6.51.6-dev-arm64.zip
+    - name: unpack Microsoft.OHCL.Kernel.Dev.6.6.51.9-arm64.tar.gz
       run: flowey e 12 flowey_lib_hvlite::download_openhcl_kernel_package 1
       shell: bash
     - name: 🌼 write_into Var
@@ -1816,7 +1816,7 @@ jobs:
     - name: report built openhcl_boot
       run: flowey e 13 flowey_lib_hvlite::build_openhcl_boot 0
       shell: bash
-    - name: unpack Microsoft.OHCL.Kernel.6.6.51.6-dev-x64.zip
+    - name: unpack Microsoft.OHCL.Kernel.Dev.6.6.51.9-x64.tar.gz
       run: flowey e 13 flowey_lib_hvlite::download_openhcl_kernel_package 2
       shell: bash
     - name: 🌼 write_into Var
