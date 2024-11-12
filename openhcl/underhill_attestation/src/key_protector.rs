@@ -393,6 +393,8 @@ mod tests {
 
     #[test]
     fn key_protector_with_wrapped_key() {
+        const DEK_EXTENDED_DATA_SIZE: usize = 384;
+
         // Test KEK (RSA-2K)
         let kek = generate_rsa_2k();
 
@@ -403,7 +405,7 @@ mod tests {
         let des = generate_aes_256();
         let result = crypto::aes_key_wrap_with_padding(&des, &dek);
         assert!(result.is_ok());
-        let aes_wrapped_dek = result.unwrap();
+        let mut aes_wrapped_dek = result.unwrap();
 
         // Test DES key wrapped by the test RSA KEK
         let result = crypto::rsa_oaep_encrypt(&kek, &des, crypto::RsaOaepHashAlgorithm::Sha256);
@@ -416,6 +418,10 @@ mod tests {
         let egress_index = 1;
 
         let mut data = [0u8; crate::protocol::vmgs::KEY_PROTECTOR_SIZE];
+
+        // Test the scenario where DEK is larger than AES-wrapped key size.
+        aes_wrapped_dek.resize(DEK_EXTENDED_DATA_SIZE, 1);
+
         data[..aes_wrapped_dek.len()].copy_from_slice(&aes_wrapped_dek);
 
         let result = KeyProtector::read_from_prefix(&data);
