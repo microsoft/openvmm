@@ -541,9 +541,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         // It is expected the device to be alive when restoring.
         if !bar0.csts().rdy() {
-            // TODO: Discard saved state and try to init the device instead of crash.
-            // TODO: Commented out to make unit tests pass. Uncomment.
-            // anyhow::bail!("device is gone");
+            anyhow::bail!("device is gone");
         }
 
         let registers = Arc::new(DeviceRegisters::new(bar0));
