@@ -1481,6 +1481,7 @@ fn maybe_with_radix_u64(s: &str) -> Result<u64, String> {
 
 #[derive(Parser)]
 #[clap(
+    name = "openvmm",
     disable_help_flag = true,
     disable_version_flag = true,
     no_binary_name = true,
@@ -2843,7 +2844,7 @@ mod interactive_console {
             arg_id: &str,
         ) -> Vec<String> {
             match (subcommand_path, arg_id) {
-                (["hvlite_entry", "inspect"], "element") => {
+                (["openvmm_entry", "inspect", "openvmm"], "element") => {
                     let on_error = vec!["failed/to/connect".into()];
 
                     let (parent_path, to_complete) = (ctx.to_complete)

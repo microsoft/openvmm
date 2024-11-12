@@ -60,7 +60,7 @@ schema_ado_yaml = { path = "flowey/schema_ado_yaml" }
 
 hvlite_core = { path = "openvmm/hvlite_core" }
 hvlite_defs = { path = "openvmm/hvlite_defs" }
-hvlite_entry = { path = "openvmm/hvlite_entry" }
+openvmm_entry = { path = "openvmm/openvmm_entry" }
 hvlite_helpers = { path = "openvmm/hvlite_helpers" }
 hvlite_pcat_locator = { path = "openvmm/hvlite_pcat_locator" }
 openvmm_resources = { path = "openvmm/openvmm_resources" }
