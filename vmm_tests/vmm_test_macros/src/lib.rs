@@ -449,7 +449,7 @@ enum Generation {
     Gen2,
 }
 
-fn parse_vhd(input: ParseStream<'_>, gen: Generation) -> syn::Result<ImageInfo> {
+fn parse_vhd(input: ParseStream<'_>, generation: Generation) -> syn::Result<ImageInfo> {
     let word = input.parse::<Ident>()?;
 
     macro_rules! image_info {
@@ -464,7 +464,7 @@ fn parse_vhd(input: ParseStream<'_>, gen: Generation) -> syn::Result<ImageInfo> 
     }
 
     match &*word.to_string() {
-        "freebsd_13_2_x64" => match gen {
+        "freebsd_13_2_x64" => match generation {
             Generation::Gen1 => Ok(image_info!(
                 ::petri_artifacts_vmm_test::artifacts::test_vhd::FREE_BSD_13_2_X64
             )),
@@ -473,7 +473,7 @@ fn parse_vhd(input: ParseStream<'_>, gen: Generation) -> syn::Result<ImageInfo> 
                 "FreeBSD 13.2 is not available for UEFI",
             )),
         },
-        "windows_datacenter_core_2022_x64" => match gen {
+        "windows_datacenter_core_2022_x64" => match generation {
             Generation::Gen1 => Ok(image_info!(
                 ::petri_artifacts_vmm_test::artifacts::test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64
             )),

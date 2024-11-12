@@ -318,7 +318,7 @@ impl SecurityDescriptor {
 }
 
 #[link(name = "api-ms-win-security-base-private-l1-1-1")]
-extern "C" {
+unsafe extern "C" {
     fn CreateAppContainerToken(
         token: HANDLE,
         caps: LPSECURITY_CAPABILITIES,

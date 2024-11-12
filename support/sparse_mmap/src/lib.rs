@@ -47,7 +47,7 @@ pub fn initialize_try_copy() {
     }
 }
 
-extern "C" {
+unsafe extern "C" {
     #[cfg(unix)]
     fn install_signal_handlers() -> i32;
 

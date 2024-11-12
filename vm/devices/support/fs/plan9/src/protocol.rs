@@ -29,7 +29,7 @@ p9_protocol_messages! {
     15 Rlcreate qid[q] iounit[4];
     24 Tgetattr fid[4] request_mask[8];
     25 Rgetattr valid[8] qid[q] mode[4] uid[4] gid[4] nlink[8] rdev[8] size[8] blksize[8] blocks[8] atime_sec[8] atime_nsec[8]
-        mtime_sec[8] mtime_nsec[8] ctime_sec[8] ctime_nsec[8] btime_sec[8] btime_nsec[8] gen[8] data_version[8];
+        mtime_sec[8] mtime_nsec[8] ctime_sec[8] ctime_nsec[8] btime_sec[8] btime_nsec[8] r#gen[8] data_version[8];
     26 Tsetattr fid[4] valid[4] mode[4] uid[4] gid[4] size[8] atime_sec[8] atime_nsec[8] mtime_sec[8] mtime_nsec[8];
     27 Rsetattr;
     40 Treaddir fid[4] offset[8] count[4];

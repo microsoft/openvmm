@@ -562,9 +562,17 @@ pbjson-build = { git = "https://github.com/jstarks/pbjson", branch = "aliases" }
 
 [workspace.lints.rust]
 # Lint groups need a priority lower than individual lints so they get applied first.
-future_incompatible = { level = "deny", priority = -1 }
-nonstandard_style = { level = "deny", priority = -1 }
-rust_2018_idioms = { level = "deny", priority = -1 }
+future_incompatible = { level = "deny", priority = -2 }
+nonstandard_style = { level = "deny", priority = -2 }
+rust_2018_idioms = { level = "deny", priority = -2 }
+
+rust-2024-compatibility = { level = "warn", priority = -1 }
+# TODO: Fix all of the below, https://github.com/microsoft/openvmm/issues/288
+edition_2024_expr_fragment_specifier = "allow"
+impl_trait_overcaptures = "allow"
+deprecated-safe-2024 = "allow"
+# Needed for linkme compatibility for now, https://github.com/dtolnay/linkme/issues/101
+unsafe-attr-outside-unsafe = "allow"
 
 unused_qualifications = "warn"
 

@@ -2106,6 +2106,8 @@ impl UhProcessor<'_, SnpBacked> {
         value: u64,
         vtl: GuestVtl,
     ) -> Result<(), MsrError> {
+        // TODO SNP: validation on the values being set, e.g. checking addresses
+        // are canonical, etc.
         let mut vmsa = self.runner.vmsa_mut(vtl);
         match msr {
             x86defs::X64_MSR_FS_BASE => {
@@ -2200,19 +2202,6 @@ impl<T: CpuIo> hv1_hypercall::EnableVpVtl<hvdef::hypercall::InitialVpContextX64>
         vp_context: &hvdef::hypercall::InitialVpContextX64,
     ) -> hvdef::HvResult<()> {
         self.hcvm_enable_vp_vtl(partition_id, vp_index, vtl, vp_context)
-    }
-}
-
-impl<T: CpuIo> hv1_hypercall::GetVpRegisters for UhHypercallHandler<'_, '_, T, SnpBacked> {
-    fn get_vp_registers(
-        &mut self,
-        partition_id: u64,
-        vp_index: u32,
-        vtl: Option<Vtl>,
-        registers: &[hvdef::HvRegisterName],
-        output: &mut [hvdef::HvRegisterValue],
-    ) -> hvdef::HvRepResult {
-        self.hcvm_get_vp_registers(partition_id, vp_index, vtl, registers, output)
     }
 }
 

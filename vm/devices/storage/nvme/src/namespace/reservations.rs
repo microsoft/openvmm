@@ -76,7 +76,7 @@ impl Namespace {
 
         let report_header = nvm::ReservationReportExtended {
             report: nvm::ReservationReport {
-                gen: report.generation,
+                generation: report.generation,
                 rtype: report
                     .reservation_type
                     .map_or(nvm::ReservationType(0), to_nvme_reservation_type),

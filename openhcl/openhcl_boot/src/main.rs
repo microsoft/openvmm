@@ -270,7 +270,7 @@ struct Fdt {
 /// where the shim is loaded. Return a ShimParams structure based on the raw
 /// offset based RawShimParams.
 fn shim_parameters(shim_params_raw_offset: isize) -> ShimParams {
-    extern "C" {
+    unsafe extern "C" {
         static __ehdr_start: u8;
     }
 
