@@ -11,6 +11,7 @@ use crate::protocol::vmgs::KeyProtectorById;
 use crate::protocol::vmgs::SecurityProfile;
 use crate::protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use crate::protocol::vmgs::GUEST_SECRET_KEY_MAX_SIZE;
+use cvm_tracing::CVM_ALLOWED;
 use guid::Guid;
 use thiserror::Error;
 use vmgs::FileId;
@@ -87,6 +88,12 @@ pub async fn read_key_protector(
                     maximum_size: KEY_PROTECTOR_SIZE,
                 })?
             }
+
+            tracing::info!(
+                CVM_ALLOWED,
+                entry_size = data.len(),
+                "Key protector data read from VMGS"
+            );
 
             let data = if data.len() < KEY_PROTECTOR_SIZE {
                 // Allow smaller buf by padding zero bytes

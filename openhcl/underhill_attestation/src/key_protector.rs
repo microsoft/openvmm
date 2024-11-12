@@ -16,7 +16,9 @@ use thiserror::Error;
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum GetKeysFromKeyProtectorError {
-    #[error("The DEK format that expects to hold an AES-WRAPPED AES key is invalid")]
+    #[error(
+        "The DEK format expects to hold an RSA-WRAPPED AES key, but found an AES-WRAPPED AES key"
+    )]
     InvalidDekFormat,
     #[error("Ingress RSA KEK size {key_size} was larger than expected {expected_size}")]
     InvalidIngressRsaKekSize {
@@ -101,11 +103,10 @@ impl KeyProtectorExt for KeyProtector {
         // decrypted `wrapped_key` (using `ingress_kek`). Otherwise, VMGS structure should be old (2-blob)
         // where the `dek` is an RSA-wrapped key. The RSA-wrapped key can be unwrapped by the `ingress_kek`.
         let des_key = if found_ingress_dek || use_des_key {
-            if found_ingress_dek && use_des_key {
-                // Validate the DEK format that expects to hold an AES-wrapped key.
-                // Throw an error if there are non-zero bytes in the buffer beyond the expected AES-wrapped AES key length
-                // (`AES_WRAPPED_AES_KEY_LENGTH`).
-                if !self.dek[ingress_idx].dek_buffer[AES_WRAPPED_AES_KEY_LENGTH..]
+            if found_ingress_dek && !use_des_key {
+                // Validate the DEK format, which is expected to hold an RSA-wrapped key instead of an AES-wrapped key
+                // when `wrapped_des_key` is `None`.
+                if self.dek[ingress_idx].dek_buffer[AES_WRAPPED_AES_KEY_LENGTH..]
                     .iter()
                     .all(|&x| x == 0)
                 {
