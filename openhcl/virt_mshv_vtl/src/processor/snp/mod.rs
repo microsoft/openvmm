@@ -365,16 +365,15 @@ impl BackingPrivate for SnpBacked {
         this: &mut UhProcessor<'_, Self>,
         dev: &impl CpuIo,
         _stop: &mut virt::StopVp<'_>,
-        interrupt_pending: VtlArray<Option<u8>, 2>,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        this.run_vp_snp(dev, interrupt_pending).await
+        this.run_vp_snp(dev).await
     }
 
     fn poll_apic(
         this: &mut UhProcessor<'_, Self>,
         vtl: GuestVtl,
         scan_irr: bool,
-    ) -> Result<Option<u8>, UhRunVpError> {
+    ) -> Result<(), UhRunVpError> {
         // Check for interrupt requests from the host.
         // TODO SNP GUEST VSM supporting VTL 1 proxy irrs requires kernel changes
         if vtl == GuestVtl::Vtl0 {
@@ -387,7 +386,6 @@ impl BackingPrivate for SnpBacked {
         // Clear any pending interrupt.
         this.runner.vmsa_mut(vtl).v_intr_cntrl_mut().set_irq(false);
 
-        let mut ret = None;
         let ApicWork {
             init,
             extint,
@@ -400,14 +398,10 @@ impl BackingPrivate for SnpBacked {
 
         if nmi {
             this.handle_nmi(vtl);
-            ret = Some(u8::MAX);
         }
 
         if let Some(vector) = interrupt {
             this.handle_interrupt(vtl, vector);
-            if ret.is_none() {
-                ret = Some(vector);
-            }
         }
 
         if extint {
@@ -429,7 +423,7 @@ impl BackingPrivate for SnpBacked {
             }
         }
 
-        Ok(ret)
+        Ok(())
     }
 
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {
@@ -450,6 +444,38 @@ impl BackingPrivate for SnpBacked {
                 u64::from(notifications).into(),
             )
             .expect("requesting deliverability is not a fallable operation");
+    }
+
+    fn handle_cross_vtl_interrupts(this: &mut UhProcessor<'_, Self>, dev: &impl CpuIo) -> bool {
+        this.hcvm_handle_cross_vtl_interrupts(|this, vtl| {
+            let vmsa = this.runner.vmsa_mut(vtl);
+            if vmsa.event_inject().valid()
+                && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
+            {
+                return true;
+            }
+
+            let lapic = &mut this.backing.lapics[vtl].lapic;
+            let ppr = lapic
+                .access(&mut SnpApicClient {
+                    partition: this.partition,
+                    vmsa,
+                    dev,
+                    vmtime: &this.vmtime,
+                    vtl,
+                })
+                .msr_read(
+                    x86defs::apic::ApicRegister::PPR.0 as u32 + x86defs::apic::X2APIC_MSR_BASE,
+                )
+                .expect("reading ppr should never fail");
+            let ppr_priority = ppr >> 4;
+            let vmsa = this.runner.vmsa_mut(vtl);
+            if vmsa.v_intr_cntrl().irq() && vmsa.v_intr_cntrl().priority() > ppr_priority {
+                return true;
+            }
+
+            false
+        })
     }
 
     fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {
@@ -759,6 +785,7 @@ impl UhProcessor<'_, SnpBacked> {
     fn handle_nmi(&mut self, vtl: GuestVtl) {
         // TODO SNP: support virtual NMI injection
         // For now, just inject an NMI and hope for the best.
+        // Don't forget to update handle_cross_vtl_interrupts if this code changes.
         let mut vmsa = self.runner.vmsa_mut(vtl);
         vmsa.set_event_inject(
             SevEventInjectInfo::new()
@@ -925,23 +952,7 @@ impl UhProcessor<'_, SnpBacked> {
         false
     }
 
-    async fn run_vp_snp(
-        &mut self,
-        dev: &impl CpuIo,
-        interrupt_pending: VtlArray<Option<u8>, 2>,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        self.hcvm_handle_cross_vtl_interrupts(interrupt_pending, |this, vtl, msr| {
-            this.backing.lapics[vtl]
-                .lapic
-                .access(&mut SnpApicClient {
-                    partition: this.partition,
-                    vmsa: this.runner.vmsa_mut(vtl),
-                    dev,
-                    vmtime: &this.vmtime,
-                    vtl,
-                })
-                .msr_read(msr)
-        });
+    async fn run_vp_snp(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
         let next_vtl = self.backing.cvm.exit_vtl;
 
         let mut vmsa = self.runner.vmsa_mut(next_vtl);

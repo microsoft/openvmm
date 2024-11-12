@@ -204,16 +204,14 @@ mod private {
             this: &mut UhProcessor<'_, Self>,
             dev: &impl CpuIo,
             stop: &mut StopVp<'_>,
-            interrupt_pending: VtlArray<Option<u8>, 2>,
         ) -> impl Future<Output = Result<(), VpHaltReason<UhRunVpError>>>;
 
-        /// Process any pending APIC work. Returns the vector of the next
-        /// pending interrupt if there is one, or u8::MAX for an NMI.
+        /// Process any pending APIC work.
         fn poll_apic(
             this: &mut UhProcessor<'_, Self>,
             vtl: GuestVtl,
             scan_irr: bool,
-        ) -> Result<Option<u8>, UhRunVpError>;
+        ) -> Result<(), UhRunVpError>;
 
         /// Requests the VP to exit when an external interrupt is ready to be
         /// delivered.
@@ -233,6 +231,10 @@ mod private {
             let _ = (this, target_vtl);
             false
         }
+
+        /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
+        /// Returns whether interrupt reprocessing is required.
+        fn handle_cross_vtl_interrupts(this: &mut UhProcessor<'_, Self>, dev: &impl CpuIo) -> bool;
 
         fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
 
@@ -636,8 +638,6 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
         let mut first_scan_irr = true;
 
         loop {
-            let mut interrupt_pending: VtlArray<_, 2> = VtlArray::new(None);
-
             // Process VP activity and wait for the VP to be ready.
             poll_fn(|cx| loop {
                 stop.check()?;
@@ -674,11 +674,14 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                         self.update_synic(vtl, false);
                     }
 
-                    interrupt_pending[vtl] =
-                        T::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
-                            .map_err(VpHaltReason::Hypervisor)?;
+                    T::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
+                        .map_err(VpHaltReason::Hypervisor)?;
                 }
                 first_scan_irr = false;
+
+                if T::handle_cross_vtl_interrupts(self, dev) {
+                    continue;
+                }
 
                 // Arm the timer.
                 if let Some(timeout) = self.vmtime.get_timeout() {
@@ -713,7 +716,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     .into();
             }
 
-            T::run_vp(self, dev, &mut stop, interrupt_pending).await?;
+            T::run_vp(self, dev, &mut stop).await?;
             self.kernel_returns += 1;
         }
     }

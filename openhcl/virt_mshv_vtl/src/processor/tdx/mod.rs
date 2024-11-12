@@ -748,9 +748,8 @@ impl BackingPrivate for TdxBacked {
         this: &mut UhProcessor<'_, Self>,
         dev: &impl CpuIo,
         _stop: &mut virt::StopVp<'_>,
-        interrupt_pending: VtlArray<Option<u8>, 2>,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        this.run_vp_tdx(dev, interrupt_pending).await
+        this.run_vp_tdx(dev).await
     }
 
     // TODO TDX GUEST VSM
@@ -758,7 +757,7 @@ impl BackingPrivate for TdxBacked {
         this: &mut UhProcessor<'_, Self>,
         _vtl: GuestVtl,
         scan_irr: bool,
-    ) -> Result<Option<u8>, UhRunVpError> {
+    ) -> Result<(), UhRunVpError> {
         if !this.try_poll_apic(scan_irr)? {
             tracing::info!("disabling APIC offload due to auto EOI");
             let page = zerocopy::transmute_mut!(this.runner.tdx_apic_page_mut());
@@ -769,8 +768,7 @@ impl BackingPrivate for TdxBacked {
             this.try_poll_apic(false)?;
         }
 
-        // TODO TDX GUEST VSM
-        Ok(None)
+        Ok(())
     }
 
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {
@@ -783,6 +781,11 @@ impl BackingPrivate for TdxBacked {
         } else {
             tracelimit::error_ratelimited!("untrusted synic is not configured");
         }
+    }
+
+    fn handle_cross_vtl_interrupts(this: &mut UhProcessor<'_, Self>, _dev: &impl CpuIo) -> bool {
+        // TODO TDX GUEST VSM
+        this.hcvm_handle_cross_vtl_interrupts(|_this, _vtl| false)
     }
 
     fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
@@ -1124,23 +1127,7 @@ impl UhProcessor<'_, TdxBacked> {
         }
     }
 
-    async fn run_vp_tdx(
-        &mut self,
-        dev: &impl CpuIo,
-        interrupt_pending: VtlArray<Option<u8>, 2>,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        self.hcvm_handle_cross_vtl_interrupts(interrupt_pending, |this, _vtl, msr| {
-            this.backing
-                .lapic
-                .lapic
-                .access(&mut TdxApicClient {
-                    partition: this.partition,
-                    dev,
-                    apic_page: zerocopy::transmute_mut!(this.runner.tdx_apic_page_mut()),
-                    vmtime: &this.vmtime,
-                })
-                .msr_read(msr)
-        });
+    async fn run_vp_tdx(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
         let next_vtl = self.backing.cvm.exit_vtl;
 
         if self.backing.interruption_information.valid() {

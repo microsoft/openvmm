@@ -135,7 +135,6 @@ impl BackingPrivate for HypervisorBackedArm64 {
         this: &mut UhProcessor<'_, Self>,
         dev: &impl CpuIo,
         _stop: &mut virt::StopVp<'_>,
-        _interrupt_pending: VtlArray<Option<u8>, 2>,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
         if this.backing.deliverability_notifications
             != this.backing.next_deliverability_notifications
@@ -198,8 +197,8 @@ impl BackingPrivate for HypervisorBackedArm64 {
         _this: &mut UhProcessor<'_, Self>,
         _vtl: GuestVtl,
         _scan_irr: bool,
-    ) -> Result<Option<u8>, UhRunVpError> {
-        Ok(None)
+    ) -> Result<(), UhRunVpError> {
+        Ok(())
     }
 
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
@@ -212,6 +211,11 @@ impl BackingPrivate for HypervisorBackedArm64 {
         this.backing
             .next_deliverability_notifications
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
+    }
+
+    fn handle_cross_vtl_interrupts(_this: &mut UhProcessor<'_, Self>, _dev: &impl CpuIo) -> bool {
+        // TODO WHP ARM GUEST VSM
+        false
     }
 
     fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}

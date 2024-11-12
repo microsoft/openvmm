@@ -25,10 +25,7 @@ use hvdef::Vtl;
 use std::iter::zip;
 use virt::io::CpuIo;
 use virt::vp::AccessVpState;
-use virt::x86::MsrError;
 use virt::Processor;
-use vtl_array::VtlArray;
-use x86defs::apic::ApicRegister;
 use zerocopy::FromZeroes;
 
 impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
@@ -598,68 +595,46 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         Ok(())
     }
 
+    /// Handle checking for cross-VTL interrupts, preempting VTL 0, and setting
+    /// VINA when appropriate. The `is_interrupt_pending` function should return
+    /// true if an interrupt of appropriate priority, or an NMI, is pending for
+    /// the given VTL.
     pub(crate) fn hcvm_handle_cross_vtl_interrupts(
         &mut self,
-        interrupt_pending: VtlArray<Option<u8>, 2>,
-        lapic_msr_read: impl FnOnce(&mut Self, GuestVtl, u32) -> Result<u64, MsrError>,
-    ) {
-        match self.backing.cvm_state_mut().exit_vtl {
-            GuestVtl::Vtl0 => {
-                // Check for VTL preemption
-                if let Some(vector) = interrupt_pending[GuestVtl::Vtl1] {
-                    let priority = vector >> 4;
-                    if priority > 0 {
-                        let ppr = lapic_msr_read(
-                            self,
-                            GuestVtl::Vtl1,
-                            ApicRegister::PPR.0 as u32 + x86defs::apic::X2APIC_MSR_BASE,
-                        )
-                        .expect("reading PPR should never fail");
-                        let ppr_priority = ppr >> 4;
-                        if priority as u64 > ppr_priority {
-                            B::switch_vtl_state(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
-                            self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
-                            self.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
-                                .set_return_reason(HvVtlEntryReason::INTERRUPT)
-                                .unwrap();
-                        }
-                    }
-                }
+        is_interrupt_pending: impl Fn(&mut Self, GuestVtl) -> bool,
+    ) -> bool {
+        let mut reprocessing_required = false;
+
+        if self.backing.cvm_state_mut().exit_vtl == GuestVtl::Vtl0 {
+            // Check for VTL preemption
+            if is_interrupt_pending(self, GuestVtl::Vtl1) {
+                B::switch_vtl_state(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
+                self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
+                self.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
+                    .set_return_reason(HvVtlEntryReason::INTERRUPT)
+                    .unwrap();
             }
-            GuestVtl::Vtl1 => {
-                // Check for VINA
-                if let Some(vector) = interrupt_pending[GuestVtl::Vtl0] {
-                    let priority = vector >> 4;
-                    if priority > 0 {
-                        let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
-                        if hv.synic.vina().enabled() && !hv.vina_asserted().unwrap() {
-                            let ppr = lapic_msr_read(
-                                self,
-                                GuestVtl::Vtl1,
-                                ApicRegister::PPR.0 as u32 + x86defs::apic::X2APIC_MSR_BASE,
-                            )
-                            .expect("reading PPR should never fail");
-                            let ppr_priority = ppr >> 4;
-                            if priority as u64 > ppr_priority {
-                                let vp_index = self.vp_index();
-                                let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
-                                hv.set_vina_asserted(true).unwrap();
-                                self.partition
-                                    .synic_interrupt(vp_index, GuestVtl::Vtl1)
-                                    .request_interrupt(
-                                        hv.synic.vina().vector().into(),
-                                        hv.synic.vina().auto_eoi(),
-                                    );
-                                // We're about to return to the guest, so we need to
-                                // process the interrupt now. We're already past the update
-                                // loop in run_vp.
-                                self.update_synic(GuestVtl::Vtl1, false);
-                            }
-                        }
-                    }
+        }
+
+        if self.backing.cvm_state_mut().exit_vtl == GuestVtl::Vtl1 {
+            // Check for VINA
+            if is_interrupt_pending(self, GuestVtl::Vtl0) {
+                let vp_index = self.vp_index();
+                let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
+                if hv.synic.vina().enabled() && !hv.vina_asserted().unwrap() {
+                    hv.set_vina_asserted(true).unwrap();
+                    self.partition
+                        .synic_interrupt(vp_index, GuestVtl::Vtl1)
+                        .request_interrupt(
+                            hv.synic.vina().vector().into(),
+                            hv.synic.vina().auto_eoi(),
+                        );
+                    reprocessing_required = true;
                 }
             }
         }
+
+        reprocessing_required
     }
 }
 
