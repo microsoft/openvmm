@@ -7111,6 +7111,7 @@ dependencies = [
  "tracing",
  "virt",
  "virt_support_gic",
+ "vm_topology",
  "vmcore",
 ]
 
@@ -7257,9 +7258,11 @@ dependencies = [
 name = "virt_support_gic"
 version = "0.0.0"
 dependencies = [
+ "aarch64defs",
  "inspect",
- "open_enum",
+ "memory_range",
  "parking_lot",
+ "tracelimit",
  "tracing",
  "vm_topology",
 ]

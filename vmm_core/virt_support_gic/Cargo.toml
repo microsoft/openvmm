@@ -7,10 +7,12 @@ edition = "2021"
 rust-version.workspace = true
 
 [dependencies]
+memory_range.workspace = true
 vm_topology.workspace = true
 
+aarch64defs.workspace = true
 inspect.workspace = true
-open_enum.workspace = true
+tracelimit.workspace = true
 
 parking_lot.workspace = true
 tracing.workspace = true

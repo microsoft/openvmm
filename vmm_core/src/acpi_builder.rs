@@ -131,26 +131,17 @@ impl AcpiTopology for Aarch64Topology {
     }
 
     fn extend_madt(topology: &ProcessorTopology<Self>, madt: &mut Vec<u8>) {
-        // Hyper-V chooses these, and UEFI is hard-coded to match. TODO: move
-        // these constants and/or make this configurable.
-        const GICD_BASE: u64 = 0xFFFF_0000;
-        const GICR_BASE: u64 = 0xEFFE_E000;
-        const GICR_SIZE: u64 = 0x20000;
-
         // GIC version 3.
-        madt.extend_from_slice(acpi_spec::madt::MadtGicd::new(0, GICD_BASE, 3).as_bytes());
+        madt.extend_from_slice(
+            acpi_spec::madt::MadtGicd::new(0, topology.gic_distributor_base(), 3).as_bytes(),
+        );
         for vp in topology.vps_arch() {
             let uid = vp.base.vp_index.index() + 1;
 
-            /// ACPI specifies that just the MPIDR affinity fields should be included.
-            const MPIDR_EL1_AFF_MASK: aarch64defs::MpidrEl1 = aarch64defs::MpidrEl1::new()
-                .with_aff0(0xff)
-                .with_aff1(0xff)
-                .with_aff2(0xff)
-                .with_aff3(0xff);
-
-            let mpidr = u64::from(vp.mpidr) & u64::from(MPIDR_EL1_AFF_MASK);
-            let gicr = GICR_BASE + vp.base.vp_index.index() as u64 * GICR_SIZE;
+            // ACPI specifies that just the MPIDR affinity fields should be included.
+            let mpidr = u64::from(vp.mpidr) & u64::from(aarch64defs::MpidrEl1::AFFINITY_MASK);
+            let gicr = topology.gic_redistributors_base()
+                + vp.base.vp_index.index() as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE;
             madt.extend_from_slice(acpi_spec::madt::MadtGicc::new(uid, mpidr, gicr).as_bytes());
         }
     }
