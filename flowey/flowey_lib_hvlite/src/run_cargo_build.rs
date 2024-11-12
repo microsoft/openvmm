@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Returns well-formed `cargo build` invocations for building crates
 //! specifically in the the hvlite repo.
@@ -180,6 +181,10 @@ pub mod common {
             arch: CommonArch::Aarch64,
             platform: CommonPlatform::WindowsMsvc,
         };
+        pub const AARCH64_LINUX_GNU: Self = Self::Common {
+            arch: CommonArch::Aarch64,
+            platform: CommonPlatform::LinuxGnu,
+        };
         pub const AARCH64_LINUX_MUSL: Self = Self::Common {
             arch: CommonArch::Aarch64,
             platform: CommonPlatform::LinuxMusl,
@@ -299,7 +304,7 @@ impl FlowNode for Node {
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
         ctx.import::<crate::run_split_debug_info::Node>();
-        ctx.import::<flowey_lib_common::install_apt_pkg::Node>();
+        ctx.import::<crate::init_cross_build::Node>();
         ctx.import::<flowey_lib_common::run_cargo_build::Node>();
     }
 
@@ -323,82 +328,48 @@ impl FlowNode for Node {
         } in requests
         {
             let mut pre_build_deps = base_pre_build_deps.clone();
-            let mut injected_env = BTreeMap::new();
-
             pre_build_deps.extend(user_pre_build_deps);
 
-            // when cross compiling aarch64-linux from linux, explicitly set the
-            // linker being used
-            //
-            // FUTURE: this will need tweaking flowey is being run on non-x86
-            // hosts
-            if matches!(ctx.platform(), FlowPlatform::Linux)
-                && matches!(
-                    target.architecture,
-                    target_lexicon::Architecture::Aarch64(_)
-                )
-                && matches!(
-                    target.operating_system,
-                    target_lexicon::OperatingSystem::Linux
-                )
-            {
-                // We use `gcc`'s linker for cross-compiling due to:
-                //
-                // * The special baremetal options are the same. These options
-                //   don't work for the LLVM linker,
-                // * The compiler team at Microsoft has stated that `rust-lld`
-                //   is not a production option,
-                // * The only Rust `aarch64` targets that produce
-                //   position-independent static ELF binaries with no std are
-                //   `aarch64-unknown-linux-*`.
-                pre_build_deps.push(ctx.reqv(|v| {
-                    flowey_lib_common::install_apt_pkg::Request::Install {
-                        package_names: vec!["gcc-aarch64-linux-gnu".into()],
-                        done: v,
-                    }
-                }));
-
-                // HACK: ...unless this is musl, in which case, we use the
-                // openhcl linker set in the repo's `.cargo/config.toml`
-                //
-                // Not sure if I'm a fan of the current approach to begin with,
-                // since it means _any_ musl code (not just code running in
-                // VTL2) will use the openhcl-specific musl... but whatever
-                if !matches!(target.environment, target_lexicon::Environment::Musl) {
-                    injected_env.insert(
-                        format!(
-                            "CARGO_TARGET_{}_LINKER",
-                            target.to_string().replace('-', "_").to_uppercase()
-                        ),
-                        "aarch64-linux-gnu-gcc".into(),
-                    );
-                }
-            }
-
-            // FIXME?: because we set `CC_x86_64_unknown_linux_musl` in our cargo env,
-            // we end up compining _every_ musl artifact using the openhcl musl
+            // FIXME: because we set `CC_{arch}_unknown_linux_musl` in our cargo env,
+            // we end up compiling _every_ musl artifact using the openhcl musl
             // toolchain.
             //
             // it's not super clear how to fix this in a clean way without breaking the
             // dev-ex of anyone using rust-analyzer though...
+            let sysroot_arch = match target.architecture {
+                target_lexicon::Architecture::Aarch64(_) => {
+                    crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch::Aarch64
+                }
+                target_lexicon::Architecture::X86_64 => {
+                    crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch::X64
+                }
+                arch => anyhow::bail!("unsupported arch {arch}"),
+            };
+
             if matches!(target.environment, target_lexicon::Environment::Musl) {
                 pre_build_deps.push(
                     ctx.reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
-                        arch:
-                            crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch::X64,
+                        arch: sysroot_arch,
                         path: v,
                     })
                     .into_side_effect(),
                 );
             }
 
+            let injected_env = ctx.reqv(|v| crate::init_cross_build::Request {
+                target: target.clone(),
+                injected_env: v,
+            });
+
             let extra_env = if let Some(extra_env) = extra_env {
-                extra_env.map(ctx, move |mut m| {
-                    m.extend(injected_env);
-                    m
-                })
+                extra_env
+                    .zip(ctx, injected_env)
+                    .map(ctx, move |(mut a, b)| {
+                        a.extend(b);
+                        a
+                    })
             } else {
-                ReadVar::from_static(injected_env)
+                injected_env
             };
 
             let base_output = ctx.reqv(|v| flowey_lib_common::run_cargo_build::Request {

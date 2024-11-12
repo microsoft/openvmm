@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use self::cargo_fuzz::CargoFuzzCommand;
 use self::parse_fuzz_crate_toml::RepoFuzzTarget;

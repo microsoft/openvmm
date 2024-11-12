@@ -1,8 +1,10 @@
-# Copyright (C) Microsoft Corporation. All rights reserved.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 [package]
 name = "underhill_core"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 # Enable profiler support
@@ -30,7 +32,6 @@ cvm_tracing.workspace = true
 diag_proto.workspace = true
 diag_server.workspace = true
 debug_worker_defs = { workspace = true, optional = true }
-hcl.workspace = true
 shared_pool_alloc =  { workspace = true, features = ["vfio"] }
 virt.workspace = true
 vmm_core.workspace = true
@@ -76,7 +77,6 @@ scsi_core.workspace = true
 scsidisk.workspace = true
 scsidisk_resources.workspace = true
 serial_16550_resources.workspace = true
-sidecar_client.workspace = true
 storage_string.workspace = true
 storvsp.workspace = true
 storvsp_resources.workspace = true
@@ -124,7 +124,7 @@ vmgs_broker = { workspace = true, features = ["encryption_ossl"] }
 vmgs_resources.workspace = true
 x86defs.workspace = true
 
-safe_x86_intrinsics.workspace = true
+safe_intrinsics.workspace = true
 debug_ptr.workspace = true
 guid.workspace = true
 inspect.workspace = true
@@ -158,7 +158,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_helpers.workspace = true
 serde_json.workspace = true
 socket2.workspace = true
-thiserror.workspace = true
+thiserror = { workspace = true, features = ["std"] }
 time = { workspace = true, features = ["macros"] }
 tracing-subscriber = { workspace = true, features = ["registry"] }
 tracing.workspace = true

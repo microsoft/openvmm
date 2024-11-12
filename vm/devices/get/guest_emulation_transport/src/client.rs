@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use super::process_loop::msg;
 use super::process_loop::msg::IgvmAttestRequestData;
@@ -447,7 +448,7 @@ impl GuestEmulationTransportClient {
     /// This function is non-blocking and does not wait for a response from the
     /// host.
     ///
-    /// When reporting fatal events (i.e: events which terminate underhill
+    /// When reporting fatal events (i.e: events which terminate OpenHCL
     /// execution entirely), the caller must also await-on
     /// [`event_log_flush`](Self::event_log_flush) in order to ensure all queued
     /// events has actually been sent to the host.
@@ -461,6 +462,19 @@ impl GuestEmulationTransportClient {
     /// This async method will only resolve after all outstanding event logs
     /// are written back to the host.
     pub async fn event_log_flush(&self) {
+        self.control.call(msg::Msg::FlushWrites, ()).await
+    }
+
+    /// Report the fatal event to the host and flush the event queue.
+    ///
+    /// This function is asynchronous and is equivalent to the combination of
+    /// [`event_log`](Self::event_log) and [`event_log_flush`](Self::event_log_flush).
+    ///
+    /// Use this function to ensure all the events prior to the fatal event are sent to
+    /// the host before the OpenHCL tears down. For non-fatal event, use
+    /// [`event_log`](Self::event_log).
+    pub async fn event_log_fatal(&self, event_log_id: crate::api::EventLogId) {
+        self.control.notify(msg::Msg::EventLog(event_log_id));
         self.control.call(msg::Msg::FlushWrites, ()).await
     }
 

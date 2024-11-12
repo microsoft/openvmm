@@ -1,14 +1,13 @@
-# Copyright (C) Microsoft Corporation. All rights reserved.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 [package]
 name = "fdt"
 edition = "2021"
-
-[features]
-default = []
-std = []
+rust-version.workspace = true
 
 [dependencies]
+thiserror.workspace = true
 zerocopy.workspace = true
 zerocopy_helpers.workspace = true
 

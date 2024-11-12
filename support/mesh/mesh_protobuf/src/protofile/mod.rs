@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Definitions for describing the format protobuf messages. These can be used
 //! to generate `.proto` files that are binary compatible with the associated

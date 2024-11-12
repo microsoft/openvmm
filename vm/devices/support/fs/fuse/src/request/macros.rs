@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 /// Generates an enum that holds fuse operations and their arguments.
 macro_rules! fuse_operations {

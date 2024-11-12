@@ -1,0 +1,12 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "safe_intrinsics"
+edition = "2021"
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

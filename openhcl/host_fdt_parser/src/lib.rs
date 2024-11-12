@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Common parsing code for parsing the device tree provided by the host.
 //! Note that is is not a generic device tree parser, but parses the device tree
@@ -7,7 +8,7 @@
 //! Notably, we search for IGVM specific extensions to nodes, defined here:
 //! [`igvm_defs::dt`].
 
-#![cfg_attr(not(any(test, feature = "std")), no_std)]
+#![no_std]
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -65,9 +66,7 @@ impl<'a> Display for Error<'a> {
     }
 }
 
-// TODO: Once core::error::Error is stablized, we can remove this feature gate.
-#[cfg(feature = "std")]
-impl<'a> std::error::Error for Error<'a> {}
+impl<'a> core::error::Error for Error<'a> {}
 
 #[derive(Debug)]
 enum ErrorKind<'a> {
@@ -247,10 +246,10 @@ pub enum MemoryAllocationMode {
     Vtl2 {
         /// The number of bytes VTL2 should allocate for memory for itself.
         /// Encoded as `openhcl/memory-size` in device tree.
-        memory_size: u64,
+        memory_size: Option<u64>,
         /// The number of bytes VTL2 should allocate for mmio for itself.
         /// Encoded as `openhcl/mmio-size` in device tree.
-        mmio_size: u64,
+        mmio_size: Option<u64>,
     },
 }
 
@@ -454,21 +453,15 @@ impl<
                             let memory_size = child
                                 .find_property("memory-size")
                                 .map_err(ErrorKind::Prop)?
-                                .ok_or(ErrorKind::PropMissing {
-                                    node_name: child.name,
-                                    prop_name: "memory-size",
-                                })?
-                                .read_u64(0)
+                                .map(|p| p.read_u64(0))
+                                .transpose()
                                 .map_err(ErrorKind::Prop)?;
 
                             let mmio_size = child
                                 .find_property("mmio-size")
                                 .map_err(ErrorKind::Prop)?
-                                .ok_or(ErrorKind::PropMissing {
-                                    node_name: child.name,
-                                    prop_name: "mmio-size",
-                                })?
-                                .read_u64(0)
+                                .map(|p| p.read_u64(0))
+                                .transpose()
                                 .map_err(ErrorKind::Prop)?;
 
                             storage.memory_allocation_mode = MemoryAllocationMode::Vtl2 {
@@ -500,7 +493,7 @@ impl<
                                     .data;
 
                                 if host_entropy.len() > MAX_ENTROPY_SIZE {
-                                    #[cfg(feature = "std")]
+                                    #[cfg(feature = "tracing")]
                                     tracing::warn!(
                                         entropy_len = host_entropy.len(),
                                         "Truncating host-provided entropy",
@@ -514,7 +507,7 @@ impl<
                                 storage.entropy = Some(entropy);
                             }
                             _ => {
-                                #[cfg(feature = "std")]
+                                #[cfg(feature = "tracing")]
                                 tracing::warn!(?openhcl_child.name, "Unrecognized OpenHCL child node");
                             }
                         }
@@ -732,7 +725,7 @@ fn parse_compatible<'a>(
     } else if compatible == "x86-pio-bus" {
         parse_io_bus(node, com3_serial)?;
     } else {
-        #[cfg(feature = "std")]
+        #[cfg(feature = "tracing")]
         tracing::warn!(?compatible, ?node.name,
             "Unrecognized compatible field",
         );
@@ -976,7 +969,7 @@ fn parse_io_bus<'a>(
         if compatible == "ns16550" && reg_base == COM3_REG_BASE {
             *com3_serial = true
         } else {
-            #[cfg(feature = "std")]
+            #[cfg(feature = "tracing")]
             tracing::warn!(?node.name, ?compatible, ?reg_base,
                 "unrecognized io bus child"
             );
@@ -1069,7 +1062,12 @@ mod inspect_helpers {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+
     use super::*;
+    use alloc::format;
+    use alloc::vec;
+    use alloc::vec::Vec;
     use fdt::builder::Builder;
     use fdt::builder::BuilderConfig;
     use fdt::builder::Nest;
@@ -1354,10 +1352,14 @@ mod tests {
                 mmio_size,
             } => {
                 // Encode the size at the expected property.
-                openhcl = openhcl
-                    .add_u64(p_memory_allocation_size, memory_size)
-                    .unwrap();
-                openhcl = openhcl.add_u64(p_mmio_allocation_size, mmio_size).unwrap();
+                if let Some(memory_size) = memory_size {
+                    openhcl = openhcl
+                        .add_u64(p_memory_allocation_size, memory_size)
+                        .unwrap();
+                }
+                if let Some(mmio_size) = mmio_size {
+                    openhcl = openhcl.add_u64(p_mmio_allocation_size, mmio_size).unwrap();
+                }
                 "vtl2"
             }
         };
@@ -1521,8 +1523,8 @@ mod tests {
             false,
             None,
             MemoryAllocationMode::Vtl2 {
-                memory_size: 1000 * 1024 * 1024, // 1000 MB
-                mmio_size: 128 * 1024 * 1024,    // 128 MB
+                memory_size: Some(1000 * 1024 * 1024), // 1000 MB
+                mmio_size: Some(128 * 1024 * 1024),    // 128 MB
             },
         );
 

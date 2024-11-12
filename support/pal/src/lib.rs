@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This crate provides a set of types that abstract over OS-specific platform
 //! primitives. It is focused on IO- and wait-related functionality: events,

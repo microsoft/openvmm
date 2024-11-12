@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implements a command line utility to generate IGVM files.
 
@@ -13,17 +14,19 @@ use anyhow::bail;
 use anyhow::Context;
 use clap::Parser;
 use file_loader::IgvmLoaderRegister;
+use file_loader::IgvmVtlLoader;
 use igvm::IgvmFile;
 use igvm_defs::SnpPolicy;
 use igvm_defs::TdxPolicy;
 use igvm_defs::IGVM_FIXED_HEADER;
 use igvmfilegen_config::Config;
 use igvmfilegen_config::ConfigIsolationType;
+use igvmfilegen_config::Image;
+use igvmfilegen_config::LinuxImage;
 use igvmfilegen_config::ResourceType;
 use igvmfilegen_config::Resources;
 use igvmfilegen_config::SnpInjectionType;
 use igvmfilegen_config::UefiConfigType;
-use igvmfilegen_config::VtlConfig;
 use loader::importer::Aarch64Register;
 use loader::importer::GuestArch;
 use loader::importer::GuestArchKind;
@@ -33,7 +36,6 @@ use loader::linux::InitrdConfig;
 use loader::paravisor::CommandLineType;
 use loader::paravisor::Vtl0Config;
 use loader::paravisor::Vtl0Linux;
-use std::ffi::CString;
 use std::io::Write;
 use std::path::PathBuf;
 use tracing_subscriber::filter::LevelFilter;
@@ -165,11 +167,6 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
             bail!("max_vtl must be 2 or 0");
         }
 
-        // If max VTL is 0, then VTL2 config must be none.
-        if config.max_vtl == 0 && !matches!(config.vtl2, VtlConfig::None) {
-            bail!("vtl2 must be none if max vtl is 0");
-        }
-
         let isolation_string = match config.isolation_type {
             ConfigIsolationType::None => "none",
             ConfigIsolationType::Vbs { .. } => "vbs",
@@ -209,12 +206,7 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
 
         let mut loader = IgvmLoader::<R>::new(with_paravisor, loader_isolation_type);
 
-        // Load VTL0, then VTL2, if present.
-        let vtl0_load_info = load_vtl0(&mut loader, &config.vtl0, &resources)?;
-
-        if config.max_vtl == 2 {
-            load_vtl2(&mut loader, &config.vtl2, &resources, vtl0_load_info)?;
-        }
+        load_image(&mut loader.loader(), &config.image, &resources)?;
 
         let igvm_output = loader
             .finalize(config.guest_svn)
@@ -397,13 +389,6 @@ fn debug_validate_igvm_file(igvm_file: &IgvmFile, binary_file: &[u8]) {
     }
 }
 
-#[derive(Debug)]
-enum Vtl0LoadInfo<'a> {
-    None,
-    Uefi(loader::uefi::LoadInfo),
-    Linux(&'a CString, loader::linux::LoadInfo),
-}
-
 /// A trait to specialize behavior of the file builder based on different
 /// register types for different architectures. Different methods may need to be
 /// called depending on the register type that represents the given architecture.
@@ -425,7 +410,7 @@ trait IgvmfilegenRegister: IgvmLoaderRegister + 'static {
         F: std::io::Read + std::io::Seek,
         Self: GuestArch;
 
-    fn load_underhill<F>(
+    fn load_openhcl<F>(
         importer: &mut dyn ImageLoad<Self>,
         kernel_image: &mut F,
         shim: &mut F,
@@ -467,7 +452,7 @@ impl IgvmfilegenRegister for X86Register {
         )
     }
 
-    fn load_underhill<F>(
+    fn load_openhcl<F>(
         importer: &mut dyn ImageLoad<Self>,
         kernel_image: &mut F,
         shim: &mut F,
@@ -481,7 +466,7 @@ impl IgvmfilegenRegister for X86Register {
     where
         F: std::io::Read + std::io::Seek,
     {
-        loader::paravisor::load_underhill_x64(
+        loader::paravisor::load_openhcl_x64(
             importer,
             kernel_image,
             shim,
@@ -523,7 +508,7 @@ impl IgvmfilegenRegister for Aarch64Register {
         )
     }
 
-    fn load_underhill<F>(
+    fn load_openhcl<F>(
         importer: &mut dyn ImageLoad<Self>,
         kernel_image: &mut F,
         shim: &mut F,
@@ -537,7 +522,7 @@ impl IgvmfilegenRegister for Aarch64Register {
     where
         F: std::io::Read + std::io::Seek,
     {
-        loader::paravisor::load_underhill_arm64(
+        loader::paravisor::load_openhcl_arm64(
             importer,
             kernel_image,
             shim,
@@ -550,105 +535,36 @@ impl IgvmfilegenRegister for Aarch64Register {
     }
 }
 
-/// Load an image into VTL0.
-fn load_vtl0<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
-    loader: &mut IgvmLoader<R>,
-    config: &'a VtlConfig,
+/// Load an image.
+fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
+    loader: &mut IgvmVtlLoader<'_, R>,
+    config: &'a Image,
     resources: &'a Resources,
-) -> anyhow::Result<Vtl0LoadInfo<'a>> {
+) -> anyhow::Result<()> {
     tracing::debug!(?config, "loading into VTL0");
 
-    let load_info = match config {
-        VtlConfig::None => {
-            // Nothing is loaded.
-            Vtl0LoadInfo::None
-        }
-        VtlConfig::Uefi { config_type } => {
-            let image_path = resources
-                .get(ResourceType::Uefi)
-                .expect("validated present");
-            let image = fs_err::read(image_path)
-                .context(format!("reading uefi image at {}", image_path.display()))?;
-            let config = match config_type {
-                UefiConfigType::None => loader::uefi::ConfigType::None,
-                UefiConfigType::Igvm => loader::uefi::ConfigType::Igvm,
-            };
-
-            let load_info = R::load_uefi(loader, &image, config).context("uefi loader")?;
-            Vtl0LoadInfo::Uefi(load_info)
-        }
-        VtlConfig::Linux {
-            command_line,
-            use_initrd,
-        } => {
-            let kernel_path = resources
-                .get(ResourceType::LinuxKernel)
-                .expect("validated present");
-            let mut kernel = fs_err::File::open(kernel_path).context(format!(
-                "reading vtl0 kernel image at {}",
-                kernel_path.display()
-            ))?;
-
-            let initrd_vec = if *use_initrd {
-                let initrd_path = resources
-                    .get(ResourceType::LinuxInitrd)
-                    .expect("validated present");
-                fs_err::read(initrd_path)
-                    .context(format!("reading vtl0 initrd at {}", initrd_path.display()))?
-            } else {
-                Vec::new()
-            };
-
-            let initrd = if initrd_vec.is_empty() {
-                None
-            } else {
-                Some(InitrdConfig {
-                    initrd_address: loader::linux::InitrdAddressType::AfterKernel,
-                    initrd: &initrd_vec,
-                })
-            };
-
-            // NOTE: The kernel is allowed to load at address 0, but if it actually attempts to load at address 0,
-            //       underhill will fail to load due to overlapping with ACPI tables and additional config.
-            let load_info = R::load_linux_kernel_and_initrd(loader, &mut kernel, 0, initrd, None)
-                .context("loading linux kernel and initrd")?;
-
-            Vtl0LoadInfo::Linux(command_line, load_info)
-        }
-        VtlConfig::Underhill { .. } => {
-            bail!("underhill can only be loaded into VTL2")
-        }
-    };
-
-    Ok(load_info)
-}
-
-/// Load an image into VTL2.
-fn load_vtl2<R: IgvmfilegenRegister + GuestArch>(
-    loader: &mut IgvmLoader<R>,
-    config: &VtlConfig,
-    resources: &Resources,
-    vtl0_load_info: Vtl0LoadInfo<'_>,
-) -> anyhow::Result<()> {
-    tracing::debug!(
-        config = ?config,
-        load_info = ?&vtl0_load_info,
-        "Loading into VTL2 with VTL0 load info",
-    );
-
-    match config {
-        VtlConfig::None => {
+    match *config {
+        Image::None => {
             // Nothing is loaded.
         }
-        VtlConfig::Uefi { .. } => {
-            bail!("uefi can only be loaded into VTL0")
+        Image::Uefi { config_type } => {
+            load_uefi(loader, resources, config_type)?;
         }
-        VtlConfig::Underhill {
-            command_line,
+        Image::Linux(ref linux) => {
+            load_linux(loader, linux, resources)?;
+        }
+        Image::Openhcl {
+            ref command_line,
             static_command_line,
             memory_page_base,
             memory_page_count,
+            uefi,
+            ref linux,
         } => {
+            if uefi && linux.is_some() {
+                anyhow::bail!("cannot include both UEFI and Linux images in OpenHCL image");
+            }
+
             let kernel_path = resources
                 .get(ResourceType::UnderhillKernel)
                 .expect("validated present");
@@ -689,28 +605,34 @@ fn load_vtl2<R: IgvmfilegenRegister + GuestArch>(
             // Since the host performs PCAT loading, each image that supports
             // UEFI also supports PCAT boot. A future file builder config change
             // will make this more explicit.
-            let vtl0_load_config = match vtl0_load_info {
-                Vtl0LoadInfo::None => Vtl0Config {
-                    supports_pcat: false,
-                    supports_uefi: None,
+            let vtl0_load_config = if uefi {
+                let mut inner_loader = loader.nested_loader();
+                let load_info = load_uefi(&mut inner_loader, resources, UefiConfigType::None)?;
+                let vp_context = inner_loader.take_vp_context();
+                Vtl0Config {
+                    supports_pcat: loader.loader().arch() == GuestArchKind::X86_64,
+                    supports_uefi: Some((load_info, vp_context)),
                     supports_linux: None,
-                },
-                Vtl0LoadInfo::Uefi(load_info) => Vtl0Config {
-                    supports_pcat: loader.arch() == GuestArchKind::X86_64,
-                    supports_uefi: Some(load_info),
-                    supports_linux: None,
-                },
-                Vtl0LoadInfo::Linux(command_line, load_info) => Vtl0Config {
+                }
+            } else if let Some(linux) = linux {
+                let load_info = load_linux(&mut loader.nested_loader(), linux, resources)?;
+                Vtl0Config {
                     supports_pcat: false,
                     supports_uefi: None,
                     supports_linux: Some(Vtl0Linux {
-                        command_line,
+                        command_line: &linux.command_line,
                         load_info,
                     }),
-                },
+                }
+            } else {
+                Vtl0Config {
+                    supports_pcat: false,
+                    supports_uefi: None,
+                    supports_linux: None,
+                }
             };
 
-            let command_line = if loader.confidential_debug() {
+            let command_line = if loader.loader().confidential_debug() {
                 tracing::info!("enabling underhill confidential debug environment flag");
                 format!(
                     "{command_line} {}=1",
@@ -720,29 +642,82 @@ fn load_vtl2<R: IgvmfilegenRegister + GuestArch>(
                 command_line.to_string()
             };
 
-            let command_line = if *static_command_line {
+            let command_line = if static_command_line {
                 CommandLineType::Static(&command_line)
             } else {
                 CommandLineType::HostAppendable(&command_line)
             };
 
-            R::load_underhill(
+            R::load_openhcl(
                 loader,
                 &mut kernel,
                 &mut shim,
                 sidecar.as_mut(),
                 command_line,
                 initrd_slice,
-                *memory_page_base,
-                *memory_page_count,
+                memory_page_base,
+                memory_page_count,
                 vtl0_load_config,
             )
             .context("underhill kernel loader")?;
         }
-        VtlConfig::Linux { .. } => {
-            bail!("linux can only be loaded into vtl0")
-        }
-    }
+    };
 
     Ok(())
+}
+
+fn load_uefi<R: IgvmfilegenRegister + GuestArch + 'static>(
+    loader: &mut IgvmVtlLoader<'_, R>,
+    resources: &Resources,
+    config_type: UefiConfigType,
+) -> Result<loader::uefi::LoadInfo, anyhow::Error> {
+    let image_path = resources
+        .get(ResourceType::Uefi)
+        .expect("validated present");
+    let image = fs_err::read(image_path)
+        .context(format!("reading uefi image at {}", image_path.display()))?;
+    let config = match config_type {
+        UefiConfigType::None => loader::uefi::ConfigType::None,
+        UefiConfigType::Igvm => loader::uefi::ConfigType::Igvm,
+    };
+    let load_info = R::load_uefi(loader, &image, config).context("uefi loader")?;
+    Ok(load_info)
+}
+
+fn load_linux<R: IgvmfilegenRegister + GuestArch + 'static>(
+    loader: &mut IgvmVtlLoader<'_, R>,
+    config: &LinuxImage,
+    resources: &Resources,
+) -> Result<loader::linux::LoadInfo, anyhow::Error> {
+    let LinuxImage {
+        use_initrd,
+        command_line: _,
+    } = *config;
+    let kernel_path = resources
+        .get(ResourceType::LinuxKernel)
+        .expect("validated present");
+    let mut kernel = fs_err::File::open(kernel_path).context(format!(
+        "reading vtl0 kernel image at {}",
+        kernel_path.display()
+    ))?;
+    let initrd_vec = if use_initrd {
+        let initrd_path = resources
+            .get(ResourceType::LinuxInitrd)
+            .expect("validated present");
+        fs_err::read(initrd_path)
+            .context(format!("reading vtl0 initrd at {}", initrd_path.display()))?
+    } else {
+        Vec::new()
+    };
+    let initrd = if initrd_vec.is_empty() {
+        None
+    } else {
+        Some(InitrdConfig {
+            initrd_address: loader::linux::InitrdAddressType::AfterKernel,
+            initrd: &initrd_vec,
+        })
+    };
+    let load_info = R::load_linux_kernel_and_initrd(loader, &mut kernel, 0, initrd, None)
+        .context("loading linux kernel and initrd")?;
+    Ok(load_info)
 }

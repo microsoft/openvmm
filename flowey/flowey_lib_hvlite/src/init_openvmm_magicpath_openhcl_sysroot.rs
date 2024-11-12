@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Ensure the OpenHCL sysroot is extracted into the correct "magic directory"
 //! set by the project-level `[env]` table in `.cargo/config.toml`
@@ -41,7 +42,7 @@ impl FlowNode for Node {
 
         // -- end of req processing -- //
 
-        if !matches!(ctx.platform(), FlowPlatform::Linux) {
+        if !matches!(ctx.platform(), FlowPlatform::Linux(_)) {
             anyhow::bail!("step only available on linux systems");
         }
 

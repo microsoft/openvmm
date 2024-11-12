@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Module used to parse the host parameters used to setup Underhill. These are
 //! provided via a device tree IGVM parameter.
@@ -12,6 +13,7 @@ use host_fdt_parser::MemoryEntry;
 use host_fdt_parser::VmbusInfo;
 use memory_range::subtract_ranges;
 use memory_range::MemoryRange;
+use shim_params::IsolationType;
 
 mod dt;
 mod mmio;
@@ -53,6 +55,8 @@ pub struct PartitionInfo {
     pub vtl2_config_region_reclaim: MemoryRange,
     /// The full memory map provided by the host.
     pub partition_ram: ArrayVec<MemoryEntry, MAX_PARTITION_RAM_RANGES>,
+    /// The partiton's isolation type.
+    pub isolation: IsolationType,
     /// The reg field in device tree for the BSP. This is either the apic_id on
     /// x64, or mpidr on aarch64.
     pub bsp_reg: u32,
@@ -72,6 +76,8 @@ pub struct PartitionInfo {
     pub memory_allocation_mode: MemoryAllocationMode,
     /// Entropy from the host to be used by the OpenHCL kernel
     pub entropy: Option<ArrayVec<u8, MAX_ENTROPY_SIZE>>,
+    /// The VTL0 alias map physical address.
+    pub vtl0_alias_map: Option<u64>,
 }
 
 impl PartitionInfo {
@@ -82,6 +88,7 @@ impl PartitionInfo {
             vtl2_full_config_region: MemoryRange::EMPTY,
             vtl2_config_region_reclaim: MemoryRange::EMPTY,
             partition_ram: ArrayVec::new_const(),
+            isolation: IsolationType::None,
             bsp_reg: 0,
             cpus: ArrayVec::new_const(),
             vmbus_vtl2: VmbusInfo {
@@ -97,6 +104,7 @@ impl PartitionInfo {
             gic: None,
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
+            vtl0_alias_map: None,
         }
     }
 

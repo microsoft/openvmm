@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 // UNSAFETY: Declaring unsafe trait functions for manual memory management.
 #![allow(unsafe_code)]

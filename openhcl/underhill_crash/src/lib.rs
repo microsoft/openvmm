@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module implements sending crash dump files to the host.
 
@@ -156,7 +157,7 @@ async fn send_dump(
         cfg.max_dump_size
     };
 
-    tracing::info!("The host accepts crash dump files no larger than {max_dump_size} bytes");
+    tracing::debug!(max_dump_size, "Got host config");
 
     let dump_start_rq = crash::DumpStartRequestV1 {
         header: make_header(None, crash::MessageType::REQUEST_NIX_DUMP_START_V1),
@@ -205,7 +206,7 @@ async fn send_dump(
         } else {
             0
         };
-        tracing::info!("Reported crash, wrote {wrote_bytes_total} bytes at {speed} bytes/sec");
+        tracing::info!(size = wrote_bytes_total, speed, "Reported crash");
 
         Ok::<(), anyhow::Error>(())
     });
@@ -269,13 +270,12 @@ pub fn main() -> ! {
 
     let os_version = OsVersionInfo::new();
 
-    let crate_name = env!("CARGO_PKG_NAME");
     let crate_revision = option_env!("VERGEN_GIT_SHA").unwrap_or("UNKNOWN_REVISION");
-    tracing::info!(?crate_name, ?crate_revision, "Crash reporting process");
 
     let os_version_major = os_version.major();
     let os_version_minor = os_version.minor();
     tracing::error!(
+        ?crate_revision,
         ?options.comm,
         ?options.pid,
         ?options.tid,
@@ -570,20 +570,20 @@ impl<'a> DumpStreamer<'a> {
         // write the actual length of the kmsg log in a predictable location
         self.write((kmsg_len as u32).as_bytes()).await?;
 
-        tracing::info!("wrote kmsg with length: {}", kmsg_len);
+        tracing::debug!(len = kmsg_len, "wrote kmsg");
 
         Ok(())
     }
 
     /// Let the VSP know that is all the data so the host can start reporting
     async fn complete(&mut self, os_version: &OsVersionInfo) -> anyhow::Result<()> {
-        tracing::info!(
+        tracing::debug!(
             "Read {} bytes, wrote {} bytes",
             self.read_bytes_total,
             self.wrote_bytes_total
         );
         if self.read_bytes_total + KMSG_NOTE_BYTES == self.wrote_bytes_total {
-            tracing::info!(
+            tracing::debug!(
                 "Bytes written includes {} bytes for kmsg note",
                 KMSG_NOTE_BYTES,
             );

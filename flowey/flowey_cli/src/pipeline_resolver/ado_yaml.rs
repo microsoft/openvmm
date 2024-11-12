@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use super::common_yaml::check_generated_yaml_and_json;
 use super::common_yaml::job_flowey_bootstrap_source;
@@ -86,6 +87,8 @@ pub fn ado_yaml(
             arch,
             cond_param_idx,
             ref ado_pool,
+            gh_override_if: _,
+            gh_global_env: _,
             gh_pool: _,
             gh_permissions: _,
             ref external_read_vars,
@@ -105,12 +108,7 @@ pub fn ado_yaml(
                 .collect(),
             patches.clone(),
             external_read_vars.clone(),
-            match platform {
-                FlowPlatform::Windows => FlowPlatform::Windows,
-                FlowPlatform::Linux => FlowPlatform::Linux,
-                FlowPlatform::MacOs => FlowPlatform::MacOs,
-                _ => panic!("unsupported ADO platform {platform:?}"),
-            },
+            platform,
             arch,
             job_idx.index(),
         )
@@ -142,7 +140,7 @@ pub fn ado_yaml(
                     "{{FLOWEY_TARGET}}",
                     match platform {
                         FlowPlatform::Windows => "x86_64-pc-windows-msvc",
-                        FlowPlatform::Linux => "x86_64-unknown-linux-gnu",
+                        FlowPlatform::Linux(_) => "x86_64-unknown-linux-gnu",
                         platform => anyhow::bail!("unsupported ADO platform {platform:?}"),
                     },
                 )

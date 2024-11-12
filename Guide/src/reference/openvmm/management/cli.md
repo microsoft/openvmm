@@ -1,10 +1,11 @@
 # CLI
 
-> Note: The following list is not exhaustive, and may be out of date. The most
-> up to date reference is always the code itself.
->
-> For a full list of command line arguments that can be passed to OpenVMM, run
-> `cargo run -- --help`.
+```admonish danger title="Disclaimer"
+The following list is not exhaustive, and may be out of date.
+
+The most up to date reference is always the [code itself](https://openvmm.dev/rustdoc/linux/hvlite_entry/struct.Options.html),
+as well as the generated CLI help (via `cargo run -- --help`).
+```
 
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
 * `--memory <SIZE>`: The VM's memory size. Defaults to 1GB.
@@ -28,10 +29,13 @@
 
 And serial devices can each be configured to be relayed to different endpoints:
 
-* `--com1/com2/virtio-serial <none|console|stderr|listen=PATH>`
+* `--com1/com2/virtio-serial <none|console|stderr|listen=PATH|listen=tcp:IP:PORT>`
     * `none`: Serial output is dropped.
     * `console`: Serial input is read and output is written to the console.
     * `stderr`: Serial output is written to stderr.
     * `listen=PATH`: A named pipe (on Windows) or Unix socket (on Linux) is set
       up to listen on the given path. Serial input and output is relayed to this
       pipe/socket.
+    * `listen=tcp:IP:PORT`: As with `listen=PATH`, but listen for TCP
+      connections on the given IP address and port. Typically IP will be
+      127.0.0.1, to restrict connections to the current host.

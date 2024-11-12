@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module implements the inspect framework, which allows an object to
 //! expose its state for diagnostics purposes as a hierarchy. All such subtrees
@@ -294,36 +295,32 @@ pub use initiate::*;
 /// * `flatten`: calls [`Response::merge`] with `&mut field`.
 /// * `transparent` (struct attribute): calls [`InspectMut::inspect_mut`] on the
 ///   sole unskipped field.
-#[cfg_attr(
-    feature = "std",
-    doc = r##"
-## Example
-
-```no_run
-# use inspect::{Inspect, InspectMut};
-# use std::sync::Arc;
-# use std::path::PathBuf;
-#[derive(InspectMut)]
-struct Outer {
-    #[inspect(hex)]
-    id: u32,                // will be displayed as hex
-    count: usize,
-    #[inspect(mut)]
-    max_buffers: usize,     // can be changed via `update()`
-    #[inspect(skip)]
-    signal: Box<dyn Send>,  // won't be present in inspect output
-    #[inspect(flatten)]
-    inner: Arc<Inner>,      // contents will be merged in
-}
-
-#[derive(Inspect)]
-struct Inner {
-    #[inspect(format = "{:016x}")]
-    uuid: u128,             // will be displayed as a 0-padded hex string
-}
-```
-"##
-)]
+/// ## Example
+///
+/// ```no_run
+/// # use inspect::{Inspect, InspectMut};
+/// # use std::sync::Arc;
+/// # use std::path::PathBuf;
+/// #[derive(InspectMut)]
+/// struct Outer {
+///     #[inspect(hex)]
+///     id: u32,                // will be displayed as hex
+///     count: usize,
+///     #[inspect(mut)]
+///     max_buffers: usize,     // can be changed via `update()`
+///     #[inspect(skip)]
+///     signal: Box<dyn Send>,  // won't be present in inspect output
+///     #[inspect(flatten)]
+///     inner: Arc<Inner>,      // contents will be merged in
+/// }
+///
+/// #[derive(Inspect)]
+/// struct Inner {
+///     #[inspect(format = "{:016x}")]
+///     uuid: u128,             // will be displayed as a 0-padded hex string
+/// }
+/// ```
+///
 /// # Unit-only enums
 ///
 /// The macro supports enums, with multiple different output formats:
@@ -790,12 +787,11 @@ impl Response<'_> {
     }
 
     /// Adds a mutable field with custom get/update function.
-    #[cfg(feature = "std")]
     pub fn field_mut_with<F, V, E>(&mut self, name: &str, f: F) -> &mut Self
     where
         F: FnOnce(Option<&str>) -> Result<V, E>,
         V: Into<Value>,
-        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+        E: Into<Box<dyn core::error::Error + Send + Sync>>,
     {
         self.child(name, |req| match req.update() {
             Ok(req) => match (f)(Some(req.new_value())) {
@@ -1125,8 +1121,7 @@ impl UpdateRequest<'_> {
     }
 
     /// Report that the update failed, with the reason in `err`.
-    #[cfg(feature = "std")]
-    pub fn fail<E: Into<Box<dyn std::error::Error + Send + Sync>>>(self, err: E) {
+    pub fn fail<E: Into<Box<dyn core::error::Error + Send + Sync>>>(self, err: E) {
         *self.node = InternalNode::failed(err.into());
     }
 }
@@ -1437,7 +1432,6 @@ macro_rules! inspect_value {
         inspect_value_immut!($($ty,)*);
         $(
         $(#[$attr])*
-        #[cfg(feature = "std")]
         impl InspectMut for $ty {
             fn inspect_mut(&mut self, req: Request<'_>) {
                 match req.update() {
@@ -1518,7 +1512,6 @@ macro_rules! inspect_atomic_value {
         // reference to the Atomic, it's most likely that type didn't need to be
         // atomic in the first place.
 
-        #[cfg(feature = "std")]
         impl Inspect for AtomicMut<&core::sync::atomic::$ty> {
             fn inspect(&self, req: Request<'_>) {
                 let mut value = self.0.load(core::sync::atomic::Ordering::Relaxed);
@@ -1615,6 +1608,15 @@ macro_rules! hexbincount {
 pub struct AsHex<T>(pub T);
 
 hexbincount!(AsHex, into_hex, u8, u16, u32, u64, usize);
+
+impl<T> Inspect for AsHex<Wrapping<T>>
+where
+    for<'a> AsHex<&'a T>: Inspect,
+{
+    fn inspect(&self, req: Request<'_>) {
+        Inspect::inspect(&AsHex(&self.0 .0), req)
+    }
+}
 
 impl<T: Clone> Inspect for AsHex<&'_ T>
 where
@@ -1894,8 +1896,7 @@ enum InternalError {
 }
 
 impl InternalNode {
-    #[cfg(feature = "std")]
-    fn failed(err: Box<dyn std::error::Error + Send + Sync>) -> Self {
+    fn failed(err: Box<dyn core::error::Error + Send + Sync>) -> Self {
         use core::fmt::Write;
 
         let mut s = err.to_string();

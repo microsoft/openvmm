@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implements a [`tracing_subscriber::Layer`] that sends a JSON string to the
 //! mesh tracing backend.

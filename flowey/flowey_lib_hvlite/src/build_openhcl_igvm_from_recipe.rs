@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Build an OpenHCL IGVM file using a particular known-good "recipe", which
 //! encodes the precise features / build parameters used by each constituent
@@ -76,6 +77,7 @@ pub struct OpenhclIgvmRecipeDetailsLocalOnly {
     pub custom_uefi: Option<PathBuf>,
     pub custom_kernel: Option<PathBuf>,
     pub custom_sidecar: Option<PathBuf>,
+    pub custom_extra_rootfs: Vec<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -296,6 +298,7 @@ impl SimpleFlowNode for Node {
             custom_uefi,
             custom_kernel,
             custom_sidecar,
+            custom_extra_rootfs,
         } = local_only.unwrap_or(OpenhclIgvmRecipeDetailsLocalOnly {
             openvmm_hcl_no_strip: false,
             openhcl_initrd_extra_params: None,
@@ -304,6 +307,7 @@ impl SimpleFlowNode for Node {
             custom_uefi: None,
             custom_kernel: None,
             custom_sidecar: None,
+            custom_extra_rootfs: Vec::new(),
         });
 
         let target = custom_target.unwrap_or(target);
@@ -540,7 +544,14 @@ impl SimpleFlowNode for Node {
         openvmm_hcl_bin.write_into(ctx, built_openvmm_hcl, |x| x);
 
         let initrd = {
-            let rootfs_config = openvmm_repo_path.map(ctx, |p| p.join("openhcl/rootfs.config"));
+            let rootfs_config = [openvmm_repo_path.map(ctx, |p| p.join("openhcl/rootfs.config"))]
+                .into_iter()
+                .chain(
+                    custom_extra_rootfs
+                        .into_iter()
+                        .map(|p| ReadVar::from_static(p)),
+                )
+                .collect();
             let openvmm_hcl_bin = openvmm_hcl_bin.map(ctx, |o| o.bin);
 
             ctx.reqv(|v| crate::build_openhcl_initrd::Request {

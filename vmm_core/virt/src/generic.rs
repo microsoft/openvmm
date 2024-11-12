@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 mod partition_memory_map;
 
@@ -64,12 +65,26 @@ pub trait Hypervisor: 'static {
 /// Isolation type for a partition.
 #[derive(Eq, PartialEq, Debug, Copy, Clone, Inspect)]
 pub enum IsolationType {
+    /// No isolation.
+    None,
     /// Hypervisor based isolation.
     Vbs,
     /// Secure nested paging (AMD SEV-SNP) - hardware based isolation.
     Snp,
     /// Trust domain extensions (Intel TDX) - hardware based isolation.
     Tdx,
+}
+
+impl IsolationType {
+    /// Returns true if the isolation type is not `None`.
+    pub fn is_isolated(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// Returns whether the isolation type is hardware-backed.
+    pub fn is_hardware_isolated(&self) -> bool {
+        matches!(self, Self::Snp | Self::Tdx)
+    }
 }
 
 /// An unexpected isolation type was provided.
@@ -79,22 +94,22 @@ pub struct UnexpectedIsolationType;
 impl IsolationType {
     pub fn from_hv(
         value: hvdef::HvPartitionIsolationType,
-    ) -> Result<Option<Self>, UnexpectedIsolationType> {
+    ) -> Result<Self, UnexpectedIsolationType> {
         match value {
-            hvdef::HvPartitionIsolationType::NONE => Ok(None),
-            hvdef::HvPartitionIsolationType::VBS => Ok(Some(IsolationType::Vbs)),
-            hvdef::HvPartitionIsolationType::SNP => Ok(Some(IsolationType::Snp)),
-            hvdef::HvPartitionIsolationType::TDX => Ok(Some(IsolationType::Tdx)),
+            hvdef::HvPartitionIsolationType::NONE => Ok(IsolationType::None),
+            hvdef::HvPartitionIsolationType::VBS => Ok(IsolationType::Vbs),
+            hvdef::HvPartitionIsolationType::SNP => Ok(IsolationType::Snp),
+            hvdef::HvPartitionIsolationType::TDX => Ok(IsolationType::Tdx),
             _ => Err(UnexpectedIsolationType),
         }
     }
 
-    pub fn to_hv(isolation_type: Option<Self>) -> hvdef::HvPartitionIsolationType {
-        match isolation_type {
-            None => hvdef::HvPartitionIsolationType::NONE,
-            Some(IsolationType::Vbs) => hvdef::HvPartitionIsolationType::VBS,
-            Some(IsolationType::Snp) => hvdef::HvPartitionIsolationType::SNP,
-            Some(IsolationType::Tdx) => hvdef::HvPartitionIsolationType::TDX,
+    pub fn to_hv(self) -> hvdef::HvPartitionIsolationType {
+        match self {
+            IsolationType::None => hvdef::HvPartitionIsolationType::NONE,
+            IsolationType::Vbs => hvdef::HvPartitionIsolationType::VBS,
+            IsolationType::Snp => hvdef::HvPartitionIsolationType::SNP,
+            IsolationType::Tdx => hvdef::HvPartitionIsolationType::TDX,
         }
     }
 }
@@ -119,7 +134,7 @@ pub struct ProtoPartitionConfig<'a> {
     /// Use the user-mode APIC emulator, if supported.
     pub user_mode_apic: bool,
     /// Isolation type for this partition.
-    pub isolation: Option<IsolationType>,
+    pub isolation: IsolationType,
 }
 
 /// Partition creation configuration.

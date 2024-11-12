@@ -1,11 +1,14 @@
-# Copyright (C) Microsoft Corporation. All rights reserved.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 [package]
 name = "consomme"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 inspect.workspace = true
+inspect_counters.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 

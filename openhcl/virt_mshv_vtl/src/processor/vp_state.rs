@@ -1,17 +1,19 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use super::Backing;
 use super::UhProcessor;
+use crate::GuestVtl;
 use thiserror::Error;
 
 pub struct UhVpStateAccess<'a, 'b, T: Backing> {
     pub(crate) vp: &'a mut UhProcessor<'b, T>,
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    pub(crate) vtl: hvdef::Vtl,
+    pub(crate) vtl: GuestVtl,
 }
 
 impl<'a, 'p, T: Backing> UhVpStateAccess<'a, 'p, T> {
-    pub(crate) fn new(vp: &'a mut UhProcessor<'p, T>, vtl: hvdef::Vtl) -> Self {
+    pub(crate) fn new(vp: &'a mut UhProcessor<'p, T>, vtl: GuestVtl) -> Self {
         Self { vp, vtl }
     }
 }

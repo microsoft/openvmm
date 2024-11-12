@@ -1,11 +1,9 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Microsoft hypervisor definitions.
 
 #![no_std]
-
-#[cfg(feature = "std")]
-extern crate std;
 
 use bitfield_struct::bitfield;
 use core::fmt::Debug;
@@ -479,9 +477,7 @@ impl core::fmt::Display for HvError {
     }
 }
 
-#[cfg(feature = "std")]
-// TODO: Once core::error::Error is stablized, can remove this feature gate.
-impl std::error::Error for HvError {}
+impl core::error::Error for HvError {}
 
 /// Hypervisor result type for simple hypercalls, or code where only an HV_STATUS is to be returned.
 /// The error is an `HvError` and the success value `T` is the output data of the hypercall.

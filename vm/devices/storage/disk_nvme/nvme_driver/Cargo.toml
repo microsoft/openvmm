@@ -1,8 +1,10 @@
-# Copyright (C) Microsoft Corporation. All rights reserved.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 [package]
 name = "nvme_driver"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 inspect = { workspace = true, features = ["defer"] }
@@ -24,6 +26,8 @@ slab.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
+safe_intrinsics.workspace = true
 
 [dev-dependencies]
 chipset_device.workspace = true

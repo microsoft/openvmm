@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Sidecar code that runs on the APs, after initialization. This code all runs
 //! with per-AP page tables, concurrently with the main kernel.

@@ -1,8 +1,10 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Module used to write the device tree used by the OpenHCL kernel and
 //! usermode.
 
+use crate::host_params::shim_params::IsolationType;
 use crate::host_params::PartitionInfo;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::sidecar::SidecarConfig;
@@ -243,7 +245,7 @@ pub fn write_dt(
         .add_u32(p_size_cells, 0)?;
 
     if cfg!(target_arch = "aarch64") {
-        let pa_bits = crate::arch::physical_address_bits();
+        let pa_bits = crate::arch::physical_address_bits(partition_info.isolation);
         let p_pa_bits = cpu_builder.add_string("pa_bits")?;
         cpu_builder = cpu_builder.add_u32(p_pa_bits, pa_bits.into())?;
     }
@@ -448,6 +450,17 @@ pub fn write_dt(
     // Add information used by openhcl usermode.
     let mut openhcl_builder = root_builder.start_node("openhcl")?;
 
+    let p_isolation_type = openhcl_builder.add_string("isolation-type")?;
+    let isolation_type = match partition_info.isolation {
+        IsolationType::None => "none",
+        IsolationType::Vbs => "vbs",
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Snp => "snp",
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Tdx => "tdx",
+    };
+    openhcl_builder = openhcl_builder.add_str(p_isolation_type, isolation_type)?;
+
     // Indicate what kind of memory allocation mode was done by the bootloader
     // to usermode.
     let p_memory_allocation_mode = openhcl_builder.add_string("memory-allocation-mode")?;
@@ -461,11 +474,19 @@ pub fn write_dt(
         } => {
             let p_memory_size = openhcl_builder.add_string("memory-size")?;
             let p_mmio_size = openhcl_builder.add_string("mmio-size")?;
-            openhcl_builder = openhcl_builder
-                .add_str(p_memory_allocation_mode, "vtl2")?
-                .add_u64(p_memory_size, memory_size)?
-                .add_u64(p_mmio_size, mmio_size)?;
+            openhcl_builder = openhcl_builder.add_str(p_memory_allocation_mode, "vtl2")?;
+            if let Some(memory_size) = memory_size {
+                openhcl_builder = openhcl_builder.add_u64(p_memory_size, memory_size)?;
+            }
+            if let Some(mmio_size) = mmio_size {
+                openhcl_builder = openhcl_builder.add_u64(p_mmio_size, mmio_size)?;
+            }
         }
+    }
+
+    if let Some(data) = partition_info.vtl0_alias_map {
+        let p_vtl0_alias_map = openhcl_builder.add_string("vtl0-alias-map")?;
+        openhcl_builder = openhcl_builder.add_u64(p_vtl0_alias_map, data)?;
     }
 
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]

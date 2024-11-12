@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Download a copy of `azcopy`
 
@@ -21,7 +22,7 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::install_apt_pkg::Node>();
+        ctx.import::<crate::install_dist_pkg::Node>();
         ctx.import::<crate::cache::Node>();
     }
 
@@ -63,8 +64,18 @@ impl FlowNode for Node {
         });
 
         // in case we need to unzip the thing we downloaded
-        let bsdtar_installed = ctx.reqv(|v| crate::install_apt_pkg::Request::Install {
-            package_names: vec!["libarchive-tools".into()],
+        let platform = ctx.platform();
+        let bsdtar_installed = ctx.reqv(|v| crate::install_dist_pkg::Request::Install {
+            package_names: match platform {
+                FlowPlatform::Linux(linux_distribution) => match linux_distribution {
+                    FlowPlatformLinuxDistro::Fedora => vec!["bsdtar".into()],
+                    FlowPlatformLinuxDistro::Ubuntu => vec!["libarchive-tools".into()],
+                    FlowPlatformLinuxDistro::Unknown => vec![],
+                },
+                _ => {
+                    vec![]
+                }
+            },
             done: v,
         });
 
@@ -89,20 +100,25 @@ impl FlowNode for Node {
                     cached
                 } else {
                     let sh = xshell::Shell::new()?;
+                    let arch = match rt.arch() {
+                        FlowArch::X86_64 => "amd64",
+                        FlowArch::Aarch64 => "arm64",
+                        arch => anyhow::bail!("unhandled arch {arch}"),
+                    };
                     match rt.platform().kind() {
                         FlowPlatformKind::Windows => {
-                            xshell::cmd!(sh, "curl -L https://azcopyvnext.azureedge.net/releases/release-{version_with_date}/azcopy_windows_amd64_{version_without_date}.zip -o azcopy.zip").run()?;
+                            xshell::cmd!(sh, "curl --fail -L https://azcopyvnext.azureedge.net/releases/release-{version_with_date}/azcopy_windows_{arch}_{version_without_date}.zip -o azcopy.zip").run()?;
 
                             let bsdtar = crate::_util::bsdtar_name(rt);
                             xshell::cmd!(sh, "{bsdtar} -xf azcopy.zip --strip-components=1").run()?;
                         }
                         FlowPlatformKind::Unix => {
                             let os = match rt.platform() {
-                                FlowPlatform::Linux => "linux",
+                                FlowPlatform::Linux(_) => "linux",
                                 FlowPlatform::MacOs => "darwin",
                                 platform => anyhow::bail!("unhandled platform {platform}"),
                             };
-                            xshell::cmd!(sh, "curl -L https://azcopyvnext.azureedge.net/releases/release-{version_with_date}/azcopy_{os}_amd64_{version_without_date}.tar.gz -o azcopy.tar.gz").run()?;
+                            xshell::cmd!(sh, "curl --fail -L https://azcopyvnext.azureedge.net/releases/release-{version_with_date}/azcopy_{os}_{arch}_{version_without_date}.tar.gz -o azcopy.tar.gz").run()?;
                             xshell::cmd!(sh, "tar -xf azcopy.tar.gz --strip-components=1").run()?;
                         }
                     };

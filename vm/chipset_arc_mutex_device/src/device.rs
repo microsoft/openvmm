@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A builder to streamline the construction of `Arc + Mutex` wrapped
 //! [`ChipsetDevice`] instances.
@@ -40,9 +41,9 @@ pub(crate) enum AddDeviceErrorKind {
     #[error("could not construct device")]
     DeviceError(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 
-    #[error("device attmpted to use {0:?} services without overriding supports_{}", .0.supports_fn())]
+    #[error("device attmpted to use {0:?} services without overriding supports_{sup}", sup = .0.supports_fn())]
     DeviceMissingSupports(ServiceKind),
-    #[error("chipset does not support {0:?} services (`ChipsetServices::supports_{}` returned `None`)", .0.supports_fn())]
+    #[error("chipset does not support {0:?} services (`ChipsetServices::supports_{sup}` returned `None`)", sup = .0.supports_fn())]
     ChipsetMissingSupports(ServiceKind),
 
     #[error("no pci bus address provided")]

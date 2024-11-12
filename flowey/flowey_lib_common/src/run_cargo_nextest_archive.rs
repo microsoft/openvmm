@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Build and archive cargo-nextest tests (for cross-job execution).
 //!
@@ -53,6 +54,7 @@ impl FlowNode for Node {
                     unstable_panic_abort_tests,
                     target,
                     profile,
+                    extra_env,
                 },
             pre_run_deps,
             archive_file,
@@ -72,11 +74,13 @@ impl FlowNode for Node {
                     let working_dir = working_dir.claim(ctx);
                     let archive_file = archive_file.claim(ctx);
                     let packages = packages.claim(ctx);
+                    let extra_env = extra_env.claim(ctx);
                     move |rt| {
                         let cargo_flags = rt.read(cargo_flags);
                         let working_dir = rt.read(working_dir);
                         let rust_toolchain = rt.read(rust_toolchain);
                         let packages = rt.read(packages);
+                        let extra_env = rt.read(extra_env);
 
                         let rust_toolchain = rust_toolchain.map(|s| format!("+{s}"));
                         let (build_args, build_env) =
@@ -88,6 +92,7 @@ impl FlowNode for Node {
                                 features,
                                 unstable_panic_abort_tests,
                                 no_default_features,
+                                extra_env,
                             );
 
                         let sh = xshell::Shell::new()?;

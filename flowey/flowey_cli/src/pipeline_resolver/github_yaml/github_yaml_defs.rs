@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Serde defs for GitHub YAML
 
@@ -267,6 +268,10 @@ pub struct Job {
     pub permissions: BTreeMap<Permissions, PermissionValue>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub needs: Vec<String>,
+    #[serde(rename = "if", skip_serializing_if = "Option::is_none")]
+    pub r#if: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
     pub steps: Vec<serde_yaml::Value>,
 }
 

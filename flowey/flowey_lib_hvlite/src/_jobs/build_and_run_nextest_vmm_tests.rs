@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Build and run the cargo-nextest based VMM tests.
 
@@ -9,6 +10,7 @@ use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_build::common::CommonTriple;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
+use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Params {
@@ -47,7 +49,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_pipette::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_vhds::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
-        ctx.import::<flowey_lib_common::junit_publish_test_results::Node>();
+        ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -194,6 +196,9 @@ impl SimpleFlowNode for Node {
             "build and run VMM tests only works locally"
         ))?;
 
+        let (test_log_path, get_test_log_path) = ctx.new_var();
+        let (openhcl_dump_path, get_openhcl_dump_path) = ctx.new_var();
+
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir,
             vmm_tests_target: target.clone(),
@@ -203,8 +208,8 @@ impl SimpleFlowNode for Node {
             register_guest_test_uefi: Some(register_guest_test_uefi),
             disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files: Some(register_openhcl_igvm_files),
-            get_test_log_path: None,
-            get_openhcl_dump_path: None,
+            get_test_log_path: Some(get_test_log_path),
+            get_openhcl_dump_path: Some(get_openhcl_dump_path),
             get_env: v,
         });
 
@@ -222,26 +227,24 @@ impl SimpleFlowNode for Node {
 
         let mut side_effects = Vec::new();
 
-        if let Some(artifact_dir) = artifact_dir {
-            let published_artifact = ctx.reqv(|v| {
-                flowey_lib_common::junit_publish_test_results::Request::PublishToArtifact(
-                    artifact_dir,
-                    v,
-                )
-            });
-
-            side_effects.push(published_artifact)
-        }
+        // TODO: Get correct path on linux and more reliably on windows
+        let crash_dumps_path = ReadVar::from_static(PathBuf::from(match ctx.platform().kind() {
+            FlowPlatformKind::Windows => r#"C:\Users\cloudtest\AppData\Local\CrashDumps"#,
+            FlowPlatformKind::Unix => "/will/not/exist",
+        }));
 
         let junit_xml = results.map(ctx, |r| r.junit_xml);
-        let reported_results =
-            ctx.reqv(
-                |v| flowey_lib_common::junit_publish_test_results::Request::Register {
-                    junit_xml,
-                    test_label: junit_test_label,
-                    done: v,
-                },
-            );
+        let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
+            junit_xml,
+            test_label: junit_test_label,
+            attachments: BTreeMap::from([
+                ("logs".to_string(), (test_log_path, false)),
+                ("openhcl-dumps".to_string(), (openhcl_dump_path, false)),
+                ("crash-dumps".to_string(), (crash_dumps_path, true)),
+            ]),
+            output_dir: artifact_dir,
+            done: v,
+        });
 
         side_effects.push(reported_results);
 

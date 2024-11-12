@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Core types and traits used to create and work with flowey pipelines.
 
@@ -11,6 +12,7 @@ use crate::node::user_facing::GhPermissionValue;
 use crate::node::FlowArch;
 use crate::node::FlowNodeBase;
 use crate::node::FlowPlatform;
+use crate::node::FlowPlatformLinuxDistro;
 use crate::node::IntoRequest;
 use crate::node::NodeHandle;
 use crate::node::ReadVar;
@@ -51,6 +53,20 @@ pub mod user_facing {
     pub use crate::node::FlowPlatform;
 }
 
+fn linux_distro() -> FlowPlatformLinuxDistro {
+    if let Ok(etc_os_release) = fs_err::read_to_string("/etc/os-release") {
+        if etc_os_release.contains("ID=ubuntu") {
+            FlowPlatformLinuxDistro::Ubuntu
+        } else if etc_os_release.contains("ID=fedora") {
+            FlowPlatformLinuxDistro::Fedora
+        } else {
+            FlowPlatformLinuxDistro::Unknown
+        }
+    } else {
+        FlowPlatformLinuxDistro::Unknown
+    }
+}
+
 pub trait HostExt: Sized {
     /// Return the value for the current host machine.
     ///
@@ -70,7 +86,7 @@ impl HostExt for FlowPlatform {
         if cfg!(target_os = "windows") {
             Self::Windows
         } else if cfg!(target_os = "linux") {
-            Self::Linux
+            Self::Linux(linux_distro())
         } else if cfg!(target_os = "macos") {
             Self::MacOs
         } else {
@@ -530,6 +546,8 @@ impl Pipeline {
             cond_param_idx: None,
             ado_pool: None,
             ado_variables: BTreeMap::new(),
+            gh_override_if: None,
+            gh_global_env: BTreeMap::new(),
             gh_pool: None,
             gh_permissions: BTreeMap::new(),
         });
@@ -871,17 +889,18 @@ impl PipelineJob<'_> {
 
     /// (ADO only) Declare a job-level, named, read-only ADO variable.
     ///
-    /// `name` and `value` are both arbitrary strings.
+    /// `name` and `value` are both arbitrary strings, which may include ADO
+    /// template expressions.
     ///
     /// NOTE: Unless required by some particular third-party task, it's strongly
     /// recommended to _avoid_ using this method, and to simply use
     /// [`ReadVar::from_static`] to get a obtain a static variable.
     ///
-    /// DEVNOTE: In the future, this API may be updated to return a handle that will
-    /// allow resolving the resulting `AdoRuntimeVar`, but for implementation
-    /// expediency, this API does not currently do this. If you need to read the
-    /// value of this variable at runtime, you may need to invoke
-    /// [`AdoRuntimeVar::dangerous_from_global`] manually.
+    /// DEVNOTE: In the future, this API may be updated to return a handle that
+    /// will allow resolving the resulting `AdoRuntimeVar`, but for
+    /// implementation expediency, this API does not currently do this. If you
+    /// need to read the value of this variable at runtime, you may need to
+    /// invoke [`AdoRuntimeVar::dangerous_from_global`] manually.
     ///
     /// [`NodeCtx::get_ado_variable`]: crate::node::NodeCtx::get_ado_variable
     pub fn ado_new_named_variable(self, name: impl AsRef<str>, value: impl AsRef<str>) -> Self {
@@ -925,6 +944,53 @@ impl PipelineJob<'_> {
     /// (GitHub Actions only) specify which Github runner this job will be run on.
     pub fn gh_set_pool(self, pool: GhRunner) -> Self {
         self.pipeline.jobs[self.job_idx].gh_pool = Some(pool);
+        self
+    }
+
+    /// (GitHub Actions only) Manually override the `if:` condition for this
+    /// particular job.
+    ///
+    /// **This is dangerous**, as an improperly set `if` condition may break
+    /// downstream flowey jobs which assume flowey is in control of the job's
+    /// scheduling logic.
+    ///
+    /// See
+    /// <https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#jobsjob_idif>
+    /// for more info.
+    pub fn gh_dangerous_override_if(self, condition: impl AsRef<str>) -> Self {
+        self.pipeline.jobs[self.job_idx].gh_override_if = Some(condition.as_ref().into());
+        self
+    }
+
+    /// (GitHub Actions only) Declare a global job-level environment variable,
+    /// visible to all downstream steps.
+    ///
+    /// `name` and `value` are both arbitrary strings, which may include GitHub
+    /// Actions template expressions.
+    ///
+    /// **This is dangerous**, as it is easy to misuse this API in order to
+    /// write a node which takes an implicit dependency on there being a global
+    /// variable set on its behalf by the top-level pipeline code, making it
+    /// difficult to "locally reason" about the behavior of a node simply by
+    /// reading its code.
+    ///
+    /// Whenever possible, nodes should "late bind" environment variables:
+    /// accepting a compile-time / runtime flowey parameter, and then setting it
+    /// prior to executing a child command that requires it.
+    ///
+    /// Only use this API in exceptional cases, such as obtaining an environment
+    /// variable whose value is determined by a job-level GitHub Actions
+    /// expression evaluation.
+    pub fn gh_dangerous_global_env_var(
+        self,
+        name: impl AsRef<str>,
+        value: impl AsRef<str>,
+    ) -> Self {
+        let name = name.as_ref();
+        let value = value.as_ref();
+        self.pipeline.jobs[self.job_idx]
+            .gh_global_env
+            .insert(name.into(), value.into());
         self
     }
 
@@ -1069,7 +1135,9 @@ pub mod internal {
         // backend specific
         pub ado_pool: Option<AdoPool>,
         pub ado_variables: BTreeMap<String, String>,
+        pub gh_override_if: Option<String>,
         pub gh_pool: Option<GhRunner>,
+        pub gh_global_env: BTreeMap<String, String>,
         pub gh_permissions: BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
     }
 

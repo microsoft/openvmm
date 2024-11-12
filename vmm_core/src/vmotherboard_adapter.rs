@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Glue code to adapt OpenVMM-specific platform APIs to the types/traits
 //! required by `vmotherboard`.

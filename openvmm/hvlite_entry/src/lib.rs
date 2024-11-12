@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module implements the interactive control process and the entry point
 //! for the worker process.
@@ -64,7 +65,6 @@ use hvlite_defs::worker::VM_WORKER;
 use hvlite_helpers::crash_dump::spawn_dump_handler;
 use hvlite_helpers::disk::open_disk_type;
 use input_core::MultiplexedInputHandle;
-use inspect::Inspect;
 use inspect::InspectMut;
 use inspect::InspectionBuilder;
 use io::Read;
@@ -88,6 +88,7 @@ use pal_async::DefaultPool;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use serial_16550_resources::ComPort;
+use serial_core::resources::DisconnectedSerialBackendHandle;
 use serial_io::SerialIo;
 use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
@@ -190,6 +191,12 @@ fn vm_config_from_command_line(
         .spawn(|| serial_pool.run())
         .unwrap();
 
+    let openhcl_vtl = if opt.vtl2 {
+        DeviceVtl::Vtl2
+    } else {
+        DeviceVtl::Vtl0
+    };
+
     let console_state: RefCell<Option<ConsoleState<'_>>> = RefCell::new(None);
     let setup_serial = |name: &str, cli_cfg, device| -> anyhow::Result<_> {
         Ok(match cli_cfg {
@@ -230,6 +237,9 @@ fn vm_config_from_command_line(
             SerialConfigCli::None => None,
             SerialConfigCli::Pipe(path) => {
                 Some(serial_io::bind_serial(&path).context("failed to bind serial")?)
+            }
+            SerialConfigCli::Tcp(addr) => {
+                Some(serial_io::bind_tcp_serial(&addr).context("failed to bind serial")?)
             }
             SerialConfigCli::NewConsole(app) => {
                 let path = console::random_console_path();
@@ -274,6 +284,7 @@ fn vm_config_from_command_line(
                     .detach();
                 Some(io.config)
             }
+            SerialConfigCli::Tcp(_addr) => anyhow::bail!("TCP virtio serial not supported"),
             SerialConfigCli::NewConsole(app) => {
                 let path = console::random_console_path();
 
@@ -357,7 +368,7 @@ fn vm_config_from_command_line(
         "vmbus_com1",
     )? {
         vmbus_devices.push((
-            DeviceVtl::Vtl2,
+            openhcl_vtl,
             VmbusSerialDeviceHandle {
                 port: VmbusSerialPort::Com1,
                 backend: vmbus_com1_cfg,
@@ -376,7 +387,7 @@ fn vm_config_from_command_line(
         "vmbus_com2",
     )? {
         vmbus_devices.push((
-            DeviceVtl::Vtl2,
+            openhcl_vtl,
             VmbusSerialDeviceHandle {
                 port: VmbusSerialPort::Com2,
                 backend: vmbus_com2_cfg,
@@ -387,6 +398,14 @@ fn vm_config_from_command_line(
     } else {
         false
     };
+    let debugcon_cfg = setup_serial(
+        "debugcon",
+        opt.debugcon
+            .clone()
+            .map(|cfg| cfg.serial)
+            .unwrap_or(SerialConfigCli::None),
+        "debugcon",
+    )?;
 
     let mut resources = VmResources::default();
     let mut console_str = "";
@@ -415,7 +434,9 @@ fn vm_config_from_command_line(
         );
     }
 
-    let mut storage = storage_builder::StorageBuilder::new();
+    let with_get = opt.get || opt.vtl2;
+
+    let mut storage = storage_builder::StorageBuilder::new(with_get.then_some(openhcl_vtl));
     for &cli_args::DiskCli {
         vtl,
         ref kind,
@@ -496,7 +517,7 @@ fn vm_config_from_command_line(
             if !opt.no_alias_map {
                 anyhow::bail!("must specify --no-alias-map to offer NICs to VTL2");
             }
-            let mana = mana_nics[2].get_or_insert_with(|| {
+            let mana = mana_nics[openhcl_vtl as usize].get_or_insert_with(|| {
                 let vpci_instance_id = Guid::new_random();
                 underhill_nics.push(vtl2_settings_proto::NicDeviceLegacy {
                     instance_id: vpci_instance_id.to_string(),
@@ -518,7 +539,7 @@ fn vm_config_from_command_line(
         let nic_config = parse_endpoint(
             &NicConfigCli {
                 vtl: DeviceVtl::Vtl0,
-                endpoint: EndpointConfigCli::Consomme,
+                endpoint: EndpointConfigCli::Consomme { cidr: None },
                 max_queues: None,
                 underhill: false,
             },
@@ -680,6 +701,12 @@ fn vm_config_from_command_line(
         tx.send(HostBatteryUpdate::default_present());
         chipset = chipset.with_battery(rx);
     }
+    if let Some(cfg) = &opt.debugcon {
+        chipset = chipset.with_debugcon(
+            debugcon_cfg.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
+            cfg.port,
+        );
+    }
 
     let VmChipsetResult {
         chipset,
@@ -801,7 +828,7 @@ fn vm_config_from_command_line(
         };
     }
 
-    if opt.vtl2 && with_hv {
+    if with_get && with_hv {
         let vtl2_settings = vtl2_settings_proto::Vtl2Settings {
             version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
             fixed: Some(Default::default()),
@@ -816,11 +843,11 @@ fn vm_config_from_command_line(
         resources.ged_rpc = Some(send);
         vmbus_devices.extend([
             (
-                DeviceVtl::Vtl2,
+                openhcl_vtl,
                 get_resources::gel::GuestEmulationLogHandle.into_resource(),
             ),
             (
-                DeviceVtl::Vtl2,
+                openhcl_vtl,
                 get_resources::ged::GuestEmulationDeviceHandle {
                     firmware: if opt.pcat {
                         get_resources::ged::GuestFirmwareConfig::Pcat {
@@ -1040,7 +1067,7 @@ fn vm_config_from_command_line(
     if let Some(path) = &opt.underhill_dump_path {
         let (resource, task) = spawn_dump_handler(&spawner, path.clone(), None);
         task.detach();
-        vmbus_devices.push((DeviceVtl::Vtl2, resource));
+        vmbus_devices.push((openhcl_vtl, resource));
     }
 
     #[cfg(guest_arch = "aarch64")]
@@ -1278,8 +1305,8 @@ fn parse_endpoint(
 ) -> anyhow::Result<NicConfig> {
     let _ = resources;
     let endpoint = match &cli_cfg.endpoint {
-        EndpointConfigCli::Consomme => {
-            net_backend_resources::consomme::ConsommeHandle.into_resource()
+        EndpointConfigCli::Consomme { cidr } => {
+            net_backend_resources::consomme::ConsommeHandle { cidr: cidr.clone() }.into_resource()
         }
         EndpointConfigCli::None => net_backend_resources::null::NullHandle.into_resource(),
         EndpointConfigCli::Dio { id } => {
@@ -1528,9 +1555,9 @@ enum InteractiveCommand {
         /// The recursive depth limit.
         #[clap(short, long, requires("recursive"))]
         limit: Option<usize>,
-        /// Target Underhill running in VTL2.
-        #[clap(short, long)]
-        vtl2: bool,
+        /// Target the paravisor.
+        #[clap(short = 'v', long)]
+        paravisor: bool,
         /// The element path to inspect.
         element: Option<String>,
         /// Update the path with a new value.
@@ -1750,9 +1777,15 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         vm_rpc.call(VmRpc::Resume, ()).await?;
     }
 
-    let diag_inspector = opt
-        .vtl2
-        .then(|| DiagInspector::new(driver.clone(), vm_rpc.clone()));
+    let mut diag_inspector = DiagInspector::new(
+        driver.clone(),
+        vm_rpc.clone(),
+        if opt.vtl2 {
+            DeviceVtl::Vtl2
+        } else {
+            DeviceVtl::Vtl0
+        },
+    );
 
     let (console_command_send, console_command_recv) = mesh::channel();
     let (inspect_completion_engine_send, inspect_completion_engine_recv) = mesh::channel();
@@ -1777,9 +1810,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             )
             .unwrap();
 
-            let pool = DefaultPool::new();
             rl.set_helper(Some(interactive_console::HvLiteRustylineEditor {
-                driver: pool.driver(),
                 hvlite_inspect_req: Arc::new(inspect_completion_engine_send),
             }));
 
@@ -1849,7 +1880,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 term::set_raw_console(false);
 
                 loop {
-                    let line = rl.readline("hvlite> ");
+                    let line = rl.readline("openvmm> ");
                     if line.is_err() {
                         break;
                     }
@@ -1909,7 +1940,9 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
 
     enum Event {
         Command((InteractiveCommand, mesh::OneshotSender<()>)),
-        InspectRequestFromCompletionEngine((DeviceVtl, String, mesh::OneshotSender<inspect::Node>)),
+        InspectRequestFromCompletionEngine(
+            (InspectTarget, String, mesh::OneshotSender<inspect::Node>),
+        ),
         Quit,
         Halt(vmm_core_defs::HaltReason),
         PulseSaveRestore,
@@ -1984,7 +2017,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                             &vm_worker,
                             vnc_worker.as_ref(),
                             gdb_worker.as_ref(),
-                            diag_inspector.as_ref(),
+                            &mut diag_inspector,
                         ));
                 let _ = CancelContext::new()
                     .with_timeout(Duration::from_secs(1))
@@ -2138,24 +2171,23 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         };
 
         fn inspect_obj<'a>(
-            vtl: DeviceVtl,
+            target: InspectTarget,
             mesh: &'a VmmMesh,
             vm_worker: &'a WorkerHandle,
             vnc_worker: Option<&'a WorkerHandle>,
             gdb_worker: Option<&'a WorkerHandle>,
-            diag_inspector: Option<&'a DiagInspector>,
+            diag_inspector: &'a mut DiagInspector,
         ) -> impl 'a + InspectMut {
-            inspect::adhoc(move |req| match vtl {
-                DeviceVtl::Vtl0 => {
+            inspect::adhoc_mut(move |req| match target {
+                InspectTarget::Host => {
                     let mut resp = req.respond();
                     resp.field("mesh", mesh)
                         .field("vm", vm_worker)
                         .field("vnc", vnc_worker)
                         .field("gdb", gdb_worker);
                 }
-                DeviceVtl::Vtl1 => {}
-                DeviceVtl::Vtl2 => {
-                    Inspect::inspect(&diag_inspector, req);
+                InspectTarget::Paravisor => {
+                    diag_inspector.inspect_mut(req);
                 }
             })
         }
@@ -2331,21 +2363,21 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             InteractiveCommand::Inspect {
                 recursive,
                 limit,
-                vtl2,
+                paravisor,
                 element,
                 update,
             } => {
                 let obj = inspect_obj(
-                    if vtl2 {
-                        DeviceVtl::Vtl2
+                    if paravisor {
+                        InspectTarget::Paravisor
                     } else {
-                        DeviceVtl::Vtl0
+                        InspectTarget::Host
                     },
                     mesh,
                     &vm_worker,
                     vnc_worker.as_ref(),
                     gdb_worker.as_ref(),
-                    diag_inspector.as_ref(),
+                    &mut diag_inspector,
                 );
 
                 if let Some(value) = update {
@@ -2434,7 +2466,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 let r = async {
                     let start;
                     if user_mode_only {
-                        let diag = connect_vtl2_diag(driver.clone(), &vm_rpc).await?;
+                        let diag = connect_diag(driver.clone(), &vm_rpc, DeviceVtl::Vtl2).await?;
                         start = Instant::now();
                         diag.restart().await?;
                     } else {
@@ -2582,9 +2614,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     Ok(())
 }
 
-async fn connect_vtl2_diag(
+async fn connect_diag(
     driver: impl Driver + Spawn,
     vm_rpc: &mesh::Sender<VmRpc>,
+    openhcl_vtl: DeviceVtl,
 ) -> anyhow::Result<diag_client::DiagClient> {
     let service_id = new_hvsock_service_id(1);
     let socket = vm_rpc
@@ -2593,7 +2626,7 @@ async fn connect_vtl2_diag(
             (
                 CancelContext::new().with_timeout(Duration::from_secs(2)),
                 service_id,
-                DeviceVtl::Vtl2,
+                openhcl_vtl,
             ),
         )
         .await?;
@@ -2601,36 +2634,77 @@ async fn connect_vtl2_diag(
     Ok(diag_client)
 }
 
-/// An object that implements [`Inspect`] by sending an inspect request over
-/// TTRPC to VTL2, then stitching the response back into the inspect tree.
+/// An object that implements [`InspectMut`] by sending an inspect request over
+/// TTRPC to the guest (typically the paravisor running in VTL2), then stitching
+/// the response back into the inspect tree.
 ///
-/// This also caches the TTRPC connection to VTL2 so that only the first inspect
-/// request has to wait for the connection to be established.
-pub struct DiagInspector {
-    send: mesh::Sender<inspect::Deferred>,
-    _task: Task<()>,
+/// This also caches the TTRPC connection to the guest so that only the first
+/// inspect request has to wait for the connection to be established.
+pub struct DiagInspector(DiagInspectorInner);
+
+enum DiagInspectorInner {
+    NotStarted {
+        driver: DefaultDriver,
+        vm_rpc: Arc<mesh::Sender<VmRpc>>,
+        openhcl_vtl: DeviceVtl,
+    },
+    Started {
+        send: mesh::Sender<inspect::Deferred>,
+        _task: Task<()>,
+    },
+    Invalid,
 }
 
 impl DiagInspector {
-    pub fn new(driver: DefaultDriver, vm_rpc: Arc<mesh::Sender<VmRpc>>) -> Self {
-        let (send, recv) = mesh::channel();
-        let task = driver
-            .clone()
-            .spawn("diag-inspect", Self::run(driver, vm_rpc, recv));
-        Self { send, _task: task }
+    pub fn new(
+        driver: DefaultDriver,
+        vm_rpc: Arc<mesh::Sender<VmRpc>>,
+        openhcl_vtl: DeviceVtl,
+    ) -> Self {
+        Self(DiagInspectorInner::NotStarted {
+            driver,
+            vm_rpc,
+            openhcl_vtl,
+        })
+    }
+
+    fn start(&mut self) -> &mesh::Sender<inspect::Deferred> {
+        loop {
+            match self.0 {
+                DiagInspectorInner::NotStarted { .. } => {
+                    let DiagInspectorInner::NotStarted {
+                        driver,
+                        vm_rpc,
+                        openhcl_vtl,
+                    } = std::mem::replace(&mut self.0, DiagInspectorInner::Invalid)
+                    else {
+                        unreachable!()
+                    };
+                    let (send, recv) = mesh::channel();
+                    let task = driver
+                        .clone()
+                        .spawn("diag-inspect", Self::run(driver, vm_rpc, recv, openhcl_vtl));
+
+                    self.0 = DiagInspectorInner::Started { send, _task: task };
+                }
+                DiagInspectorInner::Started { ref send, .. } => break send,
+                DiagInspectorInner::Invalid => unreachable!(),
+            }
+        }
     }
 
     async fn run(
         driver: DefaultDriver,
         vm_rpc: Arc<mesh::Sender<VmRpc>>,
         mut recv: mesh::Receiver<inspect::Deferred>,
+        openhcl_vtl: DeviceVtl,
     ) {
         let mut last_client = None;
         while let Some(deferred) = recv.next().await {
             let client = if let Some(client) = &mut last_client {
                 client
             } else {
-                match connect_vtl2_diag(driver.clone(), &vm_rpc).await {
+                match connect_diag(driver.clone(), &vm_rpc, openhcl_vtl).await {
                     Ok(client) => last_client.insert(client),
                     Err(err) => {
                         deferred.complete_external(
@@ -2669,10 +2743,15 @@ impl DiagInspector {
     }
 }
 
-impl Inspect for DiagInspector {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.send.send(req.defer());
+impl InspectMut for DiagInspector {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        self.start().send(req.defer());
     }
+}
+
+enum InspectTarget {
+    Host,
+    Paravisor,
 }
 
 mod interactive_console {
@@ -2683,10 +2762,13 @@ mod interactive_console {
     use rustyline::Validator;
 
     #[derive(Helper, Highlighter, Hinter, Validator)]
-    pub struct HvLiteRustylineEditor {
-        pub driver: pal_async::DefaultDriver,
+    pub(crate) struct HvLiteRustylineEditor {
         pub hvlite_inspect_req: std::sync::Arc<
-            mesh::Sender<(super::DeviceVtl, String, mesh::OneshotSender<inspect::Node>)>,
+            mesh::Sender<(
+                super::InspectTarget,
+                String,
+                mesh::OneshotSender<inspect::Node>,
+            )>,
         >,
     }
 
@@ -2745,7 +2827,11 @@ mod interactive_console {
 
     pub struct HvLiteComplete {
         hvlite_inspect_req: std::sync::Arc<
-            mesh::Sender<(super::DeviceVtl, String, mesh::OneshotSender<inspect::Node>)>,
+            mesh::Sender<(
+                super::InspectTarget,
+                String,
+                mesh::OneshotSender<inspect::Node>,
+            )>,
         >,
     }
 
@@ -2765,13 +2851,13 @@ mod interactive_console {
                         .unwrap_or(("", ctx.to_complete));
 
                     let node = {
-                        let vtl2 = {
+                        let paravisor = {
                             let raw_arg = ctx
                                 .matches
                                 .subcommand()
                                 .unwrap()
                                 .1
-                                .get_one::<String>("vtl2")
+                                .get_one::<String>("paravisor")
                                 .map(|x| x.as_str())
                                 .unwrap_or_default();
                             raw_arg == "true"
@@ -2779,10 +2865,10 @@ mod interactive_console {
 
                         let (tx, rx) = mesh::oneshot();
                         self.hvlite_inspect_req.send((
-                            if vtl2 {
-                                super::DeviceVtl::Vtl2
+                            if paravisor {
+                                super::InspectTarget::Paravisor
                             } else {
-                                super::DeviceVtl::Vtl0
+                                super::InspectTarget::Host
                             },
                             parent_path.to_owned(),
                             tx,

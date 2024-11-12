@@ -1,12 +1,12 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
-//! Build the HvLite Guide
+//! Build the OpenVMM Guide.
 
 use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Request {
-        pub guide_source: ReadVar<PathBuf>,
         pub built_guide: WriteVar<PathBuf>,
     }
 }
@@ -18,32 +18,52 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
+        ctx.import::<flowey_lib_common::download_mdbook_admonish::Node>();
+        ctx.import::<flowey_lib_common::download_mdbook_mermaid::Node>();
         ctx.import::<flowey_lib_common::download_mdbook::Node>();
+        ctx.import::<flowey_lib_common::install_rust::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mdbook_bin = ctx.reqv(flowey_lib_common::download_mdbook::Request::GetMdbook);
-        for Request {
-            built_guide,
-            guide_source,
-        } in requests
-        {
-            ctx.emit_rust_step("build HvLite guide (mdbook)", |ctx| {
-                let built_guide = built_guide.claim(ctx);
-                let guide_source = guide_source.claim(ctx);
-                let mdbook_bin = mdbook_bin.clone().claim(ctx);
+        let mdbook_admonish_bin =
+            ctx.reqv(flowey_lib_common::download_mdbook_admonish::Request::GetMdbookAdmonish);
+        let mdbook_mermaid_bin =
+            ctx.reqv(flowey_lib_common::download_mdbook_mermaid::Request::GetMdbookMermaid);
 
+        let guide_source = ctx
+            .reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir)
+            .map(ctx, |p| p.join("Guide"));
+
+        let rust_is_installed = ctx.reqv(flowey_lib_common::install_rust::Request::EnsureInstalled);
+
+        for Request { built_guide } in requests {
+            ctx.emit_rust_step("build HvLite guide (mdbook)", |ctx| {
+                // rust must be installed to build the `mdbook-openvmm-shim`
+                rust_is_installed.clone().claim(ctx);
+                let mdbook_bin = mdbook_bin.clone().claim(ctx);
+                let mdbook_admonish_bin = mdbook_admonish_bin.clone().claim(ctx);
+                let mdbook_mermaid_bin = mdbook_mermaid_bin.clone().claim(ctx);
+                let built_guide = built_guide.claim(ctx);
+                let guide_source = guide_source.clone().claim(ctx);
                 |rt| {
                     let mdbook_bin = rt.read(mdbook_bin);
+                    let mdbook_admonish_bin = rt.read(mdbook_admonish_bin);
+                    let mdbook_mermaid_bin = rt.read(mdbook_mermaid_bin);
+
                     let sh = xshell::Shell::new()?;
 
                     let out_path: PathBuf = sh.current_dir().absolute()?.join("book");
                     let guide_source: PathBuf = rt.read(guide_source);
 
+                    sh.change_dir(&guide_source);
                     xshell::cmd!(
                         sh,
                         "{mdbook_bin} build {guide_source} --dest-dir {out_path}"
                     )
+                    // intercepted by the `mdbook-openvmm-shim`
+                    .env("SHIM_MDBOOK_ADMONISH", mdbook_admonish_bin)
+                    .env("SHIM_MDBOOK_MERMAID", mdbook_mermaid_bin)
                     .run()?;
 
                     rt.write(built_guide, &out_path);

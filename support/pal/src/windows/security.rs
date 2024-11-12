@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Windows security API wrappers.
 
@@ -317,7 +318,7 @@ impl SecurityDescriptor {
 }
 
 #[link(name = "api-ms-win-security-base-private-l1-1-1")]
-extern "C" {
+unsafe extern "C" {
     fn CreateAppContainerToken(
         token: HANDLE,
         caps: LPSECURITY_CAPABILITIES,

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Definitions for interfacing with the Hyperfisor framework C ABI.
 
@@ -64,7 +65,7 @@ impl HvfResult {
 }
 
 #[link(name = "Hypervisor", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     pub fn hv_vm_create(config: *const ()) -> HvfResult;
     pub fn hv_vm_destroy() -> HvfResult;
     pub fn hv_vm_map(addr: *mut c_void, ipa: u64, size: usize, flags: u64) -> HvfResult;

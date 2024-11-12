@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Builds and tests `vmgs_lib` library.
 //!
@@ -38,7 +39,7 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::run_cargo_build::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
-        ctx.import::<flowey_lib_common::install_apt_pkg::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -48,13 +49,14 @@ impl SimpleFlowNode for Node {
             vmgs_lib,
         } = request;
 
-        let pre_build_deps = [
-            ctx.reqv(|v| flowey_lib_common::install_apt_pkg::Request::Install {
-                package_names: vec!["libssl-dev".into()],
-                done: v,
-            }),
-        ]
-        .to_vec();
+        let pre_build_deps =
+            [
+                ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
+                    package_names: vec!["libssl-dev".into()],
+                    done: v,
+                }),
+            ]
+            .to_vec();
 
         let output = ctx.reqv(|v| crate::run_cargo_build::Request {
             crate_name: "vmgs_lib".into(),
@@ -90,20 +92,22 @@ impl SimpleFlowNode for Node {
         // if we ever decide to do more involved testing for this lib,
         // this should get split out into a separate step
 
-        // TODO: figure out how to test vmgs_lib on aarch64
-        let did_test = if !matches!(
+        // TODO: figure out how to test vmgs_lib on other architectures.
+        // Currently x86 only
+        let did_test = if matches!(
             &target.as_triple().architecture,
-            target_lexicon::Architecture::Aarch64(_)
-        ) {
+            target_lexicon::Architecture::X86_64
+        ) && matches!(ctx.arch(), FlowArch::X86_64)
+        {
             let clang_installed =
-                ctx.reqv(|v| flowey_lib_common::install_apt_pkg::Request::Install {
+                ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
                     package_names: vec!["clang".into()],
                     done: v,
                 });
 
             let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
-            if matches!(ctx.platform(), FlowPlatform::Linux) {
+            if matches!(ctx.platform(), FlowPlatform::Linux(_)) {
                 ctx.emit_rust_step("test vmgs_lib", |ctx| {
                     clang_installed.claim(ctx);
 

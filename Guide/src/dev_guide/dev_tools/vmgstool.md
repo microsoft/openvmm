@@ -28,11 +28,15 @@ architecture and operating system.
 
 ## Running
 
->Note: The examples in this section use the Windows executable `vmgstool.exe`,
->which can be replaced with the Linux executable `vmgstool`.
->Developers who have already setup their development environment may also use
->the appropriate `cargo run` command. For more details on building,
->see the [build](#building) section below.
+```admonish tip
+Note: The examples in this section use the Windows executable `vmgstool.exe`,
+which can be replaced with the Linux executable `vmgstool`.
+
+Developers who have already setup their development environment may also use
+the appropriate `cargo run` command. For more details on building,
+
+see the [build](#building) section below.
+```
 
 The VmgsTool commands are always evolving, so use `vmgstool.exe --help` to see the
 most up to date information about the available commands. Options for each command

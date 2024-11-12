@@ -1,8 +1,10 @@
-# Copyright (C) Microsoft Corporation. All rights reserved.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 [package]
 name = "diag_server"
 edition = "2021"
+rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 diag_proto.workspace = true
@@ -29,8 +31,8 @@ tracing.workspace = true
 net_packet_capture.workspace = true
 profiler_worker = { workspace = true, optional = true }
 socket2.workspace = true
-safe_x86_intrinsics.workspace = true
-hvdef = { workspace = true, features = ["std"] }
+safe_intrinsics.workspace = true
+hvdef.workspace = true
 
 [features]
 profiler = ["dep:profiler_worker"]

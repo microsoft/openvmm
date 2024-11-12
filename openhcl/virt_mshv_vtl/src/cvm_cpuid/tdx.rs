@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! CPUID definitions and implementation specific to Underhill in TDX CVMs.
 
@@ -36,7 +37,7 @@ pub struct TdxCpuidInitializer {}
 
 impl TdxCpuidInitializer {
     fn cpuid(leaf: u32, subleaf: u32) -> CpuidResult {
-        safe_x86_intrinsics::cpuid(leaf, subleaf)
+        safe_intrinsics::cpuid(leaf, subleaf)
     }
 }
 

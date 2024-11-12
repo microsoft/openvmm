@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! See [`get_template`]
 
@@ -9,5 +10,10 @@
 /// [`Pipeline::gh_set_flowey_bootstrap_template`]:
 ///     flowey::pipeline::prelude::Pipeline::gh_set_flowey_bootstrap_template
 pub fn get_template() -> String {
-    include_str!("gh_flowey_bootstrap_template.yml").to_string()
+    let template = include_str!("gh_flowey_bootstrap_template.yml").to_string();
+
+    template.replace(
+        "{{RUSTUP_TOOLCHAIN}}",
+        flowey_lib_hvlite::_jobs::cfg_versions::RUSTUP_TOOLCHAIN,
+    )
 }

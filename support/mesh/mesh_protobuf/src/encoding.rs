@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Protobuf encodings for Rust types.
 
@@ -1833,6 +1834,9 @@ mod windows {
     os_resource!(std::net::TcpListener, OwnedSocket);
     os_resource!(std::net::TcpStream, OwnedSocket);
     os_resource!(std::net::UdpSocket, OwnedSocket);
+
+    #[cfg(feature = "socket2")]
+    os_resource!(socket2::Socket, OwnedSocket);
 }
 
 #[cfg(unix)]

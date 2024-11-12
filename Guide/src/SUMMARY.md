@@ -106,4 +106,4 @@
 
 ---
 
-[OpenVMM Rust Crate API Docs]()
+[OpenVMM Rust Crate API Docs](./rustdoc.md)

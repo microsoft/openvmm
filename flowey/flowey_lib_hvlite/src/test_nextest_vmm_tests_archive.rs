@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Run cargo-nextest based VMM tests from a pre-built archive.
 //!
@@ -51,7 +52,7 @@ impl SimpleFlowNode for Node {
         } = request;
 
         if !matches!(ctx.backend(), FlowBackend::Local)
-            && matches!(ctx.platform(), FlowPlatform::Linux)
+            && matches!(ctx.platform(), FlowPlatform::Linux(_))
         {
             pre_run_deps.push({
                 ctx.emit_rust_step("ensure /dev/kvm is accessible", |_| {

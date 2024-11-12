@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Ensure the lxutil package is moved into the correct "magic directory"
 //! as expected by the project-level `[env]` table in `.cargo/config.toml`

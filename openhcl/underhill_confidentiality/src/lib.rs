@@ -1,11 +1,14 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A source of information for Underhill confidentiality configuration.
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
+#[cfg(feature = "std")]
+extern crate std;
 #[cfg(feature = "std")]
 mod getters;
 #[cfg(feature = "std")]

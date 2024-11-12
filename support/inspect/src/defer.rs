@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Support for deferring inspection requests.
 
@@ -268,8 +269,7 @@ impl DeferredUpdate {
     }
 
     /// Report that the update failed, with the reason in `err`.
-    #[cfg(feature = "std")]
-    pub fn fail<E: Into<alloc::boxed::Box<dyn std::error::Error + Send + Sync>>>(self, err: E) {
+    pub fn fail<E: Into<alloc::boxed::Box<dyn core::error::Error + Send + Sync>>>(self, err: E) {
         self.node.send(InternalNode::failed(err.into()));
     }
 }

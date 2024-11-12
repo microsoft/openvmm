@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #[cfg(guest_arch = "x86_64")]
 use firmware_pcat::PcatEvent;

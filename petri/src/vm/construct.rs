@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Contains [`PetriVmConfig::new`], which builds a [`PetriVmConfig`] with all
 //! default settings for a given [`Firmware`] and [`MachineArch`].
@@ -65,7 +66,7 @@ use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
-use serial_socket::unix::OpenUnixStreamSerialConfig;
+use serial_socket::net::OpenSocketSerialConfig;
 use sparse_mmap::alloc_shared_memory;
 use std::fmt::Write as _;
 use std::io::Write;
@@ -540,7 +541,7 @@ impl PetriVmConfigSetupCore<'_> {
     )> {
         let (host_side, guest_side) = UnixStream::pair()?;
         let host_side = PolledSocket::new(self.driver, host_side)?;
-        let serial = OpenUnixStreamSerialConfig::from(guest_side).into_resource();
+        let serial = OpenSocketSerialConfig::from(guest_side).into_resource();
         Ok((host_side, Some(serial)))
     }
 

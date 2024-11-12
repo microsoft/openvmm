@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A flexible chipset builder that pre-populates a [`Chipset`](super::Chipset)
 //! with a customizable configuration of semi-standardized device.

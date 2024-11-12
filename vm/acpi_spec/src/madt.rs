@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use super::Table;
 use bitfield_struct::bitfield;
@@ -6,6 +7,7 @@ use core::mem::size_of;
 use open_enum::open_enum;
 use size_of_val;
 use static_assertions::const_assert_eq;
+use thiserror::Error;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
@@ -279,8 +281,10 @@ impl<'a> MadtParser<'a> {
 
     /// Parse apic_ids from the given MADT for enabled processors. Returned as a
     /// `Vec<Option<u32>>` with element 0 being processor_acpi_uid 1.
-    #[cfg(feature = "std")]
-    pub fn parse_apic_ids(&self) -> Result<Vec<Option<u32>>, ParseApicIdError> {
+    #[cfg(feature = "alloc")]
+    pub fn parse_apic_ids(&self) -> Result<alloc::vec::Vec<Option<u32>>, ParseApicIdError> {
+        use alloc::vec::Vec;
+
         let mut apic_ids: Vec<Option<u32>> = Vec::new();
 
         for entry in self.entries() {
@@ -318,16 +322,12 @@ impl<'a> MadtParser<'a> {
 }
 
 /// MADT parsing error.
-/// TODO: better error reporting on std
-#[derive(Debug)]
-#[cfg_attr(feature = "std", derive(thiserror::Error))]
-#[cfg_attr(feature = "std", error("madt parsing failed"))]
+#[derive(Debug, Error)]
+#[error("madt parsing failed")]
 pub struct ParserError;
 
 /// parse_apic_ids error
-/// TODO: better error reporting on std
-#[cfg(feature = "std")]
-#[cfg_attr(feature = "std", derive(Debug, thiserror::Error))]
+#[derive(Debug, thiserror::Error)]
 pub enum ParseApicIdError {
     #[error("error parsing entry")]
     Parser(#[source] ParserError),
@@ -384,12 +384,14 @@ impl Iterator for MadtIter<'_> {
 #[cfg(test)]
 mod test {
     use super::*;
-    #[cfg(feature = "std")]
-    use std::vec::Vec;
+    #[cfg(feature = "alloc")]
+    use alloc::vec;
+    #[cfg(feature = "alloc")]
+    use alloc::vec::Vec;
 
     // test sparse madt with not sequential processors enabled
     #[test]
-    #[cfg(feature = "std")]
+    #[cfg(feature = "alloc")]
     fn sparse_madt() {
         const DATA: &[u8] = &[
             65, 80, 73, 67, 194, 0, 0, 0, 5, 195, 72, 86, 76, 73, 84, 69, 72, 86, 76, 73, 84, 69,
@@ -473,7 +475,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "std")]
+    #[cfg(feature = "alloc")]
     fn madt_50_vps() {
         const DATA: &[u8] = &[
             0x41, 0x50, 0x49, 0x43, 0xd8, 0x01, 0x00, 0x00, 0x04, 0x06, 0x56, 0x52, 0x54, 0x55,
@@ -577,7 +579,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "std")]
+    #[cfg(feature = "alloc")]
     fn madt_256() {
         const DATA: &[u8] = &[
             0x41, 0x50, 0x49, 0x43, 0x50, 0x08, 0x00, 0x00, 0x04, 0x14, 0x56, 0x52, 0x54, 0x55,

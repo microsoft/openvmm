@@ -1,10 +1,12 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Backing for non-hardware-isolated X64 partitions.
 
 use super::private::BackingPrivate;
 use super::BackingState;
 use super::Error;
+use super::GuestVtl;
 use super::HclVp;
 use super::NoRunner;
 use super::ProcessorRunner;
@@ -16,7 +18,6 @@ use hvdef::HvRegisterValue;
 use hvdef::HvX64RegisterName;
 use hvdef::HvX64RegisterPage;
 use hvdef::HypercallCode;
-use hvdef::Vtl;
 use hvdef::HV_PARTITION_ID_SELF;
 use hvdef::HV_VP_INDEX_SELF;
 use sidecar_client::SidecarVp;
@@ -32,6 +33,16 @@ pub struct TranslateErrorX64 {
     pub code: u32,
     /// The event to inject.
     pub event_info: hvdef::HvX64PendingEvent,
+}
+
+/// Result when the intercepted vtl is invalid.
+#[derive(Error, Debug)]
+#[allow(missing_docs)]
+pub enum RegisterPageVtlError {
+    #[error("no register page")]
+    NoRegisterPage,
+    #[error("invalid guest vtl {0}")]
+    InvalidVtl(u8),
 }
 
 /// Runner backing for non-hardware-isolated X64 partitions.
@@ -65,9 +76,15 @@ impl ProcessorRunner<'_, MshvX64> {
     }
 
     /// Returns the last VTL according to the register page.
-    pub fn reg_page_vtl(&self) -> Option<Vtl> {
-        self.reg_page()
-            .map(|reg_page| reg_page.vtl.try_into().unwrap())
+    pub fn reg_page_vtl(&self) -> Result<GuestVtl, RegisterPageVtlError> {
+        // Note: if available, the register page is only valid if VTL 2 is
+        // handling an intercept.
+        let vtl = self
+            .reg_page()
+            .ok_or(RegisterPageVtlError::NoRegisterPage)?
+            .vtl;
+        vtl.try_into()
+            .map_err(|_| RegisterPageVtlError::InvalidVtl(vtl))
     }
 
     /// Returns a reference to the current VTL's CPU context.

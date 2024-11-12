@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Memory-related abstractions.
 
@@ -46,7 +47,7 @@ pub fn initialize_try_copy() {
     }
 }
 
-extern "C" {
+unsafe extern "C" {
     #[cfg(unix)]
     fn install_signal_handlers() -> i32;
 

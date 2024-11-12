@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Infrastructure for type-erased "resource" types, representing interchangeable
 //! resources that can be resolved into the same type at runtime.

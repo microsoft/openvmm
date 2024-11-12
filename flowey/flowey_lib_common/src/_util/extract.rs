@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use flowey::node::prelude::*;
 
@@ -29,10 +30,20 @@ impl ClaimVar for ExtractZipDeps {
 
 #[track_caller]
 pub fn extract_zip_if_new_deps(ctx: &mut NodeCtx<'_>) -> ExtractZipDeps {
+    let platform = ctx.platform();
     ExtractZipDeps {
         persistent_dir: ctx.persistent_dir(),
-        bsdtar_installed: ctx.reqv(|v| crate::install_apt_pkg::Request::Install {
-            package_names: vec!["libarchive-tools".into()],
+        bsdtar_installed: ctx.reqv(|v| crate::install_dist_pkg::Request::Install {
+            package_names: match platform {
+                FlowPlatform::Linux(linux_distribution) => match linux_distribution {
+                    FlowPlatformLinuxDistro::Fedora => vec!["bsdtar".into()],
+                    FlowPlatformLinuxDistro::Ubuntu => vec!["libarchive-tools".into()],
+                    FlowPlatformLinuxDistro::Unknown => vec![],
+                },
+                _ => {
+                    vec![]
+                }
+            },
             done: v,
         }),
     }
@@ -125,7 +136,7 @@ impl ClaimVar for ExtractTarBz2Deps {
 pub fn extract_tar_bz2_if_new_deps(ctx: &mut NodeCtx<'_>) -> ExtractTarBz2Deps {
     ExtractTarBz2Deps {
         persistent_dir: ctx.persistent_dir(),
-        lbzip2_installed: ctx.reqv(|v| crate::install_apt_pkg::Request::Install {
+        lbzip2_installed: ctx.reqv(|v| crate::install_dist_pkg::Request::Install {
             package_names: vec!["lbzip2".into()],
             done: v,
         }),

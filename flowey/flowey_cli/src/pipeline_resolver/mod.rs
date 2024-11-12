@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Code which resolves user-defined
 //! [`Pipeline`](flowey_core::pipeline::Pipeline) objects into runnable code.

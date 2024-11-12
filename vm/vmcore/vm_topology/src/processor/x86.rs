@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! X86-specific topology definitions.
 
@@ -94,7 +95,7 @@ impl TopologyBuilder<X86Topology> {
             }
             #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
             {
-                let result = safe_x86_intrinsics::cpuid(leaf, sub_leaf);
+                let result = safe_intrinsics::cpuid(leaf, sub_leaf);
                 [result.eax, result.ebx, result.ecx, result.edx]
             }
         }

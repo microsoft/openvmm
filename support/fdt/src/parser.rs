@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Code to parse a Flattened DeviceTree binary blob.
 
@@ -17,13 +18,12 @@ pub struct Error<'a>(ErrorKind<'a>);
 
 impl<'a> Display for Error<'a> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("{}", self.0))
+        self.0.fmt(f)
     }
 }
 
 // TODO: Once core::error::Error is stablized, we can remove this feature gate.
-#[cfg(feature = "std")]
-impl<'a> std::error::Error for Error<'a> {}
+impl<'a> core::error::Error for Error<'a> {}
 
 /// Types of errors when parsing a FDT.
 #[derive(Debug)]
@@ -735,9 +735,7 @@ impl<'a> Iterator for MemoryReserveIter<'a> {
     }
 }
 
-#[cfg(feature = "std")]
-// TODO: Once core::error::Error is stablized, we can remove this feature gate.
-impl std::error::Error for StringError {}
+impl core::error::Error for StringError {}
 
 /// Extract a string from bytes treated as a C String, stopping at the first null terminator.
 fn extract_str_from_bytes(bytes: &[u8]) -> Result<&str, StringError> {
@@ -753,12 +751,17 @@ fn extract_str_from_bytes(bytes: &[u8]) -> Result<&str, StringError> {
 
 #[cfg(test)]
 mod test {
+    extern crate alloc;
+
     use super::*;
     use crate::builder::Builder;
     use crate::builder::BuilderConfig;
     use crate::builder::StringId;
     use crate::spec::ReserveEntry;
-    use std::vec;
+    use alloc::format;
+    use alloc::string::String;
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum DtProp {

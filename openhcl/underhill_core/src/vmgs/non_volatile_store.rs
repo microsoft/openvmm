@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use vmcore::non_volatile_store::NonVolatileStore;
 use vmgs_broker::non_volatile_store::EncryptionNotSupported;

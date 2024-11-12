@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use crate::dispatch::vtl2_settings_worker::wait_for_pci_path;
 use crate::vpci::HclVpciBusControl;

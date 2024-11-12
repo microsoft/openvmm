@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use crate::VersionInfo;
 use bitfield_struct::bitfield;
@@ -163,7 +164,8 @@ pub struct FeatureFlags {
     /// If not used, the client ID is zero.
     pub client_id: bool,
 
-    /// Indicates the `confidential_channel` offer flag is supported.
+    /// Indicates the `confidential_ring_buffer` and `confidential_external_memory` offer flags are
+    /// supported.
     pub confidential_channels: bool,
 
     #[bits(27)]
@@ -461,9 +463,12 @@ pub struct OfferChannel {
 #[mesh(transparent)]
 pub struct OfferFlags {
     pub enumerate_device_interface: bool, // 0x1
-    /// Indicates the channel can use an encrypted ring buffer on a hardware-isolated VM.
-    pub confidential_channel: bool, // 0x2
-    #[bits(2)]
+    /// Indicates the channel must use an encrypted ring buffer on a hardware-isolated VM.
+    pub confidential_ring_buffer: bool, // 0x2
+    /// Indicates the channel must use encrypted additional GPADLs and GPA direct ranges on a
+    /// hardware-isolated VM.
+    pub confidential_external_memory: bool, // 0x4
+    #[bits(1)]
     _reserved1: u16,
     pub named_pipe_mode: bool, // 0x10
     #[bits(8)]

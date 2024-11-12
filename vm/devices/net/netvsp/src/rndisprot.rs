@@ -1,9 +1,11 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #![allow(dead_code)]
 
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
+use static_assertions::const_assert_eq;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
@@ -896,7 +898,13 @@ pub struct NdisOffload {
     pub padding: [u8; 3],
 }
 
-pub const NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_1: usize = 112;
+pub const NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_1: usize =
+    std::mem::offset_of!(NdisOffload, flags) + size_of::<u32>();
+const_assert_eq!(NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_1, 112);
+
+pub const NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_3: usize =
+    std::mem::offset_of!(NdisOffload, encapsulated_packet_task_offload_gre) + size_of::<[u32; 2]>();
+const_assert_eq!(NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_3, 156);
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]

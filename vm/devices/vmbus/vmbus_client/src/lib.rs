@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #![forbid(unsafe_code)]
 
@@ -471,9 +472,8 @@ impl Channel {
     }
 
     fn inspect(&self, resp: &mut inspect::Response<'_>) {
-        let name = format!("host relay channel - {}", self.interface_id_to_string());
         resp.display("state", &self.state)
-            .field("interface_name", name)
+            .field_with("interface_name", || self.interface_id_to_string())
             .display("instance_id", &self.offer.instance_id)
             .display("interface_id", &self.offer.interface_id)
             .field("mmio_megabytes", self.offer.mmio_megabytes)

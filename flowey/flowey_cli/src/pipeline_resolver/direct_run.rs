@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_PERSISTENT_STORAGE_DIR;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
@@ -92,6 +93,8 @@ fn direct_run_do_work(
             cond_param_idx,
             ado_pool: _,
             ado_variables: _,
+            gh_override_if: _,
+            gh_global_env: _,
             gh_pool: _,
             gh_permissions: _,
             ref external_read_vars,
@@ -134,7 +137,7 @@ fn direct_run_do_work(
 
         let platform_ok = match platform {
             FlowPlatform::Windows => cfg!(windows) || (cfg!(target_os = "linux") && windows_as_wsl),
-            FlowPlatform::Linux => cfg!(target_os = "linux"),
+            FlowPlatform::Linux(_) => cfg!(target_os = "linux"),
             FlowPlatform::MacOs => cfg!(target_os = "macos"),
             platform => panic!("unknown platform {platform}"),
         };

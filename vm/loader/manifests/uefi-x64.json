@@ -10,12 +10,11 @@
                     "sept_ve_disable": true
                 }
             },
-            "vtl0": {
+            "image": {
                 "uefi": {
                     "config_type": "igvm"
                 }
-            },
-            "vtl2": "none"
+            }
         },
         {
             "guest_svn": 1,
@@ -28,12 +27,11 @@
                     "injection_type": "restricted"
                 }
             },
-            "vtl0": {
+            "image": {
                 "uefi": {
                     "config_type": "igvm"
                 }
-            },
-            "vtl2": "none"
+            }
         }
     ]
 }

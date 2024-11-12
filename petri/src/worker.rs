@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use hvlite_defs::config::Config;
 use hvlite_defs::rpc::PulseSaveRestoreError;

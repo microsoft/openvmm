@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Download pre-built mu_msvm package from its GitHub Release.
 
@@ -29,7 +30,7 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<flowey_lib_common::install_apt_pkg::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::download_gh_release::Node>();
     }
 
@@ -63,6 +64,7 @@ impl FlowNode for Node {
             let mu_msvm_zip = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
                 repo_owner: "microsoft".into(),
                 repo_name: "mu_msvm".into(),
+                needs_auth: false,
                 tag: format!("v{version}"),
                 file_name: file_name.into(),
                 path: v,

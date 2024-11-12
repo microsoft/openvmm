@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Types for handling a kmsg byte stream, which is a series of kmsg entries
 //! separated by null terminators.

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Sidecar initialization code. This code runs once, on the BSP, before the
 //! main kernel boots.
@@ -54,7 +55,7 @@ use x86defs::IdtEntry64;
 use x86defs::Pte;
 use zerocopy::FromZeroes;
 
-extern "C" {
+unsafe extern "C" {
     static IMAGE_PDE: Pte;
     fn irq_entry();
     fn exc_gpf();

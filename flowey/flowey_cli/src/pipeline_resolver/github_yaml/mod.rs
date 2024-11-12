@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Code for emitting a pipeline as a single self-contained GitHub Actions yaml file
 
@@ -85,6 +86,8 @@ pub fn github_yaml(
             arch,
             ref external_read_vars,
             ado_pool: _,
+            ref gh_override_if,
+            ref gh_global_env,
             ref gh_pool,
             ref gh_permissions,
             cond_param_idx: _,
@@ -138,8 +141,8 @@ pub fn github_yaml(
                     match (platform, arch) {
                         (FlowPlatform::Windows, FlowArch::X86_64) => "x86_64-pc-windows-msvc",
                         (FlowPlatform::Windows, FlowArch::Aarch64) => "aarch64-pc-windows-msvc",
-                        (FlowPlatform::Linux, FlowArch::X86_64) => "x86_64-unknown-linux-gnu",
-                        (FlowPlatform::Linux, FlowArch::Aarch64) => "aarch64-unknown-linux-gnu",
+                        (FlowPlatform::Linux(_), FlowArch::X86_64) => "x86_64-unknown-linux-gnu",
+                        (FlowPlatform::Linux(_), FlowArch::Aarch64) => "aarch64-unknown-linux-gnu",
                         (platform, arch) => {
                             anyhow::bail!("unsupported platform {platform} / arch {arch}")
                         }
@@ -564,6 +567,8 @@ EOF
                         })
                         .collect()
                 },
+                r#if: gh_override_if.clone(),
+                env: gh_global_env.clone(),
                 steps: gh_steps,
             },
         );

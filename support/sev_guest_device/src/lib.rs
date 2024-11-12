@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! The crate includes the abstraction layer of Linux SEV-SNP Guest APIs and
 //! definitions of data structures according to SEV-SNP specification.

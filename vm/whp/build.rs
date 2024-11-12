@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 fn main() {
     // WinHvPlatform isn't in the public SDK yet, so build a minimal import lib

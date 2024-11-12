@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 // TODO: Allow nonstandard definitions to match htcpuid.h for now.
 #![allow(non_upper_case_globals)]

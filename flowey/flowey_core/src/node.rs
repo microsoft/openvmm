@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Core types and traits used to create and work with flowey nodes.
 
@@ -53,6 +54,7 @@ pub mod user_facing {
     pub use crate::flowey_request;
     pub use crate::new_flow_node;
     pub use crate::new_simple_flow_node;
+    pub use crate::node::FlowPlatformLinuxDistro;
 
     /// Helper method to streamline request validation in cases where a value is
     /// expected to be identical across all incoming requests.
@@ -725,6 +727,17 @@ pub enum FlowPlatformKind {
     Unix,
 }
 
+/// The kind platform the flow is being running on, Windows or Unix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FlowPlatformLinuxDistro {
+    /// Fedora (including WSL2)
+    Fedora,
+    /// Ubuntu (including WSL2)
+    Ubuntu,
+    /// An unknown distribution
+    Unknown,
+}
+
 /// What platform the flow is being running on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
@@ -732,7 +745,7 @@ pub enum FlowPlatform {
     /// Windows
     Windows,
     /// Linux (including WSL2)
-    Linux,
+    Linux(FlowPlatformLinuxDistro),
     /// macOS
     MacOs,
 }
@@ -741,14 +754,14 @@ impl FlowPlatform {
     pub fn kind(&self) -> FlowPlatformKind {
         match self {
             Self::Windows => FlowPlatformKind::Windows,
-            Self::Linux | Self::MacOs => FlowPlatformKind::Unix,
+            Self::Linux(_) | Self::MacOs => FlowPlatformKind::Unix,
         }
     }
 
     fn as_str(&self) -> &'static str {
         match self {
             Self::Windows => "windows",
-            Self::Linux => "linux",
+            Self::Linux(_) => "linux",
             Self::MacOs => "macos",
         }
     }
@@ -1485,6 +1498,10 @@ pub mod steps {
             /// `System.AccessToken`
             pub const SYSTEM__ACCESS_TOKEN: AdoRuntimeVar =
                 AdoRuntimeVar::new_secret("System.AccessToken");
+
+            /// `System.System.JobAttempt`
+            pub const SYSTEM__JOB_ATTEMPT: AdoRuntimeVar =
+                AdoRuntimeVar::new_secret("System.JobAttempt");
         }
 
         impl AdoRuntimeVar {
@@ -1666,20 +1683,20 @@ pub mod steps {
             /// Adds a parameter to the step, specified as a key-value pair corresponding
             /// to the param name and value. For example the following code generates the following yaml:
             ///
-            /// ```rust
+            /// ```rust,ignore
             /// let (client_id, write_client_id) = ctx.new_secret_var();
             /// let (tenant_id, write_tenant_id) = ctx.new_secret_var();
             /// let (subscription_id, write_subscription_id) = ctx.new_secret_var();
-            /// ... <insert rust step writing to each of those secrets>
-            /// GhStepBuilder::new("Azure Login", "Azure/login@v2.2.0")
+            /// // ... insert rust step writing to each of those secrets ...
+            /// GhStepBuilder::new("Azure Login", "Azure/login@v2")
             ///               .with("client-id", client_id)
             ///               .with("tenant-id", tenant_id)
             ///               .with("subscription-id", subscription_id)
             /// ```
             ///
-            /// ```ignore
+            /// ```text
             /// - name: Azure Login
-            ///   uses: Azure/login@v2.2.0
+            ///   uses: Azure/login@v2
             ///   with:
             ///     client-id: ${{ env.floweyvar1 }} // Assuming the backend wrote client_id to floweyvar1
             ///     tenant-id: ${{ env.floweyvar2 }} // Assuming the backend wrote tenant-id to floweyvar2

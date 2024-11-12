@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Unix socket-based mesh node implementation.
 //!
@@ -295,7 +296,7 @@ async fn run_leader(
             },
             Err(err) => {
                 if let RecvError::Error(err) = err {
-                    tracing::warn!(
+                    tracing::debug!(
                         ?remote_id,
                         error = &err as &dyn std::error::Error,
                         "leader connection to remote failed"

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use super::abi::*;
 use std::ffi::c_void;
@@ -72,7 +73,7 @@ pub const WHV_E_UNKNOWN_CAPABILITY: HRESULT = 0x80370300u32 as HRESULT;
 pub const WHV_E_INSUFFICIENT_BUFFER: HRESULT = 0x80370301u32 as HRESULT;
 
 #[link(name = "WinHvPlatform")]
-extern "stdcall" {
+unsafe extern "stdcall" {
     pub fn WHvGetCapability(
         CapabilityCode: WHV_CAPABILITY_CODE,
         CapabilityBuffer: *mut u8,

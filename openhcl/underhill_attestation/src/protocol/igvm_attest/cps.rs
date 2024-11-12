@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module includes the definition of the VM Metadata blob (VMMD)
 //! issued by CVM Provisioning Service (CPS) that is used for parsing

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A "standard library" of flowey nodes, not tied to any particular project.
 //!
@@ -13,6 +14,7 @@ pub mod ado_task_azure_key_vault;
 pub mod ado_task_npm_authenticate;
 pub mod ado_task_nuget_authenticate;
 pub mod ado_task_nuget_tool_installer;
+pub mod ado_task_publish_test_results;
 pub mod cache;
 pub mod cfg_cargo_common_flags;
 pub mod cfg_persistent_dir_cargo_install;
@@ -24,19 +26,21 @@ pub mod download_cargo_nextest;
 pub mod download_gh_cli;
 pub mod download_gh_release;
 pub mod download_mdbook;
+pub mod download_mdbook_admonish;
+pub mod download_mdbook_mermaid;
 pub mod download_nuget_exe;
 pub mod download_protoc;
 pub mod gh_download_azure_key_vault_secret;
 pub mod gh_task_azure_login;
 pub mod git_checkout;
-pub mod install_apt_pkg;
 pub mod install_azure_cli;
+pub mod install_dist_pkg;
 pub mod install_git;
 pub mod install_nodejs;
 pub mod install_nuget_azure_credential_provider;
 pub mod install_rust;
-pub mod junit_publish_test_results;
 pub mod nuget_install_package;
+pub mod publish_test_results;
 pub mod run_cargo_build;
 pub mod run_cargo_clippy;
 pub mod run_cargo_doc;

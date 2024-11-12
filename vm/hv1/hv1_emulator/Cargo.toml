@@ -1,11 +1,13 @@
-# Copyright (C) Microsoft Corporation. All rights reserved.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 [package]
 name = "hv1_emulator"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
-hvdef = { workspace = true, features = ["std"] }
+hvdef.workspace = true
 vm_topology.workspace = true
 guestmem.workspace = true
 virt.workspace = true

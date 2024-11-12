@@ -1,6 +1,7 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
-//! Download HvLite VMM test images from Azure Blob Storage.
+//! Download OpenVMM VMM test images from Azure Blob Storage.
 //!
 //! If persistent storage is available, caches downloaded disk images locally.
 
@@ -12,7 +13,6 @@ use vmm_test_images::KnownVhd;
 
 const STORAGE_ACCOUNT: &str = "hvlitetestvhds";
 const CONTAINER: &str = "vhds";
-const ADO_SERVICE_CONNECTION: &str = "HvLiteVHDs";
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CustomDiskPolicy {
@@ -60,7 +60,6 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
-        ctx.import::<flowey_lib_common::gh_task_azure_login::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -192,18 +191,13 @@ impl FlowNode for Node {
 ================================================================================
 Detected inconsistencies between expected and cached VMM test images.
 
-If you are a Microsoft employee:
-  This is *not* expected, and your cached disk images are corrupt / out-of-date,
-  and need to be re-downloaded.
-
+  If you are trying to use the same disks used in CI, then this is not expected,
+  and your cached disks are corrupt / out-of-date and need to be re-downloaded.
   Please tweak your CLI invocation / pipeline such that
   `LocalOnlyCustomDiskPolicy` is set to `CustomDiskPolicy::Strict`.
 
-If you are NOT a Microsoft employee:
-  This is *possibly* expected, in cases where you're using a disk image that
-  isn't 1:1 equivalent with those used in hosted CI.
-
-  Please tweak your CLI invocation / pipeline such that
+  If you manually modified or replaced disks and you would like to keep them,
+  please tweak your CLI invocation / pipeline such that
   `LocalOnlyCustomDiskPolicy` is set to `CustomDiskPolicy::Loose`.
 ================================================================================
 "#
@@ -253,8 +247,6 @@ If you are NOT a Microsoft employee:
                     //
                     if matches!(rt.backend(), FlowBackend::Local) {
                         let output_folder = output_folder.display();
-                        // FUTURE: also provide links to where these images can be
-                        // downloaded from publicly (if available)
                         let disk_image_list = files_to_download
                             .iter()
                             .map(|(name, size)| format!("  - {name} ({size})"))
@@ -267,12 +259,6 @@ If you are NOT a Microsoft employee:
 ================================================================================
 In order to run the selected VMM tests, some (possibly large) disk images need
 to be downloaded from Azure blob storage.
-
-You will be asked to log-in via the Azure CLI.
-
-NOTE: If you are not a Microsoft employee, you will not have authorization to
-download these disk images, and will need procure these same/similar disk images
-from third-party sources!
 ================================================================================
 - The following disk images will be downloaded:
 {disk_image_list}
@@ -301,114 +287,28 @@ Otherwise, press `ctrl-c` to cancel the run.
             }
         });
 
-        let did_download = if matches!(ctx.backend(), FlowBackend::Local) {
-            ctx.emit_rust_step("downloading VMM test disk images", |ctx| {
-                let azcopy_bin = azcopy_bin.claim(ctx);
-                let files_to_download = files_to_download.claim(ctx);
-                let output_folder = output_folder.clone().claim(ctx);
-                move |rt| {
-                    let files_to_download = rt.read(files_to_download);
-                    let output_folder = rt.read(output_folder);
-                    let azcopy_bin = rt.read(azcopy_bin);
+        let did_download = ctx.emit_rust_step("downloading VMM test disk images", |ctx| {
+            let azcopy_bin = azcopy_bin.claim(ctx);
+            let files_to_download = files_to_download.claim(ctx);
+            let output_folder = output_folder.clone().claim(ctx);
+            |rt| {
+                let files_to_download = rt.read(files_to_download);
+                let output_folder = rt.read(output_folder);
+                let azcopy_bin = rt.read(azcopy_bin);
 
-                    if !files_to_download.is_empty() {
-                        download_blobs_from_azure(
-                            rt,
-                            &azcopy_bin,
-                            AzCopyAuthMethod::Device,
-                            files_to_download,
-                            &output_folder,
-                        )?;
-                    }
-
-                    Ok(())
-                }
-            })
-        } else if matches!(ctx.backend(), FlowBackend::Ado) {
-            let (did_download, claim_did_download) = ctx.new_var();
-            ctx.emit_ado_step_with_inline_script("downloading VMM test disk images", |ctx| {
-                claim_did_download.claim(ctx);
-                let azcopy_bin = azcopy_bin.claim(ctx);
-                let files_to_download = files_to_download.claim(ctx);
-                let output_folder = output_folder.clone().claim(ctx);
-
-                (
-                    // FUTURE: in order to properly abstract this sort of YAML
-                    // into a flowey snippet, flowey would need some way to
-                    // "register" and "serialize" Rust callbacks as ReadVars.
-                    //
-                    // This is definitely _possible_, using a callback-tracking
-                    // scheme similar to how regular steps are tracked... but
-                    // supporting 'arbitrary' callbacks with variable arguments
-                    // might require some more nuanced workarounds.
-                    //
-                    // Task is known to be flaky, so stick a hard coded retry
-                    // count on it. Only retry once since it can be slow.
-                    //
-                    // Failures can come both during the initial auth step, as
-                    // well as during the actual download step, which is why the
-                    // retry count is on the task itself.
-                    |_rt| {
-                        format!(
-                            r#"
-                              - task: AzureCLI@2
-                                retryCountOnTaskFailure: 1
-                                inputs:
-                                  azureSubscription: {ADO_SERVICE_CONNECTION}
-                                  scriptType: bash
-                                  scriptLocation: inlineScript
-                                  inlinescript: |
-                                    {{{{FLOWEY_INLINE_SCRIPT}}}}
-                            "#
-                        )
-                    },
-                    |rt| {
-                        let files_to_download = rt.read(files_to_download);
-                        let output_folder = rt.read(output_folder);
-                        let azcopy_bin = rt.read(azcopy_bin);
-
-                        if !files_to_download.is_empty() {
-                            download_blobs_from_azure(
-                                rt,
-                                &azcopy_bin,
-                                AzCopyAuthMethod::AzureCli,
-                                files_to_download,
-                                &output_folder,
-                            )?
-                        }
-
-                        Ok(())
-                    },
-                )
-            });
-            did_download
-        } else if matches!(ctx.backend(), FlowBackend::Github) {
-            let azure_login =
-                ctx.reqv(flowey_lib_common::gh_task_azure_login::Request::EnsureLogIn);
-            ctx.emit_rust_step("downloading VMM test disk images", |ctx| {
-                azure_login.claim(ctx);
-                let azcopy_bin = azcopy_bin.claim(ctx);
-                let files_to_download = files_to_download.claim(ctx);
-                let output_folder = output_folder.clone().claim(ctx);
-                |rt| {
-                    let files_to_download = rt.read(files_to_download);
-                    let output_folder = rt.read(output_folder);
-                    let azcopy_bin = rt.read(azcopy_bin);
-                    if files_to_download.is_empty() {
-                        return Ok(());
-                    }
+                if !files_to_download.is_empty() {
                     download_blobs_from_azure(
                         rt,
                         &azcopy_bin,
-                        AzCopyAuthMethod::AzureCli,
+                        None,
                         files_to_download,
                         &output_folder,
-                    )
+                    )?;
                 }
-            })
-        } else {
-            anyhow::bail!("unsupported backend")
-        };
+
+                Ok(())
+            }
+        });
 
         ctx.emit_rust_step("report downloaded VMM test disk images", |ctx| {
             did_download.claim(ctx);
@@ -416,7 +316,7 @@ Otherwise, press `ctrl-c` to cancel the run.
             let isos = isos.claim(ctx);
             let output_folder = output_folder.claim(ctx);
             let get_download_folder = get_download_folder.claim(ctx);
-            move |rt| {
+            |rt| {
                 let output_folder = rt.read(output_folder).absolute()?;
                 for path in get_download_folder {
                     rt.write(path, &output_folder)
@@ -439,6 +339,8 @@ Otherwise, press `ctrl-c` to cancel the run.
         Ok(())
     }
 }
+
+#[allow(unused)]
 enum AzCopyAuthMethod {
     /// Pull credentials from the Azure CLI instance running the command.
     AzureCli,
@@ -451,7 +353,7 @@ fn download_blobs_from_azure(
     // resolution time
     _rt: &mut RustRuntimeServices<'_>,
     azcopy_bin: &PathBuf,
-    azcopy_auth_method: AzCopyAuthMethod,
+    azcopy_auth_method: Option<AzCopyAuthMethod>,
     files_to_download: Vec<(String, u64)>,
     output_folder: &Path,
 ) -> anyhow::Result<()> {
@@ -469,12 +371,14 @@ fn download_blobs_from_azure(
         .join(";");
 
     // Translate the authentication method we're using.
-    let auth_method = match azcopy_auth_method {
+    let auth_method = azcopy_auth_method.map(|x| match x {
         AzCopyAuthMethod::AzureCli => "AZCLI",
         AzCopyAuthMethod::Device => "DEVICE",
-    };
+    });
 
-    sh.set_var("AZCOPY_AUTO_LOGIN_TYPE", auth_method);
+    if let Some(auth_method) = auth_method {
+        sh.set_var("AZCOPY_AUTO_LOGIN_TYPE", auth_method);
+    }
     // instead of using return codes to signal success/failure,
     // azcopy forces you to parse execution logs in order to find
     // specific strings to detect if/how a copy has failed
@@ -494,6 +398,7 @@ fn download_blobs_from_azure(
             {output_folder}
             --include-path {include_path}
             --overwrite true
+            --skip-version-check
         "
     )
     .run();
@@ -505,14 +410,12 @@ fn download_blobs_from_azure(
         )
         .run()?;
         let dir_contents = sh.read_dir(sh.current_dir())?;
-        let log_file: PathBuf = dir_contents
-            .into_iter()
+        for log in dir_contents
+            .iter()
             .filter(|p| p.extension() == Some("log".as_ref()))
-            .take(1)
-            .collect();
-        let job_id = log_file.file_stem().unwrap();
-        xshell::cmd!(sh, "{azcopy_bin} jobs show {job_id} --with-status=Failed").run()?;
-        println!("{}", sh.read_file(log_file)?);
+        {
+            println!("{}:\n{}\n", log.display(), sh.read_file(log)?);
+        }
         return result.context("failed to download VMM test disk images");
     }
 

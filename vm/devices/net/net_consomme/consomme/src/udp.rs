@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use super::dhcp::DHCP_SERVER;
 use super::Access;
@@ -9,6 +10,8 @@ use super::SocketAddress;
 use crate::ChecksumState;
 use crate::Ipv4Addresses;
 use inspect::Inspect;
+use inspect::InspectMut;
+use inspect_counters::Counter;
 use pal_async::interest::InterestSlot;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PolledSocket;
@@ -46,24 +49,32 @@ impl Udp {
     }
 }
 
-impl Inspect for Udp {
-    fn inspect(&self, req: inspect::Request<'_>) {
+impl InspectMut for Udp {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         let mut resp = req.respond();
-        for (addr, conn) in &self.connections {
-            resp.field(&format!("{}:{}", addr.ip, addr.port), conn);
+        for (addr, conn) in &mut self.connections {
+            resp.field_mut(&format!("{}:{}", addr.ip, addr.port), conn);
         }
     }
 }
 
+#[derive(InspectMut)]
 struct UdpConnection {
-    socket: PolledSocket<UdpSocket>,
+    #[inspect(skip)]
+    socket: Option<PolledSocket<UdpSocket>>,
+    #[inspect(display)]
     guest_mac: EthernetAddress,
+    stats: Stats,
+    #[inspect(mut)]
+    recycle: bool,
 }
 
-impl Inspect for UdpConnection {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        req.respond();
-    }
+#[derive(Inspect, Default)]
+struct Stats {
+    tx_packets: Counter,
+    tx_dropped: Counter,
+    tx_errors: Counter,
+    rx_packets: Counter,
 }
 
 impl UdpConnection {
@@ -73,21 +84,31 @@ impl UdpConnection {
         dst_addr: &SocketAddress,
         state: &mut ConsommeState,
         client: &mut impl Client,
-    ) {
+    ) -> bool {
+        if self.recycle {
+            return false;
+        }
+
         let mut eth = EthernetFrame::new_unchecked(&mut state.buffer);
-        // Receive UDP packets while there are receive buffers available. This
-        // means we won't drop UDP packets at this level--instead, we only drop
-        // UDP packets if the kernel socket's receive buffer fills up. If this
-        // results in latency problems, then we could try sizing this buffer
-        // more carefully.
-        while client.rx_mtu() > 0 {
-            match self
-                .socket
-                .poll_io(cx, InterestSlot::Read, PollEvents::IN, |socket| {
+        loop {
+            // Receive UDP packets while there are receive buffers available. This
+            // means we won't drop UDP packets at this level--instead, we only drop
+            // UDP packets if the kernel socket's receive buffer fills up. If this
+            // results in latency problems, then we could try sizing this buffer
+            // more carefully.
+            if client.rx_mtu() == 0 {
+                break true;
+            }
+            match self.socket.as_mut().unwrap().poll_io(
+                cx,
+                InterestSlot::Read,
+                PollEvents::IN,
+                |socket| {
                     socket
                         .get()
                         .recv_from(&mut eth.payload_mut()[IPV4_HEADER_LEN + UDP_HEADER_LEN..])
-                }) {
+                },
+            ) {
                 Poll::Ready(Ok((n, src_addr))) => {
                     let src_ip = if let IpAddr::V4(ip) = src_addr.ip() {
                         ip
@@ -113,12 +134,13 @@ impl UdpConnection {
                     udp.fill_checksum(&src_ip.into(), &dst_addr.ip.into());
                     let len = ETHERNET_HEADER_LEN + ipv4.total_len() as usize;
                     client.recv(&eth.as_ref()[..len], &ChecksumState::UDP4);
+                    self.stats.rx_packets.increment();
                 }
                 Poll::Ready(Err(err)) => {
                     tracing::error!(error = &err as &dyn std::error::Error, "recv error");
-                    break;
+                    break false;
                 }
-                Poll::Pending => break,
+                Poll::Pending => break true,
             }
         }
     }
@@ -126,9 +148,28 @@ impl UdpConnection {
 
 impl<T: Client> Access<'_, T> {
     pub(crate) fn poll_udp(&mut self, cx: &mut Context<'_>) {
-        for (dst_addr, conn) in &mut self.inner.udp.connections {
-            conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client);
-        }
+        self.inner.udp.connections.retain(|dst_addr, conn| {
+            conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
+        });
+    }
+
+    pub(crate) fn refresh_udp_driver(&mut self) {
+        self.inner.udp.connections.retain(|_, conn| {
+            let socket = conn.socket.take().unwrap().into_inner();
+            match PolledSocket::new(self.client.driver(), socket) {
+                Ok(socket) => {
+                    conn.socket = Some(socket);
+                    true
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = &err as &dyn std::error::Error,
+                        "failed to update driver for udp connection"
+                    );
+                    false
+                }
+            }
+        });
     }
 
     pub(crate) fn handle_udp(
@@ -158,13 +199,22 @@ impl<T: Client> Access<'_, T> {
         };
 
         let conn = self.get_or_insert(guest_addr, None, Some(frame.src_addr))?;
-        match conn.socket.get().send_to(
+        match conn.socket.as_mut().unwrap().get().send_to(
             udp_packet.payload(),
             (Ipv4Addr::from(addresses.dst_addr), udp.dst_port),
         ) {
-            Ok(_) => Ok(()),
-            Err(err) if err.kind() == ErrorKind::WouldBlock => Err(DropReason::SendBufferFull),
-            Err(err) => Err(DropReason::Io(err)),
+            Ok(_) => {
+                conn.stats.tx_packets.increment();
+                Ok(())
+            }
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                conn.stats.tx_dropped.increment();
+                Err(DropReason::SendBufferFull)
+            }
+            Err(err) => {
+                conn.stats.tx_errors.increment();
+                Err(DropReason::Io(err))
+            }
         }
     }
 
@@ -183,8 +233,10 @@ impl<T: Client> Access<'_, T> {
                 let socket =
                     PolledSocket::new(self.client.driver(), socket).map_err(DropReason::Io)?;
                 let conn = UdpConnection {
-                    socket,
+                    socket: Some(socket),
                     guest_mac: guest_mac.unwrap_or(self.inner.state.client_mac),
+                    stats: Default::default(),
+                    recycle: false,
                 };
                 Ok(e.insert(conn))
             }

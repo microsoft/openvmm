@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Core building blocks for managing vm and vm related state to build a vmm.
 //! Used by both hvlite and underhill today.

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Protobuf definitions for OpenHCL VTL2 settings documents that are provided
 //! by the host via the GET device.

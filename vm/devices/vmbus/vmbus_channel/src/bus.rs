@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Vmbus bus definitions.
 
@@ -11,6 +12,7 @@ use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::MeshPayload;
 use std::fmt::Display;
+use vmbus_core::protocol;
 use vmbus_core::protocol::GpadlId;
 use vmbus_core::protocol::UserDefinedData;
 use vmcore::interrupt::Interrupt;
@@ -29,10 +31,49 @@ pub struct OfferInput {
 }
 
 /// Resources for an offered channel.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct OfferResources {
-    /// Guest memory access.
-    pub guest_mem: GuestMemory,
+    /// Untrusted guest memory access.
+    untrusted_memory: GuestMemory,
+    /// Private guest memory access. This will be `None` unless running in a paravisor of a hardware
+    /// isolated VM.
+    private_memory: Option<GuestMemory>,
+}
+
+impl OfferResources {
+    /// Creates a new `OfferResources`.
+    pub fn new(untrusted_memory: GuestMemory, private_memory: Option<GuestMemory>) -> Self {
+        OfferResources {
+            untrusted_memory,
+            private_memory,
+        }
+    }
+
+    /// Returns the `GuestMemory` to use based on the whether the open request requests confidential
+    /// memory.
+    ///
+    /// The open request reflects both whether the device indicated it supports confidential
+    /// external memory when it was offered, and whether the currently connected vmbus client
+    /// supports it. As such, you must not attempt to get the guest memory until a channel is
+    /// opened, and you should not retain the guest memory after it is closed, as the client and
+    /// its capabilities may change across opens.
+    pub fn guest_memory(&self, open_request: &OpenRequest) -> &GuestMemory {
+        self.get_memory(open_request.use_confidential_external_memory)
+    }
+
+    pub(crate) fn ring_memory(&self, open_request: &OpenRequest) -> &GuestMemory {
+        self.get_memory(open_request.use_confidential_ring)
+    }
+
+    fn get_memory(&self, private: bool) -> &GuestMemory {
+        if private {
+            self.private_memory
+                .as_ref()
+                .expect("private memory should be present if confidential memory is requested")
+        } else {
+            &self.untrusted_memory
+        }
+    }
 }
 
 /// A request from the VMBus control plane.
@@ -157,6 +198,31 @@ pub struct OpenRequest {
     pub open_data: OpenData,
     /// The interrupt used to signal the guest.
     pub interrupt: Interrupt,
+    /// Indicates if the currently connected vmbus client, as well as the channel the request is
+    /// for, supports the use of confidential ring buffers.
+    pub use_confidential_ring: bool,
+    /// Indicates if the currently connected vmbus client, as well as the channel the request is
+    /// for, supports the use of confidential external memory.
+    pub use_confidential_external_memory: bool,
+}
+
+impl OpenRequest {
+    /// Creates a new `OpenRequest`.
+    pub fn new(
+        open_data: OpenData,
+        interrupt: Interrupt,
+        feature_flags: protocol::FeatureFlags,
+        offer_flags: protocol::OfferFlags,
+    ) -> Self {
+        Self {
+            open_data,
+            interrupt,
+            use_confidential_ring: feature_flags.confidential_channels()
+                && offer_flags.confidential_ring_buffer(),
+            use_confidential_external_memory: feature_flags.confidential_channels()
+                && offer_flags.confidential_external_memory(),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Protobuf)]
@@ -206,6 +272,10 @@ pub struct OfferParams {
     /// The order in which channels with the same interface will be offered to
     /// the guest (optional).
     pub offer_order: Option<u32>,
+    /// Indicates whether the channel supports using encrypted memory for any
+    /// external GPADLs and GPA direct ranges. This is only used when hardware
+    /// isolation is in use.
+    pub allow_confidential_external_memory: bool,
 }
 
 impl OfferParams {

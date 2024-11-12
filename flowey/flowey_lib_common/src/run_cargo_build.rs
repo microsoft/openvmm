@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Encapsulates the logic of both invoking `cargo build`, and tracking where
 //! built artifacts are emitted (which varies depending on the crate's type and

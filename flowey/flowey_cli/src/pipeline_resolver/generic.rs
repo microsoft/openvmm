@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use anyhow::Context;
 use flowey_core::node::user_facing::GhPermission;
@@ -65,6 +66,8 @@ pub struct ResolvedPipelineJob {
     pub arch: FlowArch,
     pub ado_pool: Option<AdoPool>,
     pub ado_variables: BTreeMap<String, String>,
+    pub gh_override_if: Option<String>,
+    pub gh_global_env: BTreeMap<String, String>,
     pub gh_pool: Option<GhRunner>,
     pub gh_permissions: BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
     pub external_read_vars: BTreeSet<String>,
@@ -165,6 +168,8 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
             cond_param_idx,
             ado_pool,
             ado_variables,
+            gh_override_if,
+            gh_global_env,
             gh_pool,
             gh_permissions,
         },
@@ -216,6 +221,8 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
             label,
             ado_pool,
             ado_variables,
+            gh_override_if,
+            gh_global_env,
             gh_pool,
             gh_permissions,
             platform,

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Provides a macro for ensuring only `libcrypto` is linked and not `libssl`.
 
@@ -12,7 +13,7 @@
 use core::ffi::c_int;
 use core::ffi::c_void;
 
-extern "C" {
+unsafe extern "C" {
     #[doc(hidden)]
     pub fn OPENSSL_init_crypto(opts: u64, settings: *const c_void) -> c_int;
 }
@@ -32,7 +33,7 @@ macro_rules! openssl_crypto_only {
         /// # Safety
         ///
         /// The caller must call as documented for `OPENSSL_init_ssl`.
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         unsafe extern "C" fn OPENSSL_init_ssl(
             opts: u64,
             settings: *const ::core::ffi::c_void,

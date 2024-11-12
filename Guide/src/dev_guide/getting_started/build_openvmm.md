@@ -6,10 +6,10 @@
   - [Getting started on Windows](./windows.md)
   - [Getting started on Linux / WSL2](./linux.md).
 
-* * *
-
+```admonish tip
 It is strongly suggested that you use WSL2, and [cross compile](./suggested_dev_env.md#wsl2-cross-compiling-from-wsl2-to-windows)
 for Windows when necessary.
+```
 
 ## Build Dependencies
 
@@ -26,23 +26,6 @@ cargo xflowey restore-packages
 
 If you intend to cross-compile, refer to the command's `--help` for additional
 options related to downloading packages for other architectures.
-
-### \[Linux] Additional Dependencies
-
-On Linux, there are various other dependencies you will need depending on what
-you're working on. On Debian-based distros such as Ubuntu, running the following
-command within WSL will install these dependencies.
-
-In the future, it is likely that this step will be folded into the
-`cargo xflowey restore-packages` command.
-
-```bash
-$ sudo apt install \
-  binutils              \
-  build-essential       \
-  gcc-aarch64-linux-gnu \
-  libssl-dev
-```
 
 ## Building
 

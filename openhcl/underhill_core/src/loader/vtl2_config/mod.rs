@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Code to read and validate runtime parameters. These come from a variety of
 //! sources, such as the host or openhcl_boot.
@@ -8,6 +9,7 @@
 //! expected to be already validated by the bootloader.
 
 use anyhow::Context;
+use bootloader_fdt_parser::IsolationType;
 use bootloader_fdt_parser::ParsedBootDtInfo;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
@@ -87,12 +89,15 @@ impl MeasuredVtl2Info {
 
 #[derive(Debug)]
 /// Map of the portion of memory that contains the VTL2 parameters.
-struct Vtl2ParamsMap {
+///
+/// On drop, this mapping zeroes out the specified config ranges.
+struct Vtl2ParamsMap<'a> {
     mapping: SparseMapping,
+    ranges: &'a [MemoryRange],
 }
 
-impl Vtl2ParamsMap {
-    fn new(config_ranges: &[MemoryRange]) -> anyhow::Result<Self> {
+impl<'a> Vtl2ParamsMap<'a> {
+    fn new(config_ranges: &'a [MemoryRange]) -> anyhow::Result<Self> {
         // No overlaps.
         // TODO: Move this check to host_fdt_parser?
         if let Some((l, r)) = config_ranges
@@ -114,7 +119,10 @@ impl Vtl2ParamsMap {
         let mapping =
             SparseMapping::new(size as usize).context("failed to create a sparse mapping")?;
 
-        let dev_mem = fs_err::File::open("/dev/mem")?;
+        let dev_mem = fs_err::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/mem")?;
         for range in config_ranges {
             mapping
                 .map_file(
@@ -122,12 +130,15 @@ impl Vtl2ParamsMap {
                     range.len() as usize,
                     dev_mem.file(),
                     range.start(),
-                    false,
+                    true,
                 )
                 .context("failed to memory map igvm parameters")?;
         }
 
-        Ok(Self { mapping })
+        Ok(Self {
+            mapping,
+            ranges: config_ranges,
+        })
     }
 
     fn read_at(&self, offset: usize, buf: &mut [u8]) -> anyhow::Result<()> {
@@ -139,10 +150,24 @@ impl Vtl2ParamsMap {
     }
 }
 
+impl Drop for Vtl2ParamsMap<'_> {
+    fn drop(&mut self) {
+        let base = self
+            .ranges
+            .first()
+            .expect("already checked that there is at least one range")
+            .start();
+
+        for range in self.ranges {
+            self.mapping
+                .fill_at((range.start() - base) as usize, 0, range.len() as usize)
+                .unwrap();
+        }
+    }
+}
+
 /// Reads the VTL 2 parameters from the vtl-boot-data region.
-pub fn read_vtl2_params(
-    hcl: &hcl::ioctl::Hcl,
-) -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info)> {
+pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info)> {
     let parsed_openhcl_boot = ParsedBootDtInfo::new().context("failed to parse openhcl_boot dt")?;
 
     let mapping = Vtl2ParamsMap::new(&parsed_openhcl_boot.config_ranges)
@@ -192,7 +217,7 @@ pub fn read_vtl2_params(
     };
 
     let (cvm_cpuid_info, snp_secrets) = {
-        if hcl.isolation() == Some(hcl::ioctl::IsolationType::Snp) {
+        if parsed_openhcl_boot.isolation == IsolationType::Snp {
             let mut cpuid_pages: Vec<u8> =
                 vec![0; (HV_PAGE_SIZE * PARAVISOR_CONFIG_CPUID_SIZE_PAGES) as usize];
             mapping
@@ -216,7 +241,7 @@ pub fn read_vtl2_params(
         }
     };
 
-    let accepted_regions = if hcl.isolation().is_some() {
+    let accepted_regions = if parsed_openhcl_boot.isolation != IsolationType::None {
         parsed_openhcl_boot.accepted_ranges.clone()
     } else {
         Vec::new()
@@ -227,6 +252,10 @@ pub fn read_vtl2_params(
             (PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX * HV_PAGE_SIZE) as usize,
         )
         .context("failed to read measured vtl2 config")?;
+
+    drop(mapping);
+
+    assert_eq!(measured_config.magic, ParavisorMeasuredVtl2Config::MAGIC);
 
     let vtom_offset_bit = if measured_config.vtom_offset_bit == 0 {
         None

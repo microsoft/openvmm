@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Ensure protoc is symlinked into the correct "magic directory" set by the
 //! project-level `[env]` table in `.cargo/config.toml`

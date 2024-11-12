@@ -441,7 +441,7 @@ class CfgCondEval:
             self.token = CfgCondEval.TOK_STR
         else:
             raise Exception(f"no valid token found at the start of {head}")
-        
+
         if self.token == CfgCondEval.TOK_ENV:
             self.pos += 1
             pos = self.pos
@@ -516,7 +516,7 @@ class CfgCondEval:
             if op == None:
                 raise SyntaxError(f"Expected == or !=, position {self.pos}")
             self.lookahead()
-            
+
             right = self.term()
 
             return op(left, right)
@@ -527,7 +527,7 @@ class CfgCondEval:
         val = None
         if self.token == CfgCondEval.TOK_ENV:
             if self.token_str in self.env:
-                val = self.env[self.token_str]            
+                val = self.env[self.token_str]
         elif self.token == CfgCondEval.TOK_STR:
             val = self.token_str
         else:
@@ -538,75 +538,76 @@ class CfgCondEval:
 
 
 class InitRamFsConfig:
-    def __init__(self, file_name) -> None:
+    def __init__(self, file_names) -> None:
         self.cpio_entries = []
         inode = 721
 
-        with open(file_name, 'rt') as f:
-            cfg_cond = False
-            skip_next_line = False
-            for line_idx, line in enumerate(f):
-                line = line.strip()
-                if not line:
-                    continue
+        for file_name in file_names:
+            with open(file_name, 'rt') as f:
+                cfg_cond = False
+                skip_next_line = False
+                for line_idx, line in enumerate(f):
+                    line = line.strip()
+                    if not line:
+                        continue
 
-                if line.startswith("#[cfg(") and line.endswith(")]"):
+                    if line.startswith("#[cfg(") and line.endswith(")]"):
+                        if cfg_cond:
+                            raise UserWarning(f"previous cfg() ignored, line {line_idx+1}")
+                        cfg_cond = True
+                        cfg_cond_eval = CfgCondEval(line, os.environ)
+                        skip_next_line = not cfg_cond_eval.eval()
+                        continue
+
+                    if line.startswith('#'):
+                        continue
+
                     if cfg_cond:
-                        raise UserWarning(f"previous cfg() ignored, line {line_idx+1}")
-                    cfg_cond = True
-                    cfg_cond_eval = CfgCondEval(line, os.environ)
-                    skip_next_line = not cfg_cond_eval.eval()
-                    continue
+                        cfg_cond = False
 
-                if line.startswith('#'):
-                    continue
+                    if skip_next_line:
+                        skip_next_line = False
+                        continue
 
-                if cfg_cond:
-                    cfg_cond = False
+                    parts = line.split()
+                    if len(parts) == 0:
+                        continue
 
-                if skip_next_line:
-                    skip_next_line = False
-                    continue
+                    cpio_entry = None
 
-                parts = line.split()
-                if len(parts) == 0:
-                    continue
-
-                cpio_entry = None
-
-                try:
-                    if parts[0] == "file":
-                        name, location, mode, uid, gid, *hard_links = parts[1:]
-                        mode = int(mode, 8)
-                        cpio_entry = FileEntry(inode, name, location, mode, uid, gid, hard_links)
-                    elif parts[0] == "dir":
-                        name, mode, uid, gid = parts[1:]
-                        mode = int(mode, 8)
-                        cpio_entry = DirEntry(inode, name, mode, uid, gid)
-                    elif parts[0] == "nod":
-                        name, mode, uid, gid, dev_type, dev_maj, dev_min = parts[1:]
-                        mode = int(mode, 8)
-                        cpio_entry = DeviceNodeEntry(inode, name, mode, uid, gid, dev_type, dev_maj, dev_min)
-                    elif parts[0] == "slink":
-                        name, target, mode, uid, gid = parts[1:]
-                        mode = int(mode, 8)
-                        cpio_entry = SymLinkEntry(inode, name, target, mode, uid, gid)
-                    elif parts[0] == "pipe":
-                        name, mode, uid, gid = parts[1:]
-                        mode = int(mode, 8)
-                        cpio_entry = PipeEntry(inode, name, mode, uid, gid)
-                    elif parts[0] == "sock":
-                        name, mode, uid, gid = parts[1:]
-                        mode = int(mode, 8)
-                        cpio_entry = SocketEntry(inode, name, mode, uid, gid)
-                    else:
+                    try:
+                        if parts[0] == "file":
+                            name, location, mode, uid, gid, *hard_links = parts[1:]
+                            mode = int(mode, 8)
+                            cpio_entry = FileEntry(inode, name, location, mode, uid, gid, hard_links)
+                        elif parts[0] == "dir":
+                            name, mode, uid, gid = parts[1:]
+                            mode = int(mode, 8)
+                            cpio_entry = DirEntry(inode, name, mode, uid, gid)
+                        elif parts[0] == "nod":
+                            name, mode, uid, gid, dev_type, dev_maj, dev_min = parts[1:]
+                            mode = int(mode, 8)
+                            cpio_entry = DeviceNodeEntry(inode, name, mode, uid, gid, dev_type, dev_maj, dev_min)
+                        elif parts[0] == "slink":
+                            name, target, mode, uid, gid = parts[1:]
+                            mode = int(mode, 8)
+                            cpio_entry = SymLinkEntry(inode, name, target, mode, uid, gid)
+                        elif parts[0] == "pipe":
+                            name, mode, uid, gid = parts[1:]
+                            mode = int(mode, 8)
+                            cpio_entry = PipeEntry(inode, name, mode, uid, gid)
+                        elif parts[0] == "sock":
+                            name, mode, uid, gid = parts[1:]
+                            mode = int(mode, 8)
+                            cpio_entry = SocketEntry(inode, name, mode, uid, gid)
+                        else:
+                            raise Exception(f"Can't parse: {line}")
+                    except ValueError:
                         raise Exception(f"Can't parse: {line}")
-                except ValueError:
-                    raise Exception(f"Can't parse: {line}")
 
-                self.cpio_entries.append(cpio_entry)
-                inode += 1
-                # print(cpio_entry)
+                    self.cpio_entries.append(cpio_entry)
+                    inode += 1
+                    # print(cpio_entry)
 
     def entries(self):
         return self.cpio_entries

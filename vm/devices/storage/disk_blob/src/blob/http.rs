@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! HTTP blob implementation based on [`hyper`], [`tokio`], and
 //! [`hyper_tls`].

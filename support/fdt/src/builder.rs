@@ -1,10 +1,12 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Code to generate a Flattened DeviceTree binary blob.
 
 use crate::spec;
 use core::marker::PhantomData;
 use core::mem::size_of;
+use thiserror::Error;
 use zerocopy::AsBytes;
 use zerocopy::FromZeroes;
 
@@ -39,40 +41,21 @@ struct Inner<'a> {
 pub struct StringId(spec::U32b);
 
 /// Errors returned by the FDT builder.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Error)]
 pub enum Error {
     /// No space left in buffer.
+    #[error("out of space")]
     OutOfSpace,
     /// Memory reservations overlap.
+    #[error("memory reservations overlap: {0:?} and {1:?}")]
     OverlappingMemoryReservations(spec::ReserveEntry, spec::ReserveEntry),
     /// Duplicate memory reservation.
+    #[error("duplicate memory reservation: {0:?}")]
     DuplicateMemoryReservations(spec::ReserveEntry),
     /// Zero-sized memory reservation.
+    #[error("zero-sized memory reservation")]
     ZeroMemoryReservation,
 }
-
-impl core::fmt::Display for Error {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Error::OutOfSpace => write!(f, "out of space"),
-            Error::OverlappingMemoryReservations(entry1, entry2) => {
-                write!(
-                    f,
-                    "memory reservations overlap: {:?} and {:?}",
-                    entry1, entry2
-                )
-            }
-            Error::DuplicateMemoryReservations(entry) => {
-                write!(f, "duplicate memory reservation: {:?}", entry)
-            }
-            Error::ZeroMemoryReservation => write!(f, "zero-sized memory reservation"),
-        }
-    }
-}
-
-// TODO: Once core::error::Error is stablized, we can remove this feature gate.
-#[cfg(feature = "std")]
-impl std::error::Error for Error {}
 
 /// Type used to track node nesting level.
 #[derive(Debug)]

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A crate containing the list of images stored in Azure Blob Storage for
 //! in-tree VMM tests.

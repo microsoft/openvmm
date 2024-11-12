@@ -1,9 +1,8 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! SNP VP context builder.
 
-use super::vbs::VbsVpContext;
-use crate::file_loader::HV_NUM_VTLS;
 use crate::vp_context_builder::VpContextBuilder;
 use crate::vp_context_builder::VpContextPageState;
 use crate::vp_context_builder::VpContextState;
@@ -21,59 +20,6 @@ use x86defs::X64_EFER_SVME;
 use zerocopy::AsBytes;
 use zerocopy::FromZeroes;
 
-// The usage of this enum is in an outer box, so it doesn't need to box
-// internally itself.
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug)]
-enum SnpVpContext {
-    None,
-    Hardware(SnpHardwareContext),
-    Vbs(VbsVpContext<X86Register>),
-}
-
-impl SnpVpContext {
-    fn import_vp_register(&mut self, register: X86Register) {
-        match self {
-            SnpVpContext::None => {
-                panic!("importing register to None context")
-            }
-            SnpVpContext::Hardware(hardware_context) => hardware_context.import_register(register),
-            SnpVpContext::Vbs(vbs_context) => vbs_context.import_vp_register(register),
-        }
-    }
-
-    fn vp_context_page(&self) -> anyhow::Result<u64> {
-        match self {
-            SnpVpContext::None => Err(anyhow::anyhow!("no vp context available")),
-            SnpVpContext::Hardware(hardware_context) => hardware_context.vp_context_page(),
-            SnpVpContext::Vbs(vbs_context) => vbs_context.vp_context_page(),
-        }
-    }
-
-    fn set_vp_context_memory(&mut self, page_base: u64, acceptance: BootPageAcceptance) {
-        match self {
-            SnpVpContext::None => panic!("setting vp context memory on None context"),
-            SnpVpContext::Hardware(hardware_context) => {
-                hardware_context.set_vp_context_memory(page_base, acceptance)
-            }
-            SnpVpContext::Vbs(vbs_context) => {
-                vbs_context.set_vp_context_memory(page_base, acceptance)
-            }
-        }
-    }
-
-    fn finalize(self) -> Vec<VpContextState> {
-        match self {
-            SnpVpContext::None => Vec::new(),
-            SnpVpContext::Hardware(hardware_context) => hardware_context.finalize(),
-            SnpVpContext::Vbs(vbs_context) => match vbs_context.finalize() {
-                None => Vec::new(),
-                Some(state) => vec![state],
-            },
-        }
-    }
-}
-
 /// The interrupt injection type to use for the highest vmpl's VMSA.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum InjectionType {
@@ -85,21 +31,30 @@ pub enum InjectionType {
 
 /// A hardware SNP VP context, that is imported as a VMSA.
 #[derive(Debug)]
-struct SnpHardwareContext {
+pub struct SnpHardwareContext {
     /// If an assembly stub to accept the lower 1mb should be imported as page
     /// data.
     accept_lower_1mb: bool,
-    /// The acceptance to import this vp context as. This must be
-    /// [`BootPageAcceptance::VpContext`].
-    acceptance: Option<BootPageAcceptance>,
     /// The page number to import this vp context at.
-    page_number: u64,
+    page_number: Option<u64>,
     /// The VMSA for this VP.
     vmsa: SevVmsa,
 }
 
 impl SnpHardwareContext {
-    fn new(
+    /// Create a new SNP VP context builder.
+    ///
+    /// `enlightened_uefi` specifies if UEFI is enlightened. This will result in
+    /// [`VpContextBuilder::finalize`] generating additional trampoline code for
+    /// UEFI running without a paravisor, along with setting different fields in
+    /// the `SEV_FEATURES` register.
+    ///
+    /// `injection_type` specifies the injection type for the highest enabled
+    /// VMPL.
+    ///
+    /// Only the highest VTL will have a VMSA generated, with lower VTLs being
+    /// imported with the VBS format as page data.
+    pub fn new(
         vtl: Vtl,
         enlightened_uefi: bool,
         shared_gpa_boundary: u64,
@@ -147,13 +102,16 @@ impl SnpHardwareContext {
 
         SnpHardwareContext {
             accept_lower_1mb: enlightened_uefi,
-            acceptance: None,
-            page_number: 0,
+            page_number: None,
             vmsa,
         }
     }
+}
 
-    fn import_register(&mut self, register: X86Register) {
+impl VpContextBuilder for SnpHardwareContext {
+    type Register = X86Register;
+
+    fn import_vp_register(&mut self, register: X86Register) {
         let create_vmsa_table_register = |reg: TableRegister| -> SevSelector {
             SevSelector {
                 limit: reg.limit as u32,
@@ -222,34 +180,15 @@ impl SnpHardwareContext {
         }
     }
 
-    fn vp_context_page(&self) -> anyhow::Result<u64> {
-        match self.acceptance {
-            None => Err(anyhow::anyhow!("no vp context acceptance set")),
-            Some(_) => Ok(self.page_number),
-        }
+    fn set_vp_context_memory(&mut self, page_base: u64) {
+        assert!(self.page_number.is_none(), "only allowed to set vmsa once");
+        self.page_number = Some(page_base);
     }
 
-    fn set_vp_context_memory(&mut self, page_base: u64, acceptance: BootPageAcceptance) {
-        assert!(self.acceptance.is_none(), "only allowed to set vmsa once");
-        assert_eq!(
-            acceptance,
-            BootPageAcceptance::VpContext,
-            "snp vp context memory must be VpContext"
-        );
-
-        self.page_number = page_base;
-        self.acceptance = Some(acceptance);
-    }
-
-    fn finalize(mut self) -> Vec<VpContextState> {
-        let mut state = Vec::new();
-
-        let acceptance = match self.acceptance {
-            None => return state,
-            Some(acceptance) => acceptance,
+    fn finalize(&mut self, state: &mut Vec<VpContextState>) {
+        let Some(page_number) = self.page_number else {
+            return;
         };
-
-        assert_eq!(acceptance, BootPageAcceptance::VpContext);
 
         // If no paravisor is present, then generate a trampoline page to perform
         // validation of the low 1 MB of memory.  This is expected by UEFI and
@@ -355,92 +294,10 @@ impl SnpHardwareContext {
         }
 
         state.push(VpContextState::Page(VpContextPageState {
-            page_base: self.page_number,
+            page_base: page_number,
             page_count: 1,
-            acceptance,
+            acceptance: BootPageAcceptance::VpContext,
             data: self.vmsa.as_bytes().to_vec(),
         }));
-
-        state
-    }
-}
-
-/// Implementation of [`VpContextBuilder``] for a platform with AMD SEV-SNP
-/// isolation.
-#[derive(Debug)]
-pub struct SnpVpContextBuilder {
-    contexts: [SnpVpContext; HV_NUM_VTLS],
-}
-
-impl SnpVpContextBuilder {
-    /// Create a new SNP VP context builder.
-    ///
-    /// `enlightened_uefi` specifies if UEFI is enlightened. This will result in
-    /// [`VpContextBuilder::finalize`] generating additional trampoline code for
-    /// UEFI running without a paravisor, along with setting different fields in
-    /// the `SEV_FEATURES` register.
-    ///
-    /// `injection_type` specifies the injection type for the highest enabled
-    /// VMPL.
-    ///
-    /// Only the highest VTL will have a VMSA generated, with lower VTLs being
-    /// imported with the VBS format as page data.
-    pub fn new(
-        max_vtl: Vtl,
-        enlightened_uefi: bool,
-        shared_gpa_boundary: u64,
-        injection_type: InjectionType,
-    ) -> anyhow::Result<Self> {
-        let mut contexts = [SnpVpContext::None, SnpVpContext::None, SnpVpContext::None];
-
-        match max_vtl {
-            Vtl::Vtl0 => {
-                contexts[0] = SnpVpContext::Hardware(SnpHardwareContext::new(
-                    Vtl::Vtl0,
-                    enlightened_uefi,
-                    shared_gpa_boundary,
-                    injection_type,
-                ))
-            }
-            Vtl::Vtl1 => anyhow::bail!("VTL1 import state not supported for SNP"),
-            Vtl::Vtl2 => {
-                // Treat VTL0 as the VBS format.
-                contexts[0] = SnpVpContext::Vbs(VbsVpContext::new(0));
-                contexts[2] = SnpVpContext::Hardware(SnpHardwareContext::new(
-                    Vtl::Vtl2,
-                    enlightened_uefi,
-                    shared_gpa_boundary,
-                    injection_type,
-                ))
-            }
-        }
-
-        Ok(Self { contexts })
-    }
-}
-
-impl VpContextBuilder for SnpVpContextBuilder {
-    type Register = X86Register;
-
-    fn import_vp_register(&mut self, vtl: Vtl, register: X86Register) {
-        self.contexts[vtl as usize].import_vp_register(register);
-    }
-
-    fn vp_context_page(&self, vtl: Vtl) -> anyhow::Result<u64> {
-        self.contexts[vtl as usize].vp_context_page()
-    }
-
-    fn set_vp_context_memory(&mut self, vtl: Vtl, page_base: u64, acceptance: BootPageAcceptance) {
-        self.contexts[vtl as usize].set_vp_context_memory(page_base, acceptance);
-    }
-
-    fn finalize(self: Box<Self>) -> Vec<VpContextState> {
-        let mut state = Vec::new();
-
-        for context in self.contexts {
-            state.extend(context.finalize())
-        }
-
-        state
     }
 }

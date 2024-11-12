@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! x86_64-specific sidecar code.
 
@@ -37,7 +38,7 @@ mod addr_space {
 
     const PAGE_SIZE: u64 = 0x1000;
 
-    extern "C" {
+    unsafe extern "C" {
         static __ehdr_start: u8;
     }
 

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Parse partition info using the IGVM device tree parameter.
 
@@ -63,7 +64,7 @@ impl Display for DtError {
 fn allocate_vtl2_ram(
     params: &ShimParams,
     partition_memory_map: &[MemoryEntry],
-    ram_size: u64,
+    ram_size: Option<u64>,
 ) -> OffStackRef<'static, impl AsRef<[MemoryEntry]>> {
     // First, calculate how many numa nodes there are by looking at unique numa
     // nodes in the memory map.
@@ -80,14 +81,17 @@ fn allocate_vtl2_ram(
 
     let numa_node_count = numa_nodes.len();
 
-    if ram_size < params.memory_size {
-        panic!(
-            "host provided vtl2 ram size {:x} is smaller than measured size {:x}",
-            ram_size, params.memory_size
-        );
-    }
-
-    let vtl2_size = core::cmp::max(ram_size, params.memory_size);
+    let vtl2_size = if let Some(ram_size) = ram_size {
+        if ram_size < params.memory_size {
+            panic!(
+                "host provided vtl2 ram size {:x} is smaller than measured size {:x}",
+                ram_size, params.memory_size
+            );
+        }
+        core::cmp::max(ram_size, params.memory_size)
+    } else {
+        params.memory_size
+    };
 
     // Next, calculate the amount of memory that needs to be allocated per numa
     // node.
@@ -392,8 +396,8 @@ impl PartitionInfo {
             const MINIMUM_MMIO_SIZE: u64 = 128 * (1 << 20);
             let mmio_size = core::cmp::max(
                 match parsed.memory_allocation_mode {
-                    MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size,
-                    _ => MINIMUM_MMIO_SIZE,
+                    MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
+                    _ => 0,
                 },
                 MINIMUM_MMIO_SIZE,
             );
@@ -441,6 +445,7 @@ impl PartitionInfo {
             vtl2_full_config_region: vtl2_config_region,
             vtl2_config_region_reclaim: vtl2_config_region_reclaim_struct,
             partition_ram: _,
+            isolation,
             bsp_reg,
             cpus,
             vmbus_vtl0: _,
@@ -450,7 +455,10 @@ impl PartitionInfo {
             gic,
             memory_allocation_mode: _,
             entropy,
+            vtl0_alias_map: _,
         } = storage;
+
+        *isolation = params.isolation_type;
 
         *vtl2_config_region = MemoryRange::new(
             params.parameter_region_start

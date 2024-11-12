@@ -1,11 +1,13 @@
-# Copyright (C) Microsoft Corporation. All rights reserved.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 [package]
 name = "sidecar_client"
 edition = "2021"
+rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-hvdef = { workspace = true, features = ["std"] }
+hvdef.workspace = true
 sidecar_defs.workspace = true
 
 pal_async.workspace = true

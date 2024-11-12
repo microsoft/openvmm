@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use crate::memory::VtlAccess;
 use crate::vtl2;
@@ -952,18 +953,20 @@ mod x86 {
             }
 
             for (i, (apic_id, vp)) in apic_ids.iter().zip(vp_indices).enumerate() {
-                *vp = self
+                let target_vp = self
                     .vp
                     .vp
                     .partition
                     .vps
                     .iter()
                     .find(|vp| vp.vp_info.apic_id == *apic_id)
-                    .ok_or((HvError::InvalidParameter, i))?
-                    .vp_info
-                    .base
-                    .vp_index
-                    .index();
+                    .ok_or((HvError::InvalidParameter, i))?;
+
+                if target_vtl == Vtl::Vtl2 && !target_vp.vtl2_enable.load(Ordering::Relaxed) {
+                    return Err((HvError::InvalidParameter, i));
+                }
+
+                *vp = target_vp.vp_info.base.vp_index.index();
             }
 
             Ok(())

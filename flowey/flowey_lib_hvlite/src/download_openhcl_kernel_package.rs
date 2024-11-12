@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Download pre-built OpenHCL kernel packages from their GitHub Release
 
@@ -38,7 +39,7 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<flowey_lib_common::install_apt_pkg::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::download_gh_release::Node>();
     }
 
@@ -77,34 +78,43 @@ impl FlowNode for Node {
 
         for ((kind, arch), out_vars) in reqs {
             let version = versions.get(&kind).expect("checked above");
-            let kind_string = match kind {
-                OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => "main",
-                OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => "dev",
-            };
-
-            let tag = format!("rolling-lts/hcl-{kind_string}/{version}");
+            let tag = format!(
+                "rolling-lts/hcl-{}/{}",
+                match kind {
+                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => "main",
+                    OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => "dev",
+                },
+                version
+            );
 
             let file_name = format!(
-                "Microsoft.OHCL.Kernel.{}-{}-{}.zip",
+                "Microsoft.OHCL.Kernel{}.{}{}-{}.tar.gz",
+                match kind {
+                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => {
+                        ""
+                    }
+                    OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => {
+                        ".Dev"
+                    }
+                },
                 version,
                 match kind {
-                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Dev => {
-                        kind_string.to_string()
-                    }
-                    OpenhclKernelPackageKind::Cvm | OpenhclKernelPackageKind::CvmDev => {
-                        format!("{kind_string}-cvm")
-                    }
+                    OpenhclKernelPackageKind::Main => "-main",
+                    OpenhclKernelPackageKind::Cvm => "-main-cvm",
+                    OpenhclKernelPackageKind::Dev => "",
+                    OpenhclKernelPackageKind::CvmDev => "-cvm",
                 },
                 match arch {
                     OpenhclKernelPackageArch::X86_64 => "x64",
                     OpenhclKernelPackageArch::Aarch64 => "arm64",
-                }
+                },
             );
 
-            let kernel_package_zip =
+            let kernel_package_tar_gz =
                 ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
                     repo_owner: "microsoft".into(),
                     repo_name: "OHCL-Linux-Kernel".into(),
+                    needs_auth: false,
                     tag,
                     file_name: file_name.clone(),
                     path: v,
@@ -113,15 +123,15 @@ impl FlowNode for Node {
             ctx.emit_rust_step(format!("unpack {file_name}"), |ctx| {
                 let extract_zip_deps = extract_zip_deps.clone().claim(ctx);
                 let out_vars = out_vars.claim(ctx);
-                let kernel_package_zip = kernel_package_zip.claim(ctx);
+                let kernel_package_tar_gz = kernel_package_tar_gz.claim(ctx);
                 move |rt| {
-                    let kernel_package_zip = rt.read(kernel_package_zip);
+                    let kernel_package_tar_gz = rt.read(kernel_package_tar_gz);
 
                     let extract_dir = flowey_lib_common::_util::extract::extract_zip_if_new(
                         rt,
                         extract_zip_deps,
-                        &kernel_package_zip,
-                        &file_name, // filename currently includes version and arch
+                        &kernel_package_tar_gz,
+                        &file_name, // filename includes version and arch
                     )?;
 
                     let base_dir = std::env::current_dir()?;
@@ -129,10 +139,6 @@ impl FlowNode for Node {
                     if cfg!(unix) {
                         #[cfg(unix)]
                         {
-                            // HACK: recursively chmod all the files, otherwise they all have 000 access.
-                            let sh = xshell::Shell::new()?;
-                            xshell::cmd!(sh, "chmod -R 755 {extract_dir}").run()?;
-
                             // HACK: recreate the layout used by nuget packages.
                             let nuget_path = "build/native/bin";
                             let metadata_file = "kernel_build_metadata.json";

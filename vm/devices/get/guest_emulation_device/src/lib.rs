@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Guest Emulation Device - GED
 //!
@@ -602,8 +603,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
         // time_zone is in minutes between UTC and local time (as stored
         // in a windows TIME_ZONE_INFORMATION struct)
-        let local_offset = time::UtcOffset::current_local_offset()
-            .expect("could not determine local timezone offset");
+        let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
         let time_zone = local_offset.whole_minutes();
         let response = get_protocol::TimeResponse::new(0, since_win_epoch, time_zone, false);
 

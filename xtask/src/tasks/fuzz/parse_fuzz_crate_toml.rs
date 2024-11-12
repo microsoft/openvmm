@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Logic to parse + validate fuzzing-crate `Cargo.toml` files + their
 //! associated folder structure.

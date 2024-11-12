@@ -1,13 +1,11 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! TDX VP context builder.
 
-use super::vbs::VbsVpContext;
 use super::VpContextBuilder;
 use super::VpContextState;
-use crate::file_loader::HV_NUM_VTLS;
 use crate::vp_context_builder::VpContextPageState;
-use hvdef::Vtl;
 use igvm_defs::PAGE_SIZE_4K;
 use loader::importer::SegmentRegister;
 use loader::importer::X86Register;
@@ -60,22 +58,26 @@ pub struct TdxTrampolineContext {
 /// Represents a hardware context for TDX. This contains both the sets of
 /// initial registers and registers set by the trampoline code.
 #[derive(Debug)]
-struct TdxHardwareContext {
+pub struct TdxHardwareContext {
     trampoline_context: TdxTrampolineContext,
     accept_lower_1mb: bool,
 }
 
 impl TdxHardwareContext {
-    fn new(accept_lower_1mb: bool) -> Self {
+    pub fn new(accept_lower_1mb: bool) -> Self {
         Self {
             trampoline_context: TdxTrampolineContext::default(),
             accept_lower_1mb,
         }
     }
+}
+
+impl VpContextBuilder for TdxHardwareContext {
+    type Register = X86Register;
 
     /// Import a register into the hardware context. Only a subset of registers
     /// are allowed.
-    fn import_register(&mut self, register: X86Register) {
+    fn import_vp_register(&mut self, register: X86Register) {
         let mut set_data_selector = |reg: SegmentRegister| {
             if self.trampoline_context.data_selector == 0 {
                 self.trampoline_context.data_selector = reg.selector;
@@ -155,7 +157,11 @@ impl TdxHardwareContext {
         }
     }
 
-    fn finalize(mut self) -> VpContextState {
+    fn set_vp_context_memory(&mut self, _page_base: u64) {
+        unimplemented!("not supported for TDX");
+    }
+
+    fn finalize(&mut self, state: &mut Vec<VpContextState>) {
         // Construct and load an initial temporary GDT to use for the transition
         // to long mode.  A single selector (0008:) is defined as a 64-bit code
         // segment.
@@ -504,116 +510,11 @@ impl TdxHardwareContext {
         copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
 
         // Add this data to the architectural reset page.
-        VpContextState::Page(VpContextPageState {
+        state.push(VpContextState::Page(VpContextPageState {
             page_base: 0xFFFFF,
             page_count: 1,
             acceptance: loader::importer::BootPageAcceptance::Exclusive,
             data: reset_page,
-        })
-    }
-}
-
-#[derive(Debug)]
-enum TdxVpContext {
-    None,
-    Hardware(TdxHardwareContext),
-    Vbs(VbsVpContext<X86Register>),
-}
-
-impl TdxVpContext {
-    fn import_vp_register(&mut self, register: X86Register) {
-        match self {
-            TdxVpContext::None => panic!("importing register to None context"),
-            TdxVpContext::Hardware(hardware_context) => hardware_context.import_register(register),
-            TdxVpContext::Vbs(vbs_context) => vbs_context.import_vp_register(register),
-        }
-    }
-
-    fn vp_context_page(&self) -> anyhow::Result<u64> {
-        match self {
-            TdxVpContext::None => Err(anyhow::anyhow!("no vp context available")),
-            TdxVpContext::Hardware(_) => Ok(0xFFFFF),
-            TdxVpContext::Vbs(vbs_context) => vbs_context.vp_context_page(),
-        }
-    }
-
-    fn set_vp_context_memory(
-        &mut self,
-        page_base: u64,
-        acceptance: loader::importer::BootPageAcceptance,
-    ) {
-        match self {
-            TdxVpContext::None => panic!("setting vp context memory on None context"),
-            TdxVpContext::Hardware(_) => panic!("tdx hardware context is only the reset page"),
-            TdxVpContext::Vbs(vbs_context) => {
-                vbs_context.set_vp_context_memory(page_base, acceptance)
-            }
-        }
-    }
-
-    fn finalize(self) -> Option<VpContextState> {
-        match self {
-            TdxVpContext::None => None,
-            TdxVpContext::Hardware(hardware_context) => Some(hardware_context.finalize()),
-            TdxVpContext::Vbs(vbs_context) => vbs_context.finalize(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct TdxVpContextBuilder {
-    contexts: [TdxVpContext; HV_NUM_VTLS],
-}
-
-impl TdxVpContextBuilder {
-    pub fn new(max_vtl: Vtl, accept_lower_1mb: bool) -> anyhow::Result<Self> {
-        let mut contexts = [TdxVpContext::None, TdxVpContext::None, TdxVpContext::None];
-
-        match max_vtl {
-            Vtl::Vtl0 => {
-                contexts[0] = TdxVpContext::Hardware(TdxHardwareContext::new(accept_lower_1mb))
-            }
-            Vtl::Vtl1 => anyhow::bail!("VTL1 import state not supported for TDX"),
-            Vtl::Vtl2 => {
-                // Treat VTL0 as the VBS format, as that's what Underhill expects.
-                contexts[0] = TdxVpContext::Vbs(VbsVpContext::new(0));
-                contexts[2] = TdxVpContext::Hardware(TdxHardwareContext::new(accept_lower_1mb));
-            }
-        }
-
-        Ok(Self { contexts })
-    }
-}
-
-impl VpContextBuilder for TdxVpContextBuilder {
-    type Register = X86Register;
-
-    fn import_vp_register(&mut self, vtl: Vtl, register: X86Register) {
-        self.contexts[vtl as usize].import_vp_register(register);
-    }
-
-    fn set_vp_context_memory(
-        &mut self,
-        vtl: Vtl,
-        page_base: u64,
-        acceptance: loader::importer::BootPageAcceptance,
-    ) {
-        self.contexts[vtl as usize].set_vp_context_memory(page_base, acceptance);
-    }
-
-    fn vp_context_page(&self, vtl: Vtl) -> anyhow::Result<u64> {
-        self.contexts[vtl as usize].vp_context_page()
-    }
-
-    fn finalize(self: Box<Self>) -> Vec<VpContextState> {
-        let mut contexts = Vec::new();
-
-        for context in self.contexts {
-            if let Some(v) = context.finalize() {
-                contexts.push(v);
-            }
-        }
-
-        contexts
+        }));
     }
 }

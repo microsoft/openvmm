@@ -1,19 +1,22 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Backing for SNP partitions.
 
 use super::hcl_pvalidate_pages;
 use super::hcl_rmpadjust_pages;
+use super::hcl_rmpquery_pages;
 use super::mshv_pvalidate;
 use super::mshv_rmpadjust;
+use super::mshv_rmpquery;
 use super::HclVp;
 use super::MshvVtl;
 use super::NoRunner;
 use super::ProcessorRunner;
 use crate::vmsa::VmsaWrapper;
+use crate::GuestVtl;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
-use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
 use sidecar_client::SidecarVp;
@@ -44,9 +47,11 @@ pub enum SnpError {
 #[allow(missing_docs)]
 pub enum SnpPageError {
     #[error("pvalidate failed")]
-    Pvalidate(SnpError),
+    Pvalidate(#[source] SnpError),
     #[error("rmpadjust failed")]
-    Rmpadjust(SnpError),
+    Rmpadjust(#[source] SnpError),
+    #[error("rmpquery failed")]
+    Rmpquery(#[source] SnpError),
 }
 
 impl MshvVtl {
@@ -127,6 +132,44 @@ impl MshvVtl {
 
         Ok(())
     }
+
+    /// Gets the current vtl permissions for a page.
+    /// Note: only supported on Genoa+
+    pub fn rmpquery_page(&self, gpa: u64, vtl: GuestVtl) -> Result<SevRmpAdjust, SnpPageError> {
+        let page_count = 1u64;
+        let mut flags = [u64::from(SevRmpAdjust::new().with_target_vmpl(match vtl {
+            GuestVtl::Vtl0 => 2,
+            GuestVtl::Vtl1 => 1,
+        })); 1];
+
+        let mut page_size = [0; 1];
+        let mut pages_processed = 0u64;
+
+        debug_assert!(flags.len() == page_count as usize);
+        debug_assert!(page_size.len() == page_count as usize);
+
+        let query = mshv_rmpquery {
+            start_pfn: gpa / HV_PAGE_SIZE,
+            page_count,
+            terminate_on_failure: 0,
+            ram: 0,
+            padding: Default::default(),
+            flags: flags.as_mut_ptr(),
+            page_size: page_size.as_mut_ptr(),
+            pages_processed: &mut pages_processed,
+        };
+
+        // SAFETY: the input query is the correct type for this ioctl
+        unsafe {
+            hcl_rmpquery_pages(self.file.as_raw_fd(), &query)
+                .map_err(SnpError::Os)
+                .map_err(SnpPageError::Rmpquery)?;
+        }
+
+        assert!(pages_processed <= page_count);
+
+        Ok(SevRmpAdjust::from(flags[0]))
+    }
 }
 
 impl super::private::BackingPrivate for Snp {
@@ -163,41 +206,33 @@ impl super::private::BackingPrivate for Snp {
 
 impl ProcessorRunner<'_, Snp> {
     /// Gets a reference to the VMSA and backing state of a VTL
-    pub fn vmsa(&self, vtl: Vtl) -> VmsaWrapper<'_, &SevVmsa> {
+    pub fn vmsa(&self, vtl: GuestVtl) -> VmsaWrapper<'_, &SevVmsa> {
         // SAFETY: the VMSA will not be concurrently accessed by the processor
         // while this VP is in VTL2.
-        let vmsa = unsafe { &*(self.state.vmsa[vtl]).as_ptr() };
+        let vmsa = unsafe { self.state.vmsa[vtl].as_ref() };
 
         VmsaWrapper::new(vmsa, &self.hcl.snp_register_bitmap)
     }
 
     /// Gets a mutable reference to the VMSA and backing state of a VTL.
-    pub fn vmsa_mut(&mut self, vtl: Vtl) -> VmsaWrapper<'_, &mut SevVmsa> {
+    pub fn vmsa_mut(&mut self, vtl: GuestVtl) -> VmsaWrapper<'_, &mut SevVmsa> {
         // SAFETY: the VMSA will not be concurrently accessed by the processor
         // while this VP is in VTL2.
-        let vmsa = unsafe { &mut *(self.state.vmsa[vtl]).as_ptr() };
+        let vmsa = unsafe { self.state.vmsa[vtl].as_mut() };
 
         VmsaWrapper::new(vmsa, &self.hcl.snp_register_bitmap)
     }
 
-    /// Gets references to multiple VMSAs for copying state
-    pub fn vmsas_for_copy(
-        &mut self,
-        source_vtl: Vtl,
-        target_vtl: Vtl,
-    ) -> (VmsaWrapper<'_, &SevVmsa>, VmsaWrapper<'_, &mut SevVmsa>) {
+    /// Returns the VMSAs for [VTL0, VTL1].
+    pub fn vmsas_mut(&mut self) -> [VmsaWrapper<'_, &mut SevVmsa>; 2] {
+        let [mut vtl0, mut vtl1] = *self.state.vmsa;
         // SAFETY: the VMSA will not be concurrently accessed by the processor
         // while this VP is in VTL2.
-        let (source_vmsa, target_vmsa) = unsafe {
-            (
-                &*(self.state.vmsa[source_vtl]).as_ptr(),
-                &mut *(self.state.vmsa[target_vtl]).as_ptr(),
-            )
-        };
+        let (vmsa0, vmsa1) = unsafe { (vtl0.as_mut(), vtl1.as_mut()) };
 
-        (
-            VmsaWrapper::new(source_vmsa, &self.hcl.snp_register_bitmap),
-            VmsaWrapper::new(target_vmsa, &self.hcl.snp_register_bitmap),
-        )
+        [
+            VmsaWrapper::new(vmsa0, &self.hcl.snp_register_bitmap),
+            VmsaWrapper::new(vmsa1, &self.hcl.snp_register_bitmap),
+        ]
     }
 }

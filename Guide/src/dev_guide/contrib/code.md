@@ -24,12 +24,14 @@ rules that are must be manually enforced:
 - All lines must end with LF, not CRLF.
 - Top-level `use` imports should be non-nested.
 
-> NOTE: Some of these manually-enforced conventions were introduced late into
-> OpenVMM's development, and there may be chunks of the codebase that do not
-> adhere to these conventions.
->
-> If you're working in a file and notice that it isn't following a certain
-> convention, please take a moment to fix it!
+```admonish note
+Some of these manually-enforced conventions were introduced late into
+OpenVMM's development, and there may be chunks of the codebase that do not
+adhere to these conventions.
+
+If you're working in a file and notice that it isn't following a certain
+convention, please take a moment to fix it!
+```
 
 Assuming you've followed the [suggested dev env setup](../getting_started/suggested_dev_env.md)
 and set up `rust-analyzer` to format-on-save, you should rarely have to think
@@ -174,12 +176,14 @@ why certain lints have been enabled/disabled.
 
 ## Unsafe Code Policy
 
-> _Preface:_ When possible, try to avoid introducing new `unsafe` code!
->
-> Before rolling your own `unsafe` code, check to see if a safe abstraction
-> already exists, either in-tree, on crates.io\*, or in the standard library.
->
-> \*subject to an unsafe-code audit
+```admonish danger
+When possible, try to avoid introducing new `unsafe` code!
+
+Before rolling your own `unsafe` code, check to see if a safe abstraction
+already exists, either in-tree, on crates.io\*, or in the standard library.
+
+\*subject to an unsafe-code audit
+```
 
 Rather than synthesizing our own unsafe code conventions, we follow the
 guidelines outlined in the following two resources:
@@ -274,11 +278,14 @@ The why:
 
 As per the Rust docs for [`Default::default`](https://doc.rust-lang.org/std/default/trait.Default.html#tymethod.default):
 
-> `fn default() -> Self`
->
-> Returns the “default value” for a type.
->
-> Default values are often some kind of initial value, identity value, or anything else that may make sense as a default.
+```admonish quote
+`fn default() -> Self`
+
+Returns the “default value” for a type.
+
+Default values are often some kind of initial value, identity value, or anything
+else that may make sense as a default.
+```
 
 Notably, **default should _not_ be used as some shorthand to "zero initialize"
 values!** For most non-trivial structs, the all-zero representation is _not_ a

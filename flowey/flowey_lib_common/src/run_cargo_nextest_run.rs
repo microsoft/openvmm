@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Run cargo-nextest tests.
 
@@ -18,6 +19,7 @@ pub struct TestResults {
 pub mod build_params {
     use crate::run_cargo_build::CargoBuildProfile;
     use flowey::node::prelude::*;
+    use std::collections::BTreeMap;
 
     #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Debug)]
     pub enum PanicAbortTests {
@@ -59,12 +61,13 @@ pub mod build_params {
         /// Whether to disable default features
         pub no_default_features: bool,
         /// Whether to build tests with unstable `-Zpanic-abort-tests` flag
-        // FIXME: this should probably be a generic `with_env` parameter
         pub unstable_panic_abort_tests: Option<PanicAbortTests>,
         /// Build unit tests for the specified target
         pub target: target_lexicon::Triple,
         /// Build unit tests with the specified cargo profile
         pub profile: CargoBuildProfile,
+        /// Additional env vars set when building the tests
+        pub extra_env: ReadVar<BTreeMap<String, String>, C>,
     }
 }
 
@@ -164,23 +167,20 @@ impl FlowNode for Node {
 
         let terminate_job_on_fail = terminate_job_on_fail.unwrap_or(false);
 
-        for (
-            i,
-            Run {
-                friendly_name,
-                run_kind,
-                working_dir,
-                config_file,
-                tool_config_files,
-                nextest_profile,
-                extra_env,
-                with_rlimit_unlimited_core_size,
-                nextest_filter_expr,
-                run_ignored,
-                pre_run_deps,
-                results,
-            },
-        ) in run.into_iter().enumerate()
+        for Run {
+            friendly_name,
+            run_kind,
+            working_dir,
+            config_file,
+            tool_config_files,
+            nextest_profile,
+            extra_env,
+            with_rlimit_unlimited_core_size,
+            nextest_filter_expr,
+            run_ignored,
+            pre_run_deps,
+            results,
+        } in run
         {
             let run_kind_deps = match run_kind {
                 NextestRunKind::BuildAndRun(params) => {
@@ -278,6 +278,7 @@ impl FlowNode for Node {
                                     unstable_panic_abort_tests,
                                     target,
                                     profile,
+                                    extra_env,
                                 },
                             nextest_installed: _, // side-effect
                             rust_toolchain,
@@ -291,6 +292,7 @@ impl FlowNode for Node {
                                 features,
                                 unstable_panic_abort_tests,
                                 no_default_features,
+                                rt.read(extra_env),
                             );
 
                             let nextest_invocation = NextestInvocation::WithCargo {
@@ -435,7 +437,7 @@ impl FlowNode for Node {
                     // Will need to find time to experiment with this...
                     #[cfg(unix)]
                     let old_core_rlimits = if with_rlimit_unlimited_core_size
-                        && matches!(rt.platform(), FlowPlatform::Linux)
+                        && matches!(rt.platform(), FlowPlatform::Linux(_))
                     {
                         let limits = rlimit::getrlimit(rlimit::Resource::CORE)?;
                         rlimit::setrlimit(
@@ -542,62 +544,10 @@ impl FlowNode for Node {
                 }
             });
 
-            let (crash_dumps_exist_read, crash_dumps_exist_write) = ctx.new_var();
-
-            let crash_dumps_path = ctx.emit_rust_stepv("checking for crash dumps", |ctx| {
-                all_tests_passed_read.clone().claim(ctx);
-                let crash_dumps_exist_write = crash_dumps_exist_write.claim(ctx);
-                |rt| {
-                    // TODO Linux
-                    let path = match rt.platform().kind() {
-                        FlowPlatformKind::Windows => {
-                            r#"C:\Users\cloudtest\AppData\Local\CrashDumps"#
-                        }
-                        FlowPlatformKind::Unix => "/will/not/exist",
-                    }
-                    .to_owned();
-
-                    rt.write(crash_dumps_exist_write, &Path::new(&path).exists());
-                    Ok(path)
-                }
-            });
-
-            let (published_dumps_read, published_dumps_write) = ctx.new_var::<SideEffect>();
-
-            // TODO Github
-            match ctx.backend() {
-                FlowBackend::Ado => ctx.emit_ado_step_with_condition(
-                    format!("upload crash dumps for {friendly_name}"),
-                    crash_dumps_exist_read,
-                    |ctx| {
-                        published_dumps_write.claim(ctx);
-                        let crash_dumps_path = crash_dumps_path.claim(ctx);
-                        move |rt| {
-                            let path_var = rt.get_var(crash_dumps_path).as_raw_var_name();
-                            format!(
-                                r#"
-                                - publish: $({path_var})
-                                  artifact: crash-dumps-{friendly_name}-$(Build.BuildNumber)-{i}"#,
-                            )
-                        }
-                    },
-                ),
-                _ => {
-                    ctx.emit_side_effect_step(
-                        [
-                            crash_dumps_path.into_side_effect(),
-                            crash_dumps_exist_read.into_side_effect(),
-                        ],
-                        [published_dumps_write],
-                    );
-                }
-            }
-
             ctx.emit_rust_step("write results", |ctx| {
                 let all_tests_passed = all_tests_passed_read.claim(ctx);
                 let junit_xml = junit_xml_read.claim(ctx);
                 let results = results.claim(ctx);
-                published_dumps_read.claim(ctx);
 
                 move |rt| {
                     let all_tests_passed = rt.read(all_tests_passed);
@@ -629,6 +579,7 @@ pub(crate) fn cargo_nextest_build_args_and_env(
     features: build_params::FeatureSet,
     unstable_panic_abort_tests: Option<build_params::PanicAbortTests>,
     no_default_features: bool,
+    mut extra_env: BTreeMap<String, String>,
 ) -> (Vec<String>, BTreeMap<String, String>) {
     let locked = cargo_flags.locked.then_some("--locked");
     let verbose = cargo_flags.verbose.then_some("--verbose");
@@ -708,6 +659,7 @@ pub(crate) fn cargo_nextest_build_args_and_env(
     if use_rustc_bootstrap {
         env.insert("RUSTC_BOOTSTRAP".into(), "1".into());
     }
+    env.append(&mut extra_env);
 
     (args, env)
 }
@@ -722,6 +674,7 @@ impl build_params::NextestBuildParams {
             unstable_panic_abort_tests,
             target,
             profile,
+            extra_env,
         } = self;
 
         build_params::NextestBuildParams {
@@ -731,6 +684,7 @@ impl build_params::NextestBuildParams {
             unstable_panic_abort_tests,
             target,
             profile,
+            extra_env: extra_env.claim(ctx),
         }
     }
 }

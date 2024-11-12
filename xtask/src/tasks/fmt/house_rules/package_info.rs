@@ -1,7 +1,9 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Checks to ensure that the `[package]` sections of Cargo.toml files do not
-//! contain `authors` or `version` fields.
+//! contain `authors` or `version` fields, and that rust-version is properly
+//! workspace.
 //!
 //! Eliding the [version][] sets the version to "0.0.0", which is fine. More
 //! importantly, it means the module cannot be published to crates.io
@@ -21,6 +23,8 @@
 use anyhow::Context;
 use std::ffi::OsStr;
 use std::path::Path;
+use toml_edit::Item;
+use toml_edit::Table;
 
 pub fn check_package_info(f: &Path, fix: bool) -> anyhow::Result<()> {
     if f.file_name() != Some(OsStr::new("Cargo.toml")) {
@@ -29,6 +33,23 @@ pub fn check_package_info(f: &Path, fix: bool) -> anyhow::Result<()> {
 
     let contents = fs_err::read_to_string(f)?;
     let mut parsed = contents.parse::<toml_edit::Document>()?;
+
+    let mut allow_missing_rust_version = false;
+    if let Some(metadata) = parsed
+        .get("package")
+        .and_then(|x| x.get("metadata"))
+        .and_then(|x| x.get("xtask"))
+        .and_then(|x| x.get("house-rules"))
+    {
+        let props = metadata.as_table().context("invalid metadata format")?;
+        for (k, v) in props.iter() {
+            if k == "allow-missing-rust-version" {
+                allow_missing_rust_version = v
+                    .as_bool()
+                    .context("invalid type for allow-dash-in-name (must be bool)")?;
+            }
+        }
+    }
 
     let Some(package) = parsed.get_mut("package") else {
         // workspace root, skip
@@ -39,12 +60,21 @@ pub fn check_package_info(f: &Path, fix: bool) -> anyhow::Result<()> {
         .as_table_mut()
         .with_context(|| format!("invalid package section in {}", f.display()))?;
 
+    let mut rust_version_field = Table::new();
+    rust_version_field.set_dotted(true);
+    rust_version_field.insert("workspace", Item::Value(true.into()));
+    let old_rust_version = package.insert("rust-version", Item::Table(rust_version_field.clone()));
+
     // Note careful use of non-short-circuiting or.
-    let invalid = package.remove("authors").is_some() | package.remove("version").is_some();
+    let invalid = package.remove("authors").is_some()
+        | package.remove("version").is_some()
+        | (!allow_missing_rust_version
+            && (old_rust_version.map(|o| o.to_string()) != Some(rust_version_field.to_string())));
+
     if invalid {
         if !fix {
             anyhow::bail!(
-                "invalid inclusion of package authors or version in {}",
+                "invalid inclusion of package authors or version, or non-workspaced rust-version, in {}",
                 f.display()
             );
         }

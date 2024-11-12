@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 pub mod resolver;
 
@@ -58,8 +59,8 @@ impl ConsommeEndpoint {
 
 impl InspectMut for ConsommeEndpoint {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        if let Some(consomme) = &*self.consomme.lock() {
-            consomme.inspect(req);
+        if let Some(consomme) = &mut *self.consomme.lock() {
+            consomme.inspect_mut(req);
         }
     }
 }
@@ -78,7 +79,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
     ) -> anyhow::Result<()> {
         assert_eq!(config.len(), 1);
         let config = config.into_iter().next().unwrap();
-        let queue = Box::new(ConsommeQueue {
+        let mut queue = Box::new(ConsommeQueue {
             slot: self.consomme.clone(),
             consomme: self.consomme.lock().take(),
             state: QueueState {
@@ -91,6 +92,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             stats: Default::default(),
             driver: config.driver,
         });
+        queue.with_consomme(|c| c.refresh_driver());
         queues.push(queue);
         Ok(())
     }
@@ -124,7 +126,7 @@ pub struct ConsommeQueue {
 impl InspectMut for ConsommeQueue {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.respond()
-            .merge(self.consomme.as_ref().unwrap())
+            .merge(self.consomme.as_mut().unwrap())
             .field("rx_avail", self.state.rx_avail.len())
             .field("rx_ready", self.state.rx_ready.len())
             .field("tx_avail", self.state.tx_avail.len())

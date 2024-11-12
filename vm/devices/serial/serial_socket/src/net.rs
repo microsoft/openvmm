@@ -1,8 +1,8 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
-//! Unix stream socket serial backend.
-//!
-//! Despite the name, this is available on Windows, too.
+//! Socket serial backend, usable for both TCP and Unix sockets (even on
+//! Windows).
 
 use futures::AsyncRead;
 use futures::AsyncWrite;
@@ -15,7 +15,10 @@ use pal_async::socket::PolledSocket;
 use serial_core::resources::ResolveSerialBackendParams;
 use serial_core::resources::ResolvedSerialBackend;
 use serial_core::SerialIo;
+use socket2::Socket;
 use std::io;
+use std::net::TcpListener;
+use std::net::TcpStream;
 use std::pin::Pin;
 use std::task::ready;
 use std::task::Context;
@@ -29,59 +32,77 @@ use vm_resource::Resource;
 use vm_resource::ResourceId;
 
 #[derive(Debug, MeshPayload)]
-pub struct OpenUnixStreamSerialConfig {
-    pub current: Option<UnixStream>,
-    pub listener: Option<UnixListener>,
+pub struct OpenSocketSerialConfig {
+    pub current: Option<Socket>,
+    pub listener: Option<Socket>,
 }
 
-impl ResourceId<SerialBackendHandle> for OpenUnixStreamSerialConfig {
-    const ID: &'static str = "unix_socket";
+impl ResourceId<SerialBackendHandle> for OpenSocketSerialConfig {
+    const ID: &'static str = "socket";
 }
 
-pub struct UnixStreamSerialResolver;
+pub struct SocketSerialResolver;
 declare_static_resolver!(
-    UnixStreamSerialResolver,
-    (SerialBackendHandle, OpenUnixStreamSerialConfig)
+    SocketSerialResolver,
+    (SerialBackendHandle, OpenSocketSerialConfig)
 );
 
-impl ResolveResource<SerialBackendHandle, OpenUnixStreamSerialConfig> for UnixStreamSerialResolver {
+impl ResolveResource<SerialBackendHandle, OpenSocketSerialConfig> for SocketSerialResolver {
     type Output = ResolvedSerialBackend;
     type Error = io::Error;
 
     fn resolve(
         &self,
-        rsrc: OpenUnixStreamSerialConfig,
+        rsrc: OpenSocketSerialConfig,
         input: ResolveSerialBackendParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        Ok(UnixStreamSerialBackend::new(input.driver, rsrc)?.into())
+        Ok(SocketSerialBackend::new(input.driver, rsrc)?.into())
     }
 }
 
-impl From<UnixStream> for OpenUnixStreamSerialConfig {
+impl From<UnixStream> for OpenSocketSerialConfig {
     fn from(stream: UnixStream) -> Self {
         Self {
-            current: Some(stream),
+            current: Some(stream.into()),
             listener: None,
         }
     }
 }
 
-impl From<UnixListener> for OpenUnixStreamSerialConfig {
+impl From<UnixListener> for OpenSocketSerialConfig {
     fn from(listener: UnixListener) -> Self {
         Self {
             current: None,
-            listener: Some(listener),
+            listener: Some(listener.into()),
         }
     }
 }
 
-pub struct UnixStreamSerialBackend {
-    driver: Box<dyn Driver>,
-    current: Option<PolledSocket<UnixStream>>,
-    listener: Option<PolledSocket<UnixListener>>,
+impl From<TcpStream> for OpenSocketSerialConfig {
+    fn from(stream: TcpStream) -> Self {
+        Self {
+            current: Some(stream.into()),
+            listener: None,
+        }
+    }
 }
 
-impl InspectMut for UnixStreamSerialBackend {
+impl From<TcpListener> for OpenSocketSerialConfig {
+    fn from(listener: TcpListener) -> Self {
+        Self {
+            current: None,
+            listener: Some(listener.into()),
+        }
+    }
+}
+
+pub struct SocketSerialBackend {
+    driver: Box<dyn Driver>,
+    current: Option<PolledSocket<Socket>>,
+    listener: Option<PolledSocket<Socket>>,
+}
+
+impl InspectMut for SocketSerialBackend {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.respond().field_with("state", || {
             if self.current.is_some() {
@@ -95,8 +116,8 @@ impl InspectMut for UnixStreamSerialBackend {
     }
 }
 
-impl UnixStreamSerialBackend {
-    pub fn new(driver: Box<dyn Driver>, config: OpenUnixStreamSerialConfig) -> io::Result<Self> {
+impl SocketSerialBackend {
+    pub fn new(driver: Box<dyn Driver>, config: OpenSocketSerialConfig) -> io::Result<Self> {
         let current = config
             .current
             .map(|s| PolledSocket::new(&driver, s))
@@ -112,21 +133,21 @@ impl UnixStreamSerialBackend {
         })
     }
 
-    pub fn into_config(self) -> OpenUnixStreamSerialConfig {
-        OpenUnixStreamSerialConfig {
+    pub fn into_config(self) -> OpenSocketSerialConfig {
+        OpenSocketSerialConfig {
             current: self.current.map(PolledSocket::into_inner),
             listener: self.listener.map(PolledSocket::into_inner),
         }
     }
 }
 
-impl From<UnixStreamSerialBackend> for Resource<SerialBackendHandle> {
-    fn from(value: UnixStreamSerialBackend) -> Self {
+impl From<SocketSerialBackend> for Resource<SerialBackendHandle> {
+    fn from(value: SocketSerialBackend) -> Self {
         Resource::new(value.into_config())
     }
 }
 
-impl SerialIo for UnixStreamSerialBackend {
+impl SerialIo for SocketSerialBackend {
     fn is_connected(&self) -> bool {
         self.current.is_some()
     }
@@ -153,7 +174,7 @@ impl SerialIo for UnixStreamSerialBackend {
     }
 }
 
-impl AsyncRead for UnixStreamSerialBackend {
+impl AsyncRead for SocketSerialBackend {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -170,7 +191,7 @@ impl AsyncRead for UnixStreamSerialBackend {
     }
 }
 
-impl AsyncWrite for UnixStreamSerialBackend {
+impl AsyncWrite for SocketSerialBackend {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,

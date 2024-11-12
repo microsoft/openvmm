@@ -1,9 +1,11 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Run a pre-built cargo-nextest based unit test archive.
 
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
+use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Params {
@@ -17,7 +19,7 @@ flowey_request! {
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
         /// (optionally) Also publish raw junit.xml test results as an artifact.
-        pub results_artifact_dir: Option<ReadVar<PathBuf>>,
+        pub artifact_dir: Option<ReadVar<PathBuf>>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -28,7 +30,7 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<flowey_lib_common::junit_publish_test_results::Node>();
+        ctx.import::<flowey_lib_common::publish_test_results::Node>();
         ctx.import::<crate::artifact_nextest_unit_tests_archive::resolve::Node>();
         ctx.import::<crate::test_nextest_unit_tests_archive::Node>();
     }
@@ -39,7 +41,7 @@ impl SimpleFlowNode for Node {
             unit_test_artifact_dir,
             nextest_profile,
             fail_job_on_test_fail,
-            results_artifact_dir,
+            artifact_dir,
             done,
         } = request;
 
@@ -59,26 +61,14 @@ impl SimpleFlowNode for Node {
 
         let mut side_effects = Vec::new();
 
-        if let Some(artifact_dir) = results_artifact_dir {
-            let published_artifact = ctx.reqv(|v| {
-                flowey_lib_common::junit_publish_test_results::Request::PublishToArtifact(
-                    artifact_dir,
-                    v,
-                )
-            });
-
-            side_effects.push(published_artifact)
-        }
-
         let junit_xml = results.map(ctx, |r| r.junit_xml);
-        let reported_results =
-            ctx.reqv(
-                |v| flowey_lib_common::junit_publish_test_results::Request::Register {
-                    junit_xml,
-                    test_label: junit_test_label,
-                    done: v,
-                },
-            );
+        let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
+            junit_xml,
+            test_label: junit_test_label,
+            attachments: BTreeMap::new(),
+            output_dir: artifact_dir,
+            done: v,
+        });
 
         side_effects.push(reported_results);
 

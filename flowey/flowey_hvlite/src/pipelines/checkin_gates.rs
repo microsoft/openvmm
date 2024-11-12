@@ -1,7 +1,9 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! See [`CheckinGatesCli`]
 
+use flowey::node::prelude::FlowPlatformLinuxDistro;
 use flowey::node::prelude::GhPermission;
 use flowey::node::prelude::GhPermissionValue;
 use flowey::node::prelude::ReadVar;
@@ -163,39 +165,42 @@ impl IntoPipeline for CheckinGatesCli {
         let mut all_jobs = Vec::new();
 
         // emit mdbook guide build job
-        let (pub_guide, _use_guide) = pipeline.new_artifact("guide");
+        let (pub_guide, use_guide) = pipeline.new_artifact("guide");
         let job = pipeline
             .new_job(
-                FlowPlatform::Windows,
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 FlowArch::X86_64,
-                "build mdbook guide [x64-windows]",
+                "build mdbook guide",
             )
-            .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                FlowPlatform::Windows,
+            .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
             ))
             .dep_on(
                 |ctx| flowey_lib_hvlite::_jobs::build_and_publish_guide::Params {
                     artifact_dir: ctx.publish_artifact(pub_guide),
                     done: ctx.new_done_handle(),
-                    deploy_github_pages: matches!(config, PipelineConfig::Ci),
                 },
             )
-            .gh_grant_permissions::<flowey_lib_hvlite::_jobs::build_and_publish_guide::Node>([(
-                GhPermission::Pages,
-                GhPermissionValue::Write,
-            )])
             .finish();
 
         all_jobs.push(job);
 
         // emit rustdoc jobs
-        for (target, platform) in [
-            (CommonTriple::X86_64_WINDOWS_MSVC, FlowPlatform::Windows),
-            (CommonTriple::X86_64_LINUX_GNU, FlowPlatform::Linux),
+        let (pub_rustdoc_linux, use_rustdoc_linux) = pipeline.new_artifact("x64-linux-rustdoc");
+        let (pub_rustdoc_win, use_rustdoc_win) = pipeline.new_artifact("x64-windows-rustdoc");
+        for (target, platform, pub_rustdoc) in [
+            (
+                CommonTriple::X86_64_WINDOWS_MSVC,
+                FlowPlatform::Windows,
+                pub_rustdoc_win,
+            ),
+            (
+                CommonTriple::X86_64_LINUX_GNU,
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                pub_rustdoc_linux,
+            ),
         ] {
             let deny_warnings = !matches!(backend_hint, PipelineBackendHint::Local);
-            let (pub_rustdoc, _use_rustdoc) =
-                pipeline.new_artifact(format!("x64-{platform}-rustdoc"));
             let job = pipeline
                 .new_job(
                     platform,
@@ -220,6 +225,38 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(job);
         }
 
+        // emit consolidated gh pages publish job
+        if matches!(config, PipelineConfig::Ci) {
+            let artifact_dir = if matches!(backend_hint, PipelineBackendHint::Local) {
+                let (publish, _use) = pipeline.new_artifact("gh-pages");
+                Some(publish)
+            } else {
+                None
+            };
+
+            let job = pipeline
+                .new_job(FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu), FlowArch::X86_64, "publish openvmm.dev")
+                .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                ))
+                .dep_on(
+                    |ctx| flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages::Params {
+                        rustdoc_linux: ctx.use_artifact(&use_rustdoc_linux),
+                        rustdoc_windows: ctx.use_artifact(&use_rustdoc_win),
+                        guide: ctx.use_artifact(&use_guide),
+                        artifact_dir: artifact_dir.map(|x| ctx.publish_artifact(x)),
+                        done: ctx.new_done_handle(),
+                    },
+                )
+                .gh_grant_permissions::<flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages::Node>([
+                    (GhPermission::IdToken, GhPermissionValue::Write),
+                    (GhPermission::Pages, GhPermissionValue::Write),
+                ])
+                .finish();
+
+            all_jobs.push(job);
+        }
+
         // emit xtask fmt job
         {
             let windows_fmt_job = pipeline
@@ -238,9 +275,13 @@ impl IntoPipeline for CheckinGatesCli {
                 .finish();
 
             let linux_fmt_job = pipeline
-                .new_job(FlowPlatform::Linux, FlowArch::X86_64, "xtask fmt (linux)")
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    "xtask fmt (linux)",
+                )
                 .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                    FlowPlatform::Linux,
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(|ctx| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
                     target: CommonTriple::X86_64_LINUX_GNU,
@@ -468,12 +509,12 @@ impl IntoPipeline for CheckinGatesCli {
 
             let mut job = pipeline
                 .new_job(
-                    FlowPlatform::Linux,
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                     FlowArch::X86_64,
                     format!("build artifacts [{arch_tag}-linux]"),
                 )
                 .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                    FlowPlatform::Linux,
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(|ctx| {
                     flowey_lib_hvlite::_jobs::build_and_publish_openvmm::Params {
@@ -620,12 +661,12 @@ impl IntoPipeline for CheckinGatesCli {
 
             let job = pipeline
                 .new_job(
-                    FlowPlatform::Linux,
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                     FlowArch::X86_64,
                     format!("build openhcl [{arch_tag}-linux]"),
                 )
                 .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                    FlowPlatform::Linux,
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(|ctx| {
                     flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
@@ -696,7 +737,7 @@ impl IntoPipeline for CheckinGatesCli {
                 )),
             },
             ClippyUnitTestJobParams {
-                platform: FlowPlatform::Linux,
+                platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
                 gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted(),
                 clippy_targets: Some((
@@ -713,7 +754,7 @@ impl IntoPipeline for CheckinGatesCli {
                 )),
             },
             ClippyUnitTestJobParams {
-                platform: FlowPlatform::Linux,
+                platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
                 gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted(),
                 clippy_targets: Some((
@@ -725,15 +766,17 @@ impl IntoPipeline for CheckinGatesCli {
                 )),
                 unit_test_target: Some(("x64-linux-musl", openhcl_musl_target(CommonArch::X86_64))),
             },
+            ClippyUnitTestJobParams {
+                platform: FlowPlatform::Windows,
+                arch: FlowArch::Aarch64,
+                gh_pool: crate::pipelines_shared::gh_pools::windows_arm_self_hosted_baremetal(),
+                clippy_targets: None,
+                unit_test_target: Some((
+                    "aarch64-windows",
+                    target_lexicon::triple!("aarch64-pc-windows-msvc"),
+                )),
+            },
         ] {
-            let pub_unit_test_junit_xml = if matches!(backend_hint, PipelineBackendHint::Local) {
-                unit_test_target
-                    .as_ref()
-                    .map(|(label, _)| pipeline.new_artifact(format!("{label}-unit-tests")).0)
-            } else {
-                None
-            };
-
             let mut job_name = Vec::new();
             if let Some((label, _)) = &clippy_targets {
                 job_name.push(format!("clippy [{label}]"));
@@ -742,6 +785,17 @@ impl IntoPipeline for CheckinGatesCli {
                 job_name.push(format!("unit tests [{label}]"));
             }
             let job_name = job_name.join(", ");
+
+            let unit_test_target = unit_test_target.map(|(label, target)| {
+                let test_label = format!("{label}-unit-tests");
+                let pub_unit_test_junit_xml = if matches!(backend_hint, PipelineBackendHint::Local)
+                {
+                    Some(pipeline.new_artifact(&test_label).0)
+                } else {
+                    None
+                };
+                (test_label, target, pub_unit_test_junit_xml)
+            });
 
             let mut clippy_unit_test_job = pipeline
                 .new_job(platform, arch, job_name)
@@ -760,20 +814,28 @@ impl IntoPipeline for CheckinGatesCli {
                 }
             }
 
-            if let Some((label, target)) = unit_test_target {
-                clippy_unit_test_job = clippy_unit_test_job.dep_on(|ctx| {
-                    flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests::Params {
-                        junit_test_label: format!("{label}-unit-tests"),
-                        nextest_profile:
-                            flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
-                        fail_job_on_test_fail: true,
-                        target,
-                        profile: CommonProfile::from_release(release),
-                        unstable_panic_abort_tests: None,
-                        artifact_dir: pub_unit_test_junit_xml.map(|x| ctx.publish_artifact(x)),
-                        done: ctx.new_done_handle(),
-                    }
-                });
+            if let Some((test_label, target, pub_unit_test_junit_xml)) = unit_test_target {
+                clippy_unit_test_job = clippy_unit_test_job
+                    .dep_on(|ctx| {
+                        flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests::Params {
+                            junit_test_label: test_label,
+                            nextest_profile:
+                                flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
+                            fail_job_on_test_fail: true,
+                            target: target.clone(),
+                            profile: CommonProfile::from_release(release),
+                            unstable_panic_abort_tests: None,
+                            artifact_dir: pub_unit_test_junit_xml.map(|x| ctx.publish_artifact(x)),
+                            done: ctx.new_done_handle(),
+                        }
+                    })
+                    .dep_on(
+                        |ctx| flowey_lib_hvlite::_jobs::build_and_run_doc_tests::Params {
+                            target,
+                            profile: CommonProfile::from_release(release),
+                            done: ctx.new_done_handle(),
+                        },
+                    );
             }
 
             all_jobs.push(clippy_unit_test_job.finish());
@@ -794,7 +856,7 @@ impl IntoPipeline for CheckinGatesCli {
             vmm_tests_artifacts_linux_x86.finish().map_err(|missing| {
                 anyhow::anyhow!("missing required linux vmm_tests artifact: {missing}")
             })?;
-        let _vmm_tests_artifacts_windows_aarch64 = vmm_tests_artifacts_windows_aarch64
+        let vmm_tests_artifacts_windows_aarch64 = vmm_tests_artifacts_windows_aarch64
             .finish()
             .map_err(|missing| {
                 anyhow::anyhow!("missing required windows-aarch64 vmm_tests artifact: {missing}")
@@ -835,23 +897,26 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
             },
             VmmTestJobParams {
-                platform: FlowPlatform::Linux,
+                platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
                 gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted(),
                 label: "x64-linux",
                 target: CommonTriple::X86_64_LINUX_GNU,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
             },
+            VmmTestJobParams {
+                platform: FlowPlatform::Windows,
+                arch: FlowArch::Aarch64,
+                gh_pool: crate::pipelines_shared::gh_pools::windows_arm_self_hosted_baremetal(),
+                label: "aarch64-windows",
+                target: CommonTriple::AARCH64_WINDOWS_MSVC,
+                resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_aarch64,
+            },
         ] {
-            // TODO: Enable VMM tests for pull requests once the issues around
-            // using secret variables are resolved.
-            // This is tracked by https://github.com/microsoft/openvmm/issues/137.
-            if matches!(config, PipelineConfig::Pr) {
-                break;
-            }
+            let test_label = format!("{label}-vmm-tests");
 
-            let pub_vmm_tests_junit_xml = if matches!(backend_hint, PipelineBackendHint::Local) {
-                Some(pipeline.new_artifact(format!("{label}-vmm-tests")).0)
+            let pub_vmm_tests_results = if matches!(backend_hint, PipelineBackendHint::Local) {
+                Some(pipeline.new_artifact(&test_label).0)
             } else {
                 None
             };
@@ -879,22 +944,12 @@ impl IntoPipeline for CheckinGatesCli {
                 _ => unreachable!(),
             };
 
-            // These secrets describe the HvLite-GitHub service principal and associated Azure subscription,
-            // which, along with the GITHUB_TOKEN, are used to authenticate GitHub Actions to Azure with OpenID Connect.
-            // The service principal has federated identity credentials configured describing which branches and
-            // scenarios can be authenticated.
-            // To learn more about these secrets and using OIDC, see
-            // <https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure?tabs=azure-portal%2Clinux#use-the-azure-login-action-with-openid-connect>
-            let client_id = pipeline.gh_use_secret("OPENVMM_CLIENT_ID");
-            let tenant_id = pipeline.gh_use_secret("OPENVMM_TENANT_ID");
-            let subscription_id = pipeline.gh_use_secret("OPENVMM_SUBSCRIPTION_ID");
-
             let mut vmm_tests_run_job = pipeline
                 .new_job(platform, arch, format!("run vmm-tests [{label}]"))
                 .gh_set_pool(gh_pool)
                 .dep_on(|ctx| {
                     flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::Params {
-                        junit_test_label: format!("{label}-vmm-tests"),
+                        junit_test_label: test_label,
                         vmm_tests_artifact_dir: ctx.use_artifact(use_vmm_tests_archive),
                         target: target.as_triple(),
                         nextest_profile:
@@ -902,23 +957,10 @@ impl IntoPipeline for CheckinGatesCli {
                         nextest_filter_expr: nextest_filter_expr.clone(),
                         dep_artifact_dirs: resolve_vmm_tests_artifacts(ctx),
                         fail_job_on_test_fail: true,
+                        artifact_dir: pub_vmm_tests_results.map(|x| ctx.publish_artifact(x)),
                         done: ctx.new_done_handle(),
                     }
-                })
-                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_gh_azure_login::Params {
-                    client_id: client_id.clone(),
-                    tenant_id: tenant_id.clone(),
-                    subscription_id: subscription_id.clone(),
                 });
-
-            if let Some(pub_vmm_tests_junit_xml) = pub_vmm_tests_junit_xml {
-                vmm_tests_run_job = vmm_tests_run_job.dep_on(|ctx| {
-                    flowey_lib_common::junit_publish_test_results::Request::PublishToArtifact(
-                        ctx.publish_artifact(pub_vmm_tests_junit_xml),
-                        ctx.new_done_handle(),
-                    )
-                });
-            }
 
             if let Some(vmm_tests_disk_cache_dir) = vmm_tests_disk_cache_dir.clone() {
                 vmm_tests_run_job = vmm_tests_run_job.dep_on(|_| {
@@ -935,12 +977,12 @@ impl IntoPipeline for CheckinGatesCli {
         {
             let job = pipeline
                 .new_job(
-                    FlowPlatform::Linux,
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                     FlowArch::X86_64,
                     "test flowey local backend",
                 )
                 .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                    FlowPlatform::Linux,
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(
                     |ctx| flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm::Request {
@@ -952,21 +994,37 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(job);
         }
 
-        // Add a job that depends on all others as a workaround for https://github.com/orgs/community/discussions/12395.
-        // TODO: Add a way for this job to skip flowey setup and become a true no-op.
-        let all_good_job = pipeline
-            .new_job(
-                FlowPlatform::Windows,
-                FlowArch::X86_64,
-                "openvmm checkin gates",
-            )
-            .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
-                FlowPlatform::Windows,
-            ))
-            .finish();
+        if matches!(config, PipelineConfig::Pr) {
+            // Add a job that depends on all others as a workaround for
+            // https://github.com/orgs/community/discussions/12395.
+            //
+            // This workaround then itself requires _another_ workaround, requiring
+            // the use of `gh_dangerous_override_if`, and some additional custom job
+            // logic, to deal with https://github.com/actions/runner/issues/2566.
+            //
+            // TODO: Add a way for this job to skip flowey setup and become a true
+            // no-op.
+            let all_good_job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    "openvmm checkin gates",
+                )
+                .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                ))
+                // always run this job, regardless whether or not any previous jobs failed
+                .gh_dangerous_override_if("${{ always() }}")
+                .gh_dangerous_global_env_var("ANY_JOBS_FAILED", "${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}")
+                .dep_on(|ctx| flowey_lib_hvlite::_jobs::all_good_job::Params {
+                    did_fail_env_var: "ANY_JOBS_FAILED".into(),
+                    done: ctx.new_done_handle(),
+                })
+                .finish();
 
-        for job in all_jobs.iter() {
-            pipeline.non_artifact_dep(&all_good_job, job);
+            for job in all_jobs.iter() {
+                pipeline.non_artifact_dep(&all_good_job, job);
+            }
         }
 
         Ok(pipeline)

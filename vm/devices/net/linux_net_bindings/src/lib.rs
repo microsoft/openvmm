@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 // C API bingings based on /usr/include/linux/if.h and
 // /usr/include/linux/if_tun.h.

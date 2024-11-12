@@ -16,14 +16,15 @@ At the moment, OpenVMM can be built and run on the following host platforms:
 When compiled, OpenVMM consists of a single standalone `openvmm` / `openvmm.exe`
 executable.[^dlls]
 
-> _Note:_ As you explore the OpenVMM repo, you may find references to the
-> term **HvLite**.
->
-> HvLite was the former codename for OpenVMM, so whenever you see the term
-> "HvLite", you can treat it as synonymous to "OpenVMM".
->
-> We are actively migrating existing code and docs away from using the term
-> "HvLite".
+```admonish note
+As you explore the OpenVMM repo, you may find references to the term **HvLite**.
+
+HvLite was the former codename for OpenVMM, so whenever you see the term
+"HvLite", you can treat it as synonymous to "OpenVMM".
+
+We are actively migrating existing code and docs away from using the term
+"HvLite".
+```
 
 ## Notable Features
 
@@ -77,28 +78,29 @@ pages under the **Reference** section of the OpenVMM Guide.
 the Guide is currently under construction, and not all items have corresponding
 pages at this time.
 
-## DISCLAIMER
+* * *
 
 Before heading on to [Running OpenVMM](./openvmm/run.md), please take a moment
 to read and understand the following important disclaimer:
 
-> In recent years, development efforts in the OpenVMM project have primarily
-> focused on [OpenHCL](./openhcl.md) (AKA: OpenVMM as a paravisor).
->
-> As a result, not a lot of "polish" has gone into making the experience of
-> running OpenVMM in traditional host contexts particularly "pleasant".
->
-> This lack of polish manifests in several ways, including but not limited to:
->
-> - Unorganized and minimally documented management interfaces (e.g: CLI, ttrpc/grpc)
-> - Unoptimized device backend performance (e.g: for storage, networking, graphics)
-> - Unexpectedly missing device features (e.g: legacy IDE drive, PS/2 mouse features)
-> - **No API or feature-set stability guarantees whatsoever.**
->
-> At this time, OpenVMM _on the host_ is not yet ready to run end-user
-> workloads, and should should be treated more akin to a development platform
-> for implementing new OpenVMM features, rather than a ready-to-deploy
-> application.
+```admonish warning title="DISCLAIMER"
+In recent years, development efforts in the OpenVMM project have primarily
+focused on [OpenHCL](./openhcl.md) (AKA: OpenVMM as a paravisor).
+
+As a result, not a lot of "polish" has gone into making the experience of
+running OpenVMM in traditional host contexts particularly "pleasant".
+This lack of polish manifests in several ways, including but not limited to:
+
+- Unorganized and minimally documented management interfaces (e.g: CLI, ttrpc/grpc)
+- Unoptimized device backend performance (e.g: for storage, networking, graphics)
+- Unexpectedly missing device features (e.g: legacy IDE drive, PS/2 mouse features)
+- **No API or feature-set stability guarantees whatsoever.**
+
+At this time, OpenVMM _on the host_ is not yet ready to run end-user
+workloads, and should should be treated more akin to a development platform
+for implementing new OpenVMM features, rather than a ready-to-deploy
+application.
+```
 
 [^dlls]: though, depending on the platform and compiled-in feature-set, some
     additional DLLs and/or system libraries may need to be installed (notably:

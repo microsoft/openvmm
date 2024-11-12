@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Debug backend that simply visualizes flows, instead of emitting them in any
 //! runnable format
@@ -74,6 +75,8 @@ fn viz_pipeline_generic(
             cond_param_idx: _,
             ref ado_pool,
             ado_variables: _,
+            gh_override_if: _,
+            gh_global_env: _,
             ref gh_pool,
             gh_permissions: _,
             ref external_read_vars,
@@ -252,6 +255,8 @@ pub fn viz_pipeline_dot(pipeline: ResolvedPipeline, _backend: FlowBackend) -> an
                 cond_param_idx: _,
                 ado_pool,
                 ado_variables: _,
+                gh_override_if: _,
+                gh_global_env: _,
                 gh_pool,
                 gh_permissions: _,
                 external_read_vars: _,

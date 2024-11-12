@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use crate::cleanup_socket;
 use anyhow::Context;
@@ -12,10 +13,11 @@ use pal_async::driver::Driver;
 use pal_async::driver::SpawnDriver;
 use pal_async::pipe::PolledPipe;
 use pal_async::task::Task;
-use serial_socket::unix::OpenUnixStreamSerialConfig;
+use serial_socket::net::OpenSocketSerialConfig;
 use std::fs::File;
 use std::io;
 use std::io::Write;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::thread;
 use unix_socket::UnixListener;
@@ -205,10 +207,7 @@ pub fn anonymous_serial_pair(
 )> {
     let (left, right) = unix_socket::UnixStream::pair()?;
     let right = pal_async::socket::PolledSocket::new(driver, right)?;
-    Ok((
-        OpenUnixStreamSerialConfig::from(left).into_resource(),
-        right,
-    ))
+    Ok((OpenSocketSerialConfig::from(left).into_resource(), right))
 }
 
 #[cfg(windows)]
@@ -247,5 +246,11 @@ pub fn bind_serial(path: &Path) -> io::Result<Resource<SerialBackendHandle>> {
     }
 
     cleanup_socket(path);
-    Ok(OpenUnixStreamSerialConfig::from(UnixListener::bind(path)?).into_resource())
+    Ok(OpenSocketSerialConfig::from(UnixListener::bind(path)?).into_resource())
+}
+
+pub fn bind_tcp_serial(addr: &SocketAddr) -> anyhow::Result<Resource<SerialBackendHandle>> {
+    let listener = std::net::TcpListener::bind(addr)
+        .with_context(|| format!("failed to bind tcp address {addr}"))?;
+    Ok(OpenSocketSerialConfig::from(listener).into_resource())
 }

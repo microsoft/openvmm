@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Vmbus channel offer support.
 
@@ -6,6 +7,7 @@ use crate::bus::ChannelRequest;
 use crate::bus::ChannelServerRequest;
 use crate::bus::OfferInput;
 use crate::bus::OfferParams;
+use crate::bus::OfferResources;
 use crate::bus::OpenRequest;
 use crate::bus::ParentBus;
 use crate::gpadl::GpadlMap;
@@ -17,7 +19,6 @@ use crate::ChannelClosed;
 use crate::RawAsyncChannel;
 use crate::SignalVmbusChannel;
 use futures::StreamExt;
-use guestmem::GuestMemory;
 use mesh::rpc::Rpc;
 use pal_async::driver::Driver;
 use pal_async::task::Spawn;
@@ -51,7 +52,7 @@ pub struct Offer {
     open_recv: mesh::Receiver<OpenMessage>,
     gpadl_map: GpadlMapView,
     event: Notify,
-    guest_mem: GuestMemory,
+    offer_resources: OfferResources,
     _server_request_send: mesh::Sender<ChannelServerRequest>,
 }
 
@@ -84,7 +85,7 @@ impl Offer {
         });
 
         let offer = Self {
-            guest_mem: result.guest_mem,
+            offer_resources: result,
             task,
             open_recv,
             gpadl_map,
@@ -159,7 +160,7 @@ impl Offer {
         let message = self.open_recv.next().await.ok_or(Error::Revoked)?;
 
         let (in_ring, out_ring) = make_rings(
-            &self.guest_mem,
+            self.offer_resources.ring_memory(&message.open_request),
             &self.gpadl_map,
             &message.open_request.open_data,
         )?;

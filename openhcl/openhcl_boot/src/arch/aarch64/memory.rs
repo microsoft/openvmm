@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Setting up memory
 
@@ -25,7 +26,7 @@ pub fn setup_vtl2_memory(_shim_params: &ShimParams, _partition_info: &PartitionI
         .expect("setting vsm config shouldn't fail");
 }
 
-pub fn physical_address_bits() -> u8 {
+pub fn physical_address_bits(_isolation: crate::IsolationType) -> u8 {
     let mut mmfr0: u64;
     // SAFETY: Reading a system register into u64 allocated on the stack, single-threaded.
     unsafe {

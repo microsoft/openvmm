@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use gdma_defs::PAGE_SIZE32;
 use gdma_defs::PAGE_SIZE64;

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implements reading fixed-at-IGVM-build-time measured config. This is
 //! configuration information that is deposited into the guest address space that
@@ -78,6 +79,9 @@ impl MeasuredVtl0Info {
             .read_plain::<ParavisorMeasuredVtl0Config>(PV_CONFIG_BASE_PAGE * HV_PAGE_SIZE)
             .map_err(Error::GuestMemoryAccess)?;
         config_pages.push(PV_CONFIG_BASE_PAGE);
+
+        // Verify the magic field is set.
+        assert_eq!(measured_config.magic, ParavisorMeasuredVtl0Config::MAGIC);
 
         let supports_pcat = measured_config.supported_vtl0.pcat_supported();
 

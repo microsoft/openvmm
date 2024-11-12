@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Common routines for interoperating between [`nvme_spec`] and
 //! [`disk_backend`] types.
@@ -96,7 +97,7 @@ pub fn from_nvme_reservation_report(
         .collect();
 
     let report = pr::ReservationReport {
-        generation: report_header.gen,
+        generation: report_header.generation,
         reservation_type,
         controllers,
         persist_through_power_loss: report_header.ptpls != 0,

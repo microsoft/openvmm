@@ -1,11 +1,13 @@
-# Copyright (C) Microsoft Corporation. All rights reserved.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 [package]
 name = "bootloader_fdt_parser"
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
-fdt = { workspace = true, features = ["std"] }
+fdt.workspace = true
 inspect.workspace = true
 loader_defs = { workspace = true, features = ["inspect"] }
 memory_range = { workspace = true, features = ["inspect"] }

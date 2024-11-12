@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Provides constants and types derived from Linux without requiring libc.
 
@@ -109,7 +110,7 @@ pub const XATTR_REPLACE: i32 = 0x2;
 
 /// Wraps a Linux error code in a strongly-typed struct.
 #[derive(Copy, Clone, Error, Eq, PartialEq)]
-#[error("{} ({0})", str_error(*.0))]
+#[error("{err} ({0})", err = str_error(*.0))]
 pub struct Error(i32);
 
 impl From<io::Error> for Error {

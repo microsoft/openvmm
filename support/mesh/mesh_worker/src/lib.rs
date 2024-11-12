@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Infrastructure for workers, which are agents that mostly communicate via
 //! mesh message passing. These provide a way for splitting up your program into

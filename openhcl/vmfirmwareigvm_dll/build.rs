@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A pure-Rust build system for building [Resource-only DLL] files containing
 //! OpenHCL IGVM files.

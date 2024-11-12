@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Provides an in-memory implementation of [`NvramStorage`] that doesn't
 //! automatically persist to disk.

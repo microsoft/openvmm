@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Build `openvmm` binaries
 
@@ -42,12 +43,12 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::init_openvmm_magicpath_lxutil::Node>();
         ctx.import::<crate::run_cargo_build::Node>();
-        ctx.import::<flowey_lib_common::install_apt_pkg::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let installed_apt_deps =
-            ctx.reqv(|v| flowey_lib_common::install_apt_pkg::Request::Install {
+            ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
                 package_names: vec!["libssl-dev".into(), "build-essential".into()],
                 done: v,
             });
@@ -86,7 +87,7 @@ impl FlowNode for Node {
                 match feat {
                     OpenvmmFeature::Gdb => {}
                     OpenvmmFeature::Tpm => pre_build_deps.push(ctx.reqv(|v| {
-                        flowey_lib_common::install_apt_pkg::Request::Install {
+                        flowey_lib_common::install_dist_pkg::Request::Install {
                             package_names: vec!["build-essential".into()],
                             done: v,
                         }

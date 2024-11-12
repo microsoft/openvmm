@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 pub fn encode_name(name: &[u8]) -> Vec<u8> {
     let mut encoded_name: Vec<u8> = Vec::new();

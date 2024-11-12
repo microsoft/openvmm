@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 // build.rs scripts don't read the clippy config from .cargo/config.toml, hence
 // the manual inline override

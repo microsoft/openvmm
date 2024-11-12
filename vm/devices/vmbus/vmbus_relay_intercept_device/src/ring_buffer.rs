@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module implements a vmbus ring buffer backed by a MemoryBlock,
 //! allocated memory that has been locked to physical pages and whose pfns are

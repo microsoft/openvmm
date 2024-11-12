@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 /// Defines an open enum, which contains constants for each vmbus message type.
 macro_rules! vmbus_message_type {

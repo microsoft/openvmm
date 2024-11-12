@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #![cfg(target_os = "linux")]
 // UNSAFETY: Calling KVM APIs and IOCTLs and dealing with the raw pointers

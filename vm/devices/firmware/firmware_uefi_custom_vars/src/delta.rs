@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Data types which define a "delta" operation on a
 //! [`CustomVars`](super::CustomVars) struct.

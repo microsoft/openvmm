@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Linux /dev/mshv implementation of the virt::generic interfaces.
 
@@ -87,7 +88,7 @@ impl virt::Hypervisor for LinuxMshv {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<MshvProtoPartition<'a>, Self::Error> {
-        if config.isolation.is_some() {
+        if config.isolation.is_isolated() {
             return Err(Error::IsolationNotSupported);
         }
 

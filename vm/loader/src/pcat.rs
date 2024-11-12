@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! PCAT specific loader definitions and implementation.
 
@@ -6,7 +7,6 @@ use crate::importer::BootPageAcceptance;
 use crate::importer::ImageLoad;
 use crate::importer::SegmentRegister;
 use crate::importer::X86Register;
-use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use thiserror::Error;
 
@@ -96,7 +96,7 @@ pub fn load(
     // Enable MTRRs, default MTRR is uncached, and set lowest 640KB and highest 128KB as WB
     let mut import_reg = |register| {
         importer
-            .import_vp_register(Vtl::Vtl0, register)
+            .import_vp_register(register)
             .map_err(Error::Importer)
     };
     import_reg(X86Register::MtrrDefType(0xc00))?;

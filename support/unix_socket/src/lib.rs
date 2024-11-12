@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This crate provides [`UnixStream`] and [`UnixListener`] implementations for
 //! Windows, and re-exposes the `std` types for UNIX.

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Generally we hold the position that inspect paths are completely unstable,
 //! may change at any time, and can not be depended on by anything. However, we

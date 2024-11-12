@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Download a copy of the GitHub CLI.
 //!
@@ -24,7 +25,7 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::install_apt_pkg::Node>();
+        ctx.import::<crate::install_dist_pkg::Node>();
         ctx.import::<crate::cache::Node>();
     }
 
@@ -90,15 +91,15 @@ impl FlowNode for Node {
                     let sh = xshell::Shell::new()?;
                     match rt.platform() {
                         FlowPlatform::Windows => {
-                            xshell::cmd!(sh, "curl -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_windows_{gh_arch}.zip -o gh.zip").run()?;
+                            xshell::cmd!(sh, "curl --fail -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_windows_{gh_arch}.zip -o gh.zip").run()?;
                             xshell::cmd!(sh, "tar -xf gh.zip").run()?;
                         },
-                        FlowPlatform::Linux => {
-                            xshell::cmd!(sh, "curl -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_linux_{gh_arch}.tar.gz -o gh.tar.gz").run()?;
+                        FlowPlatform::Linux(_) => {
+                            xshell::cmd!(sh, "curl --fail -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_linux_{gh_arch}.tar.gz -o gh.tar.gz").run()?;
                             xshell::cmd!(sh, "tar -xf gh.tar.gz --strip-components=1").run()?;
                         },
                         FlowPlatform::MacOs => {
-                            xshell::cmd!(sh, "curl -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_macOS_{gh_arch}.zip -o gh.zip").run()?;
+                            xshell::cmd!(sh, "curl --fail -L https://github.com/cli/cli/releases/download/v{version}/gh_{version}_macOS_{gh_arch}.zip -o gh.zip").run()?;
                             xshell::cmd!(sh, "tar -xf gh.zip --strip-components=1").run()?;
                         }
                         platform => anyhow::bail!("unsupported platform {platform}"),

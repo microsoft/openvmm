@@ -15,7 +15,8 @@ def main(repo_path: str, target_branch: str, token: str, pull_request: str, team
             return False
 
         with open(f'{repo_path}/{change.a_path}') as fd:
-            return 'unsafe ' in fd.read()
+            content = fd.read()
+            return 'unsafe ' in content or 'unsafe(' in content
 
     # Look for modified / added files
     repo = Repo(repo_path)

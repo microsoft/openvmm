@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use crate::boot_logger::log;
 use crate::host_params::shim_params::IsolationType;
@@ -32,6 +33,31 @@ pub struct SidecarConfig<'a> {
     pub nodes: &'a [SidecarNodeOutput],
     pub start_reftime: u64,
     pub end_reftime: u64,
+}
+
+impl SidecarConfig<'_> {
+    /// Returns an object to be appended to the Linux kernel command line to
+    /// configure it properly for sidecar.
+    pub fn kernel_command_line(&self) -> SidecarKernelCommandLine<'_> {
+        SidecarKernelCommandLine(self)
+    }
+}
+
+pub struct SidecarKernelCommandLine<'a>(&'a SidecarConfig<'a>);
+
+impl core::fmt::Display for SidecarKernelCommandLine<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Add something like boot_cpus=0,4,8,12 to the command line so that
+        // Linux boots with the base VP of each sidecar node. Other CPUs will
+        // be brought up by the sidecar kernel.
+        f.write_str("boot_cpus=")?;
+        let mut comma = "";
+        for node in self.0.node_params {
+            write!(f, "{}{}", comma, node.base_vp)?;
+            comma = ",";
+        }
+        Ok(())
+    }
 }
 
 pub fn start_sidecar<'a>(

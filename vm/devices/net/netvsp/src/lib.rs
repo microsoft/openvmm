@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! The user-mode netvsp VMBus device implementation.
 
@@ -725,8 +726,8 @@ impl OffloadConfig {
         rndisprot::NdisOffload {
             header: rndisprot::NdisObjectHeader {
                 object_type: rndisprot::NdisObjectType::OFFLOAD,
-                revision: 1,
-                size: rndisprot::NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_1 as u16,
+                revision: 3,
+                size: rndisprot::NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_3 as u16,
             },
             checksum,
             lso_v2,
@@ -1317,7 +1318,11 @@ impl Nic {
         let worker = Worker {
             channel_idx,
             target_vp: open_request.open_data.target_vp,
-            mem: self.resources.guest_memory.clone(),
+            mem: self
+                .resources
+                .offer_resources
+                .guest_memory(open_request)
+                .clone(),
             channel: NetChannel {
                 adapter: self.adapter.clone(),
                 queue,
@@ -1501,9 +1506,10 @@ impl Nic {
                     let version = check_version(version)
                         .ok_or(NetRestoreError::UnsupportedVersion(version))?;
 
+                    let request = requests[0].as_ref().unwrap();
                     let buffers = Arc::new(ChannelBuffers {
                         version,
-                        mem: self.resources.guest_memory.clone(),
+                        mem: self.resources.offer_resources.guest_memory(request).clone(),
                         recv_buffer: ReceiveBuffer::new(
                             &self.resources.gpadl_map,
                             receive_buffer.gpadl_id,
@@ -2446,17 +2452,16 @@ impl<T: RingMem> NetChannel<T> {
 
         #[repr(C)]
         #[derive(AsBytes)]
-        struct send_indirection_msg {
+        struct SendIndirectionMsg {
             pub message: protocol::Message5SendIndirectionTable,
             pub send_indirection_table:
                 [u32; VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES as usize],
         }
 
         // The offset to the send indirection table from the beginning of the NVSP message.
-        let send_indirection_table_offset =
-            offset_of!(send_indirection_msg, send_indirection_table)
-                + size_of::<protocol::MessageHeader>();
-        let mut data = send_indirection_msg {
+        let send_indirection_table_offset = offset_of!(SendIndirectionMsg, send_indirection_table)
+            + size_of::<protocol::MessageHeader>();
+        let mut data = SendIndirectionMsg {
             message: protocol::Message5SendIndirectionTable {
                 table_entry_count: VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES,
                 table_offset: send_indirection_table_offset as u32,

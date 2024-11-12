@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 // See also the LICENSE file in the root of the crate for additional copyright
 // information.
@@ -17,7 +18,7 @@ use libc::time_t;
 use openssl_sys::BIGNUM;
 use std::ffi::CStr;
 
-extern "C" {
+unsafe extern "C" {
     pub fn OSSL_PARAM_get_int(p: *const OSSL_PARAM, val: *mut c_int) -> c_int;
     pub fn OSSL_PARAM_get_uint(p: *const OSSL_PARAM, val: *mut c_uint) -> c_int;
     pub fn OSSL_PARAM_get_long(p: *const OSSL_PARAM, val: *mut c_long) -> c_int;

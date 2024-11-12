@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Exports [`IoRanges`], which models a linear address-space with certain
 //! regions "claimed" by [`ChipsetDevice`]s.

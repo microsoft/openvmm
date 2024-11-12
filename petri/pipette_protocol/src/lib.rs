@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! The pipette protocol used for host-to-guest agent communications. It is
 //! defined as messages over a mesh point-to-point connection.

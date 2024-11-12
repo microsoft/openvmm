@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Globally install git and ensure it is available on the user's $PATH
 
@@ -21,7 +22,7 @@ impl FlowNode for Node {
 
     fn imports(dep: &mut ImportCtx<'_>) {
         dep.import::<crate::check_needs_relaunch::Node>();
-        dep.import::<crate::install_apt_pkg::Node>();
+        dep.import::<crate::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -55,7 +56,7 @@ impl FlowNode for Node {
                 done: ensure_installed,
             });
 
-            let git_installed = ctx.reqv(|v| crate::install_apt_pkg::Request::Install {
+            let git_installed = ctx.reqv(|v| crate::install_dist_pkg::Request::Install {
                 package_names: vec!["git".into()],
                 done: v,
             });
@@ -66,7 +67,7 @@ impl FlowNode for Node {
 
                 |rt: &mut RustRuntimeServices<'_>| {
                     match rt.platform() {
-                        FlowPlatform::Linux | FlowPlatform::MacOs => {
+                        FlowPlatform::Linux(_) | FlowPlatform::MacOs => {
                             rt.write(write_bin, &Some(crate::check_needs_relaunch::BinOrEnv::Bin("git".to_string())));
                             Ok(())
                         },

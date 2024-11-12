@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Download `nuget.exe`
 
@@ -32,7 +33,7 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::ado_task_nuget_tool_installer::Node>();
-        ctx.import::<crate::install_apt_pkg::Node>();
+        ctx.import::<crate::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -78,14 +79,14 @@ impl FlowNode for Node {
                 move |rt| {
                     let nuget_config_platform = match rt.platform() {
                         FlowPlatform::Windows => NugetInstallPlatform::Windows,
-                        FlowPlatform::Linux if crate::_util::running_in_wsl(rt) => {
+                        FlowPlatform::Linux(_) if crate::_util::running_in_wsl(rt) => {
                             if force_mono_nuget_exe_wsl2 {
                                 NugetInstallPlatform::Linux
                             } else {
                                 NugetInstallPlatform::Windows
                             }
                         }
-                        FlowPlatform::Linux => NugetInstallPlatform::Linux,
+                        FlowPlatform::Linux(_) => NugetInstallPlatform::Linux,
                         FlowPlatform::MacOs => NugetInstallPlatform::MacOs,
                         platform => anyhow::bail!("unsupported platform {platform}"),
                     };
@@ -146,8 +147,8 @@ impl Node {
             .persistent_dir()
             .ok_or(anyhow::anyhow!("No persistent dir for nuget installation"))?;
 
-        // let install_mono = if matches!(ctx.platform(), FlowPlatform::Linux) {
-        //     Some(ctx.reqv(|v| crate::install_apt_pkg::Request::Install {
+        // let install_mono = if matches!(ctx.platform(), FlowPlatform::Linux(_)) {
+        //     Some(ctx.reqv(|v| crate::install_dist_pkg::Request::Install {
         //         package_names: vec!["mono-devel".to_string()],
         //         done: v,
         //     }))
@@ -170,8 +171,11 @@ impl Node {
                 if !nuget_exe_path.exists() {
                     let nuget_install_latest_url =
                         "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe";
-                    xshell::cmd!(sh, "curl -o {nuget_exe_path} {nuget_install_latest_url}")
-                        .run()?;
+                    xshell::cmd!(
+                        sh,
+                        "curl --fail -o {nuget_exe_path} {nuget_install_latest_url}"
+                    )
+                    .run()?;
                 }
 
                 let write_mono_shim = || {
@@ -186,7 +190,7 @@ impl Node {
 
                 let nuget_exec_path = match rt.platform() {
                     FlowPlatform::Windows => nuget_exe_path,
-                    FlowPlatform::Linux if crate::_util::running_in_wsl(rt) => {
+                    FlowPlatform::Linux(_) if crate::_util::running_in_wsl(rt) => {
                         // allow reusing the windows config directory from wsl2, if available
                         {
                             let windows_userprofile =
@@ -231,7 +235,7 @@ impl Node {
                             flowey_nuget
                         }
                     }
-                    FlowPlatform::Linux => write_mono_shim()?,
+                    FlowPlatform::Linux(_) => write_mono_shim()?,
                     platform => anyhow::bail!("unsupported platform {platform}"),
                 };
 

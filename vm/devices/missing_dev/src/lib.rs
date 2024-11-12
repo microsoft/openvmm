@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Exports [`MissingDev`]: a "no-op" device that silently swallows all MMIO,
 //! PIO, and PCI accesses that come its way.

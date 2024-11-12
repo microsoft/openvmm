@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implements the SimpleDisk and AsyncDisk traits for virtual disks backed by a raw block device.
 
@@ -65,6 +66,7 @@ pub struct BlockDeviceResolver {
     uring: Arc<dyn Initiate>,
     uevent_listener: Option<Arc<UeventListener>>,
     bounce_buffer_tracker: Arc<BounceBufferTracker>,
+    always_bounce: bool,
 }
 
 impl BlockDeviceResolver {
@@ -72,11 +74,13 @@ impl BlockDeviceResolver {
         uring: Arc<dyn Initiate>,
         uevent_listener: Option<Arc<UeventListener>>,
         bounce_buffer_tracker: Arc<BounceBufferTracker>,
+        always_bounce: bool,
     ) -> Self {
         Self {
             uring,
             uevent_listener,
             bounce_buffer_tracker,
+            always_bounce,
         }
     }
 }
@@ -107,6 +111,7 @@ impl AsyncResolveResource<DiskHandleKind, OpenBlockDeviceConfig> for BlockDevice
             self.uring.clone(),
             self.uevent_listener.as_deref(),
             self.bounce_buffer_tracker.clone(),
+            self.always_bounce,
         )
         .await?;
         Ok(disk.into())
@@ -148,6 +153,7 @@ pub struct BlockDevice {
     resized_acked: AtomicU64,
     #[inspect(skip)]
     bounce_buffer_tracker: Arc<BounceBufferTracker>,
+    always_bounce: bool,
 }
 
 #[derive(Inspect, Debug, Default)]
@@ -228,12 +234,14 @@ impl BlockDevice {
     /// * `file` - The backing device opened for raw access.
     /// * `read_only` - Indicates whether the device is opened for read-only access.
     /// * `uring` - The IO uring to use for issuing IOs.
+    /// * `always_bounce` - Whether to always use bounce buffers for IOs, even for those that are aligned.
     pub async fn new(
         file: fs::File,
         read_only: bool,
         uring: Arc<dyn Initiate>,
         uevent_listener: Option<&UeventListener>,
         bounce_buffer_tracker: Arc<BounceBufferTracker>,
+        always_bounce: bool,
     ) -> Result<BlockDevice, NewDeviceError> {
         let initiator = uring.initiator();
         assert!(initiator.probe(opcode::Read::CODE));
@@ -298,6 +306,7 @@ impl BlockDevice {
             resize_epoch,
             resized_acked: 0.into(),
             bounce_buffer_tracker,
+            always_bounce,
         };
 
         Ok(device)
@@ -677,11 +686,13 @@ impl AsyncDisk for BlockDevice {
 
             let mut bounce_buffer = None;
             let locked;
-            let io_vecs = if buffers.is_aligned(self.sector_size() as usize) {
+            let should_bounce =
+                self.always_bounce || !buffers.is_aligned(self.sector_size() as usize);
+            let io_vecs = if !should_bounce {
                 locked = buffers.lock(true)?;
                 locked.io_vecs()
             } else {
-                tracing::trace!("double buffering unaligned IO");
+                tracing::trace!("double buffering IO");
 
                 bounce_buffer
                     .insert(
@@ -739,11 +750,13 @@ impl AsyncDisk for BlockDevice {
 
             let mut bounce_buffer;
             let locked;
-            let io_vecs = if buffers.is_aligned(self.sector_size() as usize) {
+            let should_bounce =
+                self.always_bounce || !buffers.is_aligned(self.sector_size() as usize);
+            let io_vecs = if !should_bounce {
                 locked = buffers.lock(false)?;
                 locked.io_vecs()
             } else {
-                tracing::trace!("double buffering unaligned IO");
+                tracing::trace!("double buffering IO");
                 bounce_buffer = self
                     .bounce_buffer_tracker
                     .acquire_bounce_buffers(buffers.len(), affinity::get_cpu_number() as usize)
@@ -868,6 +881,7 @@ mod tests {
             initiator.clone(),
             None,
             bounce_buffer_tracker,
+            false,
         ))
     }
 

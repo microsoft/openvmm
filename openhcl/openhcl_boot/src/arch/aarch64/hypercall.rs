@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 /// Writes a synthehtic register to tell the hypervisor the OS ID for the boot shim.
 fn report_os_id(guest_os_id: u64) {

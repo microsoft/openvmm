@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use super::vtl2::Vtl2InterceptState;
 use super::Vplc;
@@ -844,7 +845,7 @@ mod x86 {
                         panic!("unexpected vtl2 intercept {backing_type:?}")
                     }
                     GpaBackingType::Unmapped => {
-                        assert!(self.vp.partition.isolation.is_none());
+                        assert!(!self.vp.partition.isolation.is_isolated());
                         HvMessageType::HvMessageTypeUnmappedGpa
                     }
                     GpaBackingType::VtlProtected(_) => HvMessageType::HvMessageTypeGpaIntercept,
@@ -1108,43 +1109,37 @@ mod x86 {
                 CpuidFunction(n) if matches!(n, 0x40000000..=0x400000ff) => {
                     match n {
                         hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES => {
-                            if let Some(isolation_type) = self.vp.partition.isolation {
-                                match isolation_type {
-                                    virt::IsolationType::Vbs => {
-                                        // Advertise this partition is VBS isolated.
-                                        default[1] |= (u64::from(
-                                            hvdef::HvPartitionPrivilege::new().with_isolation(true),
-                                        ) >> 32)
-                                            as u32;
-                                    }
-                                    _ => {
-                                        unimplemented!(
-                                            "isolation type unsupported: {isolation_type:?}"
-                                        )
-                                    }
+                            match self.vp.partition.isolation {
+                                virt::IsolationType::None => {}
+                                virt::IsolationType::Vbs => {
+                                    // Advertise this partition is VBS isolated.
+                                    default[1] |= (u64::from(
+                                        hvdef::HvPartitionPrivilege::new().with_isolation(true),
+                                    ) >> 32)
+                                        as u32;
+                                }
+                                ty => {
+                                    unimplemented!("isolation type unsupported: {ty:?}")
                                 }
                             }
                         }
                         hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION => {
-                            if let Some(isolation_type) = self.vp.partition.isolation {
-                                match isolation_type {
-                                    virt::IsolationType::Vbs => {
-                                        // Eax report paravisor present if VTL2 enabled.
-                                        // TODO: Should Underhill be handling this?
-                                        if self.vp.partition.vtl2.is_some()
-                                            && self.state.active_vtl != Vtl::Vtl2
-                                        {
-                                            default[0] |= 1;
-                                        }
+                            match self.vp.partition.isolation {
+                                virt::IsolationType::None => {}
+                                virt::IsolationType::Vbs => {
+                                    // Eax report paravisor present if VTL2 enabled.
+                                    // TODO: Should Underhill be handling this?
+                                    if self.vp.partition.vtl2.is_some()
+                                        && self.state.active_vtl != Vtl::Vtl2
+                                    {
+                                        default[0] |= 1;
+                                    }
 
-                                        // Ebx report vbs isolated type.
-                                        default[1] |= 1;
-                                    }
-                                    _ => {
-                                        unimplemented!(
-                                            "isolation type unsupported: {isolation_type:?}"
-                                        )
-                                    }
+                                    // Ebx report vbs isolated type.
+                                    default[1] |= 1;
+                                }
+                                ty => {
+                                    unimplemented!("isolation type unsupported: {ty:?}")
                                 }
                             }
                         }

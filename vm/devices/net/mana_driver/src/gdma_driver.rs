@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Interface to the common MANA commands.
 use crate::queues::Cq;
@@ -103,7 +104,7 @@ impl<T: DeviceRegisterIo + Inspect> Doorbell for Bar0<T> {
         tracing::trace!(page_number, address, offset, value, "doorbell");
 
         // Ensure the doorbell write is ordered after the writes to the queues.
-        crate::store_fence::store_fence();
+        safe_intrinsics::store_fence();
         self.mem.write_u64(offset as usize, value);
     }
 }

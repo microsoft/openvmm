@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Architecture-independent runtime support.
 
@@ -18,12 +19,12 @@ mod instead_of_builtins {
         }
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8;
     }
 
     /// Implementation cribbed from compiler_builtins.
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
         let delta = (dest as usize).wrapping_sub(src as usize);
         if delta >= n {
@@ -46,7 +47,7 @@ mod instead_of_builtins {
     /// This implementation is cribbed from compiler_builtins. It would be nice to
     /// use those implementation for all the above functions, but those require
     /// nightly as these are not yet stabilized.
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     unsafe extern "C" fn bcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
         // SAFETY: The caller guarantees that the pointers and length are correct.
         unsafe {

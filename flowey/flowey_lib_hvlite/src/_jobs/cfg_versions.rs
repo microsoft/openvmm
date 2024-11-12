@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! An amalgamated configuration node that streamlines the process of resolving
 //! version configuration requests required by various dependencies in OpenVMM
@@ -13,18 +14,20 @@ use flowey::node::prelude::*;
 //
 // This would require nodes that currently accept a `Version(String)` to accept
 // a `Version(ReadVar<String>)`, but that shouldn't be a serious blocker.
-pub const AZCOPY: &str = "10.26.0-20240731";
+pub const AZCOPY: &str = "10.27.0-20241030";
 pub const AZURE_CLI: &str = "2.56.0";
 pub const FUZZ: &str = "0.12.0";
 pub const GH_CLI: &str = "2.52.0";
 pub const LXUTIL: &str = "10.0.26100.1-240331-1435.ge-release";
-pub const MDBOOK: &str = "0.4.6";
+pub const MDBOOK: &str = "0.4.40";
+pub const MDBOOK_ADMONISH: &str = "1.18.0";
+pub const MDBOOK_MERMAID: &str = "0.14.0";
 pub const RUSTUP_TOOLCHAIN: &str = "1.82.0";
 pub const MU_MSVM: &str = "24.0.2";
 pub const NEXTEST: &str = "0.9.74";
 pub const NODEJS: &str = "18.x";
-pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.6.51.6";
-pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.6.51.2";
+pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.6.51.9";
+pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.6.51.7";
 pub const OPENVMM_DEPS: &str = "0.1.0-20241014.2";
 pub const PROTOC: &str = "27.1";
 
@@ -44,9 +47,11 @@ impl FlowNode for Node {
         ctx.import::<crate::download_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
-        ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
         ctx.import::<flowey_lib_common::download_cargo_fuzz::Node>();
+        ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
         ctx.import::<flowey_lib_common::download_gh_cli::Node>();
+        ctx.import::<flowey_lib_common::download_mdbook_admonish::Node>();
+        ctx.import::<flowey_lib_common::download_mdbook_mermaid::Node>();
         ctx.import::<flowey_lib_common::download_mdbook::Node>();
         ctx.import::<flowey_lib_common::download_protoc::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
@@ -68,6 +73,8 @@ impl FlowNode for Node {
         ctx.req(flowey_lib_common::download_cargo_nextest::Request::Version(NEXTEST.into()));
         ctx.req(flowey_lib_common::download_gh_cli::Request::Version(GH_CLI.into()));
         ctx.req(flowey_lib_common::download_mdbook::Request::Version(MDBOOK.into()));
+        ctx.req(flowey_lib_common::download_mdbook_admonish::Request::Version(MDBOOK_ADMONISH.into()));
+        ctx.req(flowey_lib_common::download_mdbook_mermaid::Request::Version(MDBOOK_MERMAID.into()));
         ctx.req(flowey_lib_common::download_protoc::Request::Version(PROTOC.into()));
         ctx.req(flowey_lib_common::install_azure_cli::Request::Version(AZURE_CLI.into()));
         ctx.req(flowey_lib_common::install_nodejs::Request::Version(NODEJS.into()));

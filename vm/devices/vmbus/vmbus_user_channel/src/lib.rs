@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Support for a vmbus channel client via the /dev/uioX devices.
 //!
@@ -162,10 +163,10 @@ pub fn open_uio_device(instance_id: &Guid) -> Result<File, Error> {
         .map_err(ErrorInner::Exist)?;
 
     let uio_dev_path = Path::new("/dev").join(uio_path.file_name());
-    tracing::info!(
-        "opening device {} for {}",
-        uio_dev_path.display(),
-        instance_id
+    tracing::debug!(
+        dev_path = %uio_dev_path.display(),
+        %instance_id,
+        "opening device"
     );
 
     let file = fs_err::OpenOptions::new()

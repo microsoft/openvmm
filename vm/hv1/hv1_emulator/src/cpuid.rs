@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Provides the synthetic hypervisor cpuid leaves matching this hv1 emulator's
 //! capabilities.
@@ -14,7 +15,7 @@ const MAX_CPUS: usize = 2048;
 pub fn hv_cpuid_leaves(
     topology: &ProcessorTopology<X86Topology>,
     emulate_apic: bool,
-    isolation: Option<IsolationType>,
+    isolation: IsolationType,
     access_vsm: bool,
     mut hardware_isolated: Option<&mut dyn FnMut(u32, u32) -> [u32; 4]>,
     vtom: Option<u64>,
@@ -124,7 +125,7 @@ pub fn hv_cpuid_leaves(
                     // compatible with APIC hardware offloads.
                     // However, Lazy EOI on SNP is beneficial and requires the
                     // Hyper-V MSRs to function. Enable it there regardless.
-                    isolation == Some(IsolationType::Snp)
+                    isolation == IsolationType::Snp
                 }
             };
 
@@ -136,7 +137,7 @@ pub fn hv_cpuid_leaves(
 
             if hardware_isolated.is_some() {
                 // TODO TDX too when it's ready
-                if isolation == Some(IsolationType::Snp) {
+                if isolation == IsolationType::Snp {
                     enlightenments = enlightenments
                         .with_use_hypercall_for_remote_flush_and_local_flush_entire(true);
                 }
@@ -174,7 +175,7 @@ pub fn hv_cpuid_leaves(
                 split_u128(
                     hvdef::HvIsolationConfiguration::new()
                         .with_paravisor_present(true)
-                        .with_isolation_type(IsolationType::to_hv(isolation).0)
+                        .with_isolation_type(isolation.to_hv().0)
                         .with_shared_gpa_boundary_active(true)
                         .with_shared_gpa_boundary_bits(
                             vtom.expect("cvm requires vtom").trailing_zeros() as u8,

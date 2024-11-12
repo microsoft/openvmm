@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! See [`OpenvmmKnownPathsTestArtifactResolver`].
 
@@ -273,7 +274,7 @@ fn uefi_firmware_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
 fn openhcl_bin_path(version: OpenhclVersion, flavor: OpenhclFlavor) -> anyhow::Result<PathBuf> {
     let (path, name, cmd) = match (version, flavor) {
         (OpenhclVersion::Latest, OpenhclFlavor::Standard) => (
-            "flowey-out/artifacts/build-igvm-msft/debug/x64",
+            "flowey-out/artifacts/build-igvm/debug/x64",
             "openhcl-x64.bin",
             MissingCommand::XFlowey {
                 description: "OpenHCL IGVM file",
@@ -281,7 +282,7 @@ fn openhcl_bin_path(version: OpenhclVersion, flavor: OpenhclFlavor) -> anyhow::R
             },
         ),
         (OpenhclVersion::Latest, OpenhclFlavor::Cvm) => (
-            "flowey-out/artifacts/build-igvm-msft/debug/x64-cvm",
+            "flowey-out/artifacts/build-igvm/debug/x64-cvm",
             "openhcl-x64-cvm.bin",
             MissingCommand::XFlowey {
                 description: "OpenHCL IGVM file",
@@ -289,7 +290,7 @@ fn openhcl_bin_path(version: OpenhclVersion, flavor: OpenhclFlavor) -> anyhow::R
             },
         ),
         (OpenhclVersion::Latest, OpenhclFlavor::LinuxDirect) => (
-            "flowey-out/artifacts/build-igvm-msft/debug/x64-test-linux-direct",
+            "flowey-out/artifacts/build-igvm/debug/x64-test-linux-direct",
             "openhcl-x64-test-linux-direct.bin",
             MissingCommand::XFlowey {
                 description: "OpenHCL IGVM file",
@@ -313,11 +314,11 @@ fn openhcl_extras_path(
 
     let (path, name) = match item {
         OpenhclExtras::UmBin => (
-            "flowey-out/artifacts/build-igvm-msft/debug/x64-test-linux-direct",
+            "flowey-out/artifacts/build-igvm/debug/x64-test-linux-direct",
             "openvmm_hcl_msft",
         ),
         OpenhclExtras::UmDbg => (
-            "flowey-out/artifacts/build-igvm-msft/debug/x64-test-linux-direct",
+            "flowey-out/artifacts/build-igvm/debug/x64-test-linux-direct",
             "openvmm_hcl_msft.dbg",
         ),
     };

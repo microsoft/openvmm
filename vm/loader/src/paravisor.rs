@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Paravisor specific loader definitions and implementation.
 
@@ -57,7 +58,8 @@ pub struct Vtl0Linux<'a> {
 #[derive(Debug)]
 pub struct Vtl0Config<'a> {
     pub supports_pcat: bool,
-    pub supports_uefi: Option<crate::uefi::LoadInfo>,
+    /// The load info and the VP context page.
+    pub supports_uefi: Option<(crate::uefi::LoadInfo, Vec<u8>)>,
     pub supports_linux: Option<Vtl0Linux<'a>>,
 }
 
@@ -99,7 +101,7 @@ pub enum CommandLineType<'a> {
 ///
 /// An optional `memory_page_base` may be specified. This will disable
 /// relocation support for underhill.
-pub fn load_underhill_x64<F>(
+pub fn load_openhcl_x64<F>(
     importer: &mut dyn ImageLoad<X86Register>,
     kernel_image: &mut F,
     shim: &mut F,
@@ -118,8 +120,6 @@ where
         paravisor_present,
         shared_gpa_boundary_bits,
     } = importer.isolation_config();
-
-    assert!(paravisor_present);
 
     // If no explicit memory base is specified, load with relocation support.
     let with_relocation = memory_page_base.is_none() && isolation_type == IsolationType::None;
@@ -158,7 +158,11 @@ where
     importer.verify_startup_memory_available(
         memory_start_address / HV_PAGE_SIZE,
         memory_page_count,
-        StartupMemoryType::Vtl2ProtectableRam,
+        if paravisor_present {
+            StartupMemoryType::Vtl2ProtectableRam
+        } else {
+            StartupMemoryType::Ram
+        },
     )?;
 
     let kernel_acceptance = match isolation_type {
@@ -219,7 +223,7 @@ where
     // If an AP kernel was provided, load it next.
     let (sidecar_size, sidecar_entrypoint) = if let Some(sidecar) = sidecar {
         // Sidecar load addr must be 2MB aligned
-        let offset = align_up_to_large_page_size(offset);
+        offset = align_up_to_large_page_size(offset);
 
         let load_info = crate::elf::load_static_elf(
             importer,
@@ -406,9 +410,7 @@ where
             1 << 48,
             true,
             true,
-            true,
             0, // BSP
-            Vtl::Vtl2,
         )?;
 
         // Tell the loader page table relocation information.
@@ -417,7 +419,6 @@ where
             page_table_region_size / HV_PAGE_SIZE,
             page_table.len() as u64 / HV_PAGE_SIZE,
             0,
-            Vtl::Vtl2,
         )?;
     }
 
@@ -518,7 +519,7 @@ where
 
     let mut import_reg = |register| {
         importer
-            .import_vp_register(Vtl::Vtl2, register)
+            .import_vp_register(register)
             .map_err(Error::Importer)
     };
 
@@ -651,13 +652,14 @@ where
         )?;
 
         let vmsa_page_base = config_region_page_base + PARAVISOR_CONFIG_VMSA_PAGE_INDEX;
-        importer.set_vp_context_page(Vtl::Vtl2, vmsa_page_base, BootPageAcceptance::VpContext)?;
+        importer.set_vp_context_page(vmsa_page_base)?;
     }
 
     // Load measured config.
     // The measured config is at page 0. Free pages start at page 1.
     let mut free_page = 1;
     let mut measured_config = ParavisorMeasuredVtl0Config {
+        magic: ParavisorMeasuredVtl0Config::MAGIC,
         ..FromZeroes::new_zeroed()
     };
 
@@ -671,7 +673,7 @@ where
         measured_config.supported_vtl0.set_pcat_supported(true);
     }
 
-    if let Some(uefi) = supports_uefi {
+    if let Some((uefi, vp_context)) = &supports_uefi {
         measured_config.supported_vtl0.set_uefi_supported(true);
         let vp_context_page = free_page;
         free_page += 1;
@@ -686,15 +688,14 @@ where
             },
         };
 
-        // Tell the loader to deposit VTL0 vp context for UEFI at the allocated
-        // page.
-        //
-        // TODO: It might be better to have UEFI's LoadInfo contain the vp
-        // state? Right now, UEFI is the only thing that actually sets VTL0 vp
-        // context, but if PCAT/Linux did, this wouldn't work.
-        importer
-            .set_vp_context_page(Vtl::Vtl0, vp_context_page, BootPageAcceptance::Exclusive)
-            .map_err(Error::Importer)?;
+        // Deposit the UEFI vp context.
+        importer.import_pages(
+            vp_context_page,
+            1,
+            "openhcl-uefi-vp-context",
+            BootPageAcceptance::Exclusive,
+            vp_context,
+        )?;
     }
 
     if let Some(linux) = supports_linux {
@@ -759,7 +760,9 @@ where
         .map_err(Error::Importer)?;
 
     let vtl2_measured_config = ParavisorMeasuredVtl2Config {
+        magic: ParavisorMeasuredVtl2Config::MAGIC,
         vtom_offset_bit: shared_gpa_boundary_bits.unwrap_or(0),
+        padding: [0; 7],
     };
 
     importer
@@ -810,7 +813,7 @@ fn create_snp_cpuid_page() -> HV_PSP_CPUID_PAGE {
 ///
 /// An optional `memory_page_base` may be specified. This will disable
 /// relocation support for underhill.
-pub fn load_underhill_arm64<F>(
+pub fn load_openhcl_arm64<F>(
     importer: &mut dyn ImageLoad<Aarch64Register>,
     kernel_image: &mut F,
     shim: &mut F,
@@ -831,6 +834,8 @@ where
 
     assert!(!supports_pcat);
     assert!(supports_uefi.is_some() || supports_linux.is_some());
+
+    let paravisor_present = importer.isolation_config().paravisor_present;
 
     // If no explicit memory base is specified, load with relocation support.
     let with_relocation = memory_page_base.is_none();
@@ -855,7 +860,11 @@ where
     importer.verify_startup_memory_available(
         memory_start_address / HV_PAGE_SIZE,
         memory_page_count,
-        StartupMemoryType::Vtl2ProtectableRam,
+        if paravisor_present {
+            StartupMemoryType::Vtl2ProtectableRam
+        } else {
+            StartupMemoryType::Ram
+        },
     )?;
 
     tracing::trace!(memory_start_address, "loading the kernel");
@@ -1032,10 +1041,11 @@ where
         .map_err(Error::Importer)?;
 
     let mut measured_config = ParavisorMeasuredVtl0Config {
+        magic: ParavisorMeasuredVtl0Config::MAGIC,
         ..FromZeroes::new_zeroed()
     };
 
-    if let Some(uefi) = supports_uefi {
+    if let Some((uefi, vp_context)) = &supports_uefi {
         measured_config.supported_vtl0.set_uefi_supported(true);
         let vp_context_page = PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_AARCH64 + 1;
         measured_config.uefi_info = UefiInfo {
@@ -1049,15 +1059,14 @@ where
             },
         };
 
-        // Tell the loader to deposit VTL0 vp context for UEFI at the allocated
-        // page.
-        //
-        // TODO: It might be better to have UEFI's LoadInfo contain the vp
-        // state? Right now, UEFI is the only thing that actually sets VTL0 vp
-        // context, but if PCAT/Linux did, this wouldn't work.
-        importer
-            .set_vp_context_page(Vtl::Vtl0, vp_context_page, BootPageAcceptance::Exclusive)
-            .map_err(Error::Importer)?;
+        // Deposit the UEFI vp context.
+        importer.import_pages(
+            vp_context_page,
+            1,
+            "openhcl-uefi-vp-context",
+            BootPageAcceptance::Exclusive,
+            vp_context,
+        )?;
     }
 
     importer
@@ -1103,10 +1112,8 @@ where
             PARAVISOR_DEFAULT_MEMORY_BASE_ADDRESS,
             1 << 48,
             true,
-            true,
             false,
             0, // BSP
-            Vtl::Vtl2,
         )?;
 
         // Tell the loader page table relocation information.
@@ -1115,7 +1122,6 @@ where
             page_table_region_size / HV_PAGE_SIZE,
             page_tables.len() as u64 / HV_PAGE_SIZE,
             0,
-            Vtl::Vtl2,
         )?;
     }
 
@@ -1131,7 +1137,7 @@ where
 
     let mut import_reg = |register| {
         importer
-            .import_vp_register(Vtl::Vtl2, register)
+            .import_vp_register(register)
             .map_err(Error::Importer)
     };
 
@@ -1260,6 +1266,22 @@ where
         "underhill-device-tree",
     )?;
     importer.import_parameter(dt_parameter_area, 0, IgvmParameterType::DeviceTree)?;
+
+    let vtl2_measured_config = ParavisorMeasuredVtl2Config {
+        magic: ParavisorMeasuredVtl2Config::MAGIC,
+        vtom_offset_bit: 0,
+        padding: [0; 7],
+    };
+
+    importer
+        .import_pages(
+            config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX,
+            PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES,
+            "underhill-vtl2-measured-config",
+            BootPageAcceptance::Exclusive,
+            vtl2_measured_config.as_bytes(),
+        )
+        .map_err(Error::Importer)?;
 
     let imported_region_base =
         config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_PAGE_INDEX;

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! The [`MemoryRange`] type, which represents a 4KB-page-aligned byte range of
 //! memory, plus algorithms operating on the type.
@@ -6,9 +7,6 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 #![no_std]
-
-#[cfg(feature = "std")]
-extern crate std;
 
 use core::iter::Iterator;
 use core::iter::Peekable;
@@ -60,13 +58,8 @@ impl TryFrom<Range<usize>> for MemoryRange {
 }
 
 /// Error returned by [`MemoryRange::try_new`].
-#[derive(Debug)]
-#[cfg_attr(
-    feature = "std",
-    derive(thiserror::Error),
-    error("unaligned or invalid memory range: {start:#x}-{end:#x}")
-)]
-#[cfg_attr(not(feature = "std"), allow(dead_code))]
+#[derive(Debug, thiserror::Error)]
+#[error("unaligned or invalid memory range: {start:#x}-{end:#x}")]
 pub struct InvalidMemoryRange {
     start: u64,
     end: u64,
@@ -391,19 +384,19 @@ pub fn subtract_ranges(
 /// # Examples
 ///
 /// ```
-/// # use memory_range::{MemoryRange, RangeResult, walk_ranges};
+/// # use memory_range::{MemoryRange, RangeWalkResult, walk_ranges};
 /// let left = [(MemoryRange::new(0x100000..0x400000), "first"), (MemoryRange::new(0x800000..0xc00000), "second")];
 /// let right = [(MemoryRange::new(0x200000..0x900000), 1000), (MemoryRange::new(0x900000..0xa00000), 2000)];
 /// let v: Vec<_> = walk_ranges(left, right).collect();
 /// let expected = [
-///     (MemoryRange::new(0..0x100000), RangeResult::Neither),
-///     (MemoryRange::new(0x100000..0x200000), RangeResult::Left("first")),
-///     (MemoryRange::new(0x200000..0x400000), RangeResult::Both("first", 1000)),
-///     (MemoryRange::new(0x400000..0x800000), RangeResult::Right(1000)),
-///     (MemoryRange::new(0x800000..0x900000), RangeResult::Both("second", 1000)),
-///     (MemoryRange::new(0x900000..0xa00000), RangeResult::Both("second", 2000)),
-///     (MemoryRange::new(0xa00000..0xc00000), RangeResult::Left("second")),
-///     (MemoryRange::new(0xc00000..MemoryRange::MAX_ADDRESS), RangeResult::Neither),
+///     (MemoryRange::new(0..0x100000), RangeWalkResult::Neither),
+///     (MemoryRange::new(0x100000..0x200000), RangeWalkResult::Left("first")),
+///     (MemoryRange::new(0x200000..0x400000), RangeWalkResult::Both("first", 1000)),
+///     (MemoryRange::new(0x400000..0x800000), RangeWalkResult::Right(1000)),
+///     (MemoryRange::new(0x800000..0x900000), RangeWalkResult::Both("second", 1000)),
+///     (MemoryRange::new(0x900000..0xa00000), RangeWalkResult::Both("second", 2000)),
+///     (MemoryRange::new(0xa00000..0xc00000), RangeWalkResult::Left("second")),
+///     (MemoryRange::new(0xc00000..MemoryRange::MAX_ADDRESS), RangeWalkResult::Neither),
 /// ];
 /// assert_eq!(v.as_slice(), expected.as_slice());
 /// ```
@@ -533,11 +526,10 @@ impl<
 }
 
 /// Takes a sequence of memory ranges, sorted by their start address, and
-/// returns an iterator over the flattened ranges, where adjacent ranges are
-/// merged and deduplicated.
+/// returns an iterator over the flattened ranges, where overlapping and
+/// adjacent ranges are merged and deduplicated.
 ///
-/// Panics if the input ranges are not sorted by their start address, or if
-/// ranges overlap.
+/// Panics if the input ranges are not sorted by their start address.
 ///
 /// # Example
 /// ```rust
@@ -545,6 +537,7 @@ impl<
 /// let ranges = [
 ///     MemoryRange::new(0x1000..0x2000),
 ///     MemoryRange::new(0x2000..0x5000),
+///     MemoryRange::new(0x4000..0x6000),
 ///     MemoryRange::new(0x5000..0x6000),
 ///     MemoryRange::new(0x8000..0x9000),
 /// ];
@@ -558,21 +551,41 @@ pub fn flatten_ranges(
     ranges: impl IntoIterator<Item = MemoryRange>,
 ) -> impl Iterator<Item = MemoryRange> {
     FlattenIter {
-        iter: ranges.into_iter().map(|r| (r, ())).peekable(),
+        iter: ranges.into_iter().peekable(),
     }
-    .map(|(r, _)| r)
 }
 
-/// Similar to [`flatten_ranges`], but also requires that ranges are equivalent
-/// via the passed in closure. This can be useful when merging memory ranges
-/// with associated tags.
+struct FlattenIter<I: Iterator> {
+    iter: Peekable<I>,
+}
+
+impl<I: Iterator<Item = MemoryRange>> Iterator for FlattenIter<I> {
+    type Item = MemoryRange;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let first = self.iter.next()?;
+        let mut start = first.start();
+        let mut end = first.end();
+        while let Some(r) = self.iter.next_if(|r| {
+            assert!(r.start() >= start, "ranges are not sorted");
+            r.start() <= end
+        }) {
+            start = r.start();
+            end = end.max(r.end());
+        }
+        Some(MemoryRange::new(first.start()..end))
+    }
+}
+
+/// Similar to [`flatten_ranges`], but considers ranges non-equivalent if their
+/// associated tags differ.
 ///
 /// Panics if the input ranges are not sorted by their start address, or if
 /// ranges overlap.
 ///
 /// # Example
 /// ```rust
-/// # use memory_range::{flatten_equivalent_ranges, MemoryRange};
+/// # use memory_range::{merge_adjacent_ranges, MemoryRange};
 ///
 /// #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// enum Color {
@@ -591,21 +604,21 @@ pub fn flatten_ranges(
 ///     (MemoryRange::new(0x5000..0x6000), Color::Blue),
 ///     (MemoryRange::new(0x8000..0x9000), Color::Red),
 /// ];
-/// assert!(flatten_equivalent_ranges(ranges).eq(flattened));
+/// assert!(merge_adjacent_ranges(ranges).eq(flattened));
 /// ```
-pub fn flatten_equivalent_ranges<T: PartialEq>(
+pub fn merge_adjacent_ranges<T: PartialEq>(
     ranges: impl IntoIterator<Item = (MemoryRange, T)>,
 ) -> impl Iterator<Item = (MemoryRange, T)> {
-    FlattenIter {
+    MergeAdjacentIter {
         iter: ranges.into_iter().peekable(),
     }
 }
 
-struct FlattenIter<I: Iterator> {
+struct MergeAdjacentIter<I: Iterator> {
     iter: Peekable<I>,
 }
 
-impl<I: Iterator<Item = (MemoryRange, T)>, T: PartialEq> Iterator for FlattenIter<I> {
+impl<I: Iterator<Item = (MemoryRange, T)>, T: PartialEq> Iterator for MergeAdjacentIter<I> {
     type Item = (MemoryRange, T);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -629,8 +642,8 @@ mod tests {
     extern crate alloc;
     use super::MemoryRange;
     use super::TWO_MB;
-    use crate::flatten_equivalent_ranges;
     use crate::flatten_ranges;
+    use crate::merge_adjacent_ranges;
     use crate::overlapping_ranges;
     use crate::subtract_ranges;
     use crate::AlignedSubranges;
@@ -860,13 +873,19 @@ mod tests {
     #[test]
     fn test_flatten_ranges() {
         let ranges =
-            [0..4, 5..7, 7..11, 13..20, 20..25, 35..36].map(MemoryRange::from_4k_gpn_range);
+            [0..4, 5..7, 6..11, 13..20, 20..25, 22..24, 35..36].map(MemoryRange::from_4k_gpn_range);
         let result = [0..4, 5..11, 13..25, 35..36].map(MemoryRange::from_4k_gpn_range);
         assert!(flatten_ranges(ranges).eq(result));
     }
 
     #[test]
-    fn test_flatten_equiv_ranges() {
+    #[should_panic(expected = "ranges are not sorted")]
+    fn test_flatten_ranges_not_sorted() {
+        flatten_ranges([0..4, 5..7, 3..8].map(MemoryRange::from_4k_gpn_range)).for_each(|_| ());
+    }
+
+    #[test]
+    fn test_merge_adjacent_ranges() {
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum Color {
             Red,
@@ -889,18 +908,20 @@ mod tests {
             .map(MemoryRange::from_4k_gpn_range)
             .into_iter()
             .zip([Color::Red, Color::Red, Color::Blue, Color::Red, Color::Blue]);
-        assert!(flatten_equivalent_ranges(ranges).eq(result));
+        assert!(merge_adjacent_ranges(ranges).eq(result));
     }
 
     #[test]
     #[should_panic(expected = "ranges are not sorted")]
-    fn test_flatten_ranges_not_sorted() {
-        flatten_ranges([0..4, 5..7, 3..8].map(MemoryRange::from_4k_gpn_range)).for_each(|_| ());
+    fn test_merge_adjacent_ranges_not_sorted() {
+        merge_adjacent_ranges([0..4, 5..7, 3..8].map(|r| (MemoryRange::from_4k_gpn_range(r), ())))
+            .for_each(|_| ());
     }
 
     #[test]
     #[should_panic(expected = "ranges overlap")]
-    fn test_flatten_ranges_overlap() {
-        flatten_ranges([0..6, 5..7, 9..12].map(MemoryRange::from_4k_gpn_range)).for_each(|_| ());
+    fn test_merge_adjacent_ranges_overlap() {
+        merge_adjacent_ranges([0..6, 5..7, 9..12].map(|r| (MemoryRange::from_4k_gpn_range(r), ())))
+            .for_each(|_| ());
     }
 }

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module contains logic used to intercept from VTL2 a vmbus device
 //! provided for a VTL0 guest. This requires the vmbus relay to be active,

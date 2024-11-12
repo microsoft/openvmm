@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! The schema defined in this file must match the one defined in
 //! `onecore/vm/schema/mars/Config/Config.Devices.Chipset.mars`.

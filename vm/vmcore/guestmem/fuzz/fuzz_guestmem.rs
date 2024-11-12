@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
 // UNSAFETY: Contains an impl of GuestMemoryAccess for a test mapping.

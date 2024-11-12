@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Artifact: An artifact containing various "extras" that are generated as part
 //! of the OpenHCL IGVM build. e.g: debug symbols, constituent binaries, etc.

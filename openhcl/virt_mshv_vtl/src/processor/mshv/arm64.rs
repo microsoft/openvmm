@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Aarch64 Processor support for Microsoft hypervisor-backed partitions.
 
@@ -23,6 +24,10 @@ use aarch64emu::InterceptState;
 use hcl::ioctl;
 use hcl::ioctl::aarch64::MshvArm64;
 use hcl::ioctl::ProcessorRunner;
+use hcl::GuestVtl;
+use hcl::UnsupportedGuestVtl;
+use hv1_emulator::hv::ProcessorVtlHv;
+use hv1_emulator::synic::ProcessorSynic;
 use hvdef::hypercall;
 use hvdef::HvAarch64PendingEvent;
 use hvdef::HvArm64RegisterName;
@@ -102,17 +107,10 @@ struct ProcessorStatsArm64 {
 impl BackingPrivate for HypervisorBackedArm64 {
     type HclBacking = MshvArm64;
 
-    type BackingShared = ();
-
-    fn new_shared_state(
-        _params: crate::processor::BackingSharedParams<'_>,
-    ) -> Result<Self::BackingShared, Error> {
-        Ok(())
-    }
-
     fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error> {
         vp::Registers::at_reset(&params.partition.caps, params.vp_info);
         let _ = (params.runner, &params.backing_shared);
+        assert!(params.hv.is_none());
         Ok(Self {
             deliverability_notifications: Default::default(),
             next_deliverability_notifications: Default::default(),
@@ -127,7 +125,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
 
     fn access_vp_state<'a, 'p>(
         this: &'a mut UhProcessor<'p, Self>,
-        vtl: Vtl,
+        vtl: GuestVtl,
     ) -> Self::StateAccess<'p, 'a> {
         UhVpStateAccess::new(this, vtl)
     }
@@ -196,10 +194,10 @@ impl BackingPrivate for HypervisorBackedArm64 {
 
     fn poll_apic(
         _this: &mut UhProcessor<'_, Self>,
-        _vtl: Vtl,
+        _vtl: GuestVtl,
         _scan_irr: bool,
-    ) -> Result<bool, UhRunVpError> {
-        Ok(true)
+    ) -> Result<(), UhRunVpError> {
+        Ok(())
     }
 
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
@@ -214,24 +212,42 @@ impl BackingPrivate for HypervisorBackedArm64 {
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
     }
 
-    /// The VTL that was running when the VP exited into VTL2, with the
-    /// exception of a successful vtl switch, where it will return the VTL
-    /// that will run on VTL 2 exit.
-    fn last_vtl(_this: &UhProcessor<'_, Self>) -> Vtl {
-        // TODO ARM64
-        Vtl::Vtl0
-    }
-
     /// Copies shared registers (per VSM TLFS spec) from the last VTL to
     /// the target VTL that will become active.
-    fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: Vtl) {
+    fn switch_vtl_state(
+        _this: &mut UhProcessor<'_, Self>,
+        _source_vtl: GuestVtl,
+        _target_vtl: GuestVtl,
+    ) {
         unreachable!("vtl switching should be managed by the hypervisor");
     }
 
     fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
+
+    fn hv(&self, _vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
+        None
+    }
+
+    fn hv_mut(&mut self, _vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
+        None
+    }
+
+    fn untrusted_synic(&self) -> Option<&ProcessorSynic> {
+        None
+    }
+
+    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
+        None
+    }
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {
+    fn intercepted_vtl(
+        message_header: &hvdef::HvArm64InterceptMessageHeader,
+    ) -> Result<GuestVtl, UnsupportedGuestVtl> {
+        message_header.execution_state.vtl().try_into()
+    }
+
     fn handle_synic_deliverable_exit(&mut self) {
         let message = hvdef::HvArm64SynicSintDeliverableMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
@@ -251,7 +267,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
         self.backing.next_deliverability_notifications.set_sints(0);
 
         // These messages are always VTL0, as VTL1 does not own any VMBUS channels.
-        self.deliver_synic_messages(Vtl::Vtl0, message.deliverable_sints);
+        self.deliver_synic_messages(GuestVtl::Vtl0, message.deliverable_sints);
     }
 
     fn handle_hypercall_exit(
@@ -265,13 +281,18 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "hypercall");
 
-        let guest_memory = self.last_vtl_gm();
+        let intercepted_vtl =
+            Self::intercepted_vtl(&message.header).map_err(|UnsupportedGuestVtl(vtl)| {
+                VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl(vtl))
+            })?;
+        let guest_memory = &self.partition.gm[intercepted_vtl];
         let smccc_convention = message.immediate == 0;
 
         let handler = UhHypercallHandler {
             vp: self,
             bus,
             trusted: false,
+            intercepted_vtl,
         };
         UhHypercallHandler::MSHV_DISPATCHER.dispatch(
             guest_memory,
@@ -300,7 +321,11 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             interruption_pending: message.header.execution_state.interruption_pending(),
         };
 
-        self.emulate(dev, &intercept_state).await?;
+        let intercepted_vtl =
+            Self::intercepted_vtl(&message.header).map_err(|UnsupportedGuestVtl(vtl)| {
+                VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl(vtl))
+            })?;
+        self.emulate(dev, &intercept_state, intercepted_vtl).await?;
         Ok(())
     }
 
@@ -545,11 +570,11 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked>
         // Note: the restriction to VTL 1 support also means that for WHP, which doesn't support VTL 1
         // the HvCheckSparseGpaPageVtlAccess hypercall--which is unimplemented in whp--will never be made.
         if mode == emulate::TranslateMode::Execute
-            && self.vp.last_vtl() == Vtl::Vtl0
+            && self.vtl == GuestVtl::Vtl0
             && self.vp.vtl1_supported()
         {
             // Should always be called after translate gva with the tlb lock flag
-            debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vp.last_vtl()));
+            debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vtl));
 
             let cpsr: Cpsr64 = self
                 .vp
@@ -569,7 +594,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked>
                 .vp
                 .partition
                 .hcl
-                .check_vtl_access(gpa, Vtl::Vtl0, flags)
+                .check_vtl_access(gpa, GuestVtl::Vtl0, flags)
                 .map_err(|e| EmuCheckVtlAccessError::Hypervisor(UhRunVpError::VtlAccess(e)))?;
 
             if let Some(ioctl::CheckVtlAccessResult { vtl, denied_flags }) = access_result {
@@ -612,7 +637,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked>
         assert!(!control_flags.pan_clear());
 
         // Do the translation using the current VTL.
-        control_flags.set_input_vtl(self.vp.last_vtl().into());
+        control_flags.set_input_vtl(self.vtl.into());
 
         match self
             .vp
@@ -641,10 +666,9 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked>
             u128::from_ne_bytes(event_info.as_bytes().try_into().unwrap()),
         )];
 
-        let last_vtl = self.vp.last_vtl();
         self.vp
             .runner
-            .set_vp_registers_hvcall(last_vtl, regs)
+            .set_vp_registers_hvcall(self.vtl.into(), regs)
             .expect("set_vp_registers hypercall for setting pending event should not fail");
     }
 

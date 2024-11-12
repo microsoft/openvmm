@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Helpers when writing fuzzing crates that get invoked via `cargo xtask fuzz`.
 //!

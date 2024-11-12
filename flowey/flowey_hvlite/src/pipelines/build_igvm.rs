@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! See [`BuildIgvmCli`]
 
@@ -102,7 +103,7 @@ pub struct BuildIgvmCliCustomizations {
 
     /// Ensure perf tools are included in the release initrd.
     ///
-    /// Ensures that openvmm_hcl_msft is not stripped, so that perf tools work
+    /// Ensures that openvmm_hcl is not stripped, so that perf tools work
     /// correctly, and requires that the file be built in `--release` mode, so
     /// that perf numbers are more representative of production binaries.
     #[clap(long, requires = "release")]
@@ -151,6 +152,10 @@ pub struct BuildIgvmCliCustomizations {
     /// Additional directories to be included in the initrd
     #[clap(long)]
     pub custom_directory: Vec<PathBuf>,
+
+    /// Additional rootfs.config files to use to generate the initrd
+    #[clap(long)]
+    pub custom_extra_rootfs: Vec<PathBuf>,
 
     /// (experimental) Include the AP kernel in the IGVM file
     #[clap(long)]
@@ -241,6 +246,7 @@ impl IntoPipeline for BuildIgvmCli {
                     custom_directory,
                     with_sidecar,
                     custom_sidecar,
+                    custom_extra_rootfs,
                 },
         } = self;
 
@@ -305,6 +311,7 @@ impl IntoPipeline for BuildIgvmCli {
                         KernelPackageKindCli::CvmDev => OpenhclKernelPackage::CvmDev,
                     }),
                     with_sidecar,
+                    custom_extra_rootfs,
                     override_openvmm_hcl_feature,
                     custom_sidecar,
                     override_manifest,

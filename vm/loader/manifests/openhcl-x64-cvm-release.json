@@ -12,16 +12,12 @@
                     "injection_type": "normal"
                 }
             },
-            "vtl0": {
-                "uefi": {
-                    "config_type": "none"
-                }
-            },
-            "vtl2": {
-                "underhill": {
+            "image": {
+                "openhcl": {
                     "command_line": "",
                     "memory_page_count": 163840,
-                    "memory_page_base": 32768
+                    "memory_page_base": 32768,
+                    "uefi": true
                 }
             }
         },
@@ -34,16 +30,12 @@
                     "sept_ve_disable": true
                 }
             },
-            "vtl0": {
-                "uefi": {
-                    "config_type": "none"
-                }
-            },
-            "vtl2": {
-                "underhill": {
+            "image": {
+                "openhcl": {
                     "command_line": "",
                     "memory_page_count": 32768,
-                    "memory_page_base": 32768
+                    "memory_page_base": 32768,
+                    "uefi": true
                 }
             }
         },
@@ -55,16 +47,12 @@
                     "enable_debug": true
                 }
             },
-            "vtl0": {
-                "uefi": {
-                    "config_type": "none"
-                }
-            },
-            "vtl2": {
-                "underhill": {
+            "image": {
+                "openhcl": {
                     "command_line": "",
                     "memory_page_count": 32768,
-                    "memory_page_base": 32768
+                    "memory_page_base": 32768,
+                    "uefi": true
                 }
             }
         }

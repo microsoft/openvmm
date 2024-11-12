@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #![cfg(windows)]
 
@@ -56,7 +57,7 @@ mod ntlpcapi {
     pub const OB_ALL_OBJECT_TYPE_CODES: u32 = 0x00000ffd;
 
     // This is defined incorrectly in ntapi 0.3.6.
-    extern "C" {
+    unsafe extern "C" {
         pub fn AlpcInitializeMessageAttribute(
             AttributeFlags: u32,
             Buffer: PALPC_MESSAGE_ATTRIBUTES,

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Wrapper around `update-rootfs.py`
 
@@ -31,8 +32,8 @@ flowey_request! {
         pub interactive: bool,
         /// Extra parameters for building specialized initrd files.
         pub extra_params: Option<OpenhclInitrdExtraParams>,
-        /// Path to rootfs.config file
-        pub rootfs_config: ReadVar<PathBuf>,
+        /// Paths to rootfs.config files
+        pub rootfs_config: Vec<ReadVar<PathBuf>>,
         /// Extra environment variables to set during the run (e.g: to
         /// interpolate paths into `rootfs.config`)
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
@@ -53,17 +54,18 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_openvmm_deps::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
-        ctx.import::<flowey_lib_common::install_apt_pkg::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         // ambient deps required by `update-rootfs.py`
-        let pydeps = ctx.reqv(
-            |side_effect| flowey_lib_common::install_apt_pkg::Request::Install {
-                package_names: ["python3"].map(Into::into).into(),
-                done: side_effect,
-            },
-        );
+        let pydeps =
+            ctx.reqv(
+                |side_effect| flowey_lib_common::install_dist_pkg::Request::Install {
+                    package_names: ["python3"].map(Into::into).into(),
+                    done: side_effect,
+                },
+            );
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
@@ -99,6 +101,10 @@ impl FlowNode for Node {
                 })
             };
 
+            if rootfs_config.is_empty() {
+                anyhow::bail!("no rootfs files provided");
+            }
+
             ctx.emit_rust_step("building openhcl initrd", |ctx| {
                 pydeps.clone().claim(ctx);
                 let interactive_dep = interactive_dep.claim(ctx);
@@ -110,7 +116,10 @@ impl FlowNode for Node {
                 let initrd = initrd.claim(ctx);
                 move |rt| {
                     let interactive_dep = rt.read(interactive_dep);
-                    let rootfs_config = rt.read(rootfs_config);
+                    let rootfs_config = rootfs_config
+                        .into_iter()
+                        .map(|x| rt.read(x))
+                        .collect::<Vec<_>>();
                     let extra_env = extra_env.map(|x| rt.read(x));
                     let bin_openhcl = rt.read(bin_openhcl);
                     let openvmm_repo_path = rt.read(openvmm_repo_path);
@@ -173,6 +182,10 @@ impl FlowNode for Node {
                     // hash to stuff into the initrd.
                     sh.change_dir(openvmm_repo_path);
 
+                    let rootfs_config = rootfs_config
+                        .iter()
+                        .flat_map(|x| ["--rootfs-config".as_ref(), x.as_os_str()]);
+
                     xshell::cmd!(
                         sh,
                         "python3 openhcl/update-rootfs.py
@@ -181,7 +194,7 @@ impl FlowNode for Node {
                             --arch {rootfs_py_arch}
                             --package-root {kernel_package_root}
                             --kernel-modules {kernel_modules}
-                            --rootfs-config {rootfs_config}
+                            {rootfs_config...}
                             {initrd_contents...}
                         "
                     )

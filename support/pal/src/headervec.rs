@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module implements the `HeaderVec` type for constructing dynamically
 //! sized values that have a fixed size header and a variable sized element

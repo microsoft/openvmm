@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Chipset-facing traits required to wire-up a Arc + Mutex backed
 //! [`ChipsetDevice`](chipset_device::ChipsetDevice).

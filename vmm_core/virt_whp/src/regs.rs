@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 pub trait ToWhpRegister: 'static + Copy + std::fmt::Debug {
     fn to_whp_register(self) -> Option<whp::abi::WHV_REGISTER_NAME>;

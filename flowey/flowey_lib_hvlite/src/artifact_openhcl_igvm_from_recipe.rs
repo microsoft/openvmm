@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Artifact: A collection of OpenHCL IGVM files.
 
@@ -179,7 +180,7 @@ pub mod resolve {
 
                         let Some(recipe) = super::filename_to_recipe(entry_file_stem) else {
                             anyhow::bail!(
-                                "unexpected file in openhcl_msft_igvm artifact folder: {}",
+                                "unexpected file in openhcl_igvm artifact folder: {}",
                                 entry.path().display()
                             );
                         };

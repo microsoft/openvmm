@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Support for working with global variables in a single-threaded environment.
 //! In such an environment, it is safe to access globals even if they don't

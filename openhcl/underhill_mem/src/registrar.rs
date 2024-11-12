@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Code to register lower VTL memory with the kernel as needed.
 //!
@@ -18,7 +19,6 @@
 //! initial registration for a chunk small. We track whether a given chunk has
 //! been registered via a small bitmap.
 
-use hcl::ioctl::MshvVtl;
 use inspect::Inspect;
 use memory_range::overlapping_ranges;
 use memory_range::MemoryRange;
@@ -98,12 +98,6 @@ impl Bitmap {
 
 pub trait RegisterMemory {
     fn register_range(&self, range: MemoryRange) -> Result<(), impl 'static + std::error::Error>;
-}
-
-impl RegisterMemory for MshvVtl {
-    fn register_range(&self, range: MemoryRange) -> Result<(), impl 'static + std::error::Error> {
-        self.add_vtl0_memory(range)
-    }
 }
 
 impl<T: Fn(MemoryRange) -> Result<(), E>, E: 'static + std::error::Error> RegisterMemory for T {

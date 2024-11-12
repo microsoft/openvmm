@@ -1,4 +1,5 @@
-# Copyright (C) Microsoft Corporation. All rights reserved.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 [workspace]
 resolver = "2"
@@ -40,8 +41,12 @@ members = [
   "vm/vmgs/vmgstool",
 ]
 exclude = [
-  "xsync"
+  "xsync",
+  "Guide/mdbook-openvmm-shim"
 ]
+
+[workspace.package]
+rust-version = "1.82"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
@@ -81,7 +86,7 @@ cache_topology = { path = "support/cache_topology" }
 closeable_mutex = { path = "support/closeable_mutex" }
 ci_logger = { path = "support/ci_logger" }
 clap_dyn_complete = { path = "support/clap_dyn_complete" }
-safe_x86_intrinsics = { path = "support/safe_x86_intrinsics" }
+safe_intrinsics = { path = "support/safe_intrinsics" }
 debug_ptr = { path = "support/debug_ptr" }
 fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
@@ -259,6 +264,8 @@ plan9 = { path = "vm/devices/support/fs/plan9" }
 power_resources = { path = "vm/power_resources" }
 serial_16550 = { path = "vm/devices/serial/serial_16550" }
 serial_16550_resources = { path = "vm/devices/serial/serial_16550_resources" }
+serial_debugcon = { path = "vm/devices/serial/serial_debugcon" }
+serial_debugcon_resources = { path = "vm/devices/serial/serial_debugcon_resources" }
 serial_core = { path = "vm/devices/serial/serial_core" }
 serial_pl011 = { path = "vm/devices/serial/serial_pl011" }
 serial_pl011_resources = { path = "vm/devices/serial/serial_pl011_resources" }
@@ -474,7 +481,7 @@ static_assertions = "1.1"
 syn = "2"
 target-lexicon = "0.12.13"
 tempfile = "3.2"
-thiserror = "1.0"
+thiserror = { version = "2", default-features = false }
 time = "0.3"
 toml_edit = "0.21"
 tracing = "0.1"
@@ -555,9 +562,17 @@ pbjson-build = { git = "https://github.com/jstarks/pbjson", branch = "aliases" }
 
 [workspace.lints.rust]
 # Lint groups need a priority lower than individual lints so they get applied first.
-future_incompatible = { level = "deny", priority = -1 }
-nonstandard_style = { level = "deny", priority = -1 }
-rust_2018_idioms = { level = "deny", priority = -1 }
+future_incompatible = { level = "deny", priority = -2 }
+nonstandard_style = { level = "deny", priority = -2 }
+rust_2018_idioms = { level = "deny", priority = -2 }
+
+rust-2024-compatibility = { level = "warn", priority = -1 }
+# TODO: Fix all of the below, https://github.com/microsoft/openvmm/issues/288
+edition_2024_expr_fragment_specifier = "allow"
+impl_trait_overcaptures = "allow"
+deprecated-safe-2024 = "allow"
+# Needed for linkme compatibility for now, https://github.com/dtolnay/linkme/issues/101
+unsafe-attr-outside-unsafe = "allow"
 
 unused_qualifications = "warn"
 

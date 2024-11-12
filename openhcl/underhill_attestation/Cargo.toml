@@ -1,8 +1,10 @@
-# Copyright (C) Microsoft Corporation. All rights reserved.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 [package]
 name = "underhill_attestation"
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 # Enable locally compiling and statically linking a copy of OpenSSL.
@@ -23,6 +25,7 @@ tdx_guest_device.workspace = true
 tee_call.workspace = true
 pal_async.workspace = true
 tracing.workspace = true
+cvm_tracing.workspace = true
 
 base64.workspace = true
 base64-serde.workspace = true

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! CMOS RTC device (MC146818 compatible), as found on PC (and PC compatible)
 //! platforms.

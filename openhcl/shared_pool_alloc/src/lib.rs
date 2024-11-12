@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This module implements a shared memory allocator for allocating shared pages
 //! on isolated platforms.
@@ -264,6 +265,11 @@ impl user_driver::vfio::VfioDmaBuffer for SharedPoolAllocator {
         mapping
             .map_file(0, len, gpa_fd.get(), file_offset, true)
             .context("unable to map allocation")?;
+
+        // It is a requirement of the VfioDmaBuffer trait that all allocated buffers be zeroed out
+        mapping
+            .fill_at(0, 0, len)
+            .context("failed to zero shared memory")?;
 
         let pfns: Vec<_> = (alloc.base_pfn()..alloc.base_pfn() + alloc.size_pages).collect();
 

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! WHP implementation of the virt::generic interfaces.
 
@@ -102,7 +103,7 @@ pub struct WhpPartitionInner {
     cpuid: virt::CpuidLeafSet,
     vtl0_alias_map_offset: Option<u64>,
     monitor_page: MonitorPage,
-    isolation: Option<IsolationType>,
+    isolation: IsolationType,
 }
 
 #[derive(Inspect)]
@@ -459,7 +460,7 @@ impl virt::ScrubVtl for WhpPartition {
     type Error = Error;
 
     fn scrub(&self, vtl: Vtl) -> Result<(), Error> {
-        assert!(self.inner.isolation.is_none());
+        assert!(!self.inner.isolation.is_isolated());
         assert_eq!(vtl, Vtl::Vtl2);
 
         let vtl2 = self.inner.vtl2.as_ref().ok_or(Error::NoVtl2)?;
@@ -492,7 +493,7 @@ impl virt::AcceptInitialPages for WhpPartition {
     type Error = Error;
 
     fn accept_initial_pages(&self, pages: &[(MemoryRange, PageVisibility)]) -> Result<(), Error> {
-        assert!(self.inner.isolation.is_some());
+        assert!(self.inner.isolation.is_isolated());
 
         for (range, vis) in pages {
             self.inner
@@ -521,13 +522,13 @@ impl virt::Partition for WhpPartition {
     fn supports_vtl_scrub(
         &self,
     ) -> Option<&dyn virt::ScrubVtl<Error = <Self as virt::Hv1>::Error>> {
-        self.inner.isolation.is_none().then_some(self)
+        (!self.inner.isolation.is_isolated()).then_some(self)
     }
 
     fn supports_initial_accept_pages(
         &self,
     ) -> Option<&dyn virt::AcceptInitialPages<Error = <Self as virt::Hv1>::Error>> {
-        self.inner.isolation.is_some().then_some(self)
+        self.inner.isolation.is_isolated().then_some(self)
     }
 
     fn doorbell_registration(
@@ -922,7 +923,7 @@ impl WhpPartitionInner {
                     cpuid.extend(hv1_emulator::cpuid::hv_cpuid_leaves(
                         proto_config.processor_topology,
                         proto_config.user_mode_apic,
-                        None,
+                        IsolationType::None,
                         false,
                         None,
                         None,
@@ -946,7 +947,7 @@ impl WhpPartitionInner {
 
             // TODO: Supporting the alias map with isolation requires additional
             // mapper changes that are not implemented yet.
-            if vtl2_config.vtl0_alias_map && proto_config.isolation.is_some() {
+            if vtl2_config.vtl0_alias_map && proto_config.isolation.is_isolated() {
                 todo!("alias map and isolation requires memory mapper changes")
             }
 
@@ -1360,6 +1361,7 @@ impl VtlPartition {
                     vendor,
                     tsc_frequency,
                     ref_time,
+                    hypercall_page_protectors: vtl_array::VtlArray::from_fn(|_| None),
                 }))
             }
         } else {
@@ -1379,16 +1381,16 @@ impl VtlPartition {
             .map(|vp| vp.apic_id)
             .collect();
 
-        let mapper: Box<dyn MemoryMapper> = if let Some(isolation_type) = config.isolation {
+        let mapper: Box<dyn MemoryMapper> = if config.isolation.is_isolated() {
             // VTL2 late map support is ignored, since memory acceptance
             // requires explicit calls from the guest in order to access
             // memory.
 
             assert!(!with_overlays);
 
-            match isolation_type {
+            match config.isolation {
                 IsolationType::Vbs => {}
-                _ => unimplemented!("isolation type unsupported: {isolation_type:?}"),
+                ty => unimplemented!("isolation type unsupported: {ty:?}"),
             }
 
             Box::new(memory::vtl2_mapper::VtlMemoryMapper::new(

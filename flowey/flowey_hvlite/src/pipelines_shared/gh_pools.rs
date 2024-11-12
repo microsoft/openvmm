@@ -1,15 +1,17 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Centralized list of constants enumerating available GitHub build pools.
 
 #![allow(unused)]
 
+use flowey::node::prelude::FlowPlatformLinuxDistro;
 use flowey::pipeline::prelude::*;
 
 pub fn default_x86_pool(platform: FlowPlatform) -> GhRunner {
     match platform {
         FlowPlatform::Windows => windows_amd_self_hosted(),
-        FlowPlatform::Linux => linux_self_hosted(),
+        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => linux_self_hosted(),
         platform => panic!("unsupported platform {platform}"),
     }
 }
@@ -17,7 +19,7 @@ pub fn default_x86_pool(platform: FlowPlatform) -> GhRunner {
 pub fn default_gh_hosted(platform: FlowPlatform) -> GhRunner {
     match platform {
         FlowPlatform::Windows => gh_hosted_windows(),
-        FlowPlatform::Linux => gh_hosted_linux(),
+        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => gh_hosted_linux(),
         platform => panic!("unsupported platform {platform}"),
     }
 }
@@ -63,6 +65,7 @@ pub fn linux_self_hosted() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
         "1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3".to_string(),
+        "1ES.ImageOverride=MMSUbuntu22.04-256GB".to_string(),
     ])
 }
 
@@ -74,10 +77,11 @@ pub fn gh_hosted_linux() -> GhRunner {
     GhRunner::GhHosted(GhRunnerOsLabel::UbuntuLatest)
 }
 
-pub fn windows_arm_self_hosted() -> GhRunner {
+pub fn windows_arm_self_hosted_baremetal() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
         "Windows".to_string(),
         "ARM64".to_string(),
+        "Baremetal".to_string(),
     ])
 }

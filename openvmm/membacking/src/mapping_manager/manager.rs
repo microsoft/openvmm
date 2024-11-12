@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implements the mapping manager, which keeps track of the VA mappers and
 //! their currently active mappings. It is responsible for invalidating mappings

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Coordinator between queues and hot add/remove of namespaces.
 
@@ -155,6 +156,26 @@ impl NvmeWorkers {
             }
         } else {
             panic!("not resetting: {:?}", self.state)
+        }
+    }
+
+    // Reset the workers from whatever state they are in.
+    pub async fn reset(&mut self) {
+        loop {
+            match &mut self.state {
+                EnableState::Disabled => break,
+                EnableState::Enabling(recv) => {
+                    recv.await.unwrap();
+                    self.state = EnableState::Enabled;
+                }
+                EnableState::Enabled => {
+                    self.controller_reset();
+                }
+                EnableState::Resetting(recv) => {
+                    recv.await.unwrap();
+                    self.state = EnableState::Disabled;
+                }
+            }
         }
     }
 }

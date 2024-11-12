@@ -7,26 +7,82 @@ The OpenVMM Guide is written in Markdown, and rendered to HTML using
 this Guide in the main OpenVMM GitHub repo, in the
 [`Guide/`](https://github.com/microsoft/openvmm/tree/main/Guide) folder.
 
+## Editing the Guide
+
+### Small Changes
+
 For small changes, you can simply click the "Suggest an Edit" button in the
 top-right corner of any page to automatically open up a GitHub Edit page.
 
-For larger changes, we suggest cloning the repo locally, and previewing changes
+### Medium Changes
+
+For medium changes, we suggest cloning the repo locally, and previewing changes
 to Markdown in your editor (Visual Studio Code has good support for this).
 
-## Building locally
+### Large Changes
 
-If you want a full rendered copy of the guide locally, you can build one by
-installing mdbook:
+For large changes, we suggest cloning the repo locally, and building a fully
+rendered copy of the Guide using `mdbook`.
 
+This is very useful when making changes that leverage mdbook preprocessors, such
+as using mermaid diagrams, or previewing admonishments.
+
+```admonish info
+For example, the `mdbook-admonish` preprocessor is what powers this nice looking
+"Info" box!
 ```
+
+Building the Guide locally is quite straightforward:
+
+1. Install `mdbook` and the additional preprocessors we use locally:
+
+```bash
 cargo install mdbook
+cargo install mdbook-admonish
+cargo install mdbook-mermaid
 ```
 
-Then from the root directory of the repo, running:
+2. Navigate into the `Guide/` directory, and run `mdbook`:
 
-```
-mdbook serve Guide
+```bash
+cd Guide/
+# must be run inside the `Guide/` directory!
+mdbook serve
 ```
 
-And navigating to the localhost URL in your web browser (typically
+3. Navigate to the localhost URL in your web browser (typically
 `http://127.0.0.1:3000/`)
+
+### Troubleshooting
+
+#### Running `mdbook serve` outside the `Guide/` directory
+
+**Error:**
+
+```
+2024-10-29 16:26:22 [INFO] (mdbook::book): Book building has started
+error: manifest path `./mdbook-openvmm-shim/Cargo.toml` does not exist
+```
+
+**Solution:**
+
+Ensure you have changed your working-directory to the `Guide/` folder (e.g: via
+`cd Guide/`), and then run `mdbook serve`.
+
+#### Rust is not installed
+
+**Error:**
+
+```
+2024-10-29 16:35:49 [INFO] (mdbook::book): Book building has started
+2024-10-29 16:35:49 [WARN] (mdbook::preprocess::cmd): The command wasn't found, is the "admonish" preprocessor installed?
+2024-10-29 16:35:49 [WARN] (mdbook::preprocess::cmd):   Command: cargo run --quiet --manifest-path ./mdbook-openvmm-shim/Cargo.toml mdbook-admonish
+```
+
+**Solution:**
+
+The OpenVMM Guide hooks into a custom Rust utility called `mdbook-openvmm-shim`,
+which must be compiled in order for `mdbook` to successfully build the OpenVMM
+guide.
+
+Please ensure you have [installed Rust](../getting_started/linux.md#installing-rust).

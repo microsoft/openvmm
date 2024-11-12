@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implements a generic ATA disk drive with 48-bit LBA support, wrapping a
 //! [`SimpleDisk`].

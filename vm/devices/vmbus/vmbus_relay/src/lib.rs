@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
@@ -883,8 +884,12 @@ impl RelayTask {
             // Preserve channel enumeration order from the host within the same
             // interface type.
             offer_order: Some(channel_id),
-            // Strip the confidential flag for relay channels if the host set it.
-            flags: offer.offer.flags.with_confidential_channel(false),
+            // Strip the confidential flags for relay channels if the host set them.
+            flags: offer
+                .offer
+                .flags
+                .with_confidential_ring_buffer(false)
+                .with_confidential_external_memory(false),
             user_defined: offer.offer.user_defined,
             monitor_id: use_mnf.then_some(offer.offer.monitor_id),
         };

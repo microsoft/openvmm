@@ -26,9 +26,11 @@ cargo xtask fuzz init openvmm_crate_to_fuzz TEMPLATE
 
 Use `--help` for more details on the available TEMPLATE types.
 
-> NOTE: We don't suggest using `cargo fuzz init` (i.e: without `xtask`), as it
-> emits a template that isn't compatible with the OpenVMM repo style, and also
-> doesn't properly update the root Cargo.toml's `workspace.members` array.
+```admonish caution
+We don't suggest using `cargo fuzz init` (i.e: without `xtask`), as it
+emits a template that isn't compatible with the OpenVMM repo style, and also
+doesn't properly update the root Cargo.toml's `workspace.members` array.
+```
 
 ## Fuzzing an abstraction over unsafe code
 

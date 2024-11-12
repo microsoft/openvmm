@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implements a filesystem backed by Windows section objects (rather than
 //! files). This is useful for sharing memory between the host and the guest.

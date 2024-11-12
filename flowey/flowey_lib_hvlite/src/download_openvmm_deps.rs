@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Download various pre-built `openvmm-deps` dependencies.
 
@@ -29,7 +30,7 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<flowey_lib_common::install_apt_pkg::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::download_gh_release::Node>();
     }
 
@@ -89,6 +90,7 @@ impl FlowNode for Node {
                 ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
                     repo_owner: "microsoft".into(),
                     repo_name: "openvmm-deps".into(),
+                    needs_auth: false,
                     tag: version.clone(),
                     file_name: format!("openvmm-deps.x86_64.{version}.tar.bz2"),
                     path: v,
@@ -109,6 +111,7 @@ impl FlowNode for Node {
                 ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
                     repo_owner: "microsoft".into(),
                     repo_name: "openvmm-deps".into(),
+                    needs_auth: false,
                     tag: version.clone(),
                     file_name: format!("openvmm-deps.aarch64.{version}.tar.bz2"),
                     path: v,

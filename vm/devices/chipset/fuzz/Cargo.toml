@@ -1,9 +1,11 @@
-# Copyright (C) Microsoft Corporation. All rights reserved.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 [package]
 name = "fuzz_chipset"
 publish = false
 edition = "2021"
+rust-version.workspace = true
 
 [dependencies]
 xtask_fuzz.workspace = true

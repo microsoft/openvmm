@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! flowey nodes specific to the HvLite project.
 
@@ -45,6 +46,7 @@ pub mod download_openvmm_deps;
 pub mod download_openvmm_vmm_tests_vhds;
 pub mod download_uefi_mu_msvm;
 pub mod git_checkout_openvmm_repo;
+pub mod init_cross_build;
 pub mod init_openvmm_cargo_config_deny_warnings;
 pub mod init_openvmm_magicpath_linux_test_kernel;
 pub mod init_openvmm_magicpath_lxutil;

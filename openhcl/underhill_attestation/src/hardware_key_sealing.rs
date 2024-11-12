@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implementation of key derivation using hardware secret and the VMGS data encryption key (DEK)
 //! sealing using the derived key. The sealed DEK is written to the [FileId::HW_KEY_PROTECTOR`]
@@ -8,6 +9,7 @@ use crate::crypto;
 use crate::protocol::igvm_attest;
 use crate::protocol::vmgs;
 use crate::protocol::vmgs::HardwareKeyProtector;
+use cvm_tracing::CVM_ALLOWED;
 use openssl_kdf::kdf::Kbkdf;
 use thiserror::Error;
 use zerocopy::AsBytes;
@@ -139,7 +141,7 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
         )
         .map_err(HardwareKeySealingError::HmacAfterEncrypt)?;
 
-        tracing::info!("encrypt egress_key using hardware derived key");
+        tracing::info!(CVM_ALLOWED, "encrypt egress_key using hardware derived key");
 
         Ok(hardware_key_protector)
     }
@@ -169,7 +171,10 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
         }
         decrypted_ingress_key.copy_from_slice(&output[..vmgs::AES_GCM_KEY_LENGTH]);
 
-        tracing::info!("decrypt ingress_key using hardware derived key");
+        tracing::info!(
+            CVM_ALLOWED,
+            "decrypt ingress_key using hardware derived key"
+        );
 
         Ok(decrypted_ingress_key)
     }

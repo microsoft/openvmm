@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A empty Rust crate, whose only purpose is to serve as a "build system" for a
 //! resource-only DLL containing an OpenHCL IGVM file.

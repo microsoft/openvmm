@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Loader glue code shared between both HvLite and Underhill.
 //!
@@ -101,16 +102,14 @@ impl<R> Loader<'_, R> {
         let page_end = page_base + page_count - 1;
         match self.accepted_ranges.entry(page_base..=page_end) {
             Entry::Overlapping(entry) => {
-                let (overlap_start, overlap_end, overlap_info) = entry.get();
-                let overlap_len = overlap_end - overlap_start + 1;
-
-                Err(anyhow::anyhow!("new region at page base {:#x}, len {:#x}, acceptance {:?} overlaps with existing region at page base {:#x}, len {}, tag {}",
-                    page_base,
-                    page_count,
+                let (overlap_start, overlap_end, ref overlap_info) = *entry.get();
+                Err(anyhow::anyhow!(
+                    "{} at {} ({:?}) overlaps {} at {}",
+                    tag,
+                    MemoryRange::from_4k_gpn_range(page_base..page_end + 1),
                     acceptance,
-                    overlap_start,
-                    overlap_len,
-                    overlap_info.tag
+                    overlap_info.tag,
+                    MemoryRange::from_4k_gpn_range(overlap_start..overlap_end + 1),
                 ))
             }
             Entry::Vacant(entry) => {
@@ -177,16 +176,7 @@ impl<R: Debug + GuestArch> ImageLoad<R> for Loader<'_, R> {
             .context("unable to zero remaining import")
     }
 
-    fn import_vp_register(&mut self, vtl: Vtl, register: R) -> anyhow::Result<()> {
-        // Only importing to the max VTL for registers is currently allowed, as
-        // only one set of registers is stored.
-        if vtl != self.max_vtl {
-            anyhow::bail!(
-                "vtl specified {vtl:?} is not the max enabled vtl {:?}",
-                self.max_vtl
-            );
-        }
-
+    fn import_vp_register(&mut self, register: R) -> anyhow::Result<()> {
         let entry = self.regs.entry(std::mem::discriminant(&register));
         match entry {
             std::collections::hash_map::Entry::Occupied(_) => {
@@ -271,16 +261,7 @@ impl<R: Debug + GuestArch> ImageLoad<R> for Loader<'_, R> {
         }
     }
 
-    fn set_vp_context_page(
-        &mut self,
-        _vtl: Vtl,
-        _page_base: u64,
-        _acceptance: BootPageAcceptance,
-    ) -> anyhow::Result<()> {
-        unimplemented!()
-    }
-
-    fn vp_context_page(&self, _vtl: Vtl) -> anyhow::Result<u64> {
+    fn set_vp_context_page(&mut self, _page_base: u64) -> anyhow::Result<()> {
         unimplemented!()
     }
 
@@ -319,11 +300,9 @@ impl<R: Debug + GuestArch> ImageLoad<R> for Loader<'_, R> {
         _relocation_alignment: u64,
         _minimum_relocation_gpa: u64,
         _maximum_relocation_gpa: u64,
-        _is_vtl2: bool,
         _apply_rip_offset: bool,
         _apply_gdtr_offset: bool,
         _vp_index: u16,
-        _vtl: Vtl,
     ) -> anyhow::Result<()> {
         unimplemented!()
     }
@@ -334,7 +313,6 @@ impl<R: Debug + GuestArch> ImageLoad<R> for Loader<'_, R> {
         _size_pages: u64,
         _used_pages: u64,
         _vp_index: u16,
-        _vtl: Vtl,
     ) -> anyhow::Result<()> {
         unimplemented!()
     }

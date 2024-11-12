@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! This implements the [`MemoryMapper`] trait and related functionality for
 //! [`GuestMemoryManager`](super::GuestMemoryManager).

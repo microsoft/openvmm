@@ -25,9 +25,11 @@ installation and set your password. You can open WSL by typing `wsl` or `bash`
 into Command Prompt or Powershell, or by opening the "Ubuntu" Windows Terminal
 profile that should have been created.
 
-> If you intend to cross-compile OpenVMM for Windows, please ensure you are
-> running a recent version of Windows 11. Windows 10 is no longer supported as a
-> development platform, due to needed WHP APIs.
+```admonish info
+If you intend to cross-compile OpenVMM for Windows, please ensure you are
+running a recent version of Windows 11. Windows 10 is no longer supported as a
+development platform, due to needed WHP APIs.
+```
 
 All subsequent commands on this page must be run within WSL2.
 
@@ -40,6 +42,23 @@ may take a week or two after a new stable is released until OpenVMM switches
 over to it.
 
 Please follow the [official instructions](https://www.rust-lang.org/tools/install) to do so.
+
+## \[Linux] Additional Dependencies
+
+On Linux, there are various other dependencies you will need depending on what
+you're working on. On Debian-based distros such as Ubuntu, running the following
+command within WSL will install these dependencies.
+
+In the future, it is likely that this step will be folded into the
+`cargo xflowey restore-packages` command.
+
+```bash
+$ sudo apt install \
+  binutils              \
+  build-essential       \
+  gcc-aarch64-linux-gnu \
+  libssl-dev
+```
 
 ## Cloning the OpenVMM source
 

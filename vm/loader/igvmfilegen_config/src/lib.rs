@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Configuration for generating IGVM files. These are deserialized from a JSON
 //! manifest file used by the file builder.
@@ -10,7 +11,7 @@ use std::ffi::CString;
 use std::path::PathBuf;
 
 /// The UEFI config type to pass to the UEFI loader.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum UefiConfigType {
     /// No UEFI config set at load time.
@@ -63,58 +64,81 @@ pub enum ConfigIsolationType {
     },
 }
 
-/// Configuration on what to load for a given VTL.
+/// Configuration on what to load.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
-pub enum VtlConfig {
+pub enum Image {
     /// Load nothing.
     None,
     /// Load UEFI.
     Uefi { config_type: UefiConfigType },
-    /// Load the special underhill runtime environment.
-    Underhill {
-        /// The Underhill kernel command line.
+    /// Load the OpenHCL paravisor.
+    Openhcl {
+        /// The paravisor kernel command line.
         #[serde(default)]
         command_line: String,
         /// If false, the host may provide additional kernel command line
         /// parameters at runtime.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         static_command_line: bool,
-        /// The base page number for VTL2 memory. None means relocation is used.
+        /// The base page number for paravisor memory. None means relocation is used.
         #[serde(skip_serializing_if = "Option::is_none")]
         memory_page_base: Option<u64>,
-        /// The number of pages for VTL2 memory.
+        /// The number of pages for paravisor memory.
         memory_page_count: u64,
+        /// Include the UEFI firmware for loading into the guest.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        uefi: bool,
+        /// Include the Linux kernel for loading into the guest.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        linux: Option<LinuxImage>,
     },
     /// Load the Linux kernel.
     /// TODO: Currently, this only works with underhill.
-    Linux {
-        /// Load with an initrd.
-        use_initrd: bool,
-        /// The command line to boot the kernel with.
-        command_line: CString,
-    },
+    Linux(LinuxImage),
 }
 
-impl VtlConfig {
-    /// Get the required resources for this VTL config.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+pub struct LinuxImage {
+    /// Load with an initrd.
+    pub use_initrd: bool,
+    /// The command line to boot the kernel with.
+    pub command_line: CString,
+}
+
+impl Image {
+    /// Get the required resources for this image config.
     pub fn required_resources(&self) -> Vec<ResourceType> {
-        match self {
-            VtlConfig::None => vec![],
-            VtlConfig::Uefi { .. } => vec![ResourceType::Uefi],
-            VtlConfig::Underhill { .. } => vec![
+        match *self {
+            Image::None => vec![],
+            Image::Uefi { .. } => vec![ResourceType::Uefi],
+            Image::Openhcl {
+                uefi, ref linux, ..
+            } => [
                 ResourceType::UnderhillKernel,
                 ResourceType::OpenhclBoot,
                 ResourceType::UnderhillInitrd,
-            ],
-            VtlConfig::Linux { use_initrd, .. } => {
-                let mut resources = vec![ResourceType::LinuxKernel];
-                if *use_initrd {
-                    resources.push(ResourceType::LinuxInitrd);
-                }
-                resources
-            }
+            ]
+            .into_iter()
+            .chain(if uefi { Some(ResourceType::Uefi) } else { None })
+            .chain(linux.iter().flat_map(|linux| linux.required_resources()))
+            .collect(),
+            Image::Linux(ref linux) => linux.required_resources(),
         }
+    }
+}
+
+impl LinuxImage {
+    fn required_resources(&self) -> Vec<ResourceType> {
+        [ResourceType::LinuxKernel]
+            .into_iter()
+            .chain(if self.use_initrd {
+                Some(ResourceType::LinuxInitrd)
+            } else {
+                None
+            })
+            .collect()
     }
 }
 
@@ -128,10 +152,8 @@ pub struct GuestConfig {
     pub max_vtl: u8,
     /// The isolation type to be used for the guest.
     pub isolation_type: ConfigIsolationType,
-    /// The config to load into VTL0.
-    pub vtl0: VtlConfig,
-    /// The config to load into VTL2.
-    pub vtl2: VtlConfig,
+    /// The image to load into the guest.
+    pub image: Image,
 }
 
 /// The architecture of the igvm file.
@@ -160,8 +182,7 @@ impl Config {
     pub fn required_resources(&self) -> Vec<ResourceType> {
         let mut resources = vec![];
         for guest_config in &self.guest_configs {
-            resources.extend(guest_config.vtl0.required_resources());
-            resources.extend(guest_config.vtl2.required_resources());
+            resources.extend(guest_config.image.required_resources());
         }
         resources
     }

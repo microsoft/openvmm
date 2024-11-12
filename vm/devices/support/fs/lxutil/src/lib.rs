@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! The LxUtil crate provides an API that allows you to write the same file system code on Windows
 //! and Linux, using Linux semantics on both platforms (subject to the limitations of the underlying

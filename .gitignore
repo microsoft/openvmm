@@ -10,6 +10,9 @@
 *.iso
 *.vmgs
 
+# macOS files
+.DS_Store
+
 # local fuzzing artifacts
 **/fuzz/target
 **/fuzz/corpus

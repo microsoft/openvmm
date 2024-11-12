@@ -86,7 +86,7 @@ def generate_build_info(path: str):
 
 
 def process(temp_dir: str, underhill_path: str, kernel_path: str,
-            build_info: str, rootfs_config_path: str,
+            build_info: str, rootfs_config_path: List[str],
             updated_initramfs_path: str, additional_layers: List[str],
             additional_dirs: List[str]):
     align = lambda x, boundary: (x + boundary-1) & ~(boundary-1)
@@ -149,17 +149,19 @@ def main():
     parser.add_argument('--package-root', default=os.path.join(get_script_path(), "../.packages", package_id), help='HCL package root containing kernel modules and extra cpio.gz files')
     parser.add_argument('--kernel-modules', help='Path to kernel modules (defaults to package root)')
     parser.add_argument('--build_info', help='Path to the file with build information')
-    parser.add_argument('--rootfs-config', default=os.path.join(get_script_path(), "../underhill/rootfs.config"),
-                                            help='Configuration file for the root filesystem')
+    parser.add_argument('--rootfs-config', action='append', help='Configuration file for the root filesystem')
     parser.add_argument('--layer', action='append', help='Adds a custom layer file.')
     parser.add_argument('--add-dir', action='append', help='Adds a directory.')
-    parser.set_defaults(layer=[], add_dir=[])
+    parser.set_defaults(layer=[], add_dir=[], rootfs_config=[])
 
     args, _  = parser.parse_known_args()
 
     arch = args.arch
     if arch is None:
         arch = platform.processor()
+
+    if not args.rootfs_config:
+        args.rootfs_config = [os.path.join(get_script_path(), "../underhill/rootfs.config")]
 
     kernel_arch = None
     package_arch = None
@@ -203,7 +205,6 @@ def main():
         kernel_path = args.package_root
     build_info = args.build_info
     kernel_path = os.path.realpath(kernel_path)
-    rootfs_config_path = os.path.realpath(args.rootfs_config)
     updated_initramfs_path = args.updated_initramfs_path
 
     additional_layers = []
@@ -220,7 +221,7 @@ def main():
     with tempfile.TemporaryDirectory() as temp_dir:
         process(
             str(temp_dir),
-            underhill_path, kernel_path, build_info, rootfs_config_path,
+            underhill_path, kernel_path, build_info, args.rootfs_config,
             updated_initramfs_path, additional_layers,
             additional_dirs)
 

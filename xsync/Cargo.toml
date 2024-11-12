@@ -1,9 +1,13 @@
-# Copyright (C) Microsoft Corporation. All rights reserved.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 [workspace]
 default-members = ["xsync"]
 members = ["xsync"]
 resolver = "2"
+
+[workspace.package]
+rust-version = "1.82"
 
 [workspace.dependencies]
 anyhow = "1.0"

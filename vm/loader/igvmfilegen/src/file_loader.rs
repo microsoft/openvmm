@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Implements a loader that serializes the loaded state into the IGVM binary format.
 
@@ -10,10 +11,10 @@ use crate::signed_measurement::generate_snp_measurement;
 use crate::signed_measurement::generate_tdx_measurement;
 use crate::signed_measurement::generate_vbs_measurement;
 use crate::vp_context_builder::snp::InjectionType;
-use crate::vp_context_builder::snp::SnpVpContextBuilder;
-use crate::vp_context_builder::tdx::TdxVpContextBuilder;
+use crate::vp_context_builder::snp::SnpHardwareContext;
+use crate::vp_context_builder::tdx::TdxHardwareContext;
 use crate::vp_context_builder::vbs::VbsRegister;
-use crate::vp_context_builder::vbs::VbsVpContextBuilder;
+use crate::vp_context_builder::vbs::VbsVpContext;
 use crate::vp_context_builder::VpContextBuilder;
 use crate::vp_context_builder::VpContextPageState;
 use crate::vp_context_builder::VpContextState;
@@ -56,7 +57,6 @@ use std::fmt::Display;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 
-pub const HV_NUM_VTLS: usize = 3;
 pub const DEFAULT_COMPATIBILITY_MASK: u32 = 0x1;
 
 const TDX_SHARED_GPA_BOUNDARY_BITS: u8 = 47;
@@ -100,12 +100,43 @@ pub struct IgvmLoader<R: VbsRegister + GuestArch> {
     initialization_headers: Vec<IgvmInitializationHeader>,
     directives: Vec<IgvmDirectiveHeader>,
     page_data_directives: Vec<IgvmDirectiveHeader>,
-    vp_context_builder: Option<Box<dyn VpContextBuilder<Register = R>>>,
+    vp_context: Option<Box<dyn VpContextBuilder<Register = R>>>,
     max_vtl: Vtl,
     parameter_areas: BTreeMap<(u64, u32), u32>,
     isolation_type: LoaderIsolationType,
     paravisor_present: bool,
     imported_regions_config_page: Option<u64>,
+}
+
+pub struct IgvmVtlLoader<'a, R: VbsRegister + GuestArch> {
+    loader: &'a mut IgvmLoader<R>,
+    vtl: Vtl,
+    vp_context: Option<VbsVpContext<R>>,
+}
+
+impl<R: VbsRegister + GuestArch> IgvmVtlLoader<'_, R> {
+    pub fn loader(&self) -> &IgvmLoader<R> {
+        self.loader
+    }
+
+    /// Returns a loader for importing an inner image as part of the actual
+    /// (paravisor) image to load.
+    ///
+    /// Use `take_vp_context` on the returned loader to get the VP context that
+    /// the paravisor should load.
+    pub fn nested_loader(&mut self) -> IgvmVtlLoader<'_, R> {
+        IgvmVtlLoader {
+            loader: &mut *self.loader,
+            vtl: Vtl::Vtl0,
+            vp_context: Some(VbsVpContext::new(self.vtl)),
+        }
+    }
+
+    pub fn take_vp_context(&mut self) -> Vec<u8> {
+        self.vp_context
+            .take()
+            .map_or_else(Vec::new, |vp| vp.as_page())
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -191,15 +222,12 @@ impl IgvmLoaderRegister for X86Register {
                     compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
                 };
 
-                let vp_context_builder = Box::new(
-                    SnpVpContextBuilder::new(
-                        max_vtl,
-                        !with_paravisor,
-                        shared_gpa_boundary,
-                        injection_type,
-                    )
-                    .expect("must be valid"),
-                );
+                let vp_context_builder = Box::new(SnpHardwareContext::new(
+                    max_vtl,
+                    !with_paravisor,
+                    shared_gpa_boundary,
+                    injection_type,
+                ));
 
                 (platform_header, vec![init_header], vp_context_builder)
             }
@@ -223,9 +251,7 @@ impl IgvmLoaderRegister for X86Register {
                     });
                 }
 
-                let vp_context_builder = Box::new(
-                    TdxVpContextBuilder::new(max_vtl, !with_paravisor).expect("must be valid"),
-                );
+                let vp_context_builder = Box::new(TdxHardwareContext::new(!with_paravisor));
 
                 (platform_header, init_headers, vp_context_builder)
             }
@@ -472,7 +498,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
 
         match isolation_type {
             LoaderIsolationType::None | LoaderIsolationType::Vbs { .. } => {
-                vp_context_builder = Some(Box::new(VbsVpContextBuilder::<R>::new()));
+                vp_context_builder = Some(Box::new(VbsVpContext::<R>::new(max_vtl)));
 
                 // Add VBS platform header
                 let info = IGVM_VHS_SUPPORTED_PLATFORM {
@@ -504,7 +530,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
             initialization_headers,
             directives: Vec::new(),
             page_data_directives: Vec::new(),
-            vp_context_builder,
+            vp_context: vp_context_builder,
             max_vtl,
             parameter_areas: BTreeMap::new(),
             isolation_type,
@@ -554,13 +580,10 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
     /// Finalize the loader state, returning an IGVM file.
     pub fn finalize(mut self, guest_svn: u32) -> anyhow::Result<IgvmOutput> {
         // Finalize any VP state.
-        for context in self
-            .vp_context_builder
-            .take()
-            .expect("should never be none")
-            .finalize()
-            .into_iter()
-        {
+        let mut state = Vec::new();
+        self.vp_context.take().unwrap().finalize(&mut state);
+
+        for context in state {
             match context {
                 VpContextState::Page(VpContextPageState {
                     page_base,
@@ -700,16 +723,14 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
         let page_end = page_base + page_count - 1;
         match self.accepted_ranges.entry(page_base..=page_end) {
             Entry::Overlapping(entry) => {
-                let (overlap_start, overlap_end, overlap_info) = entry.get();
-                let overlap_len = overlap_end - overlap_start + 1;
-
-                Err(anyhow::anyhow!("new region at page base {:#x}, len {:#x}, acceptance {:?} overlaps with existing region at page base {:#x}, len {}, tag {}",
-                    page_base,
-                    page_count,
+                let (overlap_start, overlap_end, ref overlap_info) = *entry.get();
+                Err(anyhow::anyhow!(
+                    "{} at {} ({:?}) overlaps {} at {}",
+                    tag,
+                    MemoryRange::from_4k_gpn_range(page_base..page_end + 1),
                     acceptance,
-                    overlap_start,
-                    overlap_len,
-                    overlap_info.tag
+                    overlap_info.tag,
+                    MemoryRange::from_4k_gpn_range(overlap_start..overlap_end + 1),
                 ))
             }
             Entry::Vacant(entry) => {
@@ -752,128 +773,13 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
             _ => false,
         }
     }
-}
 
-impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmLoader<R> {
-    fn isolation_config(&self) -> IsolationConfig {
-        match self.isolation_type {
-            LoaderIsolationType::None => IsolationConfig {
-                paravisor_present: self.paravisor_present,
-                isolation_type: IsolationType::None,
-                shared_gpa_boundary_bits: None,
-            },
-            LoaderIsolationType::Vbs { .. } => IsolationConfig {
-                paravisor_present: self.paravisor_present,
-                isolation_type: IsolationType::Vbs,
-                shared_gpa_boundary_bits: None,
-            },
-            LoaderIsolationType::Snp {
-                shared_gpa_boundary_bits,
-                policy: _,
-                injection_type: _,
-            } => IsolationConfig {
-                paravisor_present: self.paravisor_present,
-                isolation_type: IsolationType::Snp,
-                shared_gpa_boundary_bits,
-            },
-            LoaderIsolationType::Tdx { .. } => IsolationConfig {
-                paravisor_present: self.paravisor_present,
-                isolation_type: IsolationType::Tdx,
-                shared_gpa_boundary_bits: Some(TDX_SHARED_GPA_BOUNDARY_BITS),
-            },
+    pub fn loader(&mut self) -> IgvmVtlLoader<'_, R> {
+        IgvmVtlLoader {
+            vtl: self.max_vtl,
+            loader: self,
+            vp_context: None,
         }
-    }
-
-    fn create_parameter_area(
-        &mut self,
-        page_base: u64,
-        page_count: u32,
-        debug_tag: &str,
-    ) -> anyhow::Result<ParameterAreaIndex> {
-        self.create_parameter_area_with_data(page_base, page_count, debug_tag, &[])
-    }
-
-    fn create_parameter_area_with_data(
-        &mut self,
-        page_base: u64,
-        page_count: u32,
-        debug_tag: &str,
-        initial_data: &[u8],
-    ) -> anyhow::Result<ParameterAreaIndex> {
-        let area_id = (page_base, page_count);
-
-        // Allocate a new parameter area, that must not overlap other accepted ranges.
-        self.accept_new_range(
-            page_base,
-            page_count as u64,
-            debug_tag,
-            BootPageAcceptance::ExclusiveUnmeasured,
-        )?;
-
-        let index: u32 = self
-            .parameter_areas
-            .len()
-            .try_into()
-            .expect("parameter area greater than u32");
-        self.parameter_areas.insert(area_id, index);
-
-        // Add the newly allocated parameter area index to headers.
-        self.directives.push(IgvmDirectiveHeader::ParameterArea {
-            number_of_bytes: page_count as u64 * PAGE_SIZE_4K,
-            parameter_area_index: index,
-            initial_data: initial_data.to_vec(),
-        });
-
-        tracing::debug!(
-            index,
-            page_base,
-            page_count,
-            initial_data_len = initial_data.len(),
-            "Creating new parameter area",
-        );
-
-        Ok(ParameterAreaIndex(index))
-    }
-
-    fn import_parameter(
-        &mut self,
-        parameter_area: ParameterAreaIndex,
-        byte_offset: u32,
-        parameter_type: IgvmParameterType,
-    ) -> anyhow::Result<()> {
-        let index = parameter_area.0;
-
-        if index >= self.parameter_areas.len() as u32 {
-            anyhow::bail!("invalid parameter area index: {:x}", index);
-        }
-
-        tracing::debug!(
-            ?parameter_type,
-            parameter_area_index = parameter_area.0,
-            byte_offset,
-            "Importing parameter",
-        );
-
-        let info = IGVM_VHS_PARAMETER {
-            parameter_area_index: index,
-            byte_offset,
-        };
-
-        let header = match parameter_type {
-            IgvmParameterType::VpCount => IgvmDirectiveHeader::VpCount(info),
-            IgvmParameterType::Srat => IgvmDirectiveHeader::Srat(info),
-            IgvmParameterType::Madt => IgvmDirectiveHeader::Madt(info),
-            IgvmParameterType::Slit => IgvmDirectiveHeader::Slit(info),
-            IgvmParameterType::Pptt => IgvmDirectiveHeader::Pptt(info),
-            IgvmParameterType::MmioRanges => IgvmDirectiveHeader::MmioRanges(info),
-            IgvmParameterType::MemoryMap => IgvmDirectiveHeader::MemoryMap(info),
-            IgvmParameterType::CommandLine => IgvmDirectiveHeader::CommandLine(info),
-            IgvmParameterType::DeviceTree => IgvmDirectiveHeader::DeviceTree(info),
-        };
-
-        self.directives.push(header);
-
-        Ok(())
     }
 
     fn import_pages(
@@ -883,7 +789,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmLoader<R>
         debug_tag: &str,
         acceptance: BootPageAcceptance,
         mut data: &[u8],
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), anyhow::Error> {
         tracing::debug!(
             page_base,
             ?acceptance,
@@ -975,19 +881,155 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmLoader<R>
 
         Ok(())
     }
+}
 
-    fn import_vp_register(&mut self, vtl: Vtl, register: R) -> anyhow::Result<()> {
-        if vtl > self.max_vtl {
-            anyhow::bail!(
-                "vtl specified {vtl:?} is greater than max enabled vtl {:?}",
-                self.max_vtl
-            );
+impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader<'_, R> {
+    fn isolation_config(&self) -> IsolationConfig {
+        match self.loader.isolation_type {
+            LoaderIsolationType::None => IsolationConfig {
+                paravisor_present: self.loader.paravisor_present,
+                isolation_type: IsolationType::None,
+                shared_gpa_boundary_bits: None,
+            },
+            LoaderIsolationType::Vbs { .. } => IsolationConfig {
+                paravisor_present: self.loader.paravisor_present,
+                isolation_type: IsolationType::Vbs,
+                shared_gpa_boundary_bits: None,
+            },
+            LoaderIsolationType::Snp {
+                shared_gpa_boundary_bits,
+                policy: _,
+                injection_type: _,
+            } => IsolationConfig {
+                paravisor_present: self.loader.paravisor_present,
+                isolation_type: IsolationType::Snp,
+                shared_gpa_boundary_bits,
+            },
+            LoaderIsolationType::Tdx { .. } => IsolationConfig {
+                paravisor_present: self.loader.paravisor_present,
+                isolation_type: IsolationType::Tdx,
+                shared_gpa_boundary_bits: Some(TDX_SHARED_GPA_BOUNDARY_BITS),
+            },
+        }
+    }
+
+    fn create_parameter_area(
+        &mut self,
+        page_base: u64,
+        page_count: u32,
+        debug_tag: &str,
+    ) -> anyhow::Result<ParameterAreaIndex> {
+        self.create_parameter_area_with_data(page_base, page_count, debug_tag, &[])
+    }
+
+    fn create_parameter_area_with_data(
+        &mut self,
+        page_base: u64,
+        page_count: u32,
+        debug_tag: &str,
+        initial_data: &[u8],
+    ) -> anyhow::Result<ParameterAreaIndex> {
+        let area_id = (page_base, page_count);
+
+        // Allocate a new parameter area, that must not overlap other accepted ranges.
+        self.loader.accept_new_range(
+            page_base,
+            page_count as u64,
+            debug_tag,
+            BootPageAcceptance::ExclusiveUnmeasured,
+        )?;
+
+        let index: u32 = self
+            .loader
+            .parameter_areas
+            .len()
+            .try_into()
+            .expect("parameter area greater than u32");
+        self.loader.parameter_areas.insert(area_id, index);
+
+        // Add the newly allocated parameter area index to headers.
+        self.loader
+            .directives
+            .push(IgvmDirectiveHeader::ParameterArea {
+                number_of_bytes: page_count as u64 * PAGE_SIZE_4K,
+                parameter_area_index: index,
+                initial_data: initial_data.to_vec(),
+            });
+
+        tracing::debug!(
+            index,
+            page_base,
+            page_count,
+            initial_data_len = initial_data.len(),
+            "Creating new parameter area",
+        );
+
+        Ok(ParameterAreaIndex(index))
+    }
+
+    fn import_parameter(
+        &mut self,
+        parameter_area: ParameterAreaIndex,
+        byte_offset: u32,
+        parameter_type: IgvmParameterType,
+    ) -> anyhow::Result<()> {
+        let index = parameter_area.0;
+
+        if index >= self.loader.parameter_areas.len() as u32 {
+            anyhow::bail!("invalid parameter area index: {:x}", index);
         }
 
-        self.vp_context_builder
-            .as_mut()
-            .expect("option should always be some")
-            .import_vp_register(vtl, register);
+        tracing::debug!(
+            ?parameter_type,
+            parameter_area_index = parameter_area.0,
+            byte_offset,
+            "Importing parameter",
+        );
+
+        let info = IGVM_VHS_PARAMETER {
+            parameter_area_index: index,
+            byte_offset,
+        };
+
+        let header = match parameter_type {
+            IgvmParameterType::VpCount => IgvmDirectiveHeader::VpCount(info),
+            IgvmParameterType::Srat => IgvmDirectiveHeader::Srat(info),
+            IgvmParameterType::Madt => IgvmDirectiveHeader::Madt(info),
+            IgvmParameterType::Slit => IgvmDirectiveHeader::Slit(info),
+            IgvmParameterType::Pptt => IgvmDirectiveHeader::Pptt(info),
+            IgvmParameterType::MmioRanges => IgvmDirectiveHeader::MmioRanges(info),
+            IgvmParameterType::MemoryMap => IgvmDirectiveHeader::MemoryMap(info),
+            IgvmParameterType::CommandLine => IgvmDirectiveHeader::CommandLine(info),
+            IgvmParameterType::DeviceTree => IgvmDirectiveHeader::DeviceTree(info),
+        };
+
+        self.loader.directives.push(header);
+
+        Ok(())
+    }
+
+    fn import_pages(
+        &mut self,
+        page_base: u64,
+        page_count: u64,
+        debug_tag: &str,
+        acceptance: BootPageAcceptance,
+        data: &[u8],
+    ) -> anyhow::Result<()> {
+        self.loader
+            .import_pages(page_base, page_count, debug_tag, acceptance, data)
+    }
+
+    fn import_vp_register(&mut self, register: R) -> anyhow::Result<()> {
+        if let Some(vp_context) = &mut self.vp_context {
+            vp_context.import_vp_register(register)
+        } else {
+            self.loader
+                .vp_context
+                .as_mut()
+                .unwrap()
+                .import_vp_register(register);
+        }
 
         Ok(())
     }
@@ -1018,14 +1060,16 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmLoader<R>
         let vtl2_protectable =
             memory_type == loader::importer::StartupMemoryType::Vtl2ProtectableRam;
 
-        self.directives.push(IgvmDirectiveHeader::RequiredMemory {
-            gpa,
-            compatibility_mask,
-            number_of_bytes,
-            vtl2_protectable,
-        });
+        self.loader
+            .directives
+            .push(IgvmDirectiveHeader::RequiredMemory {
+                gpa,
+                compatibility_mask,
+                number_of_bytes,
+                vtl2_protectable,
+            });
 
-        self.required_memory.push(RequiredMemory {
+        self.loader.required_memory.push(RequiredMemory {
             range: MemoryRange::new(gpa..gpa + number_of_bytes as u64),
             vtl2_protectable,
         });
@@ -1033,39 +1077,14 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmLoader<R>
         Ok(())
     }
 
-    fn set_vp_context_page(
-        &mut self,
-        vtl: Vtl,
-        page_base: u64,
-        acceptance: BootPageAcceptance,
-    ) -> anyhow::Result<()> {
-        if vtl > self.max_vtl {
-            anyhow::bail!(
-                "vtl specified {vtl:?} is greater than max enabled vtl {:?}",
-                self.max_vtl
-            );
-        }
-
-        self.vp_context_builder
+    fn set_vp_context_page(&mut self, page_base: u64) -> anyhow::Result<()> {
+        self.loader
+            .vp_context
             .as_mut()
-            .expect("option should always be some")
-            .set_vp_context_memory(vtl, page_base, acceptance);
+            .unwrap()
+            .set_vp_context_memory(page_base);
 
         Ok(())
-    }
-
-    fn vp_context_page(&self, vtl: Vtl) -> anyhow::Result<u64> {
-        if vtl > self.max_vtl {
-            anyhow::bail!(
-                "vtl specified {vtl:?} is greater than max enabled vtl {:?}",
-                self.max_vtl
-            );
-        }
-
-        self.vp_context_builder
-            .as_ref()
-            .expect("option should always be some")
-            .vp_context_page(vtl)
     }
 
     fn relocation_region(
@@ -1075,13 +1094,12 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmLoader<R>
         relocation_alignment: u64,
         minimum_relocation_gpa: u64,
         maximum_relocation_gpa: u64,
-        is_vtl2: bool,
         apply_rip_offset: bool,
         apply_gdtr_offset: bool,
         vp_index: u16,
-        vtl: Vtl,
     ) -> anyhow::Result<()> {
         if let Some(overlap) = self
+            .loader
             .relocatable_regions
             .get_range(gpa..=(gpa + size_bytes - 1))
         {
@@ -1117,7 +1135,8 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmLoader<R>
             );
         }
 
-        self.initialization_headers
+        self.loader
+            .initialization_headers
             .push(IgvmInitializationHeader::RelocatableRegion {
                 compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
                 relocation_alignment,
@@ -1125,14 +1144,14 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmLoader<R>
                 relocation_region_size: size_bytes,
                 minimum_relocation_gpa,
                 maximum_relocation_gpa,
-                is_vtl2,
+                is_vtl2: self.vtl == Vtl::Vtl2,
                 apply_rip_offset,
                 apply_gdtr_offset,
                 vp_index,
-                vtl: to_igvm_vtl(vtl),
+                vtl: to_igvm_vtl(self.vtl),
             });
 
-        self.relocatable_regions.insert(
+        self.loader.relocatable_regions.insert(
             gpa..=gpa + size_bytes - 1,
             RelocationType::Normal(IgvmRelocatableRegion {
                 base_gpa: gpa,
@@ -1140,11 +1159,11 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmLoader<R>
                 minimum_relocation_gpa,
                 maximum_relocation_gpa,
                 relocation_alignment,
-                is_vtl2,
+                is_vtl2: self.vtl == Vtl::Vtl2,
                 apply_rip_offset,
                 apply_gdtr_offset,
                 vp_index,
-                vtl: to_igvm_vtl(vtl),
+                vtl: to_igvm_vtl(self.vtl),
             }),
         );
 
@@ -1157,10 +1176,9 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmLoader<R>
         size_pages: u64,
         used_size_pages: u64,
         vp_index: u16,
-        vtl: Vtl,
     ) -> anyhow::Result<()> {
         // can only be one set
-        if let Some(region) = &self.page_table_region {
+        if let Some(region) = &self.loader.page_table_region {
             anyhow::bail!("page table relocation already set {:?}", region)
         }
 
@@ -1173,22 +1191,27 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmLoader<R>
         let end_gpa = page_table_gpa + size_pages * PAGE_SIZE_4K - 1;
 
         // cannot override other relocatable regions
-        if let Some(overlap) = self.relocatable_regions.get_range(page_table_gpa..=end_gpa) {
+        if let Some(overlap) = self
+            .loader
+            .relocatable_regions
+            .get_range(page_table_gpa..=end_gpa)
+        {
             anyhow::bail!(
                 "new page table relocation region overlaps existing region {:?}",
                 overlap
             );
         }
 
-        self.initialization_headers
-            .push(IgvmInitializationHeader::PageTableRelocationRegion {
+        self.loader.initialization_headers.push(
+            IgvmInitializationHeader::PageTableRelocationRegion {
                 compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
                 gpa: page_table_gpa,
                 size: size_pages * PAGE_SIZE_4K,
                 used_size: used_size_pages * PAGE_SIZE_4K,
                 vp_index,
-                vtl: to_igvm_vtl(vtl),
-            });
+                vtl: to_igvm_vtl(self.vtl),
+            },
+        );
 
         let region = PageTableRegion {
             gpa: page_table_gpa,
@@ -1196,18 +1219,18 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmLoader<R>
             used_size_pages,
         };
 
-        self.relocatable_regions.insert(
+        self.loader.relocatable_regions.insert(
             page_table_gpa..=end_gpa,
             RelocationType::PageTable(region.clone()),
         );
 
-        self.page_table_region = Some(region);
+        self.loader.page_table_region = Some(region);
 
         Ok(())
     }
 
     fn set_imported_regions_config_page(&mut self, page_base: u64) {
-        self.imported_regions_config_page = Some(page_base);
+        self.loader.imported_regions_config_page = Some(page_base);
     }
 }
 
@@ -1310,20 +1333,23 @@ mod tests {
                 enable_debug: false,
             },
         );
+        {
+            let mut loader = loader.loader();
 
-        let data = vec![0, 5];
-        loader
-            .import_pages(0, 5, "data", BootPageAcceptance::Exclusive, &data)
-            .unwrap();
-        loader
-            .import_pages(5, 5, "data", BootPageAcceptance::ExclusiveUnmeasured, &data)
-            .unwrap();
-        loader
-            .import_pages(10, 1, "data", BootPageAcceptance::Exclusive, &data)
-            .unwrap();
-        loader
-            .import_pages(20, 1, "data", BootPageAcceptance::Shared, &data)
-            .unwrap();
+            let data = vec![0, 5];
+            loader
+                .import_pages(0, 5, "data", BootPageAcceptance::Exclusive, &data)
+                .unwrap();
+            loader
+                .import_pages(5, 5, "data", BootPageAcceptance::ExclusiveUnmeasured, &data)
+                .unwrap();
+            loader
+                .import_pages(10, 1, "data", BootPageAcceptance::Exclusive, &data)
+                .unwrap();
+            loader
+                .import_pages(20, 1, "data", BootPageAcceptance::Shared, &data)
+                .unwrap();
+        }
 
         let igvm_output = loader.finalize(1).unwrap();
         let doc = igvm_output.doc.expect("doc");

@@ -1,8 +1,9 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! ACPI types.
 
-#![cfg_attr(not(any(test, feature = "std")), no_std)]
+#![no_std]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

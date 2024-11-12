@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! RPC service for diagnostics.
 
@@ -326,7 +327,7 @@ impl DiagServiceHandler {
             // xtask-fmt allow-target-arch cpu-intrinsic
             #[cfg(target_arch = "x86_64")]
             {
-                let result = safe_x86_intrinsics::cpuid(
+                let result = safe_intrinsics::cpuid(
                     hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION,
                     0,
                 );

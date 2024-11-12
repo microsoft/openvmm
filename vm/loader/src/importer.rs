@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Common loader image loading traits and types used by all loaders.
 #![allow(dead_code)]
@@ -7,8 +8,6 @@
 pub use Aarch64Register as Register;
 #[cfg(guest_arch = "x86_64")]
 pub use X86Register as Register;
-
-use hvdef::Vtl;
 
 /// The page acceptance used for importing pages into the initial launch context
 /// of the guest.
@@ -473,8 +472,8 @@ where
         data: &[u8],
     ) -> anyhow::Result<()>;
 
-    /// Import a register into the BSP at the given VTL.
-    fn import_vp_register(&mut self, vtl: Vtl, register: R) -> anyhow::Result<()>;
+    /// Import a register into the BSP.
+    fn import_vp_register(&mut self, register: R) -> anyhow::Result<()>;
 
     /// Verify with the loader that memory is available in guest address space with the given type.
     fn verify_startup_memory_available(
@@ -487,15 +486,7 @@ where
     /// Notify the loader to deposit architecture specific VP context information at the given page.
     ///
     /// TODO: It probably makes sense to use a different acceptance type than the default one?
-    fn set_vp_context_page(
-        &mut self,
-        vtl: Vtl,
-        page_base: u64,
-        acceptance: BootPageAcceptance,
-    ) -> anyhow::Result<()>;
-
-    /// Obtain the page base of the GPA range to be used for architecture specific VP context data.
-    fn vp_context_page(&self, vtl: Vtl) -> anyhow::Result<u64>;
+    fn set_vp_context_page(&mut self, page_base: u64) -> anyhow::Result<()>;
 
     /// Specify this region as relocatable.
     fn relocation_region(
@@ -505,11 +496,9 @@ where
         relocation_alignment: u64,
         minimum_relocation_gpa: u64,
         maximum_relocation_gpa: u64,
-        is_vtl2: bool,
         apply_rip_offset: bool,
         apply_gdtr_offset: bool,
         vp_index: u16,
-        vtl: Vtl,
     ) -> anyhow::Result<()>;
 
     /// Specify a region as relocatable page table memory.
@@ -519,7 +508,6 @@ where
         size_pages: u64,
         used_pages: u64,
         vp_index: u16,
-        vtl: Vtl,
     ) -> anyhow::Result<()>;
 
     /// Lets the loader know what the base page of where the config page

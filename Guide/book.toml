@@ -1,4 +1,5 @@
-# Copyright (C) Microsoft Corporation. All rights reserved.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 [book]
 language = "en"
@@ -13,3 +14,14 @@ create-missing = false
 git-repository-url = "https://github.com/microsoft/OpenVMM"
 git-repository-icon = "fa-github"
 edit-url-template = "https://github.com/microsoft/OpenVMM/edit/main/Guide/{path}"
+additional-css = ["mdbook-admonish.css"]
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[preprocessor]
+
+[preprocessor.admonish]
+command = "cargo run --quiet --manifest-path ./mdbook-openvmm-shim/Cargo.toml mdbook-admonish"
+assets_version = "3.0.2" # do not edit: managed by `mdbook-admonish install`
+
+[preprocessor.mermaid]
+command = "cargo run --quiet --manifest-path ./mdbook-openvmm-shim/Cargo.toml mdbook-mermaid"

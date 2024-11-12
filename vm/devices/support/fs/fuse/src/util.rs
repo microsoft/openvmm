@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 /// Helper to create a CString from a utf-8 vector and return an lx::Result if it fails.
 #[cfg(target_os = "linux")]

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Download a github release artifact
 
@@ -7,10 +8,25 @@ use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Request {
+        /// First component of a github repo path
+        ///
+        /// e.g: the "foo" in "github.com/foo/bar"
         pub repo_owner: String,
+        /// Second component of a github repo path
+        ///
+        /// e.g: the "bar" in "github.com/foo/bar"
         pub repo_name: String,
+        /// Whether this repo requires authentication.
+        ///
+        /// If true, downloads will be routed through the `gh` CLI client, which
+        /// will require auth to be set up. See
+        /// [`use_gh_cli`](crate::use_gh_cli).
+        pub needs_auth: bool,
+        /// Tag associated with the release artifact.
         pub tag: String,
+        /// Specific filename to download.
         pub file_name: String,
+        /// Path to downloaded artifact.
         pub path: WriteVar<PathBuf>,
     }
 }
@@ -30,15 +46,21 @@ impl FlowNode for Node {
             (String, String, String),
             BTreeMap<String, Vec<WriteVar<PathBuf>>>,
         > = BTreeMap::new();
+        let mut use_gh_cli = false;
 
         for req in requests {
             let Request {
                 repo_owner,
                 repo_name,
+                needs_auth,
                 tag,
                 file_name,
                 path,
             } = req;
+
+            // if any package needs auth, we might as well download every
+            // package using the GH cli.
+            use_gh_cli |= needs_auth;
 
             download_reqs
                 .entry((repo_owner, repo_name, tag))
@@ -48,9 +70,15 @@ impl FlowNode for Node {
                 .push(path)
         }
 
+        if download_reqs.is_empty() {
+            return Ok(());
+        }
+
+        let gh_cli = use_gh_cli.then(|| ctx.reqv(crate::use_gh_cli::Request::Get));
+
         match ctx.persistent_dir() {
-            Some(dir) => Self::with_local_cache(ctx, dir, download_reqs),
-            None => Self::with_ci_cache(ctx, download_reqs),
+            Some(dir) => Self::with_local_cache(ctx, dir, download_reqs, gh_cli),
+            None => Self::with_ci_cache(ctx, download_reqs, gh_cli),
         }
 
         Ok(())
@@ -63,16 +91,14 @@ impl Node {
         ctx: &mut NodeCtx<'_>,
         persistent_dir: ReadVar<PathBuf>,
         download_reqs: BTreeMap<(String, String, String), BTreeMap<String, Vec<WriteVar<PathBuf>>>>,
+        gh_cli: Option<ReadVar<PathBuf>>,
     ) {
-        let gh_cli = ctx.reqv(crate::use_gh_cli::Request::Get);
-
         ctx.emit_rust_step("download artifacts from github releases", |ctx| {
             let gh_cli = gh_cli.claim(ctx);
             let persistent_dir = persistent_dir.claim(ctx);
             let download_reqs = download_reqs.claim(ctx);
             move |rt| {
                 let persistent_dir = rt.read(persistent_dir);
-                let gh_cli = rt.read(gh_cli);
 
                 // first - check what reqs are already present in the local cache
                 let mut remaining_download_reqs: BTreeMap<
@@ -103,7 +129,7 @@ impl Node {
                     return Ok(());
                 }
 
-                download_all_reqs(&remaining_download_reqs, &persistent_dir, &gh_cli)?;
+                download_all_reqs(rt, &remaining_download_reqs, &persistent_dir, gh_cli)?;
 
                 for ((repo_owner, repo_name, tag), files) in remaining_download_reqs {
                     for (file, vars) in files {
@@ -127,6 +153,7 @@ impl Node {
     fn with_ci_cache(
         ctx: &mut NodeCtx<'_>,
         download_reqs: BTreeMap<(String, String, String), BTreeMap<String, Vec<WriteVar<PathBuf>>>>,
+        gh_cli: Option<ReadVar<PathBuf>>,
     ) {
         let cache_dir = ctx.emit_rust_stepv("create gh-release-download cache dir", |_| {
             |_| Ok(std::env::current_dir()?.absolute()?)
@@ -157,8 +184,6 @@ impl Node {
             }
         });
 
-        let gh_cli = ctx.reqv(crate::use_gh_cli::Request::Get);
-
         ctx.emit_rust_step("download artifacts from github releases", |ctx| {
             let cache_dir = cache_dir.claim(ctx);
             let hitvar = hitvar.claim(ctx);
@@ -167,10 +192,9 @@ impl Node {
             move |rt| {
                 let cache_dir = rt.read(cache_dir);
                 let hitvar = rt.read(hitvar);
-                let gh_cli = rt.read(gh_cli);
 
                 if !matches!(hitvar, crate::cache::CacheHit::Hit) {
-                    download_all_reqs(&download_reqs, &cache_dir, &gh_cli)?;
+                    download_all_reqs(rt, &download_reqs, &cache_dir, gh_cli)?;
                 }
 
                 for ((repo_owner, repo_name, tag), files) in download_reqs {
@@ -190,31 +214,42 @@ impl Node {
 }
 
 fn download_all_reqs(
+    rt: &mut RustRuntimeServices<'_>,
     download_reqs: &BTreeMap<
         (String, String, String),
         BTreeMap<String, Vec<WriteVar<PathBuf, VarClaimed>>>,
     >,
     cache_dir: &Path,
-    gh_cli: &Path,
+    gh_cli: Option<ReadVar<PathBuf, VarClaimed>>,
 ) -> anyhow::Result<()> {
     let sh = xshell::Shell::new()?;
 
-    // FUTURE: while the gh cli takes care of doing simultaneous downloads in
-    // the context of a single (repo, tag), we might want to have flowey spawn
-    // multiple processes to saturate the network connection in cases where
-    // multiple (repo, tag) pairs are being pulled at the same time.
+    let gh_cli = gh_cli.map(|x| rt.read(x));
+
     for ((repo_owner, repo_name, tag), files) in download_reqs {
         let repo = format!("{repo_owner}/{repo_name}");
-        let patterns = files.keys().flat_map(|k| ["--pattern".into(), k.clone()]);
 
         let out_dir = cache_dir.join(format!("{repo_owner}/{repo_name}/{tag}"));
         fs_err::create_dir_all(&out_dir)?;
         sh.change_dir(&out_dir);
-        xshell::cmd!(
-            sh,
-            "{gh_cli} release download -R {repo} {tag} {patterns...} --skip-existing"
-        )
-        .run()?;
+
+        if let Some(gh_cli) = &gh_cli {
+            // FUTURE: while the gh cli takes care of doing simultaneous downloads in
+            // the context of a single (repo, tag), we might want to have flowey spawn
+            // multiple processes to saturate the network connection in cases where
+            // multiple (repo, tag) pairs are being pulled at the same time.
+            let patterns = files.keys().flat_map(|k| ["--pattern".into(), k.clone()]);
+            xshell::cmd!(
+                sh,
+                "{gh_cli} release download -R {repo} {tag} {patterns...} --skip-existing"
+            )
+            .run()?;
+        } else {
+            // FUTURE: parallelize curl invocations across all download_reqs
+            for file in files.keys() {
+                xshell::cmd!(sh, "curl --fail -L https://github.com/{repo_owner}/{repo_name}/releases/download/{tag}/{file} -o {file}").run()?;
+            }
+        }
     }
 
     Ok(())

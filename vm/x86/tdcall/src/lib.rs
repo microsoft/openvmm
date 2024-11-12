@@ -1,12 +1,10 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Common TDCALL handling for issuing tdcalls and functionality using tdcalls.
 
 #![no_std]
 #![warn(missing_docs)]
-
-#[cfg(feature = "std")]
-extern crate std;
 
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Globally install a Rust toolchain, and ensure those tools are available on
 //! the user's $PATH
@@ -150,7 +151,7 @@ impl FlowNode for Node {
 
                         for expected_target in additional_target_triples {
                             if !installed_target_triples.contains(expected_target.as_str()) {
-                                anyhow::bail!("missing required target-triple: {expected_target}")
+                                anyhow::bail!("missing required target-triple: {expected_target}; to intsall: `rustup target add {expected_target}`")
                             }
                         }
                     }
@@ -190,7 +191,7 @@ impl FlowNode for Node {
 
                             let sh = xshell::Shell::new()?;
                             match rt.platform() {
-                                FlowPlatform::Linux => {
+                                FlowPlatform::Linux(_) => {
                                     let interactive_prompt = Some("-y");
                                     let mut default_toolchain = Vec::new();
                                     if let Some(ver) = rust_toolchain {
@@ -200,7 +201,7 @@ impl FlowNode for Node {
 
                                     xshell::cmd!(
                                         sh,
-                                        "curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init.sh"
+                                        "curl --fail --proto =https --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init.sh"
                                     )
                                     .run()?;
                                     xshell::cmd!(sh, "chmod +x ./rustup-init.sh").run()?;
@@ -226,7 +227,7 @@ impl FlowNode for Node {
 
                                     xshell::cmd!(
                                         sh,
-                                        "curl -sSfLo rustup-init.exe https://win.rustup.rs/{arch} --output rustup-init"
+                                        "curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/{arch} --output rustup-init"
                                     ).run()?;
                                     xshell::cmd!(
                                         sh,

@@ -1,10 +1,11 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Hypercall architecture-dependent infrastructure.
 //!
 //! The hypercall ABI for x64 is well documented in the TLFS.
 
-extern "C" {
+unsafe extern "C" {
     /// The hypercall page. The actual hypercall page must be mapped on top of
     /// this page before it is used.
     pub static mut HYPERCALL_PAGE: [u8; 4096];

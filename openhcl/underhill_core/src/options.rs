@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! CLI argument parsing for the underhill core process.
 
@@ -31,6 +32,13 @@ pub struct Options {
     /// (OPENHCL_VMBUS_ENABLE_MNF=1)
     /// Enable handling of MNF in the Underhill vmbus server, instead of the host.
     pub vmbus_enable_mnf: Option<bool>,
+
+    /// (OPENHCL_VMBUS_FORCE_CONFIDENTIAL_EXTERNAL_MEMORY=1)
+    /// Force the use of confidential external memory for all non-relay vmbus channels. For testing
+    /// purposes only.
+    ///
+    /// N.B.: Not all vmbus devices support this feature, so enabling it may cause failures.
+    pub vmbus_force_confidential_external_memory: bool,
 
     /// (OPENHCL_CMDLINE_APPEND=\<string\>)
     /// Command line to append to VTL0, only used with direct boot.
@@ -116,13 +124,16 @@ impl Options {
             })
         }
 
-        let parse_env_bool = |name| {
-            legacy_openhcl_env(name)
+        fn parse_bool(value: Option<std::ffi::OsString>) -> bool {
+            value
                 .map(|v| v.to_ascii_lowercase() == "true" || v == "1")
                 .unwrap_or_default()
-        };
+        }
 
-        let parse_env_number = |name| {
+        let parse_legacy_env_bool = |name| parse_bool(legacy_openhcl_env(name));
+        let parse_env_bool = |name| parse_bool(std::env::var_os(name));
+
+        let parse_legacy_env_number = |name| {
             legacy_openhcl_env(name)
                 .map(|v| {
                     v.to_string_lossy().parse().context(format!(
@@ -133,8 +144,8 @@ impl Options {
                 .transpose()
         };
 
-        let mut wait_for_start = parse_env_bool("OPENHCL_WAIT_FOR_START");
-        let mut reformat_vmgs = parse_env_bool("OPENHCL_REFORMAT_VMGS");
+        let mut wait_for_start = parse_legacy_env_bool("OPENHCL_WAIT_FOR_START");
+        let mut reformat_vmgs = parse_legacy_env_bool("OPENHCL_REFORMAT_VMGS");
         let mut pid = legacy_openhcl_env("OPENHCL_PID_FILE_PATH")
             .map(|x| x.to_string_lossy().into_owned().into());
         let vmbus_max_version = legacy_openhcl_env("OPENHCL_VMBUS_MAX_VERSION")
@@ -143,28 +154,28 @@ impl Options {
                     .map_err(|x| anyhow::anyhow!("Error parsing vmbus max version: {}", x))
             })
             .transpose()?;
-        let vmbus_enable_mnf = if legacy_openhcl_env("OPENHCL_VMBUS_ENABLE_MNF").is_some() {
-            Some(parse_env_bool("OPENHCL_VMBUS_ENABLE_MNF"))
-        } else {
-            None
-        };
+        let vmbus_enable_mnf =
+            legacy_openhcl_env("OPENHCL_VMBUS_ENABLE_MNF").map(|v| parse_bool(Some(v)));
+        let vmbus_force_confidential_external_memory =
+            parse_env_bool("OPENHCL_VMBUS_FORCE_CONFIDENTIAL_EXTERNAL_MEMORY");
         let cmdline_append =
             legacy_openhcl_env("OPENHCL_CMDLINE_APPEND").map(|x| x.to_string_lossy().into_owned());
         let force_load_vtl0_image = legacy_openhcl_env("OPENHCL_FORCE_LOAD_VTL0_IMAGE")
             .map(|x| x.to_string_lossy().into_owned());
-        let mut vnc_port = parse_env_number("OPENHCL_VNC_PORT")?.map(|x| x as u32);
-        let framebuffer_gpa_base = parse_env_number("OPENHCL_FRAMEBUFFER_GPA_BASE")?;
-        let vtl0_starts_paused = parse_env_bool("OPENHCL_VTL0_STARTS_PAUSED");
-        let serial_wait_for_rts = parse_env_bool("OPENHCL_SERIAL_WAIT_FOR_RTS");
-        let nvme_vfio = parse_env_bool("OPENHCL_NVME_VFIO");
-        let emulate_apic = parse_env_bool("OPENHCL_EMULATE_APIC");
-        let mcr = parse_env_bool("OPENHCL_MCR_DEVICE");
-        let enable_shared_visibility_pool = parse_env_bool("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL");
-        let cvm_guest_vsm = parse_env_bool("OPENHCL_CVM_GUEST_VSM");
-        let halt_on_guest_halt = parse_env_bool("OPENHCL_HALT_ON_GUEST_HALT");
-        let no_sidecar_hotplug = parse_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
-        let gdbstub = parse_env_bool("OPENHCL_GDBSTUB");
-        let gdbstub_port = parse_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
+        let mut vnc_port = parse_legacy_env_number("OPENHCL_VNC_PORT")?.map(|x| x as u32);
+        let framebuffer_gpa_base = parse_legacy_env_number("OPENHCL_FRAMEBUFFER_GPA_BASE")?;
+        let vtl0_starts_paused = parse_legacy_env_bool("OPENHCL_VTL0_STARTS_PAUSED");
+        let serial_wait_for_rts = parse_legacy_env_bool("OPENHCL_SERIAL_WAIT_FOR_RTS");
+        let nvme_vfio = parse_legacy_env_bool("OPENHCL_NVME_VFIO");
+        let emulate_apic = parse_legacy_env_bool("OPENHCL_EMULATE_APIC");
+        let mcr = parse_legacy_env_bool("OPENHCL_MCR_DEVICE");
+        let enable_shared_visibility_pool =
+            parse_legacy_env_bool("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL");
+        let cvm_guest_vsm = parse_legacy_env_bool("OPENHCL_CVM_GUEST_VSM");
+        let halt_on_guest_halt = parse_legacy_env_bool("OPENHCL_HALT_ON_GUEST_HALT");
+        let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
+        let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
+        let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -201,6 +212,7 @@ impl Options {
             pid,
             vmbus_max_version,
             vmbus_enable_mnf,
+            vmbus_force_confidential_external_memory,
             cmdline_append,
             vnc_port: vnc_port.unwrap_or(3),
             framebuffer_gpa_base,

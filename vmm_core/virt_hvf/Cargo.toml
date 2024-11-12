@@ -1,12 +1,14 @@
-# Copyright (C) Microsoft Corporation. All rights reserved.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 [package]
 name = "virt_hvf"
 edition = "2021"
+rust-version.workspace = true
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 aarch64defs.workspace = true
-hvdef = { workspace = true, features = ["std"] }
+hvdef.workspace = true
 hv1_emulator.workspace = true
 hv1_hypercall.workspace = true
 virt.workspace = true

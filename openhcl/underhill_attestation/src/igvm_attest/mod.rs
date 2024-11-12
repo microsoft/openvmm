@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! The module helps preparing requests and parsing responses that are
 //! sent to and received from the IGVm agent runs on the host via GET
@@ -33,16 +34,6 @@ pub enum Error {
         report_size: usize,
         expected_size: usize,
     },
-    #[error("AK cert response size is too small to parse")]
-    AkCertResponseSizeTooSmall,
-    #[error(
-        "AK cert response size {specified_size} specified in the header is larger then the actual size {size}"
-    )]
-    AkCertResponseSizeMismatch { size: usize, specified_size: usize },
-    #[error(
-        "AK cert response header version {version} does match the expected version {expected_version}"
-    )]
-    AkCertResponseHeaderVersionMismatch { version: u32, expected_version: u32 },
 }
 
 /// Helper struct to create `IgvmAttestRequest` in raw bytes.

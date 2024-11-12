@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #[cfg(feature = "alloc")]
 pub use self::alloc_parse::*;
@@ -231,8 +232,7 @@ impl core::fmt::Display for ParseSratError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for ParseSratError {}
+impl core::error::Error for ParseSratError {}
 
 pub fn parse_srat<'a>(
     raw_srat: &'a [u8],

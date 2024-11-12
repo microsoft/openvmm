@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
 // Entry point that zeroes BSS, sets up the stack, performs relocations,
 // does architecture-specific setup, and jumps to start().
@@ -35,13 +36,13 @@ _start:
 
     adrp    x1, {stack}
     add     x1, x1, :lo12:{stack}
-    mov     x2, #0x5060          // Lower 16 bits of the stack cookie
-    movk    x2, #0x3040, lsl 16  // Higher 16 bits of the stack cookie, keep the lower bits
-    str     x2, [x1]             // Store the stack cookie at the bottom
-    add     x1, x1, #32768       // Stack size
-    sub     x1, x1, #8           // Leave 8 bytes for the stack cookie at the top
-    str     x2, [x1]             // Store the stack cookie at the top
-    sub     x1, x1, #8           // Set the stack pointer
+    mov     x2, {STACK_COOKIE_LO}           // Lower 16 bits of the stack cookie
+    movk    x2, {STACK_COOKIE_HI}, lsl 16   // Higher 16 bits of the stack cookie, keep the lower bits
+    str     x2, [x1]                        // Store the stack cookie at the bottom
+    add     x1, x1, {STACK_SIZE}            // Stack size
+    sub     x1, x1, #8                      // Leave 8 bytes for the stack cookie at the top
+    str     x2, [x1]                        // Store the stack cookie at the top
+    sub     x1, x1, #8                      // Set the stack pointer
     mov     sp, x1
 
     // Set the vector table up.

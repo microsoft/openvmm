@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Code managing the lifetime of a `PetriVm`. All VMs live the same lifecycle:
 //! * A `PetriVmConfig` is built for the given firmware and architecture in `construct`.

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Process Loop that handles asynchronous requests and notifications to/from
 //! the Host via the GET
@@ -1852,7 +1853,9 @@ async fn request_igvm_attest(
     };
 
     let response_length = response.length as usize;
-    if response_length > ALLOCATED_SHARED_MEMORY_SIZE {
+    if response_length == get_protocol::IGVM_ATTEST_VMWP_GENERIC_ERROR_CODE {
+        return Ok(Err(IgvmAttestError::IgvmAgentGenericError));
+    } else if response_length > ALLOCATED_SHARED_MEMORY_SIZE {
         Err(FatalError::InvalidIgvmAttestResponseSize {
             response_size: response_length,
             maximum_size: ALLOCATED_SHARED_MEMORY_SIZE,

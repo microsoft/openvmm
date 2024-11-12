@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use anyhow::anyhow;
 use anyhow::Context as _;
@@ -23,9 +24,9 @@ pub fn enable_tracing() -> anyhow::Result<()> {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
-    // Enable tracing for underhill_log by default since this is passed through
+    // Enable tracing for paravisor_log by default since this is passed through
     // from the guest (but still allow it to be disabled via OPENVMM_LOG).
-    let base = "underhill_log=trace";
+    let base = "paravisor_log=trace";
     let filter = if let Ok(filter) = legacy_openvmm_env("OPENVMM_LOG") {
         tracing_subscriber::EnvFilter::try_new(format!("{base},{filter}"))
             .context("invalid OPENVMM_LOG")?

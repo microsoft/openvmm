@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A local-only job that supports the `cargo xflowey build-igvm` CLI
 
@@ -31,6 +32,7 @@ pub struct Customizations {
     pub custom_sidecar: Option<PathBuf>,
     pub custom_uefi: Option<PathBuf>,
     pub custom_vtl0_kernel: Option<PathBuf>,
+    pub custom_extra_rootfs: Vec<PathBuf>,
     pub override_arch: Option<CommonArch>,
     pub override_kernel_pkg: Option<OpenhclKernelPackage>,
     pub override_manifest: Option<PathBuf>,
@@ -92,6 +94,7 @@ impl SimpleFlowNode for Node {
             with_debuginfo,
             with_perf_tools,
             with_sidecar,
+            custom_extra_rootfs,
         } = customizations;
 
         let profile = if release {
@@ -146,6 +149,10 @@ impl SimpleFlowNode for Node {
                 custom_uefi: custom_uefi.map(|p| p.absolute()).transpose()?,
                 custom_kernel: custom_kernel.map(|p| p.absolute()).transpose()?,
                 custom_sidecar: custom_sidecar.map(|p| p.absolute()).transpose()?,
+                custom_extra_rootfs: custom_extra_rootfs
+                    .into_iter()
+                    .map(|p| p.absolute())
+                    .collect::<Result<_, _>>()?,
             });
 
             if let Some(p) = override_manifest {

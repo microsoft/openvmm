@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Ensure the OpenVMM repo is `clippy` clean.
 
@@ -32,8 +33,9 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
         ctx.import::<crate::init_openvmm_magicpath_lxutil::Node>();
         ctx.import::<crate::install_openvmm_rust_build_essential::Node>();
+        ctx.import::<crate::init_cross_build::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
-        ctx.import::<flowey_lib_common::install_apt_pkg::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::run_cargo_clippy::Node>();
     }
 
@@ -100,21 +102,29 @@ impl SimpleFlowNode for Node {
             );
         }
 
-        if matches!(flowey_platform, FlowPlatform::Linux)
-            && matches!(
-                target.architecture,
-                target_lexicon::Architecture::Aarch64(_)
-            )
-        {
-            pre_build_deps.push(ctx.reqv(|v| {
-                flowey_lib_common::install_apt_pkg::Request::Install {
-                    package_names: vec!["libssl-dev".into(), "gcc-aarch64-linux-gnu".into()],
-                    done: v,
-                }
-            }));
-        }
+        pre_build_deps.push(
+            ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
+                package_names: vec!["libssl-dev".into()],
+                done: v,
+            }),
+        );
 
         pre_build_deps.push(ctx.reqv(crate::install_openvmm_rust_build_essential::Request));
+
+        // Cross compiling for MacOS isn't supported, but clippy still works
+        // with no additional dependencies
+        if !matches!(
+            target.operating_system,
+            target_lexicon::OperatingSystem::Darwin
+        ) {
+            pre_build_deps.push(
+                ctx.reqv(|v| crate::init_cross_build::Request {
+                    target: target.clone(),
+                    injected_env: v,
+                })
+                .into_side_effect(),
+            );
+        }
 
         let xtask_target = CommonTriple::Common {
             arch: match flowey_arch {
@@ -124,7 +134,7 @@ impl SimpleFlowNode for Node {
             },
             platform: match flowey_platform {
                 FlowPlatform::Windows => CommonPlatform::WindowsMsvc,
-                FlowPlatform::Linux => CommonPlatform::LinuxGnu,
+                FlowPlatform::Linux(_) => CommonPlatform::LinuxGnu,
                 FlowPlatform::MacOs => CommonPlatform::MacOs,
                 platform => anyhow::bail!("unsupported platform {platform}"),
             },
@@ -151,11 +161,10 @@ impl SimpleFlowNode for Node {
 
                 let mut exclude = vec!["guest_test_uefi".into()];
 
-                // packages containing libfuzzer-sys do not currently build for Aarch64
-                if matches!(
-                    target.architecture,
-                    target_lexicon::Architecture::Aarch64(_)
-                ) {
+                // packages depending on libfuzzer-sys are currently x86 only
+                if !(matches!(target.architecture, target_lexicon::Architecture::X86_64)
+                    && matches!(flowey_arch, FlowArch::X86_64))
+                {
                     let xtask_bin = match xtask {
                         crate::build_xtask::XtaskOutput::LinuxBin { bin, dbg: _ } => bin,
                         crate::build_xtask::XtaskOutput::WindowsBin { exe, pdb: _ } => exe,
@@ -173,7 +182,7 @@ impl SimpleFlowNode for Node {
                     exclude.push("xtask_fuzz".into());
                 }
 
-                // sparse_mmap and packages requiring openssl-sys won't cross compile for macos
+                // packages requiring openssl-sys won't cross compile for macos
                 // there is no openvmm artifact for macos yet, so skip petri and vmm_tests
                 if matches!(
                     target.operating_system,

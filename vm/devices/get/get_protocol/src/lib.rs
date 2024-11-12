@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Protocol used to interact between the Guest and Host via the
 //! GET (Guest Emulation Transport)
@@ -582,6 +583,10 @@ pub const IGVM_ATTEST_MSG_REQ_REPORT_MAX_SIZE: usize = 4096;
 pub const IGVM_ATTEST_MSG_MAX_SHARED_GPA: usize = 16;
 /// Current return pages
 pub const IGVM_ATTEST_MSG_SHARED_GPA: usize = IGVM_ATTEST_MSG_MAX_SHARED_GPA;
+
+// Error from the VM worker process in the host when sending an
+// attestation request.
+pub const IGVM_ATTEST_VMWP_GENERIC_ERROR_CODE: usize = 0xFFFFFFFF;
 
 /// The response payload could be quite large, so pass host
 /// previously shared pages to use for response.

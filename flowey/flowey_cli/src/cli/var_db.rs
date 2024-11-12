@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use super::exec_snippet::FloweyPipelineStaticDb;
 use super::exec_snippet::VarDbBackendKind;

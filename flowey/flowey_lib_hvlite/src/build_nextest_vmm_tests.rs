@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Build the cargo-nextest based VMM tests.
 
@@ -64,6 +65,7 @@ impl FlowNode for Node {
         ctx.import::<crate::run_cargo_nextest_run::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
+        ctx.import::<crate::init_cross_build::Node>();
         ctx.import::<flowey_lib_common::run_cargo_nextest_archive::Node>();
     }
 
@@ -79,19 +81,33 @@ impl FlowNode for Node {
         {
             let mut ambient_deps = ambient_deps.clone();
 
+            let sysroot_arch = match target.architecture {
+                target_lexicon::Architecture::Aarch64(_) => {
+                    crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch::Aarch64
+                }
+                target_lexicon::Architecture::X86_64 => {
+                    crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch::X64
+                }
+                arch => anyhow::bail!("unsupported arch {arch}"),
+            };
+
             // See comment in `crate::cargo_build` for why this is necessary.
             //
             // copied here since this node doesn't actually route through `cargo build`.
             if matches!(target.environment, target_lexicon::Environment::Musl) {
                 ambient_deps.push(
                     ctx.reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
-                        arch:
-                            crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch::X64,
+                        arch: sysroot_arch,
                         path: v,
                     })
                     .into_side_effect(),
                 );
             }
+
+            let injected_env = ctx.reqv(|v| crate::init_cross_build::Request {
+                target: target.clone(),
+                injected_env: v,
+            });
 
             let build_params =
                 flowey_lib_common::run_cargo_nextest_run::build_params::NextestBuildParams {
@@ -106,6 +122,7 @@ impl FlowNode for Node {
                         CommonProfile::Release => CargoBuildProfile::Release,
                         CommonProfile::Debug => CargoBuildProfile::Debug,
                     },
+                    extra_env: injected_env,
                 };
 
             match build_mode {

@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 mod saved_state;
 
@@ -164,6 +165,7 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
             resp.binary("feature_flags", u32::from(info.version.feature_flags));
             resp.field("interrupt_page", info.interrupt_page);
             resp.field("modifying", info.modifying);
+            resp.field("client_id", info.client_id);
             trusted = info.trusted;
         }
 
@@ -183,7 +185,9 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
             )
             .child("channels", |req| {
                 let mut resp = req.respond();
-                self.inner.channels.inspect(self.notifier, &mut resp);
+                self.inner
+                    .channels
+                    .inspect(self.notifier, self.inner.get_version(), &mut resp);
                 for ((gpadl_id, offer_id), gpadl) in &self.inner.gpadls {
                     let channel = &self.inner.channels[*offer_id];
                     resp.field(
@@ -233,7 +237,8 @@ impl ConnectionState {
         matches!(self, ConnectionState::Connected(info) if info.version.version >= min_version)
     }
 
-    /// Checks whether the state is connected and the specified feature flags are supported..
+    /// Checks whether the state is connected and the specified predicate holds for the feature
+    /// flags.
     fn check_feature_flags(&self, flags: impl Fn(FeatureFlags) -> bool) -> bool {
         matches!(self, ConnectionState::Connected(info) if flags(info.version.feature_flags))
     }
@@ -569,8 +574,12 @@ impl From<OfferParams> for OfferParamsInternal {
     fn from(value: OfferParams) -> Self {
         let mut user_defined = UserDefinedData::new_zeroed();
 
-        // All non-relay channels are capable of being confidential.
-        let mut flags = OfferFlags::new().with_confidential_channel(true);
+        // All non-relay channels are capable of using a confidential ring buffer, but external
+        // memory is dependent on the device.
+        let mut flags = OfferFlags::new()
+            .with_confidential_ring_buffer(true)
+            .with_confidential_external_memory(value.allow_confidential_external_memory);
+
         match value.channel_type {
             ChannelType::Device { pipe_packets } => {
                 if pipe_packets {
@@ -709,7 +718,8 @@ impl Channel {
             .field("target_vp", target_vp)
             .field("guest_specified_event_flag", event_flag)
             .field("guest_specified_connection_id", connection_id)
-            .field("reserved_connection_target", reserved_target);
+            .field("reserved_connection_target", reserved_target)
+            .binary("offer_flags", self.offer.flags.into_bits());
     }
 
     /// Returns the monitor ID only if it's being handled by this server.
@@ -892,7 +902,12 @@ fn channel_inspect_path(offer: &OfferParamsInternal, suffix: std::fmt::Arguments
 }
 
 impl ChannelList {
-    fn inspect(&self, notifier: &impl Notifier, resp: &mut inspect::Response<'_>) {
+    fn inspect(
+        &self,
+        notifier: &impl Notifier,
+        version: Option<VersionInfo>,
+        resp: &mut inspect::Response<'_>,
+    ) {
         for (offer_id, channel) in self.iter() {
             resp.child(
                 &channel_inspect_path(&channel.offer, format_args!("")),
@@ -904,7 +919,7 @@ impl ChannelList {
                     // the channel is revoked (and not reoffered) since in that
                     // case the caller won't recognize the channel ID.
                     if !matches!(channel.state, ChannelState::Revoked) {
-                        notifier.inspect(offer_id, resp.request());
+                        notifier.inspect(version, offer_id, resp.request());
                     }
                 },
             );
@@ -1142,7 +1157,7 @@ impl OpenParams {
 /// A channel action, sent to the device when a channel state changes.
 #[derive(Debug)]
 pub enum Action {
-    Open(OpenParams),
+    Open(OpenParams, VersionInfo),
     Close,
     Gpadl(GpadlId, u16, Vec<u64>),
     TeardownGpadl {
@@ -1196,8 +1211,8 @@ pub trait Notifier: Send {
     fn modify_connection(&mut self, request: ModifyConnectionRequest) -> anyhow::Result<()>;
 
     /// Inspects a channel.
-    fn inspect(&self, offer_id: OfferId, req: inspect::Request<'_>) {
-        let _ = (offer_id, req);
+    fn inspect(&self, version: Option<VersionInfo>, offer_id: OfferId, req: inspect::Request<'_>) {
+        let _ = (version, offer_id, req);
     }
 
     /// Sends a synic message to the guest.
@@ -1280,6 +1295,10 @@ impl Server {
                 })
             })
             .collect()
+    }
+
+    pub fn get_version(&self) -> Option<VersionInfo> {
+        self.state.get_version()
     }
 }
 
@@ -1380,11 +1399,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 ChannelState::ClosingReopen { request, .. } => {
                     self.notifier.notify(
                         offer_id,
-                        Action::Open(OpenParams::from_request(
-                            &info,
-                            &request,
-                            channel.handled_monitor_id(),
-                        )),
+                        Action::Open(
+                            OpenParams::from_request(&info, &request, channel.handled_monitor_id()),
+                            self.inner.state.get_version().expect("must be connected"),
+                        ),
                     );
                     channel.state = ChannelState::Opening {
                         request,
@@ -1394,11 +1412,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 ChannelState::Opening { request, .. } => {
                     self.notifier.notify(
                         offer_id,
-                        Action::Open(OpenParams::from_request(
-                            &info,
-                            &request,
-                            channel.handled_monitor_id(),
-                        )),
+                        Action::Open(
+                            OpenParams::from_request(&info, &request, channel.handled_monitor_id()),
+                            self.inner.state.get_version().expect("must be connected"),
+                        ),
                     );
                 }
                 ChannelState::Open { .. } => {
@@ -1612,7 +1629,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         }
 
         let key = offer.key();
-        let confidential = offer.flags.confidential_channel();
+        let confidential_ring_buffer = offer.flags.confidential_ring_buffer();
+        let confidential_external_memory = offer.flags.confidential_external_memory();
         let channel = Channel {
             info: None,
             offer,
@@ -1632,7 +1650,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             send_offer(self.notifier, channel, version);
         }
 
-        tracing::info!(?offer_id, %key, confidential, "new channel");
+        tracing::info!(?offer_id, %key, confidential_ring_buffer, confidential_external_memory, "new channel");
         Ok(offer_id)
     }
 
@@ -2546,11 +2564,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         let info = channel.info.as_ref().expect("assigned");
         self.notifier.notify(
             offer_id,
-            Action::Open(OpenParams::from_request(
-                info,
-                input,
-                channel.handled_monitor_id(),
-            )),
+            Action::Open(
+                OpenParams::from_request(info, input, channel.handled_monitor_id()),
+                self.inner.state.get_version().expect("must be connected"),
+            ),
         );
     }
 
@@ -3358,7 +3375,8 @@ fn send_offer<N: Notifier>(notifier: &mut N, channel: &mut Channel, version: Ver
     let info = channel.info.as_ref().expect("assigned");
     let mut flags = channel.offer.flags;
     if !version.feature_flags.confidential_channels() {
-        flags.set_confidential_channel(false);
+        flags.set_confidential_ring_buffer(false);
+        flags.set_confidential_external_memory(false);
     }
 
     let msg = protocol::OfferChannel {
@@ -4075,7 +4093,7 @@ mod tests {
 
         let (id, action) = recv.recv().unwrap();
         assert_eq!(id, offer_id);
-        let Action::Open(op) = action else {
+        let Action::Open(op, _) = action else {
             panic!("unexpected action: {:?}", action);
         };
         assert_eq!(op.open_data.ring_gpadl_id, GpadlId(1));
@@ -5215,7 +5233,13 @@ mod tests {
         );
 
         env.offer(1); // non-confidential
-        env.offer_with_flags(2, OfferFlags::new().with_confidential_channel(true));
+        env.offer_with_flags(2, OfferFlags::new().with_confidential_ring_buffer(true));
+        env.offer_with_flags(
+            3,
+            OfferFlags::new()
+                .with_confidential_ring_buffer(true)
+                .with_confidential_external_memory(true),
+        );
 
         // Untrusted messages are rejected when the connection is trusted.
         let error = env
@@ -5244,7 +5268,16 @@ mod tests {
         assert_eq!(offer.channel_id, ChannelId(2));
         assert_eq!(
             offer.flags,
-            OfferFlags::new().with_confidential_channel(true)
+            OfferFlags::new().with_confidential_ring_buffer(true)
+        );
+
+        let offer = env.notifier.get_message::<protocol::OfferChannel>();
+        assert_eq!(offer.channel_id, ChannelId(3));
+        assert_eq!(
+            offer.flags,
+            OfferFlags::new()
+                .with_confidential_ring_buffer(true)
+                .with_confidential_external_memory(true)
         );
 
         env.notifier
@@ -5272,7 +5305,8 @@ mod tests {
             2,
             OfferFlags::new()
                 .with_named_pipe_mode(true)
-                .with_confidential_channel(true),
+                .with_confidential_ring_buffer(true)
+                .with_confidential_external_memory(true),
         );
 
         env.send_message(in_msg_ex(
@@ -5289,7 +5323,7 @@ mod tests {
             OfferFlags::new().with_enumerate_device_interface(true)
         );
 
-        // The confidential channel flag is not sent without the feature flag.
+        // The confidential channel flags are not sent without the feature flag.
         let offer = env.notifier.get_message::<protocol::OfferChannel>();
         assert_eq!(offer.channel_id, ChannelId(2));
         assert_eq!(offer.flags, OfferFlags::new().with_named_pipe_mode(true));

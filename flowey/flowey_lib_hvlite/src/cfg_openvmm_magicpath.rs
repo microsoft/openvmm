@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! A node which returns a PathBuf to the "magic path" where OpenVMM code
 //! expects certain binary dependencies to be symlinked / extracted into.

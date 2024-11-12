@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 #![cfg(windows)]
 // UNSAFETY: Calling Win32 VirtualDisk APIs and accessing the unions they return.
@@ -201,7 +202,7 @@ mod virtdisk {
     }
 
     #[link(name = "virtdisk")]
-    extern "system" {
+    unsafe extern "system" {
         pub fn OpenVirtualDisk(
             virtual_storage_type: &mut VIRTUAL_STORAGE_TYPE,
             path: *const u16,

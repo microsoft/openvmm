@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! The Consomme user-mode TCP stack.
 //!
@@ -24,7 +25,7 @@ mod tcp;
 mod udp;
 mod windows;
 
-use inspect::Inspect;
+use inspect::InspectMut;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::driver::Driver;
@@ -135,11 +136,11 @@ pub struct Consomme {
     udp: udp::Udp,
 }
 
-impl Inspect for Consomme {
-    fn inspect(&self, req: inspect::Request<'_>) {
+impl InspectMut for Consomme {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.respond()
             .field("tcp", &self.tcp)
-            .field("udp", &self.udp);
+            .field_mut("udp", &mut self.udp);
     }
 }
 
@@ -161,6 +162,11 @@ pub struct ConsommeState {
     buffer: Box<[u8]>,
 }
 
+/// An error indicating that the CIDR is invalid.
+#[derive(Debug, Error)]
+#[error("invalid CIDR")]
+pub struct InvalidCidr;
+
 impl ConsommeState {
     /// Create default dynamic network state. The default state is
     ///     IP address: 10.0.0.2 / 24
@@ -177,6 +183,21 @@ impl ConsommeState {
             nameservers,
             buffer: Box::new([0; 65535]),
         })
+    }
+
+    /// Sets the cidr for the network.
+    ///
+    /// Setting, for example, 192.168.0.0/24 will set the gateway to
+    /// 192.168.0.1 and the client IP to 192.168.0.2.
+    pub fn set_cidr(&mut self, cidr: &str) -> Result<(), InvalidCidr> {
+        let cidr: smoltcp::wire::Ipv4Cidr = cidr.parse().map_err(|()| InvalidCidr)?;
+        let base_address = cidr.network().address();
+        self.gateway_ip = base_address;
+        self.gateway_ip.0[3] += 1;
+        self.client_ip = base_address;
+        self.client_ip.0[3] += 2;
+        self.net_mask = cidr.netmask();
+        Ok(())
     }
 }
 
@@ -439,6 +460,14 @@ impl<T: Client> Access<'_, T> {
         self.poll_udp(cx);
         self.poll_tcp(cx);
         self.poll_message(cx);
+    }
+
+    /// Update all sockets to use the new client's IO driver. This must be
+    /// called if the previous driver is no longer usable or if the client
+    /// otherwise wants existing connections to be polled on a new IO driver.
+    pub fn refresh_driver(&mut self) {
+        self.refresh_tcp_driver();
+        self.refresh_udp_driver();
     }
 
     /// Sends an Ethernet frame to the network.

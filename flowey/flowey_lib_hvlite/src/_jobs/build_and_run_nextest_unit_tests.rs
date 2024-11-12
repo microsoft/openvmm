@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 //! Build and run the cargo-nextest based unit tests.
 
@@ -7,6 +8,7 @@ use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_nextest_run::build_params::PanicAbortTests;
+use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Params {
@@ -35,7 +37,7 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<flowey_lib_common::junit_publish_test_results::Node>();
+        ctx.import::<flowey_lib_common::publish_test_results::Node>();
         ctx.import::<crate::build_nextest_unit_tests::Node>();
     }
 
@@ -63,26 +65,14 @@ impl SimpleFlowNode for Node {
 
         let mut side_effects = Vec::new();
 
-        if let Some(artifact_dir) = artifact_dir {
-            let published_artifact = ctx.reqv(|v| {
-                flowey_lib_common::junit_publish_test_results::Request::PublishToArtifact(
-                    artifact_dir,
-                    v,
-                )
-            });
-
-            side_effects.push(published_artifact)
-        }
-
         let junit_xml = results.map(ctx, |r| r.junit_xml);
-        let reported_results =
-            ctx.reqv(
-                |v| flowey_lib_common::junit_publish_test_results::Request::Register {
-                    junit_xml,
-                    test_label: junit_test_label,
-                    done: v,
-                },
-            );
+        let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
+            junit_xml,
+            test_label: junit_test_label,
+            attachments: BTreeMap::new(),
+            output_dir: artifact_dir,
+            done: v,
+        });
 
         side_effects.push(reported_results);
 
