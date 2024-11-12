@@ -59,6 +59,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
+      working-directory: flowey_bootstrap
+      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
@@ -247,6 +251,10 @@ jobs:
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
       working-directory: flowey_bootstrap
       shell: bash
     - name: Stage flowey artifact
@@ -450,6 +458,10 @@ jobs:
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
       working-directory: flowey_bootstrap
       shell: bash
     - name: Stage flowey artifact
@@ -811,6 +823,10 @@ jobs:
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
       working-directory: flowey_bootstrap
       shell: bash
     - name: Stage flowey artifact
@@ -1237,6 +1253,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
+      working-directory: flowey_bootstrap
+      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
@@ -1650,6 +1670,10 @@ jobs:
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
       working-directory: flowey_bootstrap
       shell: bash
     - name: Stage flowey artifact
@@ -2239,6 +2263,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
+      working-directory: flowey_bootstrap
+      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
@@ -2562,6 +2590,10 @@ jobs:
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
       working-directory: flowey_bootstrap
       shell: bash
     - name: Stage flowey artifact
@@ -2937,6 +2969,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
+      working-directory: flowey_bootstrap
+      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
@@ -3306,6 +3342,10 @@ jobs:
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target aarch64-pc-windows-msvc --profile flowey-ci
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
       working-directory: flowey_bootstrap
       shell: bash
     - name: Stage flowey artifact
@@ -4304,6 +4344,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
+      working-directory: flowey_bootstrap
+      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
@@ -5237,6 +5281,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
+      working-directory: flowey_bootstrap
+      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
@@ -5447,6 +5495,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
+      working-directory: flowey_bootstrap
+      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
@@ -5635,6 +5687,10 @@ jobs:
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
       working-directory: flowey_bootstrap
       shell: bash
     - name: Stage flowey artifact
@@ -5836,6 +5892,10 @@ jobs:
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
       working-directory: flowey_bootstrap
       shell: bash
     - name: Stage flowey artifact
@@ -6111,6 +6171,10 @@ jobs:
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
       working-directory: flowey_bootstrap
       shell: bash
     - name: Stage flowey artifact
@@ -6408,6 +6472,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
+      working-directory: flowey_bootstrap
+      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
@@ -6684,6 +6752,10 @@ jobs:
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Generate JSON
+      run: cargo xflowey regen
       working-directory: flowey_bootstrap
       shell: bash
     - name: Stage flowey artifact
