@@ -455,23 +455,25 @@ impl BackingPrivate for SnpBacked {
                 return true;
             }
 
-            let lapic = &mut this.backing.lapics[vtl].lapic;
-            let ppr = lapic
-                .access(&mut SnpApicClient {
-                    partition: this.partition,
-                    vmsa,
-                    dev,
-                    vmtime: &this.vmtime,
-                    vtl,
-                })
-                .msr_read(
-                    x86defs::apic::ApicRegister::PPR.0 as u32 + x86defs::apic::X2APIC_MSR_BASE,
-                )
-                .expect("reading ppr should never fail");
-            let ppr_priority = ppr >> 4;
-            let vmsa = this.runner.vmsa_mut(vtl);
-            if vmsa.v_intr_cntrl().irq() && vmsa.v_intr_cntrl().priority() > ppr_priority {
-                return true;
+            if vmsa.v_intr_cntrl().irq() {
+                let vmsa_priority = vmsa.v_intr_cntrl().priority();
+                let lapic = &mut this.backing.lapics[vtl].lapic;
+                let ppr = lapic
+                    .access(&mut SnpApicClient {
+                        partition: this.partition,
+                        vmsa,
+                        dev,
+                        vmtime: &this.vmtime,
+                        vtl,
+                    })
+                    .msr_read(
+                        x86defs::apic::ApicRegister::PPR.0 as u32 + x86defs::apic::X2APIC_MSR_BASE,
+                    )
+                    .expect("reading ppr should never fail");
+                let ppr_priority = ppr >> 4;
+                if vmsa_priority > ppr_priority {
+                    return true;
+                }
             }
 
             false

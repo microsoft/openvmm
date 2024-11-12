@@ -52,7 +52,6 @@ use virt_support_aarch64emu::emulate::EmuCheckVtlAccessError;
 use virt_support_aarch64emu::emulate::EmuTranslateError;
 use virt_support_aarch64emu::emulate::EmuTranslateResult;
 use virt_support_aarch64emu::emulate::EmulatorSupport;
-use vtl_array::VtlArray;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
