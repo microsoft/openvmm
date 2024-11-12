@@ -94,11 +94,10 @@ impl MeasuredVtl2Info {
 struct Vtl2ParamsMap<'a> {
     mapping: SparseMapping,
     ranges: &'a [MemoryRange],
-    is_isolated: bool,
 }
 
 impl<'a> Vtl2ParamsMap<'a> {
-    fn new(config_ranges: &'a [MemoryRange], is_isolated: bool) -> anyhow::Result<Self> {
+    fn new(config_ranges: &'a [MemoryRange]) -> anyhow::Result<Self> {
         // No overlaps.
         // TODO: Move this check to host_fdt_parser?
         if let Some((l, r)) = config_ranges
@@ -139,7 +138,6 @@ impl<'a> Vtl2ParamsMap<'a> {
         Ok(Self {
             mapping,
             ranges: config_ranges,
-            is_isolated,
         })
     }
 
@@ -154,10 +152,9 @@ impl<'a> Vtl2ParamsMap<'a> {
 
 impl Drop for Vtl2ParamsMap<'_> {
     fn drop(&mut self) {
-        // The zeroing is only for servicing validation, so this is only needed
-        // for non-isolated VMs. Currently it breaks SNP-isolated VMs, so skip
-        // it for all isolated VMs for now.
-        if !self.is_isolated {
+        // This currently doesn't work on SNP. Revive this when it works on all
+        // platforms.
+        if false {
             let base = self
                 .ranges
                 .first()
@@ -177,11 +174,8 @@ impl Drop for Vtl2ParamsMap<'_> {
 pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info)> {
     let parsed_openhcl_boot = ParsedBootDtInfo::new().context("failed to parse openhcl_boot dt")?;
 
-    let mapping = Vtl2ParamsMap::new(
-        &parsed_openhcl_boot.config_ranges,
-        parsed_openhcl_boot.isolation != IsolationType::None,
-    )
-    .context("failed to map igvm parameters")?;
+    let mapping = Vtl2ParamsMap::new(&parsed_openhcl_boot.config_ranges)
+        .context("failed to map igvm parameters")?;
 
     // For the various ACPI tables, read the header to see how big the table
     // is, then read the exact table.
