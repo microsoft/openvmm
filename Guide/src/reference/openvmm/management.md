@@ -18,7 +18,7 @@ At the moment, OpenVMM exposes 3 distinct configuration and management interface
     devices are exposed to the Guest, such as a virtual NIC, Storage, vTPM,
     etc..
 - **Interactive console**: Used to interact with a VM at runtime
-  - This interfaces allows users to perform core VM operations such as stop,
+  - This interface allows users to perform core VM operations such as stop,
     restart, save, restore, pause, resume, etc.. as well as things like storage
     hot-add, VTL2 servicing, running Inspect queries, etc..
 - **gRPC / ttrpc**: A _very_ WIP set of APIs for configuring and interacting
@@ -72,7 +72,7 @@ tables. -->
 </table>
 </div>
 
-If a feature you is missing from this list, please check if the feature is being
+If a feature is missing from this list, please check if the feature is being
 tracked via a Issue on the OpenVMM GitHub, and/or submit a PR adding it to this
 list.
 
