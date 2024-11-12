@@ -61,6 +61,7 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 use virt::io::CpuIo;
+use virt::x86::translate::TranslationRegisters;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
@@ -279,6 +280,12 @@ pub trait HardwareIsolatedBacking: Backing {
         source_vtl: GuestVtl,
         target_vtl: GuestVtl,
     );
+    /// Gets registers needed for gva to gpa translation
+    fn translation_registers(
+        &self,
+        this: &UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+    ) -> TranslationRegisters;
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]

@@ -253,7 +253,7 @@ pub fn translate_gva_to_gpa(
 
     let mut gpa_base = registers.cr3 & !0xfff;
     let mut remaining_bits: u32 = address_bits;
-    let mut cache_type: Option<TranslateCacheType> = None;
+    let cache_type: Option<TranslateCacheType>;
     loop {
         // Compute the PTE address.
         let pte_address = if large_pte {

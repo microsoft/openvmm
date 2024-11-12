@@ -5,7 +5,6 @@
 
 use super::from_seg;
 use super::hardware_cvm;
-use super::hardware_cvm::HvTranslateGvaSupport;
 use super::private::BackingParams;
 use super::vp_state;
 use super::vp_state::UhVpStateAccess;
@@ -25,7 +24,6 @@ use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
 use crate::UhPartitionInner;
 use crate::WakeReason;
-use guestmem::GuestMemory;
 use hcl::vmsa::VmsaWrapper;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
@@ -59,7 +57,6 @@ use virt_support_apic::ApicWork;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
-use virt_support_x86emu::emulate::TranslateGvaSupport;
 use vmcore::vmtime::VmTimeAccess;
 use vtl_array::VtlArray;
 use x86defs::cpuid::CpuidFunction;
@@ -205,6 +202,26 @@ impl HardwareIsolatedBacking for SnpBacked {
         for i in 0..vec_reg_count {
             target_vmsa.set_xmm_registers(i, current_vmsa.xmm_registers(i));
             target_vmsa.set_ymm_registers(i, current_vmsa.ymm_registers(i));
+        }
+    }
+
+    fn translation_registers(
+        &self,
+        this: &UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+    ) -> TranslationRegisters {
+        let vmsa = this.runner.vmsa(vtl);
+        TranslationRegisters {
+            cr0: vmsa.cr0(),
+            cr4: vmsa.cr4(),
+            efer: vmsa.efer(),
+            cr3: vmsa.cr3(),
+            rflags: vmsa.rflags(),
+            pat: Some(vmsa.pat()),
+            ss: from_seg(hv_seg_from_snp(&vmsa.ss())),
+            encryption_mode: virt::x86::translate::EncryptionMode::Vtom(
+                this.partition.caps.vtom.unwrap(),
+            ),
         }
     }
 }
@@ -570,62 +587,6 @@ fn hv_table_from_snp(selector: &SevSelector) -> hvdef::HvX64TableRegister {
         limit: selector.limit as u16,
         base: selector.base,
         ..FromZeroes::new_zeroed()
-    }
-}
-
-// Translation support for lower-vtl hypercall handling
-impl HvTranslateGvaSupport for UhProcessor<'_, SnpBacked> {
-    type Error = UhRunVpError;
-    fn overlay_page(&self, vtl: GuestVtl) -> u64 {
-        hvdef::hypercall::MsrHypercallContents::from(
-            self.backing
-                .hv(vtl)
-                .expect("has an hv emulator")
-                .msr_read(hvdef::HV_X64_MSR_HYPERCALL)
-                .unwrap(),
-        )
-        .gpn()
-    }
-
-    fn guest_memory(&self, vtl: GuestVtl) -> &GuestMemory {
-        &self.partition.gm[vtl]
-    }
-
-    fn acquire_tlb_lock(&mut self, vtl: GuestVtl) {
-        self.set_tlb_lock(Vtl::Vtl2, vtl)
-    }
-
-    fn registers(&mut self, vtl: GuestVtl) -> Result<TranslationRegisters, Self::Error> {
-        let vmsa = self.runner.vmsa(vtl);
-        Ok(TranslationRegisters {
-            cr0: vmsa.cr0(),
-            cr4: vmsa.cr4(),
-            efer: vmsa.efer(),
-            cr3: vmsa.cr3(),
-            rflags: vmsa.rflags(),
-            pat: Some(vmsa.pat()),
-            ss: from_seg(hv_seg_from_snp(&vmsa.ss())),
-            encryption_mode: virt::x86::translate::EncryptionMode::Vtom(
-                self.partition.caps.vtom.unwrap(),
-            ),
-        })
-    }
-}
-
-// Translation support for emulation
-impl<T: CpuIo> TranslateGvaSupport for UhEmulationState<'_, '_, T, SnpBacked> {
-    type Error = UhRunVpError;
-
-    fn guest_memory(&self) -> &GuestMemory {
-        &self.vp.partition.gm[self.vtl]
-    }
-
-    fn acquire_tlb_lock(&mut self) {
-        HvTranslateGvaSupport::acquire_tlb_lock(self.vp, self.vtl);
-    }
-
-    fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
-        HvTranslateGvaSupport::registers(self.vp, self.vtl)
     }
 }
 
@@ -2314,42 +2275,6 @@ impl<T: CpuIo> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, Snp
                     .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT)
                     .with_vector(x86defs::Exception::INVALID_OPCODE.0),
             );
-    }
-}
-
-impl<T> hv1_hypercall::TranslateVirtualAddressX64 for UhHypercallHandler<'_, '_, T, SnpBacked> {
-    fn translate_virtual_address(
-        &mut self,
-        partition_id: u64,
-        vp_index: u32,
-        control_flags: hvdef::hypercall::TranslateGvaControlFlagsX64,
-        gva_page: u64,
-    ) -> hvdef::HvResult<hvdef::hypercall::TranslateVirtualAddressOutput> {
-        if partition_id != hvdef::HV_PARTITION_ID_SELF {
-            return Err(HvError::AccessDenied);
-        }
-
-        if vp_index != hvdef::HV_VP_INDEX_SELF && vp_index != self.vp.vp_index().index() {
-            return Err(HvError::AccessDenied);
-        }
-
-        let target_vtl = control_flags
-            .input_vtl()
-            .target_vtl()?
-            .unwrap_or(self.intercepted_vtl.into())
-            .try_into()
-            .map_err(|_| HvError::InvalidParameter)?; // TODO: fix return code
-
-        if self.intercepted_vtl <= target_vtl {
-            return Err(HvError::AccessDenied);
-        }
-
-        Self::hcvm_translate_virtual_address(
-            self.vp,
-            target_vtl,
-            gva_page * HV_PAGE_SIZE,
-            control_flags,
-        )
     }
 }
 
