@@ -1,13 +1,18 @@
 # gRPC / ttrpc
-To enable gRPC or ttrpc management interfaces, specify the respective cli flags,
-`--grpc <SOCKETPATH>` and `--trpc <SOCKETPATH>`. This runs OpenVMM as a gRPC or
+
+To enable gRPC or ttrpc management interfaces, pass `--grpc <SOCKETPATH>` or
+`--trpc <SOCKETPATH>`. This will spawn an OpenVMM process acting as a gRPC or
 ttrpc server.
 
 Here is a list of supported RPCs:
 
 ```admonish danger title="Disclaimer"
 The following list is not exhaustive, and may be out of date. The most up to
-date reference is always [the code].
+date reference is the [`vmservice.proto`] file.
+
+Moreover, many APIs defined in the `.proto` file may not be fully wired up yet.
+
+In other words: This API is _very_ WIP, and user discretion is advised.
 ```
 
 * CreateVM
@@ -20,4 +25,4 @@ date reference is always [the code].
 * ModifyResource
 * Quit
 
-[the code]: https://openvmm.dev/rustdoc/linux/hvlite_ttrpc_vmservice/index.html
+[`vmservice.proto`]: https://github.com/microsoft/openvmm/blob/main/openvmm/hvlite_ttrpc_vmservice/src/vmservice.proto
