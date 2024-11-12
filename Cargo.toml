@@ -571,8 +571,6 @@ rust-2024-compatibility = { level = "warn", priority = -1 }
 edition_2024_expr_fragment_specifier = "allow"
 impl_trait_overcaptures = "allow"
 deprecated-safe-2024 = "allow"
-# Needed for linkme compatibility for now, https://github.com/dtolnay/linkme/issues/101
-unsafe-attr-outside-unsafe = "allow"
 
 unused_qualifications = "warn"
 
