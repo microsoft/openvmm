@@ -95,6 +95,10 @@ pub struct ShimParams {
     pub parameter_region_start: u64,
     /// The size of the parameter region.
     pub parameter_region_size: u64,
+    /// The base address of the VTL2 reserved region.
+    pub vtl2_reserved_region_start: u64,
+    /// The size of the VTL2 reserved region.
+    pub vtl2_reserved_region_size: u64,
     /// Isolation type supported by the boot shim.
     pub isolation_type: IsolationType,
     pub sidecar_entry_address: u64,
@@ -120,6 +124,8 @@ impl ShimParams {
             memory_size,
             parameter_region_offset,
             parameter_region_size,
+            vtl2_reserved_region_offset,
+            vtl2_reserved_region_size,
             sidecar_offset,
             sidecar_size,
             sidecar_entry_offset,
@@ -148,6 +154,9 @@ impl ShimParams {
             memory_size,
             parameter_region_start: shim_base_address.wrapping_add_signed(parameter_region_offset),
             parameter_region_size,
+            vtl2_reserved_region_start: shim_base_address
+                .wrapping_add_signed(vtl2_reserved_region_offset),
+            vtl2_reserved_region_size,
             isolation_type,
             sidecar_entry_address: shim_base_address.wrapping_add_signed(sidecar_entry_offset),
             sidecar_base: shim_base_address.wrapping_add_signed(sidecar_offset),
@@ -163,15 +172,17 @@ impl ShimParams {
     /// Get the base address of the secrets page.
     #[cfg(target_arch = "x86_64")]
     pub fn secrets_start(&self) -> u64 {
-        self.parameter_region_start
-            + loader_defs::paravisor::PARAVISOR_CONFIG_SECRETS_PAGE_INDEX * hvdef::HV_PAGE_SIZE
+        self.vtl2_reserved_region_start
+            + loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX
+                * hvdef::HV_PAGE_SIZE
     }
 
     /// Get the size of the CPUID page.
     #[cfg(target_arch = "x86_64")]
     pub fn cpuid_start(&self) -> u64 {
-        self.parameter_region_start
-            + loader_defs::paravisor::PARAVISOR_CONFIG_CPUID_PAGE_INDEX * hvdef::HV_PAGE_SIZE
+        self.vtl2_reserved_region_start
+            + loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_PAGE_INDEX
+                * hvdef::HV_PAGE_SIZE
     }
 
     /// Get the base address of the host provided device tree.

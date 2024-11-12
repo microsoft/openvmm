@@ -166,6 +166,28 @@ impl Drop for Vtl2ParamsMap<'_> {
     }
 }
 
+/// Map that reads the VTL 2 reserved region, that should not be zeroed after
+/// reading.
+struct Vtl2ReservedMap {
+    mapping: SparseMapping,
+}
+
+impl Vtl2ReservedMap {
+    fn new(reserved_range: MemoryRange) -> anyhow::Result<Self> {
+        let size = reserved_range.len() as usize;
+
+        let mapping = SparseMapping::new(size).context("failed to create a sparse mapping")?;
+
+        let dev_mem = fs_err::OpenOptions::new().read(true).open("/dev/mem")?;
+
+        mapping
+            .map_file(0, size, dev_mem.file(), reserved_range.start(), false)
+            .context("failed to memory map reserved region")?;
+
+        Ok(Self { mapping })
+    }
+}
+
 /// Reads the VTL 2 parameters from the vtl-boot-data region.
 pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info)> {
     let parsed_openhcl_boot = ParsedBootDtInfo::new().context("failed to parse openhcl_boot dt")?;
