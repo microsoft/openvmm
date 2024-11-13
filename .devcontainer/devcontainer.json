@@ -3,16 +3,24 @@
 {
 	"name": "Ubuntu",
 	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
-	"image": "mcr.microsoft.com/devcontainers/base:jammy"
+	"image": "mcr.microsoft.com/devcontainers/base:jammy",
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
-	// "features": {},
+	"features": {
+		"ghcr.io/devcontainers/features/rust:1": {
+			"version": "latest",
+			"targets": "aarch64-apple-darwin,aarch64-unknown-linux-musl,x86_64-pc-windows-msvc,x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,x86_64-unknown-none"
+		}
+	},
+
+	// Allow kvm by setting priviledged to true.
+	"privileged": true,
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": [],
 
 	// Use 'postCreateCommand' to run commands after the container is created.
-	// "postCreateCommand": "uname -a",
+	"postCreateCommand": "cargo xflowey restore-packages"
 
 	// Configure tool-specific properties.
 	// "customizations": {},
