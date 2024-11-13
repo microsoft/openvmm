@@ -356,7 +356,6 @@ fn get_next_page_table(
     let mut pte;
     loop {
         pte = pte_access.map_err(|_| Error::GpaUnmapped(level))?;
-        tracing::trace!(?pte);
         let large_page_supported = match page_table.level {
             3 => false,
             2 => page_table.page_shift > 12,
