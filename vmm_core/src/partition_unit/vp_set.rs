@@ -437,27 +437,29 @@ impl<T: Processor, U> DebugVp for BoundVp<'_, T, U> {
         let mut access = self.vp.access_state(vtl);
         let regs = access.registers()?;
         let msrs = access.virtual_msrs()?;
-        Ok(Box::new(DebuggerVpState::X86_64(vmm_core_defs::debug_rpc::X86VpState {
-            gp: [
-                regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
-                regs.r8, regs.r9, regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
-            ],
-            rip: regs.rip,
-            rflags: regs.rflags,
-            cr0: regs.cr0,
-            cr2: regs.cr2,
-            cr3: regs.cr3,
-            cr4: regs.cr4,
-            cr8: regs.cr8,
-            efer: regs.efer,
-            kernel_gs_base: msrs.kernel_gs_base,
-            es: regs.es,
-            cs: regs.cs,
-            ss: regs.ss,
-            ds: regs.ds,
-            fs: regs.fs,
-            gs: regs.gs,
-        })))
+        Ok(Box::new(DebuggerVpState::X86_64(
+            vmm_core_defs::debug_rpc::X86VpState {
+                gp: [
+                    regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
+                    regs.r8, regs.r9, regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
+                ],
+                rip: regs.rip,
+                rflags: regs.rflags,
+                cr0: regs.cr0,
+                cr2: regs.cr2,
+                cr3: regs.cr3,
+                cr4: regs.cr4,
+                cr8: regs.cr8,
+                efer: regs.efer,
+                kernel_gs_base: msrs.kernel_gs_base,
+                es: regs.es,
+                cs: regs.cs,
+                ss: regs.ss,
+                ds: regs.ds,
+                fs: regs.fs,
+                gs: regs.gs,
+            },
+        )))
     }
 
     #[cfg(guest_arch = "aarch64")]
@@ -1255,8 +1257,8 @@ mod vp_state {
                     cpsr: state.cpsr.into(),
                     sctlr: state.sctlr_el1.into(),
                     tcr: state.tcr_el1.into(),
-                    ttbr0: state.ttbr0_el1.into(),
-                    ttbr1: state.ttbr1_el1.into(),
+                    ttbr0: state.ttbr0_el1,
+                    ttbr1: state.ttbr1_el1,
                     syndrome: 0,
                     // For debug translation, don't worry about accidentally reading
                     // page tables from shared memory.
