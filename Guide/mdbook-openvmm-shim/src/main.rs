@@ -3,6 +3,8 @@
 
 use std::ffi::OsString;
 
+mod custom_preprocessors;
+
 // certain plugins (e.g: mdbook-admonish) also "helpfully" update book.toml as
 // part of an `install` operation, without any way to opt-out.
 fn preserve_book_toml(f: impl FnOnce()) {
@@ -29,6 +31,10 @@ fn main() {
     let args = args.collect::<Vec<OsString>>();
 
     eprintln!("plugin={plugin}, args={args:?}");
+
+    if plugin == "openvmm-custom" {
+        return openvmm_custom(args);
+    }
 
     let plugin_bin = {
         if let Ok(path) = std::env::var(format!("SHIM_{}", plugin.replace('-', "_").to_uppercase()))
@@ -63,4 +69,24 @@ fn main() {
         .unwrap();
 
     std::process::exit(status.code().unwrap())
+}
+
+fn openvmm_custom(args: Vec<OsString>) {
+    if args.first().map(|s| s == "supports").unwrap_or(false) {
+        // no need to inspect what backend is being used - the current custom
+        // preprocessors we implement support all backends.
+        std::process::exit(0);
+    }
+
+    // avoid taking a dependency on the `mdbook` library for now, since its
+    // pretty heavy.
+    //
+    // if we decide to do some more involved preprocessing for whatever reason,
+    // then the calculus here likely changes.
+    let [context, mut book]: [serde_json::Value; 2] =
+        serde_json::from_reader(std::io::stdin().lock()).unwrap();
+
+    custom_preprocessors::fixup_include_book_relative_path(context, &mut book);
+
+    println!("{book}")
 }

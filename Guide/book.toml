@@ -19,6 +19,10 @@ additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [preprocessor]
 
+[preprocessor.openvmm-shim]
+before = ["links"] # to fixup book repo-relative {{ #include }} directives
+command = "cargo run --quiet --manifest-path ./mdbook-openvmm-shim/Cargo.toml openvmm-custom"
+
 [preprocessor.admonish]
 command = "cargo run --quiet --manifest-path ./mdbook-openvmm-shim/Cargo.toml mdbook-admonish"
 assets_version = "3.0.2" # do not edit: managed by `mdbook-admonish install`

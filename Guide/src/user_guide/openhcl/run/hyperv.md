@@ -1,5 +1,5 @@
 # Windows - Hyper-V
-Hyper-V has support for running with OpenHCL when running on Windows. 
+Hyper-V has support for running with OpenHCL when running on Windows.
 This is the closest configuration to what Microsoft ships in Azure VMs, the only difference being that Azure uses Azure Host OS (as opposed to Windows Client or Windows Server).
 
 ## Get a Windows version that has development support for OpenHCL
@@ -10,10 +10,10 @@ Note that Windows Client and Windows Server do not have production support for O
 
 You can use the Windows 11 2024 Update (AKA version 24H2), the third and new major update to Windows 11, as this is the first Windows version to have development support for OpenHCL VMs.
 
-As of October 1, 2024, the Windows 11 2024 Update is available. Microsoft is taking a phased approach with its rollout. If the update is available for your device, it will [download and install automatically](https://learn.microsoft.com/en-us/windows/release-health/status-windows-11-24h2). 
+As of October 1, 2024, the Windows 11 2024 Update is available. Microsoft is taking a phased approach with its rollout. If the update is available for your device, it will [download and install automatically](https://learn.microsoft.com/en-us/windows/release-health/status-windows-11-24h2).
 
-Otherwise, you can get it via [Windows Insider](https://www.microsoft.com/en-us/windowsinsider) by [registering](https://www.microsoft.com/en-us/windowsinsider/register) with your Microsoft account and following these [instructions](https://www.microsoft.com/en-us/windowsinsider/for-business-getting-started#flight) (you can choose the “Release Preview Channel”). You may have to click the Check for updates button to download the latest Insider Preview build twice, and this update may take over an hour. Finally go to Settings > About to check you are on Windows 11, version 24H2 (Build 26100.1586). 
-![alt text](./_images/exampleWindows.png)
+Otherwise, you can get it via [Windows Insider](https://www.microsoft.com/en-us/windowsinsider) by [registering](https://www.microsoft.com/en-us/windowsinsider/register) with your Microsoft account and following these [instructions](https://www.microsoft.com/en-us/windowsinsider/for-business-getting-started#flight) (you can choose the “Release Preview Channel”). You may have to click the Check for updates button to download the latest Insider Preview build twice, and this update may take over an hour. Finally go to Settings > About to check you are on Windows 11, version 24H2 (Build 26100.1586).
+![alt text](/_images/windows_version.png)
 
 ### Windows Server
 Instructions coming soon.
@@ -21,7 +21,7 @@ Instructions coming soon.
 ## Machine setup
 
 ### Enable Hyper-V
-Enbable [Hyper-V](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/quick-start/enable-hyper-v) on your machine. 
+Enbable [Hyper-V](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/quick-start/enable-hyper-v) on your machine.
 
 ### Enable loading from developer file
 Once you get the right Windows Version, run the following command once before starting your VM.  Note that this enabled loading unsigned images, and must be done as administrator.
@@ -31,7 +31,7 @@ Set-ItemProperty "HKLM:/Software/Microsoft/Windows NT/CurrentVersion/Virtualizat
 ```
 
 ### File access
-Ensure that your OpenHCL .bin is located somewhere that vmwp.exe in your Windows host has permissions to read it (that can be in windows\system32, or another directory with wide read access). 
+Ensure that your OpenHCL .bin is located somewhere that vmwp.exe in your Windows host has permissions to read it (that can be in windows\system32, or another directory with wide read access).
 
 ## Create a VM
 

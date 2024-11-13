@@ -13,7 +13,7 @@ on this page.
 Sometimes it can be useful to extract additional information from the kernel
 during runtime. By default the config OpenHCL uses does not support tracing;
 as such you will need to build a custom kernel with tracing support. First, see
-the [Kernel Development](../../../dev_guide/getting_started/build_ohcl_kernel.md)
+the [Kernel Development](/dev_guide/getting_started/build_ohcl_kernel.md)
 section of the docs to find the repo. To set up a tracing enabled kernel:
 
 1. Find `CONFIG_FTRACE` in Microsoft/hcl-dev.config and change it from

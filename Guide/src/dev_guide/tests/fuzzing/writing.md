@@ -50,7 +50,7 @@ is making are being upheld via the API.
 For example, let's say we want to fuzz `BounceBuffers`, here's what we may
 want to fuzz:
 
-![BounceBuffers Example](./_images//fuzz_abstraction_example.png "Overview of the safe API exposed by BounceBuffers")
+![BounceBuffers Example](/_images/fuzz_abstraction_example.png "Overview of the safe API exposed by BounceBuffers")
 
 Fuzz logic might then allocate a `BounceBuffer` using `new` and call methods on
 it such as `as_mut_bytes` and `io_vecs`. Then it could access the return result

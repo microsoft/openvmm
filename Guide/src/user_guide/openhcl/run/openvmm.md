@@ -23,7 +23,7 @@ runtime characteristics and user ergonomics are like, we currently suggest
 ```admonish warning
 These examples assume basic familiarity with the OpenVMM command line, and a
 willingness to deal with OpenVMM's various "rough edges" (as described in
-[Getting Started: OpenVMM](../../openvmm.md#disclaimer)).
+[Getting Started: OpenVMM](/user_guide/openvmm.md#disclaimer)).
 ```
 
 ```admonish tip
@@ -35,7 +35,7 @@ To run these examples using a pre-compiled copy of OpenVMM, swap `cargo run
 ```
 
 If you run into any issues, please refer to
-[OpenVMM: Troubleshooting](../../openvmm/troubleshooting.md), and/or
+[OpenVMM: Troubleshooting](/user_guide/openvmm/troubleshooting.md), and/or
 [OpenHCL: Troubleshooting](../troubleshooting.md).
 
 ### _Preface:_ Using ohcldiag-dev

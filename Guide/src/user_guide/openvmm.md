@@ -6,12 +6,8 @@ Machine Monitor (VMM).
 
 At the moment, OpenVMM can be built and run on the following host platforms:
 
-| Host OS | Architecture  | Virtualization API                |
-| ------- | ------------- | --------------------------------- |
-| Windows | x64 / Aarch64 | WHP (Windows Hypervisor Platform) |
-| Linux   | x64           | KVM                               |
-|         | x64           | MSHV (Microsoft Hypervisor)       |
-| macOS   | Aarch64       | Hypervisor.framework              |
+{{ #include /_fragments/openvmm_platforms_table_header.md }}
+{{ #include /_fragments/openvmm_platforms_table_content.md }}
 
 When compiled, OpenVMM consists of a single standalone `openvmm` / `openvmm.exe`
 executable.[^dlls]

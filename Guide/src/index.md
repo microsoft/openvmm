@@ -14,38 +14,15 @@ The project is open-source, MIT Licensed, and developed publicly at
 OpenVMM supports a variety of host operating systems, architectures, and
 virtualization backends:
 
-| Host OS             | Architecture  | Virtualization API                     |
-| ------------------- | ------------- | -------------------------------------- |
+{{ #include /_fragments/openvmm_platforms_table_header.md }}
 | Linux ([paravisor]) | x64 / Aarch64 | MSHV (using [VSM] / [TDX] / [SEV-SNP]) |
-| Windows             | x64 / Aarch64 | WHP (Windows Hypervisor Platform)      |
-| Linux               | x64           | KVM                                    |
-|                     | x64           | MSHV (Microsoft Hypervisor)            |
-| macOS               | Aarch64       | Hypervisor.framework                   |
+{{ #include /_fragments/openvmm_platforms_table_content.md }}
 
 **Running in the OpenHCL paravisor**
 
 OpenVMM is the VMM that runs in the [OpenHCL paravisor][paravisor].
 
-Unlike in traditional virtualization, where a VMM runs in a privileged host/root
-partition and provides virtualization services to a unprivileged guest
-partition, the "paravisor" model enables a VMM to provide virtualization
-services from _within_ the guest partition itself.
-
-It can be considered a form of "virtual firmware", running at a higher privilege
-level than the primary guest OS.
-
-Paravisors are quite exciting, as they enable a wide variety of useful and novel
-virtualization scenarios! For example: at Microsoft, OpenHCL plays a key role in
-enabling several important Azure scenarios:
-
-- Enabling existing workloads to seamlessly leverage [Azure Boost] (Azure's
-  next-generation hardware accelerator), without requiring any modifications to
-  the guest VM image.
-
-- Enabling existing guest operating systems to run inside [Confidential VMs].
-
-- Powering [Trusted Launch VMs] - VMs that support Secure Boot, and include a
-  vTPM.
+{{ #include /_fragments/what_is_openhcl.md }}
 
 **Standalone VMM**
 
@@ -124,11 +101,6 @@ following links:
 [paravisor]: ./user_guide/openhcl.md
 [VSM]:
     https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/vsm
-[Azure Boost]: https://learn.microsoft.com/en-us/azure/azure-boost/overview
-[Confidential VMs]:
-    https://azure.microsoft.com/en-us/solutions/confidential-compute
-[Trusted Launch VMs]:
-    https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch
 [TDX]:
     https://www.intel.com/content/www/us/en/developer/tools/trust-domain-extensions/overview.html
 [SEV-SNP]:
