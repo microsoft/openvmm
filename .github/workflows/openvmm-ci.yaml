@@ -87,7 +87,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -276,7 +276,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -478,7 +478,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -838,7 +838,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -1261,7 +1261,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -1675,7 +1675,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -2261,7 +2261,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -2585,7 +2585,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -2957,7 +2957,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -3327,7 +3327,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -4322,7 +4322,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -5254,7 +5254,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -5463,7 +5463,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -5652,7 +5652,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -5852,7 +5852,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -6126,7 +6126,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -6420,7 +6420,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -6697,7 +6697,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |

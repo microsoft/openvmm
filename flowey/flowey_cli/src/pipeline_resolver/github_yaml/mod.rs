@@ -9,6 +9,7 @@ use super::generic::ResolvedJobArtifact;
 use super::generic::ResolvedJobUseParameter;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
+use crate::cli::pipeline::CheckMode;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
 use crate::flow_resolver::stage1_dag::Step;
 use crate::pipeline_resolver::common_yaml::job_flowey_bootstrap_source;
@@ -29,7 +30,6 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::path::Path;
-use std::path::PathBuf;
 mod github_yaml_defs;
 
 const RUNNER_TEMP: &str = "${{ runner.temp }}";
@@ -41,7 +41,7 @@ pub fn github_yaml(
     repo_root: &Path,
     pipeline_file: &Path,
     flowey_crate: &str,
-    check: Option<PathBuf>,
+    check: CheckMode,
 ) -> anyhow::Result<()> {
     if pipeline_file.extension().and_then(|s| s.to_str()) != Some("yaml") {
         anyhow::bail!("pipeline name must end with .yaml")
@@ -388,7 +388,7 @@ EOF
                 };
 
                 current_invocation.insert(i, current_yaml.into());
-                current_invocation.insert(i, "--check".into());
+                current_invocation.insert(i, "--runtime".into());
             }
 
             // Need to use an escaped version of the "true" windows/linux path
@@ -664,23 +664,22 @@ EOF
         inputs: None,
     };
 
-    if let Some(check) = check {
-        check_generated_yaml_and_json(
+    match check {
+        CheckMode::Check(_) | CheckMode::Runtime(_) => check_generated_yaml_and_json(
             &github_pipeline,
             &pipeline_static_db,
             check,
             repo_root,
             pipeline_file,
             None,
-        )
-    } else {
-        write_generated_yaml_and_json(
+        ),
+        CheckMode::None => write_generated_yaml_and_json(
             &github_pipeline,
             &pipeline_static_db,
             repo_root,
             pipeline_file,
             None,
-        )
+        ),
     }
 }
 

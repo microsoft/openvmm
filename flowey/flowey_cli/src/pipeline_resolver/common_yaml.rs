@@ -4,6 +4,7 @@
 //! Shared functionality for emitting a pipeline as ADO/GitHub YAML files
 
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
+use crate::cli::pipeline::CheckMode;
 use crate::pipeline_resolver::generic::ResolvedPipelineJob;
 use anyhow::Context;
 use flowey_core::node::FlowPlatform;
@@ -14,7 +15,6 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::Path;
-use std::path::PathBuf;
 
 #[derive(Debug)]
 pub(crate) enum FloweySource {
@@ -149,7 +149,7 @@ pub(crate) fn job_flowey_bootstrap_source(
 fn check_or_write_generated_yaml_and_json<T>(
     pipeline: &T,
     pipeline_static_db: &FloweyPipelineStaticDb,
-    check: &Option<PathBuf>,
+    mode: CheckMode,
     repo_root: &Path,
     pipeline_file: &Path,
     ado_post_process_yaml_cb: Option<Box<dyn FnOnce(Value) -> Value>>,
@@ -180,40 +180,46 @@ where
     let generated_json =
         serde_json::to_string_pretty(pipeline_static_db).context("while emitting pipeline json")?;
 
-    if let Some(check_file) = check {
-        let existing_yaml = fs_err::read_to_string(check_file)
-            .context("cannot check pipeline that doesn't exist!")?;
+    match mode {
+        CheckMode::Runtime(ref check_file) | CheckMode::Check(ref check_file) => {
+            let existing_yaml = fs_err::read_to_string(check_file)
+                .context("cannot check pipeline that doesn't exist!")?;
 
-        let yaml_out_of_date = existing_yaml != generated_yaml;
+            let yaml_out_of_date = existing_yaml != generated_yaml;
 
-        if yaml_out_of_date {
-            println!(
-                "generated yaml {}:\n==========\n{generated_yaml}",
-                generated_yaml.len()
-            );
-            println!(
-                "existing yaml {}:\n==========\n{existing_yaml}",
-                existing_yaml.len()
-            );
+            if yaml_out_of_date {
+                println!(
+                    "generated yaml {}:\n==========\n{generated_yaml}",
+                    generated_yaml.len()
+                );
+                println!(
+                    "existing yaml {}:\n==========\n{existing_yaml}",
+                    existing_yaml.len()
+                );
+            }
+
+            if yaml_out_of_date {
+                anyhow::bail!("checked in pipeline YAML is out of date! run `cargo xflowey regen`")
+            }
+
+            // Only write the JSON if we're in runtime mode, not in check mode
+            if let CheckMode::Runtime(_) = mode {
+                let mut f = fs_err::File::create(check_file.with_extension("json"))?;
+                f.write_all(generated_json.as_bytes())
+                    .context("while emitting pipeline database json")?;
+            }
+
+            Ok(())
         }
+        CheckMode::None => {
+            let out_yaml_path = repo_root.join(pipeline_file);
 
-        if yaml_out_of_date {
-            anyhow::bail!("checked in pipeline YAML is out of date! run `cargo xflowey regen`")
+            let mut f = fs_err::File::create(out_yaml_path)?;
+            f.write_all(generated_yaml.as_bytes())
+                .context("while emitting pipeline yaml")?;
+
+            Ok(())
         }
-
-        let mut f = fs_err::File::create(check_file.with_extension("json"))?;
-        f.write_all(generated_json.as_bytes())
-            .context("while emitting pipeline database json")?;
-
-        Ok(())
-    } else {
-        let out_yaml_path = repo_root.join(pipeline_file);
-
-        let mut f = fs_err::File::create(out_yaml_path)?;
-        f.write_all(generated_yaml.as_bytes())
-            .context("while emitting pipeline yaml")?;
-
-        Ok(())
     }
 }
 
@@ -221,7 +227,7 @@ where
 pub(crate) fn check_generated_yaml_and_json<T>(
     pipeline: &T,
     pipeline_static_db: &FloweyPipelineStaticDb,
-    check: PathBuf,
+    check: CheckMode,
     repo_root: &Path,
     pipeline_file: &Path,
     ado_post_process_yaml_cb: Option<Box<dyn FnOnce(Value) -> Value>>,
@@ -232,7 +238,7 @@ where
     check_or_write_generated_yaml_and_json(
         pipeline,
         pipeline_static_db,
-        &Some(check),
+        check,
         repo_root,
         pipeline_file,
         ado_post_process_yaml_cb,
@@ -253,7 +259,7 @@ where
     check_or_write_generated_yaml_and_json(
         pipeline,
         pipeline_static_db,
-        &None,
+        CheckMode::None,
         repo_root,
         pipeline_file,
         ado_post_process_yaml_cb,
