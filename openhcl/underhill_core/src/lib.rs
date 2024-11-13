@@ -381,6 +381,11 @@ async fn launch_workers(
                         listener,
                         req_chan: send,
                         vp_count,
+                        target_arch: if cfg!(target_arch = "x86_64") {
+                            debug_worker_defs::TargetArch::X86_64
+                        } else {
+                            debug_worker_defs::TargetArch::Aarch64
+                        },
                     },
                 )
                 .await?,
