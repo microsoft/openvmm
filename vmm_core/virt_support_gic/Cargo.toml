@@ -7,7 +7,7 @@ edition = "2021"
 rust-version.workspace = true
 
 [dependencies]
-memory_range.workspace = true
+memory_range = { workspace = true, features = ["inspect"] }
 vm_topology.workspace = true
 
 aarch64defs.workspace = true

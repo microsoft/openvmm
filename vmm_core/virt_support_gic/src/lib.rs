@@ -682,13 +682,12 @@ mod gicr {
         }
 
         fn rd_read64(&self, address: GicrRdRegister) -> Option<u64> {
-            let mpidr = MpidrEl1::from(self.mpidr);
             let v = match address {
                 GicrRdRegister::TYPER => GicrTyper::new()
-                    .with_aff0(mpidr.aff0())
-                    .with_aff1(mpidr.aff1())
-                    .with_aff2(mpidr.aff2())
-                    .with_aff3(mpidr.aff3())
+                    .with_aff0(self.mpidr.aff0())
+                    .with_aff1(self.mpidr.aff1())
+                    .with_aff2(self.mpidr.aff2())
+                    .with_aff3(self.mpidr.aff3())
                     .with_last(self.last)
                     .into(),
                 _ => return None,
