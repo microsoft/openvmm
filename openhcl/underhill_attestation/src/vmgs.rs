@@ -11,7 +11,6 @@ use crate::protocol::vmgs::KeyProtectorById;
 use crate::protocol::vmgs::SecurityProfile;
 use crate::protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use crate::protocol::vmgs::GUEST_SECRET_KEY_MAX_SIZE;
-use cvm_tracing::CVM_ALLOWED;
 use guid::Guid;
 use thiserror::Error;
 use vmgs::FileId;
