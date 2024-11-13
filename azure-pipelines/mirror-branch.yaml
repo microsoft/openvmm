@@ -1,6 +1,9 @@
 trigger:
 - main
 pr: none
+variables:
+- name: skipComponentGovernanceDetection
+  value: 'true'
 jobs:
   - job: mirror
     steps:
