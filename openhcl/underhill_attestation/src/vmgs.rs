@@ -89,12 +89,6 @@ pub async fn read_key_protector(
                 })?
             }
 
-            tracing::info!(
-                CVM_ALLOWED,
-                entry_size = data.len(),
-                "Key protector data read from VMGS"
-            );
-
             let data = if data.len() < KEY_PROTECTOR_SIZE {
                 // Allow smaller buf by padding zero bytes
                 let mut data = data;
