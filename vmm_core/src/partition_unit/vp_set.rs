@@ -1326,7 +1326,8 @@ mod vp_state {
                     gva,
                     &registers,
                     flags,
-                )?.gpa)
+                )?
+                .gpa)
             }
         }
     }

@@ -489,7 +489,6 @@ impl HardwareIsolatedBacking for TdxBacked {
         let cr4 = this.backing.cr4.read(&this.runner);
         let efer = this.backing.efer;
         let cr3 = this.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR3);
-        let pat = Some(this.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_PAT));
         let ss = this.read_segment(vtl, TdxSegmentReg::Ss).into();
         let rflags = this.runner.tdx_enter_guest_state().rflags;
         TranslationRegisters {
@@ -497,7 +496,6 @@ impl HardwareIsolatedBacking for TdxBacked {
             cr4,
             efer,
             cr3,
-            pat,
             ss,
             rflags,
             encryption_mode: self.vp.partition.caps.vtom.map_or(

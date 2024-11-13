@@ -951,7 +951,6 @@ impl TranslateGvaSupport for MshvEmulationState<'_> {
             HvX64RegisterName::Efer,
             HvX64RegisterName::Cr3,
             HvX64RegisterName::Rflags,
-            HvX64RegisterName::Pat,
             HvX64RegisterName::Ss,
         ]
         .map(|n| HvRegisterAssoc::from((n, 0u64)));
@@ -964,7 +963,7 @@ impl TranslateGvaSupport for MshvEmulationState<'_> {
             >(&mut reg[..]))?;
         }
 
-        let [cr0, cr4, efer, cr3, rflags, pat, ss] = reg.map(|v| v.value);
+        let [cr0, cr4, efer, cr3, rflags, ss] = reg.map(|v| v.value);
 
         Ok(TranslationRegisters {
             cr0: cr0.as_u64(),
@@ -972,7 +971,6 @@ impl TranslateGvaSupport for MshvEmulationState<'_> {
             efer: efer.as_u64(),
             cr3: cr3.as_u64(),
             rflags: rflags.as_u64(),
-            pat: Some(pat.as_u64()),
             ss: from_seg(ss.as_segment()),
             encryption_mode: virt::x86::translate::EncryptionMode::None,
         })

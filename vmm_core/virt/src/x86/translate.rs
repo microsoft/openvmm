@@ -9,6 +9,7 @@ use guestmem::GuestMemory;
 use hvdef::hypercall::TranslateGvaControlFlagsX64;
 use hvdef::hypercall::TranslateGvaResultCode;
 use thiserror::Error;
+use x86defs::LargePde;
 use x86defs::Pte;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
@@ -34,8 +35,6 @@ pub struct TranslationRegisters {
     pub cr3: u64,
     /// RFLAGS
     pub rflags: u64,
-    /// PAT
-    pub pat: Option<u64>,
     /// SS
     pub ss: SegmentRegister,
     /// The way the processor uses to determine if an access is to encrypted
@@ -121,29 +120,22 @@ impl TranslateFlags {
 pub struct TranslateResult {
     /// The translated GPA.
     pub gpa: u64,
-    /// The cache type of the translated page.
-    pub cache_type: Option<TranslateCacheType>,
+
+    /// Information from the walk that can be used to determine cache type
+    pub cache_info: TranslateCachingInfo,
 }
 
-/// Possible cache types of a translated page.
-pub enum TranslateCacheType {
-    Uncached,
-    WriteCombining,
-    WriteThrough,
-    WriteProtected,
-    WriteBack,
-}
-
-impl From<TranslateCacheType> for hvdef::HvCacheType {
-    fn from(value: TranslateCacheType) -> Self {
-        match value {
-            TranslateCacheType::Uncached => hvdef::HvCacheType::HvCacheTypeUncached,
-            TranslateCacheType::WriteCombining => hvdef::HvCacheType::HvCacheTypeWriteCombining,
-            TranslateCacheType::WriteThrough => hvdef::HvCacheType::HvCacheTypeWriteThrough,
-            TranslateCacheType::WriteProtected => hvdef::HvCacheType::HvCacheTypeWriteProtected,
-            TranslateCacheType::WriteBack => hvdef::HvCacheType::HvCacheTypeWriteBack,
-        }
-    }
+/// Information from a translation walk that can be used to determine cache
+/// type.
+pub enum TranslateCachingInfo {
+    /// The translation was non-paged.
+    NonPaged,
+    /// Walk state from a paged translation.
+    Paged {
+        cache_disable: bool,
+        write_through: bool,
+        pat: bool,
+    },
 }
 
 /// Translation error.
@@ -196,7 +188,7 @@ pub fn translate_gva_to_gpa(
     if registers.cr0 & X64_CR0_PG == 0 {
         return Ok(TranslateResult {
             gpa: gva,
-            cache_type: Some(TranslateCacheType::WriteBack),
+            cache_info: TranslateCachingInfo::NonPaged,
         });
     }
 
@@ -253,7 +245,9 @@ pub fn translate_gva_to_gpa(
 
     let mut gpa_base = registers.cr3 & !0xfff;
     let mut remaining_bits: u32 = address_bits;
-    let cache_type: Option<TranslateCacheType>;
+    let cache_disable: bool;
+    let write_through: bool;
+    let pat: bool;
     loop {
         // Compute the PTE address.
         let pte_address = if large_pte {
@@ -394,23 +388,16 @@ pub fn translate_gva_to_gpa(
         }
 
         if done {
-            // TODO: check this
-            cache_type = registers.pat.map(|p| {
-                let pat_index = ((pte.cache_disable() as u64) << 1)
-                    | (pte.write_through() as u64)
-                    | if remaining_bits == 0 {
-                        (pte.pat() as u64) << 2
-                    } else {
-                        (pte.pfn() & 1) << 2
-                    };
-                match (p >> (pat_index * 8)) & 0xff {
-                    0 | 7 => TranslateCacheType::Uncached,
-                    1 => TranslateCacheType::WriteCombining,
-                    4 => TranslateCacheType::WriteThrough,
-                    5 => TranslateCacheType::WriteProtected,
-                    _ => TranslateCacheType::WriteBack,
-                }
-            });
+            cache_disable = pte.cache_disable();
+            write_through = pte.write_through();
+            pat = if remaining_bits == 12 {
+                // TODO: is this the correct check
+                pte.pat()
+            } else {
+                let large_pde = LargePde::from(u64::from(pte));
+                large_pde.pat()
+            };
+
             break;
         }
     }
@@ -420,7 +407,11 @@ pub fn translate_gva_to_gpa(
     let address_mask = !0 << remaining_bits;
     Ok(TranslateResult {
         gpa: (gpa_base & address_mask) | (gva & !address_mask),
-        cache_type,
+        cache_info: TranslateCachingInfo::Paged {
+            cache_disable,
+            write_through,
+            pat,
+        },
     })
 }
 

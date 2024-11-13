@@ -19,6 +19,7 @@ use guestmem::GuestMemory;
 use hv1_emulator::RequestInterrupt;
 use hvdef::hypercall::HvFlushFlags;
 use hvdef::hypercall::TranslateGvaResultCode;
+use hvdef::HvCacheType;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
 use hvdef::HvRegisterVsmPartitionConfig;
@@ -29,6 +30,7 @@ use hvdef::Vtl;
 use std::iter::zip;
 use virt::io::CpuIo;
 use virt::vp::AccessVpState;
+use virt::x86::translate::TranslateCachingInfo;
 use virt::x86::translate::TranslationRegisters;
 use virt::Processor;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
@@ -944,13 +946,20 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
 
         let registers = self.vp.backing.translation_registers(self.vp, target_vtl);
 
+        let pat = self
+            .vp
+            .access_state(target_vtl.into())
+            .cache_control()
+            .map_err(Self::reg_access_error_to_hv_err)?
+            .msr_cr_pat;
+
         match virt::x86::translate::translate_gva_to_gpa(
             &self.vp.partition.gm[target_vtl], // TODO GUEST VSM: This is doesn't have VTL access checks.
             gva,
             &registers,
             virt::x86::translate::TranslateFlags::from_hv_flags(control_flags),
         ) {
-            Ok(virt::x86::translate::TranslateResult { gpa, cache_type }) => {
+            Ok(virt::x86::translate::TranslateResult { gpa, cache_info }) => {
                 let overlay_page = hvdef::hypercall::MsrHypercallContents::from(
                     self.vp
                         .backing
@@ -961,11 +970,32 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
                 )
                 .gpn();
 
+                // TODO: check this
+                let cache_type = match cache_info {
+                    TranslateCachingInfo::NonPaged => HvCacheType::HvCacheTypeWriteBack,
+                    TranslateCachingInfo::Paged {
+                        cache_disable,
+                        write_through,
+                        pat: pte_pat,
+                    } => {
+                        let pat_index = ((cache_disable as u64) << 1)
+                            | (write_through as u64)
+                            | (pte_pat as u64) << 2;
+                        match (pat >> (pat_index * 8)) & 0xff {
+                            0 | 7 => HvCacheType::HvCacheTypeUncached,
+                            1 => HvCacheType::HvCacheTypeWriteCombining,
+                            4 => HvCacheType::HvCacheTypeWriteThrough,
+                            5 => HvCacheType::HvCacheTypeWriteProtected,
+                            _ => HvCacheType::HvCacheTypeWriteBack,
+                        }
+                    }
+                };
+
                 Ok(hvdef::hypercall::TranslateVirtualAddressOutput {
                     translation_result: hvdef::hypercall::TranslateGvaResult::new()
                         .with_result_code(TranslateGvaResultCode::SUCCESS.0)
                         .with_overlay_page(gpa == overlay_page)
-                        .with_cache_type(hvdef::HvCacheType::from(cache_type.unwrap()).0 as u8),
+                        .with_cache_type(cache_type.0 as u8),
                     gpa_page: gpa / hvdef::HV_PAGE_SIZE,
                 })
             }
