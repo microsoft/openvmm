@@ -50,12 +50,8 @@ impl TargetArch for gdbstub_arch::aarch64::AArch64 {
                         .with_crm(((id >> 3) & 0b1111) as u8)
                         .with_op2((id & 0b11) as u8),
                 );
-                match reg {
-                    reg => {
-                        tracing::warn!(?reg, "unsupported system register");
-                        return Err(ArchError);
-                    }
-                }
+                tracing::warn!(?reg, "unsupported system register");
+                return Err(ArchError);
             }
             _ => return Err(ArchError),
         };
@@ -86,7 +82,7 @@ impl TargetArch for gdbstub_arch::aarch64::AArch64 {
         _state: &mut DebuggerVpState,
         _regs: &Self::Registers,
     ) -> Result<(), ArchError> {
-        return Err(ArchError);
+        Err(ArchError)
     }
 
     fn update_register(
@@ -94,6 +90,6 @@ impl TargetArch for gdbstub_arch::aarch64::AArch64 {
         _reg_id: Self::RegId,
         _val: &[u8],
     ) -> Result<(), ArchError> {
-        return Err(ArchError);
+        Err(ArchError)
     }
 }
