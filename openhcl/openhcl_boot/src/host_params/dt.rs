@@ -444,6 +444,7 @@ impl PartitionInfo {
             vtl2_ram: _,
             vtl2_full_config_region: vtl2_config_region,
             vtl2_config_region_reclaim: vtl2_config_region_reclaim_struct,
+            vtl2_reserved_region,
             partition_ram: _,
             isolation,
             bsp_reg,
@@ -466,6 +467,10 @@ impl PartitionInfo {
         );
         *vtl2_config_region_reclaim_struct = vtl2_config_region_reclaim;
         assert!(vtl2_config_region.contains(&vtl2_config_region_reclaim));
+        *vtl2_reserved_region = MemoryRange::new(
+            params.vtl2_reserved_region_start
+                ..(params.vtl2_reserved_region_start + params.vtl2_reserved_region_size),
+        );
         *bsp_reg = parsed.boot_cpuid_phys;
         cpus.extend(parsed.cpus.iter().copied());
         *com3_serial = parsed.com3_serial;

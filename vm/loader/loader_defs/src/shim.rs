@@ -34,6 +34,10 @@ pub struct ShimParamsRaw {
     pub parameter_region_offset: i64,
     /// The size of the parameter region.
     pub parameter_region_size: u64,
+    /// The offset to the VTL2 reserved region.
+    pub vtl2_reserved_region_offset: i64,
+    /// The size of the VTL2 reserved region.
+    pub vtl2_reserved_region_size: u64,
     /// The offset to the sidecar memory region.
     pub sidecar_offset: i64,
     /// The size of the sidecar memory region.
@@ -88,6 +92,10 @@ open_enum! {
         VTL0_MMIO = 5,
         /// This range is mmio for VTL2.
         VTL2_MMIO = 6,
+        /// This memory holds VTL2 data which should be preserved by the kernel
+        /// and usermode. Today, this is only used for SNP: VMSA, CPUID pages,
+        /// and secrets pages.
+        VTL2_RESERVED = 7,
     }
 }
 
@@ -101,6 +109,7 @@ impl MemoryVtlType {
                 | MemoryVtlType::VTL2_CONFIG
                 | MemoryVtlType::VTL2_SIDECAR_IMAGE
                 | MemoryVtlType::VTL2_SIDECAR_NODE
+                | MemoryVtlType::VTL2_RESERVED
         )
     }
 }

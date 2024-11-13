@@ -148,7 +148,13 @@ impl SimpleFlowNode for Node {
                         ]),
                     ]);
                 }
-                target_lexicon::Architecture::Aarch64(_) => {}
+                target_lexicon::Architecture::Aarch64(_) => {
+                    ctx.requests::<crate::download_openvmm_vmm_tests_vhds::Node>([
+                        crate::download_openvmm_vmm_tests_vhds::Request::DownloadVhds(vec![
+                            vmm_test_images::KnownVhd::Ubuntu2404ServerAarch64,
+                        ]),
+                    ]);
+                }
                 arch => anyhow::bail!("unsupported arch {arch}"),
             }
 

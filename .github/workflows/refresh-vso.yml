@@ -37,3 +37,4 @@ jobs:
           azure-devops-project-url: '${{ secrets.VSO_MIRROR_URL }}'
           azure-pipeline-name: '${{ secrets.VSO_REFRESH_PIPELINE_NAME }}'
           azure-devops-token: '${{ steps.AzureKeyVault.outputs.HvliteMirrorPAT }}' # This PAT should have the Build (read & execute) permission.
+          azure-pipeline-variables: '{"branch": "main"}'

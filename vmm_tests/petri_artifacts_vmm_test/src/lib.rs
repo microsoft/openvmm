@@ -250,6 +250,21 @@ pub mod artifacts {
             const FILENAME: &'static str = "ubuntu-22.04-server-cloudimg-amd64.vhd";
             const SIZE: u64 = 2361655808;
         }
+
+        declare_artifacts! {
+            /// Ubuntu 24.04 Server Aarch64
+            UBUNTU_2404_SERVER_AARCH64
+        }
+
+        impl IsTestVhd for UBUNTU_2404_SERVER_AARCH64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
+            const ARCH: MachineArch = MachineArch::Aarch64;
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2404_SERVER_AARCH64 {
+            const FILENAME: &'static str = "ubuntu-24.04-server-cloudimg-arm64.vhd";
+            const SIZE: u64 = 3758211584;
+        }
     }
 
     /// Test ISO artifacts

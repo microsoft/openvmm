@@ -484,6 +484,9 @@ fn parse_vhd(input: ParseStream<'_>, generation: Generation) -> syn::Result<Imag
         "ubuntu_2204_server_x64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64
         )),
+        "ubuntu_2404_server_aarch64" => Ok(image_info!(
+            ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64
+        )),
         _ => Err(Error::new(word.span(), "unrecognized vhd")),
     }
 }

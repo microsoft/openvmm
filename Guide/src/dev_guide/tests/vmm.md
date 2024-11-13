@@ -43,9 +43,12 @@ And, for further example, to rebuild everything and run all the tests
 ```bash
 # Install (most) of the dependencies; cargo nextest run may tell you
 # about other deps.
+rustup target add x86_64-unknown-none
 rustup target add x86_64-unknown-uefi
 rustup target add x86_64-pc-windows-msvc
 sudo apt install clang-tools-14 lld-14
+
+cargo install cargo-nextest --locked
 
 cargo xtask guest-test download-image
 cargo xtask guest-test uefi --bootx64

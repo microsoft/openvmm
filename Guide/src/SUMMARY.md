@@ -47,10 +47,10 @@
 # Reference
 
 - [OpenVMM Features](./reference/openvmm.md)
-  - [Configuration and Management]()
+  - [Configuration and Management](./reference/openvmm/management.md)
     - [CLI](./reference/openvmm/management/cli.md)
     - [Interactive Console](./reference/openvmm/management/interactive_console.md)
-    - [gRPC / ttrpc]()
+    - [gRPC / ttrpc](./reference/openvmm/management/grpc.md)
   - [Graphical Console](./reference/openvmm/graphical_console.md)
   - [Logging](./reference/openvmm/logging.md)
 - [OpenHCL Features](./reference/openhcl.md)
