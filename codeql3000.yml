@@ -1,0 +1,6 @@
+# CodeQL is autoinjected into all pipelines by organization policy.
+# However CodeQL does not support analyzing Rust code today.
+# It also has known memory leaks when analyzing Rust binaries.
+# Disable it repo-wide for now.
+variables:
+  Codeql.Enabled: false
