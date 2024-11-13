@@ -324,11 +324,13 @@ fn reserved_memory_regions(
         }));
     }
 
-    // Add the VTL2 reserved region.
-    reserved.push((
-        partition_info.vtl2_reserved_region,
-        ReservedMemoryType::Vtl2Reserved,
-    ));
+    // Add the VTL2 reserved region, if it exists.
+    if !partition_info.vtl2_reserved_region.is_empty() {
+        reserved.push((
+            partition_info.vtl2_reserved_region,
+            ReservedMemoryType::Vtl2Reserved,
+        ));
+    }
 
     reserved
         .as_mut()
