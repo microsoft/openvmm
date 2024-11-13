@@ -62,16 +62,10 @@
   working-directory: flowey_bootstrap
   shell: bash
 
-- name: Generate JSON
-  run: cargo xflowey regen
-  working-directory: flowey_bootstrap
-  shell: bash
-
 - name: Stage flowey artifact
   run: |
     mkdir ./flowey_bootstrap_temp
     mv ./{{FLOWEY_PIPELINE_PATH}}.yaml ./flowey_bootstrap_temp/pipeline.yaml
-    mv ./{{FLOWEY_PIPELINE_PATH}}.json ./flowey_bootstrap_temp/pipeline.json
     mv target/{{FLOWEY_TARGET}}/flowey-ci/{{FLOWEY_CRATE}}{{FLOWEY_BIN_EXTENSION}} ./flowey_bootstrap_temp/flowey{{FLOWEY_BIN_EXTENSION}}
   working-directory: flowey_bootstrap
   shell: bash

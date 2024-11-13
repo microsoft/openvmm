@@ -183,11 +183,8 @@ where
     if let Some(check_file) = check {
         let existing_yaml = fs_err::read_to_string(check_file)
             .context("cannot check pipeline that doesn't exist!")?;
-        let existing_json = fs_err::read_to_string(check_file.with_extension("json"))
-            .context("pipeline yaml doesn't have corresponding pipeline json")?;
 
         let yaml_out_of_date = existing_yaml != generated_yaml;
-        let json_out_of_date = existing_json != generated_json;
 
         if yaml_out_of_date {
             println!(
@@ -200,33 +197,22 @@ where
             );
         }
 
-        if json_out_of_date {
-            println!(
-                "generated json {}:\n==========\n{generated_json}",
-                generated_json.len()
-            );
-            println!(
-                "existing json {}:\n==========\n{existing_json}",
-                existing_json.len()
-            );
+        if yaml_out_of_date {
+            anyhow::bail!("checked in pipeline YAML is out of date! run `cargo xflowey regen`")
         }
 
-        if yaml_out_of_date || json_out_of_date {
-            anyhow::bail!("checked in pipeline YAML/JSON is out of date! run `cargo xflowey regen`")
-        }
+        let out_pipeline_db_path = repo_root.join(pipeline_file).with_extension("json");
+        let mut f = fs_err::File::create(out_pipeline_db_path)?;
+        f.write_all(generated_json.as_bytes())
+            .context("while emitting pipeline database json")?;
 
         Ok(())
     } else {
         let out_yaml_path = repo_root.join(pipeline_file);
-        let out_pipeline_db_path = repo_root.join(pipeline_file).with_extension("json");
 
         let mut f = fs_err::File::create(out_yaml_path)?;
         f.write_all(generated_yaml.as_bytes())
             .context("while emitting pipeline yaml")?;
-
-        let mut f = fs_err::File::create(out_pipeline_db_path)?;
-        f.write_all(generated_json.as_bytes())
-            .context("while emitting pipeline database json")?;
 
         Ok(())
     }

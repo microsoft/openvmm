@@ -62,15 +62,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -256,15 +251,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -463,15 +453,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -891,15 +876,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -1310,15 +1290,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -1901,15 +1876,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -2230,15 +2200,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -2607,15 +2572,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -2982,15 +2942,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target aarch64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/aarch64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -4339,15 +4294,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -4911,15 +4861,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -5104,15 +5049,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -5298,15 +5238,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -5503,15 +5438,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -5782,15 +5712,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -6081,15 +6006,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -6363,15 +6283,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -6663,15 +6578,10 @@ jobs:
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
       working-directory: flowey_bootstrap
       shell: bash
-    - name: Generate JSON
-      run: cargo xflowey regen
-      working-directory: flowey_bootstrap
-      shell: bash
     - name: Stage flowey artifact
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash

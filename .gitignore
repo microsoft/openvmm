@@ -43,6 +43,3 @@ __pycache__
 
 flowey-out
 flowey-persist
-
-# Ignore pipeline generated JSON
-.github/workflows/*.json
