@@ -1,0 +1,17 @@
+trigger:
+- main
+pr: none
+jobs:
+  - job: mirror
+    steps:
+    - task: TriggerBuild@4
+      inputs:
+        definitionIsInCurrentTeamProject: true
+        buildDefinition: 'openvmm-mirror-refresh'
+        queueBuildForUserThatTriggeredBuild: false
+        useSameBranch: false
+        branchToUse: 'main'
+        buildParameters: 'branch: main'
+        authenticationMethod: 'OAuth Token'
+        password: '$(System.AccessToken)'
+      displayName: Trigger openvmm-mirror-refresh pipeline
