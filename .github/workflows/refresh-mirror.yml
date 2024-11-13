@@ -1,0 +1,48 @@
+name: Private VSO build
+on:
+  workflow_dispatch:
+  push:
+    branches:
+    - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  PrivateBuild:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Azure/login@v1
+        with:
+          # These secrets describe the HvLite-GitHub service principal and associated Azure subscription,
+          # which, along with the GITHUB_TOKEN, are used to authenticate GitHub Actions to Azure with OpenID Connect.
+          # The service principal has federated identity credentials configured describing which branches and 
+          # scenarios can be authenticated.
+          client-id: ${{ secrets.OPENVMM_CLIENT_ID }}
+          tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
+          subscription-id:  ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
+
+      - name: Pull Azure Key Vault secrets
+        uses: Azure/get-keyvault-secrets@v1
+        with:
+          keyvault: 'HvLite-PATs'
+          secrets: 'HvliteMirrorPAT'
+        id: AzureKeyVault
+
+      - name: Checkout actions
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        shell: bash
+        run: pip install --user -r .github/scripts/refresh_mirror/requirements.txt
+
+      - name: Run VSO build
+        shell: bash
+        run: python .github/scripts/refresh_mirror/refresh-mirror.py 149443 ${{ steps.AzureKeyVault.outputs.HvliteMirrorPAT }}
