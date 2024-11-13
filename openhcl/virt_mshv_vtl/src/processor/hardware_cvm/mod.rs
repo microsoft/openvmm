@@ -598,7 +598,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     /// Handle checking for cross-VTL interrupts, preempting VTL 0, and setting
     /// VINA when appropriate. The `is_interrupt_pending` function should return
     /// true if an interrupt of appropriate priority, or an NMI, is pending for
-    /// the given VTL.
+    /// the given VTL. Returns true if interrupt reprocessing is required.
     pub(crate) fn hcvm_handle_cross_vtl_interrupts(
         &mut self,
         is_interrupt_pending: impl Fn(&mut Self, GuestVtl) -> bool,
