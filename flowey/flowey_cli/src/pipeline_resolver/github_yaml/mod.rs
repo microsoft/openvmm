@@ -361,11 +361,11 @@ EOF
             // current call, or else there'll be a dupe
             if let Some(i) = current_invocation
                 .iter()
-                .position(|s| s.starts_with("--check"))
+                .position(|s| s.starts_with("--runtime"))
             {
                 // remove the --check param
                 let s = current_invocation.remove(i);
-                if !s.starts_with("--check=") {
+                if !s.starts_with("--runtime=") {
                     // remove its freestanding argument
                     current_invocation.remove(i);
                 }
