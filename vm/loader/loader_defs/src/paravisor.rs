@@ -9,7 +9,6 @@ use hvdef::HV_PAGE_SIZE;
 #[cfg(feature = "inspect")]
 use inspect::Inspect;
 use open_enum::open_enum;
-use static_assertions::const_assert;
 use static_assertions::const_assert_eq;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
@@ -23,35 +22,12 @@ pub const PARAVISOR_CONFIG_SLIT_SIZE_PAGES: u64 = 20;
 pub const PARAVISOR_CONFIG_PPTT_SIZE_PAGES: u64 = 20;
 /// Size in pages for the device tree.
 pub const PARAVISOR_CONFIG_DEVICE_TREE_SIZE_PAGES: u64 = 64;
-/// Size in pages for the secrets page.
-pub const PARAVISOR_CONFIG_SECRETS_SIZE_PAGES: u64 = 1;
-/// Size in pages for the CPUID pages.
-pub const PARAVISOR_CONFIG_CPUID_SIZE_PAGES: u64 = 2;
-/// Size in pages for the VMSA page.
-pub const PARAVISOR_CONFIG_VMSA_SIZE_PAGES: u64 = 1;
 
-/// Count for unmeasured config region size on different isolation types.
-pub const PARAVISOR_UNMEASURED_VTL2_CONFIG_REGION_PAGE_COUNT_COMMON: u64 =
+/// The maximum size in pages of the unmeasured vtl 2 config region.
+pub const PARAVISOR_UNMEASURED_VTL2_CONFIG_REGION_PAGE_COUNT_MAX: u64 =
     PARAVISOR_CONFIG_SLIT_SIZE_PAGES
         + PARAVISOR_CONFIG_PPTT_SIZE_PAGES
         + PARAVISOR_CONFIG_DEVICE_TREE_SIZE_PAGES;
-
-/// Size in pages for VSM isolation.
-pub const PARAVISOR_UNMEASURED_VTL2_CONFIG_REGION_PAGE_COUNT_VSM: u64 =
-    PARAVISOR_UNMEASURED_VTL2_CONFIG_REGION_PAGE_COUNT_COMMON;
-/// Size in pages for AMD SEV-SNP isolation.
-pub const PARAVISOR_UNMEASURED_VTL2_CONFIG_REGION_PAGE_COUNT_SNP: u64 =
-    PARAVISOR_UNMEASURED_VTL2_CONFIG_REGION_PAGE_COUNT_COMMON
-        + PARAVISOR_CONFIG_SECRETS_SIZE_PAGES
-        + PARAVISOR_CONFIG_CPUID_SIZE_PAGES
-        + PARAVISOR_CONFIG_VMSA_SIZE_PAGES;
-const_assert!(
-    PARAVISOR_UNMEASURED_VTL2_CONFIG_REGION_PAGE_COUNT_SNP
-        >= PARAVISOR_UNMEASURED_VTL2_CONFIG_REGION_PAGE_COUNT_VSM
-);
-/// The maximum size in pages of the unmeasured vtl 2 config region out of all isolation architectures.
-pub const PARAVISOR_UNMEASURED_VTL2_CONFIG_REGION_PAGE_COUNT_MAX: u64 =
-    PARAVISOR_UNMEASURED_VTL2_CONFIG_REGION_PAGE_COUNT_SNP; // TODO: const fn max or macro possible?
 
 // Page indices for different parameters within the unmeasured vtl 2 config region.
 /// The page index to the SLIT.
@@ -62,18 +38,37 @@ pub const PARAVISOR_CONFIG_PPTT_PAGE_INDEX: u64 =
 /// The page index to the device tree.
 pub const PARAVISOR_CONFIG_DEVICE_TREE_PAGE_INDEX: u64 =
     PARAVISOR_CONFIG_PPTT_PAGE_INDEX + PARAVISOR_CONFIG_PPTT_SIZE_PAGES;
-/// The page index to the secrets page.
-pub const PARAVISOR_CONFIG_SECRETS_PAGE_INDEX: u64 =
-    PARAVISOR_CONFIG_DEVICE_TREE_PAGE_INDEX + PARAVISOR_CONFIG_DEVICE_TREE_SIZE_PAGES;
-/// The page index to the first CPUID page.
-pub const PARAVISOR_CONFIG_CPUID_PAGE_INDEX: u64 =
-    PARAVISOR_CONFIG_SECRETS_PAGE_INDEX + PARAVISOR_CONFIG_SECRETS_SIZE_PAGES;
-/// The page index to the VMSA page.
-pub const PARAVISOR_CONFIG_VMSA_PAGE_INDEX: u64 =
-    PARAVISOR_CONFIG_CPUID_PAGE_INDEX + PARAVISOR_CONFIG_CPUID_SIZE_PAGES;
 /// Base index for the unmeasured vtl 2 config region
 pub const PARAVISOR_UNMEASURED_VTL2_CONFIG_REGION_BASE_INDEX: u64 =
     PARAVISOR_CONFIG_SLIT_PAGE_INDEX;
+
+/// Size in pages for the SNP CPUID pages.
+pub const PARAVISOR_RESERVED_VTL2_SNP_CPUID_SIZE_PAGES: u64 = 2;
+/// Size in pages for the VMSA page.
+pub const PARAVISOR_RESERVED_VTL2_SNP_VMSA_SIZE_PAGES: u64 = 1;
+/// Size in pages for the secrets page.
+pub const PARAVISOR_RESERVED_VTL2_SNP_SECRETS_SIZE_PAGES: u64 = 1;
+
+/// Total size of the reserved vtl2 range.
+pub const PARAVISOR_RESERVED_VTL2_PAGE_COUNT_MAX: u64 = PARAVISOR_RESERVED_VTL2_SNP_CPUID_SIZE_PAGES
+    + PARAVISOR_RESERVED_VTL2_SNP_VMSA_SIZE_PAGES
+    + PARAVISOR_RESERVED_VTL2_SNP_SECRETS_SIZE_PAGES;
+
+// Page indices for reserved vtl2 ranges, ranges that are marked as reserved to
+// both the kernel and usermode. Today, these are SNP specific pages.
+//
+// TODO SNP: Does the kernel require that the CPUID and secrets pages are
+// persisted, or after the kernel boots, and usermode reads them, can we discard
+// them?
+//
+/// The page index to the SNP VMSA page.
+pub const PARAVISOR_RESERVED_VTL2_SNP_VMSA_PAGE_INDEX: u64 = 0;
+/// The page index to the first SNP CPUID page.
+pub const PARAVISOR_RESERVED_VTL2_SNP_CPUID_PAGE_INDEX: u64 =
+    PARAVISOR_RESERVED_VTL2_SNP_VMSA_PAGE_INDEX + PARAVISOR_RESERVED_VTL2_SNP_VMSA_SIZE_PAGES;
+/// The page index to the first SNP secrets page.
+pub const PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX: u64 =
+    PARAVISOR_RESERVED_VTL2_SNP_CPUID_PAGE_INDEX + PARAVISOR_RESERVED_VTL2_SNP_CPUID_SIZE_PAGES;
 
 // Number of pages for each type of parameter in the vtl 2 measured config
 // region.

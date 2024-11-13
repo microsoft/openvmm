@@ -53,7 +53,10 @@ pub struct PartitionInfo {
     /// Additional ram that can be reclaimed from the parameter region. Today,
     /// this is the whole device tree provided by the host.
     pub vtl2_config_region_reclaim: MemoryRange,
-    /// The full memory map provided by the host.
+    /// The vtl2 reserved region, that is reserved to both the kernel and
+    /// usermode.
+    pub vtl2_reserved_region: MemoryRange,
+    ///  The full memory map provided by the host.
     pub partition_ram: ArrayVec<MemoryEntry, MAX_PARTITION_RAM_RANGES>,
     /// The partiton's isolation type.
     pub isolation: IsolationType,
@@ -87,6 +90,7 @@ impl PartitionInfo {
             vtl2_ram: ArrayVec::new_const(),
             vtl2_full_config_region: MemoryRange::EMPTY,
             vtl2_config_region_reclaim: MemoryRange::EMPTY,
+            vtl2_reserved_region: MemoryRange::EMPTY,
             partition_ram: ArrayVec::new_const(),
             isolation: IsolationType::None,
             bsp_reg: 0,
