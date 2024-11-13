@@ -11,7 +11,7 @@ jobs:
         queueBuildForUserThatTriggeredBuild: false
         useSameBranch: false
         branchToUse: 'main'
-        buildParameters: 'branch: main'
+        buildParameters: 'branchToMirror: main, branchToUpdateSubmodule: main'
         authenticationMethod: 'OAuth Token'
         password: '$(System.AccessToken)'
       displayName: Trigger openvmm-mirror-refresh pipeline
