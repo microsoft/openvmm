@@ -78,7 +78,7 @@ struct PartitionUnitRunner {
     topology: ProcessorTopology,
     initial_regs: Option<Arc<InitialRegs>>,
 
-    #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+    #[cfg(feature = "gdb")]
     debugger_state: debug::DebuggerState,
 }
 
@@ -204,7 +204,7 @@ impl PartitionUnit {
             req_recv,
             topology: params.processor_topology.clone(),
             initial_regs: None,
-            #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+            #[cfg(feature = "gdb")]
             debugger_state: debug::DebuggerState::new(
                 params.vtl_guest_memory[0]
                     .ok_or(Error::MissingGuestMemory)?
@@ -280,13 +280,13 @@ impl PartitionUnitRunner {
                 State(Option<StateRequest>),
                 Halt(InternalHaltReason),
                 Request(PartitionRequest),
-                #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+                #[cfg(feature = "gdb")]
                 Debug(vmm_core_defs::debug_rpc::DebugRequest),
             }
 
-            #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+            #[cfg(feature = "gdb")]
             let debug = self.debugger_state.wait_rpc();
-            #[cfg(not(all(feature = "gdb", guest_arch = "x86_64")))]
+            #[cfg(not(feature = "gdb"))]
             let debug = std::future::pending();
 
             let event = futures::select! {  // merge semantics
@@ -294,11 +294,11 @@ impl PartitionUnitRunner {
                 request = self.halt_request_recv.select_next_some() => Event::Halt(request),
                 request = self.req_recv.select_next_some() => Event::Request(request),
                 request = debug.fuse() => {
-                    #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+                    #[cfg(feature = "gdb")]
                     {
                         Event::Debug(request)
                     }
-                    #[cfg(not(all(feature = "gdb", guest_arch = "x86_64")))]
+                    #[cfg(not(feature = "gdb"))]
                     {
                         let _: std::convert::Infallible = request;
                         unreachable!()
@@ -334,7 +334,7 @@ impl PartitionUnitRunner {
                             .await
                     }
                 },
-                #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+                #[cfg(feature = "gdb")]
                 Event::Debug(request) => {
                     self.handle_gdb(request).await;
                 }
@@ -356,9 +356,9 @@ impl PartitionUnitRunner {
                     self.halt_reason = Some(reason.clone());
 
                     // Report the halt to the debugger.
-                    #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+                    #[cfg(feature = "gdb")]
                     let reported = self.debugger_state.report_halt_to_debugger(&reason);
-                    #[cfg(not(all(feature = "gdb", guest_arch = "x86_64")))]
+                    #[cfg(not(feature = "gdb"))]
                     let reported = false;
 
                     // If the debugger is not attached, then report the halt

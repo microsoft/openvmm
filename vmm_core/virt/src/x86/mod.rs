@@ -20,27 +20,6 @@ use x86defs::cpuid::SgxCpuidSubleafEax;
 use x86defs::cpuid::Vendor;
 use x86defs::xsave::XSAVE_VARIABLE_OFFSET;
 
-/// Subset of VP state for debuggers.
-#[derive(Debug, PartialEq, Eq, Protobuf)]
-pub struct VpState {
-    pub gp: [u64; 16],
-    pub rip: u64,
-    pub rflags: u64,
-    pub cr0: u64,
-    pub cr2: u64,
-    pub cr3: u64,
-    pub cr4: u64,
-    pub cr8: u64,
-    pub efer: u64,
-    pub kernel_gs_base: u64,
-    pub es: SegmentRegister,
-    pub cs: SegmentRegister,
-    pub ss: SegmentRegister,
-    pub ds: SegmentRegister,
-    pub fs: SegmentRegister,
-    pub gs: SegmentRegister,
-}
-
 /// VP state that can be set for initial boot.
 #[derive(Debug, PartialEq, Eq, Protobuf)]
 pub struct X86InitialRegs {

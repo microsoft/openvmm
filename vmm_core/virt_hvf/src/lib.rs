@@ -641,7 +641,7 @@ impl<'p> virt::Processor for HvfProcessor<'p> {
         _vtl: Vtl,
         _state: Option<&virt::x86::DebugState>,
     ) -> Result<(), Self::Error> {
-        todo!()
+        Ok(())
     }
 
     async fn run_vp(

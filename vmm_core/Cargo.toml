@@ -7,10 +7,11 @@ edition = "2021"
 rust-version.workspace = true
 
 [features]
-gdb = ["iced-x86", "virt_support_x86emu"]
+gdb = ["iced-x86", "virt_support_aarch64emu", "virt_support_x86emu"]
 
 [dependencies]
 virt.workspace = true
+virt_support_aarch64emu = { workspace = true, optional = true }
 virt_support_x86emu = { workspace = true, optional = true }
 state_unit.workspace = true
 vmm_core_defs.workspace = true

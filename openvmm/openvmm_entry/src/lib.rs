@@ -1745,6 +1745,11 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         listener,
                         req_chan: req_tx,
                         vp_count: vm_config.processor_topology.proc_count,
+                        target_arch: if cfg!(guest_arch = "x86_64") {
+                            debug_worker_defs::TargetArch::X86_64
+                        } else {
+                            debug_worker_defs::TargetArch::Aarch64
+                        },
                     },
                 )
                 .await
