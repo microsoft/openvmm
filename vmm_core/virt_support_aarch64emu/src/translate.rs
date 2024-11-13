@@ -299,12 +299,12 @@ fn get_root_page_table(
         tracing::trace!(gva, address_width, "Invalid high bits");
         return Err(Error::InvalidAddressSize(0));
     }
-    let span_shift = (granule_width - 3) * num_levels;
+    let span_shift = granule_width + (granule_width - 3) * (num_levels - 1);
     let level_width = address_width - span_shift;
     Ok((
         gva & !high_mask,
         Aarch64PageTable {
-            table_address_gpa: root_address & !((1 << (address_width + 3)) - 1),
+            table_address_gpa: root_address & !((1 << (level_width + 3)) - 1),
             page_shift: granule_width,
             span_shift,
             level: num_levels - 1,
@@ -356,8 +356,12 @@ fn get_next_page_table(
     let mut pte;
     loop {
         pte = pte_access.map_err(|_| Error::GpaUnmapped(level))?;
-        let large_page_supported =
-            page_table.level == 3 || (page_table.level == 2 && page_table.page_shift > 12);
+        tracing::trace!(?pte);
+        let large_page_supported = match page_table.level {
+            3 => false,
+            2 => page_table.page_shift > 12,
+            _ => true,
+        };
         if !pte.valid() || (!pte.not_large_page() && !large_page_supported) {
             return Err(Error::PageNotPresent(level));
         }
@@ -454,16 +458,18 @@ fn get_next_page_table(
             }
         }
     }
-    let pfn_mask = (1_u64 << (page_table.page_shift - HV_PAGE_SHIFT)).wrapping_sub(1);
+    let pfn_mask = !(1_u64 << (page_table.page_shift - HV_PAGE_SHIFT)).wrapping_sub(1);
     let next_address = (pte.pfn() & pfn_mask) << HV_PAGE_SHIFT;
-    let span_shift = page_table.span_shift - (page_table.page_shift - 3);
     if page_table.level == 0 || !pte.not_large_page() {
-        Ok(PageTableWalkResult::BaseGpa(next_address, span_shift))
+        Ok(PageTableWalkResult::BaseGpa(
+            next_address,
+            (1 << page_table.span_shift) - 1,
+        ))
     } else {
         Ok(PageTableWalkResult::Table(Aarch64PageTable {
             table_address_gpa: next_address,
             page_shift: page_table.page_shift,
-            span_shift,
+            span_shift: page_table.span_shift - (page_table.page_shift - 3),
             level: page_table.level - 1,
             level_width: page_table.page_shift - 3,
             is_hierarchical_permissions: page_table.is_hierarchical_permissions,
@@ -531,8 +537,8 @@ pub fn translate_gva_to_gpa(
             &mut is_writeable_address,
             &mut is_executable_address,
         )? {
-            PageTableWalkResult::BaseGpa(base_address, offset_size) => {
-                break Ok(base_address + (gva & (offset_size - 1)))
+            PageTableWalkResult::BaseGpa(base_address, mask) => {
+                break Ok(base_address + (gva & mask))
             }
             PageTableWalkResult::Table(next_table) => next_table,
         };
