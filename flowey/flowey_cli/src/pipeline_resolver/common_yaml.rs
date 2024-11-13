@@ -202,6 +202,7 @@ where
         }
 
         let out_pipeline_db_path = repo_root.join(pipeline_file).with_extension("json");
+        println!("Writing pipeline to {:?}", &out_pipeline_db_path);
         let mut f = fs_err::File::create(out_pipeline_db_path)?;
         f.write_all(generated_json.as_bytes())
             .context("while emitting pipeline database json")?;
