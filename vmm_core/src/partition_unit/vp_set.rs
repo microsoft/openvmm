@@ -437,7 +437,7 @@ impl<T: Processor, U> DebugVp for BoundVp<'_, T, U> {
         let mut access = self.vp.access_state(vtl);
         let regs = access.registers()?;
         let msrs = access.virtual_msrs()?;
-        Ok(Box::new(DebuggerVpState::X86_64(virt::x86::VpState {
+        Ok(Box::new(DebuggerVpState::X86_64(vmm_core_defs::debug_rpc::X86VpState {
             gp: [
                 regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
                 regs.r8, regs.r9, regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
