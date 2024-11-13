@@ -6,8 +6,7 @@ name = "mdbook-openvmm-shim"
 edition = "2021"
 
 [dependencies]
-pathdiff = "0.2.1"
-serde_json = "1.0"
+
 
 [workspace.lints]
 

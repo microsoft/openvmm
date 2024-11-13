@@ -14,7 +14,7 @@ dependencies, via one of the following options:
 
 ### Building OpenVMM Locally
 
-Follow the instructions on: [Building OpenVMM](/dev_guide/getting_started/build_openvmm.md).
+Follow the instructions on: [Building OpenVMM](../../dev_guide/getting_started/build_openvmm.md).
 
 ### Pre-Built Binaries
 
@@ -49,7 +49,7 @@ terminal session, forwarding all keystrokes directly to the VM.
 
 As such, a simple `ctrl-c` does not suffice to quit OpenVMM!
 
-Instead, you can type `crtl-q` to enter OpenVMM's [interactive console](/reference/openvmm/management/interactive_console.md), and enter `q` to quit.
+Instead, you can type `crtl-q` to enter OpenVMM's [interactive console](../../reference/openvmm/management/interactive_console.md), and enter `q` to quit.
 
 ### Sample Linux Kernel, via direct-boot
 
@@ -94,7 +94,7 @@ cargo run -- --uefi --disk memdiff:path/to/windows.vhdx --gfx
 ```
 
 For more info on `--gfx`, and how to actually interact with the VM using a
-mouse/keyboard/video, see the [Graphical Console](/reference/openvmm/graphical_console.md)
+mouse/keyboard/video, see the [Graphical Console](../../reference/openvmm/graphical_console.md)
 docs.
 
 The file `windows.vhdx` can be any format of VHD(X).
@@ -121,7 +121,7 @@ in, the fact DOS is able to boot in OpenVMM serves as a testament to OpenVMM's
 solid support of legacy x86 devices and infrastructure.
 
 The following command will boot a copy of DOS from a virtual floppy disk, using
-the [Hyper-V PCAT BIOS](/reference/devices/firmware/pcat_bios.md).
+the [Hyper-V PCAT BIOS](../../../reference/devices/firmware/pcat_bios.md).
 
 Booting via PCAT is not just for DOS though! Many older operating systems,
 including older copies of Windows / Linux, require booting via BIOS.

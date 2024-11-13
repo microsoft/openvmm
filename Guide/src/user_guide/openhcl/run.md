@@ -23,7 +23,7 @@ one of the following options:
 
 ### Building OpenHCL Locally
 
-Follow the instructions on: [Building OpenHCL](/dev_guide/getting_started/build_openhcl.md).
+Follow the instructions on: [Building OpenHCL](../../dev_guide/getting_started/build_openhcl.md).
 
 Note: At this time, OpenHCL can only be built on Linux / WSL2.
 
@@ -41,4 +41,4 @@ particular architecture and operating system.
 
 [^vtls]: Though, unlike UEFI / BIOS, OpenHCL is loaded into a distinct, higher
     privilege execution context within the VM, called
-    [VTL2](/reference/architecture/openhcl.md#vtls).
+    [VTL2](../../reference/architecture/openhcl.md#vtls).

@@ -2,7 +2,7 @@
 
 **Prerequisites:**
 
-- [Getting Started: OpenHCL](/user_guide/openhcl.md).
+- [Getting Started: OpenHCL](../../user_guide/openhcl.md).
 - [Architecture: OpenVMM Architecture](./openvmm.md).
 
 * * *
@@ -14,7 +14,7 @@
 The following diagram offers a brief, high-level overview of the OpenHCL
 Architecture.
 
-![OpenHCL High Level Overview](/_images/openhcl_arch_overview.png)
+![OpenHCL High Level Overview](./_images/openhcl.png)
 
 ## VTLs
 
@@ -66,12 +66,12 @@ interfaces provided by Azure Boost.
 The following diagram shows a high level overview of how synthetic networking is
 supported in OpenHCL over Microsoft Azure Network Adapter (MANA)
 
-<img src="/_images/openhcl-synthetic-nw.png" height="400" width="600"> <br>
+<img src="./_images/openhcl-synthetic-nw.png" height="400" width="600"> <br>
 
 The following diagram shows a high level overview of how accelerated networking
 is supported in OpenHCL over MANA
 
-<img src="/_images/openhcl-accelnet.png" height="400" width="600"> <br> <br>
+<img src="./_images/openhcl-accelnet.png" height="400" width="600"> <br> <br>
 
 [^sk]: Why not VTL1? Windows already uses VTL1 in order to host the [Secure Kernel].
 
