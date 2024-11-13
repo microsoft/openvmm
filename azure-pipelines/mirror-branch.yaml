@@ -1,5 +1,5 @@
 trigger:
-- main
+- release/2411
 pr: none
 variables:
 - name: skipComponentGovernanceDetection
@@ -14,7 +14,7 @@ jobs:
         queueBuildForUserThatTriggeredBuild: false
         useSameBranch: false
         branchToUse: 'main'
-        buildParameters: 'branchToMirror: main, branchToUpdateSubmodule: main'
+        buildParameters: 'branchToMirror: release/2411, branchToUpdateSubmodule: release/1.5.2411'
         authenticationMethod: 'OAuth Token'
         password: '$(System.AccessToken)'
       displayName: Trigger openvmm-mirror-refresh pipeline
