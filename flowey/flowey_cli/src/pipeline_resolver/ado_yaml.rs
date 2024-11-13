@@ -319,16 +319,6 @@ EOF
             )?;
         }
 
-        ado_steps.push({
-            let mut map = serde_yaml::Mapping::new();
-            map.insert(
-                "bash".into(),
-                serde_yaml::Value::String(flowey_bootstrap_bash),
-            );
-            map.insert("displayName".into(), "🌼🛫 Initialize job".into());
-            map.into()
-        });
-
         // if this was a bootstrap job, also take a moment to run a "self check"
         // to make sure that the current checked-in template matches the one it
         // expected
@@ -396,6 +386,16 @@ EOF
                 map.into()
             })
         }
+
+        ado_steps.push({
+            let mut map = serde_yaml::Mapping::new();
+            map.insert(
+                "bash".into(),
+                serde_yaml::Value::String(flowey_bootstrap_bash),
+            );
+            map.insert("displayName".into(), "🌼🛫 Initialize job".into());
+            map.into()
+        });
 
         // now that we've done all the job-level bootstrapping, we can emit all
         // the actual steps the user cares about
