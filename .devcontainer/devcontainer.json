@@ -26,7 +26,7 @@
 
 	// Set the minimum host cpus to 8, since otherwise builds or rust-analyzer
 	// will not work well.
-	"hostRequirements": {"cpus": 8}
+	"hostRequirements": { "cpus": 8 }
 
 	// TODO: mounts for local flowey-out/artifacts?
 }
