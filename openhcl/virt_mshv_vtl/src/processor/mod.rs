@@ -403,8 +403,8 @@ pub enum UhRunVpError {
     InvalidVmcb,
     #[error("unknown exit {0:#x?}")]
     UnknownVmxExit(x86defs::vmx::VmxExit),
-    #[error("failed to access hypercall assist page")]
-    HypercallAssistPage(#[source] guestmem::GuestMemoryError),
+    #[error("failed to access VP assist page")]
+    VpAssistPage(#[source] guestmem::GuestMemoryError),
     #[error("failed to read hypercall parameters")]
     HypercallParameters(#[source] guestmem::GuestMemoryError),
     #[error("failed to write hypercall result")]

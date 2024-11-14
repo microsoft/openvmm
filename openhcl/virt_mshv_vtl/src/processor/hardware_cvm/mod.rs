@@ -614,7 +614,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
                 self.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
                     .set_return_reason(HvVtlEntryReason::INTERRUPT)
-                    .map_err(UhRunVpError::HypercallAssistPage)?;
+                    .map_err(UhRunVpError::VpAssistPage)?;
             }
         }
 
@@ -624,12 +624,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 let vp_index = self.vp_index();
                 let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
                 if hv.synic.vina().enabled()
-                    && !hv
-                        .vina_asserted()
-                        .map_err(UhRunVpError::HypercallAssistPage)?
+                    && !hv.vina_asserted().map_err(UhRunVpError::VpAssistPage)?
                 {
                     hv.set_vina_asserted(true)
-                        .map_err(UhRunVpError::HypercallAssistPage)?;
+                        .map_err(UhRunVpError::VpAssistPage)?;
                     self.partition
                         .synic_interrupt(vp_index, GuestVtl::Vtl1)
                         .request_interrupt(
