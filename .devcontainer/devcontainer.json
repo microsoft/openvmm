@@ -1,25 +1,41 @@
 // This devcontainer is intended for developer use only, via the dev containers
 // extension or Github codespaces. It is not used for CI or anything else.
 {
-	"name": "Ubuntu",
-	"image": "mcr.microsoft.com/devcontainers/base:jammy",
+    "name": "Ubuntu",
+    "image": "mcr.microsoft.com/devcontainers/base:jammy",
 
-	// Add the Rust feature and install all supported targets, since this is
-	// meant for local developer use.
-	"features": {
-		"ghcr.io/devcontainers/features/rust:1": {
-			"version": "latest",
-			"profile": "default",
-			"targets": "aarch64-apple-darwin,aarch64-unknown-linux-musl,x86_64-pc-windows-msvc,x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,x86_64-unknown-none"
-		}
-	},
+    // Add the Rust feature and install all supported targets, since this is
+    // meant for local developer use.
+    "features": {
+        "ghcr.io/devcontainers/features/rust:1": {
+            "version": "latest",
+            "profile": "default",
+            "targets": "aarch64-apple-darwin,aarch64-unknown-linux-musl,x86_64-pc-windows-msvc,x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,x86_64-unknown-none"
+        },
 
-	// Allow kvm by setting privileged to true.
-	"privileged": true,
+        // Add the SSHD feature so that users can SSH into the container.
+        "ghcr.io/devcontainers/features/sshd:1": {}
+    },
 
-	// Restore packages so that users can build as soon as the container is
-	// ready.
-	"postCreateCommand": "cargo xflowey restore-packages"
+    // Add rust-analyzer by default.
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "rust-lang.rust-analyzer"
+            ]
+        }
+    },
 
-	// TODO: mounts for local flowey-out/artifacts?
+    // Allow kvm by setting privileged to true.
+    "privileged": true,
+
+    // Restore packages so that users can build as soon as the container is
+    // ready.
+    "updateContentCommand": "cargo xflowey restore-packages",
+
+    // Set the minimum host cpus to 8, since otherwise builds or rust-analyzer
+    // will not work well.
+    "hostRequirements": { "cpus": 8 }
+
+    // TODO: mounts for local flowey-out/artifacts?
 }
