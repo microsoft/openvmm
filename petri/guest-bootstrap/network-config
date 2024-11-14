@@ -1,0 +1,6 @@
+# Specify a non-present device to work around https://github.com/canonical/cloud-init/issues/5511
+version: 1
+config:
+  - type: physical
+    name: disabled
+    optional: true

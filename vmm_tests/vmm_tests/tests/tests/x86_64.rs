@@ -135,7 +135,7 @@ async fn vtl2_pipette(config: PetriVmConfig) -> anyhow::Result<()> {
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
     let sh = vtl2_agent.unix_shell();
     let output = cmd!(sh, "ps").read().await?;
-    assert!(output.contains("underhill vm"));
+    assert!(output.contains("openvmm_hcl vm"));
 
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
