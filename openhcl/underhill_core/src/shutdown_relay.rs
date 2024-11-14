@@ -3,7 +3,7 @@
 
 // Copyright (C) Microsoft Corporation. All rights reserved.
 
-//! Implements shutdown relay device for underhill.
+//! Implements shutdown relay device between guest and host.
 
 use futures::FutureExt;
 use futures::StreamExt;
