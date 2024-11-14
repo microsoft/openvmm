@@ -1737,7 +1737,7 @@ impl LocalApic {
             timer_dcr,
             active_auto_eoi,
             needs_offload_reeval,
-            scan_irr: pull_irr,
+            scan_irr,
             is_offloaded: _,
             stats: _,
         } = self;
@@ -1754,7 +1754,7 @@ impl LocalApic {
         // disabled state.
         *irr = [0; 8];
         *needs_offload_reeval = false;
-        *pull_irr = false;
+        *scan_irr = false;
         *tmr = [0; 8];
         *auto_eoi = [0; 8];
         *active_auto_eoi = false;
