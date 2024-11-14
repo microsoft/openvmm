@@ -305,10 +305,10 @@ impl<T: RingMem + Unpin> KeyboardChannel<T> {
 mod tests {
     use super::*;
     use input_core::mesh_input::input_pair;
+    use pal_async::async_test;
     use pal_async::task::Spawn;
     use pal_async::task::Task;
     use pal_async::DefaultDriver;
-    use pal_async::DefaultPool;
     use std::io::ErrorKind;
     use test_with_tracing::test;
     use tracing_helpers::ErrorValueExt;
@@ -357,81 +357,77 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_channel_working() {
-        DefaultPool::run_with(|driver| async move {
-            let (host, mut guest) = connected_raw_message_pipes(16384);
-            let (source, mut sink) = input_pair();
-            let worker = start_worker(&driver, Keyboard::new(Box::new(source)), host);
+    #[async_test]
+    async fn test_channel_working(driver: DefaultDriver) {
+        let (host, mut guest) = connected_raw_message_pipes(16384);
+        let (source, mut sink) = input_pair();
+        let worker = start_worker(&driver, Keyboard::new(Box::new(source)), host);
 
-            send_packet(
-                &mut guest,
-                protocol::MESSAGE_PROTOCOL_REQUEST,
-                &protocol::MessageProtocolRequest {
-                    version: protocol::VERSION_WIN8,
-                },
-            )
-            .await
-            .unwrap();
+        send_packet(
+            &mut guest,
+            protocol::MESSAGE_PROTOCOL_REQUEST,
+            &protocol::MessageProtocolRequest {
+                version: protocol::VERSION_WIN8,
+            },
+        )
+        .await
+        .unwrap();
 
+        match recv_packet(&mut guest).await.unwrap() {
+            Packet::ProtocolResponse(protocol::MessageProtocolResponse { accepted: 1 }) => (),
+            p => panic!("unexpected {:?}", p),
+        }
+
+        let events = [(3, false), (5, true)];
+
+        for &(code, make) in &events {
+            sink.send(KeyboardData { code, make });
+        }
+
+        for event in &events {
             match recv_packet(&mut guest).await.unwrap() {
-                Packet::ProtocolResponse(protocol::MessageProtocolResponse { accepted: 1 }) => (),
+                Packet::Event(protocol::MessageKeystroke {
+                    make_code,
+                    padding: _padding,
+                    flags,
+                }) => {
+                    assert_eq!(make_code, event.0);
+                    assert_eq!(
+                        flags,
+                        if event.1 {
+                            0
+                        } else {
+                            protocol::KEYSTROKE_IS_BREAK
+                        }
+                    );
+                }
                 p => panic!("unexpected {:?}", p),
             }
-
-            let events = [(3, false), (5, true)];
-
-            for &(code, make) in &events {
-                sink.send(KeyboardData { code, make });
-            }
-
-            for event in &events {
-                match recv_packet(&mut guest).await.unwrap() {
-                    Packet::Event(protocol::MessageKeystroke {
-                        make_code,
-                        padding: _padding,
-                        flags,
-                    }) => {
-                        assert_eq!(make_code, event.0);
-                        assert_eq!(
-                            flags,
-                            if event.1 {
-                                0
-                            } else {
-                                protocol::KEYSTROKE_IS_BREAK
-                            }
-                        );
-                    }
-                    p => panic!("unexpected {:?}", p),
-                }
-            }
-            drop(guest);
-            worker.await.unwrap()
-        })
+        }
+        drop(guest);
+        worker.await.unwrap()
     }
 
-    #[test]
-    fn test_channel_negotiation_failed() {
-        DefaultPool::run_with(|driver| async move {
-            let (host, mut guest) = connected_raw_message_pipes(16384);
-            let (source, _sink) = input_pair();
-            let worker = start_worker(&driver, Keyboard::new(Box::new(source)), host);
+    #[async_test]
+    async fn test_channel_negotiation_failed(driver: DefaultDriver) {
+        let (host, mut guest) = connected_raw_message_pipes(16384);
+        let (source, _sink) = input_pair();
+        let worker = start_worker(&driver, Keyboard::new(Box::new(source)), host);
 
-            send_packet(
-                &mut guest,
-                protocol::MESSAGE_PROTOCOL_REQUEST,
-                &protocol::MessageProtocolRequest { version: 0xbadf00d },
-            )
-            .await
-            .unwrap();
+        send_packet(
+            &mut guest,
+            protocol::MESSAGE_PROTOCOL_REQUEST,
+            &protocol::MessageProtocolRequest { version: 0xbadf00d },
+        )
+        .await
+        .unwrap();
 
-            match recv_packet(&mut guest).await.unwrap() {
-                Packet::ProtocolResponse(protocol::MessageProtocolResponse { accepted: 0 }) => (),
-                p => panic!("unexpected {:?}", p),
-            }
+        match recv_packet(&mut guest).await.unwrap() {
+            Packet::ProtocolResponse(protocol::MessageProtocolResponse { accepted: 0 }) => (),
+            p => panic!("unexpected {:?}", p),
+        }
 
-            drop(guest);
-            worker.await.unwrap();
-        })
+        drop(guest);
+        worker.await.unwrap();
     }
 }
