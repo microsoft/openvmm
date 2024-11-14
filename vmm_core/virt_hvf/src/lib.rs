@@ -682,7 +682,7 @@ impl HvfProcessor<'_> {
             u32::MAX as u64
         };
         let r = match PsciCall(fc.with_smc64(false).with_hint(false)) {
-            PsciCall::PSCI_VERSION => (1 << 16) | 0,
+            PsciCall::PSCI_VERSION => 1 << 16,
             PsciCall::PSCI_FEATURES => {
                 let feature_bits = match PsciCall(
                     FastCall::from(self.vcpu.gp(1).unwrap() as u32).with_smc64(false),
@@ -821,7 +821,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                     continue;
                 }
 
-                if self.partition.gicd.irq_pending(&mut self.gicr) {
+                if self.partition.gicd.irq_pending(&self.gicr) {
                     // SAFETY: no requirements.
                     unsafe {
                         abi::hv_vcpu_set_pending_interrupt(
