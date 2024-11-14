@@ -328,7 +328,7 @@ EOF
             current_invocation[0] = "$(FLOWEY_BIN)".into();
 
             // if this code path is run while generating the YAML to compare the
-            // check against, we want to remove the --check param from the
+            // check against, we want to remove the --runtime param from the
             // current call, or else there'll be a dupe
             if let Some(i) = current_invocation
                 .iter()
