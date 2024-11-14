@@ -1,11 +1,11 @@
-// For format details, see https://aka.ms/devcontainer.json. For config options, see the
-// README at: https://github.com/devcontainers/templates/tree/main/src/ubuntu
+// This devcontainer is intended for developer use only, via the dev containers
+// extension or Github codespaces. It is not used for CI or anything else.
 {
 	"name": "Ubuntu",
-	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
 	"image": "mcr.microsoft.com/devcontainers/base:jammy",
 
-	// Features to add to the dev container. More info: https://containers.dev/features.
+	// Add the Rust feature and install all supported targets, since this is
+	// meant for local developer use.
 	"features": {
 		"ghcr.io/devcontainers/features/rust:1": {
 			"version": "latest",
@@ -17,11 +17,9 @@
 	// Allow kvm by setting privileged to true.
 	"privileged": true,
 
-	// Use 'postCreateCommand' to run commands after the container is created.
+	// Restore packages so that users can build as soon as the container is
+	// ready.
 	"postCreateCommand": "cargo xflowey restore-packages"
-
-	// Configure tool-specific properties.
-	// "customizations": {},
 
 	// TODO: mounts for local flowey-out/artifacts?
 }

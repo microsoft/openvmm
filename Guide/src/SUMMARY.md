@@ -21,6 +21,7 @@
 - [Getting Started](./dev_guide/getting_started.md)
   - [On Linux / WSL2](./dev_guide/getting_started/linux.md)
   - [On Windows](./dev_guide/getting_started/windows.md)
+  - [Via Codespaces / Dev Container](./dev_guide/getting_started/devcontainer.md)
   - [Building OpenVMM](./dev_guide/getting_started/build_openvmm.md)
   - [Building OpenHCL](./dev_guide/getting_started/build_openhcl.md)
     - [Building a Custom Kernel](./dev_guide/getting_started/build_ohcl_kernel.md)
