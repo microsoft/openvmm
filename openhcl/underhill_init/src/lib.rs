@@ -36,7 +36,7 @@ use std::time::Duration;
 use syslog::SysLog;
 use walkdir::WalkDir;
 
-const UNDERHILL_PATH: &str = "/bin/underhill";
+const UNDERHILL_PATH: &str = "/bin/openvmm_hcl";
 
 struct FilesystemMount<'a> {
     source: &'a CStr,
