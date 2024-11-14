@@ -1,4 +1,4 @@
-name: Private VSO build
+name: Refresh VSO Mirror
 on:
   workflow_dispatch:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  PrivateBuild:
+  QueueBuild:
     runs-on: ubuntu-latest
     steps:
       - uses: Azure/login@v1
@@ -39,6 +39,6 @@ jobs:
         shell: bash
         run: pip install --user -r .github/scripts/refresh_mirror/requirements.txt
 
-      - name: Run VSO build
+      - name: Refresh VSO Mirror
         shell: bash
         run: python .github/scripts/refresh_mirror/refresh-mirror.py 149443 ${{ steps.AzureKeyVault.outputs.HvliteMirrorPAT }}
