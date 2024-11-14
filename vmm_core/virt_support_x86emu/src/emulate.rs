@@ -16,7 +16,6 @@ use thiserror::Error;
 use virt::io::CpuIo;
 use virt::VpHaltReason;
 use vm_topology::processor::VpIndex;
-use x86defs::apic::APIC_BASE_ADDRESS;
 use x86defs::Exception;
 use x86emu::CpuState;
 use zerocopy::AsBytes;
@@ -703,7 +702,7 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
     ) -> Result<(), Self::Error> {
         let gpa = self.translate_gva(gva, TranslateMode::Read, is_user_mode)?;
 
-        if gpa & !0xfff == APIC_BASE_ADDRESS as u64 {
+        if Some(gpa & !0xfff) == self.support.lapic_base_address() {
             self.support.lapic_read(gpa, bytes);
             return Ok(());
         }
@@ -728,7 +727,7 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
     ) -> Result<(), Self::Error> {
         let gpa = self.translate_gva(gva, TranslateMode::Write, is_user_mode)?;
 
-        if gpa & !0xfff == APIC_BASE_ADDRESS as u64 {
+        if Some(gpa & !0xfff) == self.support.lapic_base_address() {
             self.support.lapic_write(gpa, bytes);
             return Ok(());
         }

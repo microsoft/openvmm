@@ -2160,6 +2160,38 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         debug_assert!(vtom == 0 || vtom.is_power_of_two());
         self.vp.partition.is_gpa_mapped(gpa & !vtom, write)
     }
+
+    fn lapic_base_address(&self) -> Option<u64> {
+        self.vp.backing.lapic.lapic.base_address()
+    }
+
+    fn lapic_read(&mut self, address: u64, data: &mut [u8]) {
+        self.vp
+            .backing
+            .lapic
+            .lapic
+            .access(&mut TdxApicClient {
+                partition: self.vp.partition,
+                dev: self.devices,
+                vmtime: &self.vp.vmtime,
+                apic_page: zerocopy::transmute_mut!(self.vp.runner.tdx_apic_page_mut()),
+            })
+            .mmio_read(address, data);
+    }
+
+    fn lapic_write(&mut self, address: u64, data: &[u8]) {
+        self.vp
+            .backing
+            .lapic
+            .lapic
+            .access(&mut TdxApicClient {
+                partition: self.vp.partition,
+                dev: self.devices,
+                vmtime: &self.vp.vmtime,
+                apic_page: zerocopy::transmute_mut!(self.vp.runner.tdx_apic_page_mut()),
+            })
+            .mmio_write(address, data);
+    }
 }
 
 impl<T: CpuIo> TranslateGvaSupport for UhEmulationState<'_, '_, T, TdxBacked> {
