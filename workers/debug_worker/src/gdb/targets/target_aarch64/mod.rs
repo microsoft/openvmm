@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Target implementation for aarch64.
+
 use super::ArchError;
 use super::TargetArch;
 use aarch64defs::Cpsr64;
@@ -71,7 +73,7 @@ impl TargetArch for gdbstub_arch::aarch64::AArch64 {
             },
             pc: state.pc,
             cpsr: state.cpsr as u32,
-            v: [0; 32],
+            v: [0; 32], // TODO: plumb floating point register state
             fpcr: 0,
             fpsr: 0,
         };

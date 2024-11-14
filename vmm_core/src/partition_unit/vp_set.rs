@@ -463,11 +463,59 @@ impl<T: Processor, U> DebugVp for BoundVp<'_, T, U> {
     }
 
     #[cfg(guest_arch = "aarch64")]
-    fn set_vp_state(&mut self, _vtl: Vtl, state: &DebuggerVpState) -> anyhow::Result<()> {
-        let DebuggerVpState::Aarch64(_state) = state else {
+    fn set_vp_state(&mut self, vtl: Vtl, state: &DebuggerVpState) -> anyhow::Result<()> {
+        let DebuggerVpState::Aarch64(state) = state else {
             anyhow::bail!("wrong architecture")
         };
-        anyhow::bail!("todo");
+        let mut access = self.vp.access_state(vtl);
+        let regs = virt::aarch64::vp::Registers {
+            x0: state.x[0],
+            x1: state.x[1],
+            x2: state.x[2],
+            x3: state.x[3],
+            x4: state.x[4],
+            x5: state.x[5],
+            x6: state.x[6],
+            x7: state.x[7],
+            x8: state.x[8],
+            x9: state.x[9],
+            x10: state.x[10],
+            x11: state.x[11],
+            x12: state.x[12],
+            x13: state.x[13],
+            x14: state.x[14],
+            x15: state.x[15],
+            x16: state.x[16],
+            x17: state.x[17],
+            x18: state.x[18],
+            x19: state.x[19],
+            x20: state.x[20],
+            x21: state.x[21],
+            x22: state.x[22],
+            x23: state.x[23],
+            x24: state.x[24],
+            x25: state.x[25],
+            x26: state.x[26],
+            x27: state.x[27],
+            x28: state.x[28],
+            fp: state.x[29],
+            lr: state.x[30],
+            sp_el0: state.sp_el0,
+            sp_el1: state.sp_el1,
+            pc: state.pc,
+            cpsr: state.cpsr,
+        };
+        let sregs = virt::aarch64::vp::SystemRegisters {
+            sctlr_el1: state.sctlr_el1,
+            tcr_el1: state.tcr_el1,
+            ttbr0_el1: state.ttbr0_el1,
+            ttbr1_el1: state.ttbr1_el1,
+            ..access.system_registers()?
+        };
+        access.set_registers(&regs)?;
+        access.set_system_registers(&sregs)?;
+        access.commit()?;
+        Ok(())
     }
 
     #[cfg(guest_arch = "aarch64")]
