@@ -1371,7 +1371,14 @@ impl UhProcessor<'_, TdxBacked> {
                     })
                     .msr_read(msr)
                     .or_else_if_unknown(|| self.read_msr(msr, intercepted_vtl))
-                    .or_else_if_unknown(|| self.read_msr_cvm(msr, intercepted_vtl));
+                    .or_else_if_unknown(|| self.read_msr_cvm(msr, intercepted_vtl))
+                    .or_else_if_unknown(|| match msr {
+                        hvdef::HV_X64_MSR_GUEST_IDLE => {
+                            self.backing.lapic.halted = true;
+                            Ok(0)
+                        }
+                        _ => Err(MsrError::Unknown),
+                    });
 
                 let value = match result {
                     Ok(v) => Some(v),
