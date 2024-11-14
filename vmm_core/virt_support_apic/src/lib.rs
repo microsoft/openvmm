@@ -844,12 +844,7 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
             ApicRegister::ID => self.apic.id_register(),
             ApicRegister::VERSION => self.apic.version,
             ApicRegister::TPR => self.client.cr8() << 4,
-            ApicRegister::PPR => {
-                self.ensure_state_local();
-                let task_pri = self.client.cr8();
-                let isr_pri = priority(self.apic.isr.top().unwrap_or(0));
-                task_pri.max(isr_pri.into()) << 4
-            }
+            ApicRegister::PPR => self.get_ppr(),
             ApicRegister::LDR => self.apic.ldr_register(),
             ApicRegister::DFR if !self.apic.x2apic_enabled() => {
                 if self.apic.cluster_mode {
@@ -1043,6 +1038,14 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
             }
         }
         true
+    }
+
+    /// Computes and returns the current effective PPR value.
+    pub fn get_ppr(&mut self) -> u32 {
+        self.ensure_state_local();
+        let task_pri = self.client.cr8();
+        let isr_pri = priority(self.apic.isr.top().unwrap_or(0));
+        task_pri.max(isr_pri.into()) << 4
     }
 
     fn ensure_state_local(&mut self) {

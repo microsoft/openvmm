@@ -447,7 +447,7 @@ impl BackingPrivate for SnpBacked {
     }
 
     fn handle_cross_vtl_interrupts(this: &mut UhProcessor<'_, Self>, dev: &impl CpuIo) -> bool {
-        this.hcvm_handle_cross_vtl_interrupts(|this, vtl| {
+        this.hcvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
             let vmsa = this.runner.vmsa_mut(vtl);
             if vmsa.event_inject().valid()
                 && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
@@ -455,28 +455,26 @@ impl BackingPrivate for SnpBacked {
                 return true;
             }
 
-            if vmsa.v_intr_cntrl().irq() {
-                let vmsa_priority = vmsa.v_intr_cntrl().priority();
-                let lapic = &mut this.backing.lapics[vtl].lapic;
-                let ppr = lapic
-                    .access(&mut SnpApicClient {
-                        partition: this.partition,
-                        vmsa,
-                        dev,
-                        vmtime: &this.vmtime,
-                        vtl,
-                    })
-                    .msr_read(
-                        x86defs::apic::ApicRegister::PPR.0 as u32 + x86defs::apic::X2APIC_MSR_BASE,
-                    )
-                    .expect("reading ppr should never fail");
-                let ppr_priority = ppr >> 4;
-                if vmsa_priority > ppr_priority {
-                    return true;
-                }
+            if (check_rflags && !x86defs::RFlags::from_bits(vmsa.rflags()).interrupt_enable())
+                || vmsa.v_intr_cntrl().intr_shadow()
+                || !vmsa.v_intr_cntrl().irq()
+            {
+                return false;
             }
 
-            false
+            let vmsa_priority = vmsa.v_intr_cntrl().priority() as u32;
+            let lapic = &mut this.backing.lapics[vtl].lapic;
+            let ppr = lapic
+                .access(&mut SnpApicClient {
+                    partition: this.partition,
+                    vmsa,
+                    dev,
+                    vmtime: &this.vmtime,
+                    vtl,
+                })
+                .get_ppr();
+            let ppr_priority = ppr >> 4;
+            vmsa_priority > ppr_priority
         })
     }
 

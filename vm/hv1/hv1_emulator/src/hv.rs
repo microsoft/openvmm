@@ -468,6 +468,15 @@ impl ProcessorVtlHv {
         self.guest_memory.read_plain(gpa)
     }
 
+    /// Set the reason for the vtl return into the vp assist page
+    pub fn set_return_reason(&self, reason: HvVtlEntryReason) -> Result<(), GuestMemoryError> {
+        let gpa = (self.vp_assist_page.gpa_page_number() * HV_PAGE_SIZE)
+            + offset_of!(hvdef::HvVpAssistPage, vtl_control) as u64
+            + offset_of!(HvVpVtlControl, entry_reason) as u64;
+
+        self.guest_memory.write_plain(gpa, &(reason.0))
+    }
+
     /// Gets whether VINA is currently asserted.
     pub fn vina_asserted(&self) -> Result<bool, GuestMemoryError> {
         let gpa = (self.vp_assist_page.gpa_page_number() * HV_PAGE_SIZE)
@@ -484,15 +493,6 @@ impl ProcessorVtlHv {
             + offset_of!(HvVpVtlControl, vina_status) as u64;
 
         self.guest_memory.write_plain(gpa, &(value as u8))
-    }
-
-    /// Set the reason for the vtl return into the vp assist page
-    pub fn set_return_reason(&self, reason: HvVtlEntryReason) -> Result<(), GuestMemoryError> {
-        let gpa = (self.vp_assist_page.gpa_page_number() * HV_PAGE_SIZE)
-            + offset_of!(hvdef::HvVpAssistPage, vtl_control) as u64
-            + offset_of!(HvVpVtlControl, entry_reason) as u64;
-
-        self.guest_memory.write_plain(gpa, &(reason.0))
     }
 }
 

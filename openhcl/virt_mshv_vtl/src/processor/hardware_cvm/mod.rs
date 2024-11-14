@@ -598,16 +598,17 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     /// Handle checking for cross-VTL interrupts, preempting VTL 0, and setting
     /// VINA when appropriate. The `is_interrupt_pending` function should return
     /// true if an interrupt of appropriate priority, or an NMI, is pending for
-    /// the given VTL. Returns true if interrupt reprocessing is required.
+    /// the given VTL. The boolean specifies whether RFLAGS.IF should be checked.
+    /// Returns true if interrupt reprocessing is required.
     pub(crate) fn hcvm_handle_cross_vtl_interrupts(
         &mut self,
-        is_interrupt_pending: impl Fn(&mut Self, GuestVtl) -> bool,
+        is_interrupt_pending: impl Fn(&mut Self, GuestVtl, bool) -> bool,
     ) -> bool {
         let mut reprocessing_required = false;
 
         if self.backing.cvm_state_mut().exit_vtl == GuestVtl::Vtl0 {
-            // Check for VTL preemption
-            if is_interrupt_pending(self, GuestVtl::Vtl1) {
+            // Check for VTL preemption - which ignores RFLAGS.IF
+            if is_interrupt_pending(self, GuestVtl::Vtl1, false) {
                 B::switch_vtl_state(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
                 self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
                 self.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
@@ -618,7 +619,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
         if self.backing.cvm_state_mut().exit_vtl == GuestVtl::Vtl1 {
             // Check for VINA
-            if is_interrupt_pending(self, GuestVtl::Vtl0) {
+            if is_interrupt_pending(self, GuestVtl::Vtl0, true) {
                 let vp_index = self.vp_index();
                 let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
                 if hv.synic.vina().enabled() && !hv.vina_asserted().unwrap() {
