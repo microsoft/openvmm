@@ -281,7 +281,8 @@ impl PetriVmInner {
 
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
         tracing::info!("Waiting for shutdown ic ready");
-        self.resources
+        let (notify_shutdown, _) = self
+            .resources
             .shutdown_ic_send
             .call(ShutdownRpc::WaitReady, ())
             .await?;
@@ -294,11 +295,9 @@ impl PetriVmInner {
         }
 
         tracing::info!("Sending shutdown command");
-        let shutdown_result = self
-            .resources
-            .shutdown_ic_send
+        let shutdown_result = notify_shutdown
             .call(
-                ShutdownRpc::Shutdown,
+                |x| x,
                 hyperv_ic_resources::shutdown::ShutdownParams {
                     shutdown_type: match kind {
                         ShutdownKind::Shutdown => {
