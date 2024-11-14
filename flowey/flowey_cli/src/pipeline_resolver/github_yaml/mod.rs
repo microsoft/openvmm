@@ -357,19 +357,22 @@ EOF
             current_invocation[0] = flowey_bin;
 
             // if this code path is run while generating the YAML to compare the
-            // check against, we want to remove the --runtime param from the
+            // check against, we want to remove the --runtime or --check param from the
             // current call, or else there'll be a dupe
-            if let Some(i) = current_invocation
-                .iter()
-                .position(|s| s.starts_with("--runtime"))
-            {
-                // remove the --check param
-                let s = current_invocation.remove(i);
-                if !s.starts_with("--runtime=") {
-                    // remove its freestanding argument
+            let mut strip_parameter = |prefix: &str| {
+                if let Some(i) = current_invocation
+                    .iter()
+                    .position(|s| s.starts_with(prefix))
+                {
                     current_invocation.remove(i);
+                    if !current_invocation[i].starts_with(prefix) {
+                        current_invocation.remove(i);
+                    }
                 }
-            }
+            };
+
+            strip_parameter("--runtime");
+            strip_parameter("--check");
 
             // insert the --check bit of the call alongside the --out param
             {
