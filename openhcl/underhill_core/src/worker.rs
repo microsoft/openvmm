@@ -2533,28 +2533,12 @@ async fn new_underhill_vm(
             .unwrap_or(!controllers.mana.is_empty());
         tracing::info!(enable_mnf, "Underhill MNF enabled?");
 
-        // Channel ID offsets are enabled for the Underhill server if the relay is not in use. This
-        // prevents them from conflicting with channels offered by the host, for which Hyper-V vmbus
-        // allocates ports even if not connected.
-        //
-        // This is not necessary when hardware isolation is enabled but the isolation is hidden from
-        // the guest, because the hypervisor's synic will not be used and so the port conflicts will
-        // not matter.
-        //
-        // If the relay is present, guest-specified channel IDs are used instead (which the host
-        // must support).
-        //
-        // N.B. The channel ID offset can break older Linux versions (that only support vmbus
-        //      protocol V1 and Win7) because they don't support channel IDs above 255.
-        let enable_channel_id_offset = !with_vmbus_relay && !(hardware_isolated && hide_isolation);
-
         // N.B. VmBus uses untrusted memory by default for relay channels, and uses additional
         //      trusted memory only for confidential channels offered by Underhill itself.
         let vmbus = VmbusServer::builder(&tp, synic.clone(), device_memory.clone())
             .private_gm(gm.private_vtl0_memory().cloned())
             .hvsock_notify(hvsock_notify)
             .server_relay(server_relay)
-            .enable_channel_id_offset(enable_channel_id_offset)
             .max_version(env_cfg.vmbus_max_version)
             .delay_max_version(firmware_type == FirmwareType::Uefi)
             .enable_mnf(enable_mnf)
