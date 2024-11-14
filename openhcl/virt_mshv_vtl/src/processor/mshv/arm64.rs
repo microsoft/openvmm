@@ -16,6 +16,7 @@ use super::super::UhRunVpError;
 use crate::processor::UhEmulationState;
 use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
+use crate::BackingShared;
 use crate::Error;
 use crate::HypervisorBacked;
 use aarch64defs::Cpsr64;
@@ -106,10 +107,16 @@ struct ProcessorStatsArm64 {
 
 impl BackingPrivate for HypervisorBackedArm64 {
     type HclBacking = MshvArm64;
+    type Shared = ();
 
-    fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error> {
+    fn shared(_shared: &BackingShared) -> &Self::Shared {
+        &()
+    }
+
+    fn new(params: BackingParams<'_, '_, Self>, _shared: &()) -> Result<Self, Error> {
         vp::Registers::at_reset(&params.partition.caps, params.vp_info);
-        let _ = (params.runner, &params.backing_shared);
+        // TODO: reset the registers in the CPU context.
+        let _ = params.runner;
         assert!(params.hv.is_none());
         Ok(Self {
             deliverability_notifications: Default::default(),
@@ -135,6 +142,8 @@ impl BackingPrivate for HypervisorBackedArm64 {
         dev: &impl CpuIo,
         _stop: &mut virt::StopVp<'_>,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
+        let () = this.shared;
+
         if this.backing.deliverability_notifications
             != this.backing.next_deliverability_notifications
         {

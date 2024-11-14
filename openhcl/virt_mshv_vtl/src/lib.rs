@@ -1290,11 +1290,17 @@ impl<'a> UhProtoPartition<'a> {
             IsolationType::Vbs | IsolationType::None => None,
         };
 
-        let guest_vsm_available = Self::check_guest_vsm_support(&hcl, &params, cvm_cpuid.as_ref());
+        let guest_vsm_available = Self::check_guest_vsm_support(
+            &hcl,
+            &params,
+            #[cfg(guest_arch = "x86_64")]
+            cvm_cpuid.as_ref(),
+        );
 
         Ok(UhProtoPartition {
             hcl,
             params,
+            #[cfg(guest_arch = "x86_64")]
             cvm_cpuid,
             guest_vsm_available,
         })
@@ -1313,6 +1319,7 @@ impl<'a> UhProtoPartition<'a> {
         let Self {
             mut hcl,
             params,
+            #[cfg(guest_arch = "x86_64")]
             cvm_cpuid,
             guest_vsm_available,
         } = self;
@@ -1670,11 +1677,8 @@ impl UhProtoPartition<'_> {
     fn check_guest_vsm_support(
         hcl: &Hcl,
         params: &UhPartitionNewParams<'_>,
-        cvm_cpuid: Option<&cvm_cpuid::CpuidResults>,
+        #[cfg(guest_arch = "x86_64")] cvm_cpuid: Option<&cvm_cpuid::CpuidResults>,
     ) -> bool {
-        #[cfg(guest_arch = "aarch64")]
-        let _ = cvm_state;
-
         match params.isolation {
             IsolationType::None | IsolationType::Vbs => {}
             #[cfg(guest_arch = "x86_64")]
