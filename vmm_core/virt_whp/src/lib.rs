@@ -925,7 +925,7 @@ impl WhpPartitionInner {
                         proto_config.user_mode_apic,
                         IsolationType::None,
                         false,
-                        None,
+                        [0; 4],
                         None,
                     ));
                 }

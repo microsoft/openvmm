@@ -17,6 +17,7 @@ use super::UhRunVpError;
 use crate::devmsr;
 use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
+use crate::BackingShared;
 use crate::Error;
 use crate::GuestVtl;
 use crate::UhCvmPartitionState;
@@ -42,7 +43,6 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
 use std::num::NonZeroU64;
-use std::sync::Arc;
 use virt::io::CpuIo;
 use virt::state::StateElement;
 use virt::vp;
@@ -91,7 +91,6 @@ pub struct SnpBacked {
     general_stats: VtlArray<GeneralStats, 2>,
     exit_stats: VtlArray<ExitStats, 2>,
     cvm: UhCvmVpState,
-    shared: Arc<SnpBackedShared>,
 }
 
 #[derive(Inspect, Default)]
@@ -152,8 +151,8 @@ impl HardwareIsolatedBacking for SnpBacked {
         &mut self.cvm
     }
 
-    fn cvm_partition_state(&self) -> &UhCvmPartitionState {
-        &self.shared.cvm
+    fn cvm_partition_state(shared: &Self::Shared) -> &UhCvmPartitionState {
+        &shared.cvm
     }
 
     fn switch_vtl_state(
@@ -243,12 +242,16 @@ impl SnpBackedShared {
 
 impl BackingPrivate for SnpBacked {
     type HclBacking = hcl::ioctl::snp::Snp;
+    type Shared = SnpBackedShared;
 
-    fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error> {
-        let crate::BackingShared::Snp(shared) = params.backing_shared else {
+    fn shared(shared: &BackingShared) -> &Self::Shared {
+        let BackingShared::Snp(shared) = shared else {
             unreachable!()
         };
+        shared
+    }
 
+    fn new(params: BackingParams<'_, '_, Self>, _shared: &SnpBackedShared) -> Result<Self, Error> {
         let pfns_handle = params
             .partition
             .shared_vis_pages_pool
@@ -271,7 +274,6 @@ impl BackingPrivate for SnpBacked {
             general_stats: VtlArray::from_fn(|_| Default::default()),
             exit_stats: VtlArray::from_fn(|_| Default::default()),
             cvm: UhCvmVpState::new(params.hv.unwrap()),
-            shared: shared.clone(),
         })
     }
 
@@ -879,7 +881,7 @@ impl UhProcessor<'_, SnpBacked> {
 
                 match x86defs::snp::GhcbUsage(message.ghcb_page.ghcb_usage) {
                     x86defs::snp::GhcbUsage::HYPERCALL => {
-                        let guest_memory = &self.partition.untrusted_dma_memory;
+                        let guest_memory = &self.shared.cvm.shared_memory;
                         // Read GHCB parameters from guest memory before
                         // dispatching.
                         let overlay_base = ghcb_overlay * HV_PAGE_SIZE;
@@ -1056,7 +1058,7 @@ impl UhProcessor<'_, SnpBacked> {
                     apic_id: self.inner.vp_info.apic_id,
                 };
 
-                let result = self.backing.shared.cvm.cpuid.guest_result(
+                let result = self.shared.cvm.cpuid.guest_result(
                     CpuidFunction(vmsa.rax() as u32),
                     vmsa.rcx() as u32,
                     &guest_state,
@@ -1193,9 +1195,9 @@ impl UhProcessor<'_, SnpBacked> {
                 let is_64bit = self.long_mode(entered_from_vtl);
                 let guest_memory = &self.partition.gm[entered_from_vtl];
                 let handler = UhHypercallHandler {
+                    trusted: !self.partition.hide_isolation,
                     vp: &mut *self,
                     bus: dev,
-                    trusted: true,
                     intercepted_vtl: entered_from_vtl,
                 };
 
@@ -2085,7 +2087,7 @@ impl UhProcessor<'_, SnpBacked> {
             x86defs::X64_MSR_GS_BASE => vmsa.gs().base,
             x86defs::X64_MSR_KERNEL_GS_BASE => vmsa.kernel_gs_base(),
             x86defs::X86X_MSR_TSC_AUX => {
-                if self.backing.shared.tsc_aux_virtualized {
+                if self.shared.tsc_aux_virtualized {
                     vmsa.tsc_aux() as u64
                 } else {
                     return Err(MsrError::InvalidAccess);
@@ -2162,7 +2164,7 @@ impl UhProcessor<'_, SnpBacked> {
             }
             x86defs::X64_MSR_KERNEL_GS_BASE => vmsa.set_kernel_gs_base(value),
             x86defs::X86X_MSR_TSC_AUX => {
-                if self.backing.shared.tsc_aux_virtualized {
+                if self.shared.tsc_aux_virtualized {
                     vmsa.set_tsc_aux(value as u32);
                 } else {
                     return Err(MsrError::InvalidAccess);
@@ -2385,7 +2387,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
                 rax.set_virtual_page_number(gpn);
                 ecx.set_additional_count(std::cmp::min(
                     count - 1,
-                    self.vp.backing.shared.invlpgb_count_max.into(),
+                    self.vp.shared.invlpgb_count_max.into(),
                 ));
 
                 let edx = SevInvlpgbEdx::new();

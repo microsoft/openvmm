@@ -100,6 +100,10 @@ pub struct Options {
     /// Enable support for guest vsm in CVMs. This is disabled by default.
     pub cvm_guest_vsm: bool,
 
+    /// (OPENHCL_HIDE_ISOLATION=1)
+    /// Hide the isolation mode from the guest.
+    pub hide_isolation: bool,
+
     /// (OPENHCL_HALT_ON_GUEST_HALT=1) When receiving a halt request from a
     /// lower VTL, halt underhill instead of forwarding the halt request to the
     /// host. This allows for debugging state without the partition state
@@ -172,6 +176,7 @@ impl Options {
         let enable_shared_visibility_pool =
             parse_legacy_env_bool("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL");
         let cvm_guest_vsm = parse_legacy_env_bool("OPENHCL_CVM_GUEST_VSM");
+        let hide_isolation = parse_env_bool("OPENHCL_HIDE_ISOLATION");
         let halt_on_guest_halt = parse_legacy_env_bool("OPENHCL_HALT_ON_GUEST_HALT");
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
@@ -226,6 +231,7 @@ impl Options {
             emulate_apic,
             enable_shared_visibility_pool,
             cvm_guest_vsm,
+            hide_isolation,
             halt_on_guest_halt,
             no_sidecar_hotplug,
         })
