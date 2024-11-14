@@ -92,25 +92,19 @@ pub trait EmulatorSupport {
 
     /// Returns the page-aligned base address of the enabled local APIC in xapic
     /// mode.
-    fn lapic_base_address(&self) -> Option<u64> {
-        None
-    }
+    fn lapic_base_address(&self) -> Option<u64>;
 
     /// Read from the current processor's local APIC memory mapped interface.
     ///
     /// This will only be called on an address in the page returned by
     /// `lapic_base_address`.
-    fn lapic_read(&mut self, _address: u64, _data: &mut [u8]) {
-        unimplemented!()
-    }
+    fn lapic_read(&mut self, address: u64, data: &mut [u8]);
 
     /// Write to the current processor's local APIC memory mapped interface.
     ///
     /// This will only be called on an address in the page returned by
     /// `lapic_base_address`.
-    fn lapic_write(&mut self, _address: u64, _data: &[u8]) {
-        unimplemented!()
-    }
+    fn lapic_write(&mut self, address: u64, data: &[u8]);
 }
 
 pub trait TranslateGvaSupport {

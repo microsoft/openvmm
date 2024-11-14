@@ -69,6 +69,8 @@ pub struct LocalApic {
     #[inspect(hex)]
     apic_base: u64,
     #[inspect(hex)]
+    base_address: Option<u64>,
+    #[inspect(hex)]
     id: u32,
     #[inspect(hex)]
     version: u32,
@@ -372,6 +374,7 @@ impl LocalApicSet {
             shared,
             global: self.global.clone(),
             apic_base: 0,
+            base_address: None,
             id: vp.apic_id,
             version: APIC_VERSION,
             ldr: 0,
@@ -1360,11 +1363,7 @@ impl LocalApic {
 
     /// Gets the APIC base address, if the APIC is enabled and in xapic mode.
     pub fn base_address(&self) -> Option<u64> {
-        if self.xapic_enabled() {
-            Some((ApicBase::from(self.apic_base).base_page() as u64) << 12)
-        } else {
-            None
-        }
+        self.base_address
     }
 
     /// Sets the APIC base MSR.
@@ -1710,6 +1709,7 @@ impl LocalApic {
             shared: _,
             global: _,
             apic_base: _,
+            base_address: _,
             id: _,
             version: _,
             ldr,
@@ -1766,7 +1766,13 @@ impl LocalApic {
         self.update_slot();
     }
 
-    fn update_slot(&self) {
+    fn update_slot(&mut self) {
+        // Cache the base address, since `base_address()` is called in the
+        // instruction emulator hot path.
+        self.base_address = self
+            .xapic_enabled()
+            .then(|| (ApicBase::from(self.apic_base).base_page() as u64) << 12);
+
         let mut mutable = self.global.mutable.write();
         let mutable = &mut *mutable;
         let slot = &mut mutable.by_apic_id[self.id as usize];
