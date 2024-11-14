@@ -11,7 +11,10 @@
 			"version": "latest",
 			"profile": "default",
 			"targets": "aarch64-apple-darwin,aarch64-unknown-linux-musl,x86_64-pc-windows-msvc,x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,x86_64-unknown-none"
-		}
+		},
+
+		// Add the SSHD feature so that users can SSH into the container.
+		"ghcr.io/devcontainers/features/sshd:1": {}
 	},
 
 	// Allow kvm by setting privileged to true.
@@ -19,7 +22,7 @@
 
 	// Restore packages so that users can build as soon as the container is
 	// ready.
-	"postCreateCommand": "cargo xflowey restore-packages"
+	"updateContentCommand": "cargo xflowey restore-packages"
 
 	// TODO: mounts for local flowey-out/artifacts?
 }
