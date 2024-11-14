@@ -111,6 +111,7 @@ pub struct LocalApic {
     active_auto_eoi: bool,
     is_offloaded: bool,
     needs_offload_reeval: bool,
+    scan_irr: bool,
 
     stats: Stats,
 }
@@ -397,6 +398,7 @@ impl LocalApicSet {
             active_auto_eoi: false,
             needs_offload_reeval: false,
             is_offloaded: false,
+            scan_irr: false,
             stats: Stats::default(),
         };
         apic.reset();
@@ -1029,7 +1031,7 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
             }
             ApicRegister::SELF_IPI if self.apic.x2apic_enabled() => {
                 self.apic.stats.self_ipi.increment();
-                self.apic.shared.request_interrupt(
+                self.apic.scan_irr |= self.apic.shared.request_interrupt(
                     self.apic.software_enabled(),
                     DeliveryMode::FIXED,
                     value as u8,
@@ -1108,7 +1110,7 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
             }
             DestinationShorthand::SELF => {
                 self.apic.stats.self_ipi.increment();
-                self.apic.shared.request_interrupt(
+                self.apic.scan_irr |= self.apic.shared.request_interrupt(
                     self.apic.software_enabled(),
                     delivery_mode,
                     icr.vector(),
@@ -1143,6 +1145,7 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
 
 impl SharedState {
     /// Returns true if the VP should be woken up to scan the APIC.
+    #[must_use]
     fn request_interrupt(
         &self,
         software_enabled: bool,
@@ -1457,7 +1460,7 @@ impl LocalApic {
         }
 
         let mut r = self.flush();
-        if scan_irr {
+        if scan_irr || self.scan_irr {
             self.pull_irr();
         }
         if !self.is_offloaded {
@@ -1649,7 +1652,7 @@ impl LocalApic {
         let lvt = Lvt::from(self.lvt_timer);
         if counts >= self.timer_ccr as u64 {
             if !lvt.masked() {
-                self.shared.request_interrupt(
+                self.scan_irr |= self.shared.request_interrupt(
                     self.software_enabled(),
                     DeliveryMode::FIXED,
                     lvt.vector(),
@@ -1734,6 +1737,7 @@ impl LocalApic {
             timer_dcr,
             active_auto_eoi,
             needs_offload_reeval,
+            scan_irr: pull_irr,
             is_offloaded: _,
             stats: _,
         } = self;
@@ -1750,6 +1754,7 @@ impl LocalApic {
         // disabled state.
         *irr = [0; 8];
         *needs_offload_reeval = false;
+        *pull_irr = false;
         *tmr = [0; 8];
         *auto_eoi = [0; 8];
         *active_auto_eoi = false;
@@ -1974,6 +1979,7 @@ impl LocalApic {
             }
         }
         self.recompute_next_irr();
+        self.scan_irr = false;
     }
 
     fn id_register(&self) -> u32 {
