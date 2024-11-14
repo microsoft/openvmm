@@ -1448,13 +1448,16 @@ async fn new_underhill_vm(
     .await
     .context("failed to initialize memory")?;
 
-    // Devices in isolated VMs default to accessing only shared memory, since
-    // that is what the guest expects--it will double buffer memory to be DMAed
-    // through a shared memory pool.
+    // Devices in hardware isolated VMs default to accessing only shared memory,
+    // since that is what the guest expects--it will double buffer memory to be
+    // DMAed through a shared memory pool.
     //
     // For non-isolated VMs, there is no shared/private distinction, so devices
-    // access the same memory as the guest.
-    let device_memory = if hide_isolation || !isolation.is_isolated() {
+    // access the same memory as the guest. For software-isolated VMs, the
+    // hypervisor does not allow the paravisor to observe changes to
+    // shared/private state, so we have no choice but to allow devices to access
+    // both.
+    let device_memory = if hide_isolation || !isolation.is_hardware_isolated() {
         gm.vtl0()
     } else {
         gm.shared_memory()
@@ -1515,6 +1518,7 @@ async fn new_underhill_vm(
         get_client.set_shared_memory_allocator(
             allocator,
             gm.shared_memory()
+                .or_else(|| env_cfg.enable_shared_visibility_pool.then(|| gm.vtl0()))
                 .context("missing shared memory for shared pool allocator")?
                 .clone(),
         );
