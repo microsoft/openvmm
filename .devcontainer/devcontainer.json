@@ -17,6 +17,15 @@
 		"ghcr.io/devcontainers/features/sshd:1": {}
 	},
 
+	// Add rust-analyzer by default.
+	"customizations": {
+        "vscode": {
+            "extensions": [
+                "rust-lang.rust-analyzer"
+            ]
+        }
+    },
+
 	// Allow kvm by setting privileged to true.
 	"privileged": true,
 
