@@ -6,6 +6,7 @@
 mod tlb_lock;
 
 use super::UhProcessor;
+use super::UhRunVpError;
 use crate::processor::HardwareIsolatedBacking;
 use crate::processor::UhHypercallHandler;
 use crate::validate_vtl_gpa_flags;
@@ -603,7 +604,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     pub(crate) fn hcvm_handle_cross_vtl_interrupts(
         &mut self,
         is_interrupt_pending: impl Fn(&mut Self, GuestVtl, bool) -> bool,
-    ) -> bool {
+    ) -> Result<bool, UhRunVpError> {
         let mut reprocessing_required = false;
 
         if self.backing.cvm_state_mut().exit_vtl == GuestVtl::Vtl0 {
@@ -613,7 +614,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
                 self.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
                     .set_return_reason(HvVtlEntryReason::INTERRUPT)
-                    .unwrap();
+                    .map_err(UhRunVpError::HypercallAssistPage)?;
             }
         }
 
@@ -622,8 +623,13 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             if is_interrupt_pending(self, GuestVtl::Vtl0, true) {
                 let vp_index = self.vp_index();
                 let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
-                if hv.synic.vina().enabled() && !hv.vina_asserted().unwrap() {
-                    hv.set_vina_asserted(true).unwrap();
+                if hv.synic.vina().enabled()
+                    && !hv
+                        .vina_asserted()
+                        .map_err(UhRunVpError::HypercallAssistPage)?
+                {
+                    hv.set_vina_asserted(true)
+                        .map_err(UhRunVpError::HypercallAssistPage)?;
                     self.partition
                         .synic_interrupt(vp_index, GuestVtl::Vtl1)
                         .request_interrupt(
@@ -635,7 +641,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             }
         }
 
-        reprocessing_required
+        Ok(reprocessing_required)
     }
 }
 

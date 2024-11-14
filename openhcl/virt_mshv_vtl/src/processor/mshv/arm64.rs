@@ -212,9 +212,12 @@ impl BackingPrivate for HypervisorBackedArm64 {
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
     }
 
-    fn handle_cross_vtl_interrupts(_this: &mut UhProcessor<'_, Self>, _dev: &impl CpuIo) -> bool {
+    fn handle_cross_vtl_interrupts(
+        _this: &mut UhProcessor<'_, Self>,
+        _dev: &impl CpuIo,
+    ) -> Result<bool, UhRunVpError> {
         // TODO WHP ARM GUEST VSM
-        false
+        Ok(false)
     }
 
     fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}

@@ -234,7 +234,10 @@ mod private {
 
         /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
         /// Returns whether interrupt reprocessing is required.
-        fn handle_cross_vtl_interrupts(this: &mut UhProcessor<'_, Self>, dev: &impl CpuIo) -> bool;
+        fn handle_cross_vtl_interrupts(
+            this: &mut UhProcessor<'_, Self>,
+            dev: &impl CpuIo,
+        ) -> Result<bool, UhRunVpError>;
 
         fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
 
@@ -400,10 +403,10 @@ pub enum UhRunVpError {
     InvalidVmcb,
     #[error("unknown exit {0:#x?}")]
     UnknownVmxExit(x86defs::vmx::VmxExit),
-    /// Failed to read hypercall parameters
+    #[error("failed to access hypercall assist page")]
+    HypercallAssistPage(#[source] guestmem::GuestMemoryError),
     #[error("failed to read hypercall parameters")]
     HypercallParameters(#[source] guestmem::GuestMemoryError),
-    /// Failed to write hypercall result
     #[error("failed to write hypercall result")]
     HypercallResult(#[source] guestmem::GuestMemoryError),
     #[error("failed to write hypercall control for retry")]
@@ -679,7 +682,9 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 }
                 first_scan_irr = false;
 
-                if T::handle_cross_vtl_interrupts(self, dev) {
+                if T::handle_cross_vtl_interrupts(self, dev)
+                    .map_err(VpHaltReason::InvalidVmState)?
+                {
                     continue;
                 }
 

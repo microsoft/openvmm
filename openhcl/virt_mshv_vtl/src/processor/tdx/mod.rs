@@ -783,7 +783,10 @@ impl BackingPrivate for TdxBacked {
         }
     }
 
-    fn handle_cross_vtl_interrupts(this: &mut UhProcessor<'_, Self>, _dev: &impl CpuIo) -> bool {
+    fn handle_cross_vtl_interrupts(
+        this: &mut UhProcessor<'_, Self>,
+        _dev: &impl CpuIo,
+    ) -> Result<bool, UhRunVpError> {
         // TODO TDX GUEST VSM
         this.hcvm_handle_cross_vtl_interrupts(|_this, _vtl, _check_rflags| false)
     }

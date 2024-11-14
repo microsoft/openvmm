@@ -355,9 +355,12 @@ impl BackingPrivate for HypervisorBackedX86 {
         false
     }
 
-    fn handle_cross_vtl_interrupts(_this: &mut UhProcessor<'_, Self>, _dev: &impl CpuIo) -> bool {
+    fn handle_cross_vtl_interrupts(
+        _this: &mut UhProcessor<'_, Self>,
+        _dev: &impl CpuIo,
+    ) -> Result<bool, UhRunVpError> {
         // TODO WHP GUEST VSM
-        false
+        Ok(false)
     }
 
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
