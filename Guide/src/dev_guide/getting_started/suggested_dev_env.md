@@ -5,6 +5,7 @@
 - One of:
   - [Getting started on Windows](./windows.md)
   - [Getting started on Linux / WSL2](./linux.md).
+  - [Getting started via Dev Container](./devcontainer.md)
 - One of:
   - [Building OpenVMM](./build_openvmm.md)
   - [Building OpenHCL](./build_openhcl.md)
