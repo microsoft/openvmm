@@ -30,10 +30,9 @@ impl ResolveResource<VmbusDeviceHandleKind, ShutdownIcHandle> for IcResolver {
         resource: ShutdownIcHandle,
         input: ResolveVmbusDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        Ok(SimpleDeviceWrapper::new(
-            input.driver_source.simple(),
-            ShutdownIc::new(input.driver_source.simple(), resource.recv),
+        Ok(
+            SimpleDeviceWrapper::new(input.driver_source.simple(), ShutdownIc::new(resource.recv))
+                .into(),
         )
-        .into())
     }
 }

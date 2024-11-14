@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // Copyright (C) Microsoft Corporation. All rights reserved.
 
 //! Implements shutdown relay device for underhill.
@@ -28,8 +31,18 @@ enum ShutdownRelayDeviceVmbusState {
 /// The current state of the guest/VTL0 vmbus device.
 enum ShutdownConnectionState {
     Unregistered,
-    Disconnected(mesh::OneshotReceiver<()>),
-    Connected(mesh::OneshotReceiver<()>),
+    Disconnected(
+        mesh::OneshotReceiver<(
+            mesh::MpscSender<Rpc<ShutdownParams, ShutdownResult>>,
+            mesh::OneshotReceiver<()>,
+        )>,
+    ),
+    Connected(
+        (
+            mesh::MpscSender<Rpc<ShutdownParams, ShutdownResult>>,
+            mesh::OneshotReceiver<()>,
+        ),
+    ),
 }
 
 /// Tracks state of the shutdown relay connecting the host visible shutdown
@@ -119,14 +132,23 @@ impl ShutdownRelayDevice {
                 if matches!(self.shutdown_connection_state, ShutdownConnectionState::Unregistered) {
                     self.shutdown_connection_state = ShutdownConnectionState::Disconnected(self.guest_notifier.call(ShutdownRpc::WaitReady, ()));
                 }
-                match &mut self.shutdown_connection_state {
+                let result = match &mut self.shutdown_connection_state {
                     ShutdownConnectionState::Disconnected(rpc) => {
-                        rpc.await.map(|_| true)
+                        rpc.await.map(ShutdownConnectionState::Connected)
                     }
-                    ShutdownConnectionState::Connected(rpc) => {
-                        rpc.await.map(|_| false)
+                    ShutdownConnectionState::Connected((_, rpc)) => {
+                        match rpc.await {
+                            Ok(()) | Err(mesh::RecvError::Closed) => Ok(ShutdownConnectionState::Disconnected(self.guest_notifier.call(ShutdownRpc::WaitReady, ()))),
+                            Err(err) => Err(err),
+                        }
                     }
                     ShutdownConnectionState::Unregistered => unreachable!(),
+                };
+                if result.is_ok() {
+                    self.shutdown_connection_state = result.unwrap();
+                    Ok(matches!(self.shutdown_connection_state, ShutdownConnectionState::Connected(_)))
+                } else {
+                    result.map(|_| false)
                 }
             }.fuse() => ShutdownRelayMessage::GuestConnectivityChange(message),
             message = self.host_notification.select_next_some() => ShutdownRelayMessage::ShutdownRequest(message)
@@ -136,29 +158,25 @@ impl ShutdownRelayDevice {
     /// Connect the host visible shutdown device.
     pub fn connect_to_host(&mut self) {
         self.host_client_control.connect();
-        self.shutdown_connection_state = ShutdownConnectionState::Connected(
-            self.guest_notifier.call(ShutdownRpc::WaitNotReady, ()),
-        );
     }
 
     /// Disconnect the host visible shutdown device.
     pub fn disconnect_from_host(&mut self) {
         self.host_client_control.disconnect();
-        self.shutdown_connection_state = ShutdownConnectionState::Disconnected(
-            self.guest_notifier.call(ShutdownRpc::WaitReady, ()),
-        );
     }
 
     /// Send a shutdown message to the guest-visible shutdown device and return
     /// the result.
     pub async fn send_shutdown_to_guest(&self, params: ShutdownParams) -> ShutdownResult {
+        let ShutdownConnectionState::Connected((notifier, _)) = &self.shutdown_connection_state
+        else {
+            tracing::info!("Shutdown message cannot be relayed when device is not connected");
+            return ShutdownResult::NotReady;
+        };
         tracing::info!(?params, "Relaying shutdown message");
-        let result = match self
-            .guest_notifier
-            .call(ShutdownRpc::Shutdown, params)
-            .await
-        {
+        let result = match notifier.call(|x| x, params).await {
             Ok(result) => result,
+            Err(mesh::RecvError::Closed) => ShutdownResult::NotReady,
             Err(err) => {
                 tracing::error!(
                     error = &err as &dyn std::error::Error,
