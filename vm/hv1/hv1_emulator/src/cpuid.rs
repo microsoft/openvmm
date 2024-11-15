@@ -49,15 +49,13 @@ pub fn hv_cpuid_leaves(
             .with_enable_extended_gva_ranges_flush_va_list(access_vsm);
 
         if hardware_isolated {
-            privileges = privileges.with_isolation(true)
+            privileges = privileges
+                .with_isolation(true)
+                // Some guests require enhanced idle for tick skipping support
+                .with_access_guest_idle_msr(true);
 
             // TODO SNP:
             //     .with_fast_hypercall_output(true);
-        }
-
-        if isolation == IsolationType::Tdx {
-            // Some guests require enhanced idle for tick skipping support
-            privileges = privileges.with_access_guest_idle_msr(true);
         }
 
         u64::from(privileges)
@@ -95,7 +93,7 @@ pub fn hv_cpuid_leaves(
             // TODO SNP
             //    .with_fast_hypercall_output_available(true);
 
-            if isolation == IsolationType::Tdx {
+            if hardware_isolated {
                 // Some guests require enhanced idle for tick skipping support
                 features = features.with_guest_idle_available(true);
             }
