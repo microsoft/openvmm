@@ -222,6 +222,8 @@ pub fn ado_yaml(
 
         // and now use those vars to do some flowey bootstrap
         writeln!(flowey_bootstrap_bash, "{}", {
+            let flowey_bin = platform.binary("flowey");
+
             let runtime_debug_level = if runtime_debug_log { "debug" } else { "info" };
 
             let var_db_insert_runtime_debug_level =
@@ -236,6 +238,14 @@ pub fn ado_yaml(
             // https://github.com/microsoft/azure-pipelines-tasks/issues/10653#issuecomment-585669089
             format!(
                 r###"
+AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
+AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+echo "##vso[task.setvariable variable=AgentTempDirNormal;]$AgentTempDirNormal"
+
+chmod +x $AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}
+FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}"
+echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
+
 echo '"{runtime_debug_level}"' | {var_db_insert_runtime_debug_level}
 echo "$(FLOWEY_TEMP_DIR)/work" | {var_db_insert_working_dir}
 "###
