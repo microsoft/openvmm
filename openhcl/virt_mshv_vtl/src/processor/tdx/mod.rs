@@ -1786,12 +1786,7 @@ impl UhProcessor<'_, TdxBacked> {
             msr @ (hvdef::HV_X64_MSR_GUEST_OS_ID | hvdef::HV_X64_MSR_VP_INDEX) => {
                 self.backing.cvm.hv[intercepted_vtl].msr_read(msr)
             }
-            _ => self
-                .backing
-                .untrusted_synic
-                .as_mut()
-                .unwrap()
-                .read_nontimer_msr(msr),
+            _ => self.backing.untrusted_synic.as_mut().unwrap().read_msr(msr),
         }
     }
 
@@ -1809,11 +1804,11 @@ impl UhProcessor<'_, TdxBacked> {
                 // If we get here we must have an untrusted synic, as otherwise
                 // we wouldn't be handling the TDVMCALL that ends up here. Therefore
                 // this is fine to unwrap.
-                self.backing
-                    .untrusted_synic
-                    .as_mut()
-                    .unwrap()
-                    .write_nontimer_msr(&self.partition.gm[GuestVtl::Vtl0], msr, value)?;
+                self.backing.untrusted_synic.as_mut().unwrap().write_msr(
+                    &self.partition.gm[GuestVtl::Vtl0],
+                    msr,
+                    value,
+                )?;
                 // Propagate sint MSR writes to the hypervisor as well
                 // so that the hypervisor can directly inject events.
                 if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {

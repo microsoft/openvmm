@@ -447,13 +447,23 @@ impl ProcessorSynic {
     }
 
     /// Reads a non-synthetic-timer x64 MSR.
-    pub fn write_nontimer_msr(
+    pub fn write_msr(
         &mut self,
         guest_memory: &GuestMemory,
         msr: u32,
         v: u64,
     ) -> Result<(), MsrError> {
         match msr {
+            msr @ hvdef::HV_X64_MSR_STIMER0_CONFIG..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
+                let offset = msr - hvdef::HV_X64_MSR_STIMER0_CONFIG;
+                let timer = (offset >> 1) as _;
+                let is_count = offset & 1 != 0;
+                if is_count {
+                    self.set_stimer_count(timer, v);
+                } else {
+                    self.set_stimer_config(timer, v);
+                }
+            }
             hvdef::HV_X64_MSR_SCONTROL => self.set_scontrol(v),
             hvdef::HV_X64_MSR_SVERSION => return Err(MsrError::InvalidAccess),
             hvdef::HV_X64_MSR_SIEFP => self.set_siefp(guest_memory, v),
@@ -468,8 +478,18 @@ impl ProcessorSynic {
     }
 
     /// Reads a non-synthetic-timer x64 MSR.
-    pub fn read_nontimer_msr(&self, msr: u32) -> Result<u64, MsrError> {
+    pub fn read_msr(&self, msr: u32) -> Result<u64, MsrError> {
         let value = match msr {
+            msr @ hvdef::HV_X64_MSR_STIMER0_CONFIG..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
+                let offset = msr - hvdef::HV_X64_MSR_STIMER0_CONFIG;
+                let timer = (offset >> 1) as _;
+                let is_count = offset & 1 != 0;
+                if is_count {
+                    self.stimer_count(timer)
+                } else {
+                    self.stimer_config(timer)
+                }
+            }
             hvdef::HV_X64_MSR_SCONTROL => self.scontrol(),
             hvdef::HV_X64_MSR_SVERSION => self.sversion(),
             hvdef::HV_X64_MSR_SIEFP => self.siefp(),
