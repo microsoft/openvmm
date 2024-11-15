@@ -307,6 +307,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "block_crypto"
+version = "0.0.0"
+dependencies = [
+ "openssl",
+ "thiserror 2.0.0",
+ "windows",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "blocking"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1142,6 +1152,30 @@ dependencies = [
  "uevent",
  "vm_resource",
  "zerocopy",
+]
+
+[[package]]
+name = "disk_crypt"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "block_crypto",
+ "disk_backend",
+ "disk_crypt_resources",
+ "guestmem",
+ "inspect",
+ "scsi_buffers",
+ "stackfuture",
+ "thiserror 2.0.0",
+ "vm_resource",
+]
+
+[[package]]
+name = "disk_crypt_resources"
+version = "0.0.0"
+dependencies = [
+ "mesh",
+ "vm_resource",
 ]
 
 [[package]]
@@ -4369,6 +4403,7 @@ dependencies = [
  "diag_client",
  "dirs",
  "disk_backend_resources",
+ "disk_crypt_resources",
  "disk_vhd1",
  "firmware_uefi_custom_vars",
  "floppy_resources",
@@ -4486,6 +4521,7 @@ dependencies = [
  "chipset",
  "debug_worker",
  "disk_blob",
+ "disk_crypt",
  "disk_file",
  "disk_prwrap",
  "disk_ramdisk",

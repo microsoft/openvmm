@@ -591,7 +591,15 @@ pub enum DiskCliKind {
     // file:<path>
     File(PathBuf),
     // blob:<type>:<url>
-    Blob { kind: BlobKind, url: String },
+    Blob {
+        kind: BlobKind,
+        url: String,
+    },
+    // crypt:<key_file>:<kind>
+    Crypt {
+        key_file: PathBuf,
+        inner: Box<DiskCliKind>,
+    },
 }
 
 #[derive(Copy, Clone)]
@@ -622,6 +630,13 @@ impl FromStr for DiskCliKind {
                     DiskCliKind::Blob {
                         kind: blob_kind,
                         url: url.to_string(),
+                    }
+                }
+                "crypt" => {
+                    let (key, kind) = arg.split_once(':').context("expected key_file:kind")?;
+                    DiskCliKind::Crypt {
+                        key_file: PathBuf::from(key),
+                        inner: Box::new(kind.parse()?),
                     }
                 }
                 kind => {
