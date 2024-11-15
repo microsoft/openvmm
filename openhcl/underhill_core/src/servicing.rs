@@ -10,6 +10,7 @@ use crate::worker::FirmwareType;
 mod state {
     use mesh::payload::Protobuf;
     use state_unit::SavedStateUnit;
+    use user_driver::memory::save_restore::MemPoolSavedState;
     use vmcore::save_restore::SaveRestore;
     use vmcore::save_restore::SavedStateRoot;
 
@@ -76,6 +77,9 @@ mod state {
         /// NVMe saved state.
         #[mesh(8)]
         pub nvme_state: Option<NvmeSavedState>,
+        /// Fixed DMA pool allocator saved state.
+        #[mesh(9)]
+        pub mem_pool_state: Option<MemPoolSavedState>,
     }
 
     #[derive(Protobuf)]
@@ -123,6 +127,7 @@ impl From<Firmware> for FirmwareType {
 #[allow(clippy::option_option)]
 pub mod transposed {
     use super::*;
+    use user_driver::memory::save_restore::MemPoolSavedState;
     use vmcore::save_restore::SaveRestore;
 
     /// A transposed `Option<ServicingInitState>`, where each field of
@@ -132,13 +137,14 @@ pub mod transposed {
         pub firmware_type: Option<Firmware>,
         pub vm_stop_reference_time: Option<u64>,
         pub emuplat: OptionEmuplatSavedState,
-        pub nvme_state: Option<Option<NvmeSavedState>>,
         pub flush_logs_result: Option<Option<FlushLogsResult>>,
         pub vmgs: Option<(
             vmgs::save_restore::state::SavedVmgsState,
             disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
         )>,
         pub overlay_shutdown_device: Option<bool>,
+        pub nvme_state: Option<Option<NvmeSavedState>>,
+        pub mem_pool_state: Option<Option<MemPoolSavedState>>,
     }
 
     /// A transposed `Option<EmuplatSavedState>`, where each field of
@@ -163,10 +169,11 @@ pub mod transposed {
                             get_backed_adjust_gpa_range,
                             netvsp_state,
                         },
-                    nvme_state,
                     flush_logs_result,
                     vmgs,
                     overlay_shutdown_device,
+                    nvme_state,
+                    mem_pool_state,
                 } = state;
 
                 OptionServicingInitState {
@@ -177,10 +184,11 @@ pub mod transposed {
                         get_backed_adjust_gpa_range: Some(get_backed_adjust_gpa_range),
                         netvsp_state: Some(netvsp_state),
                     },
-                    nvme_state: Some(nvme_state),
                     flush_logs_result: Some(flush_logs_result),
                     vmgs: Some(vmgs),
                     overlay_shutdown_device: Some(overlay_shutdown_device),
+                    nvme_state: Some(nvme_state),
+                    mem_pool_state: Some(mem_pool_state),
                 }
             } else {
                 OptionServicingInitState::default()

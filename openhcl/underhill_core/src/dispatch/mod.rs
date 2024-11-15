@@ -20,6 +20,7 @@ use crate::worker::NetworkSettingsError;
 use crate::ControlRequest;
 use anyhow::Context;
 use async_trait::async_trait;
+use fixed_pool_alloc::FixedPool;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::future::Join;
@@ -178,6 +179,7 @@ pub(crate) struct LoadedVm {
     pub _periodic_telemetry_task: Task<()>,
 
     pub shared_vis_pool: Option<PagePool>,
+    pub fixed_mem_pool: Option<FixedPool>,
 }
 
 pub struct LoadedVmState<T> {
@@ -652,6 +654,12 @@ impl LoadedVm {
             }
         };
 
+        let mem_pool_state = self
+            .fixed_mem_pool
+            .as_ref()
+            .map(|f| f.save().ok())
+            .and_then(|s| s);
+
         let units = self.save_units().await.context("state unit save failed")?;
         let vmgs = self
             .vmgs_thin_client
@@ -665,10 +673,11 @@ impl LoadedVm {
                 vm_stop_reference_time: self.last_state_unit_stop.unwrap().as_100ns(),
                 correlation_id: None,
                 emuplat,
-                nvme_state,
                 flush_logs_result: None,
                 vmgs: (vmgs, self.vmgs_disk_metadata.clone()),
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
+                nvme_state,
+                mem_pool_state,
             },
             units,
         })

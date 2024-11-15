@@ -63,7 +63,7 @@ pub struct NvmeDriver<T: DeviceBacking> {
     rescan_event: Arc<event_listener::Event>,
     /// NVMe namespaces associated with this driver.
     #[inspect(skip)]
-    namespace: Vec<Arc<Namespace>>,
+    namespaces: Vec<Arc<Namespace>>,
     /// Keeps the controller connected (CSTS.RDY==1) while servicing.
     nvme_keepalive: bool,
 }
@@ -246,7 +246,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             driver,
             io_issuers,
             rescan_event: Default::default(),
-            namespace: vec![],
+            namespaces: vec![],
             nvme_keepalive: false,
         })
     }
@@ -464,11 +464,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
-        // Check if namespace was already added after restore.
-        if let Some(ns) = self.namespace.iter().find(|n| n.nsid() == nsid) {
-            return Ok(ns.clone());
-        }
-
+        // Even if namespace might have been previously restored,
+        // query Identify again to prevent possible mismatch.
+        // TODO: Check if we will process Namespace Change AEN instead.
         let ns_new = Arc::new(
             Namespace::new(
                 &self.driver,
@@ -478,12 +476,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 &self.io_issuers,
                 &self.device_id,
                 nsid,
-                None,
             )
             .await?,
         );
 
-        self.namespace.push(ns_new.clone());
+        self.namespaces.push(ns_new.clone());
         Ok(ns_new)
     }
 
@@ -515,8 +512,12 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     .write_to(s.identify_ctrl.as_mut());
 
                 s.device_id = self.device_id.clone();
-                for ns in &self.namespace {
-                    s.namespace.push(ns.save()?);
+                for ns in &self.namespaces {
+                    // TODO: The decision is to re-query namespace data after restore.
+                    // Leave the code in place so it can be restored in future.
+                    // The reason is uncertainty about namespace change during servicing.
+                    let _ns_data = ns.save()?;
+                    // s.namespaces.push(_ns_data);
                 }
                 Ok(s)
             }
@@ -571,7 +572,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             driver: driver.clone(),
             io_issuers,
             rescan_event: Default::default(),
-            namespace: vec![],
+            namespaces: vec![],
             nvme_keepalive: true,
         };
 
@@ -656,8 +657,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         worker.io = ioq;
 
         // Restore namespace(s).
-        for ns in &saved_state.namespace {
-            this.namespace.push(Arc::new(Namespace::restore(
+        for ns in &saved_state.namespaces {
+            // TODO: Current approach is to re-query namespace data after servicing
+            // and this array will be empty. Once we confirm that we can process
+            // namespace change notification AEN, the restore code will be re-added.
+            this.namespaces.push(Arc::new(Namespace::restore(
                 &driver,
                 admin.issuer().clone(),
                 this.rescan_event.clone(),
@@ -949,7 +953,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             io,
             identify_ctrl: [0; 4096],  // Will be updated by the caller.
             device_id: "".to_string(), // Will be updated by the caller.
-            namespace: vec![],         // Will be updated by the caller.
+            namespaces: vec![],        // Will be updated by the caller.
             qsize: worker_state.qsize,
             max_io_queues: worker_state.max_io_queues,
         };
@@ -985,7 +989,7 @@ pub mod save_restore {
         pub device_id: String,
         /// Namespace data.
         #[mesh(5)]
-        pub namespace: Vec<crate::namespace::SavedNamespaceData>,
+        pub namespaces: Vec<crate::namespace::SavedNamespaceData>,
         /// Queue size as determined by CAP.MQES.
         #[mesh(6)]
         pub qsize: u16,

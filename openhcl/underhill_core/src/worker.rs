@@ -1807,7 +1807,10 @@ async fn new_underhill_vm(
     // Contents of fixed pool will be preserved during servicing.
     let fixed_mem_pool = if !runtime_params.dma_preserve_memory_map().is_empty() {
         let pools = runtime_params.dma_preserve_memory_map();
-        Some(FixedPool::new(pools)?)
+        match servicing_state.mem_pool_state {
+            Some(dma) => Some(FixedPool::restore(pools, dma.unwrap())?),
+            None => Some(FixedPool::new(pools)?),
+        }
     } else {
         None
     };
@@ -1849,6 +1852,21 @@ async fn new_underhill_vm(
     } else {
         None
     };
+
+    // NVMe manager is the only client for fixed DMA pool as of now,
+    // run integrity check after restore. Find a better place if more
+    // clients added in future.
+    if fixed_mem_pool.is_some() && nvme_manager.is_some() {
+        match fixed_mem_pool.as_ref().unwrap().validate() {
+            Ok(_) => {
+                tracing::trace!("fixed mem pool integrity OK");
+            }
+            Err(_) => {
+                // Can be converted to panic after comprehensive testing.
+                tracing::trace!("fixed mem pool integrity ERROR");
+            }
+        }
+    }
 
     let initial_generation_id = match dps.general.generation_id.map(u128::from_ne_bytes) {
         Some(0) | None => {
@@ -2964,6 +2982,7 @@ async fn new_underhill_vm(
 
         _periodic_telemetry_task: periodic_telemetry_task,
         shared_vis_pool: shared_vis_pages_pool,
+        fixed_mem_pool,
     };
 
     Ok(loaded_vm)
