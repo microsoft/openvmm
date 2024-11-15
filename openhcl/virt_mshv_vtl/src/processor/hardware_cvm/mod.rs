@@ -477,6 +477,38 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 .map_err(Self::reg_access_error_to_hv_err)?
                 .msr_cr_pat
                 .into()),
+            synic_reg @ (HvX64RegisterName::Sint0
+            | HvX64RegisterName::Sint1
+            | HvX64RegisterName::Sint2
+            | HvX64RegisterName::Sint3
+            | HvX64RegisterName::Sint4
+            | HvX64RegisterName::Sint5
+            | HvX64RegisterName::Sint6
+            | HvX64RegisterName::Sint7
+            | HvX64RegisterName::Sint8
+            | HvX64RegisterName::Sint9
+            | HvX64RegisterName::Sint10
+            | HvX64RegisterName::Sint11
+            | HvX64RegisterName::Sint12
+            | HvX64RegisterName::Sint13
+            | HvX64RegisterName::Sint14
+            | HvX64RegisterName::Sint15
+            | HvX64RegisterName::Scontrol
+            | HvX64RegisterName::Sversion
+            | HvX64RegisterName::Sifp
+            | HvX64RegisterName::Sipp
+            | HvX64RegisterName::Eom
+            | HvX64RegisterName::Stimer0Config
+            | HvX64RegisterName::Stimer0Count
+            | HvX64RegisterName::Stimer1Config
+            | HvX64RegisterName::Stimer1Count
+            | HvX64RegisterName::Stimer2Config
+            | HvX64RegisterName::Stimer2Count
+            | HvX64RegisterName::Stimer3Config
+            | HvX64RegisterName::Stimer3Count) => self.vp.backing.cvm_state_mut().hv[vtl]
+                .synic
+                .read_reg(synic_reg.into())
+                .map_err(|_| HvError::OperationFailed),
             _ => {
                 tracing::error!(
                     ?name,
@@ -617,6 +649,38 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     .map_err(Self::reg_access_error_to_hv_err)?;
                 Ok(())
             }
+            synic_reg @ (HvX64RegisterName::Sint0
+            | HvX64RegisterName::Sint1
+            | HvX64RegisterName::Sint2
+            | HvX64RegisterName::Sint3
+            | HvX64RegisterName::Sint4
+            | HvX64RegisterName::Sint5
+            | HvX64RegisterName::Sint6
+            | HvX64RegisterName::Sint7
+            | HvX64RegisterName::Sint8
+            | HvX64RegisterName::Sint9
+            | HvX64RegisterName::Sint10
+            | HvX64RegisterName::Sint11
+            | HvX64RegisterName::Sint12
+            | HvX64RegisterName::Sint13
+            | HvX64RegisterName::Sint14
+            | HvX64RegisterName::Sint15
+            | HvX64RegisterName::Scontrol
+            | HvX64RegisterName::Sversion
+            | HvX64RegisterName::Sifp
+            | HvX64RegisterName::Sipp
+            | HvX64RegisterName::Eom
+            | HvX64RegisterName::Stimer0Config
+            | HvX64RegisterName::Stimer0Count
+            | HvX64RegisterName::Stimer1Config
+            | HvX64RegisterName::Stimer1Count
+            | HvX64RegisterName::Stimer2Config
+            | HvX64RegisterName::Stimer2Count
+            | HvX64RegisterName::Stimer3Config
+            | HvX64RegisterName::Stimer3Count) => self.vp.backing.cvm_state_mut().hv[vtl]
+                .synic
+                .write_reg(&self.vp.partition.gm[vtl], synic_reg.into(), reg.value)
+                .map_err(|_| HvError::OperationFailed),
             _ => {
                 tracing::error!(
                     ?reg,

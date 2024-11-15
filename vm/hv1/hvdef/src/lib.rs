@@ -1883,7 +1883,17 @@ macro_rules! registers {
                 Sifp = 0x000A0012,
                 Sipp = 0x000A0013,
                 Eom = 0x000A0014,
-                Sirbp = 0x000A0015,
+
+                Stimer0Config = 0x000B0000,
+                Stimer0Count = 0x000B0001,
+                Stimer1Config = 0x000B0002,
+                Stimer1Count = 0x000B0003,
+                Stimer2Config = 0x000B0004,
+                Stimer2Count = 0x000B0005,
+                Stimer3Config = 0x000B0006,
+                Stimer3Count = 0x000B0007,
+                StimeUnhaltedTimerConfig = 0x000B0100,
+                StimeUnhaltedTimerCount = 0x000B0101,
 
                 VsmCodePageOffsets = 0x000D0002,
                 VsmVpStatus = 0x000D0003,
