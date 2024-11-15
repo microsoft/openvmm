@@ -309,7 +309,7 @@ EOF
             )?;
         }
 
-        let mut flowey_executable_bash= String::new();
+        let mut flowey_executable_bash = String::new();
         writeln!(flowey_executable_bash, "{}", {
             let flowey_bin = platform.binary("flowey");
             format!(
