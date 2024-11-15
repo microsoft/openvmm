@@ -313,8 +313,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             HvX64RegisterName::VpAssistPage => Ok(self.vp.backing.cvm_state_mut().hv[vtl]
                 .vp_assist_page()
                 .into()),
-            // TODO GUEST VSM: add the synic registers (definitely missing VINA
-            // and ApicBase)
+            // TODO GUEST VSM: add VINA and ApicBase registers
             virt_msr @ (HvX64RegisterName::Star
             | HvX64RegisterName::Lstar
             | HvX64RegisterName::Cstar
@@ -531,6 +530,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         // - validate the values being set, e.g. that addresses are canonical,
         //   that efer and pat make sense, etc. Similar validation is needed in
         //   the write_msr path.
+        // TODO GUEST VSM: add VINA and ApicBase registers
 
         match HvX64RegisterName::from(reg.name) {
             HvX64RegisterName::VsmPartitionConfig => self.vp.set_vsm_partition_config(
