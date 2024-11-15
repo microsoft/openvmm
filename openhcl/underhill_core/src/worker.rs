@@ -1452,6 +1452,9 @@ async fn new_underhill_vm(
     // since that is what the guest expects--it will double buffer memory to be
     // DMAed through a shared memory pool.
     //
+    // When hiding isolation, allow devices to access all memory, since that's
+    // the only option: the guest won't and can't transition anything to shared.
+    //
     // For non-isolated VMs, there is no shared/private distinction, so devices
     // access the same memory as the guest. For software-isolated VMs, the
     // hypervisor does not allow the paravisor to observe changes to
