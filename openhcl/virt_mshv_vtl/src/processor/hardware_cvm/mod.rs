@@ -6,6 +6,7 @@
 mod tlb_lock;
 
 use super::UhProcessor;
+use super::UhRunVpError;
 use crate::processor::HardwareIsolatedBacking;
 use crate::processor::UhHypercallHandler;
 use crate::validate_vtl_gpa_flags;
@@ -13,6 +14,7 @@ use crate::GuestVsmState;
 use crate::GuestVsmVtl1State;
 use crate::GuestVtl;
 use crate::WakeReason;
+use hv1_emulator::RequestInterrupt;
 use hvdef::hypercall::HvFlushFlags;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
@@ -790,16 +792,9 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
         B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl1);
         self.vp.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
 
-        // TODO GUEST VSM: reevaluate if the return reason should be set here or
-        // during VTL 2 exit handling
         self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
             .set_return_reason(HvVtlEntryReason::VTL_CALL)
             .expect("setting return reason cannot fail");
-
-        // TODO GUEST_VSM: Force reevaluation of the VTL 1 APIC in case delivery of
-        // low-priority interrupts was suppressed while in VTL 0.
-
-        // TODO GUEST_VSM: Track which VTLs are runnable and mark VTL as runnable
     }
 }
 
@@ -816,12 +811,16 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
 
         self.vp.unlock_tlb_lock(Vtl::Vtl1);
 
+        let hv = &mut self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
+        if hv.synic.vina().auto_reset() {
+            hv.set_vina_asserted(false).unwrap();
+        }
+
         B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
         self.vp.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl0;
 
         // TODO CVM GUEST_VSM:
         // - rewind interrupts
-        // - reset VINA
 
         if !fast {
             let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
@@ -980,6 +979,52 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         guest_vsm.deny_lower_vtl_startup = value.deny_lower_vtl_startup();
 
         Ok(())
+    }
+
+    /// Handle checking for cross-VTL interrupts, preempting VTL 0, and setting
+    /// VINA when appropriate. The `is_interrupt_pending` function should return
+    /// true if an interrupt of appropriate priority, or an NMI, is pending for
+    /// the given VTL. The boolean specifies whether RFLAGS.IF should be checked.
+    /// Returns true if interrupt reprocessing is required.
+    pub(crate) fn hcvm_handle_cross_vtl_interrupts(
+        &mut self,
+        is_interrupt_pending: impl Fn(&mut Self, GuestVtl, bool) -> bool,
+    ) -> Result<bool, UhRunVpError> {
+        let mut reprocessing_required = false;
+
+        if self.backing.cvm_state_mut().exit_vtl == GuestVtl::Vtl0 {
+            // Check for VTL preemption - which ignores RFLAGS.IF
+            if is_interrupt_pending(self, GuestVtl::Vtl1, false) {
+                B::switch_vtl_state(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
+                self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
+                self.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
+                    .set_return_reason(HvVtlEntryReason::INTERRUPT)
+                    .map_err(UhRunVpError::VpAssistPage)?;
+            }
+        }
+
+        if self.backing.cvm_state_mut().exit_vtl == GuestVtl::Vtl1 {
+            // Check for VINA
+            if is_interrupt_pending(self, GuestVtl::Vtl0, true) {
+                let vp_index = self.vp_index();
+                let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
+                if hv.synic.vina().enabled()
+                    && !hv.vina_asserted().map_err(UhRunVpError::VpAssistPage)?
+                {
+                    hv.set_vina_asserted(true)
+                        .map_err(UhRunVpError::VpAssistPage)?;
+                    self.partition
+                        .synic_interrupt(vp_index, GuestVtl::Vtl1)
+                        .request_interrupt(
+                            hv.synic.vina().vector().into(),
+                            hv.synic.vina().auto_eoi(),
+                        );
+                    reprocessing_required = true;
+                }
+            }
+        }
+
+        Ok(reprocessing_required)
     }
 }
 

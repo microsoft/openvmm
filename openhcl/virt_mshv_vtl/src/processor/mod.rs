@@ -225,20 +225,19 @@ mod private {
         /// This is used for hypervisor-managed and untrusted SINTs.
         fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
-        /// Copies shared registers (per VSM TLFS spec) from the source VTL to
-        /// the target VTL that will become active.
-        fn switch_vtl_state(
-            this: &mut UhProcessor<'_, Self>,
-            source_vtl: GuestVtl,
-            target_vtl: GuestVtl,
-        );
-
         /// Returns whether this VP should be put to sleep in usermode, or
         /// whether it's ready to proceed into the kernel.
         fn halt_in_usermode(this: &mut UhProcessor<'_, Self>, target_vtl: GuestVtl) -> bool {
             let _ = (this, target_vtl);
             false
         }
+
+        /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
+        /// Returns whether interrupt reprocessing is required.
+        fn handle_cross_vtl_interrupts(
+            this: &mut UhProcessor<'_, Self>,
+            dev: &impl CpuIo,
+        ) -> Result<bool, UhRunVpError>;
 
         fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
 
@@ -266,6 +265,13 @@ pub trait HardwareIsolatedBacking: Backing {
     fn cvm_state_mut(&mut self) -> &mut crate::UhCvmVpState;
     /// Gets CVM specific partition state.
     fn cvm_partition_state(&self) -> &crate::UhCvmPartitionState;
+    /// Copies shared registers (per VSM TLFS spec) from the source VTL to
+    /// the target VTL that will become active.
+    fn switch_vtl_state(
+        this: &mut UhProcessor<'_, Self>,
+        source_vtl: GuestVtl,
+        target_vtl: GuestVtl,
+    );
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
@@ -397,10 +403,10 @@ pub enum UhRunVpError {
     InvalidVmcb,
     #[error("unknown exit {0:#x?}")]
     UnknownVmxExit(x86defs::vmx::VmxExit),
-    /// Failed to read hypercall parameters
+    #[error("failed to access VP assist page")]
+    VpAssistPage(#[source] guestmem::GuestMemoryError),
     #[error("failed to read hypercall parameters")]
     HypercallParameters(#[source] guestmem::GuestMemoryError),
-    /// Failed to write hypercall result
     #[error("failed to write hypercall result")]
     HypercallResult(#[source] guestmem::GuestMemoryError),
     #[error("failed to write hypercall control for retry")]
@@ -675,6 +681,12 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                         .map_err(VpHaltReason::Hypervisor)?;
                 }
                 first_scan_irr = false;
+
+                if T::handle_cross_vtl_interrupts(self, dev)
+                    .map_err(VpHaltReason::InvalidVmState)?
+                {
+                    continue;
+                }
 
                 // Arm the timer.
                 if let Some(timeout) = self.vmtime.get_timeout() {

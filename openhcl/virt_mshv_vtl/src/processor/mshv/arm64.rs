@@ -212,14 +212,12 @@ impl BackingPrivate for HypervisorBackedArm64 {
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
     }
 
-    /// Copies shared registers (per VSM TLFS spec) from the last VTL to
-    /// the target VTL that will become active.
-    fn switch_vtl_state(
+    fn handle_cross_vtl_interrupts(
         _this: &mut UhProcessor<'_, Self>,
-        _source_vtl: GuestVtl,
-        _target_vtl: GuestVtl,
-    ) {
-        unreachable!("vtl switching should be managed by the hypervisor");
+        _dev: &impl CpuIo,
+    ) -> Result<bool, UhRunVpError> {
+        // TODO WHP ARM GUEST VSM
+        Ok(false)
     }
 
     fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}

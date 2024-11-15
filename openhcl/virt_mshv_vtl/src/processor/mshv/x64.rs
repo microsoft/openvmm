@@ -355,6 +355,14 @@ impl BackingPrivate for HypervisorBackedX86 {
         false
     }
 
+    fn handle_cross_vtl_interrupts(
+        _this: &mut UhProcessor<'_, Self>,
+        _dev: &impl CpuIo,
+    ) -> Result<bool, UhRunVpError> {
+        // TODO WHP GUEST VSM
+        Ok(false)
+    }
+
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
         this.backing
             .next_deliverability_notifications
@@ -365,14 +373,6 @@ impl BackingPrivate for HypervisorBackedX86 {
         this.backing
             .next_deliverability_notifications
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
-    }
-
-    fn switch_vtl_state(
-        _this: &mut UhProcessor<'_, Self>,
-        _source_vtl: GuestVtl,
-        _target_vtl: GuestVtl,
-    ) {
-        unreachable!("vtl switching should be managed by the hypervisor");
     }
 
     fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
