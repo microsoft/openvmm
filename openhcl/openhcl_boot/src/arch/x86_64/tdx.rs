@@ -4,8 +4,10 @@
 //! TDX support.
 
 use core::arch::asm;
+use hvdef::HV_X64_MSR_TSC_FREQUENCY;
 use memory_range::MemoryRange;
 use tdcall::tdcall_map_gpa;
+use tdcall::tdcall_rdmsr;
 use tdcall::AcceptPagesError;
 use tdcall::Tdcall;
 use tdcall::TdcallInput;
@@ -93,4 +95,32 @@ impl minimal_rt::arch::IoAccess for TdxIoAccess {
     unsafe fn outb(&self, port: u16, data: u8) {
         let _ = tdcall::tdcall_io_out(&mut TdcallInstruction, port, data as u32, 1);
     }
+}
+
+/// Reads MSR using TDCALL
+pub fn read_msr_tdcall(msr_index: u32) -> u64 {
+    let mut msr_value: u64 = 0;
+    tdcall_rdmsr(&mut TdcallInstruction, msr_index, &mut msr_value).unwrap();
+    msr_value
+}
+
+/// Global variable to store tsc frequency.
+static mut TSC_FREQUENCY: u64 = 0;
+
+/// Gets the timer ref time in 100ns, and 0 if it fails to get it
+pub fn get_tdx_tsc_reftime() -> u64 {
+    // SAFETY: no concurrent accessors. Only BSP running shim_main calls it first.
+    unsafe {
+        if TSC_FREQUENCY == 0 {
+            TSC_FREQUENCY = read_msr_tdcall(HV_X64_MSR_TSC_FREQUENCY);
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if TSC_FREQUENCY != 0 {
+            let tsc = safe_intrinsics::rdtsc();
+            let count_100ns = (tsc as u128 * 10000000) / TSC_FREQUENCY as u128;
+            return count_100ns as u64;
+        }
+    }
+    0
 }

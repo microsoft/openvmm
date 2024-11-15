@@ -19,6 +19,9 @@ mod rt;
 mod sidecar;
 mod single_threaded;
 
+#[cfg(target_arch = "x86_64")]
+use crate::arch::tdx::get_tdx_tsc_reftime;
+
 use crate::arch::setup_vtl2_memory;
 use crate::arch::setup_vtl2_vp;
 use crate::arch::verify_imported_regions_hash;
@@ -508,6 +511,18 @@ const fn zeroed<T: FromZeroes>() -> T {
     unsafe { core::mem::MaybeUninit::<T>::zeroed().assume_init() }
 }
 
+/// Get the tsc ref time for hw isolated vms in 100ns
+#[allow(unused_variables)]
+fn get_hw_tsc_time(isolation: IsolationType) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if isolation == IsolationType::Tdx {
+            return get_tdx_tsc_reftime();
+        }
+    }
+    0
+}
+
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
 
@@ -543,7 +558,12 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         p.isolation_type == IsolationType::None || static_options.confidential_debug;
 
     let boot_reftime = if p.isolation_type.is_hardware_isolated() {
-        None
+        let result = get_hw_tsc_time(p.isolation_type);
+        if result != 0 {
+            Some(result)
+        } else {
+            None
+        }
     } else {
         Some(minimal_rt::reftime::reference_time())
     };
@@ -666,9 +686,16 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     // Compute the ending boot time. This has to be before writing to device
     // tree, so this is as late as we can do it.
+
+    let boot_endtime = if p.isolation_type.is_hardware_isolated() {
+        get_hw_tsc_time(p.isolation_type)
+    } else {
+        minimal_rt::reftime::reference_time()
+    };
+
     let boot_times = boot_reftime.map(|start| BootTimes {
         start,
-        end: minimal_rt::reftime::reference_time(),
+        end: boot_endtime,
     });
 
     // Validate that no imported regions that are pending are not part of vtl2

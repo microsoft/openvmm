@@ -78,6 +78,51 @@ pub trait Tdcall {
     fn tdcall(&mut self, input: TdcallInput) -> TdcallOutput;
 }
 
+/// Perform a tdcall based MSR read. This is done by issuing a TDG.VP.VMCALL.
+pub fn tdcall_rdmsr(
+    call: &mut impl Tdcall,
+    msr_index: u32,
+    msr_value: &mut u64,
+) -> Result<(), TdVmCallR10Result> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::VP_VMCALL,
+        rcx: 0x1c00, // pass R10-R12
+        rdx: 0,
+        r8: 0,
+        r9: 0,
+        r10: 0, // must be 0 for ghci call
+        r11: TdVmCallSubFunction::RdMsr as u64,
+        r12: msr_index as u64,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    // This assertion failing means something has gone horribly wrong with the
+    // TDX module, as this call should always succeed with hypercall errors
+    // returned in r10.
+    assert_eq!(
+        output.rax.code(),
+        TdCallResultCode::SUCCESS,
+        "unexpected nonzero rax {:x} returned by tdcall vmcall",
+        u64::from(output.rax)
+    );
+
+    let result = TdVmCallR10Result(output.r10);
+
+    *msr_value = output.r11;
+
+    #[cfg(feature = "tracing")]
+    tracing::trace!(msr_index, msr_value, output.r10, "tdcall_rdmsr");
+
+    match result {
+        TdVmCallR10Result::SUCCESS => Ok(()),
+        val => Err(val),
+    }
+}
+
 /// Perform a tdcall based MSR write. This is done by issuing a TDG.VP.VMCALL.
 pub fn tdcall_wrmsr(
     call: &mut impl Tdcall,
