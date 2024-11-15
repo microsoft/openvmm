@@ -449,8 +449,8 @@ impl ProcessorSynic {
         Ok(())
     }
 
-    fn reg_to_msr(reg: HvRegisterName) -> u32 {
-        match HvAllArchRegisterName(reg.0) {
+    fn reg_to_msr(reg: HvRegisterName) -> Result<u32, MsrError> {
+        Ok(match HvAllArchRegisterName(reg.0) {
             HvAllArchRegisterName::Sint0
             | HvAllArchRegisterName::Sint1
             | HvAllArchRegisterName::Sint2
@@ -482,8 +482,11 @@ impl ProcessorSynic {
             HvAllArchRegisterName::Stimer2Count => hvdef::HV_X64_MSR_STIMER2_COUNT,
             HvAllArchRegisterName::Stimer3Config => hvdef::HV_X64_MSR_STIMER3_CONFIG,
             HvAllArchRegisterName::Stimer3Count => hvdef::HV_X64_MSR_STIMER3_COUNT,
-            _ => unreachable!(),
-        }
+            _ => {
+                tracelimit::error_ratelimited!(?reg, "unknown synic register");
+                return Err(MsrError::Unknown);
+            }
+        })
     }
 
     /// Writes a synthetic interrupt controller register.
@@ -493,7 +496,7 @@ impl ProcessorSynic {
         reg: HvRegisterName,
         v: HvRegisterValue,
     ) -> Result<(), MsrError> {
-        self.write_msr(guest_memory, Self::reg_to_msr(reg), v.as_u64())
+        self.write_msr(guest_memory, Self::reg_to_msr(reg)?, v.as_u64())
     }
 
     /// Writes an x64 MSR.
@@ -529,7 +532,7 @@ impl ProcessorSynic {
 
     /// Reads a synthetic interrupt controller register.
     pub fn read_reg(&self, reg: HvRegisterName) -> Result<HvRegisterValue, MsrError> {
-        self.read_msr(Self::reg_to_msr(reg))
+        self.read_msr(Self::reg_to_msr(reg)?)
             .map(HvRegisterValue::from)
     }
 
