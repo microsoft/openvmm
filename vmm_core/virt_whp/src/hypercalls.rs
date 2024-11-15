@@ -715,6 +715,7 @@ mod x86 {
     use virt::io::CpuIo;
     use virt::x86::translate::translate_gva_to_gpa;
     use virt::x86::translate::TranslateFlags;
+    use virt::x86::translate::TranslateResult;
     use virt::VpIndex;
     use vmcore::vpci_msi::VpciInterruptParameters;
     use whp::abi::WHV_REGISTER_VALUE;
@@ -1291,10 +1292,12 @@ mod x86 {
             );
 
             let result = match result {
-                Ok(gpa) => hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
-                    gpa_page: gpa / HV_PAGE_SIZE,
-                    ..FromZeroes::new_zeroed()
-                },
+                Ok(TranslateResult { gpa, cache_info: _ }) => {
+                    hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
+                        gpa_page: gpa / HV_PAGE_SIZE,
+                        ..FromZeroes::new_zeroed()
+                    }
+                }
                 Err(err) => hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
                     translation_result: hvdef::hypercall::TranslateGvaResultExX64 {
                         result: hvdef::hypercall::TranslateGvaResult::new()

@@ -121,20 +121,23 @@ pub struct TranslateResult {
     /// The translated GPA.
     pub gpa: u64,
 
-    /// Information from the walk that can be used to determine cache type
+    /// Information from the walk that can be used to determine memory type
     pub cache_info: TranslateCachingInfo,
 }
 
-/// Information from a translation walk that can be used to determine cache
+/// Information from a translation walk that can be used to determine memory
 /// type.
 pub enum TranslateCachingInfo {
-    /// The translation was non-paged.
-    NonPaged,
-    /// Walk state from a paged translation.
-    Paged {
+    /// Paging wasn't enabled for the translation.
+    NoPaging,
+    /// State from a page table walk
+    Paging {
+        /// Page-level cache disable bit in PTE
         cache_disable: bool,
+        /// Page-level write-through bit in PTE
         write_through: bool,
-        pat: bool,
+        /// PAT bit in PTE
+        pat_supported: bool,
     },
 }
 
@@ -188,7 +191,7 @@ pub fn translate_gva_to_gpa(
     if registers.cr0 & X64_CR0_PG == 0 {
         return Ok(TranslateResult {
             gpa: gva,
-            cache_info: TranslateCachingInfo::NonPaged,
+            cache_info: TranslateCachingInfo::NoPaging,
         });
     }
 
@@ -247,7 +250,7 @@ pub fn translate_gva_to_gpa(
     let mut remaining_bits: u32 = address_bits;
     let cache_disable: bool;
     let write_through: bool;
-    let pat: bool;
+    let pat_supported: bool;
     loop {
         // Compute the PTE address.
         let pte_address = if large_pte {
@@ -390,8 +393,7 @@ pub fn translate_gva_to_gpa(
         if done {
             cache_disable = pte.cache_disable();
             write_through = pte.write_through();
-            pat = if remaining_bits == 12 {
-                // TODO: is this the correct check
+            pat_supported = if remaining_bits == 12 {
                 pte.pat()
             } else {
                 let large_pde = LargePde::from(u64::from(pte));
@@ -407,10 +409,10 @@ pub fn translate_gva_to_gpa(
     let address_mask = !0 << remaining_bits;
     Ok(TranslateResult {
         gpa: (gpa_base & address_mask) | (gva & !address_mask),
-        cache_info: TranslateCachingInfo::Paged {
+        cache_info: TranslateCachingInfo::Paging {
             cache_disable,
             write_through,
-            pat,
+            pat_supported,
         },
     })
 }

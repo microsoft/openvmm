@@ -925,24 +925,20 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
             return Err(HvError::AccessDenied);
         }
 
-        let target_vtl = control_flags
-            .input_vtl()
-            .target_vtl()?
-            .unwrap_or(self.intercepted_vtl.into())
-            .try_into()
-            .map_err(|_| HvError::InvalidParameter)?; // TODO: fix return code
+        let target_vtl = self
+            .target_vtl_no_higher(
+                control_flags
+                    .input_vtl()
+                    .target_vtl()?
+                    .unwrap_or(self.intercepted_vtl.into()),
+            )
+            .map_err(|_| HvError::AccessDenied)?;
 
-        if self.intercepted_vtl <= target_vtl {
+        if self.intercepted_vtl == target_vtl {
             return Err(HvError::AccessDenied);
         }
 
         let gva = gva_page * hvdef::HV_PAGE_SIZE;
-
-        // TODO: vtl access check?
-
-        if control_flags.tlb_flush_inhibit() {
-            self.vp.set_tlb_lock(Vtl::Vtl2, target_vtl);
-        }
 
         let registers = self.vp.backing.translation_registers(self.vp, target_vtl);
 
@@ -953,8 +949,13 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
             .map_err(Self::reg_access_error_to_hv_err)?
             .msr_cr_pat;
 
+        if control_flags.tlb_flush_inhibit() {
+            self.vp
+                .set_tlb_lock(self.intercepted_vtl.into(), target_vtl);
+        }
+
         match virt::x86::translate::translate_gva_to_gpa(
-            &self.vp.partition.gm[target_vtl], // TODO GUEST VSM: This is doesn't have VTL access checks.
+            &self.vp.partition.gm[target_vtl], // TODO GUEST VSM: This doesn't have VTL access checks.
             gva,
             &registers,
             virt::x86::translate::TranslateFlags::from_hv_flags(control_flags),
@@ -970,40 +971,34 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
                 )
                 .gpn();
 
-                // TODO: check this
                 let cache_type = match cache_info {
-                    TranslateCachingInfo::NonPaged => HvCacheType::HvCacheTypeWriteBack,
-                    TranslateCachingInfo::Paged {
+                    TranslateCachingInfo::NoPaging => HvCacheType::HvCacheTypeWriteBack.0 as u8,
+                    TranslateCachingInfo::Paging {
                         cache_disable,
                         write_through,
-                        pat: pte_pat,
+                        pat_supported,
                     } => {
                         let pat_index = ((cache_disable as u64) << 1)
                             | (write_through as u64)
-                            | (pte_pat as u64) << 2;
-                        match (pat >> (pat_index * 8)) & 0xff {
-                            0 | 7 => HvCacheType::HvCacheTypeUncached,
-                            1 => HvCacheType::HvCacheTypeWriteCombining,
-                            4 => HvCacheType::HvCacheTypeWriteThrough,
-                            5 => HvCacheType::HvCacheTypeWriteProtected,
-                            _ => HvCacheType::HvCacheTypeWriteBack,
-                        }
+                            | ((pat_supported as u64) << 2);
+                        ((pat >> (pat_index * 8)) & 0xff) as u8
                     }
                 };
 
+                let gpn = gpa / hvdef::HV_PAGE_SIZE;
                 Ok(hvdef::hypercall::TranslateVirtualAddressOutput {
                     translation_result: hvdef::hypercall::TranslateGvaResult::new()
                         .with_result_code(TranslateGvaResultCode::SUCCESS.0)
-                        .with_overlay_page(gpa == overlay_page)
-                        .with_cache_type(cache_type.0 as u8),
-                    gpa_page: gpa / hvdef::HV_PAGE_SIZE,
+                        .with_overlay_page(gpn == overlay_page)
+                        .with_cache_type(cache_type),
+                    gpa_page: gpn,
                 })
             }
             Err(err) => Ok(hvdef::hypercall::TranslateVirtualAddressOutput {
                 translation_result: hvdef::hypercall::TranslateGvaResult::new()
-                    .with_result_code(TranslateGvaResultCode::from(err).0), // TODO fill out the rest
+                    .with_result_code(TranslateGvaResultCode::from(err).0),
                 gpa_page: 0,
-            }), // TODO: should this be ok or err?
+            }),
         }
     }
 }

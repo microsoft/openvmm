@@ -18,8 +18,9 @@ cfg_if::cfg_if! {
         use hvdef::HvX64RegisterName;
         use hvdef::HvX64SegmentRegister;
         use virt::state::StateElement;
-        use virt::x86::MsrError;
         use virt::vp::AccessVpState;
+        use virt::x86::MsrError;
+        use virt::x86::translate::TranslationRegisters;
     } else if #[cfg(guest_arch = "aarch64")] {
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
@@ -61,7 +62,6 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 use virt::io::CpuIo;
-use virt::x86::translate::TranslationRegisters;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
