@@ -150,6 +150,7 @@ impl VtlsTlbLocked {
 pub struct LapicState {
     lapic: LocalApic,
     halted: bool,
+    idle: bool,
     startup_suspend: bool,
     nmi_pending: bool,
 }
@@ -794,6 +795,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 let state = LapicState {
                     lapic,
                     halted: false,
+                    idle: false,
                     nmi_pending: false,
                     startup_suspend: first && !vp_info.base.is_bsp(),
                 };
