@@ -76,6 +76,12 @@ mod state {
         /// NVMe saved state.
         #[mesh(10000)]
         pub nvme_state: Option<NvmeSavedState>,
+        /// Shared pool information.
+        ///
+        /// BUGBUG: Think about if this should be an enum or substruct for all
+        /// pools (there will be more in the future).
+        #[mesh(8)]
+        pub shared_pool_state: Option<page_pool_alloc::save_restore::PagePoolState>,
     }
 
     #[derive(Protobuf)]
@@ -138,7 +144,11 @@ pub mod transposed {
             disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
         )>,
         pub overlay_shutdown_device: Option<bool>,
+<<<<<<< HEAD
         pub nvme_state: Option<Option<NvmeSavedState>>,
+=======
+        pub shared_pool_state: Option<Option<page_pool_alloc::save_restore::PagePoolState>>,
+>>>>>>> 9424b92 (save restore for pool)
     }
 
     /// A transposed `Option<EmuplatSavedState>`, where each field of
@@ -166,7 +176,11 @@ pub mod transposed {
                     flush_logs_result,
                     vmgs,
                     overlay_shutdown_device,
+<<<<<<< HEAD
                     nvme_state,
+=======
+                    shared_pool_state,
+>>>>>>> 9424b92 (save restore for pool)
                 } = state;
 
                 OptionServicingInitState {
@@ -180,7 +194,11 @@ pub mod transposed {
                     flush_logs_result: Some(flush_logs_result),
                     vmgs: Some(vmgs),
                     overlay_shutdown_device: Some(overlay_shutdown_device),
+<<<<<<< HEAD
                     nvme_state: Some(nvme_state),
+=======
+                    shared_pool_state: Some(shared_pool_state),
+>>>>>>> 9424b92 (save restore for pool)
                 }
             } else {
                 OptionServicingInitState::default()

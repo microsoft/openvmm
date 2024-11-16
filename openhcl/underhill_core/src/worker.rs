@@ -1493,17 +1493,24 @@ async fn new_underhill_vm(
             .expect("isolated VMs should have shared memory")
     };
 
-    let shared_vis_pages_pool = if shared_pool_size != 0 {
-        Some(
-            PagePool::new_shared_visibility_pool(
-                &shared_pool,
-                measured_vtl2_info
-                    .vtom_offset_bit
-                    .map(|bit| 1 << bit)
-                    .unwrap_or(0),
-            )
-            .context("failed to create shared vis page pool")?,
+    let mut shared_vis_pages_pool = if shared_pool_size != 0 {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut pool = PagePool::new_shared_visibility_pool(
+            &shared_pool,
+            measured_vtl2_info
+                .vtom_offset_bit
+                .map(|bit| 1 << bit)
+                .unwrap_or(0),
         )
+        .context("failed to create shared vis page pool")?;
+
+        if let Some(pool_state) = servicing_state.shared_pool_state.flatten() {
+            pool.restore(pool_state)
+                .context("failed to restore shared vis page pool")?;
+        }
+
+        Some(pool)
     } else {
         None
     };
@@ -2923,6 +2930,14 @@ async fn new_underhill_vm(
         },
     )
     .context("failed to create partition unit")?;
+
+    // Finalize the shared visibility pool. For now, allow leaking as pool users
+    // do not support restoring allocations.
+    shared_vis_pages_pool
+        .as_mut()
+        .map(|pool| pool.validate_restore(true))
+        .transpose()
+        .context("failed to validate restore for shared visibility pool")?;
 
     // Start the VP tasks on the thread pool.
     crate::vp::spawn_vps(tp, vps, vp_runners, &chipset, isolation)

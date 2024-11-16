@@ -23,6 +23,266 @@ use std::sync::Arc;
 use thiserror::Error;
 use vm_topology::memory::MemoryRangeWithNode;
 
+pub mod save_restore {
+    use super::DeviceId;
+    use super::PagePool;
+    use super::State;
+    use memory_range::MemoryRange;
+    use mesh::payload::Protobuf;
+    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::SavedStateRoot;
+
+    #[derive(Protobuf)]
+    #[mesh(package = "openhcl.pagepool")]
+    enum InnerState {
+        #[mesh(1)]
+        Free {
+            #[mesh(1)]
+            base_pfn: u64,
+            #[mesh(2)]
+            pfn_bias: u64,
+            #[mesh(3)]
+            size_pages: u64,
+        },
+        #[mesh(2)]
+        Allocated {
+            #[mesh(1)]
+            base_pfn: u64,
+            #[mesh(2)]
+            pfn_bias: u64,
+            #[mesh(3)]
+            size_pages: u64,
+            #[mesh(4)]
+            device_id: usize,
+            #[mesh(5)]
+            tag: String,
+        },
+        #[mesh(3)]
+        Leaked {
+            #[mesh(1)]
+            base_pfn: u64,
+            #[mesh(2)]
+            pfn_bias: u64,
+            #[mesh(3)]
+            size_pages: u64,
+            #[mesh(4)]
+            device_id: usize,
+            #[mesh(5)]
+            tag: String,
+        },
+    }
+
+    impl From<State> for InnerState {
+        fn from(state: State) -> Self {
+            match state {
+                State::Free {
+                    base_pfn,
+                    pfn_bias,
+                    size_pages,
+                } => InnerState::Free {
+                    base_pfn,
+                    pfn_bias,
+                    size_pages,
+                },
+                State::Allocated {
+                    base_pfn,
+                    pfn_bias,
+                    size_pages,
+                    device_id,
+                    tag,
+                } => InnerState::Allocated {
+                    base_pfn,
+                    pfn_bias,
+                    size_pages,
+                    device_id,
+                    tag,
+                },
+                State::AllocatedPendingRestore { .. } => {
+                    panic!("should not save AllocatedPendingRestore")
+                }
+                State::Leaked {
+                    base_pfn,
+                    pfn_bias,
+                    size_pages,
+                    device_id,
+                    tag,
+                } => InnerState::Leaked {
+                    base_pfn,
+                    pfn_bias,
+                    size_pages,
+                    device_id,
+                    tag,
+                },
+            }
+        }
+    }
+
+    impl From<InnerState> for State {
+        fn from(state: InnerState) -> Self {
+            match state {
+                InnerState::Free {
+                    base_pfn,
+                    pfn_bias,
+                    size_pages,
+                } => State::Free {
+                    base_pfn,
+                    pfn_bias,
+                    size_pages,
+                },
+                InnerState::Allocated {
+                    base_pfn,
+                    pfn_bias,
+                    size_pages,
+                    device_id,
+                    tag,
+                } => State::AllocatedPendingRestore {
+                    base_pfn,
+                    pfn_bias,
+                    size_pages,
+                    device_id,
+                    tag,
+                },
+                InnerState::Leaked {
+                    base_pfn,
+                    pfn_bias,
+                    size_pages,
+                    device_id,
+                    tag,
+                } => State::Leaked {
+                    base_pfn,
+                    pfn_bias,
+                    size_pages,
+                    device_id,
+                    tag,
+                },
+            }
+        }
+    }
+
+    // TODO: okay to make MemoryRangeWithNode in vm_topology also stable save/restore?
+    #[derive(Protobuf)]
+    #[mesh(package = "openhcl.pagepool")]
+    struct MemoryRangeWithNode {
+        #[mesh(1)]
+        range: MemoryRange,
+        #[mesh(2)]
+        vnode: u32,
+    }
+
+    #[derive(Protobuf)]
+    #[mesh(package = "openhcl.pagepool")]
+    enum DeviceIdState {
+        #[mesh(1)]
+        Used(String),
+        #[mesh(2)]
+        Unassigned(String),
+        #[mesh(3)]
+        Leaked(String),
+    }
+
+    impl From<DeviceId> for DeviceIdState {
+        fn from(state: DeviceId) -> Self {
+            match state {
+                DeviceId::PendingRestore(name) => {
+                    panic!("should not save PendingRestore, device name: {name}")
+                }
+                DeviceId::Leaked(name) => DeviceIdState::Leaked(name),
+                DeviceId::Unassigned(name) => DeviceIdState::Unassigned(name),
+                DeviceId::Used(name) => DeviceIdState::Used(name),
+            }
+        }
+    }
+
+    impl From<DeviceIdState> for DeviceId {
+        fn from(state: DeviceIdState) -> Self {
+            match state {
+                DeviceIdState::Used(name) => DeviceId::PendingRestore(name),
+                DeviceIdState::Unassigned(name) => DeviceId::Unassigned(name),
+                DeviceIdState::Leaked(name) => DeviceId::Leaked(name),
+            }
+        }
+    }
+
+    #[derive(Protobuf, SavedStateRoot)]
+    #[mesh(package = "openhcl.pagepool")]
+    pub struct PagePoolState {
+        #[mesh(1)]
+        state: Vec<InnerState>,
+        #[mesh(2)]
+        device_ids: Vec<DeviceIdState>,
+        #[mesh(3)]
+        ranges: Vec<MemoryRangeWithNode>,
+    }
+
+    impl SaveRestore for PagePool {
+        type SavedState = PagePoolState;
+
+        fn save(&mut self) -> Result<Self::SavedState, vmcore::save_restore::SaveError> {
+            let state = self.inner.lock();
+            Ok(PagePoolState {
+                state: state.state.iter().map(|s| s.clone().into()).collect(),
+                device_ids: state
+                    .device_ids
+                    .iter()
+                    .map(|id| id.clone().into())
+                    .collect(),
+                ranges: self
+                    .ranges
+                    .iter()
+                    .map(|range| MemoryRangeWithNode {
+                        range: range.range,
+                        vnode: range.vnode,
+                    })
+                    .collect(),
+            })
+        }
+
+        fn restore(
+            &mut self,
+            state: Self::SavedState,
+        ) -> Result<(), vmcore::save_restore::RestoreError> {
+            // Verify that the pool describes the same regions of memory as the
+            // saved state.
+            for (current, saved) in self.ranges.iter().zip(state.ranges.iter()) {
+                if current.range != saved.range || current.vnode != saved.vnode {
+                    // TODO: return unmatched range or vecs?
+                    return Err(vmcore::save_restore::RestoreError::InvalidSavedState(
+                        anyhow::anyhow!("pool ranges do not match"),
+                    ));
+                }
+            }
+
+            let mut inner = self.inner.lock();
+
+            // Verify that there are no existing allocations present - we cannot
+            // easily restore if so.
+            if inner.state.iter().any(|state| match state {
+                State::Free { .. } => false,
+                State::Allocated { .. } => true,
+                State::AllocatedPendingRestore { .. } => true,
+                State::Leaked { .. } => true,
+            }) {
+                return Err(vmcore::save_restore::RestoreError::InvalidSavedState(
+                    anyhow::anyhow!("existing allocations present"),
+                ));
+            }
+
+            // Verify there are no existing allocators present, as we rely on
+            // the pool being completely free.
+            if !inner.device_ids.is_empty() {
+                return Err(vmcore::save_restore::RestoreError::InvalidSavedState(
+                    anyhow::anyhow!("existing allocators present"),
+                ));
+            }
+
+            inner.state = state.state.into_iter().map(|s| s.into()).collect();
+            inner.device_ids = state.device_ids.into_iter().map(|id| id.into()).collect();
+
+            Ok(())
+        }
+    }
+}
+
 /// Error returned when unable to allocate memory.
 #[derive(Debug, Error)]
 #[error("unable to allocate page pool size {size} with tag {tag}")]
@@ -39,6 +299,25 @@ enum State {
         size_pages: u64,
     },
     Allocated {
+        base_pfn: u64,
+        pfn_bias: u64,
+        size_pages: u64,
+        /// This is an index into the outer [`PagePoolInner`]'s device_ids
+        /// vector.
+        device_id: usize,
+        tag: String,
+    },
+    AllocatedPendingRestore {
+        base_pfn: u64,
+        pfn_bias: u64,
+        size_pages: u64,
+        /// This is an index into the outer [`PagePoolInner`]'s device_ids
+        /// vector.
+        device_id: usize,
+        tag: String,
+    },
+    /// This allocation was leaked, and is no longer able to be allocated from.
+    Leaked {
         base_pfn: u64,
         pfn_bias: u64,
         size_pages: u64,
@@ -66,6 +345,12 @@ enum DeviceId {
     /// A device id that was dropped and can be reused if an allocator with the
     /// same name is created.
     Unassigned(#[inspect(rename = "name")] String),
+    /// A previously used device ID that was saved, that is waiting for the
+    /// corresponding device allocator to be constructed.
+    PendingRestore(#[inspect(rename = "id")] String),
+    /// A device ID that was in saved state, but was never restored. It is
+    /// not legal for this to be reused for a new allocator.
+    Leaked(#[inspect(rename = "id")] String),
 }
 
 impl DeviceId {
@@ -73,6 +358,8 @@ impl DeviceId {
         match self {
             DeviceId::Used(name) => name,
             DeviceId::Unassigned(name) => name,
+            DeviceId::PendingRestore(name) => name,
+            DeviceId::Leaked(name) => name,
         }
     }
 }
@@ -116,6 +403,36 @@ impl Inspect for PagePoolInner {
                         } => {
                             req.respond()
                                 .field("state", "allocated")
+                                .field("base_pfn", inspect::AsHex(base_pfn))
+                                .field("pfn_bias", inspect::AsHex(pfn_bias))
+                                .field("size_pages", inspect::AsHex(size_pages))
+                                .field("device_id", self.device_ids[*device_id].clone())
+                                .field("tag", tag);
+                        }
+                        State::AllocatedPendingRestore {
+                            base_pfn,
+                            pfn_bias,
+                            size_pages,
+                            device_id,
+                            tag,
+                        } => {
+                            req.respond()
+                                .field("state", "allocated_pending_restore")
+                                .field("base_pfn", inspect::AsHex(base_pfn))
+                                .field("pfn_bias", inspect::AsHex(pfn_bias))
+                                .field("size_pages", inspect::AsHex(size_pages))
+                                .field("device_id", self.device_ids[*device_id].clone())
+                                .field("tag", tag);
+                        }
+                        State::Leaked {
+                            base_pfn,
+                            pfn_bias,
+                            size_pages,
+                            device_id,
+                            tag,
+                        } => {
+                            req.respond()
+                                .field("state", "leaked")
                                 .field("base_pfn", inspect::AsHex(base_pfn))
                                 .field("pfn_bias", inspect::AsHex(pfn_bias))
                                 .field("size_pages", inspect::AsHex(size_pages))
@@ -205,6 +522,8 @@ impl Drop for PagePoolHandle {
 pub struct PagePool {
     #[inspect(flatten)]
     inner: Arc<Mutex<PagePoolInner>>,
+    #[inspect(iter_by_index)]
+    ranges: Vec<MemoryRangeWithNode>,
     typ: PoolType,
 }
 
@@ -248,6 +567,7 @@ impl PagePool {
                 state: pages,
                 device_ids: Vec::new(),
             })),
+            ranges: memory.to_vec(),
             typ,
         })
     }
@@ -269,7 +589,65 @@ impl PagePool {
         }
     }
 
-    // TODO: save method and restore
+    /// Validate that all allocations have been restored. This should be called
+    /// after all devices have been restored.
+    ///
+    /// `leak_unrestored` controls what to do if a matching allocation was not restored.
+    /// If true, the allocation is marked as leaked and the function returns Ok.
+    /// If false, the function returns an error if any are unmatched.
+    ///
+    /// Unmatched allocations are always logged via a `tracing::warn!` log.
+    pub fn validate_restore(&self, leak_unrestored: bool) -> anyhow::Result<()> {
+        let mut inner = self.inner.lock();
+        let mut unrestored_allocation = false;
+
+        // Mark unrestored allocations as leaked.
+        for state in inner.state.iter_mut() {
+            if let State::AllocatedPendingRestore {
+                base_pfn,
+                pfn_bias,
+                size_pages,
+                device_id,
+                tag,
+            } = state
+            {
+                tracing::warn!(
+                    base_pfn = *base_pfn,
+                    pfn_bias = *pfn_bias,
+                    size_pages = *size_pages,
+                    device_id = *device_id,
+                    tag = tag.as_str(),
+                    "unrestored allocation"
+                );
+
+                if leak_unrestored {
+                    *state = State::Leaked {
+                        base_pfn: *base_pfn,
+                        pfn_bias: *pfn_bias,
+                        size_pages: *size_pages,
+                        device_id: *device_id,
+                        tag: tag.clone(),
+                    };
+                }
+
+                unrestored_allocation = true;
+            }
+        }
+
+        // Mark unrestored device ids as leaked.
+        for device_id in inner.device_ids.iter_mut() {
+            if let DeviceId::PendingRestore(name) = device_id {
+                tracing::warn!(device_id = name.as_str(), "unrestored device id");
+                *device_id = DeviceId::Leaked(name.clone());
+            }
+        }
+
+        if unrestored_allocation && !leak_unrestored {
+            Err(anyhow::anyhow!("unrestored allocations found for pool"))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// A spawner for [`PagePoolAllocator`] instances.
@@ -331,12 +709,15 @@ impl PagePoolAllocator {
                     let entry = &mut inner.device_ids[index];
 
                     match entry {
-                        DeviceId::Unassigned(_) => {
+                        DeviceId::Unassigned(_) | DeviceId::PendingRestore(_) => {
                             *entry = DeviceId::Used(device_name);
                             device_id = index;
                         }
                         DeviceId::Used(_) => {
                             anyhow::bail!("device name {device_name} already in use");
+                        }
+                        DeviceId::Leaked(_) => {
+                            anyhow::bail!("device name {device_name} was leaked");
                         }
                     }
                 }
@@ -375,6 +756,8 @@ impl PagePoolAllocator {
                     size_pages: len,
                 } => *len >= size_pages,
                 State::Allocated { .. } => false,
+                State::AllocatedPendingRestore { .. } => false,
+                State::Leaked { .. } => false,
             })
             .ok_or(PagePoolOutOfMemory {
                 size: size_pages,
@@ -406,6 +789,8 @@ impl PagePoolAllocator {
                 (base, offset)
             }
             State::Allocated { .. } => unreachable!(),
+            State::AllocatedPendingRestore { .. } => unreachable!(),
+            State::Leaked { .. } => unreachable!(),
         };
 
         Ok(PagePoolHandle {
@@ -414,6 +799,48 @@ impl PagePoolAllocator {
             pfn_bias,
             size_pages,
         })
+    }
+
+    /// Restore allocations after a restore operation on the pool. This will
+    /// return any allocations that were previously allocated for this
+    /// allocator.
+    pub fn restore_allocations(&self) -> Vec<PagePoolHandle> {
+        let mut inner = self.inner.lock();
+        let mut handles = Vec::new();
+
+        for state in inner.state.iter_mut() {
+            if let State::AllocatedPendingRestore {
+                base_pfn,
+                pfn_bias,
+                size_pages,
+                device_id,
+                tag,
+            } = state
+            {
+                if *device_id != self.device_id {
+                    continue;
+                }
+
+                let handle = PagePoolHandle {
+                    inner: self.inner.clone(),
+                    base_pfn: *base_pfn,
+                    pfn_bias: *pfn_bias,
+                    size_pages: *size_pages,
+                };
+
+                *state = State::Allocated {
+                    base_pfn: *base_pfn,
+                    pfn_bias: *pfn_bias,
+                    size_pages: *size_pages,
+                    device_id: *device_id,
+                    tag: tag.clone(),
+                };
+
+                handles.push(handle);
+            }
+        }
+
+        handles
     }
 }
 
@@ -489,10 +916,14 @@ impl user_driver::vfio::VfioDmaBuffer for PagePoolAllocator {
     }
 }
 
+// TODO: provide function to convert alloc handle to vfio dma buffer memory
+// block for restoring drivers.
+
 #[cfg(test)]
 mod test {
     use super::*;
     use memory_range::MemoryRange;
+    use vmcore::save_restore::SaveRestore;
 
     #[test]
     fn test_basic_alloc() {
@@ -569,5 +1000,43 @@ mod test {
 
         let alloc = pool.allocator("test".into()).unwrap();
         let _a3 = alloc.alloc(5.try_into().unwrap(), "alloc3".into()).unwrap();
+    }
+
+    #[test]
+    fn test_save_restore() {
+        let mut pool = PagePool::new_shared_visibility_pool(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::from_4k_gpn_range(10..30),
+                vnode: 0,
+            }],
+            0,
+        )
+        .unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+
+        let _a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
+        let _a2 = alloc
+            .alloc(15.try_into().unwrap(), "alloc2".into())
+            .unwrap();
+
+        let state = pool.save().unwrap();
+
+        let mut pool = PagePool::new_shared_visibility_pool(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::from_4k_gpn_range(10..30),
+                vnode: 0,
+            }],
+            0,
+        )
+        .unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+
+        pool.restore(state).unwrap();
+        let allocs = alloc.restore_allocations();
+        assert_eq!(allocs.len(), 2);
+
+        // TODO: check individual allocs
+
+        pool.validate_restore(false).unwrap();
     }
 }
