@@ -19,7 +19,16 @@ use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 
 #[async_test]
-async fn test_nvme_driver(driver: DefaultDriver) {
+async fn test_nvme_driver_direct_dma(driver: DefaultDriver) {
+    test_nvme_driver(driver, true).await;
+}
+
+#[async_test]
+async fn test_nvme_driver_bounce_buffer(driver: DefaultDriver) {
+    test_nvme_driver(driver, false).await;
+}
+
+async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     let base_len = 64 << 20;
     let payload_len = 1 << 20;
     let mem = DeviceSharedMemory::new(base_len, payload_len);
@@ -27,6 +36,13 @@ async fn test_nvme_driver(driver: DefaultDriver) {
         .guest_memory()
         .subrange(base_len as u64, payload_len as u64, false)
         .unwrap();
+    let driver_dma_mem = if allow_dma {
+        mem.guest_memory_for_driver_dma()
+            .subrange(base_len as u64, payload_len as u64, false)
+            .unwrap()
+    } else {
+        payload_mem.clone()
+    };
 
     let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
 
@@ -61,7 +77,7 @@ async fn test_nvme_driver(driver: DefaultDriver) {
             1,
             2,
             false,
-            &payload_mem,
+            &driver_dma_mem,
             buf_range.buffer(&payload_mem).range(),
         )
         .await
@@ -72,7 +88,7 @@ async fn test_nvme_driver(driver: DefaultDriver) {
             1,
             0,
             32,
-            &payload_mem,
+            &driver_dma_mem,
             buf_range.buffer(&payload_mem).range(),
         )
         .await
@@ -110,7 +126,7 @@ async fn test_nvme_driver(driver: DefaultDriver) {
             63,
             0,
             32,
-            &payload_mem,
+            &driver_dma_mem,
             buf_range.buffer(&payload_mem).range(),
         )
         .await

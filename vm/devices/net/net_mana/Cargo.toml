@@ -18,10 +18,12 @@ vmcore.workspace = true
 
 inspect = { workspace = true, features = ["std"] }
 pal_async.workspace = true
+safeatomic.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
+thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true

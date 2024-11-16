@@ -627,6 +627,8 @@ struct UhVmNetworkSettings {
     get_client: GuestEmulationTransportClient,
     #[inspect(skip)]
     vp_count: usize,
+    #[inspect(skip)]
+    dma_mode: net_mana::GuestDmaMode,
 }
 
 impl UhVmNetworkSettings {
@@ -743,6 +745,7 @@ impl UhVmNetworkSettings {
             nic_max_sub_channels,
             servicing_netvsp_state,
             vfio_dma_buffer(shared_vis_pages_pool),
+            self.dma_mode,
         )
         .await?;
 
@@ -2653,6 +2656,11 @@ async fn new_underhill_vm(
         vf_managers: HashMap::new(),
         get_client: get_client.clone(),
         vp_count: vps.len(),
+        dma_mode: if hide_isolation {
+            net_mana::GuestDmaMode::BounceBuffer
+        } else {
+            net_mana::GuestDmaMode::DirectDma
+        },
     };
     let mut netvsp_state = Vec::with_capacity(controllers.mana.len());
     if !controllers.mana.is_empty() {
