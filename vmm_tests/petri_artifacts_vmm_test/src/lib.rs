@@ -27,6 +27,7 @@ pub mod artifacts {
     openvmm_native!(OPENVMM_LINUX_X64, "linux", "x86_64");
     openvmm_native!(OPENVMM_WIN_AARCH64, "windows", "aarch64");
     openvmm_native!(OPENVMM_LINUX_AARCH64, "linux", "aarch64");
+    openvmm_native!(OPENVMM_MACOS_AARCH64, "macos", "aarch64");
 
     declare_artifacts! {
         /// openvmm windows x86_64 executable
@@ -37,6 +38,8 @@ pub mod artifacts {
         OPENVMM_WIN_AARCH64,
         /// openvmm linux aarch64 executable
         OPENVMM_LINUX_AARCH64,
+        /// openvmm macos aarch64 executable
+        OPENVMM_MACOS_AARCH64,
         /// Directory to put OpenHCL dumps in
         OPENHCL_DUMP_DIRECTORY,
     }
