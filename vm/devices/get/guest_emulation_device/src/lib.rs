@@ -16,6 +16,7 @@ pub mod test_utilities;
 
 use async_trait::async_trait;
 use core::mem::size_of;
+use disk_backend::SimpleDisk;
 use futures::FutureExt;
 use futures::StreamExt;
 use get_protocol::dps_json::HclSecureBootTemplateId;
@@ -36,6 +37,7 @@ use get_resources::ged::GuestEmulationRequest;
 use get_resources::ged::ModifyVtl2SettingsError;
 use get_resources::ged::SaveRestoreError;
 use get_resources::ged::Vtl0StartError;
+use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -43,7 +45,9 @@ use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
+use scsi_buffers::OwnedRequestBuffers;
 use std::io::IoSlice;
+use std::sync::Arc;
 use task_control::StopTask;
 use thiserror::Error;
 use video_core::FramebufferControl;
@@ -94,10 +98,6 @@ impl From<task_control::Cancelled> for Error {
         Error::Cancelled(value)
     }
 }
-
-// TODO: swap out the adhoc in-memory VMGS with a real VMGS backend.
-const VMGS_CAPACITY: usize = 4194816; // 4 MB
-const VMGS_SECTOR_SIZE: usize = 512;
 
 /// Settings to enable in the guest.
 #[derive(Debug, Clone, Inspect)]
@@ -179,10 +179,21 @@ pub struct GuestEmulationDevice {
     #[inspect(skip)]
     waiting_for_vtl0_start: Vec<mesh::OneshotSender<Result<(), Vtl0StartError>>>,
 
-    #[inspect(skip)]
-    vmgs: Vec<u8>,
+    vmgs: Option<VmgsState>,
+
     #[inspect(with = "Option::is_some")]
     save_restore_buf: Option<Vec<u8>>,
+}
+
+#[derive(Inspect)]
+struct VmgsState {
+    /// The underlying VMGS disk.
+    disk: Arc<dyn SimpleDisk>,
+    /// Memory for the guest to DMA to/from.
+    mem: GuestMemory,
+    /// Memory to buffer data for sending to the guest.
+    #[inspect(skip)]
+    buf: Vec<u8>,
 }
 
 impl GuestEmulationDevice {
@@ -193,6 +204,7 @@ impl GuestEmulationDevice {
         firmware_event_send: Option<mesh::MpscSender<FirmwareEvent>>,
         guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         framebuffer_control: Option<Box<dyn FramebufferControl>>,
+        vmgs_disk: Option<Arc<dyn SimpleDisk>>,
     ) -> Self {
         Self {
             config,
@@ -200,7 +212,11 @@ impl GuestEmulationDevice {
             firmware_event_send,
             framebuffer_control,
             guest_request_recv,
-            vmgs: vec![0; VMGS_CAPACITY],
+            vmgs: vmgs_disk.map(|disk| VmgsState {
+                disk,
+                mem: GuestMemory::allocate(MAX_PAYLOAD_SIZE),
+                buf: vec![0; MAX_PAYLOAD_SIZE],
+            }),
             save_restore_buf: None,
             waiting_for_vtl0_start: Vec::new(),
         }
@@ -210,17 +226,6 @@ impl GuestEmulationDevice {
         if let Some(sender) = &self.firmware_event_send {
             sender.send(event);
         }
-    }
-
-    fn vmgs(&mut self, sector_offset: u64, sector_count: u32) -> Option<&mut [u8]> {
-        let start = usize::try_from(sector_offset)
-            .ok()?
-            .checked_mul(VMGS_SECTOR_SIZE)?;
-        let len = usize::try_from(sector_count)
-            .ok()?
-            .checked_mul(VMGS_SECTOR_SIZE)?;
-        let end = start.checked_add(len)?;
-        self.vmgs.get_mut(start..end)
     }
 }
 
@@ -390,11 +395,6 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                         continue;
                     }
 
-                    const HEADER_SIZE: usize =
-                        size_of::<get_protocol::RestoreGuestVtl2StateResponse>();
-
-                    let mut message = vec![0; HEADER_SIZE + MAX_PAYLOAD_SIZE];
-
                     let status_code = if *written + MAX_PAYLOAD_SIZE >= saved_state_size {
                         get_protocol::GuestVtl2SaveRestoreStatus::SUCCESS
                     } else {
@@ -416,10 +416,12 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                         "more data"
                     );
 
-                    message.clear();
-                    message.extend_from_slice(host_response_header.as_bytes());
-                    message.extend_from_slice(&buffer[*written..][..payload_len]);
-                    self.channel.try_send(&message).map_err(Error::Vmbus)?;
+                    self.channel
+                        .try_send_vectored(&[
+                            IoSlice::new(host_response_header.as_bytes()),
+                            IoSlice::new(&buffer[*written..][..payload_len]),
+                        ])
+                        .map_err(Error::Vmbus)?;
 
                     *written += payload_len;
                 }
@@ -547,10 +549,10 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         match header.message_id {
             HostRequests::TIME => self.handle_time()?,
             HostRequests::BIOS_BOOT_FINALIZE => self.handle_bios_boot_finalize(message_buf)?,
-            HostRequests::VMGS_GET_DEVICE_INFO => self.handle_vmgs_get_device_info()?,
-            HostRequests::VMGS_READ => self.handle_vmgs_read(state, message_buf)?,
-            HostRequests::VMGS_WRITE => self.handle_vmgs_write(state, message_buf)?,
-            HostRequests::VMGS_FLUSH => self.handle_vmgs_flush()?,
+            HostRequests::VMGS_GET_DEVICE_INFO => self.handle_vmgs_get_device_info(state)?,
+            HostRequests::VMGS_READ => self.handle_vmgs_read(state, message_buf).await?,
+            HostRequests::VMGS_WRITE => self.handle_vmgs_write(state, message_buf).await?,
+            HostRequests::VMGS_FLUSH => self.handle_vmgs_flush(state).await?,
             HostRequests::GUEST_STATE_PROTECTION => {
                 self.handle_guest_state_protection(message_buf)?
             }
@@ -613,21 +615,28 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         Ok(())
     }
 
-    fn handle_vmgs_get_device_info(&mut self) -> Result<(), Error> {
-        let response = get_protocol::VmgsGetDeviceInfoResponse::new(
-            VmgsIoStatus::SUCCESS,
-            VMGS_CAPACITY as u64,
-            VMGS_SECTOR_SIZE as u16,
-            VMGS_SECTOR_SIZE as u16,
-            512,
-        );
+    fn handle_vmgs_get_device_info(
+        &mut self,
+        state: &mut GuestEmulationDevice,
+    ) -> Result<(), Error> {
+        let response = if let Some(vmgs) = &state.vmgs {
+            get_protocol::VmgsGetDeviceInfoResponse::new(
+                VmgsIoStatus::SUCCESS,
+                vmgs.disk.sector_count(),
+                vmgs.disk.sector_size() as u16,
+                vmgs.disk.physical_sector_size() as u16,
+                vmgs.buf.len() as u32,
+            )
+        } else {
+            get_protocol::VmgsGetDeviceInfoResponse::new(VmgsIoStatus::DEVICE_ERROR, 0, 0, 0, 0)
+        };
         self.channel
             .try_send(response.as_bytes())
             .map_err(Error::Vmbus)?;
         Ok(())
     }
 
-    fn handle_vmgs_read(
+    async fn handle_vmgs_read(
         &mut self,
         state: &mut GuestEmulationDevice,
         message_buf: &[u8],
@@ -635,11 +644,35 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let message = get_protocol::VmgsReadRequest::read_from_prefix(message_buf)
             .ok_or(Error::MessageTooSmall)?;
 
-        let (status, payload) = if let Some(vmgs) = state.vmgs(message.offset, message.length) {
-            if vmgs.len() > MAX_PAYLOAD_SIZE {
+        let (status, payload) = if let Some(vmgs) = &mut state.vmgs {
+            let len = message.length as u64 * vmgs.disk.sector_size() as u64;
+            if len > MAX_PAYLOAD_SIZE as u64 {
                 return Err(Error::InvalidFieldValue);
             }
-            (VmgsIoStatus::SUCCESS, &*vmgs)
+
+            // FUTURE: since this IO may take a long time, consider storing the
+            // future and awaiting in a cancellable context.
+            match vmgs
+                .disk
+                .read_vectored(
+                    &OwnedRequestBuffers::linear(0, len as usize, true).buffer(&vmgs.mem),
+                    message.offset,
+                )
+                .await
+            {
+                Ok(()) => {
+                    let payload = &mut vmgs.buf[..len as usize];
+                    vmgs.mem.read_at(0, payload).unwrap();
+                    (VmgsIoStatus::SUCCESS, &*payload)
+                }
+                Err(err) => {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        "vmgs read error"
+                    );
+                    (VmgsIoStatus::DEVICE_ERROR, &[] as _)
+                }
+            }
         } else {
             (VmgsIoStatus::DEVICE_ERROR, &[] as _)
         };
@@ -651,7 +684,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         Ok(())
     }
 
-    fn handle_vmgs_write(
+    async fn handle_vmgs_write(
         &mut self,
         state: &mut GuestEmulationDevice,
         message_buf: &[u8],
@@ -659,12 +692,36 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let (message, rest) = get_protocol::VmgsWriteRequest::read_from_prefix_split(message_buf)
             .ok_or(Error::MessageTooSmall)?;
 
-        let status = if let Some(vmgs) = state.vmgs(message.offset, message.length) {
-            if vmgs.len() > MAX_PAYLOAD_SIZE {
+        let status = if let Some(vmgs) = &mut state.vmgs {
+            let len = message.length as u64 * vmgs.disk.sector_size() as u64;
+            if len > MAX_PAYLOAD_SIZE as u64 {
                 return Err(Error::InvalidFieldValue);
             }
-            vmgs.copy_from_slice(rest.get(..vmgs.len()).ok_or(Error::MessageTooSmall)?);
-            VmgsIoStatus::SUCCESS
+
+            vmgs.mem
+                .write_at(0, rest.get(..len as usize).ok_or(Error::MessageTooSmall)?)
+                .unwrap();
+
+            // FUTURE: since this IO may take a long time, consider storing the
+            // future and awaiting in a cancellable context.
+            match vmgs
+                .disk
+                .write_vectored(
+                    &OwnedRequestBuffers::linear(0, len as usize, false).buffer(&vmgs.mem),
+                    message.offset,
+                    false,
+                )
+                .await
+            {
+                Ok(()) => VmgsIoStatus::SUCCESS,
+                Err(err) => {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        "vmgs write error"
+                    );
+                    VmgsIoStatus::DEVICE_ERROR
+                }
+            }
         } else {
             VmgsIoStatus::DEVICE_ERROR
         };
@@ -676,8 +733,25 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         Ok(())
     }
 
-    fn handle_vmgs_flush(&mut self) -> Result<(), Error> {
-        let response = get_protocol::VmgsFlushResponse::new(VmgsIoStatus::SUCCESS);
+    async fn handle_vmgs_flush(&mut self, state: &mut GuestEmulationDevice) -> Result<(), Error> {
+        let status = if let Some(vmgs) = &mut state.vmgs {
+            // FUTURE: since this IO may take a long time, consider storing the
+            // future and awaiting in a cancellable context.
+            match vmgs.disk.sync_cache().await {
+                Ok(()) => VmgsIoStatus::SUCCESS,
+                Err(err) => {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        "vmgs flush error"
+                    );
+                    VmgsIoStatus::DEVICE_ERROR
+                }
+            }
+        } else {
+            VmgsIoStatus::DEVICE_ERROR
+        };
+
+        let response = get_protocol::VmgsFlushResponse::new(status);
         self.channel
             .try_send(response.as_bytes())
             .map_err(Error::Vmbus)?;

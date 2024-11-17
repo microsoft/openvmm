@@ -93,6 +93,12 @@ pub struct Options {
     #[clap(long, requires("hv"))]
     pub get: bool,
 
+    /// The disk to use for the GET VMGS.
+    ///
+    /// If this is not provided, then a 4MB RAM disk will be used.
+    #[clap(long)]
+    pub get_vmgs: Option<DiskCliKind>,
+
     /// disable the VTL0 alias map presented to VTL2 by default
     #[clap(long, requires("vtl2"))]
     pub no_alias_map: bool,

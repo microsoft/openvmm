@@ -14,7 +14,7 @@ use vm_resource::Resource;
 /// .vhdx, the file will be opened using the kernel-mode VHD parser.
 pub fn open_disk_type(path: &Path, read_only: bool) -> anyhow::Result<Resource<DiskHandleKind>> {
     Ok(match path.extension().and_then(|s| s.to_str()) {
-        Some("vhd") => {
+        Some("vhd" | "vmgs") => {
             let file = std::fs::OpenOptions::new()
                 .read(true)
                 .write(!read_only)

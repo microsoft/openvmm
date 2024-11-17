@@ -923,6 +923,12 @@ impl PetriVmConfigSetupCore<'_> {
             com2: true,
             vmbus_redirection: false,
             vtl2_settings: None, // Will be added at startup to allow tests to modify
+            vmgs_disk: Some(
+                disk_backend_resources::RamDiskHandle {
+                    len: vmgs_format::VMGS_DEFAULT_CAPACITY,
+                }
+                .into_resource(),
+            ),
             framebuffer: framebuffer.then(|| SharedFramebufferHandle.into_resource()),
             guest_request_recv,
             enable_tpm: false,

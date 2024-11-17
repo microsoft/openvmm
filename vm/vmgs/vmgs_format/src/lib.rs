@@ -16,6 +16,9 @@ use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
 
+/// The default capacity of a VMGS disk in bytes, 4MB.
+pub const VMGS_DEFAULT_CAPACITY: u64 = 0x400000;
+
 open_enum! {
     /// VMGS fixed file IDs
     #[cfg_attr(feature = "inspect", derive(Inspect))]
