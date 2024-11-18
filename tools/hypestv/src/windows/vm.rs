@@ -160,7 +160,6 @@ impl Vm {
                                     err
                                 )
                                 .ok();
-                                return;
                             }
                         });
                         self.serial[port_index] = Some(task);
@@ -229,7 +228,7 @@ impl VmInner {
                 diag_client::hyperv::ComPortAccessInfo::PortNumber(port),
             )
             .await
-            .with_context(|| format!("failed to open serial port"))?;
+            .context("failed to open serial port")?;
 
             writeln!(self.printer.out(), "serial port {port} connected").ok();
 

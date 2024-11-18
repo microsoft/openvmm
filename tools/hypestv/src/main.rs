@@ -7,7 +7,7 @@ mod windows;
 
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
-    pal_async::DefaultPool::run_with(|driver| windows::main(driver))
+    pal_async::DefaultPool::run_with(windows::main)
 }
 
 #[cfg(not(windows))]
