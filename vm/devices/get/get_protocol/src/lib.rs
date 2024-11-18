@@ -747,8 +747,8 @@ const_assert_eq!(24, size_of::<VmgsGetDeviceInfoResponse>());
 pub struct VmgsWriteRequest {
     pub message_header: HeaderHostRequest,
     pub flags: VmgsWriteFlags,
-    pub offset: u64, // logical sectors
-    pub length: u32, // logical sectors
+    pub sector_offset: u64, // logical sectors
+    pub sector_count: u32,  // logical sectors
     pub _pad: u32,
     // Variable size payload follows
 }
@@ -756,12 +756,12 @@ pub struct VmgsWriteRequest {
 const_assert_eq!(24, size_of::<VmgsWriteRequest>());
 
 impl VmgsWriteRequest {
-    pub fn new(flags: VmgsWriteFlags, offset: u64, length: u32) -> Self {
+    pub fn new(flags: VmgsWriteFlags, sector_offset: u64, sector_count: u32) -> Self {
         Self {
             message_header: HeaderGeneric::new(HostRequests::VMGS_WRITE),
             flags,
-            offset,
-            length,
+            sector_offset,
+            sector_count,
             _pad: 0,
         }
     }

@@ -189,9 +189,9 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                                             )
                                             .unwrap();
                                         let buf = &message_buf[request_size..];
-                                        let offset = request.offset as usize
+                                        let offset = request.sector_offset as usize
                                             * TEST_VMGS_SECTOR_SIZE as usize;
-                                        let length = request.length as usize
+                                        let length = request.sector_count as usize
                                             * TEST_VMGS_SECTOR_SIZE as usize;
                                         self.vmgs[offset..][..length]
                                             .copy_from_slice(&buf[..length]);
