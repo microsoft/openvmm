@@ -357,7 +357,10 @@ impl BackingPrivate for HypervisorBackedX86 {
 
     fn halt_in_usermode(this: &mut UhProcessor<'_, Self>, target_vtl: GuestVtl) -> bool {
         if let Some(lapics) = this.backing.lapics.as_ref() {
-            if lapics[target_vtl].halted || lapics[target_vtl].startup_suspend {
+            if lapics[target_vtl].halted
+                || lapics[target_vtl].idle
+                || lapics[target_vtl].startup_suspend
+            {
                 return true;
             }
         }
@@ -954,6 +957,9 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         let priority = vector >> 4;
 
+        // Exit idle when an interrupt is pending
+        lapic_state.idle = false;
+
         if pending_interruption.interruption_pending()
             || interrupt_state.interrupt_shadow()
             || !rflags.interrupt_enable()
@@ -1024,6 +1030,9 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         let pending_event = HvX64PendingEventReg0::from(pending_event.as_u128());
         let interrupt_state = HvX64InterruptStateRegister::from(interrupt_state.as_u64());
 
+        // Exit idle when an interrupt is pending
+        lapic_state.idle = false;
+
         if pending_interruption.interruption_pending()
             || interrupt_state.nmi_masked()
             || interrupt_state.interrupt_shadow()
@@ -1091,6 +1100,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
                 .map_err(UhRunVpError::EmulationState)?;
             lapic.startup_suspend = false;
             lapic.halted = false;
+            lapic.idle = false;
         }
         Ok(())
     }
