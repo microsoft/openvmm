@@ -189,7 +189,7 @@ pub struct GuestEmulationDevice {
 struct VmgsState {
     /// The underlying VMGS disk.
     disk: Arc<dyn SimpleDisk>,
-    /// Memory for the guest to DMA to/from.
+    /// Memory for the disk to DMA to/from.
     mem: GuestMemory,
     /// Memory to buffer data for sending to the guest.
     #[inspect(skip)]
@@ -650,8 +650,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 return Err(Error::InvalidFieldValue);
             }
 
-            // FUTURE: since this IO may take a long time, consider storing the
-            // future and awaiting in a cancellable context.
+            // FUTURE: this IO will block VM state changes. Since this IO may
+            // take a long time, consider storing the future and awaiting in a
+            // cancellable context.
             match vmgs
                 .disk
                 .read_vectored(
@@ -702,8 +703,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 .write_at(0, rest.get(..len as usize).ok_or(Error::MessageTooSmall)?)
                 .unwrap();
 
-            // FUTURE: since this IO may take a long time, consider storing the
-            // future and awaiting in a cancellable context.
+            // FUTURE: this IO will block VM state changes. Since this IO may
+            // take a long time, consider storing the future and awaiting in a
+            // cancellable context.
             match vmgs
                 .disk
                 .write_vectored(
@@ -735,8 +737,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
     async fn handle_vmgs_flush(&mut self, state: &mut GuestEmulationDevice) -> Result<(), Error> {
         let status = if let Some(vmgs) = &mut state.vmgs {
-            // FUTURE: since this IO may take a long time, consider storing the
-            // future and awaiting in a cancellable context.
+            // FUTURE: this IO will block VM state changes. Since this IO may
+            // take a long time, consider storing the future and awaiting in a
+            // cancellable context.
             match vmgs.disk.sync_cache().await {
                 Ok(()) => VmgsIoStatus::SUCCESS,
                 Err(err) => {

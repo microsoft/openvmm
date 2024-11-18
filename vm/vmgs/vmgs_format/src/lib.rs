@@ -16,7 +16,13 @@ use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
 
-/// The default capacity of a VMGS disk in bytes, 4MB.
+/// The suggested default capacity of a VMGS disk in bytes, 4MB.
+///
+/// In some sense, this is not part of the VMGS format, but all known
+/// implementations default to this capacity (with an optional user-provided
+/// override), so it is useful to have it here. But an implementation is not
+/// _required_ to use this capacity, and the VMGS parser cannot assume that the
+/// disk is this size.
 pub const VMGS_DEFAULT_CAPACITY: u64 = 0x400000;
 
 open_enum! {
