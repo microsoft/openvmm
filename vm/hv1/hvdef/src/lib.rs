@@ -1883,6 +1883,7 @@ macro_rules! registers {
                 Sifp = 0x000A0012,
                 Sipp = 0x000A0013,
                 Eom = 0x000A0014,
+                Sirbp = 0x000A0015,
 
                 Stimer0Config = 0x000B0000,
                 Stimer0Count = 0x000B0001,

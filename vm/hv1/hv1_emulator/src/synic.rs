@@ -474,14 +474,16 @@ impl ProcessorSynic {
             HvAllArchRegisterName::Sifp => hvdef::HV_X64_MSR_SIEFP,
             HvAllArchRegisterName::Sipp => hvdef::HV_X64_MSR_SIMP,
             HvAllArchRegisterName::Eom => hvdef::HV_X64_MSR_EOM,
-            HvAllArchRegisterName::Stimer0Config => hvdef::HV_X64_MSR_STIMER0_CONFIG,
-            HvAllArchRegisterName::Stimer0Count => hvdef::HV_X64_MSR_STIMER0_COUNT,
-            HvAllArchRegisterName::Stimer1Config => hvdef::HV_X64_MSR_STIMER1_CONFIG,
-            HvAllArchRegisterName::Stimer1Count => hvdef::HV_X64_MSR_STIMER1_COUNT,
-            HvAllArchRegisterName::Stimer2Config => hvdef::HV_X64_MSR_STIMER2_CONFIG,
-            HvAllArchRegisterName::Stimer2Count => hvdef::HV_X64_MSR_STIMER2_COUNT,
-            HvAllArchRegisterName::Stimer3Config => hvdef::HV_X64_MSR_STIMER3_CONFIG,
-            HvAllArchRegisterName::Stimer3Count => hvdef::HV_X64_MSR_STIMER3_COUNT,
+            HvAllArchRegisterName::Stimer0Config
+            | HvAllArchRegisterName::Stimer0Count
+            | HvAllArchRegisterName::Stimer1Config
+            | HvAllArchRegisterName::Stimer1Count
+            | HvAllArchRegisterName::Stimer2Config
+            | HvAllArchRegisterName::Stimer2Count
+            | HvAllArchRegisterName::Stimer3Config
+            | HvAllArchRegisterName::Stimer3Count => {
+                hvdef::HV_X64_MSR_STIMER0_CONFIG + (reg.0 - HvAllArchRegisterName::Stimer0Config.0)
+            }
             _ => {
                 tracelimit::error_ratelimited!(?reg, "unknown synic register");
                 return Err(MsrError::Unknown);
@@ -517,6 +519,19 @@ impl ProcessorSynic {
                     self.set_stimer_config(timer, v);
                 }
             }
+            _ => self.write_nontimer_msr(guest_memory, msr, v)?,
+        }
+        Ok(())
+    }
+
+    /// Writes a non-synthetic-timer x64 MSR.
+    pub fn write_nontimer_msr(
+        &mut self,
+        guest_memory: &GuestMemory,
+        msr: u32,
+        v: u64,
+    ) -> Result<(), MsrError> {
+        match msr {
             hvdef::HV_X64_MSR_SCONTROL => self.set_scontrol(v),
             hvdef::HV_X64_MSR_SVERSION => return Err(MsrError::InvalidAccess),
             hvdef::HV_X64_MSR_SIEFP => self.set_siefp(guest_memory, v),
@@ -549,6 +564,14 @@ impl ProcessorSynic {
                     self.stimer_config(timer)
                 }
             }
+            _ => self.read_nontimer_msr(msr)?,
+        };
+        Ok(value)
+    }
+
+    /// Reads a non-synthetic-timer x64 MSR.
+    pub fn read_nontimer_msr(&self, msr: u32) -> Result<u64, MsrError> {
+        let value = match msr {
             hvdef::HV_X64_MSR_SCONTROL => self.scontrol(),
             hvdef::HV_X64_MSR_SVERSION => self.sversion(),
             hvdef::HV_X64_MSR_SIEFP => self.siefp(),
