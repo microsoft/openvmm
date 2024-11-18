@@ -1710,8 +1710,8 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
     }
 
     #[cfg(guest_arch = "aarch64")]
-    fn is_kernel_managed(&self, _name: HvArm64RegisterName) -> bool {
-        false
+    fn is_kernel_managed(&self, name: HvArm64RegisterName) -> bool {
+        is_vtl_shared_reg(name)
     }
 
     fn set_reg(&mut self, vtl: GuestVtl, regs: &[HvRegisterAssoc]) -> Result<(), Error> {
