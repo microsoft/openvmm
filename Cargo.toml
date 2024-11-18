@@ -60,7 +60,7 @@ schema_ado_yaml = { path = "flowey/schema_ado_yaml" }
 
 hvlite_core = { path = "openvmm/hvlite_core" }
 hvlite_defs = { path = "openvmm/hvlite_defs" }
-hvlite_entry = { path = "openvmm/hvlite_entry" }
+openvmm_entry = { path = "openvmm/openvmm_entry" }
 hvlite_helpers = { path = "openvmm/hvlite_helpers" }
 hvlite_pcat_locator = { path = "openvmm/hvlite_pcat_locator" }
 openvmm_resources = { path = "openvmm/openvmm_resources" }
@@ -399,6 +399,7 @@ futures-core = "0.3"
 futures-channel = "0.3"
 futures-io = "0.3"
 gdbstub = "0.6"
+gdbstub_arch = "0.2"
 getrandom = "0.2"
 glob = "0.3"
 gptman = "1.0"
@@ -571,8 +572,6 @@ rust-2024-compatibility = { level = "warn", priority = -1 }
 edition_2024_expr_fragment_specifier = "allow"
 impl_trait_overcaptures = "allow"
 deprecated-safe-2024 = "allow"
-# Needed for linkme compatibility for now, https://github.com/dtolnay/linkme/issues/101
-unsafe-attr-outside-unsafe = "allow"
 
 unused_qualifications = "warn"
 

@@ -158,6 +158,8 @@ pub struct ParsedBootDtInfo {
     /// The ranges config regions are stored at.
     #[inspect(iter_by_index)]
     pub config_ranges: Vec<MemoryRange>,
+    /// The VTL2 reserved range.
+    pub vtl2_reserved_range: MemoryRange,
     /// The ranges that were accepted at load time by the host on behalf of the
     /// guest.
     #[inspect(iter_by_index)]
@@ -201,6 +203,7 @@ struct OpenhclInfo {
     config_ranges: Vec<MemoryRange>,
     partition_memory_map: Vec<AddressRange>,
     accepted_memory: Vec<MemoryRange>,
+    vtl2_reserved_range: MemoryRange,
     vtl0_alias_map: Option<u64>,
     memory_allocation_mode: MemoryAllocationMode,
     isolation: IsolationType,
@@ -352,6 +355,25 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         })
         .collect();
 
+    // Report the reserved range. There should only be one.
+    let vtl2_reserved_range = {
+        let mut reserved_range_iter = memory.iter().filter_map(|entry| {
+            if entry.vtl_usage() == MemoryVtlType::VTL2_RESERVED {
+                Some(*entry.range())
+            } else {
+                None
+            }
+        });
+
+        let reserved_range = reserved_range_iter.next().unwrap_or(MemoryRange::EMPTY);
+
+        if reserved_range_iter.next().is_some() {
+            bail!("multiple VTL2 reserved ranges found");
+        }
+
+        reserved_range
+    };
+
     let vtl0_alias_map = try_find_property(node, "vtl0-alias-map")
         .map(|prop| prop.read_u64(0).map_err(err_to_owned))
         .transpose()
@@ -374,6 +396,7 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         config_ranges,
         partition_memory_map: memory,
         accepted_memory,
+        vtl2_reserved_range,
         vtl0_alias_map,
         memory_allocation_mode,
         isolation,
@@ -469,6 +492,7 @@ impl ParsedBootDtInfo {
         let mut vtl0_alias_map = None;
         let mut memory_allocation_mode = MemoryAllocationMode::Host;
         let mut isolation = IsolationType::None;
+        let mut vtl2_reserved_range = MemoryRange::EMPTY;
 
         let parser = Parser::new(raw)
             .map_err(err_to_owned)
@@ -497,6 +521,7 @@ impl ParsedBootDtInfo {
                         vtl0_mmio: n_vtl0_mmio,
                         config_ranges: n_config_ranges,
                         partition_memory_map: n_partition_memory_map,
+                        vtl2_reserved_range: n_vtl2_reserved_range,
                         accepted_memory: n_accepted_memory,
                         vtl0_alias_map: n_vtl0_alias_map,
                         memory_allocation_mode: n_memory_allocation_mode,
@@ -509,6 +534,7 @@ impl ParsedBootDtInfo {
                     vtl0_alias_map = n_vtl0_alias_map;
                     memory_allocation_mode = n_memory_allocation_mode;
                     isolation = n_isolation;
+                    vtl2_reserved_range = n_vtl2_reserved_range;
                 }
 
                 _ if child.name.starts_with("memory@") => {
@@ -540,6 +566,7 @@ impl ParsedBootDtInfo {
             gic,
             memory_allocation_mode,
             isolation,
+            vtl2_reserved_range,
         })
     }
 }
@@ -856,6 +883,14 @@ mod tests {
                 }),
                 AddressRange::Memory(Memory {
                     range: MemoryRangeWithNode {
+                        range: MemoryRange::new(0x40000..0x50000),
+                        vnode: 1,
+                    },
+                    vtl_usage: MemoryVtlType::VTL2_RESERVED,
+                    igvm_type: MemoryMapEntryType::VTL2_PROTECTABLE,
+                }),
+                AddressRange::Memory(Memory {
+                    range: MemoryRangeWithNode {
                         range: MemoryRange::new(0x1000000..0x2000000),
                         vnode: 0,
                     },
@@ -890,6 +925,7 @@ mod tests {
                 mmio_size: Some(0x2000),
             },
             isolation: IsolationType::Vbs,
+            vtl2_reserved_range: MemoryRange::new(0x40000..0x50000),
         };
 
         let dt = build_dt(&orig_info).unwrap();

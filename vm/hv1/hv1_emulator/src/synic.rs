@@ -9,6 +9,7 @@ use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvMessageHeader;
 use hvdef::HvMessageType;
+use hvdef::HvRegisterVsmVina;
 use hvdef::HvSynicSimpSiefp;
 use hvdef::HvSynicStimerConfig;
 use hvdef::TimerMessagePayload;
@@ -33,6 +34,8 @@ pub struct ProcessorSynic {
     timers: [Timer; hvdef::NUM_TIMERS],
     #[inspect(skip)]
     shared: Arc<RwLock<SharedProcessorState>>,
+    #[inspect(debug)]
+    vina: HvRegisterVsmVina,
 }
 
 #[derive(Inspect)]
@@ -256,6 +259,7 @@ impl GlobalSynic {
             sints: SintState::AT_RESET,
             timers: array::from_fn(|_| Timer::default()),
             shared,
+            vina: HvRegisterVsmVina::new(),
         }
     }
 }
@@ -267,10 +271,12 @@ impl ProcessorSynic {
             sints,
             timers,
             shared,
+            vina,
         } = self;
         *sints = SintState::AT_RESET;
         *timers = array::from_fn(|_| Timer::default());
         *shared.write() = SharedProcessorState::AT_RESET;
+        *vina = HvRegisterVsmVina::new();
     }
 
     /// Returns the event flags page register.
@@ -320,6 +326,11 @@ impl ProcessorSynic {
     /// Returns the specified synthetic timer count register.
     pub fn stimer_count(&self, n: usize) -> u64 {
         self.timers[n].count
+    }
+
+    /// Returns the value of the VINA register.
+    pub fn vina(&self) -> HvRegisterVsmVina {
+        self.vina
     }
 
     /// Sets the event flags page register.

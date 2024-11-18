@@ -299,6 +299,7 @@ pub const MAX_RESERVED_MEM_RANGES: usize = 3 + sidecar_defs::MAX_NODES;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReservedMemoryType {
     Vtl2Config,
+    Vtl2Reserved,
     SidecarImage,
     SidecarNode,
 }
@@ -325,6 +326,15 @@ fn reserved_memory_regions(
             )
         }));
     }
+
+    // Add the VTL2 reserved region, if it exists.
+    if !partition_info.vtl2_reserved_region.is_empty() {
+        reserved.push((
+            partition_info.vtl2_reserved_region,
+            ReservedMemoryType::Vtl2Reserved,
+        ));
+    }
+
     reserved
         .as_mut()
         .sort_unstable_by_key(|(r, _typ)| r.start());
@@ -882,6 +892,7 @@ mod test {
             vtl2_ram: ArrayVec::new(),
             vtl2_full_config_region: MemoryRange::EMPTY,
             vtl2_config_region_reclaim: MemoryRange::EMPTY,
+            vtl2_reserved_region: MemoryRange::EMPTY,
             partition_ram: ArrayVec::new(),
             isolation: IsolationType::None,
             bsp_reg: cpus[0].reg as u32,

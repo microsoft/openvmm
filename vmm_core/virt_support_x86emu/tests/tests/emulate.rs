@@ -91,6 +91,18 @@ impl EmulatorSupport for MockSupport {
     fn is_gpa_mapped(&self, _gpa: u64, _write: bool) -> bool {
         true
     }
+
+    fn lapic_base_address(&self) -> Option<u64> {
+        None
+    }
+
+    fn lapic_read(&mut self, _address: u64, _data: &mut [u8]) {
+        unreachable!()
+    }
+
+    fn lapic_write(&mut self, _address: u64, _data: &[u8]) {
+        unreachable!()
+    }
 }
 
 #[async_test]

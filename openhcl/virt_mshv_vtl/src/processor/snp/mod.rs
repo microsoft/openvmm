@@ -17,6 +17,7 @@ use super::UhRunVpError;
 use crate::devmsr;
 use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
+use crate::BackingShared;
 use crate::Error;
 use crate::GuestVtl;
 use crate::UhCvmPartitionState;
@@ -42,7 +43,6 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
 use std::num::NonZeroU64;
-use std::sync::Arc;
 use virt::io::CpuIo;
 use virt::state::StateElement;
 use virt::vp;
@@ -91,7 +91,6 @@ pub struct SnpBacked {
     general_stats: VtlArray<GeneralStats, 2>,
     exit_stats: VtlArray<ExitStats, 2>,
     cvm: UhCvmVpState,
-    shared: Arc<SnpBackedShared>,
 }
 
 #[derive(Inspect, Default)]
@@ -152,8 +151,60 @@ impl HardwareIsolatedBacking for SnpBacked {
         &mut self.cvm
     }
 
-    fn cvm_partition_state(&self) -> &UhCvmPartitionState {
-        &self.shared.cvm
+    fn cvm_partition_state(shared: &Self::Shared) -> &UhCvmPartitionState {
+        &shared.cvm
+    }
+
+    fn switch_vtl_state(
+        this: &mut UhProcessor<'_, Self>,
+        source_vtl: GuestVtl,
+        target_vtl: GuestVtl,
+    ) {
+        let [vmsa0, vmsa1] = this.runner.vmsas_mut();
+        let (current_vmsa, mut target_vmsa) = match (source_vtl, target_vtl) {
+            (GuestVtl::Vtl0, GuestVtl::Vtl1) => (vmsa0, vmsa1),
+            (GuestVtl::Vtl1, GuestVtl::Vtl0) => (vmsa1, vmsa0),
+            _ => unreachable!(),
+        };
+
+        target_vmsa.set_rax(current_vmsa.rax());
+        target_vmsa.set_rbx(current_vmsa.rbx());
+        target_vmsa.set_rcx(current_vmsa.rcx());
+        target_vmsa.set_rdx(current_vmsa.rdx());
+        target_vmsa.set_rbp(current_vmsa.rbp());
+        target_vmsa.set_rsi(current_vmsa.rsi());
+        target_vmsa.set_rdi(current_vmsa.rdi());
+        target_vmsa.set_r8(current_vmsa.r8());
+        target_vmsa.set_r9(current_vmsa.r9());
+        target_vmsa.set_r10(current_vmsa.r10());
+        target_vmsa.set_r11(current_vmsa.r11());
+        target_vmsa.set_r12(current_vmsa.r12());
+        target_vmsa.set_r13(current_vmsa.r13());
+        target_vmsa.set_r14(current_vmsa.r14());
+        target_vmsa.set_r15(current_vmsa.r15());
+        target_vmsa.set_xcr0(current_vmsa.xcr0());
+
+        target_vmsa.set_cr2(current_vmsa.cr2());
+
+        // DR6 not shared on AMD
+        target_vmsa.set_dr0(current_vmsa.dr0());
+        target_vmsa.set_dr1(current_vmsa.dr1());
+        target_vmsa.set_dr2(current_vmsa.dr2());
+        target_vmsa.set_dr3(current_vmsa.dr3());
+
+        target_vmsa.set_pl0_ssp(current_vmsa.pl0_ssp());
+        target_vmsa.set_pl1_ssp(current_vmsa.pl1_ssp());
+        target_vmsa.set_pl2_ssp(current_vmsa.pl2_ssp());
+        target_vmsa.set_pl3_ssp(current_vmsa.pl3_ssp());
+        target_vmsa.set_u_cet(current_vmsa.u_cet());
+
+        target_vmsa.set_x87_registers(&current_vmsa.x87_registers());
+
+        let vec_reg_count = 16;
+        for i in 0..vec_reg_count {
+            target_vmsa.set_xmm_registers(i, current_vmsa.xmm_registers(i));
+            target_vmsa.set_ymm_registers(i, current_vmsa.ymm_registers(i));
+        }
     }
 }
 
@@ -191,12 +242,16 @@ impl SnpBackedShared {
 
 impl BackingPrivate for SnpBacked {
     type HclBacking = hcl::ioctl::snp::Snp;
+    type Shared = SnpBackedShared;
 
-    fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error> {
-        let crate::BackingShared::Snp(shared) = params.backing_shared else {
+    fn shared(shared: &BackingShared) -> &Self::Shared {
+        let BackingShared::Snp(shared) = shared else {
             unreachable!()
         };
+        shared
+    }
 
+    fn new(params: BackingParams<'_, '_, Self>, _shared: &SnpBackedShared) -> Result<Self, Error> {
         let pfns_handle = params
             .partition
             .shared_vis_pages_pool
@@ -219,7 +274,6 @@ impl BackingPrivate for SnpBacked {
             general_stats: VtlArray::from_fn(|_| Default::default()),
             exit_stats: VtlArray::from_fn(|_| Default::default()),
             cvm: UhCvmVpState::new(params.hv.unwrap()),
-            shared: shared.clone(),
         })
     }
 
@@ -378,7 +432,14 @@ impl BackingPrivate for SnpBacked {
         unreachable!("extint managed through software apic")
     }
 
-    fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16) {
+    fn request_untrusted_sint_readiness(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        sints: u16,
+    ) {
+        if vtl == GuestVtl::Vtl1 {
+            todo!("TODO: handle untrusted sints for VTL1");
+        }
         if this.backing.hv_sint_notifications & !sints == 0 {
             return;
         }
@@ -388,62 +449,46 @@ impl BackingPrivate for SnpBacked {
         tracing::trace!(?notifications, "setting notifications");
         this.runner
             .set_vp_register(
+                vtl,
                 HvX64RegisterName::DeliverabilityNotifications,
                 u64::from(notifications).into(),
             )
             .expect("requesting deliverability is not a fallable operation");
     }
 
-    fn switch_vtl_state(
+    fn handle_cross_vtl_interrupts(
         this: &mut UhProcessor<'_, Self>,
-        source_vtl: GuestVtl,
-        target_vtl: GuestVtl,
-    ) {
-        let [vmsa0, vmsa1] = this.runner.vmsas_mut();
-        let (current_vmsa, mut target_vmsa) = match (source_vtl, target_vtl) {
-            (GuestVtl::Vtl0, GuestVtl::Vtl1) => (vmsa0, vmsa1),
-            (GuestVtl::Vtl1, GuestVtl::Vtl0) => (vmsa1, vmsa0),
-            _ => unreachable!(),
-        };
+        dev: &impl CpuIo,
+    ) -> Result<bool, UhRunVpError> {
+        this.hcvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
+            let vmsa = this.runner.vmsa_mut(vtl);
+            if vmsa.event_inject().valid()
+                && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
+            {
+                return true;
+            }
 
-        target_vmsa.set_rax(current_vmsa.rax());
-        target_vmsa.set_rbx(current_vmsa.rbx());
-        target_vmsa.set_rcx(current_vmsa.rcx());
-        target_vmsa.set_rdx(current_vmsa.rdx());
-        target_vmsa.set_rbp(current_vmsa.rbp());
-        target_vmsa.set_rsi(current_vmsa.rsi());
-        target_vmsa.set_rdi(current_vmsa.rdi());
-        target_vmsa.set_r8(current_vmsa.r8());
-        target_vmsa.set_r9(current_vmsa.r9());
-        target_vmsa.set_r10(current_vmsa.r10());
-        target_vmsa.set_r11(current_vmsa.r11());
-        target_vmsa.set_r12(current_vmsa.r12());
-        target_vmsa.set_r13(current_vmsa.r13());
-        target_vmsa.set_r14(current_vmsa.r14());
-        target_vmsa.set_r15(current_vmsa.r15());
-        target_vmsa.set_xcr0(current_vmsa.xcr0());
+            if (check_rflags && !x86defs::RFlags::from_bits(vmsa.rflags()).interrupt_enable())
+                || vmsa.v_intr_cntrl().intr_shadow()
+                || !vmsa.v_intr_cntrl().irq()
+            {
+                return false;
+            }
 
-        target_vmsa.set_cr2(current_vmsa.cr2());
-
-        // DR6 not shared on AMD
-        target_vmsa.set_dr0(current_vmsa.dr0());
-        target_vmsa.set_dr1(current_vmsa.dr1());
-        target_vmsa.set_dr2(current_vmsa.dr2());
-        target_vmsa.set_dr3(current_vmsa.dr3());
-
-        target_vmsa.set_pl0_ssp(current_vmsa.pl0_ssp());
-        target_vmsa.set_pl1_ssp(current_vmsa.pl1_ssp());
-        target_vmsa.set_pl2_ssp(current_vmsa.pl2_ssp());
-        target_vmsa.set_pl3_ssp(current_vmsa.pl3_ssp());
-        target_vmsa.set_u_cet(current_vmsa.u_cet());
-
-        target_vmsa.set_x87_registers(&current_vmsa.x87_registers());
-
-        let vec_reg_count = 16;
-        for i in 0..vec_reg_count {
-            target_vmsa.set_xmm_registers(i, current_vmsa.xmm_registers(i));
-            target_vmsa.set_ymm_registers(i, current_vmsa.ymm_registers(i));
-        }
+            let vmsa_priority = vmsa.v_intr_cntrl().priority() as u32;
+            let lapic = &mut this.backing.lapics[vtl].lapic;
+            let ppr = lapic
+                .access(&mut SnpApicClient {
+                    partition: this.partition,
+                    vmsa,
+                    dev,
+                    vmtime: &this.vmtime,
+                    vtl,
+                })
+                .get_ppr();
+            let ppr_priority = ppr >> 4;
+            vmsa_priority > ppr_priority
+        })
     }
 
     fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {
@@ -753,6 +798,7 @@ impl UhProcessor<'_, SnpBacked> {
     fn handle_nmi(&mut self, vtl: GuestVtl) {
         // TODO SNP: support virtual NMI injection
         // For now, just inject an NMI and hope for the best.
+        // Don't forget to update handle_cross_vtl_interrupts if this code changes.
         let mut vmsa = self.runner.vmsa_mut(vtl);
         vmsa.set_event_inject(
             SevEventInjectInfo::new()
@@ -843,7 +889,7 @@ impl UhProcessor<'_, SnpBacked> {
 
                 match x86defs::snp::GhcbUsage(message.ghcb_page.ghcb_usage) {
                     x86defs::snp::GhcbUsage::HYPERCALL => {
-                        let guest_memory = &self.partition.untrusted_dma_memory;
+                        let guest_memory = &self.shared.cvm.shared_memory;
                         // Read GHCB parameters from guest memory before
                         // dispatching.
                         let overlay_base = ghcb_overlay * HV_PAGE_SIZE;
@@ -920,8 +966,6 @@ impl UhProcessor<'_, SnpBacked> {
     }
 
     async fn run_vp_snp(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
-        // TODO CVM GUEST VSM: actually check if there is an interrupt waiting
-        // for VTL 1 and switch to it if there is
         let next_vtl = self.backing.cvm.exit_vtl;
 
         let mut vmsa = self.runner.vmsa_mut(next_vtl);
@@ -946,8 +990,6 @@ impl UhProcessor<'_, SnpBacked> {
 
         // Set the lazy EOI bit just before running.
         let lazy_eoi = self.sync_lazy_eoi(next_vtl);
-
-        // TODO GUEST VSM: update next_vtl based on interrupts
 
         let mut has_intercept = self
             .runner
@@ -1024,7 +1066,7 @@ impl UhProcessor<'_, SnpBacked> {
                     apic_id: self.inner.vp_info.apic_id,
                 };
 
-                let result = self.backing.shared.cvm.cpuid.guest_result(
+                let result = self.shared.cvm.cpuid.guest_result(
                     CpuidFunction(vmsa.rax() as u32),
                     vmsa.rcx() as u32,
                     &guest_state,
@@ -1161,9 +1203,9 @@ impl UhProcessor<'_, SnpBacked> {
                 let is_64bit = self.long_mode(entered_from_vtl);
                 let guest_memory = &self.partition.gm[entered_from_vtl];
                 let handler = UhHypercallHandler {
+                    trusted: !self.partition.hide_isolation,
                     vp: &mut *self,
                     bus: dev,
-                    trusted: true,
                     intercepted_vtl: entered_from_vtl,
                 };
 
@@ -2053,7 +2095,7 @@ impl UhProcessor<'_, SnpBacked> {
             x86defs::X64_MSR_GS_BASE => vmsa.gs().base,
             x86defs::X64_MSR_KERNEL_GS_BASE => vmsa.kernel_gs_base(),
             x86defs::X86X_MSR_TSC_AUX => {
-                if self.backing.shared.tsc_aux_virtualized {
+                if self.shared.tsc_aux_virtualized {
                     vmsa.tsc_aux() as u64
                 } else {
                     return Err(MsrError::InvalidAccess);
@@ -2130,7 +2172,7 @@ impl UhProcessor<'_, SnpBacked> {
             }
             x86defs::X64_MSR_KERNEL_GS_BASE => vmsa.set_kernel_gs_base(value),
             x86defs::X86X_MSR_TSC_AUX => {
-                if self.backing.shared.tsc_aux_virtualized {
+                if self.shared.tsc_aux_virtualized {
                     vmsa.set_tsc_aux(value as u32);
                 } else {
                     return Err(MsrError::InvalidAccess);
@@ -2353,7 +2395,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
                 rax.set_virtual_page_number(gpn);
                 ecx.set_additional_count(std::cmp::min(
                     count - 1,
-                    self.vp.backing.shared.invlpgb_count_max.into(),
+                    self.vp.shared.invlpgb_count_max.into(),
                 ));
 
                 let edx = SevInvlpgbEdx::new();

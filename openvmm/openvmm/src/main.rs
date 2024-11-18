@@ -14,5 +14,5 @@ win_prng_support::use_win10_prng_apis!(advapi32);
 
 fn main() {
     openvmm_resources::ensure_linked_on_macos();
-    hvlite_entry::hvlite_main()
+    openvmm_entry::hvlite_main()
 }

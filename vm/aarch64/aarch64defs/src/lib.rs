@@ -5,6 +5,9 @@
 
 #![no_std]
 
+pub mod gic;
+pub mod psci;
+
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
 use zerocopy::AsBytes;
@@ -600,6 +603,14 @@ pub struct MpidrEl1 {
     pub aff3: u8,
     #[bits(24)]
     pub res0_40_63: u32,
+}
+
+impl MpidrEl1 {
+    pub const AFFINITY_MASK: Self = Self::new()
+        .with_aff0(0xff)
+        .with_aff1(0xff)
+        .with_aff2(0xff)
+        .with_aff3(0xff);
 }
 
 open_enum! {

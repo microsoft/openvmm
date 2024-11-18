@@ -21,6 +21,7 @@ use crate::processor::SidecarRemoveExit;
 use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
 use crate::validate_vtl_gpa_flags;
+use crate::BackingShared;
 use crate::Error;
 use crate::GuestVsmState;
 use crate::GuestVsmVtl1State;
@@ -122,8 +123,13 @@ struct ProcessorStatsX86 {
 
 impl BackingPrivate for HypervisorBackedX86 {
     type HclBacking = MshvX64;
+    type Shared = ();
 
-    fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error> {
+    fn shared(_: &BackingShared) -> &Self::Shared {
+        &()
+    }
+
+    fn new(params: BackingParams<'_, '_, Self>, _shared: &()) -> Result<Self, Error> {
         // Initialize shared register state to architectural state. The kernel
         // zero initializes this.
         //
@@ -145,7 +151,8 @@ impl BackingPrivate for HypervisorBackedX86 {
         let lapics = if let Some(mut lapics) = params.lapics {
             let apic_base = params
                 .runner
-                .get_vp_register(HvX64RegisterName::ApicBase)
+                // TODO GUEST VSM
+                .get_vp_register(GuestVtl::Vtl0, HvX64RegisterName::ApicBase)
                 .unwrap()
                 .as_u64();
 
@@ -190,6 +197,8 @@ impl BackingPrivate for HypervisorBackedX86 {
             tracing::trace!(?notifications, "setting notifications");
             this.runner
                 .set_vp_register(
+                    // TODO GUEST VSM
+                    GuestVtl::Vtl0,
                     VpRegisterName::DeliverabilityNotifications,
                     u64::from(notifications).into(),
                 )
@@ -327,7 +336,7 @@ impl BackingPrivate for HypervisorBackedX86 {
         }
 
         if let Some(vector) = interrupt {
-            this.handle_interrupt(vector, vtl)?;
+            this.handle_interrupt(vtl, vector)?;
         }
 
         if extint {
@@ -355,24 +364,28 @@ impl BackingPrivate for HypervisorBackedX86 {
         false
     }
 
+    fn handle_cross_vtl_interrupts(
+        _this: &mut UhProcessor<'_, Self>,
+        _dev: &impl CpuIo,
+    ) -> Result<bool, UhRunVpError> {
+        // TODO WHP GUEST VSM
+        Ok(false)
+    }
+
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
         this.backing
             .next_deliverability_notifications
             .set_interrupt_notification(true);
     }
 
-    fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16) {
+    fn request_untrusted_sint_readiness(
+        this: &mut UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+        sints: u16,
+    ) {
         this.backing
             .next_deliverability_notifications
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
-    }
-
-    fn switch_vtl_state(
-        _this: &mut UhProcessor<'_, Self>,
-        _source_vtl: GuestVtl,
-        _target_vtl: GuestVtl,
-    ) {
-        unreachable!("vtl switching should be managed by the hypervisor");
     }
 
     fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
@@ -596,7 +609,11 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
 
             self.vp
                 .runner
-                .set_vp_register(HvX64RegisterName::PendingEvent0, u128::from(event).into())
+                .set_vp_register(
+                    self.intercepted_vtl,
+                    HvX64RegisterName::PendingEvent0,
+                    u128::from(event).into(),
+                )
                 .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Event(e)))?;
         }
 
@@ -680,14 +697,14 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             let instruction_bytes = &instruction_bytes[..message.instruction_byte_count as usize];
             let tlb_lock_held = message.memory_access_info.gva_gpa_valid()
                 || message.memory_access_info.tlb_locked();
-            let mut state = self.vp.emulator_state();
+            let mut state = self.vp.emulator_state(self.intercepted_vtl);
             if let Some(bit) = virt_support_x86emu::emulate::emulate_mnf_write_fast_path(
                 instruction_bytes,
                 &mut state,
                 interruption_pending,
                 tlb_lock_held,
             ) {
-                self.vp.set_emulator_state(&state);
+                self.vp.set_emulator_state(self.intercepted_vtl, &state);
                 if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
                     signal_mnf(dev, connection_id);
                 }
@@ -914,7 +931,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
 }
 
 impl UhProcessor<'_, HypervisorBackedX86> {
-    fn handle_interrupt(&mut self, vector: u8, vtl: GuestVtl) -> Result<(), UhRunVpError> {
+    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
         const NAMES: &[HvX64RegisterName] = &[
             HvX64RegisterName::Rflags,
             HvX64RegisterName::Cr8,
@@ -924,7 +941,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         ];
         let mut values = [0u32.into(); NAMES.len()];
         self.runner
-            .get_vp_registers(NAMES, &mut values)
+            .get_vp_registers(vtl, NAMES, &mut values)
             .map_err(UhRunVpError::EmulationState)?;
 
         let &[rflags, cr8, interrupt_state, pending_interruption, pending_event] = &values;
@@ -976,6 +993,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         self.runner
             .set_vp_register(
+                vtl,
                 HvX64RegisterName::PendingInterruption,
                 u64::from(interruption).into(),
             )
@@ -997,7 +1015,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         ];
         let mut values = [0u32.into(); NAMES.len()];
         self.runner
-            .get_vp_registers(NAMES, &mut values)
+            .get_vp_registers(vtl, NAMES, &mut values)
             .map_err(UhRunVpError::EmulationState)?;
 
         let &[interrupt_state, pending_interruption, pending_event] = &values;
@@ -1031,6 +1049,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         self.runner
             .set_vp_register(
+                vtl,
                 HvX64RegisterName::PendingInterruption,
                 u64::from(interruption).into(),
             )
@@ -1062,10 +1081,13 @@ impl UhProcessor<'_, HypervisorBackedX86> {
                 attributes: 0x9b,
             };
             self.runner
-                .set_vp_registers([
-                    (HvX64RegisterName::Cs, HvRegisterValue::from(cs)),
-                    (HvX64RegisterName::Rip, 0u64.into()),
-                ])
+                .set_vp_registers(
+                    vtl,
+                    [
+                        (HvX64RegisterName::Cs, HvRegisterValue::from(cs)),
+                        (HvX64RegisterName::Rip, 0u64.into()),
+                    ],
+                )
                 .map_err(UhRunVpError::EmulationState)?;
             lapic.startup_suspend = false;
             lapic.halted = false;
@@ -1073,15 +1095,15 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         Ok(())
     }
 
-    fn set_rip(&mut self, _vtl: GuestVtl, rip: u64) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn set_rip(&mut self, vtl: GuestVtl, rip: u64) -> Result<(), VpHaltReason<UhRunVpError>> {
         self.runner
-            .set_vp_register(HvX64RegisterName::Rip, rip.into())
+            .set_vp_register(vtl, HvX64RegisterName::Rip, rip.into())
             .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::AdvanceRip(e)))?;
 
         Ok(())
     }
 
-    fn inject_gpf(&mut self, _vtl: GuestVtl) {
+    fn inject_gpf(&mut self, vtl: GuestVtl) {
         let exception_event = hvdef::HvX64PendingExceptionEvent::new()
             .with_event_pending(true)
             .with_event_type(hvdef::HV_X64_PENDING_EVENT_EXCEPTION)
@@ -1091,13 +1113,14 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         self.runner
             .set_vp_register(
+                vtl,
                 HvX64RegisterName::PendingEvent0,
                 u128::from(exception_event).into(),
             )
             .expect("set_vp_register should succeed for pending event");
     }
 
-    fn emulator_state(&mut self) -> x86emu::CpuState {
+    fn emulator_state(&mut self, vtl: GuestVtl) -> x86emu::CpuState {
         const NAMES: &[HvX64RegisterName] = &[
             HvX64RegisterName::Rsp,
             HvX64RegisterName::Es,
@@ -1110,7 +1133,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         ];
         let mut values = [FromZeroes::new_zeroed(); NAMES.len()];
         self.runner
-            .get_vp_registers(NAMES, &mut values)
+            .get_vp_registers(vtl, NAMES, &mut values)
             .expect("register query should not fail");
 
         let [rsp, es, ds, fs, gs, ss, cr0, efer] = values;
@@ -1138,13 +1161,16 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         }
     }
 
-    fn set_emulator_state(&mut self, state: &x86emu::CpuState) {
+    fn set_emulator_state(&mut self, vtl: GuestVtl, state: &x86emu::CpuState) {
         self.runner
-            .set_vp_registers([
-                (HvX64RegisterName::Rip, state.rip),
-                (HvX64RegisterName::Rflags, state.rflags.into()),
-                (HvX64RegisterName::Rsp, state.gps[x86emu::CpuState::RSP]),
-            ])
+            .set_vp_registers(
+                vtl,
+                [
+                    (HvX64RegisterName::Rip, state.rip),
+                    (HvX64RegisterName::Rflags, state.rflags.into()),
+                    (HvX64RegisterName::Rsp, state.gps[x86emu::CpuState::RSP]),
+                ],
+            )
             .unwrap();
 
         self.runner.cpu_context_mut().gps = state.gps;
@@ -1152,8 +1178,8 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
     fn set_vsm_partition_config(
         &mut self,
-        value: HvRegisterVsmPartitionConfig,
         vtl: GuestVtl,
+        value: HvRegisterVsmPartitionConfig,
     ) -> Result<(), HvError> {
         if vtl != GuestVtl::Vtl1 {
             return Err(HvError::InvalidParameter);
@@ -1268,11 +1294,11 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn state(&mut self) -> Result<x86emu::CpuState, Self::Error> {
-        Ok(self.vp.emulator_state())
+        Ok(self.vp.emulator_state(self.vtl))
     }
 
     fn set_state(&mut self, state: x86emu::CpuState) -> Result<(), Self::Error> {
-        self.vp.set_emulator_state(&state);
+        self.vp.set_emulator_state(self.vtl, &state);
         Ok(())
     }
 
@@ -1372,7 +1398,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             let mbec_user_execute = self
                 .vp
                 .runner
-                .get_vp_register(HvX64RegisterName::InstructionEmulationHints)
+                .get_vp_register(self.vtl, HvX64RegisterName::InstructionEmulationHints)
                 .map_err(UhRunVpError::EmulationState)?;
 
             let flags =
@@ -1647,7 +1673,7 @@ impl UhVpStateAccess<'_, '_, HypervisorBackedX86> {
         regs.get_values(values.iter_mut());
         self.vp
             .runner
-            .set_vp_registers(names.iter().copied().zip(values))
+            .set_vp_registers(self.vtl, names.iter().copied().zip(values))
             .map_err(vp_state::Error::SetRegisters)?;
         Ok(())
     }
@@ -1663,7 +1689,7 @@ impl UhVpStateAccess<'_, '_, HypervisorBackedX86> {
         let mut values = [HvRegisterValue::new_zeroed(); N];
         self.vp
             .runner
-            .get_vp_registers(&names, &mut values)
+            .get_vp_registers(self.vtl, &names, &mut values)
             .map_err(vp_state::Error::GetRegisters)?;
 
         regs.set_values(values.into_iter());
@@ -1906,7 +1932,7 @@ impl<T> hv1_hypercall::SetVpRegisters for UhHypercallHandler<'_, '_, T, Hypervis
             if reg.name == HvX64RegisterName::VsmPartitionConfig.into() {
                 let value = HvRegisterVsmPartitionConfig::from(reg.value.as_u64());
                 self.vp
-                    .set_vsm_partition_config(value, target_vtl)
+                    .set_vsm_partition_config(target_vtl, value)
                     .map_err(|e| (e, i))?;
             } else {
                 return Err((HvError::InvalidParameter, i));
@@ -1987,20 +2013,20 @@ struct UhApicClient<'a, 'b, T> {
 impl<T: CpuIo> ApicClient for UhApicClient<'_, '_, T> {
     fn cr8(&mut self) -> u32 {
         self.runner
-            .get_vp_register(HvX64RegisterName::Cr8)
+            .get_vp_register(self.vtl, HvX64RegisterName::Cr8)
             .unwrap()
             .as_u32()
     }
 
     fn set_cr8(&mut self, value: u32) {
         self.runner
-            .set_vp_register(HvX64RegisterName::Cr8, value.into())
+            .set_vp_register(self.vtl, HvX64RegisterName::Cr8, value.into())
             .unwrap();
     }
 
     fn set_apic_base(&mut self, value: u64) {
         self.runner
-            .set_vp_register(HvX64RegisterName::ApicBase, value.into())
+            .set_vp_register(self.vtl, HvX64RegisterName::ApicBase, value.into())
             .unwrap();
     }
 
@@ -2025,6 +2051,7 @@ impl<T: CpuIo> ApicClient for UhApicClient<'_, '_, T> {
     }
 }
 
+// TODO GUEST VSM Audit save state
 mod save_restore {
     use super::HypervisorBackedX86;
     use super::UhProcessor;
@@ -2125,13 +2152,15 @@ mod save_restore {
             };
 
             self.runner
-                .get_vp_registers(&SHARED_REGISTERS[..len], &mut values[..len])
+                // TODO GUEST VSM: Does dr6 need special handling?
+                .get_vp_registers(GuestVtl::Vtl0, &SHARED_REGISTERS[..len], &mut values[..len])
                 .context("failed to get shared registers")
                 .map_err(SaveError::Other)?;
 
             let startup_suspend = match self
                 .runner
-                .get_vp_register(HvX64RegisterName::InternalActivityState)
+                // TODO GUEST VSM
+                .get_vp_register(GuestVtl::Vtl0, HvX64RegisterName::InternalActivityState)
             {
                 Ok(val) => Some(HvInternalActivityRegister::from(val.as_u64()).startup_suspend()),
                 Err(e) => {
@@ -2229,7 +2258,10 @@ mod save_restore {
 
             let values = [dr0, dr1, dr2, dr3, dr6.unwrap_or(0)];
             self.runner
-                .set_vp_registers(SHARED_REGISTERS[..len].iter().copied().zip(values))
+                .set_vp_registers(
+                    GuestVtl::Vtl0,
+                    SHARED_REGISTERS[..len].iter().copied().zip(values),
+                )
                 .context("failed to set shared registers")
                 .map_err(RestoreError::Other)?;
 
@@ -2261,7 +2293,8 @@ mod save_restore {
                     ];
                     let mut values = [FromZeroes::new_zeroed(); NAMES.len()];
                     self.runner
-                        .get_vp_registers(&NAMES, &mut values)
+                        // TODO GUEST VSM
+                        .get_vp_registers(GuestVtl::Vtl0, &NAMES, &mut values)
                         .context("failed to get VP registers for startup suspend log")
                         .map_err(RestoreError::Other)?;
                     let [rip, rflags, cr0, efer] = values.map(|reg| reg.as_u64());
@@ -2282,9 +2315,11 @@ mod save_restore {
 
             if inject_startup_suspend {
                 let reg = u64::from(HvInternalActivityRegister::new().with_startup_suspend(true));
-                let result = self
-                    .runner
-                    .set_vp_registers([(HvX64RegisterName::InternalActivityState, reg)]);
+                let result = self.runner.set_vp_registers(
+                    // TODO GUEST VSM
+                    GuestVtl::Vtl0,
+                    [(HvX64RegisterName::InternalActivityState, reg)],
+                );
 
                 if let Err(e) = result {
                     // The ioctl set_vp_register path does not tell us hv_status

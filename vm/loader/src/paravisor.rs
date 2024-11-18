@@ -130,12 +130,13 @@ where
 
     let memory_size = memory_page_count * HV_PAGE_SIZE;
 
-    // Underhill is laid out as the following:
+    // OpenHCL is laid out as the following:
     // --- High Memory, 2MB aligned ---
     // free space
     //
     // page tables
     // IGVM parameters
+    // reserved vtl2 ranges
     // initrd
     // openhcl_boot
     // sidecar, if configured
@@ -283,7 +284,6 @@ where
         None
     };
 
-    // Determine the initial memory layout.
     let gdt_base_address = offset;
     let gdt_size = HV_PAGE_SIZE;
     offset += gdt_size;
@@ -320,6 +320,13 @@ where
     )?;
 
     offset += HV_PAGE_SIZE;
+
+    // Reserve space for the VTL2 reserved region.
+    let reserved_region_size = PARAVISOR_RESERVED_VTL2_PAGE_COUNT_MAX * HV_PAGE_SIZE;
+    let reserved_region_start = offset;
+    offset += reserved_region_size;
+
+    tracing::debug!(reserved_region_start);
 
     let parameter_region_size = PARAVISOR_VTL2_CONFIG_REGION_PAGE_COUNT_MAX * HV_PAGE_SIZE;
     let parameter_region_start = offset;
@@ -451,6 +458,8 @@ where
         memory_size,
         parameter_region_offset: calculate_shim_offset(parameter_region_start),
         parameter_region_size,
+        vtl2_reserved_region_offset: calculate_shim_offset(reserved_region_start),
+        vtl2_reserved_region_size: reserved_region_size,
         sidecar_offset: calculate_shim_offset(sidecar_base),
         sidecar_size,
         sidecar_entry_offset: calculate_shim_offset(sidecar_entrypoint),
@@ -624,21 +633,24 @@ where
     importer.import_parameter(dt_parameter_area, 0, IgvmParameterType::DeviceTree)?;
 
     if isolation_type == IsolationType::Snp {
-        let secrets_page_base = config_region_page_base + PARAVISOR_CONFIG_SECRETS_PAGE_INDEX;
+        let reserved_region_page_base = reserved_region_start / HV_PAGE_SIZE;
+        let secrets_page_base: u64 =
+            reserved_region_page_base + PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX;
         importer.import_pages(
             secrets_page_base,
-            PARAVISOR_CONFIG_SECRETS_SIZE_PAGES,
-            "underhill-secrets-page",
+            PARAVISOR_RESERVED_VTL2_SNP_SECRETS_SIZE_PAGES,
+            "underhill-snp-secrets-page",
             BootPageAcceptance::SecretsPage,
             &[],
         )?;
 
         let cpuid_page = create_snp_cpuid_page();
-        let cpuid_page_base = config_region_page_base + PARAVISOR_CONFIG_CPUID_PAGE_INDEX;
+        let cpuid_page_base =
+            reserved_region_page_base + PARAVISOR_RESERVED_VTL2_SNP_CPUID_PAGE_INDEX;
         importer.import_pages(
             cpuid_page_base,
             1,
-            "underhill-cpuid-page",
+            "underhill-snp-cpuid-page",
             BootPageAcceptance::CpuidPage,
             cpuid_page.as_bytes(),
         )?;
@@ -646,12 +658,13 @@ where
         importer.import_pages(
             cpuid_page_base + 1,
             1,
-            "underhill-cpuid-extended-state-page",
+            "underhill-snp-cpuid-extended-state-page",
             BootPageAcceptance::CpuidExtendedStatePage,
             &[],
         )?;
 
-        let vmsa_page_base = config_region_page_base + PARAVISOR_CONFIG_VMSA_PAGE_INDEX;
+        let vmsa_page_base =
+            reserved_region_page_base + PARAVISOR_RESERVED_VTL2_SNP_VMSA_PAGE_INDEX;
         importer.set_vp_context_page(vmsa_page_base)?;
     }
 
@@ -1021,6 +1034,8 @@ where
         memory_size,
         parameter_region_offset: calculate_shim_offset(parameter_region_start),
         parameter_region_size,
+        vtl2_reserved_region_offset: 0,
+        vtl2_reserved_region_size: 0,
         sidecar_offset: 0,
         sidecar_size: 0,
         sidecar_entry_offset: 0,

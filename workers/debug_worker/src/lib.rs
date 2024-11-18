@@ -40,6 +40,7 @@ use vmm_core_defs::debug_rpc::DebugStopReason;
 pub struct DebuggerWorker<T: Listener> {
     listener: T,
     state: State<T::Address>,
+    initial_arch: Architecture,
 }
 
 /// The current server state.
@@ -82,6 +83,11 @@ where
             state: State::Listening {
                 vm_proxy: VmProxy::new(params.req_chan, params.vp_count),
             },
+            initial_arch: match params.target_arch {
+                debug_worker_defs::TargetArch::X86_64 => Architecture::X86_64,
+                debug_worker_defs::TargetArch::I8086 => Architecture::I8086,
+                debug_worker_defs::TargetArch::Aarch64 => Architecture::Aarch64,
+            },
         })
     }
 
@@ -100,7 +106,7 @@ where
             let mut server = Server {
                 listener,
                 state: self.state,
-                architecture: Architecture::X86_64,
+                architecture: self.initial_arch,
             };
 
             loop {
@@ -131,6 +137,15 @@ where
                                     listener: server.listener.into_inner(),
                                     req_chan,
                                     vp_count,
+                                    target_arch: match server.architecture {
+                                        Architecture::X86_64 => {
+                                            debug_worker_defs::TargetArch::X86_64
+                                        }
+                                        Architecture::I8086 => debug_worker_defs::TargetArch::I8086,
+                                        Architecture::Aarch64 => {
+                                            debug_worker_defs::TargetArch::Aarch64
+                                        }
+                                    },
                                 }
                             };
                             response.send(Ok(state));
@@ -156,6 +171,7 @@ enum Architecture {
     X86_64,
     #[inspect(rename = "i8086")]
     I8086,
+    Aarch64,
 }
 
 impl<T: Listener> Server<T>
@@ -198,6 +214,15 @@ where
                                     run_state_machine(
                                         socket,
                                         VmTarget::<gdb::arch::x86::I8086>::new(&mut vm_proxy),
+                                    )
+                                    .await
+                                }
+                                Architecture::Aarch64 => {
+                                    run_state_machine(
+                                        socket,
+                                        VmTarget::<gdbstub_arch::aarch64::AArch64>::new(
+                                            &mut vm_proxy,
+                                        ),
                                     )
                                     .await
                                 }

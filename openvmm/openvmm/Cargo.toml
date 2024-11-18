@@ -18,10 +18,10 @@ default = [
   "disk_blob",
 ]
 
-# see the `hvlite_entry` crate for more info on these features
-encryption = ["hvlite_entry/encryption"]
+# see the `openvmm_entry` crate for more info on these features
+encryption = ["openvmm_entry/encryption"]
 gdb = ["openvmm_resources/gdb"]
-openssl-vendored = ["hvlite_entry/openssl-vendored"]
+openssl-vendored = ["openvmm_entry/openssl-vendored"]
 tpm = ["openvmm_resources/tpm"]
 virt_hvf = ["openvmm_resources/virt_hvf"]
 virt_kvm = ["openvmm_resources/virt_kvm"]
@@ -36,10 +36,10 @@ disk_blob = ["openvmm_resources/disk_blob"]
 # build openvmm to support the latest insider build of windows on arm
 # rather than latest release build
 # TODO: remove once whp on arm is stabilized
-unstable_whp = ["hvlite_entry/unstable_whp", "openvmm_resources/unstable_whp"]
+unstable_whp = ["openvmm_entry/unstable_whp", "openvmm_resources/unstable_whp"]
 
 [dependencies]
-hvlite_entry.workspace = true
+openvmm_entry.workspace = true
 openvmm_resources.workspace = true
 
 [target.'cfg(windows)'.dependencies]

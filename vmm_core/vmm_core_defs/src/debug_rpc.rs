@@ -4,14 +4,15 @@
 //! The message definitions used to process debugging requests from
 //! `debug_worker`.
 
+use mesh::payload::Protobuf;
 pub use virt::x86::BreakpointSize;
 pub use virt::x86::BreakpointType;
 pub use virt::x86::DebugState;
 pub use virt::x86::HardwareBreakpoint;
-pub use virt::x86::VpState;
 
 use mesh::rpc::FailableRpc;
 use mesh::MeshPayload;
+use virt::x86::SegmentRegister;
 
 #[derive(Debug, MeshPayload)]
 pub enum DebugRequest {
@@ -28,13 +29,57 @@ pub enum DebugRequest {
     /// Sets the hardware debugger state for a VP.
     SetDebugState { vp: u32, state: DebugState },
     /// Fetch the specified vp's register state.
-    GetVpState(FailableRpc<u32, Box<VpState>>),
+    GetVpState(FailableRpc<u32, Box<DebuggerVpState>>),
     /// Set the specified vp's register state.
-    SetVpState(FailableRpc<(u32, Box<VpState>), ()>),
+    SetVpState(FailableRpc<(u32, Box<DebuggerVpState>), ()>),
     /// Read from the specified GPA from the guest.
     ReadMemory(FailableRpc<(GuestAddress, usize), Vec<u8>>),
     /// Write to the specified GPA from the guest.
     WriteMemory(FailableRpc<(GuestAddress, Vec<u8>), ()>),
+}
+
+/// Register state for a VP.
+///
+/// This has all the supported architectures embedded in it to avoid having
+/// arch-specific compilation at this layer.
+#[derive(Debug, Protobuf)]
+pub enum DebuggerVpState {
+    X86_64(X86VpState),
+    Aarch64(Aarch64VpState),
+}
+
+/// Subset of VP state for debuggers.
+#[derive(Debug, PartialEq, Eq, Protobuf)]
+pub struct X86VpState {
+    pub gp: [u64; 16],
+    pub rip: u64,
+    pub rflags: u64,
+    pub cr0: u64,
+    pub cr2: u64,
+    pub cr3: u64,
+    pub cr4: u64,
+    pub cr8: u64,
+    pub efer: u64,
+    pub kernel_gs_base: u64,
+    pub es: SegmentRegister,
+    pub cs: SegmentRegister,
+    pub ss: SegmentRegister,
+    pub ds: SegmentRegister,
+    pub fs: SegmentRegister,
+    pub gs: SegmentRegister,
+}
+
+#[derive(Debug, PartialEq, Eq, Protobuf)]
+pub struct Aarch64VpState {
+    pub x: [u64; 31],
+    pub sp_el0: u64,
+    pub sp_el1: u64,
+    pub pc: u64,
+    pub cpsr: u64,
+    pub sctlr_el1: u64,
+    pub tcr_el1: u64,
+    pub ttbr0_el1: u64,
+    pub ttbr1_el1: u64,
 }
 
 /// An address within the Guest

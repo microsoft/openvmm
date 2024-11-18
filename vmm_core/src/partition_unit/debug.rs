@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+#![cfg(feature = "gdb")]
 
 //! Implements debugging support for [`PartitionUnitRunner`]. This is a separate
 //! module because it is cfg gated on the `gdb` feature.

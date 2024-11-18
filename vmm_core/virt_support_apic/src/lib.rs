@@ -69,6 +69,8 @@ pub struct LocalApic {
     #[inspect(hex)]
     apic_base: u64,
     #[inspect(hex)]
+    base_address: Option<u64>,
+    #[inspect(hex)]
     id: u32,
     #[inspect(hex)]
     version: u32,
@@ -111,6 +113,7 @@ pub struct LocalApic {
     active_auto_eoi: bool,
     is_offloaded: bool,
     needs_offload_reeval: bool,
+    scan_irr: bool,
 
     stats: Stats,
 }
@@ -372,6 +375,7 @@ impl LocalApicSet {
             shared,
             global: self.global.clone(),
             apic_base: 0,
+            base_address: None,
             id: vp.apic_id,
             version: APIC_VERSION,
             ldr: 0,
@@ -397,6 +401,7 @@ impl LocalApicSet {
             active_auto_eoi: false,
             needs_offload_reeval: false,
             is_offloaded: false,
+            scan_irr: false,
             stats: Stats::default(),
         };
         apic.reset();
@@ -844,12 +849,7 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
             ApicRegister::ID => self.apic.id_register(),
             ApicRegister::VERSION => self.apic.version,
             ApicRegister::TPR => self.client.cr8() << 4,
-            ApicRegister::PPR => {
-                self.ensure_state_local();
-                let task_pri = self.client.cr8();
-                let isr_pri = priority(self.apic.isr.top().unwrap_or(0));
-                task_pri.max(isr_pri.into()) << 4
-            }
+            ApicRegister::PPR => self.get_ppr(),
             ApicRegister::LDR => self.apic.ldr_register(),
             ApicRegister::DFR if !self.apic.x2apic_enabled() => {
                 if self.apic.cluster_mode {
@@ -1029,7 +1029,7 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
             }
             ApicRegister::SELF_IPI if self.apic.x2apic_enabled() => {
                 self.apic.stats.self_ipi.increment();
-                self.apic.shared.request_interrupt(
+                self.apic.scan_irr |= self.apic.shared.request_interrupt(
                     self.apic.software_enabled(),
                     DeliveryMode::FIXED,
                     value as u8,
@@ -1043,6 +1043,14 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
             }
         }
         true
+    }
+
+    /// Computes and returns the current effective PPR value.
+    pub fn get_ppr(&mut self) -> u32 {
+        self.ensure_state_local();
+        let task_pri = self.client.cr8();
+        let isr_pri = priority(self.apic.isr.top().unwrap_or(0));
+        task_pri.max(isr_pri.into()) << 4
     }
 
     fn ensure_state_local(&mut self) {
@@ -1108,7 +1116,7 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
             }
             DestinationShorthand::SELF => {
                 self.apic.stats.self_ipi.increment();
-                self.apic.shared.request_interrupt(
+                self.apic.scan_irr |= self.apic.shared.request_interrupt(
                     self.apic.software_enabled(),
                     delivery_mode,
                     icr.vector(),
@@ -1143,6 +1151,7 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
 
 impl SharedState {
     /// Returns true if the VP should be woken up to scan the APIC.
+    #[must_use]
     fn request_interrupt(
         &self,
         software_enabled: bool,
@@ -1360,11 +1369,7 @@ impl LocalApic {
 
     /// Gets the APIC base address, if the APIC is enabled and in xapic mode.
     pub fn base_address(&self) -> Option<u64> {
-        if self.xapic_enabled() {
-            Some((ApicBase::from(self.apic_base).base_page() as u64) << 12)
-        } else {
-            None
-        }
+        self.base_address
     }
 
     /// Sets the APIC base MSR.
@@ -1457,7 +1462,7 @@ impl LocalApic {
         }
 
         let mut r = self.flush();
-        if scan_irr {
+        if scan_irr || self.scan_irr {
             self.pull_irr();
         }
         if !self.is_offloaded {
@@ -1649,7 +1654,7 @@ impl LocalApic {
         let lvt = Lvt::from(self.lvt_timer);
         if counts >= self.timer_ccr as u64 {
             if !lvt.masked() {
-                self.shared.request_interrupt(
+                self.scan_irr |= self.shared.request_interrupt(
                     self.software_enabled(),
                     DeliveryMode::FIXED,
                     lvt.vector(),
@@ -1710,6 +1715,7 @@ impl LocalApic {
             shared: _,
             global: _,
             apic_base: _,
+            base_address: _,
             id: _,
             version: _,
             ldr,
@@ -1734,6 +1740,7 @@ impl LocalApic {
             timer_dcr,
             active_auto_eoi,
             needs_offload_reeval,
+            scan_irr,
             is_offloaded: _,
             stats: _,
         } = self;
@@ -1750,6 +1757,7 @@ impl LocalApic {
         // disabled state.
         *irr = [0; 8];
         *needs_offload_reeval = false;
+        *scan_irr = false;
         *tmr = [0; 8];
         *auto_eoi = [0; 8];
         *active_auto_eoi = false;
@@ -1766,7 +1774,13 @@ impl LocalApic {
         self.update_slot();
     }
 
-    fn update_slot(&self) {
+    fn update_slot(&mut self) {
+        // Cache the base address, since `base_address()` is called in the
+        // instruction emulator hot path.
+        self.base_address = self
+            .xapic_enabled()
+            .then(|| (ApicBase::from(self.apic_base).base_page() as u64) << 12);
+
         let mut mutable = self.global.mutable.write();
         let mutable = &mut *mutable;
         let slot = &mut mutable.by_apic_id[self.id as usize];
@@ -1974,6 +1988,7 @@ impl LocalApic {
             }
         }
         self.recompute_next_irr();
+        self.scan_irr = false;
     }
 
     fn id_register(&self) -> u32 {

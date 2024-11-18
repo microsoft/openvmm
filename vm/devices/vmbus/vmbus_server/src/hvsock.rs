@@ -585,11 +585,12 @@ mod tests {
     use crate::ring::FlatRingMem;
     use futures::AsyncReadExt;
     use futures::AsyncWriteExt;
+    use pal_async::async_test;
     use pal_async::driver::Driver;
     use pal_async::socket::PolledSocket;
     use pal_async::task::Spawn;
     use pal_async::task::Task;
-    use pal_async::DefaultPool;
+    use pal_async::DefaultDriver;
     use unix_socket::UnixStream;
     use vmbus_async::pipe::connected_byte_pipes;
     use vmbus_async::pipe::BytePipe;
@@ -610,87 +611,77 @@ mod tests {
         (c, s, task)
     }
 
-    #[test]
-    fn test_relay() {
-        DefaultPool::run_with(|driver| async move {
-            let (mut c, mut s, task) = setup_relay(&driver);
+    #[async_test]
+    async fn test_relay(driver: DefaultDriver) {
+        let (mut c, mut s, task) = setup_relay(&driver);
 
-            let d = b"abcd";
-            let mut v = [0; 4];
+        let d = b"abcd";
+        let mut v = [0; 4];
 
-            // c to s
-            c.write_all(d).await.unwrap();
-            s.read_exact(&mut v).await.unwrap();
-            assert_eq!(&v, d);
+        // c to s
+        c.write_all(d).await.unwrap();
+        s.read_exact(&mut v).await.unwrap();
+        assert_eq!(&v, d);
 
-            // s to c
-            s.write_all(d).await.unwrap();
-            c.read_exact(&mut v).await.unwrap();
-            assert_eq!(&v, d);
+        // s to c
+        s.write_all(d).await.unwrap();
+        c.read_exact(&mut v).await.unwrap();
+        assert_eq!(&v, d);
 
-            // s to c
-            s.write_all(d).await.unwrap();
-            s.close().await.unwrap();
-            c.read_exact(&mut v).await.unwrap();
-            assert_eq!(&v, d);
+        // s to c
+        s.write_all(d).await.unwrap();
+        s.close().await.unwrap();
+        c.read_exact(&mut v).await.unwrap();
+        assert_eq!(&v, d);
 
-            // c to s
-            c.write_all(d).await.unwrap();
-            s.read_exact(&mut v).await.unwrap();
-            assert_eq!(&v, d);
+        // c to s
+        c.write_all(d).await.unwrap();
+        s.read_exact(&mut v).await.unwrap();
+        assert_eq!(&v, d);
 
-            c.close().await.unwrap();
-            task.await.unwrap();
-        })
+        c.close().await.unwrap();
+        task.await.unwrap();
     }
 
     #[cfg(unix)] // Windows does not deliver POLLHUP on Unix socket close.
-    #[test]
-    fn test_relay_host_close() {
-        DefaultPool::run_with(|driver| async move {
-            let (mut c, _, task) = setup_relay(&driver);
+    #[async_test]
+    async fn test_relay_host_close(driver: DefaultDriver) {
+        let (mut c, _, task) = setup_relay(&driver);
 
-            let mut b = [0];
-            assert_eq!(c.read(&mut b).await.unwrap(), 0);
-            drop(c);
-            task.await.unwrap();
-        })
+        let mut b = [0];
+        assert_eq!(c.read(&mut b).await.unwrap(), 0);
+        drop(c);
+        task.await.unwrap();
     }
 
-    #[test]
-    fn test_relay_guest_close() {
-        DefaultPool::run_with(|driver| async move {
-            let (_, mut s, task) = setup_relay(&driver);
+    #[async_test]
+    async fn test_relay_guest_close(driver: DefaultDriver) {
+        let (_, mut s, task) = setup_relay(&driver);
 
-            let mut b = [0];
-            assert_eq!(s.read(&mut b).await.unwrap(), 0);
-            drop(s);
-            task.await.unwrap();
-        })
+        let mut b = [0];
+        assert_eq!(s.read(&mut b).await.unwrap(), 0);
+        drop(s);
+        task.await.unwrap();
     }
 
-    #[test]
-    fn test_relay_forward_socket_shutdown() {
-        DefaultPool::run_with(|driver| async move {
-            let (mut c, mut s, task) = setup_relay(&driver);
-            s.close().await.unwrap();
-            let mut v = [0; 1];
-            assert_eq!(c.read(&mut v).await.unwrap(), 0);
-            drop(c);
-            task.await.unwrap();
-        })
+    #[async_test]
+    async fn test_relay_forward_socket_shutdown(driver: DefaultDriver) {
+        let (mut c, mut s, task) = setup_relay(&driver);
+        s.close().await.unwrap();
+        let mut v = [0; 1];
+        assert_eq!(c.read(&mut v).await.unwrap(), 0);
+        drop(c);
+        task.await.unwrap();
     }
 
-    #[test]
-    fn test_relay_forward_channel_shutdown() {
-        DefaultPool::run_with(|driver| async move {
-            let (mut c, mut s, task) = setup_relay(&driver);
+    #[async_test]
+    async fn test_relay_forward_channel_shutdown(driver: DefaultDriver) {
+        let (mut c, mut s, task) = setup_relay(&driver);
 
-            c.close().await.unwrap();
-            let mut v = [0; 1];
-            assert_eq!(s.read(&mut v).await.unwrap(), 0);
-            drop(s);
-            task.await.unwrap();
-        })
+        c.close().await.unwrap();
+        let mut v = [0; 1];
+        assert_eq!(s.read(&mut v).await.unwrap(), 0);
+        drop(s);
+        task.await.unwrap();
     }
 }

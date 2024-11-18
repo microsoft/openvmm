@@ -1,20 +1,19 @@
-name: VSO refresh
+name: Refresh VSO Mirror
 on:
   workflow_dispatch:
   push:
     branches:
-      - main
+    - main
+
 permissions:
   id-token: write
   contents: read
-  pull-requests: read
 
 jobs:
-  Refresh:
+  QueueBuild:
     runs-on: ubuntu-latest
     steps:
-      - name: Azure Login
-        uses: Azure/login@v2
+      - uses: Azure/login@v1
         with:
           # These secrets describe the HvLite-GitHub service principal and associated Azure subscription,
           # which, along with the GITHUB_TOKEN, are used to authenticate GitHub Actions to Azure with OpenID Connect.
@@ -27,13 +26,19 @@ jobs:
       - name: Pull Azure Key Vault secrets
         uses: Azure/get-keyvault-secrets@v1
         with:
-          keyvault: "HvLite-PATs"
-          secrets: 'HvliteMirrorPAT'  # comma separated list of secret keys that need to be fetched from the Key Vault 
-        id: AzureKeyVault # Reference the secrets with steps.AzureKeyVault.outputs.mySecret1
+          keyvault: 'HvLite-PATs'
+          secrets: 'HvliteMirrorPAT'
+        id: AzureKeyVault
 
-      - name: Refresh the VSO mirror
-        uses: Azure/pipelines@v1
+      - name: Checkout actions
+        uses: actions/checkout@v4
         with:
-          azure-devops-project-url: '${{ secrets.VSO_MIRROR_URL }}'
-          azure-pipeline-name: '${{ secrets.VSO_REFRESH_PIPELINE_NAME }}'
-          azure-devops-token: '${{ steps.AzureKeyVault.outputs.HvliteMirrorPAT }}' # This PAT should have the Build (read & execute) permission.
+          fetch-depth: 0
+
+      - name: Install dependencies
+        shell: bash
+        run: pip install --user -r .github/scripts/refresh_mirror/requirements.txt
+
+      - name: Refresh VSO Mirror
+        shell: bash
+        run: python .github/scripts/refresh_mirror/refresh-mirror.py 149443 ${{ steps.AzureKeyVault.outputs.HvliteMirrorPAT }}

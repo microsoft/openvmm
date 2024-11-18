@@ -3,7 +3,7 @@
 ```admonish danger title="Disclaimer"
 The following list is not exhaustive, and may be out of date.
 
-The most up to date reference is always the [code itself](https://openvmm.dev/rustdoc/linux/hvlite_entry/struct.Options.html),
+The most up to date reference is always the [code itself](https://openvmm.dev/rustdoc/linux/openvmm_entry/struct.Options.html),
 as well as the generated CLI help (via `cargo run -- --help`).
 ```
 

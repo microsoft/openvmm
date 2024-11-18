@@ -63,11 +63,12 @@ impl IntoPipeline for CheckinGatesCli {
 
         // configure pr/ci branch triggers and add gh pipeline name
         {
+            let branches = vec!["main".into(), "release/*".into()];
             match config {
                 PipelineConfig::Ci => {
                     pipeline
                         .gh_set_ci_triggers(GhCiTriggers {
-                            branches: vec!["main".into()],
+                            branches,
                             ..Default::default()
                         })
                         .gh_set_name("[flowey] OpenVMM CI");
@@ -75,7 +76,7 @@ impl IntoPipeline for CheckinGatesCli {
                 PipelineConfig::Pr => {
                     pipeline
                         .gh_set_pr_triggers(GhPrTriggers {
-                            branches: vec!["main".into()],
+                            branches,
                             ..Default::default()
                         })
                         .gh_set_name("[flowey] OpenVMM PR");

@@ -2362,6 +2362,17 @@ pub struct HvVpVtlControl {
     pub registers: [u64; 2],
 }
 
+#[bitfield(u64)]
+#[derive(AsBytes, FromBytes, FromZeroes)]
+pub struct HvRegisterVsmVina {
+    pub vector: u8,
+    pub enabled: bool,
+    pub auto_reset: bool,
+    pub auto_eoi: bool,
+    #[bits(53)]
+    pub reserved: u64,
+}
+
 #[repr(C)]
 #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
 pub struct HvVpAssistPage {

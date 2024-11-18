@@ -27,6 +27,7 @@ pub mod artifacts {
     openvmm_native!(OPENVMM_LINUX_X64, "linux", "x86_64");
     openvmm_native!(OPENVMM_WIN_AARCH64, "windows", "aarch64");
     openvmm_native!(OPENVMM_LINUX_AARCH64, "linux", "aarch64");
+    openvmm_native!(OPENVMM_MACOS_AARCH64, "macos", "aarch64");
 
     declare_artifacts! {
         /// openvmm windows x86_64 executable
@@ -37,6 +38,8 @@ pub mod artifacts {
         OPENVMM_WIN_AARCH64,
         /// openvmm linux aarch64 executable
         OPENVMM_LINUX_AARCH64,
+        /// openvmm macos aarch64 executable
+        OPENVMM_MACOS_AARCH64,
         /// Directory to put OpenHCL dumps in
         OPENHCL_DUMP_DIRECTORY,
     }
@@ -249,6 +252,21 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2204_SERVER_X64 {
             const FILENAME: &'static str = "ubuntu-22.04-server-cloudimg-amd64.vhd";
             const SIZE: u64 = 2361655808;
+        }
+
+        declare_artifacts! {
+            /// Ubuntu 24.04 Server Aarch64
+            UBUNTU_2404_SERVER_AARCH64
+        }
+
+        impl IsTestVhd for UBUNTU_2404_SERVER_AARCH64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
+            const ARCH: MachineArch = MachineArch::Aarch64;
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2404_SERVER_AARCH64 {
+            const FILENAME: &'static str = "ubuntu-24.04-server-cloudimg-arm64.vhd";
+            const SIZE: u64 = 3758211584;
         }
     }
 

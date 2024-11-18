@@ -60,6 +60,7 @@ impl petri_artifacts_core::TestArtifactResolverBackend for OpenvmmKnownPathsTest
             _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64 => get_guest_vhd_path(KnownVhd::Gen2WindowsDataCenterCore2022),
             _ if id == test_vhd::FREE_BSD_13_2_X64 => get_guest_vhd_path(KnownVhd::FreeBsd13_2),
             _ if id == test_vhd::UBUNTU_2204_SERVER_X64 => get_guest_vhd_path(KnownVhd::Ubuntu2204Server),
+            _ if id == test_vhd::UBUNTU_2404_SERVER_AARCH64 => get_guest_vhd_path(KnownVhd::Ubuntu2404ServerAarch64),
 
             _ if id == test_iso::FREE_BSD_13_2_X64 => get_guest_iso_path(KnownIso::FreeBsd13_2),
 

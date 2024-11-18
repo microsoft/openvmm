@@ -3,7 +3,7 @@
 
 //! Definitions for the mesh entrypoint.
 //!
-//! These are here instead of in `hvlite_entry` to support launching hvlite from
+//! These are here instead of in `openvmm_entry` to support launching hvlite from
 //! a foreign mesh host. The only supported use case is launching hvlite from
 //! petri for testing.
 
