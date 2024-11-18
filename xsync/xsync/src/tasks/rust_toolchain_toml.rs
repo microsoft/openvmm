@@ -30,6 +30,8 @@ impl Cmd for RustToolchainToml {
         let base_toolchain_toml =
             fs_err::read_to_string(ctx.base_workspace.join("rust-toolchain.toml"));
 
+        // Ensure that the rust-toolchain.toml in the overlay matches that of the base repo exactly.
+        // This is a policy decision, and is open to changing in the future.
         match base_toolchain_toml {
             Ok(base_toolchain_toml) => {
                 log::info!(
