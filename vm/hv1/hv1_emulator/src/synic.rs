@@ -498,7 +498,13 @@ impl ProcessorSynic {
         reg: HvRegisterName,
         v: HvRegisterValue,
     ) -> Result<(), MsrError> {
-        self.write_msr(guest_memory, Self::reg_to_msr(reg)?, v.as_u64())
+        match HvAllArchRegisterName(reg.0) {
+            HvAllArchRegisterName::VsmVina => {
+                self.vina = HvRegisterVsmVina::from(v.as_u64());
+            }
+            _ => self.write_msr(guest_memory, Self::reg_to_msr(reg)?, v.as_u64())?,
+        }
+        Ok(())
     }
 
     /// Writes an x64 MSR.
@@ -547,8 +553,11 @@ impl ProcessorSynic {
 
     /// Reads a synthetic interrupt controller register.
     pub fn read_reg(&self, reg: HvRegisterName) -> Result<HvRegisterValue, MsrError> {
-        self.read_msr(Self::reg_to_msr(reg)?)
-            .map(HvRegisterValue::from)
+        let v = match HvAllArchRegisterName(reg.0) {
+            HvAllArchRegisterName::VsmVina => self.vina.into_bits(),
+            _ => self.read_msr(Self::reg_to_msr(reg)?)?,
+        };
+        Ok(v.into())
     }
 
     /// Reads an x64 MSR.

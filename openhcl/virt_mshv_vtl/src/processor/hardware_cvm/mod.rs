@@ -313,7 +313,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             HvX64RegisterName::VpAssistPage => Ok(self.vp.backing.cvm_state_mut().hv[vtl]
                 .vp_assist_page()
                 .into()),
-            // TODO GUEST VSM: add VINA and ApicBase registers
+            // TODO GUEST VSM: add ApicBase register
             virt_msr @ (HvX64RegisterName::Star
             | HvX64RegisterName::Lstar
             | HvX64RegisterName::Cstar
@@ -504,7 +504,8 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::Stimer2Config
             | HvX64RegisterName::Stimer2Count
             | HvX64RegisterName::Stimer3Config
-            | HvX64RegisterName::Stimer3Count) => self.vp.backing.cvm_state_mut().hv[vtl]
+            | HvX64RegisterName::Stimer3Count
+            | HvX64RegisterName::VsmVina) => self.vp.backing.cvm_state_mut().hv[vtl]
                 .synic
                 .read_reg(synic_reg.into())
                 .map_err(|_| HvError::OperationFailed),
@@ -530,7 +531,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         // - validate the values being set, e.g. that addresses are canonical,
         //   that efer and pat make sense, etc. Similar validation is needed in
         //   the write_msr path.
-        // TODO GUEST VSM: add VINA and ApicBase registers
+        // TODO GUEST VSM: add ApicBase register
 
         match HvX64RegisterName::from(reg.name) {
             HvX64RegisterName::VsmPartitionConfig => self.vp.set_vsm_partition_config(
@@ -677,7 +678,8 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::Stimer2Config
             | HvX64RegisterName::Stimer2Count
             | HvX64RegisterName::Stimer3Config
-            | HvX64RegisterName::Stimer3Count) => self.vp.backing.cvm_state_mut().hv[vtl]
+            | HvX64RegisterName::Stimer3Count
+            | HvX64RegisterName::VsmVina) => self.vp.backing.cvm_state_mut().hv[vtl]
                 .synic
                 .write_reg(&self.vp.partition.gm[vtl], synic_reg.into(), reg.value)
                 .map_err(|_| HvError::OperationFailed),
