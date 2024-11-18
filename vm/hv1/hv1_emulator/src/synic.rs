@@ -13,6 +13,7 @@ use hvdef::HvMessageType;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use hvdef::HvRegisterVsmVina;
+use hvdef::HvResult;
 use hvdef::HvSynicSimpSiefp;
 use hvdef::HvSynicStimerConfig;
 use hvdef::TimerMessagePayload;
@@ -449,7 +450,7 @@ impl ProcessorSynic {
         Ok(())
     }
 
-    fn reg_to_msr(reg: HvRegisterName) -> Result<u32, MsrError> {
+    fn reg_to_msr(reg: HvRegisterName) -> HvResult<u32> {
         Ok(match HvAllArchRegisterName(reg.0) {
             HvAllArchRegisterName::Sint0
             | HvAllArchRegisterName::Sint1
@@ -486,9 +487,16 @@ impl ProcessorSynic {
             }
             _ => {
                 tracelimit::error_ratelimited!(?reg, "unknown synic register");
-                return Err(MsrError::Unknown);
+                return Err(HvError::UnknownRegisterName);
             }
         })
+    }
+
+    fn msrerr_to_hverr(err: MsrError) -> HvError {
+        match err {
+            MsrError::Unknown => HvError::UnknownRegisterName,
+            MsrError::InvalidAccess => HvError::InvalidParameter,
+        }
     }
 
     /// Writes a synthetic interrupt controller register.
@@ -497,12 +505,18 @@ impl ProcessorSynic {
         guest_memory: &GuestMemory,
         reg: HvRegisterName,
         v: HvRegisterValue,
-    ) -> Result<(), MsrError> {
+    ) -> HvResult<()> {
         match HvAllArchRegisterName(reg.0) {
             HvAllArchRegisterName::VsmVina => {
-                self.vina = HvRegisterVsmVina::from(v.as_u64());
+                let v = HvRegisterVsmVina::from(v.as_u64());
+                if v.reserved() != 0 {
+                    return Err(HvError::InvalidParameter);
+                }
+                self.vina = v;
             }
-            _ => self.write_msr(guest_memory, Self::reg_to_msr(reg)?, v.as_u64())?,
+            _ => self
+                .write_msr(guest_memory, Self::reg_to_msr(reg)?, v.as_u64())
+                .map_err(Self::msrerr_to_hverr)?,
         }
         Ok(())
     }
@@ -552,10 +566,12 @@ impl ProcessorSynic {
     }
 
     /// Reads a synthetic interrupt controller register.
-    pub fn read_reg(&self, reg: HvRegisterName) -> Result<HvRegisterValue, MsrError> {
+    pub fn read_reg(&self, reg: HvRegisterName) -> HvResult<HvRegisterValue> {
         let v = match HvAllArchRegisterName(reg.0) {
             HvAllArchRegisterName::VsmVina => self.vina.into_bits(),
-            _ => self.read_msr(Self::reg_to_msr(reg)?)?,
+            _ => self
+                .read_msr(Self::reg_to_msr(reg)?)
+                .map_err(Self::msrerr_to_hverr)?,
         };
         Ok(v.into())
     }

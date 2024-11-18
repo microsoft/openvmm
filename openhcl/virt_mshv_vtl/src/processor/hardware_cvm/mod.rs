@@ -507,8 +507,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::Stimer3Count
             | HvX64RegisterName::VsmVina) => self.vp.backing.cvm_state_mut().hv[vtl]
                 .synic
-                .read_reg(synic_reg.into())
-                .map_err(|_| HvError::OperationFailed),
+                .read_reg(synic_reg.into()),
             _ => {
                 tracing::error!(
                     ?name,
@@ -681,8 +680,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::Stimer3Count
             | HvX64RegisterName::VsmVina) => self.vp.backing.cvm_state_mut().hv[vtl]
                 .synic
-                .write_reg(&self.vp.partition.gm[vtl], synic_reg.into(), reg.value)
-                .map_err(|_| HvError::OperationFailed),
+                .write_reg(&self.vp.partition.gm[vtl], synic_reg.into(), reg.value),
             _ => {
                 tracing::error!(
                     ?reg,
