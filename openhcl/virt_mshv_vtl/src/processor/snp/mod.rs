@@ -432,7 +432,14 @@ impl BackingPrivate for SnpBacked {
         unreachable!("extint managed through software apic")
     }
 
-    fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16) {
+    fn request_untrusted_sint_readiness(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        sints: u16,
+    ) {
+        if vtl == GuestVtl::Vtl1 {
+            todo!("TODO: handle untrusted sints for VTL1");
+        }
         if this.backing.hv_sint_notifications & !sints == 0 {
             return;
         }
@@ -442,6 +449,7 @@ impl BackingPrivate for SnpBacked {
         tracing::trace!(?notifications, "setting notifications");
         this.runner
             .set_vp_register(
+                vtl,
                 HvX64RegisterName::DeliverabilityNotifications,
                 u64::from(notifications).into(),
             )

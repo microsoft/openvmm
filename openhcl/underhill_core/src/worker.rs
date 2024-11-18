@@ -1273,6 +1273,8 @@ async fn new_underhill_vm(
         physical_address_size,
     )?;
 
+    let hide_isolation = isolation.is_isolated() && env_cfg.hide_isolation;
+
     // Determine if x2apic is supported so that the topology matches
     // reality.
     //
@@ -1287,7 +1289,7 @@ async fn new_underhill_vm(
     //
     // TODO: centralize cpuid querying logic.
     #[cfg(guest_arch = "x86_64")]
-    let x2apic = if isolation.is_hardware_isolated() {
+    let x2apic = if isolation.is_hardware_isolated() && !hide_isolation {
         // For hardware CVMs, always enable x2apic support at boot.
         vm_topology::processor::x86::X2ApicState::Enabled
     } else if safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx
@@ -1311,8 +1313,6 @@ async fn new_underhill_vm(
         &boot_info.cpus,
     )
     .context("failed to construct the processor topology")?;
-
-    let hide_isolation = isolation.is_isolated() && env_cfg.hide_isolation;
 
     let mut with_vmbus: bool = false;
     let mut with_vmbus_relay = false;
