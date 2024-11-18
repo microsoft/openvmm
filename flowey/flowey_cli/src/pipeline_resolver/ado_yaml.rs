@@ -222,6 +222,8 @@ pub fn ado_yaml(
 
         // and now use those vars to do some flowey bootstrap
         writeln!(flowey_bootstrap_bash, "{}", {
+            let flowey_bin = platform.binary("flowey");
+
             let runtime_debug_level = if runtime_debug_log { "debug" } else { "info" };
 
             let var_db_insert_runtime_debug_level =
@@ -237,6 +239,14 @@ pub fn ado_yaml(
             format!(
                 r###"
 set -e
+AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
+AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+echo "##vso[task.setvariable variable=AgentTempDirNormal;]$AgentTempDirNormal"
+
+chmod +x $AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}
+FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}"
+echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
+
 echo '"{runtime_debug_level}"' | {var_db_insert_runtime_debug_level}
 echo "$(FLOWEY_TEMP_DIR)/work" | {var_db_insert_working_dir}
 "###
@@ -310,31 +320,13 @@ EOF
             )?;
         }
 
-        let mut flowey_executable_bash = String::new();
-        writeln!(flowey_executable_bash, "{}", {
-            let flowey_bin = platform.binary("flowey");
-            format!(
-                r###"
-set -e
-AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
-AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-echo "##vso[task.setvariable variable=AgentTempDirNormal;]$AgentTempDirNormal"
-
-chmod +x $AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}
-FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}"
-echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
-"###
-            )
-            .trim_start()
-        })?;
-
         ado_steps.push({
             let mut map = serde_yaml::Mapping::new();
             map.insert(
                 "bash".into(),
-                serde_yaml::Value::String(flowey_executable_bash),
+                serde_yaml::Value::String(flowey_bootstrap_bash),
             );
-            map.insert("displayName".into(), "Set flowey path".into());
+            map.insert("displayName".into(), "🌼🛫 Initialize job".into());
             map.into()
         });
 
@@ -408,16 +400,6 @@ EOF
                 map.into()
             })
         }
-
-        ado_steps.push({
-            let mut map = serde_yaml::Mapping::new();
-            map.insert(
-                "bash".into(),
-                serde_yaml::Value::String(flowey_bootstrap_bash),
-            );
-            map.insert("displayName".into(), "🌼🛫 Initialize job".into());
-            map.into()
-        });
 
         // now that we've done all the job-level bootstrapping, we can emit all
         // the actual steps the user cares about
