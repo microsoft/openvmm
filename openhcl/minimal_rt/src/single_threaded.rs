@@ -102,6 +102,7 @@ impl<T> DerefMut for OffStackRef<'_, T> {
 /// create multiple mutable references to the same global variable.
 ///
 /// This only works in a single-threaded environment.
+#[macro_export]
 macro_rules! off_stack {
     ($ty:ty, $val:expr) => {{
         use core::cell::Cell;
@@ -116,4 +117,3 @@ macro_rules! off_stack {
         unsafe { OffStackRef::new_internal(&VALUE.0, &USED.0) }
     }};
 }
-pub(crate) use off_stack;

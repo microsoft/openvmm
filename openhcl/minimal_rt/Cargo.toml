@@ -16,5 +16,9 @@ zerocopy.workspace = true
 [build-dependencies]
 minimal_rt_build.workspace = true
 
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+tdcall.workspace = true
+safe_intrinsics.workspace = true
+
 [lints]
 workspace = true

@@ -4,11 +4,9 @@
 //! Module used to write the device tree used by the OpenHCL kernel and
 //! usermode.
 
-use crate::host_params::shim_params::IsolationType;
 use crate::host_params::PartitionInfo;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::sidecar::SidecarConfig;
-use crate::single_threaded::off_stack;
 use crate::ReservedMemoryType;
 use crate::MAX_RESERVED_MEM_RANGES;
 use arrayvec::ArrayString;
@@ -26,6 +24,8 @@ use loader_defs::shim::MemoryVtlType;
 use memory_range::walk_ranges;
 use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
+use minimal_rt::isolation::IsolationType;
+use minimal_rt::off_stack;
 
 /// AArch64 defines
 mod aarch64 {

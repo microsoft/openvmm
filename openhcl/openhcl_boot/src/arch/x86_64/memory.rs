@@ -5,11 +5,11 @@
 
 use super::address_space::init_local_map;
 use super::address_space::LocalMap;
-use crate::host_params::shim_params::IsolationType;
 use crate::host_params::PartitionInfo;
 use crate::hypercall::hvcall;
 use crate::ShimParams;
 use memory_range::MemoryRange;
+use minimal_rt::isolation::IsolationType;
 use sha2::Digest;
 use sha2::Sha384;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;

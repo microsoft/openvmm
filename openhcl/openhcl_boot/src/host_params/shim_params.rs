@@ -9,33 +9,7 @@ use loader_defs::paravisor::ImportedRegionDescriptor;
 use loader_defs::paravisor::ParavisorCommandLine;
 use loader_defs::shim::ShimParamsRaw;
 use memory_range::MemoryRange;
-
-/// Isolation type of the partition
-///
-/// TODO: Fix arch specific abstractions across the bootloader so we can remove
-/// target_arch here and elsewhere.
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum IsolationType {
-    None,
-    Vbs,
-    #[cfg(target_arch = "x86_64")]
-    Snp,
-    #[cfg(target_arch = "x86_64")]
-    Tdx,
-}
-
-impl IsolationType {
-    pub fn is_hardware_isolated(&self) -> bool {
-        match self {
-            IsolationType::None => false,
-            IsolationType::Vbs => false,
-            #[cfg(target_arch = "x86_64")]
-            IsolationType::Snp => true,
-            #[cfg(target_arch = "x86_64")]
-            IsolationType::Tdx => true,
-        }
-    }
-}
+use minimal_rt::isolation::IsolationType;
 
 /// Iterator for the list of accepted regions in the IGVM VTL 2 config region.
 /// Does not increment past the first with page count 0.

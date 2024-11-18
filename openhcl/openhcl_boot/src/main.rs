@@ -17,10 +17,6 @@ mod host_params;
 mod hypercall;
 mod rt;
 mod sidecar;
-mod single_threaded;
-
-#[cfg(target_arch = "x86_64")]
-use crate::arch::tdx::get_tdx_tsc_reftime;
 
 use crate::arch::setup_vtl2_memory;
 use crate::arch::setup_vtl2_vp;
@@ -28,14 +24,12 @@ use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
-use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use boot_logger::LoggerType;
 use core::fmt::Write;
 use dt::write_dt;
 use dt::BootTimes;
-use host_params::shim_params::IsolationType;
 use host_params::shim_params::ShimParams;
 use host_params::PartitionInfo;
 use host_params::COMMAND_LINE_SIZE;
@@ -48,10 +42,12 @@ use memory_range::walk_ranges;
 use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
 use minimal_rt::enlightened_panic::enable_enlightened_panic;
+use minimal_rt::isolation::IsolationType;
+use minimal_rt::off_stack;
+use minimal_rt::single_threaded::OffStackRef;
 use sidecar::SidecarConfig;
 use sidecar_defs::SidecarOutput;
 use sidecar_defs::SidecarParams;
-use single_threaded::OffStackRef;
 use zerocopy::FromZeroes;
 
 #[derive(Debug)]
@@ -353,8 +349,6 @@ fn reserved_memory_regions(
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 mod x86_boot {
     use crate::host_params::PartitionInfo;
-    use crate::single_threaded::off_stack;
-    use crate::single_threaded::OffStackRef;
     use crate::zeroed;
     use crate::PageAlign;
     use crate::ReservedMemoryType;
@@ -370,6 +364,8 @@ mod x86_boot {
     use memory_range::walk_ranges;
     use memory_range::MemoryRange;
     use memory_range::RangeWalkResult;
+    use minimal_rt::off_stack;
+    use minimal_rt::single_threaded::OffStackRef;
     use zerocopy::FromZeroes;
 
     #[repr(C)]
@@ -521,18 +517,6 @@ const fn zeroed<T: FromZeroes>() -> T {
     unsafe { core::mem::MaybeUninit::<T>::zeroed().assume_init() }
 }
 
-/// Get the tsc ref time for hw isolated vms in 100ns
-#[allow(unused_variables)]
-fn get_hw_tsc_time(isolation: IsolationType) -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if isolation == IsolationType::Tdx {
-            return get_tdx_tsc_reftime();
-        }
-    }
-    0
-}
-
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
 
@@ -564,19 +548,11 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         boot_logger_init(p.isolation_type, typ);
         log!("openhcl_boot: early debugging enabled");
     }
+
     let can_trust_host =
         p.isolation_type == IsolationType::None || static_options.confidential_debug;
 
-    let boot_reftime = if p.isolation_type.is_hardware_isolated() {
-        let result = get_hw_tsc_time(p.isolation_type);
-        if result != 0 {
-            Some(result)
-        } else {
-            None
-        }
-    } else {
-        Some(minimal_rt::reftime::reference_time())
-    };
+    let boot_reftime = minimal_rt::reftime::reference_time(p.isolation_type);
 
     let mut dt_storage = off_stack!(PartitionInfo, PartitionInfo::new());
     let partition_info = match PartitionInfo::read_from_dt(&p, &mut dt_storage, can_trust_host) {
@@ -697,11 +673,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Compute the ending boot time. This has to be before writing to device
     // tree, so this is as late as we can do it.
 
-    let boot_endtime = if p.isolation_type.is_hardware_isolated() {
-        get_hw_tsc_time(p.isolation_type)
-    } else {
-        minimal_rt::reftime::reference_time()
-    };
+    let boot_endtime = minimal_rt::reftime::reference_time(p.isolation_type).unwrap_or(0);
 
     let boot_times = boot_reftime.map(|start| BootTimes {
         start,
@@ -849,7 +821,6 @@ mod test {
     use super::x86_boot::build_e820_map;
     use super::x86_boot::E820Ext;
     use crate::dt::write_dt;
-    use crate::host_params::shim_params::IsolationType;
     use crate::host_params::PartitionInfo;
     use crate::host_params::MAX_CPU_COUNT;
     use crate::reserved_memory_regions;
@@ -868,6 +839,7 @@ mod test {
     use memory_range::walk_ranges;
     use memory_range::MemoryRange;
     use memory_range::RangeWalkResult;
+    use minimal_rt::isolation::IsolationType;
     use zerocopy::FromZeroes;
 
     const HIGH_MMIO_GAP_END: u64 = 0x1000000000; //  64 GiB

@@ -3695,6 +3695,8 @@ dependencies = [
  "cfg-if",
  "hvdef",
  "minimal_rt_build",
+ "safe_intrinsics",
+ "tdcall",
  "zerocopy",
 ]
 
