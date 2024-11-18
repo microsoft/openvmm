@@ -4,12 +4,17 @@
 //! TLB lock infrastructure support for hardware-isolated partitions.
 
 use crate::processor::HardwareIsolatedBacking;
+use crate::UhCvmPartitionState;
 use crate::UhProcessor;
 use hcl::GuestVtl;
 use hvdef::Vtl;
 use std::sync::atomic::Ordering;
 
 impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
+    fn cvm_partition(&self) -> &'a UhCvmPartitionState {
+        B::cvm_partition_state(self.shared)
+    }
+
     /// Causes the specified VTL on the current VP to wait on all TLB locks.
     /// This is typically used to synchronize VTL permission changes with
     /// concurrent instruction emulation.
@@ -19,8 +24,8 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
         // any VP that acquires the lock after this point is guaranteed to see
         // state that this VP has already flushed.
         let self_index = self.vp_index().index() as usize;
-        let self_lock = &self.backing.cvm_partition_state().tlb_lock_info[self_index][target_vtl];
-        for vp in self.backing.cvm_partition_state().tlb_locked_vps[target_vtl]
+        let self_lock = &self.cvm_partition().tlb_lock_info[self_index][target_vtl];
+        for vp in self.cvm_partition().tlb_locked_vps[target_vtl]
             .clone()
             .iter_ones()
         {
@@ -43,7 +48,7 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
             // Because the wait by the current VP on the target VP is known to
             // be new, this bit should not already be set.
             let other_lock_blocked =
-                &self.backing.cvm_partition_state().tlb_lock_info[vp][target_vtl].blocked_vps;
+                &self.cvm_partition().tlb_lock_info[vp][target_vtl].blocked_vps;
             let _was_other_lock_blocked = other_lock_blocked.set_aliased(self_index, true);
             debug_assert!(!_was_other_lock_blocked);
 
@@ -51,7 +56,7 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
             // the current VP was added to its blocked set. Check again to
             // see whether the TLB lock is still held, and if not, remove the
             // block.
-            if !self.backing.cvm_partition_state().tlb_locked_vps[target_vtl][vp] {
+            if !self.cvm_partition().tlb_locked_vps[target_vtl][vp] {
                 other_lock_blocked.set_aliased(self_index, false);
                 if self_lock.blocking_vps.set_aliased(vp, false) {
                     self_lock.blocking_vp_count.fetch_sub(1, Ordering::Relaxed);
@@ -67,7 +72,7 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
     pub fn set_tlb_lock(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) {
         debug_assert!(requesting_vtl > Vtl::from(target_vtl));
 
-        self.backing.cvm_partition_state().tlb_locked_vps[target_vtl]
+        self.cvm_partition().tlb_locked_vps[target_vtl]
             .set_aliased(self.vp_index().index() as usize, true);
         self.vtls_tlb_locked.set(requesting_vtl, target_vtl, true);
     }
@@ -97,8 +102,7 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
                 }
 
                 // Now we can remove ourselves from the global TLB lock.
-                self.backing.cvm_partition_state().tlb_locked_vps[target_vtl]
-                    .set_aliased(self_index, false);
+                self.cvm_partition().tlb_locked_vps[target_vtl].set_aliased(self_index, false);
 
                 // Check to see whether any other VPs are waiting for this VP to release
                 // the TLB lock. Note that other processors may be in the process of
@@ -109,13 +113,12 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
                 // of blocked VPs may be changing, it must be captured locally, since the
                 // VP set scan below cannot safely be performed on a VP set that may be
                 // changing.
-                for blocked_vp in self.backing.cvm_partition_state().tlb_lock_info[self_index]
-                    [target_vtl]
+                for blocked_vp in self.cvm_partition().tlb_lock_info[self_index][target_vtl]
                     .blocked_vps
                     .clone()
                     .iter_ones()
                 {
-                    self.backing.cvm_partition_state().tlb_lock_info[self_index][target_vtl]
+                    self.cvm_partition().tlb_lock_info[self_index][target_vtl]
                         .blocked_vps
                         .set_aliased(blocked_vp, false);
 
@@ -123,8 +126,7 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
                     // Note that the target VP may have already marked itself as not
                     // blocked if is has already noticed that the lock has already
                     // been released on the current VP.
-                    let other_lock =
-                        &self.backing.cvm_partition_state().tlb_lock_info[blocked_vp][target_vtl];
+                    let other_lock = &self.cvm_partition().tlb_lock_info[blocked_vp][target_vtl];
                     if other_lock.blocking_vps.set_aliased(self_index, false) {
                         let other_old_count =
                             other_lock.blocking_vp_count.fetch_sub(1, Ordering::Relaxed);
@@ -153,8 +155,7 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
         if self.backing.cvm_state_mut().vtls_tlb_waiting[target_vtl] {
             // No wait is required unless this VP is blocked on another VP that
             // holds the TLB flush lock.
-            let self_lock =
-                &self.backing.cvm_partition_state().tlb_lock_info[self_index][target_vtl];
+            let self_lock = &self.cvm_partition().tlb_lock_info[self_index][target_vtl];
             if self_lock.blocking_vp_count.load(Ordering::Relaxed) != 0 {
                 self_lock.sleeping.store(true, Ordering::Relaxed);
                 // Now that this VP has been marked as sleeping, check to see
@@ -169,7 +170,7 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
             self.backing.cvm_state_mut().vtls_tlb_waiting[target_vtl] = false;
         } else {
             debug_assert_eq!(
-                self.backing.cvm_partition_state().tlb_lock_info[self_index][target_vtl]
+                self.cvm_partition().tlb_lock_info[self_index][target_vtl]
                     .blocking_vp_count
                     .load(Ordering::Relaxed),
                 0

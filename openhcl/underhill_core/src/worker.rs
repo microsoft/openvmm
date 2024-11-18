@@ -292,6 +292,8 @@ pub struct UnderhillEnvCfg {
     pub no_sidecar_hotplug: bool,
     /// Enables the GDB stub for debugging the guest.
     pub gdbstub: bool,
+    /// Hide the isolation mode from the guest.
+    pub hide_isolation: bool,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1310,11 +1312,16 @@ async fn new_underhill_vm(
     )
     .context("failed to construct the processor topology")?;
 
+    let hide_isolation = isolation.is_isolated() && env_cfg.hide_isolation;
+
     let mut with_vmbus: bool = false;
     let mut with_vmbus_relay = false;
     if dps.general.vmbus_redirection_enabled {
         with_vmbus = true;
-        with_vmbus_relay = true;
+        // If the guest is isolated but we are hiding this fact, then don't
+        // start the relay--the guest will not be able to use relayed channels
+        // since it will not be able to put their ring buffers in shared memory.
+        with_vmbus_relay = !hide_isolation;
     }
 
     // also construct the VMGS nice and early, as much like the GET, it also
@@ -1414,6 +1421,7 @@ async fn new_underhill_vm(
         no_sidecar_hotplug: env_cfg.no_sidecar_hotplug,
         use_mmio_hypercalls,
         intercept_debug_exceptions: env_cfg.gdbstub,
+        hide_isolation,
     };
 
     let proto_partition = UhProtoPartition::new(params, |cpu| tp.driver(cpu).clone())
@@ -1439,6 +1447,25 @@ async fn new_underhill_vm(
     })
     .await
     .context("failed to initialize memory")?;
+
+    // Devices in hardware isolated VMs default to accessing only shared memory,
+    // since that is what the guest expects--it will double buffer memory to be
+    // DMAed through a shared memory pool.
+    //
+    // When hiding isolation, allow devices to access all memory, since that's
+    // the only option: the guest won't and can't transition anything to shared.
+    //
+    // For non-isolated VMs, there is no shared/private distinction, so devices
+    // access the same memory as the guest. For software-isolated VMs, the
+    // hypervisor does not allow the paravisor to observe changes to
+    // shared/private state, so we have no choice but to allow devices to access
+    // both.
+    let device_memory = if hide_isolation || !isolation.is_hardware_isolated() {
+        gm.vtl0()
+    } else {
+        gm.shared_memory()
+            .expect("isolated VMs should have shared memory")
+    };
 
     let shared_vis_pages_pool = if shared_pool_size != 0 {
         Some(
@@ -1491,7 +1518,13 @@ async fn new_underhill_vm(
 
     // Set the shared memory allocator to GET that is required by attestation call-out.
     if let Some(allocator) = shared_vis_pages_pool.as_ref().map(|p| p.allocator()) {
-        get_client.set_shared_memory_allocator(allocator, gm.untrusted_dma_memory().clone());
+        get_client.set_shared_memory_allocator(
+            allocator,
+            gm.shared_memory()
+                .or_else(|| env_cfg.enable_shared_visibility_pool.then(|| gm.vtl0()))
+                .context("missing shared memory for shared pool allocator")?
+                .clone(),
+        );
     }
 
     // Create the `AttestationVmConfig` from `dps`, which will be used in
@@ -1641,7 +1674,7 @@ async fn new_underhill_vm(
             gm.vtl1().cloned().unwrap_or(GuestMemory::empty()),
         ]
         .into(),
-        untrusted_dma_memory: gm.untrusted_dma_memory().clone(),
+        shared_memory: gm.shared_memory().cloned(),
         #[cfg(guest_arch = "x86_64")]
         cpuid,
         crash_notification_send,
@@ -1715,9 +1748,13 @@ async fn new_underhill_vm(
         ))
     };
 
-    // ARM64 always bounces, as the OpenHCL kernel does not
-    // have access to VTL0 pages. Necessary until #273 is resolved.
-    let always_bounce = cfg!(guest_arch = "aarch64");
+    // ARM64 always bounces, as the OpenHCL kernel does not have access to VTL0
+    // pages. Necessary until #273 is resolved.
+    //
+    // Similarly, when hiding isolation from the guest, we must bounce because
+    // the guest buffers are in private memory, which the kernel does not have
+    // access to.
+    let always_bounce = cfg!(guest_arch = "aarch64") || hide_isolation;
     resolver.add_async_resolver::<DiskHandleKind, _, OpenBlockDeviceConfig, _>(
         BlockDeviceResolver::new(
             Arc::new(tp.clone()),
@@ -2434,7 +2471,7 @@ async fn new_underhill_vm(
     } = BaseChipsetBuilder::new(
         BaseChipsetFoundation {
             is_restoring,
-            untrusted_dma_memory: gm.untrusted_dma_memory().clone(),
+            untrusted_dma_memory: device_memory.clone(),
             trusted_vtl0_dma_memory: gm.vtl0().clone(),
             vmtime: &vmtime_source,
             vmtime_unit: vmtime.handle(),
@@ -2503,23 +2540,12 @@ async fn new_underhill_vm(
             .unwrap_or(!controllers.mana.is_empty());
         tracing::info!(enable_mnf, "Underhill MNF enabled?");
 
-        // Channel ID offsets are enabled for the Underhill server if the relay is not in use. This
-        // prevents them from conflicting with channels offered by the host, for which Hyper-V vmbus
-        // allocates ports even if not connected.
-        //
-        // If the relay is present, guest-specified channel IDs are used instead (which the host
-        // must support).
-        //
         // N.B. VmBus uses untrusted memory by default for relay channels, and uses additional
         //      trusted memory only for confidential channels offered by Underhill itself.
-        //
-        // N.B. The channel ID offset can break older Linux versions (that only support vmbus
-        //      protocol V1 and Win7) because they don't support channel IDs above 255.
-        let vmbus = VmbusServer::builder(&tp, synic.clone(), gm.untrusted_dma_memory().clone())
+        let vmbus = VmbusServer::builder(&tp, synic.clone(), device_memory.clone())
             .private_gm(gm.private_vtl0_memory().cloned())
             .hvsock_notify(hvsock_notify)
             .server_relay(server_relay)
-            .enable_channel_id_offset(!with_vmbus_relay)
             .max_version(env_cfg.vmbus_max_version)
             .delay_max_version(firmware_type == FirmwareType::Uefi)
             .enable_mnf(enable_mnf)
@@ -2599,7 +2625,7 @@ async fn new_underhill_vm(
             vmm_core::device_builder::build_vpci_device(
                 &driver_source,
                 &resolver,
-                gm.untrusted_dma_memory(),
+                device_memory,
                 vmbus.control(),
                 instance_id,
                 resource,

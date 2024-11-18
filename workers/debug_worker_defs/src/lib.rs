@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+use mesh::payload::Protobuf;
 use mesh::MeshPayload;
 use mesh_worker::WorkerId;
 use std::net::TcpListener;
@@ -15,6 +16,14 @@ pub struct DebuggerParameters<T> {
     pub listener: T,
     pub req_chan: mesh::Sender<DebugRequest>,
     pub vp_count: u32,
+    pub target_arch: TargetArch,
+}
+
+#[derive(Debug, Copy, Clone, Protobuf)]
+pub enum TargetArch {
+    X86_64,
+    I8086,
+    Aarch64,
 }
 
 pub const DEBUGGER_WORKER: WorkerId<DebuggerParameters<TcpListener>> =

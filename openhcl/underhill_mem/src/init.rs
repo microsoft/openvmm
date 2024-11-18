@@ -37,7 +37,7 @@ pub struct MemoryMappings {
     #[inspect(skip)]
     vtl1_gm: Option<GuestMemory>,
     #[inspect(skip)]
-    untrusted_dma_memory: GuestMemory,
+    shared_memory: Option<GuestMemory>,
     #[inspect(skip)]
     private_vtl0_memory: Option<GuestMemory>,
     #[inspect(skip)]
@@ -49,17 +49,17 @@ pub struct MemoryMappings {
 }
 
 impl MemoryMappings {
-    /// Includes all VTL0 memory (trusted and untrusted).
+    /// Includes all VTL0-accessible memory (private and shared).
     pub fn vtl0(&self) -> &GuestMemory {
         &self.vtl0_gm
     }
     pub fn vtl1(&self) -> Option<&GuestMemory> {
         self.vtl1_gm.as_ref()
     }
-    pub fn untrusted_dma_memory(&self) -> &GuestMemory {
-        &self.untrusted_dma_memory
+    pub fn shared_memory(&self) -> Option<&GuestMemory> {
+        self.shared_memory.as_ref()
     }
-    /// Includes only trusted VTL0 memory.
+    /// Includes only private VTL0 memory, not pages that have been made shared.
     pub fn private_vtl0_memory(&self) -> Option<&GuestMemory> {
         self.private_vtl0_memory.as_ref()
     }
@@ -355,7 +355,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         MemoryMappings {
             vtl0: vtl0_mapping,
             vtl1: None,
-            untrusted_dma_memory: shared_gm,
+            shared_memory: Some(shared_gm),
             private_vtl0_memory: Some(private_vtl0_memory),
             shared: Some(shared_mapping),
             vtl0_gm,
@@ -428,8 +428,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             shared: None,
             vtl0_gm: vtl0_gm.clone(),
             vtl1_gm,
-            // Devices can only access VTL0 memory.
-            untrusted_dma_memory: vtl0_gm,
+            shared_memory: None,
             private_vtl0_memory: None,
             acceptor: acceptor.map(Arc::new),
             layout: params.mem_layout.clone(),

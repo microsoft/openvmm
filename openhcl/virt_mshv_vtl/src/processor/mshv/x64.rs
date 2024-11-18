@@ -21,6 +21,7 @@ use crate::processor::SidecarRemoveExit;
 use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
 use crate::validate_vtl_gpa_flags;
+use crate::BackingShared;
 use crate::Error;
 use crate::GuestVsmState;
 use crate::GuestVsmVtl1State;
@@ -122,8 +123,13 @@ struct ProcessorStatsX86 {
 
 impl BackingPrivate for HypervisorBackedX86 {
     type HclBacking = MshvX64;
+    type Shared = ();
 
-    fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error> {
+    fn shared(_: &BackingShared) -> &Self::Shared {
+        &()
+    }
+
+    fn new(params: BackingParams<'_, '_, Self>, _shared: &()) -> Result<Self, Error> {
         // Initialize shared register state to architectural state. The kernel
         // zero initializes this.
         //

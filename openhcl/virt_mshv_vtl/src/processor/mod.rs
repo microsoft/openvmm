@@ -31,7 +31,6 @@ cfg_if::cfg_if! {
 use super::Error;
 use super::UhPartitionInner;
 use super::UhVpInner;
-use crate::BackingShared;
 use crate::GuestVsmState;
 use crate::GuestVtl;
 use crate::WakeReason;
@@ -101,6 +100,8 @@ pub struct UhProcessor<'a, T: Backing> {
     force_exit_sidecar: bool,
     /// The VTLs on this VP that are currently locked, per requesting VTL.
     vtls_tlb_locked: VtlsTlbLocked,
+    #[inspect(skip)]
+    shared: &'a T::Shared,
 
     // Put the runner and backing at the end so that monomorphisms of functions
     // that don't access backing-specific state are more likely to be folded
@@ -180,13 +181,15 @@ mod private {
         pub(crate) hv: Option<VtlArray<ProcessorVtlHv, 2>>,
         pub(crate) vp_info: &'a TargetVpInfo,
         pub(crate) runner: &'a mut ProcessorRunner<'b, T::HclBacking>,
-        pub(crate) backing_shared: &'a BackingShared,
     }
 
     pub trait BackingPrivate: 'static + Sized + InspectMut + Sized {
         type HclBacking: hcl::ioctl::Backing;
+        type Shared;
 
-        fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error>;
+        fn shared(shared: &BackingShared) -> &Self::Shared;
+
+        fn new(params: BackingParams<'_, '_, Self>, shared: &Self::Shared) -> Result<Self, Error>;
 
         type StateAccess<'p, 'a>: AccessVpState<Error = vp_state::Error>
         where
@@ -264,7 +267,7 @@ pub trait HardwareIsolatedBacking: Backing {
     /// Gets CVM specific VP state.
     fn cvm_state_mut(&mut self) -> &mut crate::UhCvmVpState;
     /// Gets CVM specific partition state.
-    fn cvm_partition_state(&self) -> &crate::UhCvmPartitionState;
+    fn cvm_partition_state(shared: &Self::Shared) -> &crate::UhCvmPartitionState;
     /// Copies shared registers (per VSM TLFS spec) from the source VTL to
     /// the target VTL that will become active.
     fn switch_vtl_state(
@@ -765,7 +768,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         driver: &impl Driver,
         partition: &'a UhPartitionInner,
         vp_info: TargetVpInfo,
-        backing_shared: &'a BackingShared,
         idle_control: Option<&'a mut IdleControl>,
     ) -> Result<Self, Error> {
         let inner = partition.vp(vp_info.base.vp_index).unwrap();
@@ -803,15 +805,19 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             })
         });
 
-        let backing = T::new(private::BackingParams {
-            partition,
-            #[cfg(guest_arch = "x86_64")]
-            lapics,
-            hv,
-            vp_info: &vp_info,
-            runner: &mut runner,
+        let backing_shared = T::shared(&partition.backing_shared);
+
+        let backing = T::new(
+            private::BackingParams {
+                partition,
+                #[cfg(guest_arch = "x86_64")]
+                lapics,
+                hv,
+                vp_info: &vp_info,
+                runner: &mut runner,
+            },
             backing_shared,
-        })?;
+        )?;
 
         let mut vp = Self {
             partition,
@@ -825,6 +831,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 .with_crash_message(true),
             _not_send: PhantomData,
             backing,
+            shared: backing_shared,
             vmtime: partition
                 .vmtime
                 .access(format!("vp-{}", vp_info.base.vp_index.index())),
@@ -1357,6 +1364,10 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::ModifySparseGpaPageHostVisibility
             "modify_gpa_visibility"
         );
 
+        if self.vp.partition.hide_isolation {
+            return Err((HvError::AccessDenied, 0));
+        }
+
         let shared = match visibility {
             HostVisibilityType::PRIVATE => false,
             HostVisibilityType::SHARED => true,
@@ -1382,6 +1393,10 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::QuerySparseGpaPageHostVisibility
         host_visibility: &mut [HostVisibilityType],
     ) -> hvdef::HvRepResult {
         if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err((HvError::AccessDenied, 0));
+        }
+
+        if self.vp.partition.hide_isolation {
             return Err((HvError::AccessDenied, 0));
         }
 

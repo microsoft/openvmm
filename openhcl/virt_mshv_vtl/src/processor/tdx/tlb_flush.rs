@@ -69,7 +69,7 @@ impl TdxFlushState {
 impl UhProcessor<'_, TdxBacked> {
     /// Completes any pending TLB flush activity on the current VP.
     pub(super) fn do_tlb_flush(&mut self, target_vtl: GuestVtl) {
-        let partition_flush_state = self.backing.shared.flush_state[target_vtl].read();
+        let partition_flush_state = self.shared.flush_state[target_vtl].read();
 
         // NOTE: It is theoretically possible that we haven't run in so long that the
         // partition counters have wrapped all the way around and are back to

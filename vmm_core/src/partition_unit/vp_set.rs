@@ -6,7 +6,7 @@
 use super::HaltReason;
 use super::HaltReasonReceiver;
 use super::InternalHaltReason;
-#[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+#[cfg(feature = "gdb")]
 use anyhow::Context as _;
 use async_trait::async_trait;
 use futures::future::JoinAll;
@@ -47,6 +47,8 @@ use vmcore::save_restore::ProtobufSaveRestore;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
+#[cfg(feature = "gdb")]
+use vmm_core_defs::debug_rpc::DebuggerVpState;
 
 const NUM_VTLS: usize = 3;
 
@@ -71,7 +73,7 @@ trait ControlVp: ProtobufSaveRestore {
         to_set: RegistersToSet,
     ) -> Result<(), RegisterSetError>;
 
-    #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+    #[cfg(feature = "gdb")]
     fn debug(&mut self) -> &mut dyn DebugVp;
 }
 
@@ -86,7 +88,7 @@ pub enum RegistersToSet {
     MtrrsOnly,
 }
 
-#[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+#[cfg(feature = "gdb")]
 trait DebugVp {
     fn set_debug_state(
         &mut self,
@@ -94,9 +96,9 @@ trait DebugVp {
         state: Option<&virt::x86::DebugState>,
     ) -> anyhow::Result<()>;
 
-    fn set_vp_state(&mut self, vtl: Vtl, state: &virt::x86::VpState) -> anyhow::Result<()>;
+    fn set_vp_state(&mut self, vtl: Vtl, state: &DebuggerVpState) -> anyhow::Result<()>;
 
-    fn get_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<Box<virt::x86::VpState>>;
+    fn get_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<Box<DebuggerVpState>>;
 }
 
 struct BoundVp<'a, T, U> {
@@ -232,7 +234,7 @@ where
         Ok(())
     }
 
-    #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+    #[cfg(feature = "gdb")]
     fn debug(&mut self) -> &mut dyn DebugVp {
         self
     }
@@ -369,7 +371,7 @@ where
     }
 }
 
-#[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+#[cfg(feature = "gdb")]
 impl<T: Processor, U> DebugVp for BoundVp<'_, T, U> {
     fn set_debug_state(
         &mut self,
@@ -381,8 +383,12 @@ impl<T: Processor, U> DebugVp for BoundVp<'_, T, U> {
             .context("failed to set debug state")
     }
 
-    fn set_vp_state(&mut self, vtl: Vtl, state: &virt::x86::VpState) -> anyhow::Result<()> {
+    #[cfg(guest_arch = "x86_64")]
+    fn set_vp_state(&mut self, vtl: Vtl, state: &DebuggerVpState) -> anyhow::Result<()> {
         let mut access = self.vp.access_state(vtl);
+        let DebuggerVpState::X86_64(state) = state else {
+            anyhow::bail!("wrong architecture")
+        };
         let regs = virt::x86::vp::Registers {
             rax: state.gp[0],
             rcx: state.gp[1],
@@ -426,31 +432,116 @@ impl<T: Processor, U> DebugVp for BoundVp<'_, T, U> {
         Ok(())
     }
 
-    fn get_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<Box<virt::x86::VpState>> {
+    #[cfg(guest_arch = "x86_64")]
+    fn get_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<Box<DebuggerVpState>> {
         let mut access = self.vp.access_state(vtl);
         let regs = access.registers()?;
         let msrs = access.virtual_msrs()?;
-        Ok(Box::new(virt::x86::VpState {
-            gp: [
-                regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
-                regs.r8, regs.r9, regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
-            ],
-            rip: regs.rip,
-            rflags: regs.rflags,
-            cr0: regs.cr0,
-            cr2: regs.cr2,
-            cr3: regs.cr3,
-            cr4: regs.cr4,
-            cr8: regs.cr8,
-            efer: regs.efer,
-            kernel_gs_base: msrs.kernel_gs_base,
-            es: regs.es,
-            cs: regs.cs,
-            ss: regs.ss,
-            ds: regs.ds,
-            fs: regs.fs,
-            gs: regs.gs,
-        }))
+        Ok(Box::new(DebuggerVpState::X86_64(
+            vmm_core_defs::debug_rpc::X86VpState {
+                gp: [
+                    regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
+                    regs.r8, regs.r9, regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
+                ],
+                rip: regs.rip,
+                rflags: regs.rflags,
+                cr0: regs.cr0,
+                cr2: regs.cr2,
+                cr3: regs.cr3,
+                cr4: regs.cr4,
+                cr8: regs.cr8,
+                efer: regs.efer,
+                kernel_gs_base: msrs.kernel_gs_base,
+                es: regs.es,
+                cs: regs.cs,
+                ss: regs.ss,
+                ds: regs.ds,
+                fs: regs.fs,
+                gs: regs.gs,
+            },
+        )))
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    fn set_vp_state(&mut self, vtl: Vtl, state: &DebuggerVpState) -> anyhow::Result<()> {
+        let DebuggerVpState::Aarch64(state) = state else {
+            anyhow::bail!("wrong architecture")
+        };
+        let mut access = self.vp.access_state(vtl);
+        let regs = virt::aarch64::vp::Registers {
+            x0: state.x[0],
+            x1: state.x[1],
+            x2: state.x[2],
+            x3: state.x[3],
+            x4: state.x[4],
+            x5: state.x[5],
+            x6: state.x[6],
+            x7: state.x[7],
+            x8: state.x[8],
+            x9: state.x[9],
+            x10: state.x[10],
+            x11: state.x[11],
+            x12: state.x[12],
+            x13: state.x[13],
+            x14: state.x[14],
+            x15: state.x[15],
+            x16: state.x[16],
+            x17: state.x[17],
+            x18: state.x[18],
+            x19: state.x[19],
+            x20: state.x[20],
+            x21: state.x[21],
+            x22: state.x[22],
+            x23: state.x[23],
+            x24: state.x[24],
+            x25: state.x[25],
+            x26: state.x[26],
+            x27: state.x[27],
+            x28: state.x[28],
+            fp: state.x[29],
+            lr: state.x[30],
+            sp_el0: state.sp_el0,
+            sp_el1: state.sp_el1,
+            pc: state.pc,
+            cpsr: state.cpsr,
+        };
+        let sregs = virt::aarch64::vp::SystemRegisters {
+            sctlr_el1: state.sctlr_el1,
+            tcr_el1: state.tcr_el1,
+            ttbr0_el1: state.ttbr0_el1,
+            ttbr1_el1: state.ttbr1_el1,
+            ..access.system_registers()?
+        };
+        access.set_registers(&regs)?;
+        access.set_system_registers(&sregs)?;
+        access.commit()?;
+        Ok(())
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    fn get_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<Box<DebuggerVpState>> {
+        let mut access = self.vp.access_state(vtl);
+        let regs = access.registers()?;
+        let sregs = access.system_registers()?;
+
+        Ok(Box::new(DebuggerVpState::Aarch64(
+            vmm_core_defs::debug_rpc::Aarch64VpState {
+                x: [
+                    regs.x0, regs.x1, regs.x2, regs.x3, regs.x4, regs.x5, regs.x6, regs.x7,
+                    regs.x8, regs.x9, regs.x10, regs.x11, regs.x12, regs.x13, regs.x14, regs.x15,
+                    regs.x16, regs.x17, regs.x18, regs.x19, regs.x20, regs.x21, regs.x22, regs.x23,
+                    regs.x24, regs.x25, regs.x26, regs.x27, regs.x28, regs.fp, regs.lr,
+                ],
+                sp_el0: regs.sp_el0,
+                sp_el1: regs.sp_el1,
+                pc: regs.pc,
+                cpsr: regs.cpsr,
+                sctlr_el1: sregs.sctlr_el1,
+                tcr_el1: sregs.tcr_el1,
+                ttbr0_el1: sregs.ttbr0_el1,
+                ttbr1_el1: sregs.ttbr1_el1,
+            },
+        )))
     }
 }
 
@@ -660,7 +751,7 @@ impl VpSet {
     }
 
     /// Initiates a halt to the VPs.
-    #[cfg_attr(not(all(feature = "gdb", guest_arch = "x86_64")), allow(dead_code))]
+    #[cfg_attr(not(feature = "gdb"), allow(dead_code))]
     pub fn halt(&mut self, reason: HaltReason) {
         self.inner.halt.halt(reason);
     }
@@ -788,7 +879,7 @@ pub struct RegisterSetError(&'static str, #[source] anyhow::Error);
 #[error("the vp runner was dropped")]
 struct RunnerGoneError(#[source] mesh::RecvError);
 
-#[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+#[cfg(feature = "gdb")]
 impl VpSet {
     /// Set the debug state for a single VP.
     pub async fn set_debug_state(
@@ -823,7 +914,7 @@ impl VpSet {
     pub async fn set_vp_state(
         &self,
         vp: VpIndex,
-        state: Box<virt::x86::VpState>,
+        state: Box<DebuggerVpState>,
     ) -> anyhow::Result<()> {
         self.vps[vp.index() as usize]
             .send
@@ -835,7 +926,7 @@ impl VpSet {
             .map_err(RunnerGoneError)?
     }
 
-    pub async fn get_vp_state(&self, vp: VpIndex) -> anyhow::Result<Box<virt::x86::VpState>> {
+    pub async fn get_vp_state(&self, vp: VpIndex) -> anyhow::Result<Box<DebuggerVpState>> {
         self.vps[vp.index() as usize]
             .send
             .call(
@@ -892,16 +983,16 @@ enum StateEvent {
     SetInitialRegs(Rpc<(Vtl, Arc<InitialRegs>, RegistersToSet), Result<(), RegisterSetError>>),
     Save(Rpc<(), Result<SavedStateBlob, SaveError>>),
     Restore(Rpc<SavedStateBlob, Result<(), RestoreError>>),
-    #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+    #[cfg(feature = "gdb")]
     Debug(DebugEvent),
 }
 
-#[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+#[cfg(feature = "gdb")]
 #[derive(Debug)]
 enum DebugEvent {
     SetDebugState(Rpc<Option<virt::x86::DebugState>, anyhow::Result<()>>),
-    SetVpState(Rpc<Box<virt::x86::VpState>, anyhow::Result<()>>),
-    GetVpState(Rpc<(), anyhow::Result<Box<virt::x86::VpState>>>),
+    SetVpState(Rpc<Box<DebuggerVpState>, anyhow::Result<()>>),
+    GetVpState(Rpc<(), anyhow::Result<Box<DebuggerVpState>>>),
     ReadVirtualMemory(Rpc<(u64, usize), anyhow::Result<Vec<u8>>>),
     WriteVirtualMemory(Rpc<(u64, Vec<u8>), anyhow::Result<()>>),
 }
@@ -1124,7 +1215,7 @@ impl RunnerInner {
             }
             StateEvent::Save(rpc) => rpc.handle_sync(|()| vp.save()),
             StateEvent::Restore(rpc) => rpc.handle_sync(|data| vp.restore(data)),
-            #[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+            #[cfg(feature = "gdb")]
             StateEvent::Debug(event) => match event {
                 DebugEvent::SetDebugState(rpc) => {
                     rpc.handle_sync(|state| vp.debug().set_debug_state(Vtl::Vtl0, state.as_ref()))
@@ -1165,16 +1256,13 @@ impl RunnerInner {
     }
 }
 
-#[cfg(all(feature = "gdb", guest_arch = "x86_64"))]
+#[cfg(feature = "gdb")]
 mod vp_state {
     use super::DebugVp;
     use anyhow::Context;
     use guestmem::GuestMemory;
     use hvdef::Vtl;
-    use virt::x86::vp::Registers;
-    use virt_support_x86emu::translate::translate_gva_to_gpa;
-    use virt_support_x86emu::translate::TranslateFlags;
-    use virt_support_x86emu::translate::TranslationRegisters;
+    use vmm_core_defs::debug_rpc::DebuggerVpState;
 
     fn translate_gva(
         guest_memory: &GuestMemory,
@@ -1183,27 +1271,63 @@ mod vp_state {
         gva: u64,
     ) -> anyhow::Result<u64> {
         let state = debug.get_vp_state(vtl).context("failed to get vp state")?;
-        let registers = TranslationRegisters {
-            cr0: state.cr0,
-            cr4: state.cr4,
-            efer: state.efer,
-            cr3: state.cr3,
-            rflags: state.rflags,
-            ss: state.ss.into(),
-            // For debug translation, don't worry about accidentally reading
-            // page tables from shared memory.
-            encryption_mode: virt_support_x86emu::translate::EncryptionMode::None,
-        };
-        let flags = TranslateFlags {
-            validate_execute: false,
-            validate_read: false,
-            validate_write: false,
-            override_smap: false,
-            enforce_smap: false,
-            privilege_check: virt_support_x86emu::translate::TranslatePrivilegeCheck::None,
-            set_page_table_bits: false,
-        };
-        Ok(translate_gva_to_gpa(guest_memory, gva, &registers, flags)?)
+        match &*state {
+            DebuggerVpState::X86_64(state) => {
+                let registers = virt_support_x86emu::translate::TranslationRegisters {
+                    cr0: state.cr0,
+                    cr4: state.cr4,
+                    efer: state.efer,
+                    cr3: state.cr3,
+                    rflags: state.rflags,
+                    ss: state.ss.into(),
+                    // For debug translation, don't worry about accidentally reading
+                    // page tables from shared memory.
+                    encryption_mode: virt_support_x86emu::translate::EncryptionMode::None,
+                };
+                let flags = virt_support_x86emu::translate::TranslateFlags {
+                    validate_execute: false,
+                    validate_read: false,
+                    validate_write: false,
+                    override_smap: false,
+                    enforce_smap: false,
+                    privilege_check: virt_support_x86emu::translate::TranslatePrivilegeCheck::None,
+                    set_page_table_bits: false,
+                };
+                Ok(virt_support_x86emu::translate::translate_gva_to_gpa(
+                    guest_memory,
+                    gva,
+                    &registers,
+                    flags,
+                )?)
+            }
+            DebuggerVpState::Aarch64(state) => {
+                let registers = virt_support_aarch64emu::translate::TranslationRegisters {
+                    cpsr: state.cpsr.into(),
+                    sctlr: state.sctlr_el1.into(),
+                    tcr: state.tcr_el1.into(),
+                    ttbr0: state.ttbr0_el1,
+                    ttbr1: state.ttbr1_el1,
+                    syndrome: 0,
+                    // For debug translation, don't worry about accidentally reading
+                    // page tables from shared memory.
+                    encryption_mode: virt_support_aarch64emu::translate::EncryptionMode::None,
+                };
+                let flags = virt_support_aarch64emu::translate::TranslateFlags {
+                    validate_execute: false,
+                    validate_read: false,
+                    validate_write: false,
+                    privilege_check:
+                        virt_support_aarch64emu::translate::TranslatePrivilegeCheck::None,
+                    set_page_table_bits: false,
+                };
+                Ok(virt_support_aarch64emu::translate::translate_gva_to_gpa(
+                    guest_memory,
+                    gva,
+                    &registers,
+                    flags,
+                )?)
+            }
+        }
     }
 
     pub(super) fn read_virtual_memory(
@@ -1242,7 +1366,8 @@ mod vp_state {
         Ok(())
     }
 
-    fn bits(regs: &Registers) -> u32 {
+    #[cfg(guest_arch = "x86_64")]
+    fn bits(regs: &virt::x86::vp::Registers) -> u32 {
         if regs.cr0 & x86defs::X64_CR0_PE != 0 {
             if regs.efer & x86defs::X64_EFER_LMA != 0 {
                 64
@@ -1254,7 +1379,8 @@ mod vp_state {
         }
     }
 
-    fn linear_ip(regs: &Registers, rip: u64) -> u64 {
+    #[cfg(guest_arch = "x86_64")]
+    fn linear_ip(regs: &virt::x86::vp::Registers, rip: u64) -> u64 {
         if bits(regs) == 64 {
             rip
         } else {
@@ -1264,11 +1390,12 @@ mod vp_state {
     }
 
     /// Get the previous instruction for debugging purposes.
+    #[cfg(guest_arch = "x86_64")]
     pub(super) fn previous_instruction(
         guest_memory: &GuestMemory,
         debug: &mut dyn DebugVp,
         vtl: Vtl,
-        regs: &Registers,
+        regs: &virt::x86::vp::Registers,
     ) -> anyhow::Result<iced_x86::Instruction> {
         let mut bytes = [0u8; 16];
         // Read 16 bytes before RIP.
@@ -1290,11 +1417,12 @@ mod vp_state {
     }
 
     /// Get the next instruction for debugging purposes.
+    #[cfg(guest_arch = "x86_64")]
     pub(super) fn next_instruction(
         guest_memory: &GuestMemory,
         debug: &mut dyn DebugVp,
         vtl: Vtl,
-        regs: &Registers,
+        regs: &virt::x86::vp::Registers,
     ) -> anyhow::Result<(iced_x86::Instruction, [u8; 16])> {
         let mut bytes = [0u8; 16];
         read_virtual_memory(

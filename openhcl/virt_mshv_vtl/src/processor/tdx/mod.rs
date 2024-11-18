@@ -15,6 +15,7 @@ use super::LapicState;
 use super::UhEmulationState;
 use super::UhHypercallHandler;
 use super::UhRunVpError;
+use crate::BackingShared;
 use crate::GuestVtl;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
@@ -41,7 +42,6 @@ use inspect::InspectMut;
 use inspect_counters::Counter;
 use parking_lot::RwLock;
 use std::num::NonZeroU64;
-use std::sync::Arc;
 use thiserror::Error;
 use tlb_flush::TdxFlushState;
 use tlb_flush::TdxPartitionFlushState;
@@ -419,7 +419,6 @@ pub struct TdxBacked {
     exit_stats: ExitStats,
 
     cvm: UhCvmVpState,
-    shared: Arc<TdxBackedShared>,
 }
 
 #[derive(Inspect, Default)]
@@ -469,8 +468,8 @@ impl HardwareIsolatedBacking for TdxBacked {
         &mut self.cvm
     }
 
-    fn cvm_partition_state(&self) -> &UhCvmPartitionState {
-        &self.shared.cvm
+    fn cvm_partition_state(shared: &Self::Shared) -> &UhCvmPartitionState {
+        &shared.cvm
     }
 
     fn switch_vtl_state(
@@ -500,8 +499,19 @@ impl TdxBackedShared {
 
 impl BackingPrivate for TdxBacked {
     type HclBacking = Tdx;
+    type Shared = TdxBackedShared;
 
-    fn new(params: super::private::BackingParams<'_, '_, Self>) -> Result<Self, crate::Error> {
+    fn shared(shared: &BackingShared) -> &Self::Shared {
+        let BackingShared::Tdx(shared) = shared else {
+            unreachable!()
+        };
+        shared
+    }
+
+    fn new(
+        params: super::private::BackingParams<'_, '_, Self>,
+        _shared: &TdxBackedShared,
+    ) -> Result<Self, crate::Error> {
         // TODO TDX: TDX shares the vp context page for xmm registers only. It
         // should probably move to its own page.
         //
@@ -538,10 +548,15 @@ impl BackingPrivate for TdxBacked {
         // TODO TDX: XCR_XFMEM setup?
 
         // Configure L2 controls to permit shared memory.
+        //
+        // Ideally we would disable this when `hide_isolation` is set, but
+        // currently this is failing with `METADATA_FIELD_NOT_WRITABLE`.
         let mut controls = TdxL2Ctls::new().with_enable_shared_ept(true);
 
         // If the synic is to be managed by the hypervisor, then enable TDVMCALLs.
-        controls.set_enable_tdvmcall(params.partition.untrusted_synic.is_none());
+        controls.set_enable_tdvmcall(
+            params.partition.untrusted_synic.is_none() && !params.partition.hide_isolation,
+        );
 
         let hcl = &params.partition.hcl;
 
@@ -645,10 +660,6 @@ impl BackingPrivate for TdxBacked {
             .alloc(1.try_into().unwrap(), "tdx_tlb_flush".into())
             .expect("not out of memory");
 
-        let crate::BackingShared::Tdx(shared) = params.backing_shared else {
-            unreachable!()
-        };
-
         // TODO TDX GUEST VSM
         let [lapic, _] = params.lapics.unwrap().into_inner();
 
@@ -678,7 +689,6 @@ impl BackingPrivate for TdxBacked {
             enter_stats: Default::default(),
             exit_stats: Default::default(),
             cvm: UhCvmVpState::new(params.hv.unwrap()),
-            shared: shared.clone(),
         })
     }
 
@@ -1440,11 +1450,11 @@ impl UhProcessor<'_, TdxBacked> {
                     apic_id: self.inner.vp_info.apic_id,
                 };
 
-                let result = self.backing.shared.cvm.cpuid.guest_result(
-                    CpuidFunction(leaf),
-                    subleaf,
-                    &guest_state,
-                );
+                let result =
+                    self.shared
+                        .cvm
+                        .cpuid
+                        .guest_result(CpuidFunction(leaf), subleaf, &guest_state);
 
                 tracing::trace!(leaf, subleaf, "cpuid");
 
@@ -1474,9 +1484,9 @@ impl UhProcessor<'_, TdxBacked> {
 
                     let guest_memory = &self.partition.gm[intercepted_vtl];
                     let handler = UhHypercallHandler {
+                        trusted: !self.partition.hide_isolation,
                         vp: &mut *self,
                         bus: dev,
-                        trusted: true,
                         intercepted_vtl,
                     };
 
@@ -1657,6 +1667,12 @@ impl UhProcessor<'_, TdxBacked> {
                 // instruction, and we need to handle it.
                 if self.backing.untrusted_synic.is_some() {
                     self.handle_tdvmcall(dev, intercepted_vtl);
+                } else if self.partition.hide_isolation {
+                    // TDCALL is not valid when hiding isolation. Inject a #UD.
+                    self.backing.interruption_information = InterruptionInformation::new()
+                        .with_valid(true)
+                        .with_vector(x86defs::Exception::INVALID_OPCODE.0)
+                        .with_interruption_type(INTERRUPT_TYPE_HARDWARE_EXCEPTION);
                 }
                 &mut self.backing.exit_stats.tdcall
             }
@@ -1753,7 +1769,7 @@ impl UhProcessor<'_, TdxBacked> {
             // untrusted_dma_memory correctly models. Note that some Linux
             // guests will issue hypercalls without the boundary bit set,
             // whereas UEFI will issue with the bit set.
-            let guest_memory = &self.partition.untrusted_dma_memory;
+            let guest_memory = &self.shared.cvm.shared_memory;
             let handler = UhHypercallHandler {
                 vp: &mut *self,
                 bus: dev,
@@ -2164,7 +2180,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
         // Ignore the VTOM address bit when checking, since memory is mirrored
         // across the VTOM.
-        let vtom = self.vp.partition.caps.vtom.unwrap();
+        let vtom = self.vp.partition.caps.vtom.unwrap_or(0);
         debug_assert!(vtom == 0 || vtom.is_power_of_two());
         self.vp.partition.is_gpa_mapped(gpa & !vtom, write)
     }
@@ -2233,8 +2249,9 @@ impl<T: CpuIo> TranslateGvaSupport for UhEmulationState<'_, '_, T, TdxBacked> {
             cr3,
             ss,
             rflags,
-            encryption_mode: virt_support_x86emu::translate::EncryptionMode::Vtom(
-                self.vp.partition.caps.vtom.unwrap(),
+            encryption_mode: self.vp.partition.caps.vtom.map_or(
+                virt_support_x86emu::translate::EncryptionMode::None,
+                virt_support_x86emu::translate::EncryptionMode::Vtom,
             ),
         })
     }
@@ -3238,7 +3255,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
 
         let vtl = self.intercepted_vtl;
         {
-            let mut flush_state = self.vp.backing.shared.flush_state[vtl].write();
+            let mut flush_state = self.vp.shared.flush_state[vtl].write();
 
             // If there are too many provided gvas then promote this request to a flush entire.
             // TODO do we need the extended check? I don't think so
@@ -3297,7 +3314,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
         let vtl = self.intercepted_vtl;
 
         {
-            let mut flush_state = self.vp.backing.shared.flush_state[vtl].write();
+            let mut flush_state = self.vp.shared.flush_state[vtl].write();
 
             // Set flush entire.
             if flags.non_global_mappings_only() {
