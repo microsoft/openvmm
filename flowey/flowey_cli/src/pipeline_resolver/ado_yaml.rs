@@ -283,12 +283,9 @@ EOF
         // next, emit ado steps to create dirs for artifacts which will be
         // published
         for ResolvedJobArtifact { flowey_var, name } in artifacts_published {
-            // do NOT use ADO macro syntax $(...), since this is in the same
-            // bootstrap block as where those ADO vars get defined, meaning it's
-            // not available yet!
             writeln!(
                 flowey_bootstrap_bash,
-                r#"mkdir -p "$AgentTempDirNormal/publish_artifacts/{name}""#
+                r#"mkdir -p "$(AgentTempDirNormal)/publish_artifacts/{name}""#
             )?;
             let var_db_inject_cmd = bootstrap_bash_var_db_inject(flowey_var, true);
             writeln!(
