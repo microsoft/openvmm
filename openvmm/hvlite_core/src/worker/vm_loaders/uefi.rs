@@ -89,6 +89,7 @@ pub fn load_uefi(
         .with_measure_additional_pcrs(load_settings.tpm)
         .with_tpm_locality_regs_enabled(load_settings.tpm)
         .with_watchdog_enabled(load_settings.guest_watchdog)
+        // OpenVMM pre-sets the MTRRs; tell the firmware
         .with_mtrrs_initialized_at_load(true)
         // TODO: plumb all 4 kinds of memory protection modes through
         .with_memory_protection(if load_settings.memory_protections {
