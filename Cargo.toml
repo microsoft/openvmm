@@ -39,6 +39,7 @@ members = [
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
+  "tools/hypestv",
 ]
 exclude = [
   "xsync",

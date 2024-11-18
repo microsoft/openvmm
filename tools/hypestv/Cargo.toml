@@ -1,0 +1,26 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "hypestv"
+edition = "2021"
+rust-version.workspace = true
+
+[dependencies]
+clap_dyn_complete.workspace = true
+diag_client.workspace = true
+guid.workspace = true
+inspect.workspace = true
+mesh.workspace = true
+pal_async.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+dirs.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+rustyline = { workspace = true, features = ["derive"] }
+shell-words.workspace = true
+
+[lints]
+workspace = true

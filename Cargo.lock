@@ -2894,6 +2894,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypestv"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "clap_dyn_complete",
+ "diag_client",
+ "dirs",
+ "futures",
+ "guid",
+ "inspect",
+ "mesh",
+ "pal_async",
+ "parking_lot",
+ "rustyline",
+ "shell-words",
+]
+
+[[package]]
 name = "iced-x86"
 version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
