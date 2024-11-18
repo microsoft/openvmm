@@ -607,6 +607,7 @@ pub fn write_uefi_config(
         // Some settings do not depend on host config
         flags.set_measure_additional_pcrs(true);
         flags.set_tpm_locality_regs_enabled(true);
+        flags.set_mtrrs_initialized_at_load(true);
 
         flags
     });
