@@ -1702,19 +1702,10 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
     // an HvArmRegisterName that overlaps one of these x86-specific values.
     #[cfg(guest_arch = "x86_64")]
     fn is_kernel_managed(&self, name: HvX64RegisterName) -> bool {
-        if name == HvX64RegisterName::Xfem {
-            self.hcl.isolation == IsolationType::Tdx
-        } else if name == HvX64RegisterName::Dr6 {
+        if name == HvX64RegisterName::Dr6 {
             self.hcl.dr6_shared()
         } else {
-            is_vtl_shared_mtrr(name)
-                || matches!(
-                    name,
-                    HvX64RegisterName::Dr0
-                        | HvX64RegisterName::Dr1
-                        | HvX64RegisterName::Dr2
-                        | HvX64RegisterName::Dr3
-                )
+            is_vtl_shared_reg(name)
         }
     }
 
