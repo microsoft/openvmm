@@ -957,6 +957,8 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         let priority = vector >> 4;
 
+        let lapic_state = &mut self.backing.lapics.as_mut().unwrap()[vtl];
+
         // Exit idle when an interrupt is pending
         lapic_state.idle = false;
 
@@ -1005,7 +1007,6 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             )
             .map_err(UhRunVpError::EmulationState)?;
 
-        let lapic_state = &mut self.backing.lapics.as_mut().unwrap()[vtl];
         lapic_state.halted = false;
         tracing::trace!(vector, "interrupted");
         lapic_state.lapic.acknowledge_interrupt(vector);
@@ -1029,9 +1030,10 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             HvX64PendingInterruptionRegister::from(pending_interruption.as_u64());
         let pending_event = HvX64PendingEventReg0::from(pending_event.as_u128());
         let interrupt_state = HvX64InterruptStateRegister::from(interrupt_state.as_u64());
+        let lapic = &mut self.backing.lapics.as_mut().unwrap()[vtl];
 
         // Exit idle when an interrupt is pending
-        lapic_state.idle = false;
+        lapic.idle = false;
 
         if pending_interruption.interruption_pending()
             || interrupt_state.nmi_masked()
@@ -1064,7 +1066,6 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             )
             .map_err(UhRunVpError::EmulationState)?;
 
-        let lapic = &mut self.backing.lapics.as_mut().unwrap()[vtl];
         lapic.halted = false;
         lapic.nmi_pending = false;
 
