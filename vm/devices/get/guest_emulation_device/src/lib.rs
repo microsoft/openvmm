@@ -623,9 +623,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             get_protocol::VmgsGetDeviceInfoResponse::new(
                 VmgsIoStatus::SUCCESS,
                 vmgs.disk.sector_count(),
-                vmgs.disk.sector_size() as u16,
-                vmgs.disk.physical_sector_size() as u16,
-                vmgs.buf.len() as u32,
+                vmgs.disk.sector_size().try_into().unwrap(),
+                vmgs.disk.physical_sector_size().try_into().unwrap(),
+                vmgs.buf.len().try_into().unwrap(),
             )
         } else {
             get_protocol::VmgsGetDeviceInfoResponse::new(VmgsIoStatus::DEVICE_ERROR, 0, 0, 0, 0)
