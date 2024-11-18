@@ -15,6 +15,8 @@ encryption_win = ["vmgs/encryption_win"]
 encryption_ossl = ["vmgs/encryption_ossl"]
 
 [dependencies]
+disk_backend.workspace = true
+disk_vhd1.workspace = true
 uefi_nvram_storage.workspace = true
 guid.workspace = true
 hcl_compat_uefi_nvram_storage.workspace = true

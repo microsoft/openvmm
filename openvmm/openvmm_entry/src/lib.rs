@@ -1187,6 +1187,27 @@ fn vm_config_from_command_line(
         ));
     }
 
+    let (vmgs_disk, format_vmgs) = if let Some(path) = &opt.vmgs_file {
+        let file = fs_err::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(path)
+            .context("failed to create or open vmgs file")?;
+        let format_vmgs = file.metadata()?.len() == 0;
+        if format_vmgs {
+            file.set_len(vmgs_format::VMGS_DEFAULT_CAPACITY)?;
+            disk_vhd1::Vhd1Disk::make_fixed(file.file())
+                .context("failed to format VHD1 file for VMGS")?;
+        }
+        (
+            Some(disk_backend_resources::FixedVhd1DiskHandle(file.into()).into_resource()),
+            format_vmgs,
+        )
+    } else {
+        (None, false)
+    };
+
     let mut cfg = Config {
         chipset,
         load_mode,
@@ -1252,10 +1273,8 @@ fn vm_config_from_command_line(
         chipset_devices,
         #[cfg(windows)]
         vpci_resources,
-        vmgs_file: opt
-            .vmgs_file
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned()),
+        vmgs_disk,
+        format_vmgs,
         secure_boot_enabled: opt.secure_boot,
         custom_uefi_vars,
         firmware_event_send: None,

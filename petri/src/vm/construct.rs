@@ -336,7 +336,8 @@ impl PetriVmConfig {
             virtio_devices: vec![],
             #[cfg(windows)]
             vpci_resources: vec![],
-            vmgs_file: None,
+            vmgs_disk: None,
+            format_vmgs: false,
             secure_boot_enabled: false,
             debugger_rpc: None,
             generation_id_recv: None,

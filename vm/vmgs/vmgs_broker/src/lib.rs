@@ -54,11 +54,4 @@ impl VmgsThinClient {
     pub async fn save(&self) -> Result<vmgs::save_restore::state::SavedVmgsState, VmgsClientError> {
         self.0.save().await
     }
-
-    /// See [`VmgsClient::save_storage_meta`]
-    pub async fn save_storage_meta(
-        &self,
-    ) -> Result<vmgs::save_restore::state::SavedBlockStorageMetadata, VmgsClientError> {
-        self.0.save_storage_meta().await
-    }
 }

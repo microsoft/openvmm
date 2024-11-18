@@ -23,9 +23,9 @@
 
 #![warn(missing_docs)]
 
-pub mod disk;
 mod encrypt;
 mod error;
+mod storage;
 mod vmgs_impl;
 
 pub use error::Error;

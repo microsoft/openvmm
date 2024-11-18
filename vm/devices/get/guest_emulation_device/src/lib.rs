@@ -645,7 +645,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             .ok_or(Error::MessageTooSmall)?;
 
         let (status, payload) = if let Some(vmgs) = &mut state.vmgs {
-            let len = message.length as u64 * vmgs.disk.sector_size() as u64;
+            let len = message.sector_count as u64 * vmgs.disk.sector_size() as u64;
             if len > MAX_PAYLOAD_SIZE as u64 {
                 return Err(Error::InvalidFieldValue);
             }
@@ -657,7 +657,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 .disk
                 .read_vectored(
                     &OwnedRequestBuffers::linear(0, len as usize, true).buffer(&vmgs.mem),
-                    message.offset,
+                    message.sector_offset,
                 )
                 .await
             {

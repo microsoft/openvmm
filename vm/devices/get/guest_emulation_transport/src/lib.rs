@@ -303,91 +303,18 @@ mod tests {
 
         let get =
             new_transport_pair(driver, Some(ged_responses), ProtocolVersion::NICKEL_REV2).await;
-        let buf = vec![1, 2, 3, 4];
+        let buf = (0..512).map(|x| x as u8).collect::<Vec<u8>>();
         get.client
-            .vmgs_write(0, &buf, TEST_VMGS_SECTOR_SIZE)
+            .vmgs_write(0, buf.clone(), TEST_VMGS_SECTOR_SIZE)
             .await
             .unwrap();
-        let mut read_buf = vec![0; 4];
 
-        get.client
-            .vmgs_read(0, &mut read_buf, TEST_VMGS_SECTOR_SIZE)
+        let read_buf = get
+            .client
+            .vmgs_read(0, 1, TEST_VMGS_SECTOR_SIZE)
             .await
             .unwrap();
         assert_eq!(read_buf, buf);
-    }
-
-    #[async_test]
-    async fn test_vmgs_read_write_large(driver: DefaultDriver) {
-        let vmgs_write_response = TestGetResponses::new(Event::Response(
-            get_protocol::VmgsWriteResponse::new(VmgsIoStatus::SUCCESS)
-                .as_bytes()
-                .to_vec(),
-        ));
-
-        let vmgs_read_response = TestGetResponses::new(Event::Response(
-            get_protocol::VmgsReadResponse::new(VmgsIoStatus::SUCCESS)
-                .as_bytes()
-                .to_vec(),
-        ));
-        // read and writes are fragmented to 8192 in client.rs, so we need
-        // the correct corresponding host side responses to those fragmented requests
-        let ged_responses = vec![
-            vmgs_write_response.clone(),
-            vmgs_write_response.clone(),
-            vmgs_write_response.clone(),
-            vmgs_write_response.clone(),
-            vmgs_write_response,
-            vmgs_read_response.clone(),
-            vmgs_read_response.clone(),
-            vmgs_read_response.clone(),
-            vmgs_read_response.clone(),
-            vmgs_read_response,
-        ];
-
-        let get =
-            new_transport_pair(driver, Some(ged_responses), ProtocolVersion::NICKEL_REV2).await;
-        let buf: Vec<u8> = (0..).map(|x| x as u8).take(8192 * 4 + 287).collect();
-        get.client
-            .vmgs_write(0, &buf, TEST_VMGS_SECTOR_SIZE)
-            .await
-            .unwrap();
-        let mut read_buf = vec![0; buf.len()];
-
-        get.client
-            .vmgs_read(0, &mut read_buf, TEST_VMGS_SECTOR_SIZE)
-            .await
-            .unwrap();
-        assert_eq!(buf, read_buf);
-    }
-
-    #[async_test]
-    async fn test_vmgs_read(driver: DefaultDriver) {
-        let vmgs_write_response = TestGetResponses::new(Event::Response(
-            get_protocol::VmgsWriteResponse::new(VmgsIoStatus::SUCCESS)
-                .as_bytes()
-                .to_vec(),
-        ));
-        let vmgs_read_response = TestGetResponses::new(Event::Response(
-            get_protocol::VmgsReadResponse::new(VmgsIoStatus::SUCCESS)
-                .as_bytes()
-                .to_vec(),
-        ));
-        let ged_responses = vec![vmgs_write_response, vmgs_read_response];
-
-        let get =
-            new_transport_pair(driver, Some(ged_responses), ProtocolVersion::NICKEL_REV2).await;
-        let buf = vec![1, 2, 3, 4];
-        get.client
-            .vmgs_write(0, &buf, TEST_VMGS_SECTOR_SIZE)
-            .await
-            .unwrap();
-        let mut read_buf = vec![0; 8];
-        get.client
-            .vmgs_read(0, &mut read_buf, TEST_VMGS_SECTOR_SIZE)
-            .await
-            .unwrap();
-        assert_eq!(read_buf, [1, 2, 3, 4, 0, 0, 0, 0]);
     }
 
     #[async_test]
@@ -464,9 +391,9 @@ mod tests {
         get.client
             .event_log(get_protocol::EventLogId::NO_BOOT_DEVICE);
 
-        let mut read_buf = vec![0; 1];
-        get.client
-            .vmgs_read(0, &mut read_buf, TEST_VMGS_SECTOR_SIZE)
+        let read_buf = get
+            .client
+            .vmgs_read(0, 1, TEST_VMGS_SECTOR_SIZE)
             .await
             .unwrap();
 

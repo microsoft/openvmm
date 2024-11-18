@@ -790,20 +790,20 @@ const_assert_eq!(8, size_of::<VmgsWriteResponse>());
 pub struct VmgsReadRequest {
     pub message_header: HeaderHostRequest,
     pub flags: VmgsReadFlags,
-    pub offset: u64, // logical sectors
-    pub length: u32, // logical sectors
+    pub sector_offset: u64, // logical sectors
+    pub sector_count: u32,  // logical sectors
     pub _pad: u32,
 }
 
 const_assert_eq!(24, size_of::<VmgsReadRequest>());
 
 impl VmgsReadRequest {
-    pub fn new(flags: VmgsReadFlags, offset: u64, length: u32) -> Self {
+    pub fn new(flags: VmgsReadFlags, sector_offset: u64, sector_count: u32) -> Self {
         Self {
             message_header: HeaderGeneric::new(HostRequests::VMGS_READ),
             flags,
-            offset,
-            length,
+            sector_offset,
+            sector_count,
             _pad: 0,
         }
     }
@@ -1871,6 +1871,6 @@ impl ResetRamGpaRangeResponse {
 
 pub mod test_utilities {
     // These constants are shared across GED and GET testing
-    pub const TEST_VMGS_SECTOR_SIZE: usize = 512;
+    pub const TEST_VMGS_SECTOR_SIZE: u32 = 512;
     pub const TEST_VMGS_CAPACITY: usize = 4194816; // 4 MB
 }

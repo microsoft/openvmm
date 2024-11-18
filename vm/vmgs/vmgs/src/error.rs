@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 //! Error object for the VMGS crate
+use crate::storage::StorageError;
 use thiserror::Error;
 
 /// VMGS errors.
@@ -10,13 +11,13 @@ use thiserror::Error;
 pub enum Error {
     /// Error reading from disk.
     #[error("read disk error")]
-    ReadDisk(#[source] std::io::Error),
+    ReadDisk(#[source] StorageError),
     /// Error writing to disk.
     #[error("write disk error")]
-    WriteDisk(#[source] std::io::Error),
+    WriteDisk(#[source] StorageError),
     /// Error flushing the disk.
     #[error("flush disk error")]
-    FlushDisk(#[source] std::io::Error),
+    FlushDisk(#[source] StorageError),
 
     /// Invalid file id or file header.
     #[error("invalid file id or file header")]

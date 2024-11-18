@@ -15,7 +15,6 @@ pub enum VmgsBrokerRpc {
     #[cfg(with_encryption)]
     WriteFileEncrypted(Rpc<(FileId, Vec<u8>), Result<(), vmgs::Error>>),
     Save(Rpc<(), vmgs::save_restore::state::SavedVmgsState>),
-    SaveStorageMeta(Rpc<(), vmgs::save_restore::state::SavedBlockStorageMetadata>),
 }
 
 pub struct VmgsBrokerTask {
@@ -62,9 +61,6 @@ impl VmgsBrokerTask {
                 .await
             }
             VmgsBrokerRpc::Save(rpc) => rpc.handle_sync(|()| self.vmgs.save()),
-            VmgsBrokerRpc::SaveStorageMeta(rpc) => {
-                rpc.handle_sync(|()| self.vmgs.save_storage_meta())
-            }
         }
     }
 }

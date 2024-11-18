@@ -238,6 +238,7 @@ disk_backend_resources = { path = "vm/devices/storage/disk_backend_resources" }
 disk_blob = { path = "vm/devices/storage/disk_blob" }
 disk_blockdevice = { path = "vm/devices/storage/disk_blockdevice" }
 disk_file = { path = "vm/devices/storage/disk_file" }
+disk_get_vmgs = { path = "vm/devices/storage/disk_get_vmgs" }
 disk_nvme = { path = "vm/devices/storage/disk_nvme" }
 disk_ramdisk = { path = "vm/devices/storage/disk_ramdisk" }
 disk_striped = { path = "vm/devices/storage/disk_striped" }

@@ -174,10 +174,10 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                                                 &message_buf[..request_size],
                                             )
                                             .unwrap();
-                                        let offset =
-                                            request.offset as usize * TEST_VMGS_SECTOR_SIZE;
-                                        let length =
-                                            request.length as usize * TEST_VMGS_SECTOR_SIZE;
+                                        let offset = request.sector_offset as usize
+                                            * TEST_VMGS_SECTOR_SIZE as usize;
+                                        let length = request.sector_count as usize
+                                            * TEST_VMGS_SECTOR_SIZE as usize;
                                         response.extend_from_slice(&self.vmgs[offset..][..length])
                                     }
                                     HostRequests::VMGS_WRITE => {
@@ -189,10 +189,10 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                                             )
                                             .unwrap();
                                         let buf = &message_buf[request_size..];
-                                        let offset =
-                                            request.offset as usize * TEST_VMGS_SECTOR_SIZE;
-                                        let length =
-                                            request.length as usize * TEST_VMGS_SECTOR_SIZE;
+                                        let offset = request.offset as usize
+                                            * TEST_VMGS_SECTOR_SIZE as usize;
+                                        let length = request.length as usize
+                                            * TEST_VMGS_SECTOR_SIZE as usize;
                                         self.vmgs[offset..][..length]
                                             .copy_from_slice(&buf[..length]);
                                     }
