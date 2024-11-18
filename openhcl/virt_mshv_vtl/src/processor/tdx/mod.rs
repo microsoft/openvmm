@@ -11,7 +11,6 @@ use super::vp_state;
 use super::vp_state::UhVpStateAccess;
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
-use super::LapicState;
 use super::UhEmulationState;
 use super::UhHypercallHandler;
 use super::UhRunVpError;
@@ -394,7 +393,6 @@ pub struct TdxBacked {
     #[allow(dead_code)] // Allocation handle for direct overlays held until drop
     direct_overlay_pfns_handle: shared_pool_alloc::SharedPoolHandle,
 
-    lapic: LapicState,
     untrusted_synic: Option<ProcessorSynic>,
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
     eoi_exit_bitmap: [u64; 4],
@@ -690,9 +688,6 @@ impl BackingPrivate for TdxBacked {
             .alloc(1.try_into().unwrap(), "tdx_tlb_flush".into())
             .expect("not out of memory");
 
-        // TODO TDX GUEST VSM
-        let [lapic, _] = params.lapics.unwrap().into_inner();
-
         let untrusted_synic = params
             .partition
             .untrusted_synic
@@ -705,7 +700,6 @@ impl BackingPrivate for TdxBacked {
             cr4: VirtualRegister::new(ShadowedRegister::Cr4, regs.cr4, Some(allowed_cr4_bits)),
             direct_overlays_pfns: overlays.try_into().unwrap(),
             direct_overlay_pfns_handle: pfns_handle,
-            lapic,
             untrusted_synic,
             eoi_exit_bitmap: [0; 4],
             tpr_threshold: 0,
@@ -718,7 +712,7 @@ impl BackingPrivate for TdxBacked {
             flush_page,
             enter_stats: Default::default(),
             exit_stats: Default::default(),
-            cvm: UhCvmVpState::new(params.hv.unwrap()),
+            cvm: UhCvmVpState::new(params.hv.unwrap(), params.lapics.unwrap()),
         })
     }
 
@@ -781,7 +775,9 @@ impl BackingPrivate for TdxBacked {
 
         // Enable APIC offload by default.
         this.set_apic_offload(true);
-        this.backing.lapic.lapic.enable_offload();
+        this.backing.cvm.lapics[GuestVtl::Vtl0]
+            .lapic
+            .enable_offload();
     }
 
     async fn run_vp(
@@ -803,7 +799,9 @@ impl BackingPrivate for TdxBacked {
             let page = zerocopy::transmute_mut!(this.runner.tdx_apic_page_mut());
             let (irr, isr) = pull_apic_offload(page);
 
-            this.backing.lapic.lapic.disable_offload(&irr, &isr);
+            this.backing.cvm.lapics[GuestVtl::Vtl0]
+                .lapic
+                .disable_offload(&irr, &isr);
             this.set_apic_offload(false);
             this.try_poll_apic(false)?;
         }
@@ -860,7 +858,10 @@ impl UhProcessor<'_, TdxBacked> {
         let mut update_rvi = false;
         if let Some(irr) = self.runner.proxy_irr() {
             // TODO TDX: filter proxy IRRs.
-            if self.backing.lapic.lapic.can_offload_irr() {
+            if self.backing.cvm.lapics[GuestVtl::Vtl0]
+                .lapic
+                .can_offload_irr()
+            {
                 // Put the proxied IRR directly on the APIC page to avoid going
                 // through the local APIC.
 
@@ -871,7 +872,9 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 update_rvi = true;
             } else {
-                self.backing.lapic.lapic.request_fixed_interrupts(irr);
+                self.backing.cvm.lapics[GuestVtl::Vtl0]
+                    .lapic
+                    .request_fixed_interrupts(irr);
             }
         }
 
@@ -881,7 +884,9 @@ impl UhProcessor<'_, TdxBacked> {
             sipi,
             nmi,
             interrupt,
-        } = self.backing.lapic.lapic.scan(&mut self.vmtime, scan_irr);
+        } = self.backing.cvm.lapics[GuestVtl::Vtl0]
+            .lapic
+            .scan(&mut self.vmtime, scan_irr);
 
         let mut new_processor_controls = self
             .backing
@@ -889,8 +894,8 @@ impl UhProcessor<'_, TdxBacked> {
             .with_nmi_window_exiting(false)
             .with_interrupt_window_exiting(false);
 
-        self.backing.lapic.nmi_pending |= nmi;
-        if self.backing.lapic.nmi_pending {
+        self.backing.cvm.lapics[GuestVtl::Vtl0].nmi_pending |= nmi;
+        if self.backing.cvm.lapics[GuestVtl::Vtl0].nmi_pending {
             self.handle_nmi(&mut new_processor_controls);
         }
 
@@ -933,8 +938,9 @@ impl UhProcessor<'_, TdxBacked> {
             self.backing.processor_controls = new_processor_controls;
         }
 
-        let r: Result<(), OffloadNotSupported> =
-            self.backing.lapic.lapic.push_to_offload(|irr, isr, tmr| {
+        let r: Result<(), OffloadNotSupported> = self.backing.cvm.lapics[GuestVtl::Vtl0]
+            .lapic
+            .push_to_offload(|irr, isr, tmr| {
                 let apic_page: &mut ApicPage =
                     zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut());
 
@@ -986,8 +992,9 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         // If there is a pending interrupt, clear the halted and idle state.
-        if (self.backing.lapic.halted || self.backing.lapic.idle)
-            && self.backing.lapic.lapic.is_offloaded()
+        if (self.backing.cvm.lapics[GuestVtl::Vtl0].halted
+            || self.backing.cvm.lapics[GuestVtl::Vtl0].idle)
+            && self.backing.cvm.lapics[GuestVtl::Vtl0].lapic.is_offloaded()
             && self.runner.tdx_enter_guest_state().rvi != 0
         {
             // To model a non-virtualized processor, we should only do this if
@@ -1002,23 +1009,27 @@ impl UhProcessor<'_, TdxBacked> {
             // and hlt again (which we already treat as a guest bug, since
             // Hyper-V in general does not guarantee hlt will stick until an
             // interrupt is pending), at worst this will just burn some CPU.
-            self.backing.lapic.halted = false;
-            self.backing.lapic.idle = false;
+            self.backing.cvm.lapics[GuestVtl::Vtl0].halted = false;
+            self.backing.cvm.lapics[GuestVtl::Vtl0].idle = false;
         }
 
         Ok(true)
     }
 
     fn access_apic_without_offload<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        let offloaded = self.backing.lapic.lapic.is_offloaded();
+        let offloaded = self.backing.cvm.lapics[GuestVtl::Vtl0].lapic.is_offloaded();
         if offloaded {
             let (irr, isr) =
                 pull_apic_offload(zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut()));
-            self.backing.lapic.lapic.disable_offload(&irr, &isr);
+            self.backing.cvm.lapics[GuestVtl::Vtl0]
+                .lapic
+                .disable_offload(&irr, &isr);
         }
         let r = f(self);
         if offloaded {
-            self.backing.lapic.lapic.enable_offload();
+            self.backing.cvm.lapics[GuestVtl::Vtl0]
+                .lapic
+                .enable_offload();
         }
         r
     }
@@ -1075,7 +1086,7 @@ impl UhProcessor<'_, TdxBacked> {
         tpr_threshold: &mut u8,
     ) {
         // Exit idle when an interrupt is received, regardless of IF
-        self.backing.lapic.idle = false;
+        self.backing.cvm.lapics[Vtl::Vtl0].idle = false;
         // If there is a higher-priority pending event of some kind, then
         // just request an exit after it has resolved, after which we will
         // try again.
@@ -1113,12 +1124,12 @@ impl UhProcessor<'_, TdxBacked> {
             .with_vector(vector)
             .with_interruption_type(INTERRUPT_TYPE_EXTERNAL);
 
-        self.backing.lapic.halted = false;
+        self.backing.cvm.lapics[GuestVtl::Vtl0].halted = false;
     }
 
     fn handle_nmi(&mut self, processor_controls: &mut ProcessorControls) {
         // Exit idle when an interrupt is received, regardless of IF
-        self.backing.lapic.idle = false;
+        self.backing.cvm.lapics[Vtl::Vtl0].idle = false;
         // If there is a higher-priority pending event of some kind, then
         // just request an exit after it has resolved, after which we will
         // try again.
@@ -1147,7 +1158,7 @@ impl UhProcessor<'_, TdxBacked> {
             .with_vector(2)
             .with_interruption_type(INTERRUPT_TYPE_NMI);
 
-        self.backing.lapic.halted = false;
+        self.backing.cvm.lapics[GuestVtl::Vtl0].halted = false;
     }
 
     fn handle_init(&mut self) -> Result<(), UhRunVpError> {
@@ -1160,7 +1171,7 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn handle_sipi(&mut self, vector: u8) {
-        if self.backing.lapic.startup_suspend {
+        if self.backing.cvm.lapics[GuestVtl::Vtl0].startup_suspend {
             let address = (vector as u64) << 12;
             self.write_segment(
                 GuestVtl::Vtl0,
@@ -1174,9 +1185,9 @@ impl UhProcessor<'_, TdxBacked> {
             )
             .unwrap();
             self.runner.tdx_enter_guest_state_mut().rip = 0;
-            self.backing.lapic.startup_suspend = false;
-            self.backing.lapic.halted = false;
-            self.backing.lapic.idle = false;
+            self.backing.cvm.lapics[GuestVtl::Vtl0].startup_suspend = false;
+            self.backing.cvm.lapics[GuestVtl::Vtl0].halted = false;
+            self.backing.cvm.lapics[GuestVtl::Vtl0].idle = false;
         }
     }
 
@@ -1222,9 +1233,9 @@ impl UhProcessor<'_, TdxBacked> {
         let tlb_halt = self.should_halt_for_tlb_unlock(GuestVtl::Vtl0);
 
         self.runner.set_halted(
-            self.backing.lapic.halted
-                || self.backing.lapic.idle
-                || self.backing.lapic.startup_suspend
+            self.backing.cvm.lapics[GuestVtl::Vtl0].halted
+                || self.backing.cvm.lapics[GuestVtl::Vtl0].idle
+                || self.backing.cvm.lapics[GuestVtl::Vtl0].startup_suspend
                 || tlb_halt,
         );
 
@@ -1293,27 +1304,28 @@ impl UhProcessor<'_, TdxBacked> {
                     != next_interruption.interruption_type())
         {
             match self.backing.interruption_information.interruption_type() {
-                INTERRUPT_TYPE_EXTERNAL if !self.backing.lapic.lapic.is_offloaded() => {
+                INTERRUPT_TYPE_EXTERNAL
+                    if !self.backing.cvm.lapics[GuestVtl::Vtl0].lapic.is_offloaded() =>
+                {
                     // This must be a pending APIC interrupt. Acknowledge it.
                     tracing::debug!(
                         vector = self.backing.interruption_information.vector(),
                         "acknowledging interrupt"
                     );
-                    self.backing
-                        .lapic
+                    self.backing.cvm.lapics[GuestVtl::Vtl0]
                         .lapic
                         .acknowledge_interrupt(self.backing.interruption_information.vector());
                 }
                 INTERRUPT_TYPE_NMI => {
                     // This must be a pending NMI.
                     tracing::debug!("acknowledging NMI");
-                    self.backing.lapic.nmi_pending = false;
+                    self.backing.cvm.lapics[GuestVtl::Vtl0].nmi_pending = false;
                 }
                 _ => {}
             }
         }
 
-        if self.backing.lapic.lapic.is_offloaded() {
+        if self.backing.cvm.lapics[GuestVtl::Vtl0].lapic.is_offloaded() {
             // It's possible with vAPIC that we take an exit in the window where
             // hardware has moved a bit from IRR to ISR, but has not injected
             // the interrupt into the guest. In this case, we need to track that
@@ -1398,9 +1410,7 @@ impl UhProcessor<'_, TdxBacked> {
                 let enter_state = self.runner.tdx_enter_guest_state();
                 let msr = enter_state.rcx() as u32;
 
-                let result = self
-                    .backing
-                    .lapic
+                let result = self.backing.cvm.lapics[GuestVtl::Vtl0]
                     .lapic
                     .access(&mut TdxApicClient {
                         partition: self.partition,
@@ -1413,7 +1423,7 @@ impl UhProcessor<'_, TdxBacked> {
                     .or_else_if_unknown(|| self.read_msr_cvm(msr, intercepted_vtl))
                     .or_else_if_unknown(|| match msr {
                         hvdef::HV_X64_MSR_GUEST_IDLE => {
-                            self.backing.lapic.idle = true;
+                            self.backing.cvm.lapics[intercepted_vtl].idle = true;
                             self.clear_interrupt_shadow();
                             Ok(0)
                         }
@@ -1454,9 +1464,7 @@ impl UhProcessor<'_, TdxBacked> {
                 let value =
                     (enter_state.rax() as u32 as u64) | ((enter_state.rdx() as u32 as u64) << 32);
 
-                let result = self
-                    .backing
-                    .lapic
+                let result = self.backing.cvm.lapics[GuestVtl::Vtl0]
                     .lapic
                     .access(&mut TdxApicClient {
                         partition: self.partition,
@@ -1550,7 +1558,7 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.exit_stats.vmcall
             }
             VmxExit::HLT_INSTRUCTION => {
-                self.backing.lapic.halted = true;
+                self.backing.cvm.lapics[GuestVtl::Vtl0].halted = true;
 
                 // TODO: see lots of these exits while waiting at frontpage.
                 // Probably expected, given we will still get L1 timer
@@ -2243,13 +2251,11 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
     }
 
     fn lapic_base_address(&self) -> Option<u64> {
-        self.vp.backing.lapic.lapic.base_address()
+        self.vp.backing.cvm.lapics[self.vtl].lapic.base_address()
     }
 
     fn lapic_read(&mut self, address: u64, data: &mut [u8]) {
-        self.vp
-            .backing
-            .lapic
+        self.vp.backing.cvm.lapics[self.vtl]
             .lapic
             .access(&mut TdxApicClient {
                 partition: self.vp.partition,
@@ -2261,9 +2267,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
     }
 
     fn lapic_write(&mut self, address: u64, data: &[u8]) {
-        self.vp
-            .backing
-            .lapic
+        self.vp.backing.cvm.lapics[self.vtl]
             .lapic
             .access(&mut TdxApicClient {
                 partition: self.vp.partition,
@@ -2791,11 +2795,11 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
     }
 
     fn activity(&mut self) -> Result<vp::Activity, Self::Error> {
-        let mp_state = if self.vp.backing.lapic.startup_suspend {
+        let mp_state = if self.vp.backing.cvm.lapics[self.vtl].startup_suspend {
             vp::MpState::WaitForSipi
-        } else if self.vp.backing.lapic.halted {
+        } else if self.vp.backing.cvm.lapics[self.vtl].halted {
             vp::MpState::Halted
-        } else if self.vp.backing.lapic.idle {
+        } else if self.vp.backing.cvm.lapics[self.vtl].idle {
             vp::MpState::Idle
         } else {
             vp::MpState::Running
@@ -2807,7 +2811,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             .into();
         Ok(vp::Activity {
             mp_state,
-            nmi_pending: self.vp.backing.lapic.nmi_pending,
+            nmi_pending: self.vp.backing.cvm.lapics[self.vtl].nmi_pending,
             nmi_masked: interruptibility.blocked_by_nmi(),
             interrupt_shadow: interruptibility.blocked_by_sti()
                 || interruptibility.blocked_by_movss(),
@@ -2825,15 +2829,15 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             pending_event: _,        // TODO TDX
             pending_interruption: _, // TODO TDX
         } = value;
-        self.vp.backing.lapic.halted = mp_state == vp::MpState::Halted;
-        self.vp.backing.lapic.idle = mp_state == vp::MpState::Idle;
-        self.vp.backing.lapic.startup_suspend = mp_state == vp::MpState::WaitForSipi;
-        self.vp.backing.lapic.nmi_pending = nmi_pending;
+        self.vp.backing.cvm.lapics[self.vtl].halted = mp_state == vp::MpState::Halted;
+        self.vp.backing.cvm.lapics[self.vtl].idle = mp_state == vp::MpState::Idle;
+        self.vp.backing.cvm.lapics[self.vtl].startup_suspend = mp_state == vp::MpState::WaitForSipi;
+        self.vp.backing.cvm.lapics[self.vtl].nmi_pending = nmi_pending;
         let interruptibility = Interruptibility::new()
             .with_blocked_by_movss(interrupt_shadow)
             .with_blocked_by_nmi(nmi_masked);
         self.vp.runner.write_vmcs32(
-            GuestVtl::Vtl0,
+            self.vtl,
             VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY,
             !0,
             interruptibility.into(),
@@ -2853,13 +2857,12 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
 
     fn apic(&mut self) -> Result<vp::Apic, Self::Error> {
         self.vp
-            .access_apic_without_offload(|vp| Ok(vp.backing.lapic.lapic.save()))
+            .access_apic_without_offload(|vp| Ok(vp.backing.cvm.lapics[self.vtl].lapic.save()))
     }
 
     fn set_apic(&mut self, value: &vp::Apic) -> Result<(), Self::Error> {
         self.vp.access_apic_without_offload(|vp| {
-            vp.backing
-                .lapic
+            vp.backing.cvm.lapics[self.vtl]
                 .lapic
                 .restore(value)
                 .map_err(vp_state::Error::InvalidApicBase)?;

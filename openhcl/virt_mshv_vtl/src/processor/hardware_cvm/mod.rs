@@ -320,7 +320,6 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             HvX64RegisterName::VpAssistPage => Ok(self.vp.backing.cvm_state_mut().hv[vtl]
                 .vp_assist_page()
                 .into()),
-            // TODO GUEST VSM: add ApicBase register
             virt_msr @ (HvX64RegisterName::Star
             | HvX64RegisterName::Lstar
             | HvX64RegisterName::Cstar
@@ -515,6 +514,10 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::VsmVina) => self.vp.backing.cvm_state_mut().hv[vtl]
                 .synic
                 .read_reg(synic_reg.into()),
+            HvX64RegisterName::ApicBase => Ok(self.vp.backing.cvm_state_mut().lapics[vtl]
+                .lapic
+                .apic_base()
+                .into()),
             _ => {
                 tracing::error!(
                     ?name,
@@ -688,6 +691,16 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::VsmVina) => self.vp.backing.cvm_state_mut().hv[vtl]
                 .synic
                 .write_reg(&self.vp.partition.gm[vtl], synic_reg.into(), reg.value),
+            HvX64RegisterName::ApicBase => {
+                // No changes are allowed on this path.
+                let current = self.vp.backing.cvm_state_mut().lapics[vtl]
+                    .lapic
+                    .apic_base();
+                if reg.value.as_u64() != current {
+                    return Err(HvError::InvalidParameter);
+                }
+                Ok(())
+            }
             _ => {
                 tracing::error!(
                     ?reg,
