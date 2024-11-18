@@ -605,8 +605,12 @@ pub fn write_uefi_config(
         }
 
         // Some settings do not depend on host config
+
+        // All OpenHCL vTPMs must opt-in to these settings
         flags.set_measure_additional_pcrs(true);
         flags.set_tpm_locality_regs_enabled(true);
+        // OpenHCL pre-sets the MTRRs; tell the firmware
+        flags.set_mtrrs_initialized_at_load(true);
 
         flags
     });

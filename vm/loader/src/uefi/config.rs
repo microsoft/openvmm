@@ -315,8 +315,10 @@ pub struct Flags {
     pub watchdog_enabled: bool,
     pub tpm_locality_regs_enabled: bool,
     pub dhcp6_link_layer_address: bool,
+    pub cxl_memory_enabled: bool,
+    pub mtrrs_initialized_at_load: bool,
 
-    #[bits(37)]
+    #[bits(35)]
     _reserved: u64,
 }
 
