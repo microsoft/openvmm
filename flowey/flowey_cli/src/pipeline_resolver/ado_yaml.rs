@@ -236,6 +236,7 @@ pub fn ado_yaml(
             // https://github.com/microsoft/azure-pipelines-tasks/issues/10653#issuecomment-585669089
             format!(
                 r###"
+set -e
 echo '"{runtime_debug_level}"' | {var_db_insert_runtime_debug_level}
 echo "$(FLOWEY_TEMP_DIR)/work" | {var_db_insert_working_dir}
 "###
@@ -314,6 +315,7 @@ EOF
             let flowey_bin = platform.binary("flowey");
             format!(
                 r###"
+set -e
 AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
 AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
 echo "##vso[task.setvariable variable=AgentTempDirNormal;]$AgentTempDirNormal"
