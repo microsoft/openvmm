@@ -1030,7 +1030,8 @@ pub struct WHV_ARM64_IC_GIC_V3_PARAMETERS {
     pub Reserved: u32,
     pub GicLpiIntIdBits: u32,
     pub GicPpiOverflowInterruptFromCntv: u32,
-    pub Reserved1: [u32; 7],
+    pub GicPpiPerformanceMonitorsInterrupt: u32,
+    pub Reserved1: [u32; 6],
 }
 
 // Legacy Hyper-V defaults
