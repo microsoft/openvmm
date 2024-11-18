@@ -30,10 +30,10 @@ use hvdef::Vtl;
 use std::iter::zip;
 use virt::io::CpuIo;
 use virt::vp::AccessVpState;
-use virt::x86::translate::TranslateCachingInfo;
-use virt::x86::translate::TranslationRegisters;
 use virt::Processor;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
+use virt_support_x86emu::translate::TranslateCachingInfo;
+use virt_support_x86emu::translate::TranslationRegisters;
 use zerocopy::FromZeroes;
 
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
@@ -954,13 +954,13 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
                 .set_tlb_lock(self.intercepted_vtl.into(), target_vtl);
         }
 
-        match virt::x86::translate::translate_gva_to_gpa(
+        match virt_support_x86emu::translate::translate_gva_to_gpa(
             &self.vp.partition.gm[target_vtl], // TODO GUEST VSM: This doesn't have VTL access checks.
             gva,
             &registers,
-            virt::x86::translate::TranslateFlags::from_hv_flags(control_flags),
+            virt_support_x86emu::translate::TranslateFlags::from_hv_flags(control_flags),
         ) {
-            Ok(virt::x86::translate::TranslateResult { gpa, cache_info }) => {
+            Ok(virt_support_x86emu::translate::TranslateResult { gpa, cache_info }) => {
                 let overlay_page = hvdef::hypercall::MsrHypercallContents::from(
                     self.vp
                         .backing

@@ -9,13 +9,13 @@ use crate::WhpProcessor;
 use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use virt::io::CpuIo;
-use virt::x86::translate::TranslationRegisters;
 use virt::VpIndex;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::emulate::TranslateMode;
+use virt_support_x86emu::translate::TranslationRegisters;
 use x86defs::SegmentRegister;
 
 pub(crate) enum WhpVpRefEmulation<'a> {
@@ -422,7 +422,7 @@ impl WhpProcessor<'_> {
             cr3,
             rflags,
             ss: from_seg_reg(&ss),
-            encryption_mode: virt::x86::translate::EncryptionMode::None,
+            encryption_mode: virt_support_x86emu::translate::EncryptionMode::None,
         }
     }
 }

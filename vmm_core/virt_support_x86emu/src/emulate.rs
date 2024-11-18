@@ -3,6 +3,9 @@
 
 //! Wrapper around x86emu for emulating single instructions to handle VM exits.
 
+use crate::translate::translate_gva_to_gpa;
+use crate::translate::TranslateFlags;
+use crate::translate::TranslatePrivilegeCheck;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use hvdef::HvInterceptAccessType;
@@ -10,9 +13,6 @@ use hvdef::HvMapGpaFlags;
 use hvdef::HV_PAGE_SIZE;
 use thiserror::Error;
 use virt::io::CpuIo;
-use virt::x86::translate::translate_gva_to_gpa;
-use virt::x86::translate::TranslateFlags;
-use virt::x86::translate::TranslatePrivilegeCheck;
 use virt::VpHaltReason;
 use vm_topology::processor::VpIndex;
 use x86defs::Exception;
@@ -116,7 +116,7 @@ pub trait TranslateGvaSupport {
     fn acquire_tlb_lock(&mut self);
 
     /// Returns the registers used to walk the page table.
-    fn registers(&mut self) -> Result<virt::x86::translate::TranslationRegisters, Self::Error>;
+    fn registers(&mut self) -> Result<crate::translate::TranslationRegisters, Self::Error>;
 }
 
 /// Emulates a page table walk.
@@ -143,12 +143,10 @@ pub fn emulate_translate_gva<T: TranslateGvaSupport>(
     let registers = support.registers()?;
 
     let r = match translate_gva_to_gpa(support.guest_memory(), gva, &registers, flags) {
-        Ok(virt::x86::translate::TranslateResult { gpa, cache_info: _ }) => {
-            Ok(EmuTranslateResult {
-                gpa,
-                overlay_page: None,
-            })
-        }
+        Ok(crate::translate::TranslateResult { gpa, cache_info: _ }) => Ok(EmuTranslateResult {
+            gpa,
+            overlay_page: None,
+        }),
         Err(err) => Err(EmuTranslateError {
             code: err.into(),
             event_info: None,

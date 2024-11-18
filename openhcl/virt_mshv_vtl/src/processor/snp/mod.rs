@@ -46,7 +46,6 @@ use virt::io::CpuIo;
 use virt::state::StateElement;
 use virt::vp;
 use virt::vp::AccessVpState;
-use virt::x86::translate::TranslationRegisters;
 use virt::x86::MsrError;
 use virt::x86::MsrErrorExt;
 use virt::Processor;
@@ -57,6 +56,7 @@ use virt_support_apic::ApicWork;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
+use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::vmtime::VmTimeAccess;
 use vtl_array::VtlArray;
 use x86defs::cpuid::CpuidFunction;
@@ -218,7 +218,7 @@ impl HardwareIsolatedBacking for SnpBacked {
             cr3: vmsa.cr3(),
             rflags: vmsa.rflags(),
             ss: from_seg(hv_seg_from_snp(&vmsa.ss())),
-            encryption_mode: virt::x86::translate::EncryptionMode::Vtom(
+            encryption_mode: virt_support_x86emu::translate::EncryptionMode::Vtom(
                 this.partition.caps.vtom.unwrap(),
             ),
         }

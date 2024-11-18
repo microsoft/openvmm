@@ -20,7 +20,7 @@ cfg_if::cfg_if! {
         use virt::state::StateElement;
         use virt::vp::AccessVpState;
         use virt::x86::MsrError;
-        use virt::x86::translate::TranslationRegisters;
+        use virt_support_x86emu::translate::TranslationRegisters;
     } else if #[cfg(guest_arch = "aarch64")] {
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
