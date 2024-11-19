@@ -72,8 +72,12 @@ static mut TSC_FREQUENCY: u64 = 0;
 
 /// Gets the timer ref time in 100ns, and None if it fails to get it
 pub fn get_tdx_tsc_reftime() -> Option<u64> {
+    // SAFETY: This is first called by the BSP from openhcl_boot and the frequency
+    // is saved in this gloabal variable. Subsequent calls use the global variable.
     unsafe {
         if TSC_FREQUENCY == 0 {
+            // TODO: Getting tsc frequency from HV currently. Explore the option
+            // of getting it from more reliable source such as CPUID.
             TSC_FREQUENCY = read_msr_tdcall(hvdef::HV_X64_MSR_TSC_FREQUENCY);
         }
 
