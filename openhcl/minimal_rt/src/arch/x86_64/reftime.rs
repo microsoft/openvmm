@@ -84,7 +84,6 @@ pub fn read_msr_tdcall(msr_index: u32) -> u64 {
 }
 
 /// Global variable to store tsc frequency.
-//static mut TSC_FREQUENCY: u64 = 0;
 static TSC_FREQUENCY: SingleThreaded<Cell<u64>> = SingleThreaded(Cell::new(0));
 
 /// Gets the timer ref time in 100ns, and 0 if it fails to get it
