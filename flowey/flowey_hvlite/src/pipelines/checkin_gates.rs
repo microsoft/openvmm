@@ -342,6 +342,8 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_artifact(format!("{arch_tag}-windows-vmgs_lib"));
             let (pub_vmgstool, _use_vmgstool) =
                 pipeline.new_artifact(format!("{arch_tag}-windows-vmgstool"));
+            let (pub_hypestv, _use_hypestv) =
+                pipeline.new_artifact(format!("{arch_tag}-windows-hypestv"));
             let (pub_ohcldiag_dev, _use_ohcldiag_dev) =
                 pipeline.new_artifact(format!("{arch_tag}-windows-ohcldiag-dev"));
 
@@ -363,6 +365,17 @@ impl IntoPipeline for CheckinGatesCli {
                         profile: CommonProfile::from_release(release),
                         with_crypto: true,
                         artifact_dir: ctx.publish_artifact(pub_vmgstool),
+                        done: ctx.new_done_handle(),
+                    },
+                )
+                .dep_on(
+                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_hypestv::Params {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::WindowsMsvc,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        artifact_dir: ctx.publish_artifact(pub_hypestv),
                         done: ctx.new_done_handle(),
                     },
                 )
