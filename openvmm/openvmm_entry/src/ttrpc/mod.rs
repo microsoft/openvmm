@@ -505,7 +505,8 @@ impl VmService {
             vmbus_devices: vec![],
             #[cfg(windows)]
             vpci_resources: vec![],
-            vmgs_file: None,
+            vmgs_disk: None,
+            format_vmgs: false,
             secure_boot_enabled: false,
             custom_uefi_vars: Default::default(),
             firmware_event_send: None,

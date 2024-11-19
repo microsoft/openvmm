@@ -9,6 +9,7 @@ use super::generic::ResolvedJobArtifact;
 use super::generic::ResolvedJobUseParameter;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
+use crate::cli::pipeline::CheckMode;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
 use crate::flow_resolver::stage1_dag::Step;
 use crate::pipeline_resolver::common_yaml::job_flowey_bootstrap_source;
@@ -29,7 +30,6 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::path::Path;
-use std::path::PathBuf;
 mod github_yaml_defs;
 
 const RUNNER_TEMP: &str = "${{ runner.temp }}";
@@ -41,7 +41,7 @@ pub fn github_yaml(
     repo_root: &Path,
     pipeline_file: &Path,
     flowey_crate: &str,
-    check: Option<PathBuf>,
+    check: CheckMode,
 ) -> anyhow::Result<()> {
     if pipeline_file.extension().and_then(|s| s.to_str()) != Some("yaml") {
         anyhow::bail!("pipeline name must end with .yaml")
@@ -211,8 +211,6 @@ pub fn github_yaml(
             });
         }
 
-        let mut flowey_bootstrap_bash = String::new();
-
         {
             let mut map = serde_yaml::Mapping::new();
             map.insert(
@@ -236,6 +234,80 @@ pub fn github_yaml(
                 None,
             )
         };
+
+        // if this was a bootstrap job, also take a moment to run a "self check"
+        // to make sure that the current checked-in template matches the one it
+        // expected
+        if let FloweySource::Bootstrap(..) = &flowey_source {
+            let mut current_invocation = std::env::args().collect::<Vec<_>>();
+
+            current_invocation[0] = flowey_bin.clone();
+
+            // if this code path is run while generating the YAML to compare the
+            // check against, we want to remove the --runtime or --check param from the
+            // current call, or else there'll be a dupe
+            let mut strip_parameter = |prefix: &str| {
+                if let Some(i) = current_invocation
+                    .iter()
+                    .position(|s| s.starts_with(prefix))
+                {
+                    current_invocation.remove(i);
+                    if !current_invocation[i].starts_with(prefix) {
+                        current_invocation.remove(i);
+                    }
+                }
+            };
+
+            strip_parameter("--runtime");
+            strip_parameter("--check");
+
+            // insert the --check bit of the call alongside the --out param
+            {
+                let i = current_invocation
+                    .iter()
+                    .position(|s| s.starts_with("--out"))
+                    .unwrap();
+
+                let current_yaml = match platform.kind() {
+                    FlowPlatformKind::Windows => {
+                        r#"$ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml"#
+                    }
+                    FlowPlatformKind::Unix => {
+                        r#"$ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml"#
+                    }
+                };
+
+                current_invocation.insert(i, current_yaml.into());
+                current_invocation.insert(i, "--runtime".into());
+            }
+
+            // Need to use an escaped version of the "true" windows/linux path
+            // here, or else the --check will fail.
+            let cmd = format!(
+                r###"
+ESCAPED_AGENT_TEMPDIR=$(
+cat <<'EOF' | sed 's/\\/\\\\/g'
+{RUNNER_TEMP}
+EOF
+)
+{}
+"###,
+                current_invocation.join(" ")
+            );
+
+            gh_steps.push({
+                let mut map = serde_yaml::Mapping::new();
+                map.insert("name".into(), "🌼🔎 Self-check YAML".into());
+                map.insert(
+                    "run".into(),
+                    serde_yaml::Value::String(cmd.trim().to_string()),
+                );
+                map.insert("shell".into(), "bash".into());
+                map.into()
+            })
+        }
+
+        let mut flowey_bootstrap_bash = String::new();
 
         // and now use those vars to do some flowey bootstrap
         writeln!(flowey_bootstrap_bash, "{}", {
@@ -358,75 +430,6 @@ EOF
             map.insert("shell".into(), "bash".into());
             map.into()
         });
-
-        // if this was a bootstrap job, also take a moment to run a "self check"
-        // to make sure that the current checked-in template matches the one it
-        // expected
-        if let FloweySource::Bootstrap(..) = &flowey_source {
-            let mut current_invocation = std::env::args().collect::<Vec<_>>();
-
-            current_invocation[0] = flowey_bin;
-
-            // if this code path is run while generating the YAML to compare the
-            // check against, we want to remove the --check param from the
-            // current call, or else there'll be a dupe
-            if let Some(i) = current_invocation
-                .iter()
-                .position(|s| s.starts_with("--check"))
-            {
-                // remove the --check param
-                let s = current_invocation.remove(i);
-                if !s.starts_with("--check=") {
-                    // remove its freestanding argument
-                    current_invocation.remove(i);
-                }
-            }
-
-            // insert the --check bit of the call alongside the --out param
-            {
-                let i = current_invocation
-                    .iter()
-                    .position(|s| s.starts_with("--out"))
-                    .unwrap();
-
-                let current_yaml = match platform.kind() {
-                    FlowPlatformKind::Windows => {
-                        r#"$ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml"#
-                    }
-                    FlowPlatformKind::Unix => {
-                        r#"$ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml"#
-                    }
-                };
-
-                current_invocation.insert(i, current_yaml.into());
-                current_invocation.insert(i, "--check".into());
-            }
-
-            // Need to use an escaped version of the "true" windows/linux path
-            // here, or else the --check will fail.
-            let cmd = format!(
-                r###"
-ESCAPED_AGENT_TEMPDIR=$(
-cat <<'EOF' | sed 's/\\/\\\\/g'
-{RUNNER_TEMP}
-EOF
-)
-{}
-"###,
-                current_invocation.join(" ")
-            );
-
-            gh_steps.push({
-                let mut map = serde_yaml::Mapping::new();
-                map.insert("name".into(), "🌼🔎 Self-check YAML".into());
-                map.insert(
-                    "run".into(),
-                    serde_yaml::Value::String(cmd.trim().to_string()),
-                );
-                map.insert("shell".into(), "bash".into());
-                map.into()
-            })
-        }
 
         // now that we've done all the job-level bootstrapping, we can emit all
         // the actual steps the user cares about
@@ -664,23 +667,22 @@ EOF
         inputs: None,
     };
 
-    if let Some(check) = check {
-        check_generated_yaml_and_json(
+    match check {
+        CheckMode::Check(_) | CheckMode::Runtime(_) => check_generated_yaml_and_json(
             &github_pipeline,
             &pipeline_static_db,
             check,
             repo_root,
             pipeline_file,
             None,
-        )
-    } else {
-        write_generated_yaml_and_json(
+        ),
+        CheckMode::None => write_generated_yaml_and_json(
             &github_pipeline,
             &pipeline_static_db,
             repo_root,
             pipeline_file,
             None,
-        )
+        ),
     }
 }
 

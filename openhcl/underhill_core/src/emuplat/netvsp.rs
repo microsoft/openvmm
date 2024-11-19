@@ -21,6 +21,7 @@ use net_backend::DisconnectableEndpoint;
 use net_backend::DisconnectableEndpointControl;
 use net_backend::Endpoint;
 use net_backend_resources::mac_address::MacAddress;
+use net_mana::GuestDmaMode;
 use net_packet_capture::PacketCaptureEndpoint;
 use net_packet_capture::PacketCaptureEndpointControl;
 use net_packet_capture::PacketCaptureParams;
@@ -200,6 +201,8 @@ struct HclNetworkVFManagerWorker {
     vtl2_pci_id: String,
     #[inspect(skip)]
     dma_buffer: Arc<dyn VfioDmaBuffer>,
+    #[inspect(skip)]
+    dma_mode: GuestDmaMode,
 }
 
 impl HclNetworkVFManagerWorker {
@@ -215,6 +218,7 @@ impl HclNetworkVFManagerWorker {
         vp_count: u32,
         max_sub_channels: u16,
         dma_buffer: Arc<dyn VfioDmaBuffer>,
+        dma_mode: GuestDmaMode,
     ) -> (Self, mesh::Sender<HclNetworkVfManagerMessage>) {
         let (tx_to_worker, worker_rx) = mesh::channel();
         let vtl0_bus_control = if save_state.hidden_vtl0.lock().unwrap_or(false) {
@@ -244,6 +248,7 @@ impl HclNetworkVFManagerWorker {
                 vtl2_bus_control,
                 vtl2_pci_id,
                 dma_buffer,
+                dma_mode,
             },
             tx_to_worker,
         )
@@ -270,7 +275,12 @@ impl HclNetworkVFManagerWorker {
                             format!("failed to set vport serial number {mac_address}")
                         })?;
                         let mana_ep = Box::new(
-                            net_mana::ManaEndpoint::new(self.driver_source.simple(), vport).await,
+                            net_mana::ManaEndpoint::new(
+                                self.driver_source.simple(),
+                                vport,
+                                self.dma_mode,
+                            )
+                            .await,
                         );
                         let (pkt_capture_ep, control) =
                             PacketCaptureEndpoint::new(mana_ep, mac_address.to_string());
@@ -856,6 +866,7 @@ impl HclNetworkVFManager {
         max_sub_channels: u16,
         netvsp_state: &Option<Vec<SavedState>>,
         dma_buffer: Arc<dyn VfioDmaBuffer>,
+        dma_mode: GuestDmaMode,
     ) -> anyhow::Result<(
         Self,
         Vec<HclNetworkVFManagerEndpointInfo>,
@@ -916,6 +927,7 @@ impl HclNetworkVFManager {
             vp_count,
             max_sub_channels,
             dma_buffer,
+            dma_mode,
         );
 
         // Queue new endpoints.

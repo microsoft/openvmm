@@ -841,6 +841,14 @@ fn vm_config_from_command_line(
 
         let (send, guest_request_recv) = mesh::channel();
         resources.ged_rpc = Some(send);
+        let vmgs_disk = if let Some(disk) = &opt.get_vmgs {
+            disk_open(disk, false).context("failed to open GET vmgs disk")?
+        } else {
+            disk_backend_resources::RamDiskHandle {
+                len: vmgs_format::VMGS_DEFAULT_CAPACITY,
+            }
+            .into_resource()
+        };
         vmbus_devices.extend([
             (
                 openhcl_vtl,
@@ -888,6 +896,7 @@ fn vm_config_from_command_line(
                     com2: with_vmbus_com2_serial,
                     vtl2_settings: Some(prost::Message::encode_to_vec(&vtl2_settings)),
                     vmbus_redirection: opt.vmbus_redirect,
+                    vmgs_disk: Some(vmgs_disk),
                     framebuffer: opt
                         .vtl2_gfx
                         .then(|| SharedFramebufferHandle.into_resource()),
@@ -1178,6 +1187,27 @@ fn vm_config_from_command_line(
         ));
     }
 
+    let (vmgs_disk, format_vmgs) = if let Some(path) = &opt.vmgs_file {
+        let file = fs_err::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(path)
+            .context("failed to create or open vmgs file")?;
+        let format_vmgs = file.metadata()?.len() == 0;
+        if format_vmgs {
+            file.set_len(vmgs_format::VMGS_DEFAULT_CAPACITY)?;
+            disk_vhd1::Vhd1Disk::make_fixed(file.file())
+                .context("failed to format VHD1 file for VMGS")?;
+        }
+        (
+            Some(disk_backend_resources::FixedVhd1DiskHandle(file.into()).into_resource()),
+            format_vmgs,
+        )
+    } else {
+        (None, false)
+    };
+
     let mut cfg = Config {
         chipset,
         load_mode,
@@ -1243,10 +1273,8 @@ fn vm_config_from_command_line(
         chipset_devices,
         #[cfg(windows)]
         vpci_resources,
-        vmgs_file: opt
-            .vmgs_file
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned()),
+        vmgs_disk,
+        format_vmgs,
         secure_boot_enabled: opt.secure_boot,
         custom_uefi_vars,
         firmware_event_send: None,

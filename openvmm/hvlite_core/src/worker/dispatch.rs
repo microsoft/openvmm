@@ -183,7 +183,8 @@ impl Manifest {
             vtl2_vmbus: config.vtl2_vmbus,
             #[cfg(all(windows, feature = "virt_whp"))]
             vpci_resources: config.vpci_resources,
-            vmgs_file: config.vmgs_file,
+            format_vmgs: config.format_vmgs,
+            vmgs_disk: config.vmgs_disk,
             secure_boot_enabled: config.secure_boot_enabled,
             custom_uefi_vars: config.custom_uefi_vars,
             firmware_event_send: config.firmware_event_send,
@@ -222,7 +223,8 @@ pub struct Manifest {
     vtl2_vmbus: Option<VmbusConfig>,
     #[cfg(all(windows, feature = "virt_whp"))]
     vpci_resources: Vec<virt_whp::device::DeviceHandle>,
-    vmgs_file: Option<String>,
+    format_vmgs: bool,
+    vmgs_disk: Option<Resource<DiskHandleKind>>,
     secure_boot_enabled: bool,
     custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     firmware_event_send: Option<mesh::MpscSender<get_resources::ged::FirmwareEvent>>,
@@ -945,39 +947,24 @@ impl InitializedVm {
 
         let mut resolver = ResourceResolver::new();
 
-        let (vmgs_client, vmgs_task) = match &cfg.vmgs_file {
-            Some(path) => {
-                let exists = std::path::Path::new(path).exists();
-                let flag = if exists {
-                    tracing::info!(%path, "opening existing file");
-                    vmgs::disk::vhd_file::FileDiskFlag::ReadWrite
-                } else {
-                    tracing::info!(%path, "creating new file");
-                    vmgs::disk::vhd_file::FileDiskFlag::Create {
-                        file_size: None,
-                        force_create: false,
-                    }
-                };
-                let disk = Box::new(vmgs::disk::vhd_file::VhdFileDisk::new(path, flag)?);
+        let (vmgs_client, vmgs_task) = if let Some(vmgs_file) = cfg.vmgs_disk {
+            let disk = open_simple_disk(&resolver, vmgs_file, false).await?;
+            let vmgs = if cfg.format_vmgs {
+                vmgs::Vmgs::format_new(disk)
+                    .await
+                    .context("failed to format vmgs file")?
+            } else {
+                vmgs::Vmgs::open(disk)
+                    .await
+                    .context("failed to open vmgs file")?
+            };
 
-                let vmgs = if exists {
-                    vmgs::Vmgs::open(disk)
-                        .await
-                        .context("failed to open vmgs file")?
-                } else {
-                    vmgs::Vmgs::format_new(disk)
-                        .await
-                        .context("failed to format vmgs file")?
-                };
-
-                let (vmgs_client, vmgs_task) = vmgs_broker::spawn_vmgs_broker(
-                    driver_source.builder().build("vmgs_broker"),
-                    vmgs,
-                );
-                resolver.add_resolver(VmgsFileResolver::new(vmgs_client.clone()));
-                (Some(vmgs_client), Some(vmgs_task))
-            }
-            None => (None, None),
+            let (vmgs_client, vmgs_task) =
+                vmgs_broker::spawn_vmgs_broker(driver_source.builder().build("vmgs_broker"), vmgs);
+            resolver.add_resolver(VmgsFileResolver::new(vmgs_client.clone()));
+            (Some(vmgs_client), Some(vmgs_task))
+        } else {
+            (None, None)
         };
 
         // For sanity: we immediately restrict `vmgs_client` to the
@@ -2834,7 +2821,8 @@ impl LoadedVm {
             virtio_devices: vec![], // TODO
             #[cfg(all(windows, feature = "virt_whp"))]
             vpci_resources: vec![], // TODO
-            vmgs_file: None,        // TODO
+            vmgs_disk: None,        // TODO
+            format_vmgs: false,     // TODO
             secure_boot_enabled: false, // TODO
             custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,

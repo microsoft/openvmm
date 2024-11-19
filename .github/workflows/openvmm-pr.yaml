@@ -67,7 +67,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -85,6 +84,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -101,15 +109,6 @@ jobs:
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/guide"
         echo "$AgentTempDirNormal/publish_artifacts/guide" | flowey v 0 'artifact_publish_from_guide' --update-from-stdin --is-raw-string
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 0 flowey_lib_common::download_gh_release 0
@@ -257,7 +256,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -275,6 +273,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -291,15 +298,6 @@ jobs:
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-rustdoc"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-rustdoc" | flowey.exe v 1 'artifact_publish_from_x64-windows-rustdoc' --update-from-stdin --is-raw-string
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: check if hvlite needs to be cloned
       run: flowey.exe e 1 flowey_lib_common::git_checkout 0
@@ -460,7 +458,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -478,6 +475,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -506,15 +512,6 @@ jobs:
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-vmgstool" | flowey v 10 'artifact_publish_from_x64-linux-vmgstool' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-vmm-tests-archive"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-vmm-tests-archive" | flowey v 10 'artifact_publish_from_x64-linux-vmm-tests-archive' --update-from-stdin --is-raw-string
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: install Rust
       run: flowey e 10 flowey_lib_common::install_rust 0
@@ -884,7 +881,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -902,6 +898,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -922,15 +927,6 @@ jobs:
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-openhcl-igvm" | flowey v 11 'artifact_publish_from_aarch64-openhcl-igvm' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-openhcl-igvm-extras"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-openhcl-igvm-extras" | flowey v 11 'artifact_publish_from_aarch64-openhcl-igvm-extras' --update-from-stdin --is-raw-string
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: checking if packages need to be installed
       run: flowey e 11 flowey_lib_common::install_dist_pkg 0
@@ -1299,7 +1295,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -1317,6 +1312,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -1337,15 +1341,6 @@ jobs:
         echo "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm" | flowey v 12 'artifact_publish_from_x64-openhcl-igvm' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm-extras"
         echo "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm-extras" | flowey v 12 'artifact_publish_from_x64-openhcl-igvm-extras' --update-from-stdin --is-raw-string
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: checking if packages need to be installed
       run: flowey e 12 flowey_lib_common::install_dist_pkg 0
@@ -1886,7 +1881,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -1904,6 +1898,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -1918,15 +1921,6 @@ jobs:
         cat <<'EOF' | flowey.exe v 13 'param0' --update-from-stdin
         ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
         EOF
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: install Rust
       run: flowey.exe e 13 flowey_lib_common::install_rust 0
@@ -2211,7 +2205,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -2229,6 +2222,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -2243,15 +2245,6 @@ jobs:
         cat <<'EOF' | flowey v 14 'param0' --update-from-stdin
         ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
         EOF
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: install Rust
       run: flowey e 14 flowey_lib_common::install_rust 0
@@ -2584,7 +2577,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -2602,6 +2594,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -2616,15 +2617,6 @@ jobs:
         cat <<'EOF' | flowey v 15 'param0' --update-from-stdin
         ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
         EOF
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: install Rust
       run: flowey e 15 flowey_lib_common::install_rust 0
@@ -2955,7 +2947,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/aarch64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -2973,6 +2964,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -2987,15 +2987,6 @@ jobs:
         cat <<'EOF' | flowey.exe v 16 'param0' --update-from-stdin
         ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
         EOF
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: report common cargo flags
       run: flowey.exe e 16 flowey_lib_common::cfg_cargo_common_flags 0
@@ -4308,7 +4299,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -4326,6 +4316,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -4342,15 +4341,6 @@ jobs:
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-rustdoc"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-rustdoc" | flowey v 2 'artifact_publish_from_x64-linux-rustdoc' --update-from-stdin --is-raw-string
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: check if hvlite needs to be cloned
       run: flowey e 2 flowey_lib_common::git_checkout 0
@@ -4876,7 +4866,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -4894,6 +4883,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -4908,15 +4906,6 @@ jobs:
         cat <<'EOF' | flowey v 21 'param0' --update-from-stdin
         ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
         EOF
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: check if hvlite needs to be cloned
       run: flowey e 21 flowey_lib_common::git_checkout 0
@@ -5065,7 +5054,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -5083,6 +5071,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -5097,15 +5094,6 @@ jobs:
         cat <<'EOF' | flowey.exe v 3 'param0' --update-from-stdin
         ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
         EOF
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: check if hvlite needs to be cloned
       run: flowey.exe e 3 flowey_lib_common::git_checkout 0
@@ -5255,7 +5243,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -5273,6 +5260,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -5287,15 +5283,6 @@ jobs:
         cat <<'EOF' | flowey v 4 'param0' --update-from-stdin
         ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
         EOF
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: check if hvlite needs to be cloned
       run: flowey e 4 flowey_lib_common::git_checkout 0
@@ -5456,7 +5443,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -5474,6 +5460,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -5496,15 +5491,6 @@ jobs:
         echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-vmgs_lib" | flowey.exe v 5 'artifact_publish_from_aarch64-windows-vmgs_lib' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-windows-vmgstool"
         echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-vmgstool" | flowey.exe v 5 'artifact_publish_from_aarch64-windows-vmgstool' --update-from-stdin --is-raw-string
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: install Rust
       run: flowey.exe e 5 flowey_lib_common::install_rust 0
@@ -5731,7 +5717,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -5749,6 +5734,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -5769,15 +5763,6 @@ jobs:
         echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-pipette" | flowey.exe v 6 'artifact_publish_from_aarch64-windows-pipette' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-windows-vmm-tests-archive"
         echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-vmm-tests-archive" | flowey.exe v 6 'artifact_publish_from_aarch64-windows-vmm-tests-archive' --update-from-stdin --is-raw-string
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: install Rust
       run: flowey.exe e 6 flowey_lib_common::install_rust 0
@@ -6026,7 +6011,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -6044,6 +6028,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -6066,15 +6059,6 @@ jobs:
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-vmgs_lib" | flowey.exe v 7 'artifact_publish_from_x64-windows-vmgs_lib' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-vmgstool"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-vmgstool" | flowey.exe v 7 'artifact_publish_from_x64-windows-vmgstool' --update-from-stdin --is-raw-string
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: install Rust
       run: flowey.exe e 7 flowey_lib_common::install_rust 0
@@ -6304,7 +6288,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
       working-directory: flowey_bootstrap
       shell: bash
@@ -6322,6 +6305,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -6342,15 +6334,6 @@ jobs:
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-pipette" | flowey.exe v 8 'artifact_publish_from_x64-windows-pipette' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-vmm-tests-archive"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-vmm-tests-archive" | flowey.exe v 8 'artifact_publish_from_x64-windows-vmm-tests-archive' --update-from-stdin --is-raw-string
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey.exe pipeline github --check $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: install Rust
       run: flowey.exe e 8 flowey_lib_common::install_rust 0
@@ -6600,7 +6583,6 @@ jobs:
       run: |
         mkdir ./flowey_bootstrap_temp
         mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv ./.github/workflows/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
         mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
       working-directory: flowey_bootstrap
       shell: bash
@@ -6618,6 +6600,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -6644,15 +6635,6 @@ jobs:
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmgs_lib" | flowey v 9 'artifact_publish_from_aarch64-linux-vmgs_lib' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmgstool"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmgstool" | flowey v 9 'artifact_publish_from_aarch64-linux-vmgstool' --update-from-stdin --is-raw-string
-      shell: bash
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey pipeline github --check $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
       shell: bash
     - name: install Rust
       run: flowey e 9 flowey_lib_common::install_rust 0

@@ -8,12 +8,10 @@ use crate::api::GuestSaveRequest;
 use chipset_resources::battery::HostBatteryUpdate;
 use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
-use get_protocol::MAX_PAYLOAD_SIZE;
 use guid::Guid;
 use inspect::Inspect;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use std::cmp::min;
 use std::sync::Arc;
 use vpci::bus_control::VpciBusEvent;
 use zerocopy::AsBytes;
@@ -90,85 +88,55 @@ impl GuestEmulationTransportClient {
         self.version
     }
 
-    /// Sends a VMGS read request over the GET device
+    /// Reads `sector_count` sectors of size `sector_size` from the VMGS disk,
+    /// starting at `sector_offset`.
     ///
-    /// # Arguments
-    /// * `sector_offset` - Offset to start reading from the file
-    /// * `buf` - Buffer to read the VMGS data into
-    /// * `sector_size` - Size of a sector
+    /// The caller must ensure the read is smaller than the maximum transfer
+    /// size.
     pub async fn vmgs_read(
         &self,
         sector_offset: u64,
-        buf: &mut [u8],
-        sector_size: usize,
-    ) -> Result<(), crate::error::VmgsIoError> {
-        let mut bytes_read = 0;
-
-        while bytes_read < buf.len() {
-            let data_len = min(buf.len() - bytes_read, MAX_PAYLOAD_SIZE);
-            let sector_aligned_size = round_up_count(data_len, sector_size);
-
-            let response_buf = self
-                .control
-                .call(
-                    msg::Msg::VmgsRead,
-                    msg::VmgsReadInput {
-                        sector_offset: sector_offset + (bytes_read / sector_size) as u64,
-                        length: sector_aligned_size / sector_size,
-                        sector_size,
-                    },
-                )
-                .await
-                .map_err(|e| crate::error::VmgsIoError(e.status))?;
-
-            buf[bytes_read..][..data_len].copy_from_slice(&response_buf[..data_len]);
-
-            bytes_read += data_len;
-        }
-
-        Ok(())
+        sector_count: u32,
+        sector_size: u32,
+    ) -> Result<Vec<u8>, crate::error::VmgsIoError> {
+        self.control
+            .call(
+                msg::Msg::VmgsRead,
+                msg::VmgsReadInput {
+                    sector_offset,
+                    sector_count,
+                    sector_size,
+                },
+            )
+            .await
+            .map_err(|e| crate::error::VmgsIoError(e.status))
     }
 
     /// Sends a VMGS write request over the GET device
     ///
     /// # Arguments
     /// * `sector_offset` - Offset to start reading from the file
-    /// * `buf` - Buffer containing data being written to VMGS file.
-    /// * `sector_size` - Size of a sector, must read entire sectors
-    ///   over the GET
+    /// * `buf` - Buffer containing data being written to VMGS file. Must be a
+    ///   sector multiple.
+    /// * `sector_size` - Size of a sector, must read entire sectors over the
+    ///   GET
     pub async fn vmgs_write(
         &self,
         sector_offset: u64,
-        buf: &[u8],
-        sector_size: usize,
+        buf: Vec<u8>,
+        sector_size: u32,
     ) -> Result<(), crate::error::VmgsIoError> {
-        let mut bytes_written = 0;
-        let buf_len = buf.len();
-
-        while bytes_written < buf_len {
-            let data_len = min(buf_len - bytes_written, MAX_PAYLOAD_SIZE);
-            let sector_aligned_size = round_up_count(data_len, sector_size);
-
-            let mut fragmented_buf = vec![0; sector_aligned_size];
-            fragmented_buf[..data_len].copy_from_slice(&buf[bytes_written..][..data_len]);
-
-            self.control
-                .call(
-                    msg::Msg::VmgsWrite,
-                    msg::VmgsWriteInput {
-                        sector_offset: sector_offset + (bytes_written / sector_size) as u64,
-                        buf: fragmented_buf,
-                        sector_size,
-                    },
-                )
-                .await
-                .map_err(|e| crate::error::VmgsIoError(e.status))?;
-
-            bytes_written += data_len;
-        }
-
-        tracing::debug!("vmgs_write() successfully completed");
-        Ok(())
+        self.control
+            .call(
+                msg::Msg::VmgsWrite,
+                msg::VmgsWriteInput {
+                    sector_offset,
+                    buf,
+                    sector_size,
+                },
+            )
+            .await
+            .map_err(|e| crate::error::VmgsIoError(e.status))
     }
 
     /// Sends a VMGS get device info over the GET device
@@ -181,12 +149,24 @@ impl GuestEmulationTransportClient {
             return Err(crate::error::VmgsIoError(response.status));
         }
 
+        let maximum_transfer_size_bytes = response
+            .maximum_transfer_size_bytes
+            .min(get_protocol::MAX_PAYLOAD_SIZE as u32);
+
+        if maximum_transfer_size_bytes != response.maximum_transfer_size_bytes {
+            tracing::warn!(
+                host_value = response.maximum_transfer_size_bytes,
+                clamped_value = maximum_transfer_size_bytes,
+                "VMGS maximum transfer size was clamped due to protocol limitations",
+            );
+        }
+
         Ok(crate::api::VmgsGetDeviceInfo {
             status: response.status,
             capacity: response.capacity,
             bytes_per_logical_sector: response.bytes_per_logical_sector,
             bytes_per_physical_sector: response.bytes_per_physical_sector,
-            maximum_transfer_size_bytes: response.maximum_transfer_size_bytes,
+            maximum_transfer_size_bytes,
         })
     }
 
@@ -805,23 +785,5 @@ impl GuestEmulationTransportClient {
 
         self.control
             .notify(msg::Msg::TripleFaultNotification(payload));
-    }
-}
-
-fn round_up_count(count: usize, pow2: usize) -> usize {
-    (count + pow2 - 1) & !(pow2 - 1)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_round_up_count() {
-        assert!(round_up_count(0, 4096) == 0);
-        assert!(round_up_count(1, 4096) == 4096);
-        assert!(round_up_count(4095, 4096) == 4096);
-        assert!(round_up_count(4096, 4096) == 4096);
-        assert!(round_up_count(4097, 4096) == 8192);
     }
 }

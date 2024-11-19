@@ -336,7 +336,8 @@ impl PetriVmConfig {
             virtio_devices: vec![],
             #[cfg(windows)]
             vpci_resources: vec![],
-            vmgs_file: None,
+            vmgs_disk: None,
+            format_vmgs: false,
             secure_boot_enabled: false,
             debugger_rpc: None,
             generation_id_recv: None,
@@ -923,6 +924,12 @@ impl PetriVmConfigSetupCore<'_> {
             com2: true,
             vmbus_redirection: false,
             vtl2_settings: None, // Will be added at startup to allow tests to modify
+            vmgs_disk: Some(
+                disk_backend_resources::RamDiskHandle {
+                    len: vmgs_format::VMGS_DEFAULT_CAPACITY,
+                }
+                .into_resource(),
+            ),
             framebuffer: framebuffer.then(|| SharedFramebufferHandle.into_resource()),
             guest_request_recv,
             enable_tpm: false,

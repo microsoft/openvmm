@@ -1159,6 +1159,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "disk_get_vmgs"
+version = "0.0.0"
+dependencies = [
+ "disk_backend",
+ "guest_emulation_transport",
+ "guestmem",
+ "inspect",
+ "mesh",
+ "pal_async",
+ "scsi_buffers",
+ "stackfuture",
+ "thiserror 2.0.0",
+ "vmgs",
+ "vmgs_broker",
+]
+
+[[package]]
 name = "disk_nvme"
 version = "0.0.0"
 dependencies = [
@@ -2257,19 +2274,24 @@ name = "guest_emulation_device"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "disk_backend",
+ "disk_ramdisk",
  "futures",
  "get_protocol",
  "get_resources",
+ "guestmem",
  "guid",
  "inspect",
  "mesh",
  "pal_async",
  "parking_lot",
  "power_resources",
+ "scsi_buffers",
  "serde_json",
  "task_control",
  "thiserror 2.0.0",
  "time",
+ "tracelimit",
  "tracing",
  "video_core",
  "vm_resource",
@@ -3890,7 +3912,9 @@ dependencies = [
  "net_backend",
  "pal_async",
  "pci_core",
+ "safeatomic",
  "test_with_tracing",
+ "thiserror 2.0.0",
  "tracelimit",
  "tracing",
  "user_driver",
@@ -4347,6 +4371,7 @@ dependencies = [
  "diag_client",
  "dirs",
  "disk_backend_resources",
+ "disk_vhd1",
  "firmware_uefi_custom_vars",
  "floppy_resources",
  "framebuffer",
@@ -4806,6 +4831,7 @@ dependencies = [
  "vmbfs_resources",
  "vmbus_serial_resources",
  "vmcore",
+ "vmgs_format",
  "vmm_core_defs",
  "vmotherboard",
  "vtl2_settings_proto",
@@ -6663,6 +6689,7 @@ dependencies = [
  "disk_backend",
  "disk_backend_resources",
  "disk_blockdevice",
+ "disk_get_vmgs",
  "disk_nvme",
  "firmware_pcat",
  "firmware_uefi",
@@ -7878,20 +7905,20 @@ name = "vmgs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "cfg-if",
  "crc32fast",
+ "disk_backend",
+ "disk_ramdisk",
  "getrandom",
- "guid",
+ "guestmem",
  "inspect",
  "inspect_counters",
  "mesh_protobuf",
  "openssl",
  "pal_async",
- "tempfile_helpers",
+ "scsi_buffers",
  "thiserror 2.0.0",
  "tracing",
- "vhd1_defs",
  "vmgs_format",
  "windows",
  "zerocopy",
@@ -7929,6 +7956,7 @@ dependencies = [
 name = "vmgs_lib"
 version = "0.0.0"
 dependencies = [
+ "disk_vhd1",
  "futures",
  "vmgs",
  "vmgs_format",
@@ -7950,6 +7978,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "disk_backend",
+ "disk_vhd1",
  "fs-err",
  "guid",
  "hcl_compat_uefi_nvram_storage",

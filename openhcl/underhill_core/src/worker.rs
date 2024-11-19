@@ -31,6 +31,7 @@ use crate::emuplat::netvsp::HclNetworkVFManager;
 use crate::emuplat::netvsp::HclNetworkVFManagerEndpointInfo;
 use crate::emuplat::netvsp::HclNetworkVFManagerShutdownInProgress;
 use crate::emuplat::netvsp::RuntimeSavedState;
+use crate::emuplat::non_volatile_store::VmbsBrokerNonVolatileStore;
 use crate::emuplat::tpm::resources::GetTpmGetAttestationReportHelperHandle;
 use crate::emuplat::tpm::resources::GetTpmRequestAkCertHelperHandle;
 use crate::emuplat::vga_proxy::UhRegisterHostIoFastPath;
@@ -47,7 +48,6 @@ use crate::servicing::transposed::OptionServicingInitState;
 use crate::servicing::ServicingState;
 use crate::threadpool_vm_task_backend::ThreadpoolBackend;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
-use crate::vmgs::UnderhillVmgsNonVolatileStore;
 use crate::wrapped_partition::WrappedPartition;
 use crate::ControlRequest;
 use anyhow::Context;
@@ -627,6 +627,8 @@ struct UhVmNetworkSettings {
     get_client: GuestEmulationTransportClient,
     #[inspect(skip)]
     vp_count: usize,
+    #[inspect(skip)]
+    dma_mode: net_mana::GuestDmaMode,
 }
 
 impl UhVmNetworkSettings {
@@ -743,6 +745,7 @@ impl UhVmNetworkSettings {
             nic_max_sub_channels,
             servicing_netvsp_state,
             vfio_dma_buffer(shared_vis_pages_pool),
+            self.dma_mode,
         )
         .await?;
 
@@ -1326,21 +1329,28 @@ async fn new_underhill_vm(
 
     // also construct the VMGS nice and early, as much like the GET, it also
     // plays an important role during initial bringup
-    let mut vmgs = match servicing_state.vmgs {
+    let (mut vmgs, vmgs_disk) = match servicing_state.vmgs {
         Some((vmgs_state, vmgs_get_meta_state)) => {
             // fast path, with zero .await calls
-            let storage =
-                crate::vmgs::VmgsGet::new_with_meta(get_client.clone(), vmgs_get_meta_state.into());
-            Vmgs::open_from_saved(Box::new(storage), vmgs_state)
+            let disk = Arc::new(
+                disk_get_vmgs::GetVmgsDisk::restore_with_meta(
+                    get_client.clone(),
+                    vmgs_get_meta_state,
+                )
+                .context("failed to open VMGS disk")?,
+            );
+            (Vmgs::open_from_saved(disk.clone(), vmgs_state), disk)
         }
         None => {
-            let storage = crate::vmgs::VmgsGet::new(get_client.clone())
-                .instrument(tracing::info_span!("vmgs_get_storage"))
-                .await
-                .context("failed to get VMGS client")?;
+            let disk = Arc::new(
+                disk_get_vmgs::GetVmgsDisk::new(get_client.clone())
+                    .instrument(tracing::info_span!("vmgs_get_storage"))
+                    .await
+                    .context("failed to get VMGS client")?,
+            );
 
             let vmgs = if !env_cfg.reformat_vmgs {
-                match Vmgs::open(Box::new(storage.clone()))
+                match Vmgs::open(disk.clone())
                     .instrument(tracing::info_span!("vmgs_open"))
                     .await
                 {
@@ -1368,14 +1378,15 @@ async fn new_underhill_vm(
                 None
             };
 
-            if let Some(vmgs) = vmgs {
+            let vmgs = if let Some(vmgs) = vmgs {
                 vmgs
             } else {
-                Vmgs::format_new(Box::new(storage))
+                Vmgs::format_new(disk.clone())
                     .instrument(tracing::info_span!("vmgs_format"))
                     .await
                     .context("failed to format vmgs")?
-            }
+            };
+            (vmgs, disk)
         }
     };
 
@@ -1610,7 +1621,7 @@ async fn new_underhill_vm(
     // into smaller, more focused objects. This promotes good code hygiene and
     // predictable performance characteristics in downstream code.
     let vmgs_thin_client = vmgs_broker::VmgsThinClient::new(vmgs_client.clone());
-    let vmgs_client: &dyn UnderhillVmgsNonVolatileStore = &vmgs_client;
+    let vmgs_client: &dyn VmbsBrokerNonVolatileStore = &vmgs_client;
 
     // Read measured config from VTL0 memory. When restoring, it is already gone.
     let (firmware_type, measured_vtl0_info, load_kind) = {
@@ -2653,6 +2664,11 @@ async fn new_underhill_vm(
         vf_managers: HashMap::new(),
         get_client: get_client.clone(),
         vp_count: vps.len(),
+        dma_mode: if hide_isolation {
+            net_mana::GuestDmaMode::BounceBuffer
+        } else {
+            net_mana::GuestDmaMode::DirectDma
+        },
     };
     let mut netvsp_state = Vec::with_capacity(controllers.mana.len());
     if !controllers.mana.is_empty() {
@@ -2854,6 +2870,7 @@ async fn new_underhill_vm(
         shutdown_relay,
 
         vmgs_thin_client,
+        vmgs_disk,
         _vmgs_handle: vmgs_handle,
 
         get_client: get_client.clone(),

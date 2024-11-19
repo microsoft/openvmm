@@ -1,0 +1,28 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "disk_get_vmgs"
+edition = "2021"
+rust-version.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+disk_backend.workspace = true
+guest_emulation_transport.workspace = true
+guestmem.workspace = true
+scsi_buffers.workspace = true
+
+inspect.workspace = true
+mesh.workspace = true
+
+stackfuture.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+guest_emulation_transport = { workspace = true, features = ["test_utilities"] }
+pal_async.workspace = true
+vmgs = { workspace = true, features = ["encryption_ossl"] }
+vmgs_broker.workspace = true
+
+[lints]
+workspace = true

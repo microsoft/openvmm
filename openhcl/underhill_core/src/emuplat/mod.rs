@@ -6,6 +6,7 @@ pub mod framebuffer;
 pub mod i440bx_host_pci_bridge;
 pub mod local_clock;
 pub mod netvsp;
+pub mod non_volatile_store;
 pub mod tpm;
 pub mod vga_proxy;
 pub mod watchdog;

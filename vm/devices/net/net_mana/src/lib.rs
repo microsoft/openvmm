@@ -46,6 +46,7 @@ use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
 use pal_async::task::Spawn;
+use safeatomic::AtomicSliceOps;
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
@@ -54,9 +55,11 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::task::Context;
 use std::task::Poll;
+use thiserror::Error;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
-use user_driver::memory::PAGE_SIZE;
+use user_driver::memory::PAGE_SIZE32;
+use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
 use user_driver::HostDmaAllocator;
 use vmcore::slim_event::SlimEvent;
@@ -65,7 +68,12 @@ use zerocopy::FromZeroes;
 
 /// Per queue limit, in number of pages.
 /// Used to handle bounce buffering non-contiguous network packet headers.
-const SPLIT_HEADER_BOUNCE_PAGE_LIMIT: usize = 4;
+const SPLIT_HEADER_BOUNCE_PAGE_LIMIT: u32 = 4;
+
+/// Per queue limit for bounce buffering, in number of pages.
+/// This is only used when bounce buffering is enabled for the device.
+const RX_BOUNCE_BUFFER_PAGE_LIMIT: u32 = 64;
+const TX_BOUNCE_BUFFER_PAGE_LIMIT: u32 = 64;
 
 pub struct ManaEndpoint<T: DeviceBacking> {
     spawner: Box<dyn Spawn>,
@@ -74,6 +82,7 @@ pub struct ManaEndpoint<T: DeviceBacking> {
     arena: ResourceArena,
     receive_update: mesh::Receiver<bool>,
     queue_tracker: Arc<(AtomicUsize, SlimEvent)>,
+    bounce_buffer: bool,
 }
 
 struct QueueResources {
@@ -82,8 +91,18 @@ struct QueueResources {
     _txq: BnicWq,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GuestDmaMode {
+    DirectDma,
+    BounceBuffer,
+}
+
 impl<T: DeviceBacking> ManaEndpoint<T> {
-    pub async fn new(spawner: impl 'static + Spawn, vport: Vport<T>) -> Self {
+    pub async fn new(
+        spawner: impl 'static + Spawn,
+        vport: Vport<T>,
+        dma_mode: GuestDmaMode,
+    ) -> Self {
         let (endpoint_tx, endpoint_rx) = mesh::channel();
         vport.register_link_status_notifier(endpoint_tx).await;
         Self {
@@ -93,6 +112,10 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
             arena: ResourceArena::new(),
             receive_update: endpoint_rx,
             queue_tracker: Arc::new((AtomicUsize::new(0), SlimEvent::new())),
+            bounce_buffer: match dma_mode {
+                GuestDmaMode::DirectDma => false,
+                GuestDmaMode::BounceBuffer => true,
+            },
         }
     }
 }
@@ -281,15 +304,33 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
 
         let tx_max = tx_cq_size / size_of::<Cqe>() as u32;
 
-        let contiguous_memory = ContiguousBufferManager::new(
+        let tx_bounce_buffer = ContiguousBufferManager::new(
             &self.vport.host_allocator().await,
-            SPLIT_HEADER_BOUNCE_PAGE_LIMIT,
+            if self.bounce_buffer {
+                TX_BOUNCE_BUFFER_PAGE_LIMIT
+            } else {
+                SPLIT_HEADER_BOUNCE_PAGE_LIMIT
+            },
         )
-        .context("failed to allocate bounce buffer")?;
+        .context("failed to allocate tx bounce buffer")?;
+
+        let rx_bounce_buffer = if self.bounce_buffer {
+            Some(
+                ContiguousBufferManager::new(
+                    &self.vport.host_allocator().await,
+                    RX_BOUNCE_BUFFER_PAGE_LIMIT,
+                )
+                .context("failed to allocate rx bounce buffer")?,
+            )
+        } else {
+            None
+        };
+
         let mut queue = ManaQueue {
             guest_memory: pool.guest_memory().clone(),
             pool,
-            contiguous_memory,
+            rx_bounce_buffer,
+            tx_bounce_buffer,
             vport: Arc::downgrade(&self.vport),
             queue_tracker: self.queue_tracker.clone(),
             eq: eq.queue(),
@@ -453,7 +494,8 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
             ipv4_header: true,
             tcp: true,
             udp: true,
-            tso: true,
+            // Tbe bounce buffer path does not support TSO.
+            tso: !self.bounce_buffer,
         }
     }
 
@@ -501,8 +543,8 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
 pub struct ManaQueue<T: DeviceBacking> {
     pool: Box<dyn BufferAccess>,
     guest_memory: GuestMemory,
-
-    contiguous_memory: ContiguousBufferManager,
+    rx_bounce_buffer: Option<ContiguousBufferManager>,
+    tx_bounce_buffer: ContiguousBufferManager,
 
     vport: Weak<Vport<T>>,
     queue_tracker: Arc<(AtomicUsize, SlimEvent)>,
@@ -523,7 +565,7 @@ pub struct ManaQueue<T: DeviceBacking> {
     rx_cq: Cq,
 
     avail_rx: VecDeque<RxId>,
-    posted_rx: VecDeque<(RxId, u32)>,
+    posted_rx: VecDeque<PostedRx>,
     rx_max: usize,
 
     posted_tx: VecDeque<PostedTx>,
@@ -544,10 +586,17 @@ impl<T: DeviceBacking> Drop for ManaQueue<T> {
     }
 }
 
+struct PostedRx {
+    id: RxId,
+    wqe_len: u32,
+    bounced_len_with_padding: u32,
+    bounce_offset: u32,
+}
+
 struct PostedTx {
     id: TxId,
     wqe_len: u32,
-    bounced_len_with_padding: usize,
+    bounced_len_with_padding: u32,
 }
 
 #[derive(Default)]
@@ -584,7 +633,8 @@ impl<T: DeviceBacking> InspectMut for ManaQueue<T> {
     // Search for EXPECTED_QUEUE_FIELDS_V1.
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.respond()
-            .merge(&self.contiguous_memory)
+            .merge(&self.tx_bounce_buffer)
+            .field("rx_bounce_buffer", &self.rx_bounce_buffer)
             .merge(&self.stats)
             .field("eq", &self.eq)
             .field("eq/armed", self.eq_armed)
@@ -615,20 +665,51 @@ impl<T: DeviceBacking> ManaQueue<T> {
             return false;
         }
         if let Some(id) = self.avail_rx.pop_front() {
-            let sgl = self.pool.guest_addresses(id).iter().map(|seg| Sge {
-                address: self.guest_memory.iova(seg.gpa).unwrap(),
-                mem_key: self.mem_key,
-                size: seg.len,
-            });
+            let rx = if let Some(pool) = &mut self.rx_bounce_buffer {
+                let size = self.pool.capacity(id);
+                let Ok(buffer) = pool.allocate(size) else {
+                    self.avail_rx.push_front(id);
+                    return false;
+                };
+                let buffer = buffer.commit();
+                let sqe = Sge {
+                    address: buffer.gpa,
+                    mem_key: self.mem_key,
+                    size,
+                };
+                let wqe_len = self
+                    .rx_wq
+                    .push(&(), [sqe], None, 0)
+                    .expect("rq should not be full");
 
-            let n = self
-                .rx_wq
-                .push(&(), sgl, None, 0)
-                .expect("rq should not be full");
+                PostedRx {
+                    id,
+                    wqe_len,
+                    bounce_offset: buffer.offset,
+                    bounced_len_with_padding: buffer.len_with_padding,
+                }
+            } else {
+                let sgl = self.pool.guest_addresses(id).iter().map(|seg| Sge {
+                    address: self.guest_memory.iova(seg.gpa).unwrap(),
+                    mem_key: self.mem_key,
+                    size: seg.len,
+                });
 
-            assert!(n <= MAX_RWQE_SIZE, "too many scatter/gather entries");
+                let wqe_len = self
+                    .rx_wq
+                    .push(&(), sgl, None, 0)
+                    .expect("rq should not be full");
 
-            self.posted_rx.push_back((id, n));
+                assert!(wqe_len <= MAX_RWQE_SIZE, "too many scatter/gather entries");
+                PostedRx {
+                    id,
+                    wqe_len,
+                    bounce_offset: 0,
+                    bounced_len_with_padding: 0,
+                }
+            };
+
+            self.posted_rx.push_back(rx);
             true
         } else {
             false
@@ -715,7 +796,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         let mut commit = false;
         while i < packets.len() {
             if let Some(cqe) = self.rx_cq.pop() {
-                let (id, rwqe_size) = self.posted_rx.pop_front().unwrap();
+                let rx = self.posted_rx.pop_front().unwrap();
                 let rx_oob = ManaRxcompOob::read_from_prefix(&cqe.data[..]).unwrap();
                 match rx_oob.cqe_hdr.cqe_type() {
                     CQE_RX_OKAY => {
@@ -737,27 +818,43 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         } else {
                             (L4Protocol::Unknown, RxChecksumState::Unknown)
                         };
+                        let len = rx_oob.ppi[0].pkt_len.into();
                         self.pool.write_header(
-                            id,
+                            rx.id,
                             &RxMetadata {
                                 offset: 0,
-                                len: rx_oob.ppi[0].pkt_len.into(),
+                                len,
                                 ip_checksum,
                                 l4_checksum,
                                 l4_protocol,
                             },
                         );
+                        if rx.bounced_len_with_padding > 0 {
+                            // TODO: avoid this allocation by updating
+                            // write_data to take a slice of shared memory.
+                            let mut data = vec![0; len];
+                            self.rx_bounce_buffer.as_mut().unwrap().as_slice()
+                                [rx.bounce_offset as usize..][..len]
+                                .atomic_read(&mut data);
+                            self.pool.write_data(rx.id, &data);
+                        }
                         self.stats.rx_packets += 1;
-                        packets[i] = id;
+                        packets[i] = rx.id;
                         i += 1;
                     }
                     ty => {
                         tracelimit::error_ratelimited!(ty, "invalid rx cqe type");
                         self.stats.rx_errors += 1;
-                        self.avail_rx.push_back(id);
+                        self.avail_rx.push_back(rx.id);
                     }
                 }
-                self.rx_wq.advance_head(rwqe_size);
+                self.rx_wq.advance_head(rx.wqe_len);
+                if rx.bounced_len_with_padding > 0 {
+                    self.rx_bounce_buffer
+                        .as_mut()
+                        .unwrap()
+                        .free(rx.bounced_len_with_padding);
+                }
                 // Replenish the rq, if possible.
                 commit |= self.push_rqe();
             } else {
@@ -786,176 +883,12 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                 unreachable!()
             };
 
-            let mut oob = ManaTxOob::new_zeroed();
-            oob.s_oob.set_vcq_num(self.tx_cq.id());
-            oob.s_oob
-                .set_vsq_frame((self.tx_wq.id() >> 10) as u16 & 0x3fff);
-
-            oob.s_oob
-                .set_is_outer_ipv4(meta.l3_protocol == L3Protocol::Ipv4);
-            oob.s_oob
-                .set_is_outer_ipv6(meta.l3_protocol == L3Protocol::Ipv6);
-            oob.s_oob
-                .set_comp_iphdr_csum(meta.offload_ip_header_checksum);
-            oob.s_oob.set_comp_tcp_csum(meta.offload_tcp_checksum);
-            oob.s_oob.set_comp_udp_csum(meta.offload_udp_checksum);
-            if meta.offload_tcp_checksum {
-                oob.s_oob.set_trans_off(meta.l2_len as u16 + meta.l3_len);
+            if let Some(tx) = self.handle_tx(&segments[i..i + meta.segment_count])? {
+                commit = true;
+                self.posted_tx.push_back(tx);
+            } else {
+                self.dropped_tx.push_back(meta.id);
             }
-
-            let mut gd_client_unit_data = 0;
-            let mut header_len = head.len;
-            let (header_segment_count, partial_bytes) = if meta.offload_tcp_segmentation {
-                header_len = (meta.l2_len as u16 + meta.l3_len + meta.l4_len as u16) as u32;
-                if header_len as usize > PAGE_SIZE {
-                    tracelimit::error_ratelimited!(
-                        header_len,
-                        "Header larger than PAGE_SIZE unsupported"
-                    );
-                    // Drop the packet
-                    self.dropped_tx.push_back(meta.id);
-                    i += meta.segment_count;
-                    continue;
-                }
-
-                let mut partial_bytes = 0;
-                gd_client_unit_data = meta.max_tcp_segment_size;
-                if header_len > head.len || self.force_tx_header_bounce {
-                    let mut header_bytes_remaining = header_len;
-                    let mut hdr_idx = i;
-                    while hdr_idx < i + meta.segment_count {
-                        if header_bytes_remaining <= segments[hdr_idx].len {
-                            if segments[hdr_idx].len > header_bytes_remaining {
-                                partial_bytes = header_bytes_remaining;
-                            }
-                            header_bytes_remaining = 0;
-                            break;
-                        }
-                        header_bytes_remaining -= segments[hdr_idx].len;
-                        hdr_idx += 1;
-                    }
-                    if header_bytes_remaining > 0 {
-                        tracelimit::error_ratelimited!(
-                            header_len,
-                            missing_header_bytes = header_bytes_remaining,
-                            "Invalid split header"
-                        );
-                        // Drop the packet
-                        self.dropped_tx.push_back(meta.id);
-                        i += meta.segment_count;
-                        continue;
-                    }
-                    (((hdr_idx + 1) - i), partial_bytes)
-                } else {
-                    if head.len > header_len {
-                        partial_bytes = header_len;
-                    }
-                    (1, partial_bytes)
-                }
-            } else {
-                (1, 0)
-            };
-
-            // The header needs to be contiguous.
-            let (head_iova, bounced_len_with_padding) =
-                if header_len > head.len || self.force_tx_header_bounce {
-                    let mut copy = match self.contiguous_memory.allocate(header_len) {
-                        Ok(buf) => buf,
-                        Err(err) => {
-                            tracelimit::error_ratelimited!(
-                                err = err.as_ref() as &dyn std::error::Error,
-                                header_len,
-                                "Failed to bounce buffer split header"
-                            );
-                            // Drop the packet
-                            self.dropped_tx.push_back(meta.id);
-                            i += meta.segment_count;
-                            continue;
-                        }
-                    };
-                    let mut next = copy.as_slice();
-                    for hdr_seg in &segments[i..i + header_segment_count] {
-                        let len = std::cmp::min(next.len(), hdr_seg.len as usize);
-                        self.guest_memory
-                            .read_to_atomic(hdr_seg.gpa, &next[..len])?;
-                        next = &next[len..];
-                    }
-                    let ContiguousBufferInUse {
-                        gpa,
-                        len_with_padding,
-                    } = copy.commit();
-                    (gpa, len_with_padding)
-                } else {
-                    (self.guest_memory.iova(head.gpa).unwrap(), 0)
-                };
-
-            let mut sgl = [Sge::new_zeroed(); 31];
-            sgl[0] = Sge {
-                address: head_iova,
-                mem_key: self.mem_key,
-                size: header_len,
-            };
-            let tail_sgl_offset = if partial_bytes > 0 {
-                let shared_seg = &segments[i + header_segment_count - 1];
-                sgl[1] = Sge {
-                    address: self
-                        .guest_memory
-                        .iova(shared_seg.gpa)
-                        .unwrap()
-                        .wrapping_add(partial_bytes as u64),
-                    mem_key: self.mem_key,
-                    size: shared_seg.len - partial_bytes,
-                };
-                2
-            } else {
-                1
-            };
-
-            let segment_count = tail_sgl_offset + meta.segment_count - header_segment_count;
-            let sgl = &mut sgl[..segment_count];
-            for (tail, sge) in segments[i + header_segment_count..i + meta.segment_count]
-                .iter()
-                .zip(&mut sgl[tail_sgl_offset..])
-            {
-                *sge = Sge {
-                    address: self.guest_memory.iova(tail.gpa).unwrap(),
-                    mem_key: self.mem_key,
-                    size: tail.len,
-                };
-            }
-
-            let vp_offset = self.vp_offset;
-            let wqe_len = if vp_offset <= 0xff {
-                oob.s_oob.set_pkt_fmt(MANA_SHORT_PKT_FMT);
-                oob.s_oob.set_short_vp_offset(vp_offset as u8);
-                self.tx_wq
-                    .push(
-                        &oob.s_oob,
-                        sgl.iter().copied(),
-                        meta.offload_tcp_segmentation.then(|| sgl[0].size as u8),
-                        gd_client_unit_data,
-                    )
-                    .unwrap()
-            } else {
-                oob.s_oob.set_pkt_fmt(MANA_LONG_PKT_FMT);
-                oob.l_oob.set_long_vp_offset(vp_offset);
-                self.tx_wq
-                    .push(
-                        &oob,
-                        sgl.iter().copied(),
-                        meta.offload_tcp_segmentation.then(|| sgl[0].size as u8),
-                        gd_client_unit_data,
-                    )
-                    .unwrap()
-            };
-
-            commit = true;
-            self.posted_tx.push_back(PostedTx {
-                id: meta.id,
-                wqe_len,
-                bounced_len_with_padding,
-            });
-
             i += meta.segment_count;
         }
 
@@ -982,7 +915,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                 let packet = self.posted_tx.pop_front().unwrap();
                 self.tx_wq.advance_head(packet.wqe_len);
                 if packet.bounced_len_with_padding > 0 {
-                    self.contiguous_memory.free(packet.bounced_len_with_padding);
+                    self.tx_bounce_buffer.free(packet.bounced_len_with_padding);
                 }
                 packet.id
             } else if let Some(id) = self.dropped_tx.pop_front() {
@@ -1007,24 +940,245 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
     }
 }
 
+impl<T: DeviceBacking> ManaQueue<T> {
+    fn handle_tx(&mut self, segments: &[TxSegment]) -> anyhow::Result<Option<PostedTx>> {
+        let head = &segments[0];
+        let TxSegmentType::Head(meta) = &head.ty else {
+            unreachable!()
+        };
+
+        let mut oob = ManaTxOob::new_zeroed();
+        oob.s_oob.set_vcq_num(self.tx_cq.id());
+        oob.s_oob
+            .set_vsq_frame((self.tx_wq.id() >> 10) as u16 & 0x3fff);
+
+        oob.s_oob
+            .set_is_outer_ipv4(meta.l3_protocol == L3Protocol::Ipv4);
+        oob.s_oob
+            .set_is_outer_ipv6(meta.l3_protocol == L3Protocol::Ipv6);
+        oob.s_oob
+            .set_comp_iphdr_csum(meta.offload_ip_header_checksum);
+        oob.s_oob.set_comp_tcp_csum(meta.offload_tcp_checksum);
+        oob.s_oob.set_comp_udp_csum(meta.offload_udp_checksum);
+        if meta.offload_tcp_checksum {
+            oob.s_oob.set_trans_off(meta.l2_len as u16 + meta.l3_len);
+        }
+        let short_format = self.vp_offset <= 0xff;
+        if short_format {
+            oob.s_oob.set_pkt_fmt(MANA_SHORT_PKT_FMT);
+            oob.s_oob.set_short_vp_offset(self.vp_offset as u8);
+        } else {
+            oob.s_oob.set_pkt_fmt(MANA_LONG_PKT_FMT);
+            oob.l_oob.set_long_vp_offset(self.vp_offset);
+        }
+
+        let tx = if self.rx_bounce_buffer.is_some() {
+            assert!(!meta.offload_tcp_segmentation);
+            let gd_client_unit_data = 0;
+            let mut buf: ContiguousBuffer<'_> =
+                match self.tx_bounce_buffer.allocate(meta.len as u32) {
+                    Ok(buf) => buf,
+                    Err(err) => {
+                        tracelimit::error_ratelimited!(
+                            err = &err as &dyn std::error::Error,
+                            meta.len,
+                            "failed to bounce buffer"
+                        );
+                        // Drop the packet
+                        return Ok(None);
+                    }
+                };
+            let mut next = buf.as_slice();
+            for seg in segments {
+                let len = seg.len as usize;
+                self.guest_memory.read_to_atomic(seg.gpa, &next[..len])?;
+                next = &next[len..];
+            }
+            let buf = buf.commit();
+            let sge = Sge {
+                address: buf.gpa,
+                mem_key: self.mem_key,
+                size: meta.len as u32,
+            };
+            let wqe_len = if short_format {
+                self.tx_wq
+                    .push(&oob.s_oob, [sge], None, gd_client_unit_data)
+                    .unwrap()
+            } else {
+                self.tx_wq
+                    .push(&oob, [sge], None, gd_client_unit_data)
+                    .unwrap()
+            };
+            PostedTx {
+                id: meta.id,
+                wqe_len,
+                bounced_len_with_padding: buf.len_with_padding,
+            }
+        } else {
+            let mut gd_client_unit_data = 0;
+            let mut header_len = head.len;
+            let (header_segment_count, partial_bytes) = if meta.offload_tcp_segmentation {
+                header_len = (meta.l2_len as u16 + meta.l3_len + meta.l4_len as u16) as u32;
+                if header_len > PAGE_SIZE32 {
+                    tracelimit::error_ratelimited!(
+                        header_len,
+                        "Header larger than PAGE_SIZE unsupported"
+                    );
+                    // Drop the packet
+                    return Ok(None);
+                }
+
+                let mut partial_bytes = 0;
+                gd_client_unit_data = meta.max_tcp_segment_size;
+                if header_len > head.len || self.force_tx_header_bounce {
+                    let mut header_bytes_remaining = header_len;
+                    let mut hdr_idx = 0;
+                    while hdr_idx < segments.len() {
+                        if header_bytes_remaining <= segments[hdr_idx].len {
+                            if segments[hdr_idx].len > header_bytes_remaining {
+                                partial_bytes = header_bytes_remaining;
+                            }
+                            header_bytes_remaining = 0;
+                            break;
+                        }
+                        header_bytes_remaining -= segments[hdr_idx].len;
+                        hdr_idx += 1;
+                    }
+                    if header_bytes_remaining > 0 {
+                        tracelimit::error_ratelimited!(
+                            header_len,
+                            missing_header_bytes = header_bytes_remaining,
+                            "Invalid split header"
+                        );
+                        // Drop the packet
+                        return Ok(None);
+                    }
+                    ((hdr_idx + 1), partial_bytes)
+                } else {
+                    if head.len > header_len {
+                        partial_bytes = header_len;
+                    }
+                    (1, partial_bytes)
+                }
+            } else {
+                (1, 0)
+            };
+
+            // The header needs to be contiguous.
+            let (head_iova, bounced_len_with_padding) =
+                if header_len > head.len || self.force_tx_header_bounce {
+                    let mut copy = match self.tx_bounce_buffer.allocate(header_len) {
+                        Ok(buf) => buf,
+                        Err(err) => {
+                            tracelimit::error_ratelimited!(
+                                err = &err as &dyn std::error::Error,
+                                header_len,
+                                "Failed to bounce buffer split header"
+                            );
+                            // Drop the packet
+                            return Ok(None);
+                        }
+                    };
+                    let mut next = copy.as_slice();
+                    for hdr_seg in &segments[..header_segment_count] {
+                        let len = std::cmp::min(next.len(), hdr_seg.len as usize);
+                        self.guest_memory
+                            .read_to_atomic(hdr_seg.gpa, &next[..len])?;
+                        next = &next[len..];
+                    }
+                    let ContiguousBufferInUse {
+                        gpa,
+                        offset: _,
+                        len_with_padding,
+                    } = copy.commit();
+                    (gpa, len_with_padding)
+                } else {
+                    (self.guest_memory.iova(head.gpa).unwrap(), 0)
+                };
+
+            let mut sgl = [Sge::new_zeroed(); 31];
+            sgl[0] = Sge {
+                address: head_iova,
+                mem_key: self.mem_key,
+                size: header_len,
+            };
+            let tail_sgl_offset = if partial_bytes > 0 {
+                let shared_seg = &segments[header_segment_count - 1];
+                sgl[1] = Sge {
+                    address: self
+                        .guest_memory
+                        .iova(shared_seg.gpa)
+                        .unwrap()
+                        .wrapping_add(partial_bytes as u64),
+                    mem_key: self.mem_key,
+                    size: shared_seg.len - partial_bytes,
+                };
+                2
+            } else {
+                1
+            };
+
+            let segment_count = tail_sgl_offset + meta.segment_count - header_segment_count;
+            let sgl = &mut sgl[..segment_count];
+            for (tail, sge) in segments[header_segment_count..]
+                .iter()
+                .zip(&mut sgl[tail_sgl_offset..])
+            {
+                *sge = Sge {
+                    address: self.guest_memory.iova(tail.gpa).unwrap(),
+                    mem_key: self.mem_key,
+                    size: tail.len,
+                };
+            }
+
+            let wqe_len = if short_format {
+                self.tx_wq
+                    .push(
+                        &oob.s_oob,
+                        sgl.iter().copied(),
+                        meta.offload_tcp_segmentation.then(|| sgl[0].size as u8),
+                        gd_client_unit_data,
+                    )
+                    .unwrap()
+            } else {
+                self.tx_wq
+                    .push(
+                        &oob,
+                        sgl.iter().copied(),
+                        meta.offload_tcp_segmentation.then(|| sgl[0].size as u8),
+                        gd_client_unit_data,
+                    )
+                    .unwrap()
+            };
+            PostedTx {
+                id: meta.id,
+                wqe_len,
+                bounced_len_with_padding,
+            }
+        };
+        Ok(Some(tx))
+    }
+}
+
 struct ContiguousBufferInUse {
     pub gpa: u64,
-    pub len_with_padding: usize,
+    pub offset: u32,
+    pub len_with_padding: u32,
 }
 
 struct ContiguousBuffer<'a> {
     parent: &'a mut ContiguousBufferManager,
-    offset: usize,
-    len: usize,
-    padding_len: usize,
+    offset: u32,
+    len: u32,
+    padding_len: u32,
 }
 
 impl<'a> ContiguousBuffer<'a> {
     pub fn new(
         parent: &'a mut ContiguousBufferManager,
-        offset: usize,
-        len: usize,
-        padding_len: usize,
+        offset: u32,
+        len: u32,
+        padding_len: u32,
     ) -> Self {
         Self {
             parent,
@@ -1035,36 +1189,41 @@ impl<'a> ContiguousBuffer<'a> {
     }
 
     pub fn as_slice(&mut self) -> &[AtomicU8] {
-        &self.parent.as_slice()[self.offset..self.offset + self.len]
+        &self.parent.as_slice()[self.offset as usize..(self.offset + self.len) as usize]
     }
 
     pub fn commit(self) -> ContiguousBufferInUse {
-        let page = self.offset / PAGE_SIZE;
-        let offset_in_page = self.offset - page * PAGE_SIZE;
-        let gpa = (self.parent.mem.pfns()[page] as usize * PAGE_SIZE + offset_in_page) as u64;
+        let page = self.offset / PAGE_SIZE32;
+        let offset_in_page = self.offset - page * PAGE_SIZE32;
+        let gpa = self.parent.mem.pfns()[page as usize] * PAGE_SIZE64 + offset_in_page as u64;
         let len_with_padding = self.len + self.padding_len;
         self.parent.head = self.parent.head.wrapping_add(len_with_padding);
         ContiguousBufferInUse {
             gpa,
+            offset: self.offset,
             len_with_padding,
         }
     }
 }
 
 struct ContiguousBufferManager {
-    len: usize,
-    head: usize,
-    tail: usize,
+    len: u32,
+    head: u32,
+    tail: u32,
     mem: MemoryBlock,
     // Counters
     split_headers: u64,
     failed_allocations: u64,
 }
 
+#[derive(Debug, Error)]
+#[error("out of bounce buffer memory")]
+struct OutOfMemory;
+
 impl ContiguousBufferManager {
-    pub fn new<T: HostDmaAllocator>(host_allocator: &T, page_limit: usize) -> anyhow::Result<Self> {
-        let len = PAGE_SIZE * page_limit;
-        let mem = host_allocator.allocate_dma_buffer(len)?;
+    pub fn new<T: HostDmaAllocator>(host_allocator: &T, page_limit: u32) -> anyhow::Result<Self> {
+        let len = PAGE_SIZE32 * page_limit;
+        let mem = host_allocator.allocate_dma_buffer(len as usize)?;
         Ok(Self {
             len,
             head: 0,
@@ -1076,20 +1235,19 @@ impl ContiguousBufferManager {
     }
 
     /// Allocates from next section of available ring buffer.
-    pub fn allocate(&mut self, len: u32) -> anyhow::Result<ContiguousBuffer<'_>> {
-        let len = len as usize;
+    pub fn allocate(&mut self, len: u32) -> Result<ContiguousBuffer<'_>, OutOfMemory> {
         self.split_headers += 1;
-        assert!(len < PAGE_SIZE);
+        assert!(len < PAGE_SIZE32);
         let mut len_with_padding = len;
         let mut allocated_offset = self.head;
-        let bytes_remaining_on_page = PAGE_SIZE - (self.head & (PAGE_SIZE - 1));
+        let bytes_remaining_on_page = PAGE_SIZE32 - (self.head & (PAGE_SIZE32 - 1));
         if len > bytes_remaining_on_page {
             allocated_offset = allocated_offset.wrapping_add(bytes_remaining_on_page);
             len_with_padding += bytes_remaining_on_page;
         }
         if len_with_padding > self.tail.wrapping_sub(self.head) {
             self.failed_allocations += 1;
-            anyhow::bail!("Failed allocating memory for split header bounce");
+            return Err(OutOfMemory);
         }
         Ok(ContiguousBuffer::new(
             self,
@@ -1101,11 +1259,11 @@ impl ContiguousBufferManager {
 
     /// Frees oldest reserved range by advancing the tail of the ring buffer to
     /// account for that range. This requires entries to be consumed FIFO.
-    pub fn free(&mut self, len_with_padding: usize) {
+    pub fn free(&mut self, len_with_padding: u32) {
         self.tail = self.tail.wrapping_add(len_with_padding);
     }
 
-    pub fn as_slice(&mut self) -> &[AtomicU8] {
+    pub fn as_slice(&self) -> &[AtomicU8] {
         self.mem.as_slice()
     }
 }
@@ -1120,6 +1278,7 @@ impl Inspect for ContiguousBufferManager {
 
 #[cfg(test)]
 mod tests {
+    use crate::GuestDmaMode;
     use crate::ManaEndpoint;
     use chipset_device::mmio::ExternallyManagedMmioIntercepts;
     use gdma::VportConfig;
@@ -1145,14 +1304,31 @@ mod tests {
     /// mana driver up to it, puts the net_mana endpoint on top of that, and
     /// ensures that packets can be sent and received.
     #[async_test]
-    async fn test_endpoint(driver: DefaultDriver) {
-        let base_len = 256 * 1024;
+    async fn test_endpoint_direct_dma(driver: DefaultDriver) {
+        test_endpoint(driver, GuestDmaMode::DirectDma).await;
+    }
+
+    #[async_test]
+    async fn test_endpoint_bounce_buffer(driver: DefaultDriver) {
+        test_endpoint(driver, GuestDmaMode::BounceBuffer).await;
+    }
+
+    async fn test_endpoint(driver: DefaultDriver, dma_mode: GuestDmaMode) {
+        const PACKET_LEN: usize = 1138;
+        let base_len = 1 << 20;
         let payload_len = 1 << 20;
-        let mem = DeviceSharedMemory::new(base_len, payload_len);
+        let mem: DeviceSharedMemory = DeviceSharedMemory::new(base_len, payload_len);
         let payload_mem = mem
             .guest_memory()
             .subrange(base_len as u64, payload_len as u64, false)
             .unwrap();
+        let driver_dma_mem = if dma_mode == GuestDmaMode::DirectDma {
+            mem.guest_memory_for_driver_dma()
+                .subrange(base_len as u64, payload_len as u64, false)
+                .unwrap()
+        } else {
+            payload_mem.clone()
+        };
         let mut msi_set = MsiInterruptSet::new();
         let device = gdma::GdmaDevice::new(
             &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -1176,14 +1352,14 @@ mod tests {
         };
         let thing = ManaDevice::new(&driver, device, 1, 1).await.unwrap();
         let vport = thing.new_vport(0, None, &dev_config).await.unwrap();
-        let mut endpoint = ManaEndpoint::new(driver.clone(), vport).await;
+        let mut endpoint = ManaEndpoint::new(driver.clone(), vport, dma_mode).await;
         let mut queues = Vec::new();
-        let pool = net_backend::tests::Bufs::new(payload_mem.clone());
+        let pool = net_backend::tests::Bufs::new(driver_dma_mem);
         endpoint
             .get_queues(
                 vec![QueueConfig {
                     pool: Box::new(pool),
-                    initial_rx: &[RxId(1)],
+                    initial_rx: &(1..128).map(RxId).collect::<Vec<_>>(),
                     driver: Box::new(driver.clone()),
                 }],
                 None,
@@ -1192,41 +1368,44 @@ mod tests {
             .await
             .unwrap();
 
-        let sent_data = (0..=255).collect::<Vec<u8>>();
-        payload_mem.write_at(0, &sent_data).unwrap();
+        for i in 0..1000 {
+            let sent_data = (0..PACKET_LEN).map(|v| (i + v) as u8).collect::<Vec<u8>>();
+            payload_mem.write_at(0, &sent_data).unwrap();
 
-        queues[0]
-            .tx_avail(&[TxSegment {
-                ty: net_backend::TxSegmentType::Head(net_backend::TxMetadata {
-                    id: TxId(1),
-                    segment_count: 1,
-                    len: sent_data.len(),
-                    ..Default::default()
-                }),
-                gpa: 0,
-                len: sent_data.len() as u32,
-            }])
-            .unwrap();
+            queues[0]
+                .tx_avail(&[TxSegment {
+                    ty: net_backend::TxSegmentType::Head(net_backend::TxMetadata {
+                        id: TxId(1),
+                        segment_count: 1,
+                        len: sent_data.len(),
+                        ..Default::default()
+                    }),
+                    gpa: 0,
+                    len: sent_data.len() as u32,
+                }])
+                .unwrap();
 
-        let mut packets = [RxId(0)];
-        let n = loop {
-            poll_fn(|cx| queues[0].poll_ready(cx)).await;
-            let n = queues[0].rx_poll(&mut packets).unwrap();
-            if n != 0 {
-                break n;
+            let mut packets = [RxId(0); 2];
+            let mut done = [TxId(0); 2];
+            let mut done_n = 0;
+            let mut packets_n = 0;
+            while done_n == 0 || packets_n == 0 {
+                poll_fn(|cx| queues[0].poll_ready(cx)).await;
+                packets_n += queues[0].rx_poll(&mut packets[packets_n..]).unwrap();
+                done_n += queues[0].tx_poll(&mut done[done_n..]).unwrap();
             }
-        };
-        assert_eq!(n, 1);
-        assert_eq!(packets[0].0, 1);
+            assert_eq!(packets_n, 1);
+            let rx_id = packets[0];
 
-        let mut received_data = [0; 256];
-        payload_mem.read_at(2048, &mut received_data).unwrap();
-        assert_eq!(&received_data[..], sent_data);
-
-        let mut done = [TxId(0)];
-        let n = queues[0].tx_poll(&mut done).unwrap();
-        assert_eq!(n, 1);
-        assert_eq!(done[0].0, 1);
+            let mut received_data = vec![0; PACKET_LEN];
+            payload_mem
+                .read_at(2048 * rx_id.0 as u64, &mut received_data)
+                .unwrap();
+            assert_eq!(&received_data[..], sent_data, "{i} {:?}", rx_id);
+            assert_eq!(done_n, 1);
+            assert_eq!(done[0].0, 1);
+            queues[0].rx_avail(&[rx_id]);
+        }
 
         drop(queues);
         endpoint.stop().await;

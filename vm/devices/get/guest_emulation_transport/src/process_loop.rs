@@ -307,15 +307,15 @@ pub(crate) mod msg {
     #[derive(Debug)]
     pub struct VmgsReadInput {
         pub sector_offset: u64,
-        pub length: usize,
-        pub sector_size: usize,
+        pub sector_count: u32,
+        pub sector_size: u32,
     }
 
     #[derive(Debug)]
     pub struct VmgsWriteInput {
         pub sector_offset: u64,
         pub buf: Vec<u8>,
-        pub sector_size: usize,
+        pub sector_size: u32,
     }
 
     #[derive(Debug)]
@@ -1609,14 +1609,14 @@ async fn request_vmgs_read(
 ) -> Result<Result<Vec<u8>, get_protocol::VmgsReadResponse>, FatalError> {
     let msg::VmgsReadInput {
         sector_offset,
-        length,
+        sector_count,
         sector_size,
     } = input;
     access.send_message(
         get_protocol::VmgsReadRequest::new(
             get_protocol::VmgsReadFlags::NONE,
             sector_offset,
-            length as u32,
+            sector_count,
         )
         .as_bytes()
         .to_vec(),
@@ -1624,7 +1624,7 @@ async fn request_vmgs_read(
 
     let buf = access.recv_response().await;
 
-    let vmgs_buf_len = length * sector_size;
+    let vmgs_buf_len = (sector_count * sector_size) as usize;
     let (response, remaining) = get_protocol::VmgsReadResponse::read_from_prefix_split(
         buf.as_slice(),
     )
@@ -1662,7 +1662,7 @@ async fn request_vmgs_write(
     let request = get_protocol::VmgsWriteRequest::new(
         get_protocol::VmgsWriteFlags::NONE,
         input.sector_offset,
-        (input.buf.len() / input.sector_size) as u32,
+        (input.buf.len() / input.sector_size as usize) as u32,
     );
     let message = [request.as_bytes(), &input.buf].concat();
     let response: get_protocol::VmgsWriteResponse =

@@ -8,6 +8,7 @@
 #![allow(unsafe_code)]
 
 use core::slice;
+use disk_vhd1::Vhd1Disk;
 use futures::executor::block_on;
 use std::ffi::c_char;
 use std::ffi::CStr;
@@ -15,12 +16,12 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
-use vmgs::disk::vhd_file::FileDiskFlag;
-use vmgs::disk::vhd_file::VhdFileDisk;
+use std::sync::Arc;
 use vmgs::EncryptionAlgorithm;
 use vmgs::Vmgs;
 use vmgs_format::FileId;
 use vmgs_format::VMGS_BYTES_PER_BLOCK;
+use vmgs_format::VMGS_DEFAULT_CAPACITY;
 
 #[repr(u32)]
 pub enum VmgsError {
@@ -103,16 +104,23 @@ pub unsafe extern "C" fn read_vmgs(
     VmgsError::Ok
 }
 
+fn open_disk(file_path: &str, read_only: bool) -> Result<Arc<Vhd1Disk>, VmgsError> {
+    let file = File::options()
+        .read(true)
+        .write(!read_only)
+        .open(file_path)
+        .map_err(|_| VmgsError::FileDisk)?;
+
+    let disk = Vhd1Disk::open_fixed(file, read_only).map_err(|_| VmgsError::FileDisk)?;
+    Ok(Arc::new(disk))
+}
+
 async fn do_read(
     file_path: &str,
     file_id: FileId,
     key: Option<&[u8]>,
 ) -> Result<Vec<u8>, VmgsError> {
-    let file_path = PathBuf::from(file_path);
-    let flag = FileDiskFlag::Read;
-    let storage = VhdFileDisk::new(&file_path, flag).map_err(|_| VmgsError::FileDisk)?;
-
-    let mut vmgs = Vmgs::open(Box::new(storage))
+    let mut vmgs = Vmgs::open(open_disk(file_path, true)?)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
@@ -191,11 +199,9 @@ async fn do_write(
     key: Option<&[u8]>,
     file_id: FileId,
 ) -> Result<(), VmgsError> {
-    let file_path = PathBuf::from(file_path);
-    let data_path = PathBuf::from(data_path);
     let mut buf = Vec::new();
 
-    let mut file = File::open(&data_path).map_err(|_| VmgsError::CantOpenFile)?;
+    let mut file = File::open(data_path).map_err(|_| VmgsError::CantOpenFile)?;
 
     // manually allow, since we want to differentiate between the file not being
     // accessible, and a read operation failing
@@ -203,10 +209,7 @@ async fn do_write(
     file.read_to_end(&mut buf)
         .map_err(|_| VmgsError::CantReadFile)?;
 
-    let flag = FileDiskFlag::ReadWrite;
-    let storage = VhdFileDisk::new(&file_path, flag).map_err(|_| VmgsError::FileDisk)?;
-
-    let mut vmgs = Vmgs::open(Box::new(storage))
+    let mut vmgs = Vmgs::open(open_disk(file_path, false)?)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
@@ -295,18 +298,26 @@ async fn do_create(
         return Err(VmgsError::InvalidFileSize);
     }
     let file_size = if file_size == 0 {
-        None
+        VMGS_DEFAULT_CAPACITY
     } else {
-        Some(file_size)
+        file_size
     };
-    let flag = FileDiskFlag::Create {
-        file_size,
-        force_create: overwrite_existing_file,
-    };
+    let file = File::options()
+        .create(true)
+        .create_new(!overwrite_existing_file)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(&file_path)
+        .map_err(|_| VmgsError::FileDisk)?;
 
-    let storage = VhdFileDisk::new(&file_path, flag).map_err(|_| VmgsError::FileDisk)?;
+    file.set_len(file_size).map_err(|_| VmgsError::FileDisk)?;
 
-    let mut vmgs = Vmgs::format_new(Box::new(storage))
+    Vhd1Disk::make_fixed(&file).map_err(|_| VmgsError::FileDisk)?;
+
+    let disk = Vhd1Disk::open_fixed(file, false).map_err(|_| VmgsError::FileDisk)?;
+
+    let mut vmgs = Vmgs::format_new(Arc::new(disk))
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
@@ -352,10 +363,7 @@ pub unsafe extern "C" fn query_size_vmgs(
 }
 
 async fn do_query_size(file_path: &str, file_id: FileId) -> Result<u64, VmgsError> {
-    let file_path = PathBuf::from(file_path);
-    let flag = FileDiskFlag::Read;
-    let storage = VhdFileDisk::new(file_path, flag).map_err(|_| VmgsError::FileDisk)?;
-    let vmgs = Vmgs::open(Box::new(storage))
+    let vmgs = Vmgs::open(open_disk(file_path, true)?)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 

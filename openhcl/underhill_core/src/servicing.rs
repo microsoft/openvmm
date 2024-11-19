@@ -60,7 +60,7 @@ mod state {
         #[mesh(6)]
         pub vmgs: (
             vmgs::save_restore::state::SavedVmgsState,
-            vmgs::save_restore::state::SavedBlockStorageMetadata,
+            disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
         ),
         /// Intercept the host-provided shutdown IC device.
         #[mesh(7)]
@@ -124,7 +124,7 @@ pub mod transposed {
         pub flush_logs_result: Option<Option<FlushLogsResult>>,
         pub vmgs: Option<(
             vmgs::save_restore::state::SavedVmgsState,
-            vmgs::save_restore::state::SavedBlockStorageMetadata,
+            disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
         )>,
         pub overlay_shutdown_device: Option<bool>,
     }

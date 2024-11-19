@@ -50,6 +50,16 @@ pub fn open_disk_type(path: &Path, read_only: bool) -> anyhow::Result<Resource<D
         Some("iso") if !read_only => {
             anyhow::bail!("iso file cannot be opened as read/write")
         }
+        Some("vmgs") => {
+            // VMGS files are fixed VHD1s. Don't bother to validate the footer
+            // here; let the resource resolver do that later.
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(!read_only)
+                .open(path)?;
+
+            Resource::new(disk_backend_resources::FixedVhd1DiskHandle(file))
+        }
         _ => {
             let file = std::fs::OpenOptions::new()
                 .read(true)
