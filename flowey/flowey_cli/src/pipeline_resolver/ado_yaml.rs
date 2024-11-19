@@ -205,6 +205,30 @@ pub fn ado_yaml(
             });
         }
 
+        let flowey_bin = platform.binary("flowey");
+        let flowey_executable_bash = format!(
+            r###"
+set -e
+AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
+AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+echo "##vso[task.setvariable variable=AgentTempDirNormal;]$AgentTempDirNormal"
+
+chmod +x $AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}
+FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}"
+echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
+"###
+        ).trim_start().to_string();
+
+        ado_steps.push({
+            let mut map = serde_yaml::Mapping::new();
+            map.insert(
+                "bash".into(),
+                serde_yaml::Value::String(flowey_executable_bash),
+            );
+            map.insert("displayName".into(), "Set flowey path".into());
+            map.into()
+        });
+
         let mut flowey_bootstrap_bash = String::new();
 
         let bootstrap_bash_var_db_inject = |var, is_raw_string| {
@@ -306,34 +330,6 @@ EOF
                 r#"echo "$(FLOWEY_TEMP_DIR)/used_artifacts/{name}" | {var_db_inject_cmd}"#,
             )?;
         }
-
-        let mut flowey_executable_bash = String::new();
-        writeln!(flowey_executable_bash, "{}", {
-            let flowey_bin = platform.binary("flowey");
-            format!(
-                r###"
-set -e
-AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
-AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-echo "##vso[task.setvariable variable=AgentTempDirNormal;]$AgentTempDirNormal"
-
-chmod +x $AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}
-FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}"
-echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
-"###
-            )
-            .trim_start()
-        })?;
-
-        ado_steps.push({
-            let mut map = serde_yaml::Mapping::new();
-            map.insert(
-                "bash".into(),
-                serde_yaml::Value::String(flowey_executable_bash),
-            );
-            map.insert("displayName".into(), "Set flowey path".into());
-            map.into()
-        });
 
         // if this was a bootstrap job, also take a moment to run a "self check"
         // to make sure that the current checked-in template matches the one it

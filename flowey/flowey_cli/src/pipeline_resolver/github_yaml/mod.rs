@@ -211,8 +211,6 @@ pub fn github_yaml(
             });
         }
 
-        let mut flowey_bootstrap_bash = String::new();
-
         {
             let mut map = serde_yaml::Mapping::new();
             map.insert(
@@ -236,6 +234,80 @@ pub fn github_yaml(
                 None,
             )
         };
+
+        // if this was a bootstrap job, also take a moment to run a "self check"
+        // to make sure that the current checked-in template matches the one it
+        // expected
+        if let FloweySource::Bootstrap(..) = &flowey_source {
+            let mut current_invocation = std::env::args().collect::<Vec<_>>();
+
+            current_invocation[0] = flowey_bin.clone();
+
+            // if this code path is run while generating the YAML to compare the
+            // check against, we want to remove the --runtime or --check param from the
+            // current call, or else there'll be a dupe
+            let mut strip_parameter = |prefix: &str| {
+                if let Some(i) = current_invocation
+                    .iter()
+                    .position(|s| s.starts_with(prefix))
+                {
+                    current_invocation.remove(i);
+                    if !current_invocation[i].starts_with(prefix) {
+                        current_invocation.remove(i);
+                    }
+                }
+            };
+
+            strip_parameter("--runtime");
+            strip_parameter("--check");
+
+            // insert the --check bit of the call alongside the --out param
+            {
+                let i = current_invocation
+                    .iter()
+                    .position(|s| s.starts_with("--out"))
+                    .unwrap();
+
+                let current_yaml = match platform.kind() {
+                    FlowPlatformKind::Windows => {
+                        r#"$ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml"#
+                    }
+                    FlowPlatformKind::Unix => {
+                        r#"$ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml"#
+                    }
+                };
+
+                current_invocation.insert(i, current_yaml.into());
+                current_invocation.insert(i, "--runtime".into());
+            }
+
+            // Need to use an escaped version of the "true" windows/linux path
+            // here, or else the --check will fail.
+            let cmd = format!(
+                r###"
+ESCAPED_AGENT_TEMPDIR=$(
+cat <<'EOF' | sed 's/\\/\\\\/g'
+{RUNNER_TEMP}
+EOF
+)
+{}
+"###,
+                current_invocation.join(" ")
+            );
+
+            gh_steps.push({
+                let mut map = serde_yaml::Mapping::new();
+                map.insert("name".into(), "🌼🔎 Self-check YAML".into());
+                map.insert(
+                    "run".into(),
+                    serde_yaml::Value::String(cmd.trim().to_string()),
+                );
+                map.insert("shell".into(), "bash".into());
+                map.into()
+            })
+        }
+
+        let mut flowey_bootstrap_bash = String::new();
 
         // and now use those vars to do some flowey bootstrap
         writeln!(flowey_bootstrap_bash, "{}", {
@@ -346,78 +418,6 @@ EOF
                     )?;
                 }
             }
-        }
-
-        // if this was a bootstrap job, also take a moment to run a "self check"
-        // to make sure that the current checked-in template matches the one it
-        // expected
-        if let FloweySource::Bootstrap(..) = &flowey_source {
-            let mut current_invocation = std::env::args().collect::<Vec<_>>();
-
-            current_invocation[0] = flowey_bin;
-
-            // if this code path is run while generating the YAML to compare the
-            // check against, we want to remove the --runtime or --check param from the
-            // current call, or else there'll be a dupe
-            let mut strip_parameter = |prefix: &str| {
-                if let Some(i) = current_invocation
-                    .iter()
-                    .position(|s| s.starts_with(prefix))
-                {
-                    current_invocation.remove(i);
-                    if !current_invocation[i].starts_with(prefix) {
-                        current_invocation.remove(i);
-                    }
-                }
-            };
-
-            strip_parameter("--runtime");
-            strip_parameter("--check");
-
-            // insert the --check bit of the call alongside the --out param
-            {
-                let i = current_invocation
-                    .iter()
-                    .position(|s| s.starts_with("--out"))
-                    .unwrap();
-
-                let current_yaml = match platform.kind() {
-                    FlowPlatformKind::Windows => {
-                        r#"$ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml"#
-                    }
-                    FlowPlatformKind::Unix => {
-                        r#"$ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml"#
-                    }
-                };
-
-                current_invocation.insert(i, current_yaml.into());
-                current_invocation.insert(i, "--runtime".into());
-            }
-
-            // Need to use an escaped version of the "true" windows/linux path
-            // here, or else the --check will fail.
-            let cmd = format!(
-                r###"
-ESCAPED_AGENT_TEMPDIR=$(
-cat <<'EOF' | sed 's/\\/\\\\/g'
-{RUNNER_TEMP}
-EOF
-)
-{}
-"###,
-                current_invocation.join(" ")
-            );
-
-            gh_steps.push({
-                let mut map = serde_yaml::Mapping::new();
-                map.insert("name".into(), "🌼🔎 Self-check YAML".into());
-                map.insert(
-                    "run".into(),
-                    serde_yaml::Value::String(cmd.trim().to_string()),
-                );
-                map.insert("shell".into(), "bash".into());
-                map.into()
-            })
         }
 
         gh_steps.push({
