@@ -132,12 +132,8 @@ pub enum TranslateCachingInfo {
     NoPaging,
     /// State from a page table walk
     Paging {
-        /// Page-level cache disable bit in PTE
-        cache_disable: bool,
-        /// Page-level write-through bit in PTE
-        write_through: bool,
-        /// PAT bit in PTE
-        pat_supported: bool,
+        /// Index that can be used into the pat register to determine cache type
+        pat_index: u64,
     },
 }
 
@@ -407,13 +403,11 @@ pub fn translate_gva_to_gpa(
     // The bits that didn't get used for page table indexes form the offset into
     // the page (of whatever size).
     let address_mask = !0 << remaining_bits;
+    let pat_index =
+        ((cache_disable as u64) << 1) | (write_through as u64) | ((pat_supported as u64) << 2);
     Ok(TranslateResult {
         gpa: (gpa_base & address_mask) | (gva & !address_mask),
-        cache_info: TranslateCachingInfo::Paging {
-            cache_disable,
-            write_through,
-            pat_supported,
-        },
+        cache_info: TranslateCachingInfo::Paging { pat_index },
     })
 }
 

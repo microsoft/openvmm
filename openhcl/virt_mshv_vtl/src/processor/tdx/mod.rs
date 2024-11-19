@@ -11,6 +11,7 @@ use super::vp_state;
 use super::vp_state::UhVpStateAccess;
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
+use super::HvTranslateGvaRegisters;
 use super::LapicState;
 use super::UhEmulationState;
 use super::UhHypercallHandler;
@@ -483,7 +484,7 @@ impl HardwareIsolatedBacking for TdxBacked {
         &self,
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
-    ) -> TranslationRegisters {
+    ) -> HvTranslateGvaRegisters {
         // TODO TDX GUEST VSM: use vtl for all registers
         let cr0 = this.backing.cr0.read(&this.runner);
         let cr4 = this.backing.cr4.read(&this.runner);
@@ -491,17 +492,20 @@ impl HardwareIsolatedBacking for TdxBacked {
         let cr3 = this.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR3);
         let ss = this.read_segment(vtl, TdxSegmentReg::Ss).into();
         let rflags = this.runner.tdx_enter_guest_state().rflags;
-        TranslationRegisters {
-            cr0,
-            cr4,
-            efer,
-            cr3,
-            ss,
-            rflags,
-            encryption_mode: self.vp.partition.caps.vtom.map_or(
-                virt_support_x86emu::translate::EncryptionMode::None,
-                virt_support_x86emu::translate::EncryptionMode::Vtom,
-            ),
+        HvTranslateGvaRegisters {
+            pat: this.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_PAT),
+            emu_regs: TranslationRegisters {
+                cr0,
+                cr4,
+                efer,
+                cr3,
+                ss,
+                rflags,
+                encryption_mode: this.partition.caps.vtom.map_or(
+                    virt_support_x86emu::translate::EncryptionMode::None,
+                    virt_support_x86emu::translate::EncryptionMode::Vtom,
+                ),
+            },
         }
     }
 }

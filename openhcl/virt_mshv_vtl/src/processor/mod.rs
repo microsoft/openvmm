@@ -266,6 +266,12 @@ pub trait Backing: BackingPrivate {}
 
 impl<T: BackingPrivate> Backing for T {}
 
+/// Registers needed for supporting hypercall handling of gva to gpa translation
+pub struct HvTranslateGvaRegisters {
+    pat: u64,
+    emu_regs: TranslationRegisters,
+}
+
 /// Trait for processor backings that have hardware isolation support.
 #[cfg(guest_arch = "x86_64")]
 pub trait HardwareIsolatedBacking: Backing {
@@ -285,7 +291,7 @@ pub trait HardwareIsolatedBacking: Backing {
         &self,
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
-    ) -> TranslationRegisters;
+    ) -> HvTranslateGvaRegisters;
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]

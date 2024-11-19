@@ -1299,7 +1299,8 @@ mod vp_state {
                     gva,
                     &registers,
                     flags,
-                )?)
+                )?
+                .gpa)
             }
             DebuggerVpState::Aarch64(state) => {
                 let registers = virt_support_aarch64emu::translate::TranslationRegisters {
@@ -1326,8 +1327,7 @@ mod vp_state {
                     gva,
                     &registers,
                     flags,
-                )?
-                .gpa)
+                )?)
             }
         }
     }

@@ -942,13 +942,6 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
 
         let registers = self.vp.backing.translation_registers(self.vp, target_vtl);
 
-        let pat = self
-            .vp
-            .access_state(target_vtl.into())
-            .cache_control()
-            .map_err(Self::reg_access_error_to_hv_err)?
-            .msr_cr_pat;
-
         if control_flags.tlb_flush_inhibit() {
             self.vp
                 .set_tlb_lock(self.intercepted_vtl.into(), target_vtl);
@@ -957,10 +950,15 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
         match virt_support_x86emu::translate::translate_gva_to_gpa(
             &self.vp.partition.gm[target_vtl], // TODO GUEST VSM: This doesn't have VTL access checks.
             gva,
-            &registers,
+            &registers.emu_regs,
             virt_support_x86emu::translate::TranslateFlags::from_hv_flags(control_flags),
         ) {
             Ok(virt_support_x86emu::translate::TranslateResult { gpa, cache_info }) => {
+                // TODO GUEST VSM: at the moment, the guest is only using this
+                // to check for overlay pages related to drivers and executable
+                // code. Only the hypercall code page overlay matches that
+                // description. However, for full correctness this should be
+                // extended to check for all overlay pages.
                 let overlay_page = hvdef::hypercall::MsrHypercallContents::from(
                     self.vp
                         .backing
@@ -973,15 +971,8 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
 
                 let cache_type = match cache_info {
                     TranslateCachingInfo::NoPaging => HvCacheType::HvCacheTypeWriteBack.0 as u8,
-                    TranslateCachingInfo::Paging {
-                        cache_disable,
-                        write_through,
-                        pat_supported,
-                    } => {
-                        let pat_index = ((cache_disable as u64) << 1)
-                            | (write_through as u64)
-                            | ((pat_supported as u64) << 2);
-                        ((pat >> (pat_index * 8)) & 0xff) as u8
+                    TranslateCachingInfo::Paging { pat_index } => {
+                        ((registers.pat >> (pat_index * 8)) & 0xff) as u8
                     }
                 };
 
@@ -1188,6 +1179,10 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport for UhEmulationSt
     }
 
     fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
-        Ok(self.vp.backing.translation_registers(self.vp, self.vtl))
+        Ok(self
+            .vp
+            .backing
+            .translation_registers(self.vp, self.vtl)
+            .emu_regs)
     }
 }
