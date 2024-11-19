@@ -15,6 +15,12 @@ pub enum VizModeCli {
     FlowDot,
 }
 
+pub(crate) enum CheckMode {
+    Runtime(PathBuf),
+    Check(PathBuf),
+    None,
+}
+
 #[derive(clap::Subcommand)]
 enum PipelineBackendCli<P: clap::Subcommand> {
     /// A locally executable bash script
@@ -62,6 +68,10 @@ enum PipelineBackendCli<P: clap::Subcommand> {
         /// check that the provided YAML matches the generated YAML.
         #[clap(long, value_name = "YAML")]
         check: Option<PathBuf>,
+
+        /// generate the pipeline JSON, also runs check
+        #[clap(long, value_name = "YAML")]
+        runtime: Option<PathBuf>,
     },
     /// A GitHub pipeline YAML file
     #[clap(subcommand_value_name = "PIPELINE")]
@@ -81,6 +91,10 @@ enum PipelineBackendCli<P: clap::Subcommand> {
         /// check that the provided YAML matches the generated YAML.
         #[clap(long, value_name = "YAML")]
         check: Option<PathBuf>,
+
+        /// generate the pipeline JSON, also runs check
+        #[clap(long, value_name = "YAML", conflicts_with = "check")]
+        runtime: Option<PathBuf>,
     },
     /// Run the pipeline directly using flowey
     Run {
@@ -240,6 +254,7 @@ impl<P: clap::Subcommand + IntoPipeline> Pipeline<P> {
                 out,
                 no_runtime_debug_log,
                 check,
+                runtime,
             } => {
                 let mut resolved_pipeline = resolve_pipeline(pipelines, PipelineBackendHint::Ado)?;
 
@@ -253,13 +268,21 @@ impl<P: clap::Subcommand + IntoPipeline> Pipeline<P> {
                 if let Some(viz_mode) = viz_mode {
                     viz_pipeline(viz_mode, resolved_pipeline, FlowBackend::Ado, false)
                 } else {
+                    let mode = if let Some(runtime_path) = runtime {
+                        CheckMode::Runtime(runtime_path)
+                    } else if let Some(check_path) = check {
+                        CheckMode::Check(check_path)
+                    } else {
+                        CheckMode::None
+                    };
+
                     crate::pipeline_resolver::ado_yaml::ado_yaml(
                         resolved_pipeline,
                         !no_runtime_debug_log,
                         repo_root,
                         &out,
                         flowey_crate,
-                        check,
+                        mode,
                     )
                 }
             }
@@ -268,6 +291,7 @@ impl<P: clap::Subcommand + IntoPipeline> Pipeline<P> {
                 out,
                 no_runtime_debug_log,
                 check,
+                runtime,
             } => {
                 let mut resolved_pipeline =
                     resolve_pipeline(pipelines, PipelineBackendHint::Github)?;
@@ -282,13 +306,21 @@ impl<P: clap::Subcommand + IntoPipeline> Pipeline<P> {
                 if let Some(viz_mode) = viz_mode {
                     viz_pipeline(viz_mode, resolved_pipeline, FlowBackend::Github, false)
                 } else {
+                    let mode = if let Some(runtime_path) = runtime {
+                        CheckMode::Runtime(runtime_path)
+                    } else if let Some(check_path) = check {
+                        CheckMode::Check(check_path)
+                    } else {
+                        CheckMode::None
+                    };
+
                     crate::pipeline_resolver::github_yaml::github_yaml(
                         resolved_pipeline,
                         !no_runtime_debug_log,
                         repo_root,
                         &out,
                         flowey_crate,
-                        check,
+                        mode,
                     )
                 }
             }
