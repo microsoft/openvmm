@@ -88,8 +88,6 @@ static TSC_FREQUENCY: SingleThreaded<Cell<u64>> = SingleThreaded(Cell::new(0));
 
 /// Gets the timer ref time in 100ns, and 0 if it fails to get it
 pub fn get_tdx_tsc_reftime() -> u64 {
-    // SAFETY: no concurrent accessors. Only BSP running shim_main calls it first.
-    //    unsafe {
     if TSC_FREQUENCY.get() == 0 {
         TSC_FREQUENCY.set(read_msr_tdcall(hvdef::HV_X64_MSR_TSC_FREQUENCY));
     }
@@ -100,6 +98,5 @@ pub fn get_tdx_tsc_reftime() -> u64 {
         let count_100ns = (tsc as u128 * 10000000) / TSC_FREQUENCY.get() as u128;
         return count_100ns as u64;
     }
-    //    }
     0
 }
