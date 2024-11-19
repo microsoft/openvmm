@@ -12,7 +12,7 @@ use tdcall::TdcallOutput;
 
 pub fn reference_time(isolation: IsolationType) -> Option<u64> {
     if isolation == IsolationType::Tdx {
-        Some(get_tdx_tsc_reftime())
+        get_tdx_tsc_reftime()
     } else if isolation == IsolationType::Snp {
         // TODO: Return Snp-specific tsc time
         None
@@ -86,17 +86,16 @@ pub fn read_msr_tdcall(msr_index: u32) -> u64 {
 /// Global variable to store tsc frequency.
 static TSC_FREQUENCY: SingleThreaded<Cell<u64>> = SingleThreaded(Cell::new(0));
 
-/// Gets the timer ref time in 100ns, and 0 if it fails to get it
-pub fn get_tdx_tsc_reftime() -> u64 {
+/// Gets the timer ref time in 100ns, and None if it fails to get it
+pub fn get_tdx_tsc_reftime() -> Option<u64> {
     if TSC_FREQUENCY.get() == 0 {
         TSC_FREQUENCY.set(read_msr_tdcall(hvdef::HV_X64_MSR_TSC_FREQUENCY));
     }
 
-    #[cfg(target_arch = "x86_64")]
     if TSC_FREQUENCY.get() != 0 {
         let tsc = safe_intrinsics::rdtsc();
         let count_100ns = (tsc as u128 * 10000000) / TSC_FREQUENCY.get() as u128;
-        return count_100ns as u64;
+        return Some(count_100ns as u64);
     }
-    0
+    None
 }
