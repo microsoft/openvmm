@@ -1135,6 +1135,8 @@ impl UhProcessor<'_, SnpBacked> {
                         .or_else_if_unknown(|| match msr {
                             hvdef::HV_X64_MSR_GUEST_IDLE => {
                                 self.backing.lapics[entered_from_vtl].idle = true;
+                                let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
+                                vmsa.v_intr_cntrl_mut().set_intr_shadow(false);
                                 Ok(0)
                             }
                             _ => Err(MsrError::Unknown),

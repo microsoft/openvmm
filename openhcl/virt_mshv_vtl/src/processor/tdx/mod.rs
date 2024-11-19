@@ -1384,6 +1384,7 @@ impl UhProcessor<'_, TdxBacked> {
                     .or_else_if_unknown(|| match msr {
                         hvdef::HV_X64_MSR_GUEST_IDLE => {
                             self.backing.lapic.idle = true;
+                            self.clear_interrupt_shadow();
                             Ok(0)
                         }
                         _ => Err(MsrError::Unknown),
@@ -1524,16 +1525,7 @@ impl UhProcessor<'_, TdxBacked> {
                 // TODO: see lots of these exits while waiting at frontpage.
                 // Probably expected, given we will still get L1 timer
                 // interrupts?
-
-                // Clear interrupt shadow.
-                let mask = Interruptibility::new().with_blocked_by_sti(true);
-                let value = Interruptibility::new().with_blocked_by_sti(false);
-                self.runner.write_vmcs32(
-                    GuestVtl::Vtl0,
-                    VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY,
-                    mask.into(),
-                    value.into(),
-                );
+                self.clear_interrupt_shadow();
                 self.advance_to_next_instruction();
                 &mut self.backing.exit_stats.hlt
             }
@@ -1724,6 +1716,17 @@ impl UhProcessor<'_, TdxBacked> {
         let instr_info = TdxExit(self.runner.tdx_vp_enter_exit_info()).instr_info();
         let rip = &mut self.runner.tdx_enter_guest_state_mut().rip;
         *rip = rip.wrapping_add(instr_info.length().into());
+    }
+
+    fn clear_interrupt_shadow(&mut self) {
+        let mask = Interruptibility::new().with_blocked_by_sti(true);
+        let value = Interruptibility::new().with_blocked_by_sti(false);
+        self.runner.write_vmcs32(
+            GuestVtl::Vtl0,
+            VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY,
+            mask.into(),
+            value.into(),
+        );
     }
 
     fn inject_gpf(&mut self) {
