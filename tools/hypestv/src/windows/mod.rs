@@ -123,6 +123,9 @@ pub(crate) enum InspectTarget {
     Paravisor,
 }
 
+// DEVNOTE: this tool is not intended to have a stable interface for scripting,
+// so resist the temptation to add any kind of way to invoke commands directly
+// from the command line.
 #[derive(Parser)]
 struct CommandLine {
     /// The initial VM name. Use select to change the active VM.

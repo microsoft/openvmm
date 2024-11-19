@@ -62,6 +62,7 @@
     - [Network packet capture (PCAP)](./reference/openhcl/diag/ohcldiag_dev/pcap.md)
     - [Performance analysis](./reference/openhcl/diag/ohcldiag_dev/perf.md)
     - [Tracing](./reference/openhcl/diag/tracing.md)
+    - [hypestv](./reference/openhcl/diag/hypestv.md)
 - [Developer Features]()
   - [Hardware Debugging (gdbstub)](./reference/dev_feats/gdbstub.md)
   - [Kernel Debugging (KDNET)](./reference/dev_feats/kdnet.md)
