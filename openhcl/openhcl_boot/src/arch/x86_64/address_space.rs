@@ -10,6 +10,7 @@
 //! provides the necessary support for manipulating the paging structures
 //! involved.
 
+use crate::single_threaded::SingleThreaded;
 use core::arch::asm;
 use core::cell::Cell;
 use core::marker::PhantomData;
@@ -17,7 +18,6 @@ use core::sync::atomic::compiler_fence;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use memory_range::MemoryRange;
-use minimal_rt::single_threaded::SingleThreaded;
 use x86defs::X64_LARGE_PAGE_SIZE;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;

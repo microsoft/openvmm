@@ -11,3 +11,4 @@ pub mod intrinsics;
 pub mod msr;
 pub mod reftime;
 pub mod serial;
+pub mod tdcall;

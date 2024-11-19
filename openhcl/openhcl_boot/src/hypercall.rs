@@ -3,6 +3,7 @@
 
 //! Hypercall infrastructure.
 
+use crate::single_threaded::SingleThreaded;
 use arrayvec::ArrayVec;
 use core::cell::RefCell;
 use core::cell::UnsafeCell;
@@ -12,7 +13,6 @@ use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
 use minimal_rt::arch::hypercall::invoke_hypercall;
-use minimal_rt::single_threaded::SingleThreaded;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 

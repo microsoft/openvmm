@@ -6,6 +6,9 @@
 //! Isolation type definition.
 
 /// Isolation type of the partition
+///
+/// TODO: Fix arch specific abstractions across the bootloader so we can remove
+/// target_arch here and elsewhere.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum IsolationType {
     /// No isolation is in use by this guest.

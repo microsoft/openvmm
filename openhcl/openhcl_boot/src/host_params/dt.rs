@@ -11,6 +11,8 @@ use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
+use crate::single_threaded::off_stack;
+use crate::single_threaded::OffStackRef;
 use arrayvec::ArrayVec;
 use core::fmt::Display;
 use core::fmt::Write;
@@ -23,8 +25,6 @@ use memory_range::subtract_ranges;
 use memory_range::walk_ranges;
 use memory_range::MemoryRange;
 use minimal_rt::isolation::IsolationType;
-use minimal_rt::off_stack;
-use minimal_rt::single_threaded::OffStackRef;
 
 /// Errors when reading the host device tree.
 #[derive(Debug)]

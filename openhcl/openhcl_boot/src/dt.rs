@@ -7,6 +7,7 @@
 use crate::host_params::PartitionInfo;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::sidecar::SidecarConfig;
+use crate::single_threaded::off_stack;
 use crate::ReservedMemoryType;
 use crate::MAX_RESERVED_MEM_RANGES;
 use arrayvec::ArrayString;
@@ -25,7 +26,6 @@ use memory_range::walk_ranges;
 use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
 use minimal_rt::isolation::IsolationType;
-use minimal_rt::off_stack;
 
 /// AArch64 defines
 mod aarch64 {

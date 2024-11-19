@@ -17,6 +17,7 @@ mod host_params;
 mod hypercall;
 mod rt;
 mod sidecar;
+mod single_threaded;
 
 use crate::arch::setup_vtl2_memory;
 use crate::arch::setup_vtl2_vp;
@@ -24,6 +25,7 @@ use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
+use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use boot_logger::LoggerType;
@@ -43,11 +45,10 @@ use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
 use minimal_rt::enlightened_panic::enable_enlightened_panic;
 use minimal_rt::isolation::IsolationType;
-use minimal_rt::off_stack;
-use minimal_rt::single_threaded::OffStackRef;
 use sidecar::SidecarConfig;
 use sidecar_defs::SidecarOutput;
 use sidecar_defs::SidecarParams;
+use single_threaded::OffStackRef;
 use zerocopy::FromZeroes;
 
 #[derive(Debug)]
@@ -349,6 +350,8 @@ fn reserved_memory_regions(
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 mod x86_boot {
     use crate::host_params::PartitionInfo;
+    use crate::single_threaded::off_stack;
+    use crate::single_threaded::OffStackRef;
     use crate::zeroed;
     use crate::PageAlign;
     use crate::ReservedMemoryType;
@@ -364,8 +367,6 @@ mod x86_boot {
     use memory_range::walk_ranges;
     use memory_range::MemoryRange;
     use memory_range::RangeWalkResult;
-    use minimal_rt::off_stack;
-    use minimal_rt::single_threaded::OffStackRef;
     use zerocopy::FromZeroes;
 
     #[repr(C)]

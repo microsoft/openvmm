@@ -15,4 +15,3 @@ pub mod isolation;
 pub mod reftime;
 pub mod reloc;
 pub mod rt;
-pub mod single_threaded;
