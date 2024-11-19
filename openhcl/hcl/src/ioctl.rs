@@ -1697,9 +1697,10 @@ impl<T> Drop for ProcessorRunner<'_, T> {
 }
 
 impl<'a, T: Backing> ProcessorRunner<'a, T> {
-    // These registers are handled specially by the kernel through a dedicated
-    // ioctl. is_kernel_managed is arch-specific to guard against an into() on
-    // an HvArmRegisterName that overlaps one of these x86-specific values.
+    // Registers that are shared between VTLs need to be handled by the kernel
+    // as they may require special handling there. set_reg and get_reg will
+    // handle these registers using a dedicated ioctl, instead of the general-
+    // purpose Set/GetVpRegisters hypercalls.
     #[cfg(guest_arch = "x86_64")]
     fn is_kernel_managed(&self, name: HvX64RegisterName) -> bool {
         if name == HvX64RegisterName::Dr6 {
