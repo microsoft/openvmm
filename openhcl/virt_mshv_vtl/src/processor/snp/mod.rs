@@ -1845,16 +1845,10 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
             pending_event: _,        // TODO SNP
             pending_interruption: _, // TODO SNP
         } = value;
-        let (halted, startup_suspend) = match mp_state {
-            vp::MpState::Running => (false, false),
-            vp::MpState::WaitForSipi => (false, true),
-            vp::MpState::Halted => (true, false),
-            vp::MpState::Idle => (false, false),
-        };
         let lapic = &mut self.vp.backing.lapics[self.vtl];
-        lapic.halted = halted;
+        lapic.halted = mp_state == vp::MpState::Halted;
         lapic.idle = mp_state == vp::MpState::Idle;
-        lapic.startup_suspend = startup_suspend;
+        lapic.startup_suspend = mp_state == vp::MpState::WaitForSipi;
         lapic.nmi_pending = nmi_pending;
         Ok(())
     }

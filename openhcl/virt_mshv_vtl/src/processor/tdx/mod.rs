@@ -2831,15 +2831,9 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             pending_event: _,        // TODO TDX
             pending_interruption: _, // TODO TDX
         } = value;
-        let (halted, startup_suspend) = match mp_state {
-            vp::MpState::Running => (false, false),
-            vp::MpState::WaitForSipi => (false, true),
-            vp::MpState::Halted => (true, false),
-            vp::MpState::Idle => (false, false),
-        };
-        self.vp.backing.lapic.halted = halted;
+        self.vp.backing.lapic.halted = mp_state == vp::MpState::Halted;
         self.vp.backing.lapic.idle = mp_state == vp::MpState::Idle;
-        self.vp.backing.lapic.startup_suspend = startup_suspend;
+        self.vp.backing.lapic.startup_suspend = mp_state == vp::MpState::WaitForSipi;
         self.vp.backing.lapic.nmi_pending = nmi_pending;
         let interruptibility = Interruptibility::new()
             .with_blocked_by_movss(interrupt_shadow)
