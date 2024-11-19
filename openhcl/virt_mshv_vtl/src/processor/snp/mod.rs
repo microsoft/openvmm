@@ -11,7 +11,6 @@ use super::vp_state::UhVpStateAccess;
 use super::BackingPrivate;
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
-use super::HvTranslateGvaRegisters;
 use super::LapicState;
 use super::UhEmulationState;
 use super::UhRunVpError;
@@ -210,22 +209,23 @@ impl HardwareIsolatedBacking for SnpBacked {
         &self,
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
-    ) -> HvTranslateGvaRegisters {
+    ) -> TranslationRegisters {
         let vmsa = this.runner.vmsa(vtl);
-        HvTranslateGvaRegisters {
-            pat: vmsa.pat(),
-            emu_regs: TranslationRegisters {
-                cr0: vmsa.cr0(),
-                cr4: vmsa.cr4(),
-                efer: vmsa.efer(),
-                cr3: vmsa.cr3(),
-                rflags: vmsa.rflags(),
-                ss: from_seg(hv_seg_from_snp(&vmsa.ss())),
-                encryption_mode: virt_support_x86emu::translate::EncryptionMode::Vtom(
-                    this.partition.caps.vtom.unwrap(),
-                ),
-            },
+        TranslationRegisters {
+            cr0: vmsa.cr0(),
+            cr4: vmsa.cr4(),
+            efer: vmsa.efer(),
+            cr3: vmsa.cr3(),
+            rflags: vmsa.rflags(),
+            ss: from_seg(hv_seg_from_snp(&vmsa.ss())),
+            encryption_mode: virt_support_x86emu::translate::EncryptionMode::Vtom(
+                this.partition.caps.vtom.unwrap(),
+            ),
         }
+    }
+
+    fn pat(&self, this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
+        this.runner.vmsa(vtl).pat()
     }
 }
 

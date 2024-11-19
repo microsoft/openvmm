@@ -940,8 +940,6 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
 
         let gva = gva_page * hvdef::HV_PAGE_SIZE;
 
-        let registers = self.vp.backing.translation_registers(self.vp, target_vtl);
-
         if control_flags.tlb_flush_inhibit() {
             self.vp
                 .set_tlb_lock(self.intercepted_vtl.into(), target_vtl);
@@ -950,7 +948,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
         match virt_support_x86emu::translate::translate_gva_to_gpa(
             &self.vp.partition.gm[target_vtl], // TODO GUEST VSM: This doesn't have VTL access checks.
             gva,
-            &registers.emu_regs,
+            &self.vp.backing.translation_registers(self.vp, target_vtl),
             virt_support_x86emu::translate::TranslateFlags::from_hv_flags(control_flags),
         ) {
             Ok(virt_support_x86emu::translate::TranslateResult { gpa, cache_info }) => {
@@ -972,7 +970,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
                 let cache_type = match cache_info {
                     TranslateCachingInfo::NoPaging => HvCacheType::HvCacheTypeWriteBack.0 as u8,
                     TranslateCachingInfo::Paging { pat_index } => {
-                        ((registers.pat >> (pat_index * 8)) & 0xff) as u8
+                        ((self.vp.backing.pat(self.vp, target_vtl) >> (pat_index * 8)) & 0xff) as u8
                     }
                 };
 
@@ -1179,10 +1177,6 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport for UhEmulationSt
     }
 
     fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
-        Ok(self
-            .vp
-            .backing
-            .translation_registers(self.vp, self.vtl)
-            .emu_regs)
+        Ok(self.vp.backing.translation_registers(self.vp, self.vtl))
     }
 }
