@@ -3,9 +3,12 @@
 
 //! TDX support.
 
+use crate::single_threaded::SingleThreaded;
 use core::arch::asm;
+use core::cell::Cell;
 use memory_range::MemoryRange;
 use tdcall::tdcall_map_gpa;
+use tdcall::tdcall_rdmsr;
 use tdcall::AcceptPagesError;
 use tdcall::Tdcall;
 use tdcall::TdcallInput;
@@ -93,4 +96,32 @@ impl minimal_rt::arch::IoAccess for TdxIoAccess {
     unsafe fn outb(&self, port: u16, data: u8) {
         let _ = tdcall::tdcall_io_out(&mut TdcallInstruction, port, data as u32, 1);
     }
+}
+
+/// Reads MSR using TDCALL
+fn read_msr_tdcall(msr_index: u32) -> u64 {
+    let mut msr_value: u64 = 0;
+    tdcall_rdmsr(&mut TdcallInstruction, msr_index, &mut msr_value).unwrap();
+    msr_value
+}
+
+/// Global variable to store tsc frequency.
+static TSC_FREQUENCY: SingleThreaded<Cell<u64>> = SingleThreaded(Cell::new(0));
+
+/// Gets the timer ref time in 100ns, and None if it fails to get it
+pub fn get_tdx_tsc_reftime() -> Option<u64> {
+    // This is first called by the BSP from openhcl_boot and the frequency
+    // is saved in this gloabal variable. Subsequent calls use the global variable.
+    if TSC_FREQUENCY.get() == 0 {
+        // TODO: Getting tsc frequency from HV currently. Explore the option
+        // of getting it from more reliable source such as CPUID.
+        TSC_FREQUENCY.set(read_msr_tdcall(hvdef::HV_X64_MSR_TSC_FREQUENCY));
+    }
+
+    if TSC_FREQUENCY.get() != 0 {
+        let tsc = safe_intrinsics::rdtsc();
+        let count_100ns = (tsc as u128 * 10000000) / TSC_FREQUENCY.get() as u128;
+        return Some(count_100ns as u64);
+    }
+    None
 }

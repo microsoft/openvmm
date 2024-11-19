@@ -4,6 +4,7 @@
 //! Module used to parse the host parameters used to setup Underhill. These are
 //! provided via a device tree IGVM parameter.
 
+use crate::host_params::shim_params::IsolationType;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use host_fdt_parser::CpuEntry;
@@ -13,7 +14,6 @@ use host_fdt_parser::MemoryEntry;
 use host_fdt_parser::VmbusInfo;
 use memory_range::subtract_ranges;
 use memory_range::MemoryRange;
-use minimal_rt::isolation::IsolationType;
 
 mod dt;
 mod mmio;

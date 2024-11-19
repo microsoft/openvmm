@@ -10,6 +10,7 @@
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::tdx::TdxIoAccess;
+use crate::host_params::shim_params::IsolationType;
 use crate::single_threaded::SingleThreaded;
 use core::cell::RefCell;
 use core::fmt;
@@ -17,7 +18,6 @@ use core::fmt::Write;
 #[cfg(target_arch = "x86_64")]
 use minimal_rt::arch::InstrIoAccess;
 use minimal_rt::arch::Serial;
-use minimal_rt::isolation::IsolationType;
 
 /// The logging type to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

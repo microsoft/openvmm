@@ -21,9 +21,12 @@ mod single_threaded;
 
 use crate::arch::setup_vtl2_memory;
 use crate::arch::setup_vtl2_vp;
+#[cfg(target_arch = "x86_64")]
+use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::log;
+use crate::host_params::shim_params::IsolationType;
 use crate::hypercall::hvcall;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
@@ -44,7 +47,6 @@ use memory_range::walk_ranges;
 use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
 use minimal_rt::enlightened_panic::enable_enlightened_panic;
-use minimal_rt::isolation::IsolationType;
 use sidecar::SidecarConfig;
 use sidecar_defs::SidecarOutput;
 use sidecar_defs::SidecarParams;
@@ -553,7 +555,13 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     let can_trust_host =
         p.isolation_type == IsolationType::None || static_options.confidential_debug;
 
-    let boot_reftime = minimal_rt::reftime::reference_time(p.isolation_type);
+    let boot_reftime = match p.isolation_type {
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Tdx => get_tdx_tsc_reftime(),
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Snp => None,
+        _ => Some(minimal_rt::reftime::reference_time()),
+    };
 
     let mut dt_storage = off_stack!(PartitionInfo, PartitionInfo::new());
     let partition_info = match PartitionInfo::read_from_dt(&p, &mut dt_storage, can_trust_host) {
@@ -674,7 +682,13 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Compute the ending boot time. This has to be before writing to device
     // tree, so this is as late as we can do it.
 
-    let boot_endtime = minimal_rt::reftime::reference_time(p.isolation_type).unwrap_or(0);
+    let boot_endtime = match p.isolation_type {
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Tdx => get_tdx_tsc_reftime().unwrap_or(0),
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Snp => 0,
+        _ => minimal_rt::reftime::reference_time(),
+    };
 
     let boot_times = boot_reftime.map(|start| BootTimes {
         start,
@@ -840,7 +854,7 @@ mod test {
     use memory_range::walk_ranges;
     use memory_range::MemoryRange;
     use memory_range::RangeWalkResult;
-    use minimal_rt::isolation::IsolationType;
+    use crate::host_params::shim_params::IsolationType;
     use zerocopy::FromZeroes;
 
     const HIGH_MMIO_GAP_END: u64 = 0x1000000000; //  64 GiB

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::boot_logger::log;
+use crate::host_params::shim_params::IsolationType;
 use crate::host_params::shim_params::ShimParams;
 use crate::host_params::PartitionInfo;
 use crate::host_params::MAX_CPU_COUNT;
@@ -9,7 +10,6 @@ use crate::host_params::MAX_NUMA_NODES;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
 use memory_range::MemoryRange;
-use minimal_rt::isolation::IsolationType;
 use sidecar_defs::SidecarNodeOutput;
 use sidecar_defs::SidecarNodeParams;
 use sidecar_defs::SidecarOutput;
@@ -181,7 +181,7 @@ pub fn start_sidecar<'a>(
     let sidecar_entry: extern "C" fn(&SidecarParams, &mut SidecarOutput) -> bool =
         unsafe { core::mem::transmute(p.sidecar_entry_address) };
 
-    let boot_start_reftime = minimal_rt::reftime::reference_time(IsolationType::None).unwrap_or(0);
+    let boot_start_reftime = minimal_rt::reftime::reference_time();
     log!(
         "sidecar starting, {} nodes, {} cpus, {:#x} total bytes",
         node_count,
@@ -195,7 +195,7 @@ pub fn start_sidecar<'a>(
                 .unwrap()
         );
     }
-    let boot_end_reftime = minimal_rt::reftime::reference_time(IsolationType::None).unwrap_or(0);
+    let boot_end_reftime = minimal_rt::reftime::reference_time();
 
     let SidecarOutput { nodes, error: _ } = sidecar_output;
     Some(SidecarConfig {

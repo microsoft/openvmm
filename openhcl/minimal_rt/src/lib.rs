@@ -11,7 +11,6 @@
 
 pub mod arch;
 pub mod enlightened_panic;
-pub mod isolation;
 pub mod reftime;
 pub mod reloc;
 pub mod rt;
