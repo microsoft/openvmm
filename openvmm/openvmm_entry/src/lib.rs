@@ -841,6 +841,14 @@ fn vm_config_from_command_line(
 
         let (send, guest_request_recv) = mesh::channel();
         resources.ged_rpc = Some(send);
+        let vmgs_disk = if let Some(disk) = &opt.get_vmgs {
+            disk_open(disk, false).context("failed to open GET vmgs disk")?
+        } else {
+            disk_backend_resources::RamDiskHandle {
+                len: vmgs_format::VMGS_DEFAULT_CAPACITY,
+            }
+            .into_resource()
+        };
         vmbus_devices.extend([
             (
                 openhcl_vtl,
@@ -888,6 +896,7 @@ fn vm_config_from_command_line(
                     com2: with_vmbus_com2_serial,
                     vtl2_settings: Some(prost::Message::encode_to_vec(&vtl2_settings)),
                     vmbus_redirection: opt.vmbus_redirect,
+                    vmgs_disk: Some(vmgs_disk),
                     framebuffer: opt
                         .vtl2_gfx
                         .then(|| SharedFramebufferHandle.into_resource()),

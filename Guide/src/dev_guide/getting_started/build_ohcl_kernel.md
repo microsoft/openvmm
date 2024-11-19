@@ -43,6 +43,14 @@ Do once for every machine that hasn't run this step successfully:
 ./Microsoft/install-deps.sh
 ```
 
+If you plan to use your custom kernel to work with confidential VMs, you need to enable a few more options
+in the kernel. Do once after cloning the kernel repository or every time you remove local changes from your
+kernel configuration file:
+
+```sh
+./Microsoft/merge-cvm-config.sh
+```
+
 Every time the kernel needs to be rebuilt:
 
 ```sh
