@@ -1,0 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[toolchain]
+channel = "1.82.0"
