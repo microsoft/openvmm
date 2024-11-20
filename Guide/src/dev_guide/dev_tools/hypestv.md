@@ -3,10 +3,12 @@
 `hypestv` is an interactive command-line interface for Hyper-V VMs, designed for
 making OpenHCL developers' lives easier.
 
-Similar to [`ohcldiag-dev`](./ohcldiag_dev.md), it can interact with the
-OpenHCL paravisor running inside a Hyper-V VM. But unlike `ohcldiag-dev`, it
-sports an interactive terminal interface (with history and tab completion), and
-it is specifically designed to interact with Hyper-VMs.
+Similar to [`ohcldiag-dev`][], it can interact with the OpenHCL paravisor
+running inside a Hyper-V VM. But unlike `ohcldiag-dev`, it sports an interactive
+terminal interface (with history and tab completion), and it is specifically
+designed to interact with Hyper-VMs.
+
+[`ohcldiag-dev`]: ../../reference/openhcl/diag/ohcldiag_dev.md
 
 In many ways, it is similar to the OpenVMM interactive console. In time, it may
 end up sharing code and capabilities with it and with `ohcldiag-dev`, but it
