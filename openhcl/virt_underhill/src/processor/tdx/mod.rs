@@ -772,7 +772,7 @@ impl UhProcessor<'_, TdxBacked> {
         // Check for interrupt requests from the host and kernel IPI offload.
         let mut update_rvi = false;
         let proxy_irr = self.runner.proxy_irr();
-        let kernel_irr = self.runner.kernel_ipi_offload_irr();
+        let kernel_irr = self.runner.tdx_vp_ipi_offload_extract_irr();
 
         let mut pull_irr = |irr: [u32; 8], force_no_offload: bool| {
             if self.backing.lapic.can_offload_irr() && !force_no_offload {
@@ -895,10 +895,14 @@ impl UhProcessor<'_, TdxBacked> {
                     if *eoi_exit != tmr {
                         self.runner.write_vmcs64(Vtl::Vtl0, field, !0, tmr);
                         *eoi_exit = tmr;
-                        // ipi_offload_tmr tracks the eoi_exit bitmap
-                        self.runner.kernel_ipi_offload_set_tmr(i * 2, tmr as u32);
+                        // The kernel driver supports some common APIC functionality (ICR writes,
+                        // interrupt injection). When the kernel driver handles an interrupt, it
+                        // must know if that interrupt was previously level-triggered. Otherwise,
+                        // the EOI will be incorrectly treated as level-triggered. We keep a copy
+                        // of the tmr in the kernel so it knows when this scenario occurs.
+                        self.runner.tdx_vp_ipi_offload_set_tmr(i * 2, tmr as u32);
                         self.runner
-                            .kernel_ipi_offload_set_tmr(i * 2 + 1, (tmr >> 32) as u32);
+                            .tdx_vp_ipi_offload_set_tmr(i * 2 + 1, (tmr >> 32) as u32);
                     }
                 }
             });

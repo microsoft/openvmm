@@ -20,6 +20,8 @@ use std::os::fd::AsRawFd;
 use std::ptr::addr_of;
 use std::ptr::addr_of_mut;
 use std::ptr::NonNull;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use tdcall::tdcall_vp_invgla;
 use tdcall::tdcall_vp_rd;
 use tdcall::tdcall_vp_wr;
@@ -106,6 +108,37 @@ impl ProcessorRunner<'_, Tdx> {
     /// Gets a reference to the tdx exit info from a VP.ENTER call.
     pub fn tdx_vp_enter_exit_info(&self) -> &tdx_tdg_vp_enter_exit_info {
         &self.tdx_vp_context().exit_info
+    }
+
+    /// Clears the ipi offload IRR field, returning the previous value.
+    /// This IRR field is used by the kernel to accelerate certain APIC operations.
+    pub fn tdx_vp_ipi_offload_extract_irr(&mut self) -> Option<[u32; 8]> {
+        let ctx = self.tdx_vp_context_mut();
+        // SAFETY: ipi_offload_irr is accessed as an atomic u32 in all
+        // other contexts (kernel code). The layout of an AtomicU32 matches a u32.
+        let offload_irr: &mut [AtomicU32; 8] = unsafe {
+            std::mem::transmute::<&mut [u32; 8], &mut [AtomicU32; 8]>(&mut ctx.ipi_offload_irr)
+        };
+
+        let mut r = [0; 8];
+        let mut found = false;
+        for (irr, r) in offload_irr.iter().zip(r.iter_mut()) {
+            if irr.load(Ordering::Acquire) != 0 {
+                *r = irr.swap(0, Ordering::SeqCst);
+                found = true;
+            }
+        }
+
+        found.then_some(r)
+    }
+
+    /// Sets the kernel IPI offload TMR for the specificed bank.
+    /// This must be kept in sync with the emulated APIC TMR.
+    /// Otherwise, the kernel will not know if an edge-triggered interrupt
+    /// was previously used for a level-triggered interrupt, leading to a
+    /// level-triggered-EOI instead of edge-triggered-EOI.
+    pub fn tdx_vp_ipi_offload_set_tmr(&mut self, bank: usize, val: u32) {
+        self.tdx_vp_context_mut().ipi_offload_tmr[bank] = val;
     }
 
     /// Gets a reference to the tdx APIC page.

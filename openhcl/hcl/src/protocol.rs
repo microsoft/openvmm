@@ -124,8 +124,6 @@ pub struct hcl_run {
     pub context: [u8; 1024],
     pub vtl_ret_actions: [u8; VTL_RETURN_ACTION_SIZE],
     pub proxy_irr: [u32; 8],
-    pub ipi_offload_irr: [u32; 8],
-    pub ipi_offload_tmr: [u32; 8],
     pub target_vtl: HvInputVtl,
 }
 
@@ -239,7 +237,9 @@ pub struct tdx_vp_context {
     pub pad2: [u8; 40],
     pub entry_rcx: x86defs::tdx::TdxVmFlags,
     pub gpr_list: x86defs::tdx::TdxL2EnterGuestState,
-    pub pad3: [u8; 96],
+    pub ipi_offload_irr: [u32; 8],
+    pub ipi_offload_tmr: [u32; 8],
+    pub pad3: [u8; 32],
     pub fx_state: x86defs::xsave::Fxsave,
     pub pad4: [u8; 16],
 }
