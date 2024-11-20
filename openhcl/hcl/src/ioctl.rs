@@ -1684,15 +1684,21 @@ mod private {
 
 impl<T> Drop for ProcessorRunner<'_, T> {
     fn drop(&mut self) {
+        self.flush_deferred_actions();
+        let old_state = std::mem::replace(&mut *self.vp.state.lock(), VpState::NotRunning);
+        assert!(matches!(old_state, VpState::Running(thread) if thread == Pthread::current()));
+    }
+}
+
+impl<T> ProcessorRunner<'_, T> {
+    /// Flushes any pending deferred actions. Must be called if preparing the
+    /// partition for save/restore (servicing), since otherwise the deferred
+    /// actions will be lost.
+    pub fn flush_deferred_actions(&mut self) {
         if self.sidecar.is_none() {
-            // Apply any deferred actions now since we may not be returning to lower
-            // VTL for a while (or ever, in the case of servicing).
             let mut deferred_actions = DEFERRED_ACTIONS.with(|state| state.take().unwrap());
             deferred_actions.run_actions(self.hcl);
         }
-
-        let old_state = std::mem::replace(&mut *self.vp.state.lock(), VpState::NotRunning);
-        assert!(matches!(old_state, VpState::Running(thread) if thread == Pthread::current()));
     }
 }
 
