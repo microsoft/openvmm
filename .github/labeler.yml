@@ -1,0 +1,6 @@
+Guide:
+ - changed-files:
+   - any-glob-to-any-file: 'Guide/**'
+
+release_2411:
+ - base-branch: 'release/2411'
