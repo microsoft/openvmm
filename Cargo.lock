@@ -313,7 +313,6 @@ dependencies = [
  "openssl",
  "thiserror 2.0.0",
  "windows",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
