@@ -385,7 +385,7 @@ impl BackingPrivate for SnpBacked {
             }
         }
 
-        // Clear any pending interrupt.
+        // Clear any pending interrupts.
         this.runner.vmsa_mut(vtl).v_intr_cntrl_mut().set_irq(false);
 
         let ApicWork {
@@ -1342,8 +1342,6 @@ impl UhProcessor<'_, SnpBacked> {
                 // Receipt of a virtual interrupt intercept indicates that a virtual interrupt is ready
                 // for injection but injection cannot complete due to the intercept. Rewind the pending
                 // virtual interrupt so it is reinjected as a fixed interrupt.
-
-                // TODO SNP: Rewind the interrupt.
                 unimplemented!("SevExitCode::VINTR");
             }
 

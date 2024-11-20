@@ -626,7 +626,6 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             }
         }
 
-        // TODO GUEST VSM: interrupt rewinding
         // TODO TDX GUEST VSM: update execution mode
     }
 }
@@ -818,9 +817,6 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
 
         B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
         self.vp.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl0;
-
-        // TODO CVM GUEST_VSM:
-        // - rewind interrupts
 
         if !fast {
             let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
