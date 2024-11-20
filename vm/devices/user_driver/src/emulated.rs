@@ -24,6 +24,7 @@ use parking_lot::Mutex;
 use pci_core::msi::MsiControl;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
+use safeatomic::AtomicSliceOps;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
@@ -258,9 +259,9 @@ pub struct EmulatedDmaAllocator {
 
 impl HostDmaAllocator for EmulatedDmaAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
-        Ok(MemoryBlock::new(
-            self.shared_mem.alloc(len).context("out of memory")?,
-        ))
+        let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);
+        memory.as_slice()[0..].atomic_fill(0);
+        Ok(memory)
     }
 }
 
