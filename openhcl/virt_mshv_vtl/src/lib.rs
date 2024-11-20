@@ -320,7 +320,10 @@ pub struct UhCvmVpState {
 #[cfg(guest_arch = "x86_64")]
 impl UhCvmVpState {
     /// Creates a new CVM VP state.
-    pub fn new(hv: VtlArray<ProcessorVtlHv, 2>, lapics: VtlArray<processor::LapicState, 2>) -> Self {
+    pub fn new(
+        hv: VtlArray<ProcessorVtlHv, 2>,
+        lapics: VtlArray<processor::LapicState, 2>,
+    ) -> Self {
         Self {
             vtls_tlb_waiting: VtlArray::new(false),
             exit_vtl: GuestVtl::Vtl0,
