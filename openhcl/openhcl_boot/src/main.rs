@@ -26,7 +26,6 @@ use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::log;
-use crate::host_params::shim_params::IsolationType;
 use crate::hypercall::hvcall;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
@@ -35,6 +34,7 @@ use boot_logger::LoggerType;
 use core::fmt::Write;
 use dt::write_dt;
 use dt::BootTimes;
+use host_params::shim_params::IsolationType;
 use host_params::shim_params::ShimParams;
 use host_params::PartitionInfo;
 use host_params::COMMAND_LINE_SIZE;
@@ -836,6 +836,7 @@ mod test {
     use super::x86_boot::build_e820_map;
     use super::x86_boot::E820Ext;
     use crate::dt::write_dt;
+    use crate::host_params::shim_params::IsolationType;
     use crate::host_params::PartitionInfo;
     use crate::host_params::MAX_CPU_COUNT;
     use crate::reserved_memory_regions;
@@ -854,7 +855,6 @@ mod test {
     use memory_range::walk_ranges;
     use memory_range::MemoryRange;
     use memory_range::RangeWalkResult;
-    use crate::host_params::shim_params::IsolationType;
     use zerocopy::FromZeroes;
 
     const HIGH_MMIO_GAP_END: u64 = 0x1000000000; //  64 GiB

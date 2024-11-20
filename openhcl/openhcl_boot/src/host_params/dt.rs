@@ -3,10 +3,10 @@
 
 //! Parse partition info using the IGVM device tree parameter.
 
+use super::shim_params::IsolationType;
 use super::shim_params::ShimParams;
 use super::PartitionInfo;
 use crate::boot_logger::log;
-use crate::host_params::shim_params::IsolationType;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
