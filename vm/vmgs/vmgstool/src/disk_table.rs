@@ -81,24 +81,24 @@ pub(crate) async fn do_command(
             Ok(())
         }
         DiskTableOperation::Add {
-            disk,
-            disk_key,
+            disk_id,
+            key_path: disk_key_path,
             cipher,
             allow_overwrite,
         } => {
             let mut vmgs = open_file(&file_path, &key_path, OpenMode::ReadWrite).await?;
             let mut table = read_disk_table(&mut vmgs).await?;
             let key = if matches!(cipher, DiskCipher::None) {
-                if disk_key.is_some() {
+                if disk_key_path.is_some() {
                     return Err(Error::UnexpectedDiskKeyFile);
                 }
                 Vec::new()
             } else {
-                fs_err::read(disk_key.ok_or(Error::MissingDiskKeyFile)?)
+                fs_err::read(disk_key_path.ok_or(Error::MissingDiskKeyFile)?)
                     .map_err(Error::DiskKeyFile)?
             };
             let new_entry = vmgs_format::Disk {
-                disk_id: disk.to_string(),
+                disk_id: disk_id.to_string(),
                 cipher: (match cipher {
                     DiskCipher::None => vmgs_format::DiskCipher::None,
                     DiskCipher::XtsAes256 => vmgs_format::DiskCipher::XtsAes256,
