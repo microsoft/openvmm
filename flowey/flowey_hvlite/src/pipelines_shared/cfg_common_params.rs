@@ -5,6 +5,7 @@
 
 use flowey::node::prelude::*;
 use flowey::pipeline::prelude::*;
+use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
 
 #[derive(Clone, Default, clap::Args)]
 #[clap(next_help_heading = "Local Only")]
@@ -96,5 +97,32 @@ pub fn get_cfg_common_params(
             }
             get_params_cloud(pipeline)
         }
+    }
+}
+
+#[derive(clap::ValueEnum, Clone, Copy)]
+pub enum CommonArchCli {
+    X86_64,
+    Aarch64,
+}
+
+impl From<CommonArchCli> for CommonArch {
+    fn from(value: CommonArchCli) -> Self {
+        match value {
+            CommonArchCli::X86_64 => CommonArch::X86_64,
+            CommonArchCli::Aarch64 => CommonArch::Aarch64,
+        }
+    }
+}
+
+impl TryFrom<FlowArch> for CommonArchCli {
+    type Error = anyhow::Error;
+
+    fn try_from(arch: FlowArch) -> anyhow::Result<Self> {
+        Ok(match arch {
+            FlowArch::X86_64 => CommonArchCli::X86_64,
+            FlowArch::Aarch64 => CommonArchCli::Aarch64,
+            arch => anyhow::bail!("unsupported arch {arch}"),
+        })
     }
 }

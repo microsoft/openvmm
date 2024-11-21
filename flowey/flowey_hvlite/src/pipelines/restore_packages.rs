@@ -1,28 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::pipelines_shared::cfg_common_params::CommonArchCli;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
-use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
 
-#[derive(clap::ValueEnum, Clone, Copy)]
-pub enum CommonArchCli {
-    X86_64,
-    Aarch64,
-}
-
-impl From<CommonArchCli> for CommonArch {
-    fn from(value: CommonArchCli) -> Self {
-        match value {
-            CommonArchCli::X86_64 => CommonArch::X86_64,
-            CommonArchCli::Aarch64 => CommonArch::Aarch64,
-        }
-    }
-}
-
-#[derive(clap::Args)]
 /// Download and restore packages needed for building the specified architectures.
+#[derive(clap::Args)]
 pub struct RestorePackagesCli {
+    /// Specify what architectures to restore packages for.
+    ///
+    /// If none are specified, defaults to just the current host architecture.
     arch: Vec<CommonArchCli>,
 }
 
@@ -60,11 +48,7 @@ impl IntoPipeline for RestorePackagesCli {
 
         let arches = {
             if self.arch.is_empty() {
-                vec![match FlowArch::host(backend_hint) {
-                    FlowArch::X86_64 => CommonArchCli::X86_64,
-                    FlowArch::Aarch64 => CommonArchCli::Aarch64,
-                    arch => anyhow::bail!("unsupported arch {arch}"),
-                }]
+                vec![FlowArch::host(backend_hint).try_into()?]
             } else {
                 self.arch
             }
