@@ -40,6 +40,9 @@ pub enum NewDiskError {
     /// An error occurred during cryptographic operations.
     #[error("crypto error")]
     Crypto(#[source] block_crypto::Error),
+    /// The key size is invalid.
+    #[error("invalid key size for cipher")]
+    InvalidKeySize,
 }
 
 impl CryptDisk {
@@ -53,7 +56,11 @@ impl CryptDisk {
         match cipher {
             disk_crypt_resources::Cipher::AesXts256 => {}
         }
-        let cipher = AesXts256::new(key, inner.sector_size()).map_err(NewDiskError::Crypto)?;
+        let cipher = AesXts256::new(
+            key.try_into().map_err(|_| NewDiskError::InvalidKeySize)?,
+            inner.sector_size(),
+        )
+        .map_err(NewDiskError::Crypto)?;
         let sector_shift = inner.sector_size().trailing_zeros();
         Ok(Self {
             inner,

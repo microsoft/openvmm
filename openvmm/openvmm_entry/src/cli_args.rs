@@ -595,11 +595,18 @@ pub enum DiskCliKind {
         kind: BlobKind,
         url: String,
     },
-    // crypt:<key_file>:<kind>
+    // crypt:<cipher>:<key_file>:<kind>
     Crypt {
+        cipher: DiskCipher,
         key_file: PathBuf,
-        inner: Box<DiskCliKind>,
+        disk: Box<DiskCliKind>,
     },
+}
+
+#[derive(ValueEnum, Clone, Copy)]
+pub enum DiskCipher {
+    #[clap(name = "aes-xts-256")]
+    AesXts256,
 }
 
 #[derive(Copy, Clone)]
@@ -633,10 +640,15 @@ impl FromStr for DiskCliKind {
                     }
                 }
                 "crypt" => {
-                    let (key, kind) = arg.split_once(':').context("expected key_file:kind")?;
+                    let (cipher, (key, kind)) = arg
+                        .split_once(':')
+                        .and_then(|(cipher, arg)| Some((cipher, arg.split_once(':')?)))
+                        .context("expected cipher:key_file:kind")?;
                     DiskCliKind::Crypt {
+                        cipher: ValueEnum::from_str(cipher, false)
+                            .map_err(|err| anyhow::anyhow!("invalid cipher: {err}"))?,
                         key_file: PathBuf::from(key),
-                        inner: Box::new(kind.parse()?),
+                        disk: Box::new(kind.parse()?),
                     }
                 }
                 kind => {

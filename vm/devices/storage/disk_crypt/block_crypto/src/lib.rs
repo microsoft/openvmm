@@ -17,38 +17,29 @@ pub struct AesXts256(sys::AesXts256);
 /// An error for cryptographic operations.
 #[derive(Debug, Error)]
 #[error(transparent)]
-pub struct Error(#[from] ErrorInner);
-
-#[derive(Debug, Error)]
-enum ErrorInner {
-    #[error("invalid key length")]
-    InvalidKeyLength,
-    #[error("platform crypto error")]
-    Sys(sys::Error),
-}
+pub struct Error(sys::Error);
 
 impl AesXts256 {
     /// The required key length for the algorithm.
+    ///
+    /// Note that an AES-XTS key contains two AES keys, each of which is 256 bits.
     pub const KEY_LEN: usize = 64;
 
     /// Creates a new AES-XTS-256 encryption/decryption context.
-    pub fn new(key: &[u8], data_unit_size: u32) -> Result<Self, Error> {
-        if key.len() != Self::KEY_LEN {
-            return Err(ErrorInner::InvalidKeyLength.into());
-        }
+    pub fn new(key: &[u8; Self::KEY_LEN], data_unit_size: u32) -> Result<Self, Error> {
         Ok(sys::aes_xts_256(key, data_unit_size)
             .map(AesXts256)
-            .map_err(ErrorInner::Sys)?)
+            .map_err(Error)?)
     }
 
     /// Returns a context for encrypting data.
     pub fn encrypt(&self) -> Result<AesXts256Ctx<'_>, Error> {
-        Ok(AesXts256Ctx(self.0.ctx(true).map_err(ErrorInner::Sys)?))
+        Ok(AesXts256Ctx(self.0.ctx(true).map_err(Error)?))
     }
 
     /// Returns a context for decrypting data.
     pub fn decrypt(&self) -> Result<AesXts256Ctx<'_>, Error> {
-        Ok(AesXts256Ctx(self.0.ctx(false).map_err(ErrorInner::Sys)?))
+        Ok(AesXts256Ctx(self.0.ctx(false).map_err(Error)?))
     }
 }
 
@@ -58,9 +49,7 @@ pub struct AesXts256Ctx<'a>(sys::AesXts256Ctx<'a>);
 impl AesXts256Ctx<'_> {
     /// Encrypts or decrypts `data` using the provided `tweak`.
     pub fn cipher(&mut self, tweak: u128, data: &mut [u8]) -> Result<(), Error> {
-        self.0
-            .cipher(&tweak.to_le_bytes(), data)
-            .map_err(ErrorInner::Sys)?;
+        self.0.cipher(&tweak.to_le_bytes(), data).map_err(Error)?;
         Ok(())
     }
 }

@@ -48,7 +48,7 @@ impl AsyncResolveResource<DiskHandleKind, DiskCryptHandle> for DiskCryptResolver
     ) -> Result<Self::Output, Self::Error> {
         let inner = resolver
             .resolve(
-                resource.inner,
+                resource.disk,
                 ResolveDiskParameters {
                     read_only: input.read_only,
                     _async_trait_workaround: &(),

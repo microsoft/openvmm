@@ -14,7 +14,7 @@ use vm_resource::ResourceId;
 #[derive(MeshPayload)]
 pub struct DiskCryptHandle {
     /// The inner disk.
-    pub inner: Resource<DiskHandleKind>,
+    pub disk: Resource<DiskHandleKind>,
     /// The cipher to use for encryption.
     pub cipher: Cipher,
     /// The key. This must be appropriately sized for the cipher.
