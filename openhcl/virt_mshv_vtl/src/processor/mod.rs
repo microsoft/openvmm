@@ -723,6 +723,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 }
             }
         }
+        self.runner.flush_deferred_actions();
         Ok(())
     }
 
