@@ -170,7 +170,7 @@ aarch64defs = { path = "vm/aarch64/aarch64defs" }
 aarch64emu = { path = "vm/aarch64/aarch64emu" }
 acpi = { path = "vm/acpi" }
 acpi_spec = { path = "vm/acpi_spec" }
-block_crypto = { path = "vm/devices/storage/disk_crypt/block_crypto" }
+block_crypto = { path = "vm/devices/storage/block_crypto" }
 chipset_arc_mutex_device = { path = "vm/chipset_arc_mutex_device" }
 chipset_device = { path = "vm/chipset_device" }
 chipset_device_fuzz = { path = "vm/chipset_device_fuzz" }
