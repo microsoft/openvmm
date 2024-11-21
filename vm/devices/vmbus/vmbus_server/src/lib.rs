@@ -231,6 +231,9 @@ impl EventPort for ChannelEvent {
 pub struct SavedState {
     #[mesh(1)]
     server: channels::SavedState,
+    // Indicates if the lost synic bug is fixed or not. By default it's false.
+    // During the restore process, we check if the field is not true then
+    // unstick_channels() function will be called to mitigate the issue.
     #[mesh(2)]
     lost_synic_bug_fixed: bool,
 }
@@ -900,6 +903,7 @@ impl ServerTask {
                     if self.unstick_on_start {
                         tracing::info!("lost synic bug fix is not in yet, call unstick_channels to mitigate the issue.");
                         self.unstick_channels(false);
+                        self.unstick_on_start = false;
                     }
                 }
             }
