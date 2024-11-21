@@ -16,7 +16,6 @@ default = [
   "net_consomme",
   "net_tap",
   "disk_blob",
-  "disk_crypt",
 ]
 
 # see the `openvmm_entry` crate for more info on these features
