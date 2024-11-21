@@ -44,11 +44,12 @@ After this, all commands will implicitly operate on `tdxvm`. Use `select` again
 to work on another VM.
 
 To enable serial port output, use the `serial` command. This can be used at any
-time, even while the VM is not running. E.g., to enable serial port output for
-COM2:
+time, even while the VM is not running. E.g., to open a separate window for
+interactive use of COM1 and enable logging serial port output for COM2:
 
 ```
-tdxvm [off]> serial 2 output
+tdxvm [off]> serial 1 term
+tdxvm [off]> serial 2 log
 ```
 
 Start a VM with `start`. This is an asynchronous command: you can continue to
@@ -61,6 +62,7 @@ on the prompt may not be accurate until you type another command or press Enter.
 
 ```
 tdxvm [off]> start
+serial port 1 connected
 serial port 2 connected
 VM started
 tdxvm [off]>
@@ -92,6 +94,7 @@ VM.
 
 ```
 tdxvm [running]> kill
+serial port 1 disconnected
 serial port 2 disconnected
 VM killed
 tdxvm [stopping]>

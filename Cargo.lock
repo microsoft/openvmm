@@ -690,6 +690,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "console_relay"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "getrandom",
+ "pal_async",
+ "term",
+ "unix_socket",
+]
+
+[[package]]
 name = "consomme"
 version = "0.0.0"
 dependencies = [
@@ -2955,9 +2967,11 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_dyn_complete",
+ "console_relay",
  "diag_client",
  "dirs",
  "futures",
+ "futures-concurrency",
  "guid",
  "inspect",
  "mesh",
@@ -4417,6 +4431,7 @@ dependencies = [
  "chipset_resources",
  "clap",
  "clap_dyn_complete",
+ "console_relay",
  "debug_worker_defs",
  "diag_client",
  "dirs",

@@ -13,6 +13,9 @@ use anyhow::Context as _;
 use diag_client::DiagClient;
 use futures::io::BufReader;
 use futures::AsyncBufReadExt;
+use futures::FutureExt;
+use futures::StreamExt;
+use futures_concurrency::future::Race;
 use guid::Guid;
 use pal_async::pipe::PolledPipe;
 use pal_async::task::Spawn;
@@ -24,7 +27,13 @@ use std::time::Duration;
 pub struct Vm {
     paravisor_diag: Option<DiagClient>,
     inner: Arc<VmInner>,
-    serial: Vec<Option<Task<()>>>,
+    serial: Vec<Option<SerialTask>>,
+}
+
+struct SerialTask {
+    mode: SerialMode,
+    task: Task<()>,
+    req: mesh::Sender<SerialRequest>,
 }
 
 struct VmInner {
@@ -136,33 +145,60 @@ impl Vm {
                     Ok(())
                 });
             }
-            VmCommand::Serial { port, mode } => {
-                let port_index = port.checked_sub(1).context("invalid port")? as usize;
-                if let Some(task) = self
-                    .serial
-                    .get_mut(port_index)
-                    .context("invalid port")?
-                    .take()
-                {
-                    // TODO: preserve the existing serial port connection if
-                    // changing between non-off modes.
-                    task.cancel().await;
+            VmCommand::Serial {
+                port: None,
+                mode: _,
+            } => {
+                for (i, port) in self.serial.iter().enumerate() {
+                    println!(
+                        "COM{}: {}",
+                        i + 1,
+                        port.as_ref().map_or(SerialMode::Off, |t| t.mode)
+                    );
                 }
-                match mode {
-                    SerialMode::Off => {}
-                    SerialMode::Output => {
+            }
+            VmCommand::Serial {
+                port: Some(port),
+                mode: None,
+            } => {
+                let port_index = port.checked_sub(1).context("invalid port")? as usize;
+                let task = self.serial.get_mut(port_index).context("invalid port")?;
+                println!("{}", task.as_ref().map_or(SerialMode::Off, |t| t.mode));
+            }
+            VmCommand::Serial {
+                port: Some(port),
+                mode: Some(mode),
+            } => {
+                let port_index = port.checked_sub(1).context("invalid port")? as usize;
+                let task = self.serial.get_mut(port_index).context("invalid port")?;
+
+                let target = match mode {
+                    SerialMode::Off => {
+                        if let Some(task) = task.take() {
+                            drop(task.req);
+                            task.task.await;
+                        }
+                        None
+                    }
+                    SerialMode::Log => Some(SerialTarget::Printer),
+                    SerialMode::Term => Some(SerialTarget::Console(
+                        console_relay::Console::new(self.inner.driver.clone(), None)
+                            .context("failed to launch console")?,
+                    )),
+                };
+                if let Some(target) = target {
+                    if let Some(task) = task {
+                        task.mode = mode;
+                        task.req.send(SerialRequest::NewTarget(target));
+                    } else {
+                        let (req, recv) = mesh::channel();
                         let inner = self.inner.clone();
-                        let task = self.inner.driver.spawn("serial", async move {
-                            if let Err(err) = inner.handle_serial(port).await {
-                                writeln!(
-                                    inner.printer.out(),
-                                    "serial port {port} failed: {:#}",
-                                    err
-                                )
-                                .ok();
+                        let t = self.inner.driver.spawn("serial", async move {
+                            if let Err(err) = inner.handle_serial(recv, target, port).await {
+                                writeln!(inner.printer.out(), "COM{port} failed: {:#}", err).ok();
                             }
                         });
-                        self.serial[port_index] = Some(task);
+                        *task = Some(SerialTask { task: t, mode, req });
                     }
                 }
             }
@@ -219,32 +255,90 @@ impl Vm {
     }
 }
 
+enum SerialRequest {
+    NewTarget(SerialTarget),
+}
+
+enum SerialTarget {
+    Printer,
+    Console(console_relay::Console),
+}
+
 impl VmInner {
-    async fn handle_serial(&self, port: u32) -> anyhow::Result<()> {
+    async fn handle_serial(
+        &self,
+        mut req: mesh::Receiver<SerialRequest>,
+        mut target: SerialTarget,
+        port: u32,
+    ) -> anyhow::Result<()> {
+        let mut current_serial = None;
+
+        enum Event {
+            TaskDone(anyhow::Result<()>),
+            Request(Option<SerialRequest>),
+        }
+
         loop {
-            let serial = diag_client::hyperv::open_serial_port(
-                &self.driver,
-                &self.name,
-                diag_client::hyperv::ComPortAccessInfo::PortNumber(port),
-            )
-            .await
-            .context("failed to open serial port")?;
+            let task = async {
+                let serial = if let Some(serial) = &mut current_serial {
+                    serial
+                } else {
+                    let new_serial = diag_client::hyperv::open_serial_port(
+                        &self.driver,
+                        &self.name,
+                        diag_client::hyperv::ComPortAccessInfo::PortNumber(port),
+                    )
+                    .await
+                    .context("failed to open serial port")?;
 
-            writeln!(self.printer.out(), "serial port {port} connected").ok();
+                    current_serial.insert(BufReader::new(
+                        PolledPipe::new(&self.driver, new_serial)
+                            .context("failed to create polled pipe")?,
+                    ))
+                };
 
-            let mut serial = BufReader::new(
-                PolledPipe::new(&self.driver, serial).context("failed to create polled pipe")?,
-            );
+                writeln!(self.printer.out(), "COM{port} connected").ok();
 
-            let mut line = String::new();
-            while let Ok(n) = serial.read_line(&mut line).await {
-                if n == 0 {
-                    break;
+                match &mut target {
+                    SerialTarget::Printer => {
+                        let mut line = String::new();
+                        while let Ok(n) = serial.read_line(&mut line).await {
+                            if n == 0 {
+                                break;
+                            }
+                            write!(self.printer.out(), "[COM{port}]: {}", line).ok();
+                            line.clear();
+                        }
+                    }
+                    SerialTarget::Console(console) => {
+                        console.relay(serial).await?;
+                    }
                 }
-                write!(self.printer.out(), "{}", line).ok();
-                line.clear();
+
+                writeln!(self.printer.out(), "COM{port} disconnected").ok();
+                current_serial = None;
+                Ok(())
+            };
+
+            let event = (task.map(Event::TaskDone), req.next().map(Event::Request))
+                .race()
+                .await;
+            match event {
+                Event::TaskDone(r) => r?,
+                Event::Request(Some(y)) => match y {
+                    SerialRequest::NewTarget(new_target) => {
+                        target = new_target;
+                    }
+                },
+                Event::Request(None) => {
+                    break Ok(());
+                }
             }
-            writeln!(self.printer.out(), "serial port {port} disconnected").ok();
+        }
+
+        if let Some(serial) = current_serial {
+            drop(serial);
+            writeln!(self.printer.out(), "COM{port} disconnected").ok();
         }
     }
 }

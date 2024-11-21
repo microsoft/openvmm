@@ -19,6 +19,8 @@ use hyperv::run_hvc;
 use mesh::rpc::RpcSend;
 use pal_async::DefaultDriver;
 use rustyline_printer::Printer;
+use std::fmt::Display;
+use std::path::PathBuf;
 use std::sync::Arc;
 use vm::Vm;
 
@@ -41,6 +43,10 @@ pub(crate) enum InteractiveCommand {
 
     /// Detach from the active VM.
     Detach,
+
+    /// Quit the interactive shell.
+    #[clap(visible_alias = "q")]
+    Quit,
 
     #[clap(flatten)]
     Vm(VmCommand),
@@ -74,12 +80,12 @@ pub(crate) enum VmCommand {
         force: bool,
     },
 
-    /// Sets the serial output mode.
+    /// Gets or sets the serial output mode.
     Serial {
         /// The serial port to configure (1 = COM1, etc.).
-        port: u32,
+        port: Option<u32>,
         /// The serial output mode.
-        mode: SerialMode,
+        mode: Option<SerialMode>,
     },
 
     /// Inspect host or paravisor state.
@@ -102,20 +108,28 @@ pub(crate) enum VmCommand {
     },
 }
 
-#[derive(ValueEnum, Clone)]
+#[derive(ValueEnum, Copy, Clone)]
 pub(crate) enum SerialMode {
     /// The serial port is disconnected.
     Off,
-    /// The serial port output is connected to the host's console.
-    Output,
-    // TODO: add Console mode for interactive console, and Terminal mode for
-    // launching a terminal emulator.
+    /// The serial port output is logged to standard output.
+    Log,
+    /// The serial port input and output are connected to a new terminal
+    /// emulator window.
+    Term,
+    // TODO: add Console mode for interactive console.
+}
+
+impl Display for SerialMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(self.to_possible_value().unwrap().get_name())
+    }
 }
 
 pub(crate) enum Request {
     Prompt(mesh::rpc::Rpc<(), String>),
     Inspect(mesh::rpc::Rpc<(InspectTarget, String), anyhow::Result<inspect::Node>>),
-    Command(mesh::rpc::Rpc<InteractiveCommand, anyhow::Result<()>>),
+    Command(mesh::rpc::Rpc<InteractiveCommand, anyhow::Result<bool>>),
 }
 
 pub(crate) enum InspectTarget {
@@ -130,10 +144,15 @@ pub(crate) enum InspectTarget {
 struct CommandLine {
     /// The initial VM name. Use select to change the active VM.
     vm: Option<String>,
+    #[clap(long, hide(true))]
+    relay_console_path: Option<PathBuf>,
 }
 
 pub async fn main(driver: DefaultDriver) -> anyhow::Result<()> {
     let command_line = CommandLine::parse();
+    if let Some(relay_console_path) = command_line.relay_console_path {
+        return console_relay::relay_console(&relay_console_path);
+    }
 
     let mut rl = rustyline::Editor::<_, rustyline::history::FileHistory>::with_config(
         rustyline::Config::builder()
@@ -215,7 +234,8 @@ pub async fn main(driver: DefaultDriver) -> anyhow::Result<()> {
 
             match parse(&mut template, trimmed) {
                 Ok(cmd) => match block_on(send.call_failable(Request::Command, cmd)) {
-                    Ok(()) => {}
+                    Ok(true) => {}
+                    Ok(false) => break,
                     Err(err) => {
                         eprintln!("{:#}", err);
                     }
@@ -275,8 +295,11 @@ pub async fn main(driver: DefaultDriver) -> anyhow::Result<()> {
                                 .handle_command(cmd)
                                 .await?;
                         }
+                        InteractiveCommand::Quit => {
+                            return Ok(false);
+                        }
                     }
-                    Ok(())
+                    Ok(true)
                 })
                 .await
             }
