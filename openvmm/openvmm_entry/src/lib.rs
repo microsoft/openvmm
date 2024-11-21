@@ -1434,7 +1434,7 @@ fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource
         } => Resource::new(disk_crypt_resources::DiskCryptHandle {
             disk: disk_open(disk, read_only)?,
             cipher: match cipher {
-                cli_args::DiskCipher::AesXts256 => disk_crypt_resources::Cipher::AesXts256,
+                cli_args::DiskCipher::XtsAes256 => disk_crypt_resources::Cipher::XtsAes256,
             },
             key: fs_err::read(key_file).context("failed to read key file")?,
         }),

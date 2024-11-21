@@ -8,7 +8,7 @@
 
 pub mod resolver;
 
-use block_crypto::AesXts256;
+use block_crypto::XtsAes256;
 use disk_backend::AsyncDisk;
 use disk_backend::DiskError;
 use disk_backend::SimpleDisk;
@@ -30,7 +30,7 @@ use thiserror::Error;
 pub struct CryptDisk {
     inner: Arc<dyn SimpleDisk>,
     #[inspect(skip)]
-    cipher: AesXts256,
+    cipher: XtsAes256,
     sector_shift: u32,
 }
 
@@ -54,9 +54,9 @@ impl CryptDisk {
         inner: Arc<dyn SimpleDisk>,
     ) -> Result<Self, NewDiskError> {
         match cipher {
-            disk_crypt_resources::Cipher::AesXts256 => {}
+            disk_crypt_resources::Cipher::XtsAes256 => {}
         }
-        let cipher = AesXts256::new(
+        let cipher = XtsAes256::new(
             key.try_into().map_err(|_| NewDiskError::InvalidKeySize)?,
             inner.sector_size(),
         )

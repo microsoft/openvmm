@@ -28,9 +28,9 @@ impl ResourceId<DiskHandleKind> for DiskCryptHandle {
 /// The cipher to use to encrypt the payload.
 #[derive(MeshPayload)]
 pub enum Cipher {
-    /// AES-XTS-256, using the disk sector number as the tweak value (equivalent
+    /// XTS-AES-256, using the disk sector number as the tweak value (equivalent
     /// to and compatible with dm-crypt's "aes-xts-plain64").
     ///
     /// This requires a 512-bit key.
-    AesXts256,
+    XtsAes256,
 }

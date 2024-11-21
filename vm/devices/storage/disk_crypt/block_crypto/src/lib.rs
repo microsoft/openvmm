@@ -11,42 +11,42 @@ use bcrypt as sys;
 use ossl as sys;
 use thiserror::Error;
 
-/// AES-XTS-256 encryption/decryption.
-pub struct AesXts256(sys::AesXts256);
+/// XTS-AES-256 encryption/decryption.
+pub struct XtsAes256(sys::XtsAes256);
 
 /// An error for cryptographic operations.
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub struct Error(sys::Error);
 
-impl AesXts256 {
+impl XtsAes256 {
     /// The required key length for the algorithm.
     ///
-    /// Note that an AES-XTS key contains two AES keys, each of which is 256 bits.
+    /// Note that an XTS-AES-256 key contains two AES keys, each of which is 256 bits.
     pub const KEY_LEN: usize = 64;
 
-    /// Creates a new AES-XTS-256 encryption/decryption context.
+    /// Creates a new XTS-AES-256 encryption/decryption context.
     pub fn new(key: &[u8; Self::KEY_LEN], data_unit_size: u32) -> Result<Self, Error> {
-        Ok(sys::aes_xts_256(key, data_unit_size)
-            .map(AesXts256)
+        Ok(sys::xts_aes_256(key, data_unit_size)
+            .map(Self)
             .map_err(Error)?)
     }
 
     /// Returns a context for encrypting data.
-    pub fn encrypt(&self) -> Result<AesXts256Ctx<'_>, Error> {
-        Ok(AesXts256Ctx(self.0.ctx(true).map_err(Error)?))
+    pub fn encrypt(&self) -> Result<XtsAes256Ctx<'_>, Error> {
+        Ok(XtsAes256Ctx(self.0.ctx(true).map_err(Error)?))
     }
 
     /// Returns a context for decrypting data.
-    pub fn decrypt(&self) -> Result<AesXts256Ctx<'_>, Error> {
-        Ok(AesXts256Ctx(self.0.ctx(false).map_err(Error)?))
+    pub fn decrypt(&self) -> Result<XtsAes256Ctx<'_>, Error> {
+        Ok(XtsAes256Ctx(self.0.ctx(false).map_err(Error)?))
     }
 }
 
-/// Context for AES-XTS-256 encryption/decryption.
-pub struct AesXts256Ctx<'a>(sys::AesXts256Ctx<'a>);
+/// Context for XTS-AES-256 encryption/decryption.
+pub struct XtsAes256Ctx<'a>(sys::XtsAes256Ctx<'a>);
 
-impl AesXts256Ctx<'_> {
+impl XtsAes256Ctx<'_> {
     /// Encrypts or decrypts `data` using the provided `tweak`.
     pub fn cipher(&mut self, tweak: u128, data: &mut [u8]) -> Result<(), Error> {
         self.0.cipher(&tweak.to_le_bytes(), data).map_err(Error)?;
@@ -69,10 +69,10 @@ mod ossl {
 
     pub type Error = openssl::error::ErrorStack;
 
-    pub type AesXts256 = NonStreamingCipher;
-    pub type AesXts256Ctx<'a> = NonStreamingCipherCtx<'a>;
+    pub type XtsAes256 = NonStreamingCipher;
+    pub type XtsAes256Ctx<'a> = NonStreamingCipherCtx<'a>;
 
-    pub fn aes_xts_256(key: &[u8], _data_unit_size: u32) -> Result<AesXts256, Error> {
+    pub fn xts_aes_256(key: &[u8], _data_unit_size: u32) -> Result<XtsAes256, Error> {
         let mut enc = openssl::cipher_ctx::CipherCtx::new()?;
         enc.encrypt_init(
             Some(openssl::cipher::Cipher::aes_256_xts()),
@@ -135,20 +135,20 @@ mod bcrypt {
         err: std::io::Error,
     }
 
-    pub struct AesXts256(Key);
+    pub struct XtsAes256(Key);
 
-    pub struct AesXts256Ctx<'a> {
+    pub struct XtsAes256Ctx<'a> {
         key: &'a Key,
         enc: bool,
     }
 
-    impl AesXts256 {
-        pub fn ctx(&self, enc: bool) -> Result<AesXts256Ctx<'_>, Error> {
-            Ok(AesXts256Ctx { key: &self.0, enc })
+    impl XtsAes256 {
+        pub fn ctx(&self, enc: bool) -> Result<XtsAes256Ctx<'_>, Error> {
+            Ok(XtsAes256Ctx { key: &self.0, enc })
         }
     }
 
-    impl AesXts256Ctx<'_> {
+    impl XtsAes256Ctx<'_> {
         pub fn cipher(&self, tweak: &[u8; 16], data: &mut [u8]) -> Result<(), Error> {
             // BCrypt only supports 64-bit tweaks, internally padding out the high 8
             // bytes with zeroes. (Why?) This is fine for our purposes but it's a
@@ -168,7 +168,7 @@ mod bcrypt {
         }
     }
 
-    static AES_XTS_256: OnceLock<AlgHandle> = OnceLock::new();
+    static XTS_AES_256: OnceLock<AlgHandle> = OnceLock::new();
 
     struct AlgHandle(BCRYPT_ALG_HANDLE);
 
@@ -256,8 +256,8 @@ mod bcrypt {
         }
     }
 
-    pub fn aes_xts_256(key: &[u8], data_unit_size: u32) -> Result<AesXts256, Error> {
-        let alg = if let Some(alg) = AES_XTS_256.get() {
+    pub fn xts_aes_256(key: &[u8], data_unit_size: u32) -> Result<XtsAes256, Error> {
+        let alg = if let Some(alg) = XTS_AES_256.get() {
             alg
         } else {
             let mut handle = BCRYPT_ALG_HANDLE::default();
@@ -271,7 +271,7 @@ mod bcrypt {
                 )
             };
             bcrypt_result("open algorithm provider", status)?;
-            if let Err(AlgHandle(handle)) = AES_XTS_256.set(AlgHandle(handle)) {
+            if let Err(AlgHandle(handle)) = XTS_AES_256.set(AlgHandle(handle)) {
                 // SAFETY: handle is valid and not aliased.
                 unsafe {
                     bcrypt_result(
@@ -283,7 +283,7 @@ mod bcrypt {
                     .unwrap();
                 }
             }
-            AES_XTS_256.get().unwrap()
+            XTS_AES_256.get().unwrap()
         };
         let key = {
             let mut handle = BCRYPT_KEY_HANDLE::default();
@@ -312,6 +312,6 @@ mod bcrypt {
         };
         bcrypt_result("set message block length", status)?;
 
-        Ok(AesXts256(key))
+        Ok(XtsAes256(key))
     }
 }

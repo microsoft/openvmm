@@ -605,8 +605,8 @@ pub enum DiskCliKind {
 
 #[derive(ValueEnum, Clone, Copy)]
 pub enum DiskCipher {
-    #[clap(name = "aes-xts-256")]
-    AesXts256,
+    #[clap(name = "xts-aes-256")]
+    XtsAes256,
 }
 
 #[derive(Copy, Clone)]
