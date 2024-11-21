@@ -937,8 +937,8 @@ impl UhProcessor<'_, TdxBacked> {
             self.runner.tdx_enter_guest_state_mut().rvi = rvi;
         }
 
-        // If there is a pending interrupt, clear the halted state.
-        if self.backing.lapic.halted
+        // If there is a pending interrupt, clear the halted and idle state.
+        if (self.backing.lapic.halted || self.backing.lapic.idle)
             && self.backing.lapic.lapic.is_offloaded()
             && self.runner.tdx_enter_guest_state().rvi != 0
         {
@@ -955,6 +955,7 @@ impl UhProcessor<'_, TdxBacked> {
             // Hyper-V in general does not guarantee hlt will stick until an
             // interrupt is pending), at worst this will just burn some CPU.
             self.backing.lapic.halted = false;
+            self.backing.lapic.idle = false;
         }
 
         Ok(true)
@@ -1025,6 +1026,8 @@ impl UhProcessor<'_, TdxBacked> {
         processor_controls: &mut ProcessorControls,
         tpr_threshold: &mut u8,
     ) {
+        // Exit idle when an interrupt is received, regardless of IF
+        self.backing.lapic.idle = false;
         // If there is a higher-priority pending event of some kind, then
         // just request an exit after it has resolved, after which we will
         // try again.
@@ -1066,6 +1069,8 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn handle_nmi(&mut self, processor_controls: &mut ProcessorControls) {
+        // Exit idle when an interrupt is received, regardless of IF
+        self.backing.lapic.idle = false;
         // If there is a higher-priority pending event of some kind, then
         // just request an exit after it has resolved, after which we will
         // try again.
@@ -1123,6 +1128,7 @@ impl UhProcessor<'_, TdxBacked> {
             self.runner.tdx_enter_guest_state_mut().rip = 0;
             self.backing.lapic.startup_suspend = false;
             self.backing.lapic.halted = false;
+            self.backing.lapic.idle = false;
         }
     }
 
@@ -1168,7 +1174,10 @@ impl UhProcessor<'_, TdxBacked> {
         let tlb_halt = self.should_halt_for_tlb_unlock(GuestVtl::Vtl0);
 
         self.runner.set_halted(
-            self.backing.lapic.halted || self.backing.lapic.startup_suspend || tlb_halt,
+            self.backing.lapic.halted
+                || self.backing.lapic.idle
+                || self.backing.lapic.startup_suspend
+                || tlb_halt,
         );
 
         // TODO GUEST_VSM: Probably need to set this to 2 occasionally
@@ -1353,7 +1362,15 @@ impl UhProcessor<'_, TdxBacked> {
                     })
                     .msr_read(msr)
                     .or_else_if_unknown(|| self.read_msr(msr, intercepted_vtl))
-                    .or_else_if_unknown(|| self.read_msr_cvm(msr, intercepted_vtl));
+                    .or_else_if_unknown(|| self.read_msr_cvm(msr, intercepted_vtl))
+                    .or_else_if_unknown(|| match msr {
+                        hvdef::HV_X64_MSR_GUEST_IDLE => {
+                            self.backing.lapic.idle = true;
+                            self.clear_interrupt_shadow();
+                            Ok(0)
+                        }
+                        _ => Err(MsrError::Unknown),
+                    });
 
                 let value = match result {
                     Ok(v) => Some(v),
@@ -1490,16 +1507,7 @@ impl UhProcessor<'_, TdxBacked> {
                 // TODO: see lots of these exits while waiting at frontpage.
                 // Probably expected, given we will still get L1 timer
                 // interrupts?
-
-                // Clear interrupt shadow.
-                let mask = Interruptibility::new().with_blocked_by_sti(true);
-                let value = Interruptibility::new().with_blocked_by_sti(false);
-                self.runner.write_vmcs32(
-                    GuestVtl::Vtl0,
-                    VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY,
-                    mask.into(),
-                    value.into(),
-                );
+                self.clear_interrupt_shadow();
                 self.advance_to_next_instruction();
                 &mut self.backing.exit_stats.hlt
             }
@@ -1684,6 +1692,17 @@ impl UhProcessor<'_, TdxBacked> {
         let instr_info = TdxExit(self.runner.tdx_vp_enter_exit_info()).instr_info();
         let rip = &mut self.runner.tdx_enter_guest_state_mut().rip;
         *rip = rip.wrapping_add(instr_info.length().into());
+    }
+
+    fn clear_interrupt_shadow(&mut self) {
+        let mask = Interruptibility::new().with_blocked_by_sti(true);
+        let value = Interruptibility::new().with_blocked_by_sti(false);
+        self.runner.write_vmcs32(
+            GuestVtl::Vtl0,
+            VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY,
+            mask.into(),
+            value.into(),
+        );
     }
 
     fn inject_gpf(&mut self) {
@@ -2728,6 +2747,8 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             vp::MpState::WaitForSipi
         } else if self.vp.backing.lapic.halted {
             vp::MpState::Halted
+        } else if self.vp.backing.lapic.idle {
+            vp::MpState::Idle
         } else {
             vp::MpState::Running
         };
@@ -2756,14 +2777,9 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             pending_event: _,        // TODO TDX
             pending_interruption: _, // TODO TDX
         } = value;
-        let (halted, startup_suspend) = match mp_state {
-            vp::MpState::Running => (false, false),
-            vp::MpState::WaitForSipi => (false, true),
-            vp::MpState::Halted => (true, false),
-            vp::MpState::Idle => (false, false), // TODO TDX: idle support
-        };
-        self.vp.backing.lapic.halted = halted;
-        self.vp.backing.lapic.startup_suspend = startup_suspend;
+        self.vp.backing.lapic.halted = mp_state == vp::MpState::Halted;
+        self.vp.backing.lapic.idle = mp_state == vp::MpState::Idle;
+        self.vp.backing.lapic.startup_suspend = mp_state == vp::MpState::WaitForSipi;
         self.vp.backing.lapic.nmi_pending = nmi_pending;
         let interruptibility = Interruptibility::new()
             .with_blocked_by_movss(interrupt_shadow)

@@ -756,6 +756,7 @@ impl UhProcessor<'_, SnpBacked> {
         vmsa.v_intr_cntrl_mut().set_ignore_tpr(false);
         vmsa.v_intr_cntrl_mut().set_irq(true);
         self.backing.lapics[vtl].halted = false;
+        self.backing.lapics[vtl].idle = false;
     }
 
     fn handle_nmi(&mut self, vtl: GuestVtl) {
@@ -770,6 +771,7 @@ impl UhProcessor<'_, SnpBacked> {
         );
 
         self.backing.lapics[vtl].halted = false;
+        self.backing.lapics[vtl].idle = false;
     }
 
     fn handle_init(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
@@ -794,6 +796,7 @@ impl UhProcessor<'_, SnpBacked> {
             vmsa.set_rip(0);
             self.backing.lapics[vtl].startup_suspend = false;
             self.backing.lapics[vtl].halted = false;
+            self.backing.lapics[vtl].idle = false;
         }
         Ok(())
     }
@@ -941,6 +944,7 @@ impl UhProcessor<'_, SnpBacked> {
         let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
 
         let halt = self.backing.lapics[next_vtl].halted
+            || self.backing.lapics[next_vtl].idle
             || self.backing.lapics[next_vtl].startup_suspend
             || tlb_halt;
 
@@ -1093,7 +1097,16 @@ impl UhProcessor<'_, SnpBacked> {
                         })
                         .msr_read(msr)
                         .or_else_if_unknown(|| self.read_msr(msr, entered_from_vtl))
-                        .or_else_if_unknown(|| self.read_msr_cvm(dev, msr, entered_from_vtl));
+                        .or_else_if_unknown(|| self.read_msr_cvm(dev, msr, entered_from_vtl))
+                        .or_else_if_unknown(|| match msr {
+                            hvdef::HV_X64_MSR_GUEST_IDLE => {
+                                self.backing.lapics[entered_from_vtl].idle = true;
+                                let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
+                                vmsa.v_intr_cntrl_mut().set_intr_shadow(false);
+                                Ok(0)
+                            }
+                            _ => Err(MsrError::Unknown),
+                        });
 
                     let value = match r {
                         Ok(v) => Some(v),
@@ -1776,6 +1789,8 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
             vp::MpState::WaitForSipi
         } else if lapic.halted {
             vp::MpState::Halted
+        } else if lapic.idle {
+            vp::MpState::Idle
         } else {
             vp::MpState::Running
         };
@@ -1798,15 +1813,10 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
             pending_event: _,        // TODO SNP
             pending_interruption: _, // TODO SNP
         } = value;
-        let (halted, startup_suspend) = match mp_state {
-            vp::MpState::Running => (false, false),
-            vp::MpState::WaitForSipi => (false, true),
-            vp::MpState::Halted => (true, false),
-            vp::MpState::Idle => (false, false), // TODO SNP: idle support
-        };
         let lapic = &mut self.vp.backing.lapics[self.vtl];
-        lapic.halted = halted;
-        lapic.startup_suspend = startup_suspend;
+        lapic.halted = mp_state == vp::MpState::Halted;
+        lapic.idle = mp_state == vp::MpState::Idle;
+        lapic.startup_suspend = mp_state == vp::MpState::WaitForSipi;
         lapic.nmi_pending = nmi_pending;
         Ok(())
     }
