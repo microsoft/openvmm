@@ -643,7 +643,11 @@ impl LoadedVm {
                 // Do not save NVMe state if there was an error during save
                 // or nvme_keepalive was explicitly disabled,
                 // revert back to the regular nvme_init after boot.
-                match n.save().await {
+                match n
+                    .save()
+                    .instrument(tracing::info_span!("nvme_manager_save"))
+                    .await
+                {
                     Ok(s) => Some(NvmeSavedState { nvme_state: s }),
                     Err(_) => None,
                 }
