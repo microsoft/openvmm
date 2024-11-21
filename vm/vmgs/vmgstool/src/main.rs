@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#[cfg(with_encryption)]
 mod disk_table;
 mod storage_backend;
 mod uefi_nvram;
@@ -10,7 +11,6 @@ use anyhow::Result;
 use clap::Args;
 use clap::Parser;
 use disk_backend::SimpleDisk;
-use disk_table::DiskTableOperation;
 use disk_vhd1::Vhd1Disk;
 use fs_err::File;
 use pal_async::DefaultPool;
@@ -82,16 +82,22 @@ enum Error {
     Json(String),
     #[error("File ID {0:?} already exists. Use `--allow-overwrite` to ignore.")]
     FileIdExists(FileId),
+    #[cfg(with_encryption)]
     #[error("The specified disk entry already exists. Use `--allow-overwrite` to overwrite.")]
     DiskEntryExists,
+    #[cfg(with_encryption)]
     #[error("The specified disk entry was not found.")]
     DiskEntryNotFound,
+    #[cfg(with_encryption)]
     #[error("The disk table is corrupt")]
     DiskTableCorrupt(#[source] prost::DecodeError),
+    #[cfg(with_encryption)]
     #[error("Failed to read disk key file")]
     DiskKeyFile(#[source] std::io::Error),
+    #[cfg(with_encryption)]
     #[error("Cannot specify a disk key with with no cipher")]
     UnexpectedDiskKeyFile,
+    #[cfg(with_encryption)]
     #[error("Cannot specify a cipher with no disk key")]
     MissingDiskKeyFile,
 }
@@ -253,13 +259,14 @@ enum Options {
         operation: UefiNvramOperation,
     },
     /// Disk table operations
+    #[cfg(with_encryption)]
     DiskTable {
         #[command(flatten)]
         file_path: FilePathArg,
         #[command(flatten)]
         key_path: KeyPathArg,
         #[clap(subcommand)]
-        operation: DiskTableOperation,
+        operation: disk_table::DiskTableOperation,
     },
 }
 
@@ -453,6 +460,7 @@ async fn do_main() -> Result<(), Error> {
             vmgs_file_query_encryption(file_path.file_path).await
         }
         Options::UefiNvram { operation } => uefi_nvram::do_command(operation).await,
+        #[cfg(with_encryption)]
         Options::DiskTable {
             file_path,
             key_path,

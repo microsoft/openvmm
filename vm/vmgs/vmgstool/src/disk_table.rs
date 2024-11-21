@@ -73,8 +73,8 @@ pub(crate) async fn do_command(
                     vmgs_format::DiskCipher::Unspecified => {
                         format!("unknown ({})", entry.cipher)
                     }
-                    vmgs_format::DiskCipher::None => format!("none"),
-                    vmgs_format::DiskCipher::XtsAes256 => format!("xts-aes-256"),
+                    vmgs_format::DiskCipher::None => "none".to_string(),
+                    vmgs_format::DiskCipher::XtsAes256 => "xts-aes-256".to_string(),
                 };
                 println!("{disk_id} {cipher}", disk_id = entry.disk_id);
             }
