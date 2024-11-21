@@ -52,6 +52,8 @@ vm_resource::register_static_resolvers! {
     disk_vhdmp::VhdmpDiskResolver,
     #[cfg(feature = "disk_blob")]
     disk_blob::resolver::BlobDiskResolver,
+    #[cfg(feature = "disk_sqlite")]
+    disk_sqlite::resolver::SqliteDiskResolver,
 
     // Disk Layers
     disklayer_ram::resolver::RamDiskLayerResolver,

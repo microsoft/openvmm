@@ -31,13 +31,16 @@ vm_resource.workspace = true
 # Serial
 serial_core.workspace = true
 serial_socket.workspace = true
+
+# Disks
 disk_blob = { workspace = true, optional = true }
 disk_crypt = { workspace = true, optional = true }
 disk_file.workspace = true
 disk_layered.workspace = true
 disk_prwrap.workspace = true
-disklayer_ram.workspace = true
+disk_sqlite = { workspace = true, optional = true }
 disk_vhd1.workspace = true
+disklayer_ram.workspace = true
 
 # Chipset devices
 chipset.workspace = true
@@ -84,6 +87,10 @@ debug_worker = { workspace = true, optional = true }
 hvlite_core.workspace = true
 vnc_worker.workspace = true
 
+# enable the "bundled" feature at the top level, since it's an application
+# level decision
+rusqlite = { workspace = true, features = ["bundled"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 net_tap = { workspace = true, optional = true }
 
@@ -97,3 +104,7 @@ build_rs_guest_arch.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.xtask.unused-deps]
+# see corresponding comment on the dep itself
+ignored = ["rusqlite"]

@@ -626,6 +626,8 @@ pub enum DiskCliKind {
     Memory(u64),
     // memdiff:<kind>
     MemoryDiff(Box<DiskCliKind>),
+    // sqldiff:<path>:<kind>
+    SqliteDiff(PathBuf, Box<DiskCliKind>),
     // prwrap:<kind>
     PersistentReservationsWrapper(Box<DiskCliKind>),
     // file:<path>
@@ -665,6 +667,10 @@ impl FromStr for DiskCliKind {
             Some((kind, arg)) => match kind {
                 "mem" => DiskCliKind::Memory(parse_memory(arg)?),
                 "memdiff" => DiskCliKind::MemoryDiff(Box::new(arg.parse()?)),
+                "sqldiff" => {
+                    let (path, kind) = arg.split_once(':').context("expected path,kind")?;
+                    DiskCliKind::SqliteDiff(path.into(), Box::new(kind.parse()?))
+                }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
                 "file" => DiskCliKind::File(PathBuf::from(arg)),
                 "blob" => {

@@ -1,0 +1,27 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "disk_sqlite"
+edition = "2021"
+rust-version.workspace = true
+
+[dependencies]
+disk_backend.workspace = true
+disk_backend_resources.workspace = true
+scsi_buffers.workspace = true
+guestmem.workspace = true
+vm_resource.workspace = true
+
+inspect = { workspace = true, features = ["filepath"] }
+stackfuture.workspace = true
+
+anyhow.workspace = true
+async-trait.workspace = true
+blocking.workspace = true
+parking_lot.workspace = true
+rusqlite = { workspace = true, features = ["blob"] }
+tracing.workspace = true
+
+[lints]
+workspace = true

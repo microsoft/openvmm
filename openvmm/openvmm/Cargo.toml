@@ -16,6 +16,7 @@ default = [
   "net_consomme",
   "net_tap",
   "disk_blob",
+  "disk_sqlite",
 ]
 
 # see the `openvmm_entry` crate for more info on these features
@@ -33,6 +34,7 @@ net_tap = ["openvmm_resources/net_tap"]
 
 disk_blob = ["openvmm_resources/disk_blob"]
 disk_crypt = ["openvmm_resources/disk_crypt"]
+disk_sqlite = ["openvmm_resources/disk_sqlite"]
 
 # build openvmm to support the latest insider build of windows on arm
 # rather than latest release build
