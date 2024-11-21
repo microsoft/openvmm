@@ -127,7 +127,16 @@ impl PetriVmConfig {
     }
 
     /// Run the VM, launching pipette and returning a client to it.
-    pub async fn run(mut self) -> anyhow::Result<(PetriVm, PipetteClient)> {
+    pub async fn run(self) -> anyhow::Result<(PetriVm, PipetteClient)> {
+        let mut vm = self.run_with_lazy_pipette().await?;
+        let client = vm.wait_for_agent().await?;
+        Ok((vm, client))
+    }
+
+    /// Run the VM, configuring pipette to automatically start, but do not wait
+    /// for it to connect. This is useful for tests where the first boot attempt
+    /// is expected to not succeed, but pipette functionality is still desired.
+    pub async fn run_with_lazy_pipette(mut self) -> anyhow::Result<PetriVm> {
         const CIDATA_SCSI_INSTANCE: Guid =
             Guid::from_static_str("766e96f8-2ceb-437e-afe3-a93169e48a7b");
 
@@ -227,9 +236,7 @@ impl PetriVmConfig {
             vm.launch_linux_direct_pipette().await?;
         }
 
-        let client = vm.wait_for_agent().await?;
-
-        Ok((vm, client))
+        Ok(vm)
     }
 
     fn start_watchdog_tasks(
