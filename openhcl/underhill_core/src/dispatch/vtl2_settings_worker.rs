@@ -131,6 +131,10 @@ enum Error<'a> {
     },
     #[error("cannot modify IDE configuration at runtime")]
     StorageCannotModifyIdeAtRuntime,
+    #[error("unknown disk cipher {cipher}")]
+    StorageBadCipher { cipher: i32 },
+    #[error("disk {disk_id} is missing VMGS disk table entry")]
+    StorageMissingDiskTableEntry { disk_id: &'a str },
 }
 
 impl Error<'_> {
@@ -178,6 +182,10 @@ impl Error<'_> {
             Error::StorageBadDeviceId { .. } => Vtl2SettingsErrorCode::StorageInvalidDeviceId,
             Error::StorageChangeMediaFailed { .. } => {
                 Vtl2SettingsErrorCode::StorageChangeMediaFailed
+            }
+            Error::StorageBadCipher { .. } => Vtl2SettingsErrorCode::StorageInvalidDiskCipher,
+            Error::StorageMissingDiskTableEntry { .. } => {
+                Vtl2SettingsErrorCode::StorageMissingDiskTableEntry
             }
         }
     }
@@ -233,6 +241,7 @@ pub struct Vtl2SettingsWorker {
     device_config_send: mesh::Sender<Vtl2ConfigNicRpc>,
     get_client: guest_emulation_transport::GuestEmulationTransportClient,
     interfaces: DeviceInterfaces,
+    disk_table: Option<vmgs_format::DiskTable>,
 }
 
 pub struct DeviceInterfaces {
@@ -247,12 +256,14 @@ impl Vtl2SettingsWorker {
         device_config_send: mesh::Sender<Vtl2ConfigNicRpc>,
         get_client: guest_emulation_transport::GuestEmulationTransportClient,
         interfaces: DeviceInterfaces,
+        disk_table: Option<vmgs_format::DiskTable>,
     ) -> Vtl2SettingsWorker {
         Vtl2SettingsWorker {
             old_settings: initial_settings,
             device_config_send,
             get_client,
             interfaces,
+            disk_table,
         }
     }
 
@@ -368,6 +379,7 @@ impl Vtl2SettingsWorker {
                         &StorageContext {
                             uevent_listener,
                             use_nvme_vfio: self.interfaces.use_nvme_vfio,
+                            disk_table: self.disk_table.as_ref(),
                         },
                         &disk,
                         false,
@@ -386,6 +398,7 @@ impl Vtl2SettingsWorker {
                         &StorageContext {
                             uevent_listener,
                             use_nvme_vfio: self.interfaces.use_nvme_vfio,
+                            disk_table: self.disk_table.as_ref(),
                         },
                         &disk,
                         false,
@@ -894,13 +907,14 @@ pub enum StorageDevicePath {
 
 async fn make_disk_type_from_physical_devices(
     ctx: &mut CancelContext,
+    device_id: &str,
     storage_context: &StorageContext<'_>,
     physical_devices: &PhysicalDevices,
     ntfs_guid: Option<Guid>,
     read_only: bool,
     is_restoring: bool,
 ) -> Result<Resource<DiskHandleKind>, Vtl2SettingsErrorInfo> {
-    let disk_type = match *physical_devices {
+    let mut disk_type = match *physical_devices {
         PhysicalDevices::Single { ref device } => {
             make_disk_type_from_physical_device(ctx, storage_context, device, read_only).await?
         }
@@ -935,10 +949,37 @@ async fn make_disk_type_from_physical_devices(
         } else {
             // DEVNOTE: open-source OpenHCL does not currently have a resolver
             // for `AutoFormattedDiskHandle`.
-            return Ok(Resource::new(AutoFormattedDiskHandle {
+            disk_type = Resource::new(AutoFormattedDiskHandle {
                 disk: disk_type,
                 guid: ntfs_guid.into(),
-            }));
+            });
+        }
+    }
+
+    if let Some(disk_table) = storage_context.disk_table {
+        let entry = disk_table
+            .disks
+            .iter()
+            .find(|k| k.disk_id == device_id)
+            .ok_or(Error::StorageMissingDiskTableEntry { disk_id: device_id })?;
+
+        let cipher = match entry.cipher() {
+            vmgs_format::DiskCipher::Unspecified => {
+                return Err(Error::StorageBadCipher {
+                    cipher: entry.cipher,
+                }
+                .into());
+            }
+            vmgs_format::DiskCipher::None => None,
+            vmgs_format::DiskCipher::XtsAes256 => Some(disk_crypt_resources::Cipher::XtsAes256),
+        };
+
+        if let Some(cipher) = cipher {
+            disk_type = Resource::new(disk_crypt_resources::DiskCryptHandle {
+                disk: disk_type,
+                cipher,
+                key: entry.key.clone(),
+            });
         }
     }
 
@@ -948,6 +989,7 @@ async fn make_disk_type_from_physical_devices(
 struct StorageContext<'a> {
     uevent_listener: &'a UeventListener,
     use_nvme_vfio: bool,
+    disk_table: Option<&'a vmgs_format::DiskTable>,
 }
 
 #[instrument(skip_all)]
@@ -1253,6 +1295,7 @@ async fn make_disk_type(
         (false, physical_devices) => Some(
             make_disk_type_from_physical_devices(
                 ctx,
+                &disk.disk_params().device_id,
                 storage_context,
                 physical_devices,
                 disk.ntfs_guid(),
@@ -1264,6 +1307,7 @@ async fn make_disk_type(
         (true, physical_devices) => {
             let disk_type = make_disk_type_from_physical_devices(
                 ctx,
+                &disk.disk_params().device_id,
                 storage_context,
                 physical_devices,
                 disk.ntfs_guid(),
@@ -1294,6 +1338,7 @@ async fn make_nvme_disk_config(
 ) -> Result<NamespaceDefinition, Vtl2SettingsErrorInfo> {
     let disk_type = make_disk_type_from_physical_devices(
         ctx,
+        &namespace.disk_params.device_id,
         storage_context,
         &namespace.physical_devices,
         None,
@@ -1422,6 +1467,7 @@ pub async fn create_storage_controllers_from_vtl2_settings(
     sub_channels: u16,
     is_restoring: bool,
     default_io_queue_depth: u32,
+    disk_table: Option<&vmgs_format::DiskTable>,
 ) -> Result<
     (
         Option<UhIdeControllerConfig>,
@@ -1433,6 +1479,7 @@ pub async fn create_storage_controllers_from_vtl2_settings(
     let storage_context = StorageContext {
         uevent_listener,
         use_nvme_vfio,
+        disk_table,
     };
     let ide_controller =
         make_ide_controller_config(ctx, &storage_context, settings, is_restoring).await?;
@@ -1772,6 +1819,7 @@ impl InitialControllers {
         use_nvme_vfio: bool,
         is_restoring: bool,
         default_io_queue_depth: u32,
+        disk_table: Option<&vmgs_format::DiskTable>,
     ) -> anyhow::Result<Self> {
         const VM_CONFIG_TIME_OUT_IN_SECONDS: u64 = 5;
         let mut context =
@@ -1793,6 +1841,7 @@ impl InitialControllers {
                 fixed.scsi_sub_channels,
                 is_restoring,
                 default_io_queue_depth,
+                disk_table,
             )
             .await?
         } else {

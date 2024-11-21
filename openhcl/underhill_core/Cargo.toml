@@ -48,6 +48,7 @@ chipset_legacy.workspace = true
 disk_backend.workspace = true
 disk_backend_resources.workspace = true
 disk_blockdevice.workspace = true
+disk_crypt_resources.workspace = true
 disk_get_vmgs.workspace = true
 disk_nvme.workspace = true
 firmware_uefi.workspace = true
@@ -121,6 +122,7 @@ guestmem.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
 vmgs = { workspace = true, features = ["encryption_ossl", "save_restore"] }
+vmgs_format = { workspace = true, features = ["proto"] }
 vmgs_broker = { workspace = true, features = ["encryption_ossl"] }
 vmgs_resources.workspace = true
 x86defs.workspace = true
@@ -155,6 +157,7 @@ futures.workspace = true
 getrandom.workspace = true
 libc.workspace = true
 parking_lot.workspace = true
+prost.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_helpers.workspace = true
 serde_json.workspace = true

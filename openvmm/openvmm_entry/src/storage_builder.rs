@@ -259,10 +259,18 @@ impl StorageBuilder {
             }
         };
 
+        // Use a consistent device ID, based on the location.
+        let mut device_id = Guid::from_static_str("00000000-a4a3-11ef-9347-43f645bdedf8");
+        device_id.data1 = match target {
+            DiskLocation::Ide(_, _) => unreachable!(),
+            DiskLocation::Scsi(_) => location,
+            DiskLocation::Nvme(_) => location | (1 << 31),
+        };
+
         luns.push(Lun {
             location,
-            device_id: Guid::new_random().to_string(),
-            vendor_id: "HvLite".to_string(),
+            device_id: device_id.to_string(),
+            vendor_id: "OpenVMM".to_string(),
             product_id: "Disk".to_string(),
             product_revision_level: "1.0".to_string(),
             serial_number: "0".to_string(),

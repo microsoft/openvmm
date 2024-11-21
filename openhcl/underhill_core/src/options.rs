@@ -113,6 +113,10 @@ pub struct Options {
     /// (OPENHCL_NO_SIDECAR_HOTPLUG=1) Leave sidecar VPs remote even if they
     /// hit exits.
     pub no_sidecar_hotplug: bool,
+
+    /// (OPENHCL_USE_DISK_TABLE=1) Read the disk table from the VMGS file to
+    /// determine the allowed set of disks and their associated encryption keys.
+    pub disk_table: bool,
 }
 
 impl Options {
@@ -181,6 +185,7 @@ impl Options {
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
+        let disk_table = parse_env_bool("OPENHCL_USE_DISK_TABLE");
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -234,6 +239,7 @@ impl Options {
             hide_isolation,
             halt_on_guest_halt,
             no_sidecar_hotplug,
+            disk_table,
         })
     }
 

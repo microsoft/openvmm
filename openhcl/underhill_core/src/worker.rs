@@ -294,6 +294,8 @@ pub struct UnderhillEnvCfg {
     pub gdbstub: bool,
     /// Hide the isolation mode from the guest.
     pub hide_isolation: bool,
+    /// Enable and require the disk table.
+    pub disk_table: bool,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1613,6 +1615,19 @@ async fn new_underhill_vm(
     // Make the GET available for other resources.
     resolver.add_resolver(get_client.clone());
 
+    // Read the disk table from VMGS.
+    let disk_table = if env_cfg.disk_table {
+        let table = match vmgs.read_file(vmgs::FileId::DISK_TABLE).await {
+            Ok(keys) => <vmgs_format::DiskTable as prost::Message>::decode(keys.as_slice())
+                .context("failed to decode disk table")?,
+            Err(vmgs::Error::FileInfoAllocated) => vmgs_format::DiskTable::default(),
+            Err(err) => return Err(err).context("failed to read disk table")?,
+        };
+        Some(table)
+    } else {
+        None
+    };
+
     // Spawn the VMGS client for multi-task access.
     let (vmgs_client, vmgs_handle) = spawn_vmgs_broker(get_spawner, vmgs);
     resolver.add_resolver(VmgsFileResolver::new(vmgs_client.clone()));
@@ -1715,6 +1730,7 @@ async fn new_underhill_vm(
         env_cfg.nvme_vfio,
         is_restoring,
         default_io_queue_depth,
+        disk_table.as_ref(),
     )
     .instrument(tracing::info_span!("new_initial_controllers"))
     .await
@@ -2859,6 +2875,7 @@ async fn new_underhill_vm(
             netvsp_state,
         },
         device_interfaces: Some(controllers.device_interfaces),
+        disk_table,
         vtl0_memory_map,
 
         vmbus_server,
