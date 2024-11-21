@@ -43,7 +43,6 @@ use mesh::RecvError;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_event::Event;
-use parking_lot::Mutex;
 use ring::PAGE_SIZE;
 use std::collections::HashMap;
 use std::future::Future;
@@ -233,7 +232,7 @@ pub struct SavedState {
     #[mesh(1)]
     server: channels::SavedState,
     #[mesh(2)]
-    lost_synic_bug_fixed: Option<bool>,
+    lost_synic_bug_fixed: bool,
 }
 
 const MESSAGE_CONNECTION_ID: u32 = 1;
@@ -488,6 +487,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             inner,
             external_requests: self.external_requests,
             next_seq: 0,
+            unstick_on_start: false,
         };
 
         let task = self.spawner.spawn("vmbus server", async move {
@@ -604,6 +604,7 @@ struct ServerTask {
     external_requests: Option<mesh::Receiver<InitiateContactRequest>>,
     /// Next value for [`Channel::seq`].
     next_seq: u64,
+    unstick_on_start: bool,
 }
 
 struct ServerTaskInner {
@@ -840,7 +841,6 @@ impl ServerTask {
 
     fn handle_request(&mut self, request: VmbusRequest) {
         tracing::debug!(?request, "handle_request");
-        static IS_LOST_SYNIC_BUG_FIXED: Mutex<bool> = Mutex::new(false);
         match request {
             VmbusRequest::Reset(Rpc((), done)) => {
                 assert!(self.inner.reset_done.is_none());
@@ -876,21 +876,17 @@ impl ServerTask {
             }
             VmbusRequest::Save(rpc) => {
                 // TODO: update to true once the save part fix in.
-                let lost_synic_bug_fixed = Some(false);
+                let lost_synic_bug_fixed = false;
                 rpc.handle_sync(|()| SavedState {
                     server: self.server.save(),
                     lost_synic_bug_fixed,
                 })
             }
-            VmbusRequest::Restore(rpc) => {
-                *IS_LOST_SYNIC_BUG_FIXED.lock() = rpc.0.lost_synic_bug_fixed.unwrap_or(false);
-                rpc.handle_sync(|state| self.server.restore(state.server))
-            }
+            VmbusRequest::Restore(rpc) => rpc.handle_sync(|state| {
+                self.unstick_on_start = !state.lost_synic_bug_fixed;
+                self.server.restore(state.server)
+            }),
             VmbusRequest::PostRestore(rpc) => {
-                if !*IS_LOST_SYNIC_BUG_FIXED.lock() {
-                    tracing::info!("lost synic bug fix is not in yet, call unstick_channels to mitigate the issue.");
-                    self.unstick_channels(false);
-                }
                 rpc.handle_sync(|()| self.server.with_notifier(&mut self.inner).post_restore())
             }
             VmbusRequest::Stop(rpc) => rpc.handle_sync(|()| {
@@ -901,6 +897,10 @@ impl ServerTask {
             VmbusRequest::Start => {
                 if !self.running {
                     self.running = true;
+                    if self.unstick_on_start {
+                        tracing::info!("lost synic bug fix is not in yet, call unstick_channels to mitigate the issue.");
+                        self.unstick_channels(false);
+                    }
                 }
             }
         }
