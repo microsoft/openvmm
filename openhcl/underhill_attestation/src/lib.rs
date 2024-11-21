@@ -225,8 +225,9 @@ pub enum AttestationType {
     Tdx,
     /// Use trusted host-based attestation.
     Host,
-    /// CVM without supported attestation.
-    Unsupported,
+    /// VBS-based attestation is not supported yet.
+    // TODO VBS
+    VbsUnsupported,
 }
 
 /// If required, attest platform. Gets VMGS datastore key.
@@ -274,7 +275,7 @@ pub async fn initialize_platform_security(
     let tee_call: Option<Box<dyn TeeCall>> = match attestation_type {
         AttestationType::Snp => Some(Box::new(tee_call::SnpCall)),
         AttestationType::Tdx => Some(Box::new(tee_call::TdxCall)),
-        AttestationType::Host | AttestationType::Unsupported => None,
+        AttestationType::Host | AttestationType::VbsUnsupported => None,
     };
 
     let VmgsEncryptionKeys {

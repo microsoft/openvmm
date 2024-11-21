@@ -39,6 +39,25 @@ async fn boot_alias_map(config: PetriVmConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Basic boot test with TPM enabled.
+// TODO: Reenable the linux test after the reboot failure is resolved.
+#[vmm_test(
+    openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    // openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+)]
+async fn boot_with_tpm(config: PetriVmConfig) -> anyhow::Result<()> {
+    // TODO: Support shared pool (which does not work correctly)
+    let (mut vm, agent) = config
+        // .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
+        .with_tpm()
+        .run()
+        .await?;
+    vm.wait_for_successful_boot_event().await?;
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
 /// Basic VBS boot test.
 #[vmm_test(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),

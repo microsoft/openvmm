@@ -559,6 +559,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostRequests::GUEST_STATE_PROTECTION_BY_ID => {
                 self.handle_guest_state_protection_by_id()?;
             }
+            HostRequests::IGVM_ATTEST => self.handle_igvm_attest(message_buf)?,
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2 => {
                 self.handle_device_platform_settings_v2(state)?
             }
@@ -780,6 +781,17 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let response = get_protocol::GuestStateProtectionByIdResponse {
             message_header: HeaderGeneric::new(HostRequests::GUEST_STATE_PROTECTION_BY_ID),
             ..get_protocol::GuestStateProtectionByIdResponse::new_zeroed()
+        };
+        self.channel
+            .try_send(response.as_bytes())
+            .map_err(Error::Vmbus)?;
+        Ok(())
+    }
+
+    fn handle_igvm_attest(&mut self, _message_buf: &[u8]) -> Result<(), Error> {
+        let response = get_protocol::IgvmAttestResponse {
+            message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
+            ..get_protocol::IgvmAttestResponse::new_zeroed()
         };
         self.channel
             .try_send(response.as_bytes())

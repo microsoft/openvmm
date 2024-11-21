@@ -25,8 +25,8 @@ base64_serde_type!(Base64Url, base64::engine::general_purpose::URL_SAFE_NO_PAD);
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("the type of the attestation report is invalid")]
-    InvalidAttestationReportType,
+    #[error("the type of the attestation report {0} is invalid")]
+    InvalidAttestationReportType(u32),
     #[error(
         "the size of the attestation report {report_size} is invalid, expected {expected_size}"
     )]
@@ -87,7 +87,7 @@ impl IgvmAttestRequestHelper {
 
     /// Prepare the data necessary for creating the `AK_CERT` request.
     pub fn prepare_ak_cert_request(
-        tee_type: TeeType,
+        tee_type: Option<TeeType>,
         ak_pub_exponent: &[u8],
         ak_pub_modulus: &[u8],
         ek_pub_exponent: &[u8],
@@ -96,8 +96,9 @@ impl IgvmAttestRequestHelper {
         guest_input: &[u8],
     ) -> Self {
         let report_type = match tee_type {
-            TeeType::Snp => IgvmAttestReportType::SNP_VM_REPORT,
-            TeeType::Tdx => IgvmAttestReportType::TDX_VM_REPORT,
+            Some(TeeType::Snp) => IgvmAttestReportType::SNP_VM_REPORT,
+            Some(TeeType::Tdx) => IgvmAttestReportType::TDX_VM_REPORT,
+            None => IgvmAttestReportType::TVM_REPORT,
         };
 
         let runtime_claims =
@@ -184,7 +185,8 @@ fn get_report_size(report_type: IgvmAttestReportType) -> Result<usize, Error> {
         IgvmAttestReportType::VBS_VM_REPORT => protocol::igvm_attest::get::VBS_VM_REPORT_SIZE,
         IgvmAttestReportType::SNP_VM_REPORT => protocol::igvm_attest::get::SNP_VM_REPORT_SIZE,
         IgvmAttestReportType::TDX_VM_REPORT => protocol::igvm_attest::get::TDX_VM_REPORT_SIZE,
-        _ => Err(Error::InvalidAttestationReportType)?,
+        IgvmAttestReportType::TVM_REPORT => protocol::igvm_attest::get::TVM_REPORT_SIZE,
+        ty => Err(Error::InvalidAttestationReportType(ty.0))?,
     };
 
     Ok(size)
