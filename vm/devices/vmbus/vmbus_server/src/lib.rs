@@ -43,6 +43,7 @@ use mesh::RecvError;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_event::Event;
+use parking_lot::Mutex;
 use ring::PAGE_SIZE;
 use std::collections::HashMap;
 use std::future::Future;
@@ -231,6 +232,8 @@ impl EventPort for ChannelEvent {
 pub struct SavedState {
     #[mesh(1)]
     server: channels::SavedState,
+    #[mesh(2)]
+    lost_synic_bug_fixed: Option<bool>,
 }
 
 const MESSAGE_CONNECTION_ID: u32 = 1;
@@ -837,6 +840,7 @@ impl ServerTask {
 
     fn handle_request(&mut self, request: VmbusRequest) {
         tracing::debug!(?request, "handle_request");
+        static IS_LOST_SYNIC_BUG_FIXED: Mutex<bool> = Mutex::new(false);
         match request {
             VmbusRequest::Reset(Rpc((), done)) => {
                 assert!(self.inner.reset_done.is_none());
@@ -870,13 +874,23 @@ impl ServerTask {
                         .merge(&self.server.with_notifier(&mut self.inner));
                 });
             }
-            VmbusRequest::Save(rpc) => rpc.handle_sync(|()| SavedState {
-                server: self.server.save(),
-            }),
+            VmbusRequest::Save(rpc) => {
+                // TODO: update to true once the save part fix in.
+                let lost_synic_bug_fixed = Some(false);
+                rpc.handle_sync(|()| SavedState {
+                    server: self.server.save(),
+                    lost_synic_bug_fixed,
+                })
+            }
             VmbusRequest::Restore(rpc) => {
+                *IS_LOST_SYNIC_BUG_FIXED.lock() = rpc.0.lost_synic_bug_fixed.unwrap_or(false);
                 rpc.handle_sync(|state| self.server.restore(state.server))
             }
             VmbusRequest::PostRestore(rpc) => {
+                if !*IS_LOST_SYNIC_BUG_FIXED.lock() {
+                    tracing::info!("lost synic bug fix is not in yet, call unstick_channels to mitigate the issue.");
+                    self.unstick_channels(false);
+                }
                 rpc.handle_sync(|()| self.server.with_notifier(&mut self.inner).post_restore())
             }
             VmbusRequest::Stop(rpc) => rpc.handle_sync(|()| {
