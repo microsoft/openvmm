@@ -331,7 +331,7 @@ impl VmInner {
                     }
                 },
                 Event::Request(None) => {
-                    break Ok(());
+                    break;
                 }
             }
         }
@@ -340,5 +340,7 @@ impl VmInner {
             drop(serial);
             writeln!(self.printer.out(), "COM{port} disconnected").ok();
         }
+
+        Ok(())
     }
 }
