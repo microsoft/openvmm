@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 pub enum OpenvmmHclFeature {
     Gdb,
     Tpm,
+    VirtKvm,
     LocalOnlyCustom(String),
 }
 
@@ -119,6 +120,7 @@ impl FlowNode for Node {
                         match f {
                             OpenvmmHclFeature::Gdb => "gdb",
                             OpenvmmHclFeature::Tpm => "tpm",
+                            OpenvmmHclFeature::VirtKvm => "virt_kvm",
                             OpenvmmHclFeature::LocalOnlyCustom(s) => s,
                         }
                         .into()

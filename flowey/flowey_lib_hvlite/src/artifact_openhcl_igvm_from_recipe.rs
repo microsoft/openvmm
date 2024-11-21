@@ -14,6 +14,7 @@ pub(crate) fn recipe_to_filename(flavor: &OpenhclIgvmRecipe) -> &str {
         OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => "openhcl-direct-dev",
         OpenhclIgvmRecipe::X64Cvm => "openhcl-cvm",
         OpenhclIgvmRecipe::X64CvmDevkern => "openhcl-cvm-dev",
+        OpenhclIgvmRecipe::X64Nested => "openhcl-nested",
         OpenhclIgvmRecipe::Aarch64 => "openhcl-aarch64",
         OpenhclIgvmRecipe::Aarch64Devkern => "openhcl-aarch64-dev",
         OpenhclIgvmRecipe::LocalOnlyCustom(_) => unreachable!(),

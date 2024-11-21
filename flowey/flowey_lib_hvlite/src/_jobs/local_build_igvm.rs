@@ -7,6 +7,7 @@ use flowey::node::prelude::*;
 
 use crate::build_openhcl_boot::OpenhclBootOutput;
 use crate::build_openhcl_igvm_from_recipe::IgvmManifestPath;
+use crate::build_openhcl_igvm_from_recipe::InitrdRootfsPath;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetails;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
@@ -115,6 +116,7 @@ impl SimpleFlowNode for Node {
                 with_uefi,
                 with_interactive,
                 with_sidecar_details,
+                initrd_rootfs,
             } = &mut recipe_details;
 
             if custom_kernel.is_some() {
@@ -149,11 +151,11 @@ impl SimpleFlowNode for Node {
                 custom_uefi: custom_uefi.map(|p| p.absolute()).transpose()?,
                 custom_kernel: custom_kernel.map(|p| p.absolute()).transpose()?,
                 custom_sidecar: custom_sidecar.map(|p| p.absolute()).transpose()?,
-                custom_extra_rootfs: custom_extra_rootfs
-                    .into_iter()
-                    .map(|p| p.absolute())
-                    .collect::<Result<_, _>>()?,
             });
+
+            for p in custom_extra_rootfs.iter() {
+                initrd_rootfs.push(InitrdRootfsPath::LocalOnlyCustom(p.absolute()?));
+            }
 
             if let Some(p) = override_manifest {
                 *igvm_manifest = IgvmManifestPath::LocalOnlyCustom(p.absolute()?);
@@ -309,6 +311,7 @@ pub fn non_production_build_igvm_tool_out_name(recipe: &OpenhclIgvmRecipe) -> &'
         OpenhclIgvmRecipe::X64CvmDevkern => "x64-cvm-devkern",
         OpenhclIgvmRecipe::Aarch64 => "aarch64",
         OpenhclIgvmRecipe::Aarch64Devkern => "aarch64-devkern",
+        OpenhclIgvmRecipe::X64Nested => "x64-nested",
         OpenhclIgvmRecipe::LocalOnlyCustom(_) => unreachable!(),
     }
 }

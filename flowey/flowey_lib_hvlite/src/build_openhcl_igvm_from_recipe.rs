@@ -55,10 +55,19 @@ pub enum IgvmManifestPath {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum InitrdRootfsPath {
+    /// Name of an in-tree file (located under `openhcl`)
+    InTree(String),
+    /// An absolute path to a custom manifest (for local use only)
+    LocalOnlyCustom(PathBuf),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OpenhclIgvmRecipeDetails {
     pub local_only: Option<OpenhclIgvmRecipeDetailsLocalOnly>,
 
     pub igvm_manifest: IgvmManifestPath,
+    pub initrd_rootfs: Vec<InitrdRootfsPath>,
     pub openhcl_kernel_package: OpenhclKernelPackage,
     pub openvmm_hcl_features: BTreeSet<OpenvmmHclFeature>,
     pub target: CommonTriple,
@@ -77,7 +86,6 @@ pub struct OpenhclIgvmRecipeDetailsLocalOnly {
     pub custom_uefi: Option<PathBuf>,
     pub custom_kernel: Option<PathBuf>,
     pub custom_sidecar: Option<PathBuf>,
-    pub custom_extra_rootfs: Vec<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -91,6 +99,7 @@ pub enum OpenhclIgvmRecipe {
     X64CvmDevkern,
     Aarch64,
     Aarch64Devkern,
+    X64Nested,
 }
 
 impl OpenhclIgvmRecipe {
@@ -107,6 +116,8 @@ impl OpenhclIgvmRecipe {
             m
         };
 
+        let base_initrd_rootfs = || vec![InitrdRootfsPath::InTree("rootfs.config".into())];
+
         let in_repo_template = |debug_manifest: &'static str, release_manifest: &'static str| {
             IgvmManifestPath::InTree(if matches!(profile, OpenvmmHclBuildProfile::Debug) {
                 debug_manifest.into()
@@ -122,6 +133,7 @@ impl OpenhclIgvmRecipe {
             Self::LocalOnlyCustom(details) => details.clone(),
             Self::X64 => OpenhclIgvmRecipeDetails {
                 local_only: None,
+                initrd_rootfs: base_initrd_rootfs(),
                 igvm_manifest: in_repo_template("openhcl-x64-dev.json", "openhcl-x64-release.json"),
                 openhcl_kernel_package: OpenhclKernelPackage::Main,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
@@ -133,6 +145,7 @@ impl OpenhclIgvmRecipe {
             },
             Self::X64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
+                initrd_rootfs: base_initrd_rootfs(),
                 igvm_manifest: in_repo_template("openhcl-x64-dev.json", "openhcl-x64-release.json"),
                 openhcl_kernel_package: OpenhclKernelPackage::Dev,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
@@ -144,6 +157,7 @@ impl OpenhclIgvmRecipe {
             },
             Self::X64CvmDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
+                initrd_rootfs: base_initrd_rootfs(),
                 igvm_manifest: in_repo_template(
                     "openhcl-x64-cvm-dev.json",
                     "openhcl-x64-cvm-release.json",
@@ -158,6 +172,7 @@ impl OpenhclIgvmRecipe {
             },
             Self::X64TestLinuxDirect => OpenhclIgvmRecipeDetails {
                 local_only: None,
+                initrd_rootfs: base_initrd_rootfs(),
                 igvm_manifest: in_repo_template(
                     "openhcl-x64-direct-dev.json",
                     "openhcl-x64-direct-release.json",
@@ -172,6 +187,7 @@ impl OpenhclIgvmRecipe {
             },
             Self::X64TestLinuxDirectDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
+                initrd_rootfs: base_initrd_rootfs(),
                 igvm_manifest: in_repo_template(
                     "openhcl-x64-direct-dev.json",
                     "openhcl-x64-direct-release.json",
@@ -186,6 +202,7 @@ impl OpenhclIgvmRecipe {
             },
             Self::X64Cvm => OpenhclIgvmRecipeDetails {
                 local_only: None,
+                initrd_rootfs: base_initrd_rootfs(),
                 igvm_manifest: in_repo_template(
                     "openhcl-x64-cvm-dev.json",
                     "openhcl-x64-cvm-release.json",
@@ -198,8 +215,32 @@ impl OpenhclIgvmRecipe {
                 with_interactive,
                 with_sidecar_details: false,
             },
+            Self::X64Nested => OpenhclIgvmRecipeDetails {
+                local_only: None,
+                initrd_rootfs: {
+                    let mut v = base_initrd_rootfs();
+                    v.push(InitrdRootfsPath::InTree("rootfs.kvm.config".to_owned()));
+                    v
+                },
+                igvm_manifest: in_repo_template(
+                    "openhcl-x64-nested.json",
+                    "openhcl-x64-nested.json",
+                ),
+                openhcl_kernel_package: OpenhclKernelPackage::Dev,
+                openvmm_hcl_features: {
+                    let mut features = base_openvmm_hcl_features();
+                    features.insert(OpenvmmHclFeature::VirtKvm);
+                    features
+                },
+                target: CommonTriple::X86_64_LINUX_MUSL,
+                vtl0_kernel_type: None,
+                with_uefi: true,
+                with_interactive,
+                with_sidecar_details: false,
+            },
             Self::Aarch64 => OpenhclIgvmRecipeDetails {
                 local_only: None,
+                initrd_rootfs: base_initrd_rootfs(),
                 igvm_manifest: in_repo_template(
                     "openhcl-aarch64-dev.json",
                     "openhcl-aarch64-release.json",
@@ -214,6 +255,7 @@ impl OpenhclIgvmRecipe {
             },
             Self::Aarch64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
+                initrd_rootfs: base_initrd_rootfs(),
                 igvm_manifest: in_repo_template(
                     "openhcl-aarch64-dev.json",
                     "openhcl-aarch64-release.json",
@@ -280,6 +322,7 @@ impl SimpleFlowNode for Node {
 
         let OpenhclIgvmRecipeDetails {
             local_only,
+            initrd_rootfs,
             igvm_manifest,
             openhcl_kernel_package,
             openvmm_hcl_features,
@@ -298,7 +341,6 @@ impl SimpleFlowNode for Node {
             custom_uefi,
             custom_kernel,
             custom_sidecar,
-            custom_extra_rootfs,
         } = local_only.unwrap_or(OpenhclIgvmRecipeDetailsLocalOnly {
             openvmm_hcl_no_strip: false,
             openhcl_initrd_extra_params: None,
@@ -307,7 +349,6 @@ impl SimpleFlowNode for Node {
             custom_uefi: None,
             custom_kernel: None,
             custom_sidecar: None,
-            custom_extra_rootfs: Vec::new(),
         });
 
         let target = custom_target.unwrap_or(target);
@@ -544,14 +585,16 @@ impl SimpleFlowNode for Node {
         openvmm_hcl_bin.write_into(ctx, built_openvmm_hcl, |x| x);
 
         let initrd = {
-            let rootfs_config = [openvmm_repo_path.map(ctx, |p| p.join("openhcl/rootfs.config"))]
+            let rootfs_config = initrd_rootfs
                 .into_iter()
-                .chain(
-                    custom_extra_rootfs
-                        .into_iter()
-                        .map(|p| ReadVar::from_static(p)),
-                )
-                .collect();
+                .map(|p| match p {
+                    InitrdRootfsPath::InTree(path) => {
+                        openvmm_repo_path.map(ctx, |p| p.join("openhcl").join(path))
+                    }
+                    InitrdRootfsPath::LocalOnlyCustom(p) => ReadVar::from_static(p),
+                })
+                .collect::<Vec<_>>();
+
             let openvmm_hcl_bin = openvmm_hcl_bin.map(ctx, |o| o.bin);
 
             ctx.reqv(|v| crate::build_openhcl_initrd::Request {

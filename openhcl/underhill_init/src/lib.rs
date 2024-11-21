@@ -344,7 +344,7 @@ fn init_logging() {
     }
 }
 
-fn load_modules(modules_path: &str) -> anyhow::Result<()> {
+fn parse_module_options() -> anyhow::Result<HashMap<String, String>> {
     // Get the kernel command line.
     let cmdline = fs_err::read_to_string("/proc/cmdline")?;
     let mut params = HashMap::new();
@@ -357,57 +357,89 @@ fn load_modules(modules_path: &str) -> anyhow::Result<()> {
             }
         }
     }
+    Ok(params)
+}
 
+fn load_modules(
+    all_params: &mut HashMap<String, String>,
+    modules_path: &str,
+) -> anyhow::Result<()> {
     // Load the modules.
     for module in WalkDir::new(modules_path).sort_by_file_name() {
         let module = module?;
         if !module.file_type().is_file() {
             continue;
         }
-
-        let module = module.path();
-        let module_name = module
-            .file_stem()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .replace('-', "_");
-
-        let params = params.get_mut(&module_name);
-
-        log::info!(
-            "loading kernel module {}: {}",
-            module.display(),
-            params.as_ref().map_or("", |s| s.as_str())
-        );
-        let file = fs_err::File::open(module).context("failed to open module")?;
-
-        let params = if let Some(params) = params {
-            // Null terminate
-            params.pop();
-            params.push('\0');
-            params.as_bytes()
-        } else {
-            b"\0"
-        };
-
-        // SAFETY: calling the syscall as documented. Of course, the module
-        // being loaded has full kernel privileges, but the contents of the file
-        // system are trusted.
-        let r =
-            unsafe { libc::syscall(libc::SYS_finit_module, file.as_raw_fd(), params.as_ptr(), 0) };
-        if r < 0 {
-            return Err(io::Error::last_os_error())
-                .with_context(|| format!("failed to load module {}", module.display()));
-        }
-
-        log::info!("load complete for {}", module.display());
+        load_module(all_params, module.path())?;
     }
 
     // Once the kernel modules are loaded into memory, the module files are not needed anymore.
     // By deleting them after, we can save some memory.
     fs_err::remove_dir_all(modules_path)?;
+    Ok(())
+}
 
+fn load_module(all_params: &mut HashMap<String, String>, module: &Path) -> anyhow::Result<()> {
+    let module_name = module
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .replace('-', "_");
+
+    let mut params = all_params.remove(&module_name);
+
+    log::info!(
+        "loading kernel module {}: {}",
+        module.display(),
+        params.as_ref().map_or("", |s| s.as_str())
+    );
+    let file = fs_err::File::open(module).context("failed to open module")?;
+
+    let params = if let Some(params) = &mut params {
+        // Null terminate
+        params.pop();
+        params.push('\0');
+        params.as_bytes()
+    } else {
+        b"\0"
+    };
+
+    // SAFETY: calling the syscall as documented. Of course, the module
+    // being loaded has full kernel privileges, but the contents of the file
+    // system are trusted.
+    let r = unsafe { libc::syscall(libc::SYS_finit_module, file.as_raw_fd(), params.as_ptr(), 0) };
+    if r < 0 {
+        return Err(io::Error::last_os_error())
+            .with_context(|| format!("failed to load module {}", module.display()));
+    }
+
+    log::info!("load complete for {}", module.display());
+
+    Ok(())
+}
+
+fn load_kvm(all_params: &mut HashMap<String, String>) -> anyhow::Result<()> {
+    load_module(all_params, "/lib/modules/kvm.ko".as_ref())?;
+    #[cfg(target_arch = "x86_64")]
+    {
+        let vendor_name = {
+            let result =
+                safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0, 0);
+            let vendor =
+                x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx);
+            if vendor.is_intel_compatible() {
+                Some("intel")
+            } else if vendor.is_amd_compatible() {
+                Some("amd")
+            } else {
+                None
+            }
+        };
+        if let Some(name) = vendor_name {
+            load_module(all_params, format!("/lib/modules/kvm-{name}.ko").as_ref())?;
+        }
+    }
     Ok(())
 }
 
@@ -567,9 +599,17 @@ fn do_main() -> anyhow::Result<()> {
         log::info!("registered vfio-pci as driver for nvme");
     }
 
-    // Start loading modules in parallel.
-    std::thread::spawn(|| {
-        if let Err(err) = load_modules("/lib/modules") {
+    let mut all_params = parse_module_options()?;
+
+    // If requested, load KVM, choosing the right module based on the
+    // environment.
+    if std::env::var_os("OPENHCL_KVM").is_some() {
+        load_kvm(&mut all_params).context("failed to load kvm modules")?;
+    }
+
+    // Start loading modules in parallel with the main process.
+    std::thread::spawn(move || {
+        if let Err(err) = load_modules(&mut all_params, "/lib/modules/auto") {
             panic!("failed to load modules: {:#}", err);
         }
     });

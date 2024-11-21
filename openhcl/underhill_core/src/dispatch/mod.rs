@@ -10,6 +10,7 @@ use self::vtl2_settings_worker::DeviceInterfaces;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::EmuplatServicing;
 use crate::nvme_manager::NvmeManager;
+use crate::partition::OpenhclPartition;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
 use crate::servicing::ServicingState;
@@ -53,9 +54,9 @@ use std::time::Duration;
 use tracing::instrument;
 use tracing::Instrument;
 use uevent::UeventListener;
+use underhill_mem::AccessGuestMemory;
 use underhill_threadpool::AffinitizedThreadpool;
 use virt::IsolationType;
-use virt_mshv_vtl::UhPartition;
 use virt_mshv_vtl::VtlCrash;
 use vm_resource::ResourceResolver;
 use vm_topology::memory::MemoryRangeWithNode;
@@ -105,7 +106,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
         shared_vis_pages_pool: &Option<SharedPool>,
-        partition: Arc<UhPartition>,
+        partition: Arc<dyn OpenhclPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
     ) -> anyhow::Result<RuntimeSavedState>;
@@ -127,7 +128,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
 pub(crate) struct LoadedVm {
     pub partition_unit: PartitionUnit,
     /// The various guest memory objects.
-    pub memory: underhill_mem::MemoryMappings,
+    pub memory: Box<dyn AccessGuestMemory>,
     pub firmware_type: FirmwareType,
     pub isolation: IsolationType,
     // contain task handles which must be kept live
@@ -143,7 +144,7 @@ pub(crate) struct LoadedVm {
     /// Memory map with IGVM types for each range.
     pub vtl0_memory_map: Vec<(MemoryRangeWithNode, MemoryMapEntryType)>,
 
-    pub partition: Arc<UhPartition>,
+    pub partition: Arc<dyn OpenhclPartition>,
     pub state_units: StateUnits,
     pub last_state_unit_stop: Option<ReferenceTime>,
     pub vmbus_server: Option<VmbusServerHandle>,

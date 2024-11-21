@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::partition::OpenhclPartition;
 #[cfg(guest_arch = "x86_64")]
 use firmware_pcat::PcatEvent;
 #[cfg(guest_arch = "x86_64")]
@@ -10,7 +11,6 @@ use firmware_uefi::platform::logger::UefiLogger;
 use guest_emulation_transport::api::EventLogId;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use std::sync::Weak;
-use virt_mshv_vtl::UhPartition;
 
 /// An Underhill specific logger used to log UEFI and PCAT events.
 #[derive(Debug)]
@@ -54,7 +54,7 @@ impl PcatLogger for UnderhillLogger {
 
 #[derive(Debug)]
 pub struct UnderhillVsmConfig {
-    pub partition: Weak<UhPartition>,
+    pub partition: Weak<dyn OpenhclPartition>,
 }
 
 impl firmware_uefi::platform::nvram::VsmConfig for UnderhillVsmConfig {
@@ -62,7 +62,7 @@ impl firmware_uefi::platform::nvram::VsmConfig for UnderhillVsmConfig {
         if let Some(partition) = self.partition.upgrade() {
             if let Err(err) = partition.revoke_guest_vsm() {
                 tracing::warn!(
-                    error = &err as &dyn std::error::Error,
+                    error = err.as_ref() as &dyn std::error::Error,
                     "failed to revoke guest vsm"
                 );
             }

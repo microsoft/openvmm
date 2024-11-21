@@ -6,12 +6,39 @@
 
 //! Underhill VM memory management.
 
+mod devmem;
 mod init;
 mod registrar;
 
+pub use devmem::DevMemMemory;
 pub use init::init;
 pub use init::Init;
 pub use init::MemoryMappings;
+
+use guestmem::GuestMemory;
+use inspect::Inspect;
+use std::sync::Arc;
+
+/// Trait implemented by the guest memory object to get access and manipulate
+/// various aspects of the memory.
+pub trait AccessGuestMemory: Send + Sync + Inspect {
+    /// Access to guest VTL0 memory.
+    fn vtl0(&self) -> &GuestMemory;
+    /// Optional access to guest VTL1 memory.
+    fn vtl1(&self) -> Option<&GuestMemory>;
+    /// Access to shared memory.
+    fn shared_memory(&self) -> Option<&GuestMemory>;
+    /// Access only to private VTL0 memory, i.e. VTL0 memory that untrusted
+    /// devices _cannot_ DMA to.
+    fn private_vtl0_memory(&self) -> Option<&GuestMemory>;
+    /// The memory protector for use with the partition.
+    fn isolated_memory_protector(
+        &self,
+    ) -> anyhow::Result<Option<Arc<dyn virt_mshv_vtl::ProtectIsolatedMemory>>>;
+
+    /// Map the memory into the specified partition.
+    fn map_partition(&mut self, partition: &dyn virt::PartitionMemoryMapper) -> anyhow::Result<()>;
+}
 
 mod mapping {
     // UNSAFETY: Implementing GuestMemoryAccess.

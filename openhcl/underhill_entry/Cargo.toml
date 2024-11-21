@@ -16,6 +16,9 @@ profiler = ["underhill_core/profiler"]
 # Enable vpci support.
 vpci = ["underhill_core/vpci"]
 
+# Enable KVM and nested virtualization support.
+virt_kvm = ["underhill_core/virt_kvm"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
 underhill_core.workspace = true
 underhill_init.workspace = true
