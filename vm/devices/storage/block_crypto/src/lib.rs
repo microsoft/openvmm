@@ -27,9 +27,9 @@ impl XtsAes256 {
 
     /// Creates a new XTS-AES-256 encryption/decryption context.
     pub fn new(key: &[u8; Self::KEY_LEN], data_unit_size: u32) -> Result<Self, Error> {
-        Ok(sys::xts_aes_256(key, data_unit_size)
+        sys::xts_aes_256(key, data_unit_size)
             .map(Self)
-            .map_err(Error)?)
+            .map_err(Error)
     }
 
     /// Returns a context for encrypting data.
