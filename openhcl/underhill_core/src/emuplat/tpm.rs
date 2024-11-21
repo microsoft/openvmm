@@ -14,7 +14,7 @@ pub enum TpmAttestationError {
     #[error("failed to get a hardware attestation report")]
     GetAttestationReport(#[source] tee_call::Error),
     #[error("failed to create the IgvmAttest AK_CERT request")]
-    CreateAttestAkCertRequest(#[source] underhill_attestation::IgvmAttestError),
+    CreateAkCertRequest(#[source] underhill_attestation::IgvmAttestError),
 }
 
 /// An implementation of [`GetAttestationReport`].
@@ -104,7 +104,7 @@ impl RequestAkCert for TpmRequestAkCertHelper {
 
         let request = ak_cert_request_helper
             .create_request(&attestation_report)
-            .map_err(TpmAttestationError::CreateAttestAkCertRequest)?;
+            .map_err(TpmAttestationError::CreateAkCertRequest)?;
 
         // The request will be exposed to the guest (via nv index) for isolated VMs.
         Ok(request)

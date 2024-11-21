@@ -812,7 +812,7 @@ impl Tpm {
             } else if let TpmAkCertType::Trusted(helper) = &self.ak_cert_type {
                 helper
             } else {
-                panic!("invalid ak_cert_type (`RequestAkCert` is None)")
+                panic!("ak_cert_type is None")
             };
 
         let fut = {

@@ -2373,7 +2373,7 @@ async fn new_underhill_vm(
         // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
         let (get_attestation_report, request_ak_cert) =
             if !matches!(attestation_type, AttestationType::VbsUnsupported) {
-                // Ak cert renewal depends on the ability to get an attestation report
+                // Ak cert request for isolated VMs depends on the ability to get an attestation report
                 let get_attestation_report = if !matches!(attestation_type, AttestationType::Host) {
                     Some(
                         GetTpmGetAttestationReportHelperHandle::new(attestation_type)
@@ -2383,7 +2383,7 @@ async fn new_underhill_vm(
                     None
                 };
 
-                // AK cert request depends on the availability of the shared memory.
+                // AK cert request depends on the availability of the shared memory
                 let request_ak_cert = shared_vis_pages_pool.as_ref().map(|_| {
                     GetTpmRequestAkCertHelperHandle::new(
                         attestation_type,
