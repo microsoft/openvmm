@@ -293,6 +293,13 @@ pub trait HardwareIsolatedBacking: Backing {
     fn clear_pending_interrupt(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8>;
     /// If an NMI is pending in the backing, clear it.
     fn clear_pending_nmi(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> bool;
+    /// Rewind the interrupt with the given vector on the synthetic LAPIC.
+    fn rewind_interrupt(
+        this: &mut UhProcessor<'_, Self>,
+        dev: &impl CpuIo,
+        vtl: GuestVtl,
+        vector: u8,
+    );
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]

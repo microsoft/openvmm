@@ -250,6 +250,24 @@ impl HardwareIsolatedBacking for SnpBacked {
             false
         }
     }
+
+    fn rewind_interrupt(
+        this: &mut UhProcessor<'_, Self>,
+        dev: &impl CpuIo,
+        vtl: GuestVtl,
+        vector: u8,
+    ) {
+        this.backing.cvm.lapics[vtl]
+            .lapic
+            .access(&mut SnpApicClient {
+                partition: this.partition,
+                vmsa: this.runner.vmsa_mut(vtl),
+                dev,
+                vmtime: &this.vmtime,
+                vtl,
+            })
+            .rewind_offloaded_interrupt(vector);
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.
@@ -1376,7 +1394,7 @@ impl UhProcessor<'_, SnpBacked> {
                 // Receipt of a virtual interrupt intercept indicates that a virtual interrupt is ready
                 // for injection but injection cannot complete due to the intercept. Rewind the pending
                 // virtual interrupt so it is reinjected as a fixed interrupt.
-                self.rewind_offloaded_interrupt(entered_from_vtl, false);
+                self.rewind_offloaded_interrupt(dev, entered_from_vtl, false);
                 unimplemented!("SevExitCode::VINTR");
             }
 
