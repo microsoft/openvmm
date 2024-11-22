@@ -418,7 +418,8 @@ impl BackingPrivate for SnpBacked {
             .lapic
             .scan(&mut this.vmtime, scan_irr);
 
-        if nmi {
+        this.backing.cvm.lapics[vtl].nmi_pending |= nmi;
+        if this.backing.cvm.lapics[vtl].nmi_pending {
             this.handle_nmi(vtl);
         }
 
@@ -804,6 +805,7 @@ impl UhProcessor<'_, SnpBacked> {
 
         self.backing.cvm.lapics[vtl].halted = false;
         self.backing.cvm.lapics[vtl].idle = false;
+        self.backing.cvm.lapics[vtl].nmi_pending = false;
     }
 
     fn handle_init(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
@@ -1349,8 +1351,7 @@ impl UhProcessor<'_, SnpBacked> {
                 // Receipt of a virtual interrupt intercept indicates that a virtual interrupt is ready
                 // for injection but injection cannot complete due to the intercept. Rewind the pending
                 // virtual interrupt so it is reinjected as a fixed interrupt.
-
-                // TODO SNP: Rewind the interrupt.
+                self.rewind_offloaded_interrupt(entered_from_vtl, false);
                 unimplemented!("SevExitCode::VINTR");
             }
 

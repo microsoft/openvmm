@@ -1344,8 +1344,20 @@ impl UhProcessor<'_, TdxBacked> {
                     vp_index = self.vp_index().index(),
                     "exit requires reinjecting interrupt"
                 );
+                assert!(!self.backing.interruption_information.valid());
                 self.backing.interruption_information = next_interruption;
-                self.backing.exception_error_code = exit_info.idt_vectoring_error_code();
+                match next_interruption.interruption_type() {
+                    INTERRUPT_TYPE_EXTERNAL => {
+                        self.rewind_offloaded_interrupt(GuestVtl::Vtl0, false);
+                    }
+                    INTERRUPT_TYPE_NMI => {
+                        self.rewind_offloaded_interrupt(GuestVtl::Vtl0, true);
+                    }
+                    INTERRUPT_TYPE_HARDWARE_EXCEPTION => {
+                        self.backing.exception_error_code = exit_info.idt_vectoring_error_code();
+                    }
+                    _ => unreachable!(),
+                }
                 self.backing.exit_stats.needs_interrupt_reinject.increment();
             } else {
                 self.backing.interruption_information = Default::default();
@@ -1367,6 +1379,7 @@ impl UhProcessor<'_, TdxBacked> {
             }
         }
 
+        let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
         let mut breakpoint_debug_exception = false;
         let stat = match exit_info.code().vmx_exit() {
             VmxExit::IO_INSTRUCTION => {
@@ -1688,12 +1701,15 @@ impl UhProcessor<'_, TdxBacked> {
 
                 &mut self.backing.exit_stats.ept_violation
             }
+            // Receipt of a virtual interrupt or TPR threshold intercept indicates
+            // that a virtual interrupt is ready for injection. Rewind the
+            // pending virtual interrupt so it is reinjected as a fixed interrupt.
             VmxExit::TPR_BELOW_THRESHOLD => {
-                // Loop around to reevaluate the APIC.
+                self.rewind_offloaded_interrupt(intercepted_vtl, false);
                 &mut self.backing.exit_stats.tpr_below_threshold
             }
             VmxExit::INTERRUPT_WINDOW => {
-                // Loop around to reevaluate the APIC.
+                self.rewind_offloaded_interrupt(intercepted_vtl, false);
                 &mut self.backing.exit_stats.interrupt_window
             }
             VmxExit::NMI_WINDOW => {

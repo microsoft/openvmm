@@ -657,6 +657,12 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     .access_state(vtl.into())
                     .set_registers(&registers)
                     .map_err(Self::reg_access_error_to_hv_err)?;
+
+                if let HvX64RegisterName::Cr8 | HvX64RegisterName::Rflags =
+                    HvX64RegisterName::from(reg.name)
+                {
+                    self.vp.rewind_offloaded_interrupt(vtl, false);
+                }
                 Ok(())
             }
             synic_reg @ (HvX64RegisterName::Sint0
@@ -709,8 +715,6 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 Err(HvError::InvalidParameter)
             }
         }
-
-        // TODO GUEST VSM: interrupt rewinding
         // TODO TDX GUEST VSM: update execution mode
     }
 }
@@ -903,8 +907,11 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
         B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
         self.vp.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl0;
 
-        // TODO CVM GUEST_VSM:
-        // - rewind interrupts
+        // It is possible that the current VTL is exiting with a virtual interrupt
+        // pending, which would cause preemption back into the same VTL.  Rewind
+        // any pending virtual interrupt so that preemption can be reevaluated
+        // correctly.
+        self.vp.rewind_offloaded_interrupt(GuestVtl::Vtl1, true);
 
         if !fast {
             let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
@@ -1194,6 +1201,26 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         }
 
         Ok(reprocessing_required)
+    }
+
+    /// Rewind an interrupt from the offloaded vAPIC into the synthetic APIC so
+    /// it can be queued for redelivery.
+    pub(crate) fn rewind_offloaded_interrupt(&mut self, vtl: GuestVtl, rewind_nmi: bool) {
+        let lapic = &mut self.backing.cvm_state_mut().lapics[vtl];
+        if !lapic.lapic.is_offloaded() {
+            return;
+        }
+
+        if let Some(vector) = self.backing.clear_pending_interrupt() {
+            lapic
+                .lapic
+                .access(&mut ())
+                .rewind_offloaded_interrupt(vector);
+        }
+
+        if rewind_nmi && self.backing.clear_pending_nmi() {
+            lapic.nmi_pending = true;
+        }
     }
 }
 

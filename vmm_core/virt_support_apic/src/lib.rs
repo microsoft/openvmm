@@ -1068,6 +1068,17 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
         }
     }
 
+    /// Pull offloaded APIC state and rewind the given vector.
+    pub fn rewind_offloaded_interrupt(&mut self, vector: u8) {
+        self.ensure_state_local();
+        let local_isr_top = self.apic.isr.pop();
+        assert_eq!(local_isr_top, Some(vector));
+        let (bank, mask) = bank_mask(vector);
+        self.apic.irr[bank] |= mask;
+        self.apic.auto_eoi[bank] &= !mask;
+        self.apic.recompute_next_irr();
+    }
+
     fn handle_ipi(&mut self, icr: Icr) {
         tracing::trace!(?icr, vp = self.apic.shared.vp_index.index(), "ipi");
 
