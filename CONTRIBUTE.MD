@@ -10,6 +10,6 @@ Following our [coding conventions](.\guide\src\dev_guide\contrib\code.md) and wr
 
 We strongly suggest asking for feedback before starting to work on a new feature, functionality, etc. so that we can provide feedback and discuss how we can collaborate on this and support contributors. 
 
-To engage with project maintainers, contributors can reach out on Zulip (link coming soon) and then start drafting a [GitHub issue](https://github.com/microsoft/openvmm/issues/new?template=Blank+issue) after getting some preliminary feedback on Zulip, or they can open a GitHub issue to get preliminary feedback on GitHub and then reach out to us on Zulip to get some more synchronous support. 
+To engage with project maintainers, contributors can reach out on [Zulip](https://openvmm.zulipchat.com/) and then start drafting a [GitHub issue](https://github.com/microsoft/openvmm/issues/new?template=Blank+issue) after getting some preliminary feedback on Zulip, or they can open a GitHub issue to get preliminary feedback on GitHub and then reach out to us on Zulip to get some more synchronous support. 
 
 We normally use Zulip for more informal conversations and GitHub Issues for more formal, auditable, public discussion and progress tracking. We encourage contributors to use both in either order based on preference.
