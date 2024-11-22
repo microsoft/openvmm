@@ -877,13 +877,10 @@ impl ServerTask {
                         .merge(&self.server.with_notifier(&mut self.inner));
                 });
             }
-            VmbusRequest::Save(rpc) => {
-                let lost_synic_bug_fixed = true;
-                rpc.handle_sync(|()| SavedState {
-                    server: self.server.save(),
-                    lost_synic_bug_fixed,
-                })
-            }
+            VmbusRequest::Save(rpc) => rpc.handle_sync(|()| SavedState {
+                server: self.server.save(),
+                lost_synic_bug_fixed: true,
+            }),
             VmbusRequest::Restore(rpc) => rpc.handle_sync(|state| {
                 self.unstick_on_start = !state.lost_synic_bug_fixed;
                 self.server.restore(state.server)
