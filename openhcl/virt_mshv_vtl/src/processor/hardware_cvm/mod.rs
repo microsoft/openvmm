@@ -1268,7 +1268,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
         let tlb_locked = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
         match (tlb_locked, config.tlb_locked()) {
-            (true, false) => self.unlock_tlb_lock(requesting_vtl),
+            (true, false) => self.unlock_tlb_lock_target(requesting_vtl, target_vtl),
             (false, true) => self.set_tlb_lock(requesting_vtl, target_vtl),
             _ => (), // Nothing to do
         };
