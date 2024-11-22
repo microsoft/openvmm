@@ -878,8 +878,7 @@ impl ServerTask {
                 });
             }
             VmbusRequest::Save(rpc) => {
-                // TODO: update to true once the save part fix in.
-                let lost_synic_bug_fixed = false;
+                let lost_synic_bug_fixed = true;
                 rpc.handle_sync(|()| SavedState {
                     server: self.server.save(),
                     lost_synic_bug_fixed,
