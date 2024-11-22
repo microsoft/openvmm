@@ -13,6 +13,8 @@ You can use the Windows 11 2024 Update (AKA version 24H2), the third and new maj
 As of October 1, 2024, the Windows 11 2024 Update is available. Microsoft is taking a phased approach with its rollout. If the update is available for your device, it will [download and install automatically](https://learn.microsoft.com/en-us/windows/release-health/status-windows-11-24h2). 
 
 Otherwise, you can get it via [Windows Insider](https://www.microsoft.com/en-us/windowsinsider) by [registering](https://www.microsoft.com/en-us/windowsinsider/register) with your Microsoft account and following these [instructions](https://www.microsoft.com/en-us/windowsinsider/for-business-getting-started#flight) (you can choose the “Release Preview Channel”). You may have to click the Check for updates button to download the latest Insider Preview build twice, and this update may take over an hour. Finally go to Settings > About to check you are on Windows 11, version 24H2 (Build 26100.1586). 
+
+
 ![alt text](./_images/exampleWindows.png)
 
 ### Windows Server
