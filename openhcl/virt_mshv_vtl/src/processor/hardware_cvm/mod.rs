@@ -1211,14 +1211,14 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             return;
         }
 
-        if let Some(vector) = self.backing.clear_pending_interrupt() {
+        if let Some(vector) = B::clear_pending_interrupt(self, vtl) {
             lapic
                 .lapic
                 .access(&mut ())
                 .rewind_offloaded_interrupt(vector);
         }
 
-        if rewind_nmi && self.backing.clear_pending_nmi() {
+        if rewind_nmi && B::clear_pending_nmi(self, vtl) {
             lapic.nmi_pending = true;
         }
     }

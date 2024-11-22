@@ -289,6 +289,10 @@ pub trait HardwareIsolatedBacking: Backing {
     ) -> TranslationRegisters;
     /// Gets the pat register
     fn pat(&self, this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
+    /// If an interrupt is pending in the backing, clear it and return the vector.
+    fn clear_pending_interrupt(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8>;
+    /// If an NMI is pending in the backing, clear it.
+    fn clear_pending_nmi(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> bool;
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]

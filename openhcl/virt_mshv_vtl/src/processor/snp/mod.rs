@@ -225,6 +225,31 @@ impl HardwareIsolatedBacking for SnpBacked {
     fn pat(&self, this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
         this.runner.vmsa(vtl).pat()
     }
+
+    fn clear_pending_interrupt(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8> {
+        let mut vmsa = this.runner.vmsa_mut(vtl);
+        if vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_EXT
+            && vmsa.event_inject().valid()
+        {
+            let vector = vmsa.event_inject().vector();
+            vmsa.set_event_inject(Default::default());
+            Some(vector)
+        } else {
+            None
+        }
+    }
+
+    fn clear_pending_nmi(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> bool {
+        let mut vmsa = this.runner.vmsa_mut(vtl);
+        if vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
+            && vmsa.event_inject().valid()
+        {
+            vmsa.set_event_inject(Default::default());
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.

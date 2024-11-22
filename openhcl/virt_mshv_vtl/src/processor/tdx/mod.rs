@@ -507,6 +507,29 @@ impl HardwareIsolatedBacking for TdxBacked {
     fn pat(&self, this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
         this.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_PAT)
     }
+
+    fn clear_pending_interrupt(this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl) -> Option<u8> {
+        if this.backing.interruption_information.interruption_type() == INTERRUPT_TYPE_EXTERNAL
+            && this.backing.interruption_information.valid()
+        {
+            let vector = this.backing.interruption_information.vector();
+            this.backing.interruption_information = Default::default();
+            Some(vector)
+        } else {
+            None
+        }
+    }
+
+    fn clear_pending_nmi(this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl) -> bool {
+        if this.backing.interruption_information.interruption_type() == INTERRUPT_TYPE_NMI
+            && this.backing.interruption_information.valid()
+        {
+            this.backing.interruption_information = Default::default();
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
