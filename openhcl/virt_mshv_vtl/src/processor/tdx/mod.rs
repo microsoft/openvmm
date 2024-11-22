@@ -507,6 +507,46 @@ impl HardwareIsolatedBacking for TdxBacked {
     fn pat(&self, this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
         this.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_PAT)
     }
+
+    fn clear_pending_interrupt(this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl) -> Option<u8> {
+        if this.backing.interruption_information.interruption_type() == INTERRUPT_TYPE_EXTERNAL
+            && this.backing.interruption_information.valid()
+        {
+            let vector = this.backing.interruption_information.vector();
+            this.backing.interruption_information = Default::default();
+            Some(vector)
+        } else {
+            None
+        }
+    }
+
+    fn clear_pending_nmi(this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl) -> bool {
+        if this.backing.interruption_information.interruption_type() == INTERRUPT_TYPE_NMI
+            && this.backing.interruption_information.valid()
+        {
+            this.backing.interruption_information = Default::default();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn rewind_interrupt(
+        this: &mut UhProcessor<'_, Self>,
+        dev: &impl CpuIo,
+        vtl: GuestVtl,
+        vector: u8,
+    ) {
+        this.backing.cvm.lapics[vtl]
+            .lapic
+            .access(&mut TdxApicClient {
+                partition: this.partition,
+                dev,
+                vmtime: &this.vmtime,
+                apic_page: zerocopy::transmute_mut!(this.runner.tdx_apic_page_mut()),
+            })
+            .rewind_offloaded_interrupt(vector);
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
@@ -1344,8 +1384,20 @@ impl UhProcessor<'_, TdxBacked> {
                     vp_index = self.vp_index().index(),
                     "exit requires reinjecting interrupt"
                 );
+                assert!(!self.backing.interruption_information.valid());
                 self.backing.interruption_information = next_interruption;
-                self.backing.exception_error_code = exit_info.idt_vectoring_error_code();
+                match next_interruption.interruption_type() {
+                    INTERRUPT_TYPE_EXTERNAL => {
+                        self.rewind_offloaded_interrupt(dev, GuestVtl::Vtl0, false);
+                    }
+                    INTERRUPT_TYPE_NMI => {
+                        self.rewind_offloaded_interrupt(dev, GuestVtl::Vtl0, true);
+                    }
+                    INTERRUPT_TYPE_HARDWARE_EXCEPTION => {
+                        self.backing.exception_error_code = exit_info.idt_vectoring_error_code();
+                    }
+                    _ => unreachable!(),
+                }
                 self.backing.exit_stats.needs_interrupt_reinject.increment();
             } else {
                 self.backing.interruption_information = Default::default();
@@ -1367,6 +1419,7 @@ impl UhProcessor<'_, TdxBacked> {
             }
         }
 
+        let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
         let mut breakpoint_debug_exception = false;
         let stat = match exit_info.code().vmx_exit() {
             VmxExit::IO_INSTRUCTION => {
@@ -1688,12 +1741,15 @@ impl UhProcessor<'_, TdxBacked> {
 
                 &mut self.backing.exit_stats.ept_violation
             }
+            // Receipt of a virtual interrupt or TPR threshold intercept indicates
+            // that a virtual interrupt is ready for injection. Rewind the
+            // pending virtual interrupt so it is reinjected as a fixed interrupt.
             VmxExit::TPR_BELOW_THRESHOLD => {
-                // Loop around to reevaluate the APIC.
+                self.rewind_offloaded_interrupt(dev, intercepted_vtl, false);
                 &mut self.backing.exit_stats.tpr_below_threshold
             }
             VmxExit::INTERRUPT_WINDOW => {
-                // Loop around to reevaluate the APIC.
+                self.rewind_offloaded_interrupt(dev, intercepted_vtl, false);
                 &mut self.backing.exit_stats.interrupt_window
             }
             VmxExit::NMI_WINDOW => {

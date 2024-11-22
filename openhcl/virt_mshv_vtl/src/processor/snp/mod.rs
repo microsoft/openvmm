@@ -225,6 +225,49 @@ impl HardwareIsolatedBacking for SnpBacked {
     fn pat(&self, this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
         this.runner.vmsa(vtl).pat()
     }
+
+    fn clear_pending_interrupt(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8> {
+        let mut vmsa = this.runner.vmsa_mut(vtl);
+        if vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_EXT
+            && vmsa.event_inject().valid()
+        {
+            let vector = vmsa.event_inject().vector();
+            vmsa.set_event_inject(Default::default());
+            Some(vector)
+        } else {
+            None
+        }
+    }
+
+    fn clear_pending_nmi(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> bool {
+        let mut vmsa = this.runner.vmsa_mut(vtl);
+        if vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
+            && vmsa.event_inject().valid()
+        {
+            vmsa.set_event_inject(Default::default());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn rewind_interrupt(
+        this: &mut UhProcessor<'_, Self>,
+        dev: &impl CpuIo,
+        vtl: GuestVtl,
+        vector: u8,
+    ) {
+        this.backing.cvm.lapics[vtl]
+            .lapic
+            .access(&mut SnpApicClient {
+                partition: this.partition,
+                vmsa: this.runner.vmsa_mut(vtl),
+                dev,
+                vmtime: &this.vmtime,
+                vtl,
+            })
+            .rewind_offloaded_interrupt(vector);
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.
@@ -418,7 +461,8 @@ impl BackingPrivate for SnpBacked {
             .lapic
             .scan(&mut this.vmtime, scan_irr);
 
-        if nmi {
+        this.backing.cvm.lapics[vtl].nmi_pending |= nmi;
+        if this.backing.cvm.lapics[vtl].nmi_pending {
             this.handle_nmi(vtl);
         }
 
@@ -804,6 +848,7 @@ impl UhProcessor<'_, SnpBacked> {
 
         self.backing.cvm.lapics[vtl].halted = false;
         self.backing.cvm.lapics[vtl].idle = false;
+        self.backing.cvm.lapics[vtl].nmi_pending = false;
     }
 
     fn handle_init(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
@@ -1349,8 +1394,7 @@ impl UhProcessor<'_, SnpBacked> {
                 // Receipt of a virtual interrupt intercept indicates that a virtual interrupt is ready
                 // for injection but injection cannot complete due to the intercept. Rewind the pending
                 // virtual interrupt so it is reinjected as a fixed interrupt.
-
-                // TODO SNP: Rewind the interrupt.
+                self.rewind_offloaded_interrupt(dev, entered_from_vtl, false);
                 unimplemented!("SevExitCode::VINTR");
             }
 
