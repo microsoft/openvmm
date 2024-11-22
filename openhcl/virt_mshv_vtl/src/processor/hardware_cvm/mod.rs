@@ -661,7 +661,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 if let HvX64RegisterName::Cr8 | HvX64RegisterName::Rflags =
                     HvX64RegisterName::from(reg.name)
                 {
-                    self.vp.rewind_interrupt(self.bus, vtl, false);
+                    self.vp.rewind_offloaded_interrupt(self.bus, vtl, false);
                 }
                 Ok(())
             }
@@ -915,7 +915,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn
         // pending, which would cause preemption back into the same VTL.  Rewind
         // any pending virtual interrupt so that preemption can be reevaluated
         // correctly.
-        self.vp.rewind_interrupt(self.bus, GuestVtl::Vtl1, true);
+        self.vp
+            .rewind_offloaded_interrupt(self.bus, GuestVtl::Vtl1, true);
 
         if !fast {
             let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
@@ -1209,7 +1210,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
     /// Rewind an interrupt from the offloaded vAPIC into the synthetic APIC so
     /// it can be queued for redelivery.
-    pub(crate) fn rewind_interrupt(&mut self, dev: &impl CpuIo, vtl: GuestVtl, rewind_nmi: bool) {
+    pub(crate) fn rewind_offloaded_interrupt(
+        &mut self,
+        dev: &impl CpuIo,
+        vtl: GuestVtl,
+        rewind_nmi: bool,
+    ) {
         if !self.backing.cvm_state_mut().lapics[vtl]
             .lapic
             .is_offloaded()

@@ -1388,10 +1388,10 @@ impl UhProcessor<'_, TdxBacked> {
                 self.backing.interruption_information = next_interruption;
                 match next_interruption.interruption_type() {
                     INTERRUPT_TYPE_EXTERNAL => {
-                        self.rewind_interrupt(dev, GuestVtl::Vtl0, false);
+                        self.rewind_offloaded_interrupt(dev, GuestVtl::Vtl0, false);
                     }
                     INTERRUPT_TYPE_NMI => {
-                        self.rewind_interrupt(dev, GuestVtl::Vtl0, true);
+                        self.rewind_offloaded_interrupt(dev, GuestVtl::Vtl0, true);
                     }
                     INTERRUPT_TYPE_HARDWARE_EXCEPTION => {
                         self.backing.exception_error_code = exit_info.idt_vectoring_error_code();
@@ -1745,11 +1745,11 @@ impl UhProcessor<'_, TdxBacked> {
             // that a virtual interrupt is ready for injection. Rewind the
             // pending virtual interrupt so it is reinjected as a fixed interrupt.
             VmxExit::TPR_BELOW_THRESHOLD => {
-                self.rewind_interrupt(dev, intercepted_vtl, false);
+                self.rewind_offloaded_interrupt(dev, intercepted_vtl, false);
                 &mut self.backing.exit_stats.tpr_below_threshold
             }
             VmxExit::INTERRUPT_WINDOW => {
-                self.rewind_interrupt(dev, intercepted_vtl, false);
+                self.rewind_offloaded_interrupt(dev, intercepted_vtl, false);
                 &mut self.backing.exit_stats.interrupt_window
             }
             VmxExit::NMI_WINDOW => {
