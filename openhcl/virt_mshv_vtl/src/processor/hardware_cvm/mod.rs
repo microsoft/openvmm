@@ -319,7 +319,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             )
             .into()),
             HvX64RegisterName::VsmVpSecureConfigVtl0 => {
-                Ok(u64::from(self.vp.get_vsm_vp_secure_config_vtl0(vtl)?).into())
+                Ok(u64::from(self.vp.get_vsm_vp_secure_config_vtl(vtl, GuestVtl::Vtl0)?).into())
             }
             HvX64RegisterName::VpAssistPage => Ok(self.vp.backing.cvm_state_mut().hv[vtl]
                 .vp_assist_page()
@@ -551,8 +551,9 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 HvRegisterVsmPartitionConfig::from(reg.value.as_u64()),
                 vtl,
             ),
-            HvX64RegisterName::VsmVpSecureConfigVtl0 => self.vp.set_vsm_vp_secure_config_vtl0(
+            HvX64RegisterName::VsmVpSecureConfigVtl0 => self.vp.set_vsm_vp_secure_config_vtl(
                 vtl,
+                GuestVtl::Vtl0,
                 HvRegisterVsmVpSecureVtlConfig::from(reg.value.as_u64()),
             ),
             HvX64RegisterName::VpAssistPage => self.vp.backing.cvm_state_mut().hv[vtl]
@@ -1216,19 +1217,15 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         Ok(reprocessing_required)
     }
 
-    fn get_vsm_vp_secure_config_vtl0(
+    fn get_vsm_vp_secure_config_vtl(
         &mut self,
         requesting_vtl: GuestVtl,
+        target_vtl: GuestVtl,
     ) -> Result<HvRegisterVsmVpSecureVtlConfig, HvError> {
-        if requesting_vtl <= GuestVtl::Vtl0 {
+        if requesting_vtl <= target_vtl {
             return Err(HvError::AccessDenied);
         }
 
-        if requesting_vtl != GuestVtl::Vtl1 {
-            return Err(HvError::InvalidParameter);
-        }
-
-        let target_vtl = GuestVtl::Vtl0;
         let requesting_vtl = requesting_vtl.into();
 
         let guest_vsm_lock = self.partition.guest_vsm.read();
@@ -1236,31 +1233,27 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             .get_hardware_cvm()
             .ok_or(HvError::InvalidVtlState)?;
 
-        let tlb_locked = self.is_tlb_locked(requesting_vtl, target_vtl);
+        let tlb_locked = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
 
         Ok(HvRegisterVsmVpSecureVtlConfig::new()
             .with_mbec_enabled(guest_vsm.mbec_enabled)
             .with_tlb_locked(tlb_locked))
     }
 
-    fn set_vsm_vp_secure_config_vtl0(
+    fn set_vsm_vp_secure_config_vtl(
         &mut self,
         requesting_vtl: GuestVtl,
+        target_vtl: GuestVtl,
         config: HvRegisterVsmVpSecureVtlConfig,
     ) -> Result<(), HvError> {
-        if requesting_vtl <= GuestVtl::Vtl0 {
+        if requesting_vtl <= target_vtl {
             return Err(HvError::AccessDenied);
-        }
-
-        if requesting_vtl != GuestVtl::Vtl1 {
-            return Err(HvError::InvalidParameter);
         }
 
         if config.supervisor_shadow_stack_enabled() || config.hardware_hvpt_enabled() {
             return Err(HvError::InvalidRegisterValue);
         }
 
-        let target_vtl = GuestVtl::Vtl0;
         let requesting_vtl = requesting_vtl.into();
 
         let guest_vsm_lock = self.partition.guest_vsm.read();
@@ -1273,7 +1266,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             return Err(HvError::InvalidRegisterValue);
         }
 
-        let tlb_locked = self.is_tlb_locked(requesting_vtl, target_vtl);
+        let tlb_locked = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
         match (tlb_locked, config.tlb_locked()) {
             (true, false) => self.unlock_tlb_lock(requesting_vtl),
             (false, true) => self.set_tlb_lock(requesting_vtl, target_vtl),

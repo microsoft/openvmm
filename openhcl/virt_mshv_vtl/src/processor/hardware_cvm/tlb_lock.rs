@@ -179,9 +179,4 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
 
         false
     }
-
-    /// Returns whether the requesting VTL has locked the TLB of the target VTL.
-    pub fn is_tlb_locked(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
-        self.vtls_tlb_locked.get(requesting_vtl, target_vtl)
-    }
 }
