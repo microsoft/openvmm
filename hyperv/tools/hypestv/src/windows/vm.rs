@@ -4,6 +4,7 @@
 //! VM command handling.
 
 use super::hyperv::hvc_output;
+use super::hyperv::run_hcsdiag;
 use super::hyperv::run_hvc;
 use super::rustyline_printer::Printer;
 use super::InspectTarget;
@@ -111,8 +112,12 @@ impl Vm {
                     })
                 }
             }
-            VmCommand::Kill => self.delay(move |inner| {
-                run_hvc(|cmd| cmd.arg("kill").arg(&inner.name))?;
+            VmCommand::Kill { force } => self.delay(move |inner| {
+                if force {
+                    run_hcsdiag(|cmd| cmd.arg("kill").arg(inner.id.to_string()))?;
+                } else {
+                    run_hvc(|cmd| cmd.arg("kill").arg(&inner.name))?;
+                }
                 writeln!(inner.printer.out(), "VM killed")?;
                 Ok(())
             }),

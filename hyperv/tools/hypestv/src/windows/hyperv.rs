@@ -5,6 +5,19 @@
 
 use anyhow::Context as _;
 
+/// Runs hcsdiag with the given arguments.
+pub fn run_hcsdiag(
+    f: impl FnOnce(&mut std::process::Command) -> &mut std::process::Command,
+) -> anyhow::Result<()> {
+    let mut cmd = std::process::Command::new("hcsdiag.exe");
+    f(&mut cmd);
+    let status = cmd.status().context("failed to launch hcsdiag")?;
+    if !status.success() {
+        anyhow::bail!("hcsdiag failed with exit code: {}", status);
+    }
+    Ok(())
+}
+
 /// Runs hvc with the given arguments.
 pub fn run_hvc(
     f: impl FnOnce(&mut std::process::Command) -> &mut std::process::Command,

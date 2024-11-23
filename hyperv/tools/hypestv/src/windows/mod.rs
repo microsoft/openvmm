@@ -29,6 +29,7 @@ use vm::Vm;
     disable_help_flag = true,
     disable_version_flag = true,
     no_binary_name = true,
+    max_term_width = 100,
     help_template("{subcommands}")
 )]
 pub(crate) enum InteractiveCommand {
@@ -62,7 +63,15 @@ pub(crate) enum VmCommand {
     },
 
     /// Power off the VM.
-    Kill,
+    Kill {
+        /// Force powering off the VM via the HCS API.
+        ///
+        /// Without this flag, this command uses the Hyper-V WMI interface.
+        /// This may fail if the VM is in a transition state that prevents
+        /// powering off for whatever reason (usually due to Hyper-V bugs).
+        #[clap(short, long)]
+        force: bool,
+    },
 
     /// Reset the VM.
     Reset,
