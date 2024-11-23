@@ -143,6 +143,7 @@ impl SimpleFlowNode for Node {
                         .map(|p| p.absolute())
                         .collect::<Result<_, _>>()?,
                     custom_kernel_modules,
+                    with_perf_tools,
                 }),
                 custom_openvmm_hcl: custom_openvmm_hcl.map(|p| p.absolute()).transpose()?,
                 custom_openhcl_boot: custom_openhcl_boot.map(|p| p.absolute()).transpose()?,

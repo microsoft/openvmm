@@ -23,6 +23,8 @@ pub struct OpenhclInitrdExtraParams {
     /// Path to custom kernel modules. If not provided, uses modules under the
     /// kernel package path.
     pub custom_kernel_modules: Option<PathBuf>,
+    /// Include the `perf` and `trace` tools
+    pub with_perf_tools: bool,
 }
 
 flowey_request! {
@@ -84,6 +86,8 @@ impl FlowNode for Node {
                 extra_initrd_layers,
                 extra_initrd_directories,
                 custom_kernel_modules,
+                with_perf_tools,
+
             } = extra_params.unwrap_or_default();
 
             let openvmm_deps_arch = match arch {
@@ -138,6 +142,10 @@ impl FlowNode for Node {
                         } else {
                             // just a minimal shell
                             v.push("--min-interactive".to_string());
+                        }
+
+                        if with_perf_tools {
+                            v.push("--perf".to_string());
                         }
 
                         for dir in extra_initrd_layers {
