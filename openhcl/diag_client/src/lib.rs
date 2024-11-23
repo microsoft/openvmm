@@ -39,7 +39,7 @@ pub mod hyperv {
     use guid::Guid;
     use pal_async::driver::Driver;
     use pal_async::socket::PolledSocket;
-    use pal_async::windows::pipe::NamedPipeServer;
+    use pal_async::timer::PolledTimer;
     use std::fs::File;
     use std::io::Write;
     use std::process::Command;
@@ -113,8 +113,12 @@ pub mod hyperv {
 
     /// Opens a serial port on a Hyper-V VM.
     ///
-    /// If the VM is not running, it will act as a server for the pipe. Hyper-V
-    /// will connect to the server once the VM starts running.
+    /// If the VM is not running, it will periodically try to connect to the
+    /// pipe until the VM starts running. In theory, we could instead create a
+    /// named pipe server, which Hyper-V would connect to when the VM starts.
+    /// However, in this mode, once the named pipe is disconnected, Hyper-V
+    /// stops trying to reconnect until the VM is powered off and powered on
+    /// again, so don't do that.
     pub async fn open_serial_port(
         driver: &(impl Driver + ?Sized),
         vm: &str,
@@ -146,15 +150,19 @@ pub mod hyperv {
             anyhow::bail!("Requested VM COM port is not configured");
         }
 
-        let pipe = match fs_err::OpenOptions::new().read(true).write(true).open(path) {
-            Ok(pipe) => pipe.into(),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                let server =
-                    NamedPipeServer::create(path).context("failed to create pipe server")?;
-
-                server.accept(driver)?.await?
+        let mut timer = None;
+        let pipe = loop {
+            match fs_err::OpenOptions::new().read(true).write(true).open(path) {
+                Ok(pipe) => break pipe.into(),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    // The VM is not running. Wait a bit and try again.
+                    timer
+                        .get_or_insert_with(|| PolledTimer::new(driver))
+                        .sleep(Duration::from_millis(100))
+                        .await;
+                }
+                Err(err) => Err(err)?,
             }
-            Err(err) => Err(err)?,
         };
 
         Ok(pipe)
