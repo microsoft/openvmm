@@ -8,10 +8,22 @@ publish = false
 edition = "2021"
 
 [dependencies]
+disk_ramdisk.workspace = true
 nvme_driver.workspace = true
 xtask_fuzz.workspace = true
+user_driver.workspace = true
+scsi_buffers.workspace = true
+pci_core.workspace = true
+vmcore.workspace = true
+pal_async.workspace = true
+chipset_device.workspace = true
+guid.workspace = true
+nvme.workspace = true
+nvme_spec.workspace = true
 
 arbitrary = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 libfuzzer-sys.workspace = true
