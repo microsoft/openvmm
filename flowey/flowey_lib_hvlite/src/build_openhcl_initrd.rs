@@ -87,7 +87,6 @@ impl FlowNode for Node {
                 extra_initrd_directories,
                 custom_kernel_modules,
                 with_perf_tools,
-
             } = extra_params.unwrap_or_default();
 
             let openvmm_deps_arch = match arch {

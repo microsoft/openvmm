@@ -118,12 +118,10 @@ def process(temp_dir: str, underhill_path: str, kernel_path: str,
         temp_file_name = os.path.join(temp_dir, "perf_tools.cpio.gz")
         mode = '0755'
         perf_tool_bin_path = os.path.join(kernel_path, "build", "native", "bin", os.environ["OPENHCL_KERNEL_ARCH"], "tools", "perf", "bin")
-        create_cpio_from_file(os.path.join(perf_tool_bin_path, "perf"), "/usr/bin/perf", mode, temp_file_name, 'gzip')
-        append_file(underhill_cpio_gz_file_name, temp_file_name)
-        os.unlink(temp_file_name)
-        create_cpio_from_file(os.path.join(perf_tool_bin_path, "trace"), "/usr/bin/trace", mode, temp_file_name, 'gzip')
-        append_file(underhill_cpio_gz_file_name, temp_file_name)
-        os.unlink(temp_file_name)
+        for f in ["perf", "trace"]:
+            create_cpio_from_file(os.path.join(perf_tool_bin_path, f), "/usr/bin/" + f, mode, temp_file_name, 'gzip')
+            append_file(underhill_cpio_gz_file_name, temp_file_name)
+            os.unlink(temp_file_name)
 
     for layer in additional_layers:
         append_file(underhill_cpio_gz_file_name, layer)
