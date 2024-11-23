@@ -4,7 +4,10 @@
 //! Implementation of an admin or IO queue pair.
 
 use super::spec;
+use crate::driver::save_restore::Error;
+use crate::driver::save_restore::PendingCommandSavedState;
 use crate::driver::save_restore::PendingCommandsSavedState;
+use crate::driver::save_restore::QueueHandlerSavedState;
 use crate::driver::save_restore::QueuePairSavedState;
 use crate::page_allocator::PageAllocator;
 use crate::page_allocator::ScopedPages;
@@ -114,30 +117,41 @@ impl PendingCommands {
 
     /// Save pending commands into a buffer.
     pub fn save(&self) -> PendingCommandsSavedState {
-        let mut commands = Vec::new();
-        // Convert Slab into Vec.
-        for cmd in &self.commands {
-            commands.push(cmd.1.command);
-        }
+        let commands: Vec<PendingCommandSavedState> = self
+            .commands
+            .iter()
+            .map(|(_index, cmd)| PendingCommandSavedState {
+                command: cmd.command,
+            })
+            .collect();
         PendingCommandsSavedState {
             commands,
             next_cid_high_bits: self.next_cid_high_bits.0,
+            // TODO: Not used today, added for future compatibility.
+            cid_key_bits: Self::CID_KEY_BITS,
         }
     }
 
     /// Restore pending commands from the saved state.
     pub fn restore(&mut self, saved_state: &PendingCommandsSavedState) -> anyhow::Result<()> {
-        let mut commands: Vec<(usize, PendingCommand)> = Vec::new();
-        for cmd in &saved_state.commands {
-            let (send, mut _recv) = mesh::oneshot::<nvme_spec::Completion>();
-            let pending_command = PendingCommand {
-                command: *cmd,
-                respond: send,
-            };
-            // Remove high CID bits to be used as a key.
-            let cid = cmd.cdw0.cid() & Self::CID_KEY_MASK;
-            commands.push((cid as usize, pending_command));
-        }
+        let commands: Vec<(usize, PendingCommand)> = saved_state
+            .commands
+            .iter()
+            .map(|state| {
+                let (send, mut _recv) = mesh::oneshot::<nvme_spec::Completion>();
+                // To correctly restore Slab we need both the command index,
+                // inherited from command's CID, and the command itself.
+                (
+                    // Remove high CID bits to be used as a key.
+                    (state.command.cdw0.cid() & Self::CID_KEY_MASK) as usize,
+                    PendingCommand {
+                        command: state.command,
+                        respond: send,
+                    },
+                )
+            })
+            .collect();
+
         // Re-create identical Slab where CIDs are correctly mapped.
         self.commands = commands.into_iter().collect::<Slab<PendingCommand>>();
         self.next_cid_high_bits = Wrapping(saved_state.next_cid_high_bits);
@@ -147,18 +161,10 @@ impl PendingCommands {
 }
 
 impl QueuePair {
-    pub const MAX_SQSIZE: u16 = (PAGE_SIZE / 64) as u16; // Maximum SQ size in entries.
-    pub const MAX_CQSIZE: u16 = (PAGE_SIZE / 16) as u16; // Maximum CQ size in entries.
-
-    /// Return size in bytes for Submission Queue.
-    fn sq_size() -> usize {
-        PAGE_SIZE
-    }
-
-    /// Return size in bytes for Completion Queue.
-    fn cq_size() -> usize {
-        PAGE_SIZE
-    }
+    pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16; // Maximum SQ size in entries.
+    pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16; // Maximum CQ size in entries.
+    pub const SQ_SIZE: usize = PAGE_SIZE; // Submission Queue size in bytes.
+    pub const CQ_SIZE: usize = PAGE_SIZE; // Completion Queue size in bytes.
 
     /// Return size in bytes for DMA memory.
     fn dma_data_size() -> usize {
@@ -175,7 +181,7 @@ impl QueuePair {
     /// Return total DMA buffer size needed for the queue pair (all chunks are contiguous).
     pub fn required_dma_size() -> usize {
         // 4k for SQ + 4k for CQ + 512k for data.
-        QueuePair::sq_size() + QueuePair::cq_size() + QueuePair::dma_data_size()
+        QueuePair::SQ_SIZE + QueuePair::CQ_SIZE + QueuePair::dma_data_size()
     }
 
     pub fn new(
@@ -203,18 +209,18 @@ impl QueuePair {
         cq_size: u16,
         mem_block: MemoryBlock,
     ) -> anyhow::Result<(QueueHandler, PageAllocator, MemoryBlock)> {
-        assert!(sq_size <= Self::MAX_SQSIZE);
-        assert!(cq_size <= Self::MAX_CQSIZE);
+        assert!(sq_size <= Self::MAX_SQ_ENTRIES);
+        assert!(cq_size <= Self::MAX_CQ_ENTRIES);
 
         // The memory block is split contiguously: SQ, CQ, Data.
-        let sq = SubmissionQueue::new(qid, sq_size, mem_block.subblock(0, Self::sq_size()));
+        let sq = SubmissionQueue::new(qid, sq_size, mem_block.subblock(0, Self::SQ_SIZE));
         let cq = CompletionQueue::new(
             qid,
             cq_size,
-            mem_block.subblock(Self::sq_size(), Self::cq_size()),
+            mem_block.subblock(Self::SQ_SIZE, Self::CQ_SIZE),
         );
         let alloc: PageAllocator = PageAllocator::new(
-            mem_block.subblock(Self::sq_size() + Self::cq_size(), Self::dma_data_size()),
+            mem_block.subblock(Self::SQ_SIZE + Self::CQ_SIZE, Self::dma_data_size()),
         );
 
         let queue_handler = QueueHandler {
@@ -276,15 +282,20 @@ impl QueuePair {
 
     /// Save queue pair state for servicing.
     pub async fn save(&self) -> anyhow::Result<QueuePairSavedState> {
+        // Return error if the queue does not have any memory allocated.
+        if self.mem.pfns().is_empty() {
+            return Err(Error::InvalidState.into());
+        }
         // Send an RPC request to QueueHandler thread to save its data.
-        let queue_data = self.issuer.send.call(Req::Save, ()).await?;
+        let handler_data = self.issuer.send.call(Req::Save, ()).await??;
 
-        // Add more data to the returned response.
-        let mut local_queue_data = queue_data.unwrap();
-        local_queue_data.mem_len = self.mem.len();
-        local_queue_data.pfns = self.mem.pfns().to_vec();
-
-        Ok(local_queue_data)
+        Ok(QueuePairSavedState {
+            cpu: 0,
+            mem_len: self.mem.len(),
+            msix: 0,
+            base_pfn: self.mem.pfns()[0],
+            handler_data,
+        })
     }
 
     /// Restore queue pair state after servicing. Returns newly created object from saved data.
@@ -296,13 +307,13 @@ impl QueuePair {
         saved_state: &QueuePairSavedState,
     ) -> anyhow::Result<Self> {
         let (mut queue_handler, alloc, mem) = QueuePair::allocate(
-            saved_state.sq_state.sqid,
-            saved_state.sq_state.len as u16,
-            saved_state.cq_state.len as u16,
+            saved_state.handler_data.sq_state.sqid,
+            saved_state.handler_data.sq_state.len as u16,
+            saved_state.handler_data.cq_state.len as u16,
             mem_block,
         )?;
 
-        queue_handler.restore(saved_state)?;
+        queue_handler.restore(&saved_state.handler_data)?;
 
         QueuePair::resume(spawner, interrupt, registers, mem, alloc, queue_handler)
     }
@@ -562,7 +573,7 @@ struct PendingCommand {
 enum Req {
     Command(Rpc<spec::Command, spec::Completion>),
     Inspect(inspect::Deferred),
-    Save(Rpc<(), Result<QueuePairSavedState, anyhow::Error>>),
+    Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
 }
 
 #[derive(Inspect)]
@@ -638,21 +649,17 @@ impl QueueHandler {
     }
 
     /// Save queue data for servicing.
-    pub async fn save(&self) -> anyhow::Result<QueuePairSavedState> {
+    pub async fn save(&self) -> anyhow::Result<QueueHandlerSavedState> {
         // The data is collected from both QueuePair and QueueHandler.
-        Ok(QueuePairSavedState {
+        Ok(QueueHandlerSavedState {
             sq_state: self.sq.save(),
             cq_state: self.cq.save(),
             pending_cmds: self.commands.save(),
-            cpu: 0,       // Will be updated by the caller.
-            msix: 0,      // Will be updated by the caller.
-            mem_len: 0,   // Will be updated by the caller.
-            pfns: vec![], // Will be updated by the caller.
         })
     }
 
     /// Restore queue data after servicing.
-    pub fn restore(&mut self, saved_state: &QueuePairSavedState) -> anyhow::Result<()> {
+    pub fn restore(&mut self, saved_state: &QueueHandlerSavedState) -> anyhow::Result<()> {
         self.commands.restore(&saved_state.pending_cmds)?;
         self.sq.restore(&saved_state.sq_state)?;
         self.cq.restore(&saved_state.cq_state)?;

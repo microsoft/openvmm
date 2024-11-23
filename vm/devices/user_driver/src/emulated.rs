@@ -264,8 +264,8 @@ impl HostDmaAllocator for EmulatedDmaAllocator {
         Ok(memory)
     }
 
-    fn attach_dma_buffer(&self, len: usize, _pfns: &[u64]) -> anyhow::Result<MemoryBlock> {
-        // For emulated allocator (unit tests) reuse the regular alloc.
+    fn attach_dma_buffer(&self, len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        // For emulated allocator (unit tests only) reuse the regular alloc.
         self.allocate_dma_buffer(len)
     }
 }
@@ -279,7 +279,8 @@ impl crate::vfio::VfioDmaBuffer for EmulatedDmaAllocator {
         ))
     }
 
-    fn restore_dma_buffer(&self, len: usize, _pfns: &[u64]) -> anyhow::Result<MemoryBlock> {
+    fn restore_dma_buffer(&self, len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        // For emulated allocator (unit tests) call regular restore.
         self.create_dma_buffer(len)
     }
 }

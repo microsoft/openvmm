@@ -5,6 +5,7 @@
 
 use super::spec;
 use super::spec::nvm;
+use crate::driver::save_restore::SavedNamespaceData;
 use crate::driver::IoIssuers;
 use crate::queue_pair::admin_cmd;
 use crate::queue_pair::Issuer;
@@ -13,7 +14,6 @@ use crate::NVME_PAGE_SHIFT;
 use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
 use inspect::Inspect;
-use mesh::payload::Protobuf;
 use mesh::CancelContext;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
@@ -527,15 +527,18 @@ impl Namespace {
     }
 
     /// Save namespace object data for servicing.
+    /// Initially we will re-query namespace state after restore
+    /// to avoid possible contention if namespace was changed
+    /// during servicing.
+    /// TODO: Re-enable namespace save/restore once we confirm
+    /// that we can process namespace change AEN.
+    #[allow(dead_code)]
     pub fn save(&self) -> anyhow::Result<SavedNamespaceData> {
-        let id = self.state.identify.lock();
-        let mut save_data = SavedNamespaceData {
+        Ok(SavedNamespaceData {
             nsid: self.nsid,
             block_count: self.state.block_count.load(Ordering::Relaxed),
-            identify_ns: [0; 4096],
-        };
-        save_data.identify_ns.copy_from_slice(id.as_bytes());
-        Ok(save_data)
+            identify_ns: self.state.identify.lock().clone(),
+        })
     }
 
     /// Restore namespace object data after servicing.
@@ -546,12 +549,10 @@ impl Namespace {
         identify_ctrl: Arc<spec::IdentifyController>,
         io_issuers: &Arc<IoIssuers>,
         device_id: &str,
-        identify_ns: &[u8; 4096],
+        identify_ns: nvm::IdentifyNamespace,
         saved_state: &SavedNamespaceData,
     ) -> Result<Self, NamespaceError> {
         let nsid = saved_state.nsid;
-        let identify = nvm::IdentifyNamespace::read_from_prefix(identify_ns)
-            .unwrap_or(nvm::IdentifyNamespace::new_zeroed());
 
         let (mut ctx, cancel_rescan) = CancelContext::new().with_cancel();
         let this = Namespace::new_from_identify(
@@ -559,7 +560,7 @@ impl Namespace {
             io_issuers,
             cancel_rescan,
             nsid,
-            identify,
+            identify_ns,
         )?;
 
         // Spawn a task, but detach is so that it doesn't get dropped while NVMe
@@ -663,16 +664,4 @@ fn nvm_cmd(opcode: nvm::NvmOpcode, nsid: u32) -> spec::Command {
         nsid,
         ..FromZeroes::new_zeroed()
     }
-}
-
-/// Save/restore NVMe namespace data.
-#[derive(Protobuf, Clone, Debug)]
-#[mesh(package = "underhill")]
-pub struct SavedNamespaceData {
-    #[mesh(1)]
-    pub nsid: u32,
-    #[mesh(2)]
-    pub block_count: u64,
-    #[mesh(3)]
-    pub identify_ns: [u8; 4096],
 }

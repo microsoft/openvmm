@@ -168,7 +168,7 @@ pub mod save_restore {
     use mesh::payload::Protobuf;
 
     #[derive(Protobuf)]
-    #[mesh(package = "underhill")]
+    #[mesh(package = "page_pool")]
     pub struct MemPoolState {
         /// Base PFN for the chunk.
         #[mesh(1)]
@@ -185,7 +185,7 @@ pub mod save_restore {
     }
 
     #[derive(Protobuf)]
-    #[mesh(package = "underhill")]
+    #[mesh(package = "page_pool")]
     /// Save-restore memory allocation mapping.
     pub struct MemPoolSavedState {
         /// Memory pool allocation map.

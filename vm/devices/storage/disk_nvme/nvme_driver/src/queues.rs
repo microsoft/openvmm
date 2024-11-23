@@ -78,7 +78,6 @@ impl SubmissionQueue {
             tail: self.tail,
             committed_tail: self.committed_tail,
             len: self.len,
-            pfns: self.mem.pfns().to_vec(),
         }
     }
 
@@ -152,7 +151,6 @@ impl CompletionQueue {
             committed_head: self.committed_head,
             len: self.len,
             phase: self.phase,
-            pfns: self.mem.pfns().to_vec(),
         }
     }
 

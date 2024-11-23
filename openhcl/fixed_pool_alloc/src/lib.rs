@@ -446,7 +446,7 @@ impl VfioDmaBuffer for FixedPoolAllocator {
     }
 
     /// Restore DMA buffer at the same location after servicing.
-    fn restore_dma_buffer(&self, len: usize, pfns: &[u64]) -> anyhow::Result<MemoryBlock> {
+    fn restore_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock> {
         if len == 0 {
             anyhow::bail!("allocation of size 0 not supported");
         }
@@ -456,11 +456,9 @@ impl VfioDmaBuffer for FixedPoolAllocator {
         }
 
         let size_pages = len as u64 / HV_PAGE_SIZE;
-        assert_eq!(size_pages as usize, pfns.len());
-
         let alloc = self
             .restore(
-                pfns[0],
+                base_pfn,
                 size_pages.try_into().expect("already checked nonzero"),
                 FixedPoolAllocator::VFIO_MSHV_TAG.into(),
             )
@@ -490,8 +488,8 @@ impl HostDmaAllocator for FixedPoolAllocator {
         self.create_dma_buffer(len)
     }
 
-    fn attach_dma_buffer(&self, len: usize, pfns: &[u64]) -> anyhow::Result<MemoryBlock> {
-        self.restore_dma_buffer(len, pfns)
+    fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        self.restore_dma_buffer(len, base_pfn)
     }
 }
 
