@@ -34,7 +34,6 @@ pub enum Ucs2ParseError {
 /// `unsafe` code to impl `Deref<Target = Ucs2LeSlice>` by reinterpretting the
 /// `Vec<u16>` as a `&[u8]`, so there wouldn't be any major ergonomic hit.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "mesh", derive(mesh_protobuf::Protobuf))]
 pub struct Ucs2LeVec(Vec<u8>);
 
 impl Ucs2LeVec {
