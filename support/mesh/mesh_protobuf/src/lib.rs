@@ -20,8 +20,15 @@
 #![warn(missing_docs)]
 // UNSAFETY: Serialization and deserialization of structs directly.
 #![allow(unsafe_code)]
+#![warn(clippy::std_instead_of_alloc)]
+#![warn(clippy::std_instead_of_core)]
+#![warn(clippy::alloc_instead_of_core)]
+#![no_std]
 
+extern crate alloc;
 extern crate self as mesh_protobuf;
+#[cfg(feature = "std")]
+extern crate std;
 
 pub mod buffer;
 mod encode_with;
@@ -43,14 +50,16 @@ pub use time::Timestamp;
 
 use self::table::decode::DecoderEntry;
 use self::table::encode::EncoderEntry;
+use alloc::boxed::Box;
+use alloc::fmt;
+use alloc::vec::Vec;
+use core::cell::RefCell;
+use core::mem::MaybeUninit;
+use core::num::Wrapping;
 use inplace::InplaceOption;
 use protofile::DescribeMessage;
 use protofile::MessageDescription;
 use protofile::TypeUrl;
-use std::cell::RefCell;
-use std::fmt;
-use std::mem::MaybeUninit;
-use std::num::Wrapping;
 
 /// Associates the default encoder/decoder type for converting an object to/from
 /// protobuf format.
@@ -437,7 +446,7 @@ pub struct Error(Box<ErrorInner>);
 #[derive(Debug)]
 struct ErrorInner {
     types: Vec<&'static str>,
-    err: Box<dyn std::error::Error + Send + Sync>,
+    err: Box<dyn core::error::Error + Send + Sync>,
 }
 
 /// The cause of a decoding error.
@@ -483,7 +492,7 @@ enum DecodeError {
     #[error("wrong buffer size for u128")]
     BadU128,
     #[error("invalid UTF-8 string")]
-    InvalidUtf8(#[source] std::str::Utf8Error),
+    InvalidUtf8(#[source] core::str::Utf8Error),
     #[error("missing required field")]
     MissingRequiredField,
     #[error("wrong packed array length")]
@@ -497,7 +506,7 @@ enum DecodeError {
 
 impl Error {
     /// Creates a new error.
-    pub fn new(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+    pub fn new(error: impl Into<Box<dyn core::error::Error + Send + Sync>>) -> Self {
         Self(Box::new(ErrorInner {
             types: Vec::new(),
             err: error.into(),
@@ -506,7 +515,7 @@ impl Error {
 
     /// Returns a new error with an additional type context added.
     pub fn typed<T>(mut self) -> Self {
-        self.0.types.push(std::any::type_name::<T>());
+        self.0.types.push(core::any::type_name::<T>());
         self
     }
 }
@@ -534,8 +543,8 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for Error {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         Some(self.0.err.as_ref())
     }
 }
@@ -553,10 +562,12 @@ impl<T> ResultExt for Result<T> {
 }
 
 /// A decoding result.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = core::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::encode;
     use super::SerializedMessage;
     use crate::decode;
@@ -567,19 +578,21 @@ mod tests {
     use crate::FieldDecode;
     use crate::FieldEncode;
     use crate::NoResources;
+    use alloc::borrow::Cow;
+    use alloc::collections::BTreeMap;
+    use alloc::vec;
+    use core::convert::Infallible;
+    use core::error::Error;
+    use core::num::NonZeroU32;
+    use core::time::Duration;
     use mesh_derive::Protobuf;
-    use std::borrow::Cow;
-    use std::collections::BTreeMap;
-    use std::collections::HashMap;
-    use std::convert::Infallible;
-    use std::error::Error;
-    use std::num::NonZeroU32;
-    use std::time::Duration;
+    use std::prelude::rust_2021::*;
+    use std::println;
 
     #[track_caller]
     fn assert_roundtrips<T>(t: T)
     where
-        T: crate::DefaultEncoding + Clone + Eq + std::fmt::Debug,
+        T: crate::DefaultEncoding + Clone + Eq + core::fmt::Debug,
         T::Encoding:
             crate::MessageEncode<T, NoResources> + for<'a> crate::MessageDecode<'a, T, NoResources>,
     {
@@ -593,7 +606,7 @@ mod tests {
     #[track_caller]
     fn assert_field_roundtrips<T>(t: T)
     where
-        T: crate::DefaultEncoding + Clone + Eq + std::fmt::Debug,
+        T: crate::DefaultEncoding + Clone + Eq + core::fmt::Debug,
         T::Encoding: FieldEncode<T, NoResources> + for<'a> FieldDecode<'a, T, NoResources>,
     {
         assert_roundtrips((t,));
@@ -617,7 +630,8 @@ mod tests {
         assert_field_roundtrips(Some(Some(true)));
         assert_field_roundtrips(Some(Option::<bool>::None));
         assert_field_roundtrips(vec![None, Some(true), None]);
-        assert_field_roundtrips(HashMap::from_iter([(5u32, 6u32), (4, 2)]));
+        #[cfg(feature = "std")]
+        assert_field_roundtrips(std::collections::HashMap::from_iter([(5u32, 6u32), (4, 2)]));
         assert_field_roundtrips(BTreeMap::from_iter([
             ("hi".to_owned(), 6u32),
             ("hmm".to_owned(), 2),

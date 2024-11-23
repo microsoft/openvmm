@@ -16,8 +16,8 @@ use super::MessageEncode;
 use super::Result;
 use crate::inplace;
 use crate::Downcast;
-use std::ops::Deref;
-use std::ops::DerefMut;
+use core::ops::Deref;
+use core::ops::DerefMut;
 
 /// Wrapper type to easily support custom mesh encoding.
 ///
@@ -72,7 +72,7 @@ impl<T, U: From<T>> EncodeAs<T, U> {
     }
 
     fn encode(&mut self) -> &mut U {
-        match std::mem::replace(&mut self.0, Inner::Invalid) {
+        match core::mem::replace(&mut self.0, Inner::Invalid) {
             Inner::Unencoded(t) => {
                 self.0 = Inner::Encoded(t.into());
             }

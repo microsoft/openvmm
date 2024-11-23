@@ -6,7 +6,8 @@
 //! This is different from `bytes::BufMut` in that the buffer is required to be
 //! contiguous, which allows for more efficient use with type erasure.
 
-use std::mem::MaybeUninit;
+use alloc::vec::Vec;
+use core::mem::MaybeUninit;
 
 /// Models a partially written, contiguous byte buffer.
 pub trait Buffer {
@@ -66,11 +67,12 @@ impl Buffer for Buf<'_> {
     }
 }
 
+#[cfg(feature = "std")]
 impl Buffer for std::io::Cursor<&mut [u8]> {
     unsafe fn unwritten(&mut self) -> &mut [MaybeUninit<u8>] {
         let slice = self.get_mut();
         // SAFETY: the caller promises not to uninitialize any initialized data.
-        unsafe { std::slice::from_raw_parts_mut(slice.as_mut_ptr().cast(), slice.len()) }
+        unsafe { core::slice::from_raw_parts_mut(slice.as_mut_ptr().cast(), slice.len()) }
     }
 
     unsafe fn extend_written(&mut self, len: usize) {
@@ -187,6 +189,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::write_with;
+    use alloc::vec;
 
     #[test]
     #[should_panic]

@@ -10,6 +10,7 @@ rust-version.workspace = true
 default = []
 prost = ["dep:prost", "dep:prost-types", "dep:prost-build"]
 socket2 = ["dep:socket2"]
+std = []
 
 [dependencies]
 mesh_derive.workspace = true
