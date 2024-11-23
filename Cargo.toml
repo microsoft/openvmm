@@ -40,6 +40,7 @@ members = [
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
   "hyperv/tools/hypestv",
+  "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
 ]
 exclude = [
   "xsync",
