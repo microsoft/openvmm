@@ -643,8 +643,6 @@ def create_cpio_from_file(source_file: str, dest_file: str, dest_mode: int, outp
         raise Exception(f"{source_file} is not a file")
     with __open_output_stream(output_file, compression) as ostream:
         with CpioRamFs(ostream) as cpio:
-            name = os.path.join("/", dest_file)
-            location = os.path.join("/", source_file)
             file_entry = FileEntry(0, dest_file, source_file, mode=dest_mode, uid=0, gid=0, hard_links=[])
             cpio.write(file_entry)
 
