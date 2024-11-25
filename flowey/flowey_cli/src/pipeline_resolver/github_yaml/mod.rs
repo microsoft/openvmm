@@ -570,7 +570,7 @@ EOF
                         })
                         .collect()
                 },
-                r#if: gh_override_if.clone(),
+                r#if: Some("${{ !github.event.pull_request.draft }}".to_string()),
                 env: gh_global_env.clone(),
                 steps: gh_steps,
             },
