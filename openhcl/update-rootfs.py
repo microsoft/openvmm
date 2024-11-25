@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import time
 
-from gen_init_ramfs import create_cpio_from_config, create_cpio_from_dir, create_cpio_from_file
+from gen_init_ramfs import create_cpio_from_config, create_cpio_from_dir
 from typing import List
 
 package_id = "Microsoft.HCL.Kernel"
@@ -88,7 +88,7 @@ def generate_build_info(path: str):
 def process(temp_dir: str, underhill_path: str, kernel_path: str,
             build_info: str, rootfs_config_path: List[str],
             updated_initramfs_path: str, additional_layers: List[str],
-            additional_dirs: List[str], add_perf: bool):
+            additional_dirs: List[str]):
     align = lambda x, boundary: (x + boundary-1) & ~(boundary-1)
 
     eprint("Building the initial root fs")
@@ -113,15 +113,6 @@ def process(temp_dir: str, underhill_path: str, kernel_path: str,
         create_cpio_from_dir(dir_name, temp_file_name, 'gzip')
         append_file(underhill_cpio_gz_file_name, temp_file_name)
         os.unlink(temp_file_name)
-
-    if add_perf:
-        temp_file_name = os.path.join(temp_dir, "perf_tools.cpio.gz")
-        mode = '0755'
-        perf_tool_bin_path = os.path.join(kernel_path, "build", "native", "bin", os.environ["OPENHCL_KERNEL_ARCH"], "tools", "perf", "bin")
-        for f in ["perf", "trace"]:
-            create_cpio_from_file(os.path.join(perf_tool_bin_path, f), "/usr/bin/" + f, mode, temp_file_name, 'gzip')
-            append_file(underhill_cpio_gz_file_name, temp_file_name)
-            os.unlink(temp_file_name)
 
     for layer in additional_layers:
         append_file(underhill_cpio_gz_file_name, layer)
@@ -160,7 +151,6 @@ def main():
     parser.add_argument('--build_info', help='Path to the file with build information')
     parser.add_argument('--rootfs-config', action='append', help='Configuration file for the root filesystem')
     parser.add_argument('--layer', action='append', help='Adds a custom layer file.')
-    parser.add_argument('--perf', action='store_true', help='Adds perf and trace tools')
     parser.add_argument('--add-dir', action='append', help='Adds a directory.')
     parser.set_defaults(layer=[], add_dir=[], rootfs_config=[])
 
@@ -233,7 +223,7 @@ def main():
             str(temp_dir),
             underhill_path, kernel_path, build_info, args.rootfs_config,
             updated_initramfs_path, additional_layers,
-            additional_dirs, args.perf)
+            additional_dirs)
 
 
 if __name__ == '__main__':

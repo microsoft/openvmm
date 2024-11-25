@@ -637,14 +637,6 @@ def create_cpio_from_config(config_file: str, output_file: str, compression: str
             for entry in config.entries():
                 cpio.write(entry)
 
-# Include a single file that is not in .cpio.gz format
-def create_cpio_from_file(source_file: str, dest_file: str, dest_mode: int, output_file: str, compression: str):
-    if not os.path.isfile(source_file):
-        raise Exception(f"{source_file} is not a file")
-    with __open_output_stream(output_file, compression) as ostream:
-        with CpioRamFs(ostream) as cpio:
-            file_entry = FileEntry(0, dest_file, source_file, mode=dest_mode, uid=0, gid=0, hard_links=[])
-            cpio.write(file_entry)
 
 def create_cpio_from_dir(top_dir: str, output_file: str, compression: str):
     if not os.path.isdir(top_dir):

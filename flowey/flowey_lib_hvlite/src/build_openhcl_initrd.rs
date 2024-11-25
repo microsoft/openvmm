@@ -119,13 +119,17 @@ impl FlowNode for Node {
                 let initrd = initrd.claim(ctx);
                 move |rt| {
                     let interactive_dep = rt.read(interactive_dep);
+                    let openvmm_repo_path = rt.read(openvmm_repo_path);
+                    let perf_fs_iter = with_perf_tools
+                        .then_some(openvmm_repo_path.join("openhcl/perftoolsfs.config"))
+                        .into_iter();
                     let rootfs_config = rootfs_config
                         .into_iter()
                         .map(|x| rt.read(x))
+                        .chain(perf_fs_iter)
                         .collect::<Vec<_>>();
                     let extra_env = extra_env.map(|x| rt.read(x));
                     let bin_openhcl = rt.read(bin_openhcl);
-                    let openvmm_repo_path = rt.read(openvmm_repo_path);
                     let kernel_package_root = rt.read(kernel_package_root);
 
                     let sh = xshell::Shell::new()?;
@@ -141,10 +145,6 @@ impl FlowNode for Node {
                         } else {
                             // just a minimal shell
                             v.push("--min-interactive".to_string());
-                        }
-
-                        if with_perf_tools {
-                            v.push("--perf".to_string());
                         }
 
                         for dir in extra_initrd_layers {
