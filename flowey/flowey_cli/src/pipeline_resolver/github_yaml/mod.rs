@@ -570,10 +570,9 @@ EOF
                         })
                         .collect()
                 },
-                r#if: Some(gh_override_if.clone().map_or_else(
-                    || "github.event.pull_request.draft == false".to_string(),
-                    |original| format!("{} && github.event.pull_request.draft == false", original),
-                )),
+                r#if: gh_override_if
+                    .clone()
+                    .or_else(|| Some("github.event.pull_request.draft == false".to_string())),
                 env: gh_global_env.clone(),
                 steps: gh_steps,
             },

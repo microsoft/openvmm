@@ -1028,7 +1028,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 // always run this job, regardless whether or not any previous jobs failed
-                .gh_dangerous_override_if("always()")
+                .gh_dangerous_override_if("always() && github.event.pull_request.draft == false")
                 .gh_dangerous_global_env_var("ANY_JOBS_FAILED", "${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}")
                 .dep_on(|ctx| flowey_lib_hvlite::_jobs::all_good_job::Params {
                     did_fail_env_var: "ANY_JOBS_FAILED".into(),
