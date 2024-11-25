@@ -4989,7 +4989,7 @@ jobs:
     - job2
     - job1
     - job0
-    if: ${{ !github.event.pull_request.draft }}
+    if: ${{ always() }}
     env:
       ANY_JOBS_FAILED: ${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}
     steps:
