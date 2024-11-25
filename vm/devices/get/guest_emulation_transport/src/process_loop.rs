@@ -19,7 +19,6 @@ use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
-use mesh::payload::buffer;
 use mesh::RecvError;
 use parking_lot::Mutex;
 use std::cmp::min;
