@@ -408,10 +408,10 @@ impl DiagClient {
         )
     }
 
-    /// Creates a client from a connector.
+    /// Creates a client from a dialer.
     ///
     /// This client won't be usable with operations that require additional connections.
-    pub fn from_conn(driver: impl Driver + Spawn, conn: impl mesh_rpc::client::Dial) -> Self {
+    pub fn from_dialer(driver: impl Driver + Spawn, conn: impl mesh_rpc::client::Dial) -> Self {
         Self::new(driver, VmType::None, conn)
     }
 

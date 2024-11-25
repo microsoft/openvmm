@@ -1828,9 +1828,9 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         vm_rpc.call(VmRpc::Resume, ()).await?;
     }
 
-    let paravisor_diag = Arc::new(diag_client::DiagClient::from_conn(
+    let paravisor_diag = Arc::new(diag_client::DiagClient::from_dialer(
         driver.clone(),
-        DiagConnector {
+        DiagDialer {
             driver: driver.clone(),
             vm_rpc: vm_rpc.clone(),
             openhcl_vtl: if opt.vtl2 {
@@ -2673,13 +2673,13 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     Ok(())
 }
 
-struct DiagConnector {
+struct DiagDialer {
     driver: DefaultDriver,
     vm_rpc: Arc<mesh::Sender<VmRpc>>,
     openhcl_vtl: DeviceVtl,
 }
 
-impl mesh_rpc::client::Dial for DiagConnector {
+impl mesh_rpc::client::Dial for DiagDialer {
     type Stream = PolledSocket<unix_socket::UnixStream>;
 
     async fn dial(&mut self) -> io::Result<Self::Stream> {
