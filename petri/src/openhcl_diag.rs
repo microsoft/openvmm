@@ -6,8 +6,10 @@ use diag_client::DiagClient;
 use diag_client::ExitStatus;
 use futures::io::AllowStdIo;
 use std::io::Read;
+use std::path::PathBuf;
 
 pub(crate) struct OpenHclDiagHandler {
+    pub(crate) vtl2_vsock_path: PathBuf,
     pub(crate) client: DiagClient,
 }
 
@@ -28,6 +30,10 @@ pub(crate) struct Vtl2CommandResult {
 }
 
 impl OpenHclDiagHandler {
+    pub(crate) async fn wait_for_vtl2(&self) -> anyhow::Result<()> {
+        self.client.wait_for_server().await
+    }
+
     pub(crate) async fn run_vtl2_command(
         &self,
         command: impl AsRef<str>,
@@ -95,7 +101,7 @@ impl OpenHclDiagHandler {
     }
 
     async fn diag_client(&self) -> anyhow::Result<&DiagClient> {
-        self.client.wait_for_server().await?;
+        self.wait_for_vtl2().await?;
         Ok(&self.client)
     }
 }

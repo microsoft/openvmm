@@ -75,6 +75,11 @@ impl PetriVm {
         }
     }
 
+    /// Get the path to the VTL 2 vsock socket, if the VM is configured with OpenHCL.
+    pub fn vtl2_vsock_path(&self) -> anyhow::Result<&Path> {
+        self.inner.openhcl_diag().map(|x| &*x.vtl2_vsock_path)
+    }
+
     /// Get the artifact resolver constructed for this VM.
     pub fn artifact_resolver(&self) -> &petri_artifacts_core::TestArtifacts {
         &self.inner.resources.resolver
@@ -155,6 +160,14 @@ impl PetriVm {
         /// Wait for a connection from a pipette agent running in the guest.
         /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
         pub async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient>
+    );
+    petri_vm_fn!(
+        /// Wait for VTL 2 to report that it is ready to respond to commands.
+        /// Will fail if the VM is not running OpenHCL.
+        ///
+        /// This should only be necessary if you're doing something manual. All
+        /// Petri-provided methods will wait for VTL 2 to be ready automatically.
+        pub async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()>
     );
     petri_vm_fn!(
         /// Wait for a connection from a pipette agent running in VTL 2.
@@ -362,6 +375,10 @@ impl PetriVmInner {
             &self.resources.output_dir,
         )
         .await
+    }
+
+    async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()> {
+        self.openhcl_diag()?.wait_for_vtl2().await
     }
 
     async fn wait_for_vtl2_agent(&mut self) -> anyhow::Result<PipetteClient> {

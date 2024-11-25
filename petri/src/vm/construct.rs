@@ -198,6 +198,7 @@ impl PetriVmConfig {
                             driver.clone(),
                             &vtl2_vsock_path,
                         ),
+                        vtl2_vsock_path,
                     }),
                     Some(ged),
                     Some(ged_send),
