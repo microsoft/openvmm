@@ -7,6 +7,7 @@ use tpm::ak_cert::GetAttestationReport;
 use tpm::ak_cert::RequestAkCert;
 use underhill_attestation::AttestationType;
 use underhill_attestation::AttestationVmConfig;
+use underhill_attestation::AK_CERT_RESPONSE_BUFFER_PAGES;
 
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
@@ -115,7 +116,10 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         request: Vec<u8>,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>> {
         let agent_data = self.attestation_agent_data.clone().unwrap_or_default();
-        let result = self.get_client.igvm_attest(agent_data, request).await?;
+        let result = self
+            .get_client
+            .igvm_attest(agent_data, request, AK_CERT_RESPONSE_BUFFER_PAGES)
+            .await?;
         let payload = underhill_attestation::parse_ak_cert_response(&result.response)?;
 
         Ok(payload)

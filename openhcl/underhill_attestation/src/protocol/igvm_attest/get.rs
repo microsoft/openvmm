@@ -5,6 +5,7 @@
 //! sent to and received from the IGVm agent runs on the host via GET
 //! `IGVM_ATTEST` host request.
 
+use get_protocol;
 use open_enum::open_enum;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
@@ -19,6 +20,13 @@ pub const SNP_VM_REPORT_SIZE: usize = sev_guest_device::protocol::SNP_REPORT_SIZ
 pub const TDX_VM_REPORT_SIZE: usize = tdx_guest_device::protocol::TDX_REPORT_SIZE;
 /// No TEE attestation report for TVM
 pub const TVM_REPORT_SIZE: usize = 0;
+
+// Number of pages required by the response buffer of WRAPPED_KEY request
+pub const WRAPPED_KEY_RESPONSE_BUFFER_PAGES: usize = get_protocol::IGVM_ATTEST_MSG_MAX_SHARED_GPA;
+// Number of pages required by the response buffer of KEY_RELEASE  request
+pub const KEY_RELEASE_RESPONSE_BUFFER_PAGES: usize = get_protocol::IGVM_ATTEST_MSG_MAX_SHARED_GPA;
+/// Number of pages required by the response buffer of AK_CERT request
+pub const AK_CERT_RESPONSE_BUFFER_PAGES: usize = 1;
 
 /// Current AK cert response header version
 pub const AK_CERT_RESPONSE_HEADER_VERSION: u32 = 1;

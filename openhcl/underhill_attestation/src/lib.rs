@@ -22,6 +22,7 @@ pub use igvm_attest::ak_cert::parse_response as parse_ak_cert_response;
 pub use igvm_attest::Error as IgvmAttestError;
 pub use igvm_attest::IgvmAttestRequestHelper;
 pub use protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+pub use protocol::igvm_attest::get::AK_CERT_RESPONSE_BUFFER_PAGES;
 
 use ::vmgs::EncryptionAlgorithm;
 use ::vmgs::Vmgs;

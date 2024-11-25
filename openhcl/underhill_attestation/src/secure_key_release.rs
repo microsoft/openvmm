@@ -7,6 +7,8 @@
 use crate::crypto;
 use crate::igvm_attest;
 use crate::protocol;
+use crate::protocol::igvm_attest::get::KEY_RELEASE_RESPONSE_BUFFER_PAGES;
+use crate::protocol::igvm_attest::get::WRAPPED_KEY_RESPONSE_BUFFER_PAGES;
 use crate::protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use crate::AttestationVmConfig;
 use crate::IgvmAttestRequestHelper;
@@ -234,7 +236,7 @@ async fn make_igvm_attest_requests(
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestWrappedKeyRequest)?;
 
     let response = get
-        .igvm_attest([].into(), request)
+        .igvm_attest([].into(), request, WRAPPED_KEY_RESPONSE_BUFFER_PAGES)
         .await
         .map_err(RequestVmgsEncryptionKeysError::SendIgvmAttestWrappedKeyRequest)?;
 
@@ -282,7 +284,11 @@ async fn make_igvm_attest_requests(
 
     // Get tenant keys based on attestation results
     let response = get
-        .igvm_attest(agent_data.to_vec(), request)
+        .igvm_attest(
+            agent_data.to_vec(),
+            request,
+            KEY_RELEASE_RESPONSE_BUFFER_PAGES,
+        )
         .await
         .map_err(RequestVmgsEncryptionKeysError::SendIgvmAttestKeyReleaseRequest)?;
 

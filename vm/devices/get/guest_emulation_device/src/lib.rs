@@ -791,8 +791,12 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     fn handle_igvm_attest(&mut self, _message_buf: &[u8]) -> Result<(), Error> {
         let response = get_protocol::IgvmAttestResponse {
             message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
-            ..get_protocol::IgvmAttestResponse::new_zeroed()
+            length: 2508,
         };
+        // TODO: Write payload to shared page
+        // let header = vec![0xcc, 0x09, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00];
+        // let data = vec![0xab; 2500];
+        // let payload = [header, data].concat();
         self.channel
             .try_send(response.as_bytes())
             .map_err(Error::Vmbus)?;

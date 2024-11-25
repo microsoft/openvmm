@@ -1210,7 +1210,7 @@ async fn new_underhill_vm(
     let boot_info = runtime_params.parsed_openhcl_boot();
 
     // The amount of memory required by the GET igvm_attest request
-    let attestation = get_protocol::IGVM_ATTEST_MSG_SHARED_GPA as u64 * hvdef::HV_PAGE_SIZE;
+    let attestation = get_protocol::IGVM_ATTEST_MSG_MAX_SHARED_GPA as u64 * hvdef::HV_PAGE_SIZE;
 
     // TODO: determine actual memory usage by NVME/MANA. hardcode as 10MB
     let device_dma = 10 * 1024 * 1024;

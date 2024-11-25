@@ -40,19 +40,67 @@ async fn boot_alias_map(config: PetriVmConfig) -> anyhow::Result<()> {
 }
 
 /// Basic boot test with TPM enabled.
-// TODO: Reenable the linux test after the reboot failure is resolved.
 #[vmm_test(
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
 async fn boot_with_tpm(config: PetriVmConfig) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+
     // TODO: Support shared pool (which does not work correctly)
-    let (mut vm, agent) = config
-        // .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
-        .with_tpm()
-        .run()
-        .await?;
-    vm.wait_for_successful_boot_event().await?;
+    let config = config
+        .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
+        .with_tpm();
+
+    let (vm, agent) = match os_flavor {
+        OsFlavor::Windows => config.run().await?,
+        OsFlavor::Linux => {
+            let mut vm = config.run_with_lazy_pipette().await?;
+            // Workaround to https://github.com/microsoft/openvmm/issues/379
+            assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+            vm.reset().await?;
+            let agent = vm.wait_for_agent().await?;
+            vm.wait_for_successful_boot_event().await?;
+
+            // Use the following python script to read AK cert from TPM nv index
+            // TODO: Replace the script with tpm2-tools
+            const TEST_FILE: &str = "tpm.py";
+            const TEST_CONTENT: &str = r#"
+command = b'\x80\x02\x00\x00\x00\x23\x00\x00\x01\x4e\x40\x00\x00\x01\x01\xc1\x01\xd0\x00\x00\x00\x09\x40\x00\x00\x09\x00\x00\x00\x00\x00'
+expected_output = bytearray([0xab] * 2500  + [0x00] * 1596)
+
+output = b'';
+with open('/dev/tpmrm0', 'r+b', buffering=0) as tpm:
+    size = 1024
+    offset = 0
+    for i in range(4):
+        tpm.write(command + size.to_bytes(2, 'big') + offset.to_bytes(2, 'big'))
+        response = tpm.read()
+        output += response[16:len(response) - 5]
+        offset += size
+
+print(f"output (size full {len(output)}, nonzero {output.index(0)}): {output}")
+
+if output == expected_output:
+    print('succeeded')
+else:
+    print('failed')
+"#;
+
+            agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
+            assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
+
+            let sh = agent.unix_shell();
+            let _output = cmd!(sh, "python3 tpm.py").read().await?;
+
+            // Enable when shared memory is supported
+            // assert!(output.contains("succeeded"));
+
+            (vm, agent)
+        }
+        _ => unreachable!(),
+    };
+
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())

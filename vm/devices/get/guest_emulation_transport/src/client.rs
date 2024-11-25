@@ -382,8 +382,13 @@ impl GuestEmulationTransportClient {
         &self,
         agent_data: Vec<u8>,
         report: Vec<u8>,
+        response_buffer_pages: usize,
     ) -> Result<crate::api::IgvmAttest, crate::error::IgvmAttestError> {
-        let request = IgvmAttestRequestData { agent_data, report };
+        let request = IgvmAttestRequestData {
+            agent_data,
+            report,
+            response_buffer_pages,
+        };
 
         let response = self
             .control

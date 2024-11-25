@@ -19,6 +19,7 @@ use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use mesh::payload::buffer;
 use mesh::RecvError;
 use parking_lot::Mutex;
 use std::cmp::min;
@@ -157,6 +158,7 @@ pub(crate) mod msg {
     pub(crate) struct IgvmAttestRequestData {
         pub(crate) agent_data: Vec<u8>,
         pub(crate) report: Vec<u8>,
+        pub(crate) response_buffer_pages: usize,
     }
 
     /// A list specifying control messages to send to the process loop.
@@ -1812,18 +1814,16 @@ async fn request_igvm_attest(
     shared_pool_allocator: Option<Arc<shared_pool_alloc::SharedPoolAllocator>>,
     shared_guest_memory: Option<Arc<guestmem::GuestMemory>>,
 ) -> Result<Result<Vec<u8>, IgvmAttestError>, FatalError> {
-    const ALLOCATED_SHARED_MEMORY_SIZE: usize =
-        get_protocol::IGVM_ATTEST_MSG_SHARED_GPA * hvdef::HV_PAGE_SIZE_USIZE;
-
     let (Some(shared_pool_allocator), Some(shared_guest_memory)) =
         (&shared_pool_allocator, &shared_guest_memory)
     else {
         Err(FatalError::SharedMemoryUnavailable)?
     };
 
-    // Allocate shared memory.
-    let size_pages = std::num::NonZeroU64::new(get_protocol::IGVM_ATTEST_MSG_SHARED_GPA as u64)
-        .expect("is nonzero");
+    // Allocate shared memory. The allocated memory size should match the requested size if allocation succeeds.
+    let allocated_shared_memory_size = request.response_buffer_pages * hvdef::HV_PAGE_SIZE_USIZE;
+    let size_pages =
+        std::num::NonZeroU64::new(request.response_buffer_pages as u64).expect("is nonzero");
     let handle = shared_pool_allocator
         .alloc(size_pages, "igvm_attest".to_string())
         .map_err(FatalError::SharedMemoryAllocationError)?;
@@ -1855,17 +1855,19 @@ async fn request_igvm_attest(
     let response_length = response.length as usize;
     if response_length == get_protocol::IGVM_ATTEST_VMWP_GENERIC_ERROR_CODE {
         return Ok(Err(IgvmAttestError::IgvmAgentGenericError));
-    } else if response_length > ALLOCATED_SHARED_MEMORY_SIZE {
+    } else if response_length > allocated_shared_memory_size {
         Err(FatalError::InvalidIgvmAttestResponseSize {
             response_size: response_length,
-            maximum_size: ALLOCATED_SHARED_MEMORY_SIZE,
+            maximum_size: allocated_shared_memory_size,
         })?
     }
 
-    let mut buffer = vec![0u8; ALLOCATED_SHARED_MEMORY_SIZE];
-    shared_guest_memory
-        .read_at(request.shared_gpa[0], &mut buffer)
-        .map_err(FatalError::ReadSharedMemory)?;
+    let mut buffer = vec![0u8; allocated_shared_memory_size];
+    if response_length != 0 {
+        shared_guest_memory
+            .read_at(request.shared_gpa[0], &mut buffer)
+            .map_err(FatalError::ReadSharedMemory)?;
+    }
 
     buffer.truncate(response_length);
 
