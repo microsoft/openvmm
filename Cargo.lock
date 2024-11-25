@@ -4269,7 +4269,6 @@ dependencies = [
  "clap_dyn_complete",
  "ctrlc",
  "diag_client",
- "env_logger",
  "fs-err",
  "futures",
  "futures-concurrency",
@@ -4281,6 +4280,7 @@ dependencies = [
  "socket2",
  "term",
  "thiserror 2.0.0",
+ "tracing-subscriber",
  "unicycle",
 ]
 

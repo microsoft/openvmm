@@ -7,6 +7,16 @@ package diag;
 
 import "google/protobuf/empty.proto";
 
+// OpenHCL diagnostics services.
+//
+// Add new methods here, since the diagnostics service in use before this did
+// not handle unknown methods correctly.
+service OpenhclDiag {
+    // Ping the server, validating it is ready for use.
+    rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+// Older methods.
 service UnderhillDiag {
     rpc Exec(ExecRequest) returns (ExecResponse);
     rpc Wait(WaitRequest) returns (WaitResponse);

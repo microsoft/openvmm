@@ -16,7 +16,7 @@
 #[cfg(test)]
 extern crate self as mesh_rpc;
 
-mod client;
+pub mod client;
 mod message;
 mod rpc;
 pub mod server;

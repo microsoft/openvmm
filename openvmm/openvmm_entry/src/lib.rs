@@ -77,7 +77,6 @@ use mesh_worker::WorkerEvent;
 use mesh_worker::WorkerHandle;
 use meshworker::VmmMesh;
 use net_backend_resources::mac_address::MacAddress;
-use pal_async::driver::Driver;
 use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
@@ -1829,15 +1828,20 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         vm_rpc.call(VmRpc::Resume, ()).await?;
     }
 
-    let mut diag_inspector = DiagInspector::new(
+    let paravisor_diag = Arc::new(diag_client::DiagClient::from_conn(
         driver.clone(),
-        vm_rpc.clone(),
-        if opt.vtl2 {
-            DeviceVtl::Vtl2
-        } else {
-            DeviceVtl::Vtl0
+        DiagConnector {
+            driver: driver.clone(),
+            vm_rpc: vm_rpc.clone(),
+            openhcl_vtl: if opt.vtl2 {
+                DeviceVtl::Vtl2
+            } else {
+                DeviceVtl::Vtl0
+            },
         },
-    );
+    ));
+
+    let mut diag_inspector = DiagInspector::new(driver.clone(), paravisor_diag.clone());
 
     let (console_command_send, console_command_recv) = mesh::channel();
     let (inspect_completion_engine_send, inspect_completion_engine_recv) = mesh::channel();
@@ -2522,9 +2526,8 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 let r = async {
                     let start;
                     if user_mode_only {
-                        let diag = connect_diag(driver.clone(), &vm_rpc, DeviceVtl::Vtl2).await?;
                         start = Instant::now();
-                        diag.restart().await?;
+                        paravisor_diag.restart().await?;
                     } else {
                         let path = igvm
                             .as_ref()
@@ -2670,24 +2673,32 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     Ok(())
 }
 
-async fn connect_diag(
-    driver: impl Driver + Spawn,
-    vm_rpc: &mesh::Sender<VmRpc>,
+struct DiagConnector {
+    driver: DefaultDriver,
+    vm_rpc: Arc<mesh::Sender<VmRpc>>,
     openhcl_vtl: DeviceVtl,
-) -> anyhow::Result<diag_client::DiagClient> {
-    let service_id = new_hvsock_service_id(1);
-    let socket = vm_rpc
-        .call_failable(
-            VmRpc::ConnectHvsock,
-            (
-                CancelContext::new().with_timeout(Duration::from_secs(2)),
-                service_id,
-                openhcl_vtl,
-            ),
-        )
-        .await?;
-    let diag_client = diag_client::DiagClient::from_conn(driver, socket);
-    Ok(diag_client)
+}
+
+impl mesh_rpc::client::Dial for DiagConnector {
+    type Stream = PolledSocket<unix_socket::UnixStream>;
+
+    async fn dial(&mut self) -> io::Result<Self::Stream> {
+        let service_id = new_hvsock_service_id(1);
+        let socket = self
+            .vm_rpc
+            .call_failable(
+                VmRpc::ConnectHvsock,
+                (
+                    CancelContext::new().with_timeout(Duration::from_secs(2)),
+                    service_id,
+                    self.openhcl_vtl,
+                ),
+            )
+            .await
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+        Ok(PolledSocket::new(&self.driver, socket)?)
+    }
 }
 
 /// An object that implements [`InspectMut`] by sending an inspect request over
@@ -2699,11 +2710,7 @@ async fn connect_diag(
 pub struct DiagInspector(DiagInspectorInner);
 
 enum DiagInspectorInner {
-    NotStarted {
-        driver: DefaultDriver,
-        vm_rpc: Arc<mesh::Sender<VmRpc>>,
-        openhcl_vtl: DeviceVtl,
-    },
+    NotStarted(DefaultDriver, Arc<diag_client::DiagClient>),
     Started {
         send: mesh::Sender<inspect::Deferred>,
         _task: Task<()>,
@@ -2712,34 +2719,23 @@ enum DiagInspectorInner {
 }
 
 impl DiagInspector {
-    pub fn new(
-        driver: DefaultDriver,
-        vm_rpc: Arc<mesh::Sender<VmRpc>>,
-        openhcl_vtl: DeviceVtl,
-    ) -> Self {
-        Self(DiagInspectorInner::NotStarted {
-            driver,
-            vm_rpc,
-            openhcl_vtl,
-        })
+    pub fn new(driver: DefaultDriver, diag_client: Arc<diag_client::DiagClient>) -> Self {
+        Self(DiagInspectorInner::NotStarted(driver, diag_client))
     }
 
     fn start(&mut self) -> &mesh::Sender<inspect::Deferred> {
         loop {
             match self.0 {
                 DiagInspectorInner::NotStarted { .. } => {
-                    let DiagInspectorInner::NotStarted {
-                        driver,
-                        vm_rpc,
-                        openhcl_vtl,
-                    } = std::mem::replace(&mut self.0, DiagInspectorInner::Invalid)
+                    let DiagInspectorInner::NotStarted(driver, client) =
+                        std::mem::replace(&mut self.0, DiagInspectorInner::Invalid)
                     else {
                         unreachable!()
                     };
                     let (send, recv) = mesh::channel();
-                    let task = driver
-                        .clone()
-                        .spawn("diag-inspect", Self::run(driver, vm_rpc, recv, openhcl_vtl));
+                    let task = driver.clone().spawn("diag-inspect", async move {
+                        Self::run(&client, recv).await
+                    });
 
                     self.0 = DiagInspectorInner::Started { send, _task: task };
                 }
@@ -2750,28 +2746,10 @@ impl DiagInspector {
     }
 
     async fn run(
-        driver: DefaultDriver,
-        vm_rpc: Arc<mesh::Sender<VmRpc>>,
+        diag_client: &diag_client::DiagClient,
         mut recv: mesh::Receiver<inspect::Deferred>,
-        openhcl_vtl: DeviceVtl,
     ) {
-        let mut last_client = None;
         while let Some(deferred) = recv.next().await {
-            let client = if let Some(client) = &mut last_client {
-                client
-            } else {
-                match connect_diag(driver.clone(), &vm_rpc, openhcl_vtl).await {
-                    Ok(client) => last_client.insert(client),
-                    Err(err) => {
-                        deferred.complete_external(
-                            inspect::Node::Failed(inspect::Error::Mesh(format!("{err:#}"))),
-                            inspect::SensitivityLevel::Unspecified,
-                        );
-                        continue;
-                    }
-                }
-            };
-
             let info = deferred.external_request();
             let result = match info.request_type {
                 inspect::ExternalRequestType::Inspect { depth } => {
@@ -2779,18 +2757,17 @@ impl DiagInspector {
                         Ok(inspect::Node::Unevaluated)
                     } else {
                         // TODO: Support taking timeouts from the command line
-                        client
+                        diag_client
                             .inspect(info.path, Some(depth - 1), Some(Duration::from_secs(1)))
                             .await
                     }
                 }
                 inspect::ExternalRequestType::Update { value } => {
-                    (client.update(info.path, value).await).map(inspect::Node::Value)
+                    (diag_client.update(info.path, value).await).map(inspect::Node::Value)
                 }
             };
             deferred.complete_external(
                 result.unwrap_or_else(|err| {
-                    last_client = None;
                     inspect::Node::Failed(inspect::Error::Mesh(format!("{err:#}")))
                 }),
                 inspect::SensitivityLevel::Unspecified,

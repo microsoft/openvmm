@@ -621,6 +621,7 @@ mod grpc {
 
 #[cfg(test)]
 mod tests {
+    use crate::client::ExistingConnection;
     use crate::service::Code;
     use crate::service::ServiceRpc;
     use crate::Client;
@@ -628,6 +629,7 @@ mod tests {
     use futures::executor::block_on;
     use futures::StreamExt;
     use pal_async::local::block_with_io;
+    use pal_async::socket::PolledSocket;
     use pal_async::DefaultPool;
     use test_with_tracing::test;
 
@@ -646,9 +648,13 @@ mod tests {
 
         let client_thread = std::thread::spawn(move || {
             DefaultPool::run_with(|driver| async move {
-                let client = Client::new(&driver, c);
+                let client = Client::new(
+                    &driver,
+                    ExistingConnection::new(PolledSocket::new(&driver, c).unwrap()),
+                );
                 let response = client
-                    .call(
+                    .call()
+                    .start(
                         items::Example::Method1,
                         items::Method1Request {
                             foo: "abc".to_string(),
@@ -656,16 +662,15 @@ mod tests {
                         },
                     )
                     .await
-                    .unwrap()
                     .unwrap();
 
                 assert_eq!(&response.foo, "abc123");
                 assert_eq!(&response.bar, "def456");
 
                 let status = client
-                    .call_raw(items::Example::NAME, "unknown", Vec::new())
+                    .call()
+                    .start_raw(items::Example::NAME, "unknown", Vec::new())
                     .await
-                    .unwrap()
                     .unwrap_err();
 
                 assert_eq!(status.code, Code::Unimplemented as i32);

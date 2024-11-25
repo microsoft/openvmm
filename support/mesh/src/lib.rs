@@ -17,6 +17,7 @@ pub use mesh_channel::cancel::Cancel;
 pub use mesh_channel::cancel::CancelContext;
 pub use mesh_channel::cancel::CancelReason;
 pub use mesh_channel::cancel::Cancelled;
+pub use mesh_channel::cancel::Deadline;
 pub use mesh_channel::cell::cell;
 pub use mesh_channel::cell::Cell;
 pub use mesh_channel::cell::CellUpdater;

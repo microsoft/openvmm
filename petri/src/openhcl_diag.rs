@@ -116,8 +116,9 @@ impl OpenHclDiagHandler {
 
     async fn diag_client(&self, driver: &DefaultDriver) -> anyhow::Result<DiagClient> {
         self.wait_for_vtl2().await?;
-        DiagClient::from_hybrid_vsock(driver.clone(), &self.vtl2_vsock_path)
-            .await
-            .map_err(anyhow::Error::from)
+        Ok(DiagClient::from_hybrid_vsock(
+            driver.clone(),
+            &self.vtl2_vsock_path,
+        ))
     }
 }
