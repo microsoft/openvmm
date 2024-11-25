@@ -142,6 +142,9 @@ pub(crate) enum ParavisorCommand {
     /// Inpsect paravisor state.
     #[clap(visible_alias = "x")]
     Inspect(InspectArgs),
+
+    /// Get or set the paravisor command line.
+    CommandLine { command_line: Option<String> },
 }
 
 #[derive(ValueEnum, Copy, Clone)]

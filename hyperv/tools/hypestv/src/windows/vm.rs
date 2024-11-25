@@ -4,6 +4,7 @@
 //! VM command handling.
 
 use super::hyperv::hvc_output;
+use super::hyperv::powershell_script;
 use super::hyperv::run_hcsdiag;
 use super::hyperv::run_hvc;
 use super::rustyline_printer::Printer;
@@ -277,6 +278,39 @@ impl Vm {
 
                     println!("{:#}", node);
                 }
+            }
+            ParavisorCommand::CommandLine { command_line: None } => {
+                let output = powershell_script(
+                    r#"
+                    param([string]$id)
+                    $ErrorActionPreference = "Stop"
+                    $vm = Get-CimInstance -namespace "root\virtualization\v2" -query "select * from Msvm_ComputerSystem where Name = '$id'"
+                    $vssd = $vm | Get-CimAssociatedInstance -ResultClass "Msvm_VirtualSystemSettingData" -Association "Msvm_SettingsDefineState"
+                    [System.Text.Encoding]::Default.GetString($vssd.FirmwareParameters)
+                    "#,
+                    &[&self.inner.id.to_string()],
+                )
+                .context("failed to query vssd")?;
+                println!("{}", output.trim());
+            }
+            ParavisorCommand::CommandLine {
+                command_line: Some(command_line),
+            } => {
+                let output = powershell_script(
+                    r#"
+                    param([string]$id, [string]$command_line)
+                    $ErrorActionPreference = "Stop"
+                    $vm = Get-CimInstance -namespace "root\virtualization\v2" -query "select * from Msvm_ComputerSystem where Name = '$id'"
+                    $vssd = $vm | Get-CimAssociatedInstance -ResultClass "Msvm_VirtualSystemSettingData" -Association "Msvm_SettingsDefineState"
+                    $vssd.FirmwareParameters = [System.Text.Encoding]::UTF8.GetBytes($command_line)
+                    $vmms = Get-CimInstance -Namespace "root\virtualization\v2" -Class "Msvm_VirtualSystemManagementService"
+                    $vmms | Invoke-CimMethod -Name "ModifySystemSettings" -Arguments @{"SystemSettings" = ($vssd | ConvertTo-CimEmbeddedString)}
+                    $command_line
+                    "#,
+                    &[&self.inner.id.to_string(), &command_line],
+                )
+                .context("failed to update vssd")?;
+                println!("{}", output.trim());
             }
         }
         Ok(())
