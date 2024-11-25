@@ -183,6 +183,7 @@ pub struct GuestEmulationDevice {
     vmgs: Vec<u8>,
     #[inspect(with = "Option::is_some")]
     save_restore_buf: Option<Vec<u8>>,
+    last_save_restore_buf_len: usize,
 }
 
 impl GuestEmulationDevice {
@@ -203,6 +204,7 @@ impl GuestEmulationDevice {
             vmgs: vec![0; VMGS_CAPACITY],
             save_restore_buf: None,
             waiting_for_vtl0_start: Vec::new(),
+            last_save_restore_buf_len: 0,
         }
     }
 
@@ -386,6 +388,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     let saved_state_size = buffer.len();
                     if *written >= saved_state_size {
                         self.state = GedState::Ready;
+                        state.last_save_restore_buf_len = saved_state_size;
                         state.save_restore_buf = None;
                         continue;
                     }
