@@ -38,6 +38,7 @@ use inspect_proto::UpdateResponse2;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
 use mesh::CancelContext;
+use mesh_rpc::server::RpcReceiver;
 use mesh_rpc::service::Status;
 use net_packet_capture::OperationData;
 use net_packet_capture::PacketCaptureOperation;
@@ -127,9 +128,9 @@ impl DiagServiceHandler {
     pub async fn process_requests(
         self: &Arc<Self>,
         driver: &(impl Driver + Spawn + Clone),
-        diag_recv: mesh::Receiver<(CancelContext, UnderhillDiag)>,
-        inspect_recv: mesh::Receiver<(CancelContext, InspectService)>,
-        profile_recv: mesh::Receiver<(CancelContext, AzureProfiler)>,
+        diag_recv: RpcReceiver<UnderhillDiag>,
+        inspect_recv: RpcReceiver<InspectService>,
+        profile_recv: RpcReceiver<AzureProfiler>,
     ) -> anyhow::Result<()> {
         enum Event {
             Diag(UnderhillDiag),

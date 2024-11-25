@@ -16,6 +16,7 @@ use anyhow::Context;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use mesh::CancelReason;
+use mesh_rpc::server::RpcReceiver;
 use mesh_rpc::service::Code;
 use mesh_rpc::service::Status;
 use pal_async::driver::Driver;
@@ -97,19 +98,18 @@ impl DiagServer {
         cancel: mesh::OneshotReceiver<()>,
         request_send: mesh::Sender<DiagRequest>,
     ) -> anyhow::Result<()> {
-        let (diag_send, diag_recv) = mesh::channel();
-        let (inspect_send, inspect_recv) = mesh::channel();
         // Disable all diag requests for CVMs. Inspect filtering will be handled
         // internally more granularly.
-        if !underhill_confidentiality::confidential_filtering_enabled() {
-            self.server.add_service(diag_send);
-        }
+        let diag_recv = if underhill_confidentiality::confidential_filtering_enabled() {
+            RpcReceiver::disconnected()
+        } else {
+            self.server.add_service()
+        };
 
-        self.server.add_service(inspect_send);
+        let inspect_recv = self.server.add_service();
 
         // TODO: split the profiler to a separate service provider.
-        let (profile_send, profile_recv) = mesh::channel();
-        self.server.add_service(profile_send);
+        let profile_recv = self.server.add_service();
 
         let diag_service = Arc::new(diag_service::DiagServiceHandler::new(
             request_send,

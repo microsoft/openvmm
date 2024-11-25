@@ -46,9 +46,20 @@ pub struct Server {
 }
 
 /// A receiver for RPC requests for a given service.
+///
+/// Returned by [`Server::add_service`].
 #[derive(MeshPayload)]
 #[mesh(bound = "T: ServiceRpc")]
 pub struct RpcReceiver<T>(mesh::Receiver<(CancelContext, DecodedRpc<T>)>);
+
+impl<T: ServiceRpc> RpcReceiver<T> {
+    /// Returns a disconnected stream, useful for when a service is dynamically
+    /// not registered.
+    pub fn disconnected() -> Self {
+        let (_send, recv) = mesh::channel();
+        Self(recv)
+    }
+}
 
 impl<T: ServiceRpc> Stream for RpcReceiver<T> {
     type Item = (CancelContext, T);
