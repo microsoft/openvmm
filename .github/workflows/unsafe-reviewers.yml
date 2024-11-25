@@ -18,7 +18,7 @@ concurrency:
 jobs:
   UnsafeReview:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.merged != true && github.event.action != 'closed' && github.event.pull_request.draft == false
+    if: github.event.pull_request.merged != true && github.event.action != 'closed'
     steps:
       - name: Checkout actions
         uses: actions/checkout@v4
