@@ -77,7 +77,7 @@ impl IntoPipeline for CheckinGatesCli {
                     pipeline
                         .gh_set_pr_triggers(GhPrTriggers {
                             branches,
-                            ..Default::default()
+                            ..GhPrTriggers::new_draftable()
                         })
                         .gh_set_name("[flowey] OpenVMM PR");
                 }

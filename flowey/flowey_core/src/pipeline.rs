@@ -221,8 +221,6 @@ pub struct GhPrTriggers {
     /// Specify any branches which should be filtered out from the list of
     /// `branches` (supports glob syntax)
     pub exclude_branches: Vec<String>,
-    /// Run the pipeline even if the PR is a draft PR. Defaults to `false`.
-    pub run_on_draft: bool,
     /// Automatically cancel the pipeline run if a new commit lands in the
     /// branch. Defaults to `true`.
     pub auto_cancel: bool,
@@ -247,8 +245,9 @@ pub struct GhCiTriggers {
     pub exclude_tags: Vec<String>,
 }
 
-impl Default for GhPrTriggers {
-    fn default() -> Self {
+impl GhPrTriggers {
+    /// Triggers the pipeline on the default PR events plus when a draft is marked as ready for review.
+    pub fn new_draftable() -> Self {
         Self {
             branches: Vec::new(),
             exclude_branches: Vec::new(),
@@ -258,7 +257,6 @@ impl Default for GhPrTriggers {
                 "reopened".into(),
                 "ready_for_review".into(),
             ],
-            run_on_draft: false,
             auto_cancel: true,
         }
     }
