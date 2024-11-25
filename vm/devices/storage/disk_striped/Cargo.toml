@@ -21,7 +21,6 @@ futures.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
-stackfuture.workspace = true
 vm_resource.workspace = true
 
 [dev-dependencies]

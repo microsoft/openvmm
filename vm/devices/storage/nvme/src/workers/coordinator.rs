@@ -9,6 +9,7 @@ use super::admin::AdminState;
 use super::admin::NsidConflict;
 use super::IoQueueEntrySizes;
 use crate::queue::DoorbellRegister;
+use disk_backend::SimpleDisk;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::future::Race;
@@ -27,7 +28,6 @@ use task_control::TaskControl;
 use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
-use disk_backend::SimpleDisk;
 
 pub struct NvmeWorkers {
     _task: Task<()>,

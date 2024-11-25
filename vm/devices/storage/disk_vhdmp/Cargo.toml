@@ -17,7 +17,6 @@ inspect.workspace = true
 mesh.workspace = true
 futures.workspace = true
 thiserror.workspace = true
-stackfuture.workspace = true
 winapi = { workspace = true, features = [ "handleapi", "winbase", "winnt" ] }
 
 [target.'cfg(windows)'.dev-dependencies]

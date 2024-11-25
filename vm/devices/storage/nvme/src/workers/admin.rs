@@ -23,6 +23,7 @@ use crate::NVME_VERSION;
 use crate::PAGE_MASK;
 use crate::PAGE_SIZE;
 use crate::VENDOR_ID;
+use disk_backend::SimpleDisk;
 use futures::FutureExt;
 use futures::SinkExt;
 use futures::StreamExt;
@@ -51,7 +52,6 @@ use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
-use disk_backend::SimpleDisk;
 
 const IOSQES: u8 = 6;
 const IOCQES: u8 = 4;

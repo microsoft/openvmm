@@ -15,7 +15,6 @@ vm_resource.workspace = true
 
 inspect = { workspace = true, features = ["filepath"] }
 blocking.workspace = true
-stackfuture.workspace = true
 thiserror.workspace = true
 
 [lints]

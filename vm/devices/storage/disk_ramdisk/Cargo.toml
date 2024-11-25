@@ -20,7 +20,6 @@ anyhow.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
 event-listener.workspace = true
-stackfuture.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
