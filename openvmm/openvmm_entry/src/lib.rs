@@ -5,7 +5,6 @@
 //! for the worker process.
 
 mod cli_args;
-mod console;
 mod meshworker;
 mod serial_io;
 mod storage_builder;
@@ -80,6 +79,7 @@ use meshworker::VmmMesh;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::driver::Driver;
 use pal_async::pipe::PolledPipe;
+use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
@@ -242,10 +242,10 @@ fn vm_config_from_command_line(
                 Some(serial_io::bind_tcp_serial(&addr).context("failed to bind serial")?)
             }
             SerialConfigCli::NewConsole(app) => {
-                let path = console::random_console_path();
+                let path = console_relay::random_console_path();
                 let config =
                     serial_io::bind_serial(&path).context("failed to bind console serial")?;
-                console::launch_console(app.as_deref(), &path)
+                console_relay::launch_console(app.or_else(openvmm_terminal_app).as_deref(), &path)
                     .context("failed to launch console")?;
 
                 Some(config)
@@ -286,14 +286,14 @@ fn vm_config_from_command_line(
             }
             SerialConfigCli::Tcp(_addr) => anyhow::bail!("TCP virtio serial not supported"),
             SerialConfigCli::NewConsole(app) => {
-                let path = console::random_console_path();
+                let path = console_relay::random_console_path();
 
                 let mut io = SerialIo::new().context("creating serial IO")?;
                 io.spawn_copy_listener(serial_driver.clone(), name, &path)
                     .with_context(|| format!("listening on pipe {}", path.display()))?
                     .detach();
 
-                console::launch_console(app.as_deref(), &path)
+                console_relay::launch_console(app.or_else(openvmm_terminal_app).as_deref(), &path)
                     .context("failed to launch console")?;
                 Some(io.config)
             }
@@ -1286,6 +1286,13 @@ fn vm_config_from_command_line(
     Ok((cfg, resources))
 }
 
+/// Gets the terminal to use for externally launched console windows.
+fn openvmm_terminal_app() -> Option<PathBuf> {
+    std::env::var_os("OPENVMM_TERM")
+        .or_else(|| std::env::var_os("HVLITE_TERM"))
+        .map(Into::into)
+}
+
 // Tries to remove `path` if it is confirmed to be a Unix socket.
 fn cleanup_socket(path: &Path) {
     #[cfg(windows)]
@@ -1427,6 +1434,17 @@ fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource
         DiskCliKind::PersistentReservationsWrapper(inner) => Resource::new(
             disk_backend_resources::DiskWithReservationsHandle(disk_open(inner, read_only)?),
         ),
+        DiskCliKind::Crypt {
+            disk,
+            cipher,
+            key_file,
+        } => Resource::new(disk_crypt_resources::DiskCryptHandle {
+            disk: disk_open(disk, read_only)?,
+            cipher: match cipher {
+                cli_args::DiskCipher::XtsAes256 => disk_crypt_resources::Cipher::XtsAes256,
+            },
+            key: fs_err::read(key_file).context("failed to read key file")?,
+        }),
     };
 
     Ok(disk_type)
@@ -1452,7 +1470,7 @@ fn do_main() -> anyhow::Result<()> {
     }
 
     if let Some(path) = opt.relay_console_path {
-        return console::relay_console(&path);
+        return console_relay::relay_console(&path);
     }
 
     if let Some(path) = opt.ttrpc.as_ref().or(opt.grpc.as_ref()) {
@@ -1603,7 +1621,7 @@ enum InteractiveCommand {
     Hvsock {
         /// the terminal emulator to run (defaults to conhost.exe or xterm)
         #[clap(short, long)]
-        term: Option<String>,
+        term: Option<PathBuf>,
         /// the vsock port to connect to
         port: u32,
     },
@@ -2472,7 +2490,6 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 let vm_rpc = &vm_rpc;
                 let action = || async move {
                     let service_id = new_hvsock_service_id(port);
-                    let pool = DefaultPool::new();
                     let socket = vm_rpc
                         .call_failable(
                             VmRpc::ConnectHvsock,
@@ -2483,9 +2500,14 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                             ),
                         )
                         .await?;
-                    let path = console::relay_console_server(&pool.driver(), socket)?;
-                    console::launch_console(term.as_ref().map(|x| x.as_ref()), &path)?;
-                    thread::spawn(move || pool.run());
+                    let socket = PolledSocket::new(driver, socket)?;
+                    let mut console = console_relay::Console::new(
+                        driver.clone(),
+                        term.or_else(openvmm_terminal_app).as_deref(),
+                    )?;
+                    driver
+                        .spawn("console-relay", async move { console.relay(socket).await })
+                        .detach();
                     anyhow::Result::<_>::Ok(())
                 };
 

@@ -10,6 +10,13 @@ format of the CLI, output via stdout/stderr, etc...
 That is to say:
 **ANY AUTOMATION THAT ATTEMPTS TO USE `ohcldiag-dev` WILL EVENTUALLY BREAK!**
 
+`ochldiag-dev` is designed to work no matter where you run OpenHCL: in a Hyper-V
+VM, an OpenVMM VM using VSM or nested virtualization, or in other VMMs that
+support paravisors. Consider the [`hypestv`][] tool for an interactive dev/test
+tool specifically for Hyper-V VMs.
+
+[`hypestv`]: ../../../dev_guide/dev_tools/hypestv.md
+
 ## Examples
 
 ### Check `OpenHCL` version

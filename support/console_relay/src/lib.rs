@@ -1,24 +1,31 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Code to launch a graphical terminal for relaying input/output.
+//! Code to launch a terminal emulator for relaying input/output.
 
-use anyhow::Context;
+#![warn(missing_docs)]
+
+mod unix;
+mod windows;
+
+use anyhow::Context as _;
 use futures::executor::block_on;
 use futures::io::AllowStdIo;
+use futures::io::AsyncReadExt;
+use futures::AsyncRead;
+use futures::AsyncWrite;
 use futures::AsyncWriteExt;
 use pal_async::driver::Driver;
 use pal_async::local::block_with_io;
-use pal_async::socket::PolledSocket;
-use pal_async::task::Spawn;
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::process::Command;
+use std::task::Context;
 use term::raw_stdout;
 use term::set_raw_console;
-use unix_socket::UnixStream;
 
 /// Synchronously relays stdio to the pipe (Windows) or socket (Unix) pointed to
 /// by `path`.
@@ -33,7 +40,7 @@ pub fn relay_console(path: &Path) -> anyhow::Result<()> {
     block_with_io(|driver| async move {
         #[cfg(unix)]
         let (read, mut write) = {
-            let pipe = PolledSocket::connect_unix(&driver, path)
+            let pipe = pal_async::socket::PolledSocket::connect_unix(&driver, path)
                 .await
                 .context("failed to connect to console socket")?;
             pipe.split()
@@ -47,7 +54,7 @@ pub fn relay_console(path: &Path) -> anyhow::Result<()> {
                 .context("failed to connect to console pipe")?;
             let pipe = pal_async::pipe::PolledPipe::new(&driver, pipe)
                 .context("failed to create polled pipe")?;
-            futures::AsyncReadExt::split(pipe)
+            AsyncReadExt::split(pipe)
         };
 
         set_raw_console(true);
@@ -88,15 +95,6 @@ fn choose_terminal_apps(app: Option<&Path>) -> Vec<App<'_>> {
     // If a specific app was specified, use it with no fallbacks.
     if let Some(app) = app {
         return vec![app.into()];
-    }
-
-    // Use just the environment variable if specified.
-    if let Some(term) = std::env::var_os("OPENVMM_TERM").or_else(|| std::env::var_os("HVLITE_TERM"))
-    {
-        return vec![App {
-            path: PathBuf::from(term).into(),
-            args: Vec::new(),
-        }];
     }
 
     let mut apps = Vec::new();
@@ -190,68 +188,95 @@ pub fn random_console_path() -> PathBuf {
     path
 }
 
-/// Relays a socket to a server usable by [`relay_console`].
+/// An external console window.
 ///
-/// Returns the path of the server, suitable for passing to [`launch_console`].
-pub fn relay_console_server(
-    driver: &(impl Driver + Spawn + Clone),
-    socket: UnixStream,
-) -> anyhow::Result<PathBuf> {
-    let path = random_console_path();
-
+/// To write to the console, use methods from [`AsyncWrite`]. To read from the
+/// console, use methods from [`AsyncRead`].
+pub struct Console {
     #[cfg(windows)]
-    let listener = pal_async::windows::pipe::NamedPipeServer::create(&path)
-        .context("failed to create pipe server")?;
+    sys: windows::WindowsNamedPipeConsole,
     #[cfg(unix)]
-    let mut listener = PolledSocket::new(
-        driver,
-        unix_socket::UnixListener::bind(&path).context("failed to bind socket")?,
-    )
-    .context("failed to create polled listener")?;
+    sys: unix::UnixSocketConsole,
+}
 
-    driver
-        .spawn("console relay", {
-            let driver = driver.clone();
-            async move {
-                #[cfg(windows)]
-                let (pipe_recv, mut pipe_send) = {
-                    let pipe = listener
-                        .accept(&driver)
-                        .context("failed to create pipe")?
-                        .await
-                        .context("failed to accept connection")?;
-                    let pipe = pal_async::pipe::PolledPipe::new(&driver, pipe)
-                        .context("failed to create polled pipe")?;
+impl Console {
+    /// Launches a new terminal emulator and returns an object used to
+    /// read/write to the console of that window.
+    ///
+    /// If `app` is `None`, the system default terminal emulator is used.
+    ///
+    /// The terminal emulator will relaunch the current executable with the
+    /// `--relay-console-path` argument to specify the path of the pipe/socket
+    /// used to relay data. Call [`relay_console`] with that path in your `main`
+    /// function.
+    pub fn new(driver: impl Driver, app: Option<&Path>) -> anyhow::Result<Self> {
+        let path = random_console_path();
+        let this = Self::new_from_path(driver, &path)?;
+        launch_console(app, &path).context("failed to launch console")?;
+        Ok(this)
+    }
 
-                    futures::AsyncReadExt::split(pipe)
-                };
+    fn new_from_path(driver: impl Driver, path: &Path) -> anyhow::Result<Self> {
+        #[cfg(windows)]
+        let sys = windows::WindowsNamedPipeConsole::new(Box::new(driver), path)
+            .context("failed to create console pipe")?;
+        #[cfg(unix)]
+        let sys = unix::UnixSocketConsole::new(Box::new(driver), path)
+            .context("failed to create console socket")?;
+        Ok(Console { sys })
+    }
 
-                #[cfg(unix)]
-                let (pipe_recv, mut pipe_send) = {
-                    let (connection, _) = listener.accept().await.context("failed to accept")?;
-                    let connection = PolledSocket::new(&driver, connection)
-                        .context("failed to create polled connection")?;
-                    connection.split()
-                };
+    /// Relays the console contents to and from `io`.
+    pub async fn relay(&mut self, io: impl AsyncRead + AsyncWrite) -> anyhow::Result<()> {
+        let (pipe_recv, mut pipe_send) = { AsyncReadExt::split(self) };
 
-                let socket =
-                    PolledSocket::new(&driver, socket).context("failed to create polled socket")?;
-                let (socket_recv, mut socket_send) = socket.split();
+        let (socket_recv, mut socket_send) = io.split();
 
-                let task_a = async move {
-                    let r = futures::io::copy(pipe_recv, &mut socket_send).await;
-                    let _ = socket_send.close().await;
-                    r
-                };
-                let task_b = async move {
-                    let r = futures::io::copy(socket_recv, &mut pipe_send).await;
-                    let _ = pipe_send.close().await;
-                    r
-                };
-                futures::future::try_join(task_a, task_b).await?;
-                anyhow::Result::<_>::Ok(())
-            }
-        })
-        .detach();
-    Ok(path)
+        let task_a = async move {
+            let r = futures::io::copy(pipe_recv, &mut socket_send).await;
+            let _ = socket_send.close().await;
+            r
+        };
+        let task_b = async move {
+            let r = futures::io::copy(socket_recv, &mut pipe_send).await;
+            let _ = pipe_send.close().await;
+            r
+        };
+        futures::future::try_join(task_a, task_b).await?;
+        anyhow::Result::<_>::Ok(())
+    }
+}
+
+impl AsyncRead for Console {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.get_mut().sys).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Console {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.get_mut().sys).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().sys).poll_flush(cx)
+    }
+
+    fn poll_close(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().sys).poll_close(cx)
+    }
 }

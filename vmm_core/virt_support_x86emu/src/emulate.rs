@@ -6,7 +6,6 @@
 use crate::translate::translate_gva_to_gpa;
 use crate::translate::TranslateFlags;
 use crate::translate::TranslatePrivilegeCheck;
-use crate::translate::TranslationRegisters;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use hvdef::HvInterceptAccessType;
@@ -117,7 +116,7 @@ pub trait TranslateGvaSupport {
     fn acquire_tlb_lock(&mut self);
 
     /// Returns the registers used to walk the page table.
-    fn registers(&mut self) -> Result<TranslationRegisters, Self::Error>;
+    fn registers(&mut self) -> Result<crate::translate::TranslationRegisters, Self::Error>;
 }
 
 /// Emulates a page table walk.
@@ -144,7 +143,7 @@ pub fn emulate_translate_gva<T: TranslateGvaSupport>(
     let registers = support.registers()?;
 
     let r = match translate_gva_to_gpa(support.guest_memory(), gva, &registers, flags) {
-        Ok(gpa) => Ok(EmuTranslateResult {
+        Ok(crate::translate::TranslateResult { gpa, cache_info: _ }) => Ok(EmuTranslateResult {
             gpa,
             overlay_page: None,
         }),

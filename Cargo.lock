@@ -307,6 +307,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "block_crypto"
+version = "0.0.0"
+dependencies = [
+ "openssl",
+ "thiserror 2.0.0",
+ "windows",
+]
+
+[[package]]
 name = "blocking"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -607,6 +616,7 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+ "terminal_size",
 ]
 
 [[package]]
@@ -678,6 +688,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
+]
+
+[[package]]
+name = "console_relay"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "getrandom",
+ "pal_async",
+ "term",
+ "unix_socket",
 ]
 
 [[package]]
@@ -1142,6 +1164,30 @@ dependencies = [
  "uevent",
  "vm_resource",
  "zerocopy",
+]
+
+[[package]]
+name = "disk_crypt"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "block_crypto",
+ "disk_backend",
+ "disk_crypt_resources",
+ "guestmem",
+ "inspect",
+ "scsi_buffers",
+ "stackfuture",
+ "thiserror 2.0.0",
+ "vm_resource",
+]
+
+[[package]]
+name = "disk_crypt_resources"
+version = "0.0.0"
+dependencies = [
+ "mesh",
+ "vm_resource",
 ]
 
 [[package]]
@@ -2916,6 +2962,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypestv"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "clap_dyn_complete",
+ "console_relay",
+ "diag_client",
+ "dirs",
+ "futures",
+ "futures-concurrency",
+ "guid",
+ "inspect",
+ "mesh",
+ "pal_async",
+ "parking_lot",
+ "rustyline",
+ "shell-words",
+]
+
+[[package]]
 name = "iced-x86"
 version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4365,10 +4432,12 @@ dependencies = [
  "chipset_resources",
  "clap",
  "clap_dyn_complete",
+ "console_relay",
  "debug_worker_defs",
  "diag_client",
  "dirs",
  "disk_backend_resources",
+ "disk_crypt_resources",
  "disk_vhd1",
  "firmware_uefi_custom_vars",
  "floppy_resources",
@@ -4486,6 +4555,7 @@ dependencies = [
  "chipset",
  "debug_worker",
  "disk_blob",
+ "disk_crypt",
  "disk_file",
  "disk_prwrap",
  "disk_ramdisk",
@@ -6089,6 +6159,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "terminal_size"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21bebf2b7c9e0a515f6e0f8c51dc0f8e4696391e6f1ff30379559f8365fb0df7"
+dependencies = [
+ "rustix",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
 name = "test_with_tracing"
 version = "0.0.0"
 dependencies = [
@@ -6460,7 +6540,6 @@ checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
 name = "ucs2"
 version = "0.0.0"
 dependencies = [
- "mesh_protobuf",
  "thiserror 2.0.0",
 ]
 

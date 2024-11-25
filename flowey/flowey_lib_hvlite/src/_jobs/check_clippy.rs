@@ -183,21 +183,12 @@ impl SimpleFlowNode for Node {
                 }
 
                 // packages requiring openssl-sys won't cross compile for macos
-                // there is no openvmm artifact for macos yet, so skip petri and vmm_tests
                 if matches!(
                     target.operating_system,
                     target_lexicon::OperatingSystem::Darwin
                 ) {
                     exclude.extend(
-                        [
-                            "openssl_kdf",
-                            "vmgs_lib",
-                            "vmm_tests",
-                            "petri_artifact_resolver_openvmm_known_paths",
-                            "vmm_test_petri_support",
-                            "petri",
-                        ]
-                        .map(|x| x.into()),
+                        ["openssl_kdf", "vmgs_lib", "block_crypto", "disk_crypt"].map(|x| x.into()),
                     );
                 }
 

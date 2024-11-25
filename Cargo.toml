@@ -39,6 +39,7 @@ members = [
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
+  "hyperv/tools/hypestv",
 ]
 exclude = [
   "xsync",
@@ -86,6 +87,7 @@ cache_topology = { path = "support/cache_topology" }
 closeable_mutex = { path = "support/closeable_mutex" }
 ci_logger = { path = "support/ci_logger" }
 clap_dyn_complete = { path = "support/clap_dyn_complete" }
+console_relay = { path = "support/console_relay" }
 safe_intrinsics = { path = "support/safe_intrinsics" }
 debug_ptr = { path = "support/debug_ptr" }
 fast_select = { path = "support/fast_select" }
@@ -170,6 +172,7 @@ aarch64defs = { path = "vm/aarch64/aarch64defs" }
 aarch64emu = { path = "vm/aarch64/aarch64emu" }
 acpi = { path = "vm/acpi" }
 acpi_spec = { path = "vm/acpi_spec" }
+block_crypto = { path = "vm/devices/storage/block_crypto" }
 chipset_arc_mutex_device = { path = "vm/chipset_arc_mutex_device" }
 chipset_device = { path = "vm/chipset_device" }
 chipset_device_fuzz = { path = "vm/chipset_device_fuzz" }
@@ -237,6 +240,8 @@ disk_backend = { path = "vm/devices/storage/disk_backend" }
 disk_backend_resources = { path = "vm/devices/storage/disk_backend_resources" }
 disk_blob = { path = "vm/devices/storage/disk_blob" }
 disk_blockdevice = { path = "vm/devices/storage/disk_blockdevice" }
+disk_crypt = { path = "vm/devices/storage/disk_crypt" }
+disk_crypt_resources = { path = "vm/devices/storage/disk_crypt_resources" }
 disk_file = { path = "vm/devices/storage/disk_file" }
 disk_get_vmgs = { path = "vm/devices/storage/disk_get_vmgs" }
 disk_nvme = { path = "vm/devices/storage/disk_nvme" }
