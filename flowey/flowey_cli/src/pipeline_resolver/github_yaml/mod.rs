@@ -645,6 +645,9 @@ EOF
             }
             None => None,
         },
+        pull_request_target: Some(github_yaml_defs::PrTarget {
+            types: vec!["ready_for_review".to_string()],
+        }),
         push: match gh_ci_triggers {
             Some(gh_ci_triggers) => Some(github_yaml_defs::CiTrigger {
                 branches: gh_ci_triggers.branches,

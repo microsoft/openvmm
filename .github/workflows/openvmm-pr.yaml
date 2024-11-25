@@ -15,6 +15,9 @@ on:
     branches:
     - main
     - release/*
+  pull_request_target:
+    types:
+    - ready_for_review
 concurrency:
   group: ${{ github.ref }}
   cancel-in-progress: true
