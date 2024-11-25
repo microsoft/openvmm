@@ -90,8 +90,11 @@ impl Vm {
         match cmd {
             VmCommand::Start { paravisor } => {
                 if paravisor {
-                    let diag = self.diag_client().await?;
-                    diag.start([], []).await.context("start failed")?;
+                    self.paravisor_diag
+                        .start([], [])
+                        .await
+                        .context("start failed")?;
+
                     writeln!(self.inner.printer.out(), "guest started within paravisor")?;
                 } else {
                     self.delay(move |inner| {
@@ -206,7 +209,6 @@ impl Vm {
                 if !paravisor {
                     anyhow::bail!("no host inspect yet");
                 }
-                let diag = self.diag_client().await?;
                 if let Some(update) = update {
                     let value = self
                         .paravisor_diag
