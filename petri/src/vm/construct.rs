@@ -194,8 +194,10 @@ impl PetriVmConfig {
                         vmbusproxy_handle: None,
                     }),
                     Some(OpenHclDiagHandler {
-                        ged_send: ged_send.clone(),
-                        vtl2_vsock_path,
+                        client: diag_client::DiagClient::from_hybrid_vsock(
+                            driver.clone(),
+                            &vtl2_vsock_path,
+                        ),
                     }),
                     Some(ged),
                     Some(ged_send),

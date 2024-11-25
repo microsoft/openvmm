@@ -100,22 +100,34 @@ impl DiagServer {
     ) -> anyhow::Result<()> {
         // Disable all diag requests for CVMs. Inspect filtering will be handled
         // internally more granularly.
-        let diag_recv = if underhill_confidentiality::confidential_filtering_enabled() {
-            RpcReceiver::disconnected()
+        let (diag_recv, diag2_recv) = if underhill_confidentiality::confidential_filtering_enabled()
+        {
+            (RpcReceiver::disconnected(), RpcReceiver::disconnected())
         } else {
-            self.server.add_service()
+            (
+                self.server.add_service::<diag_proto::UnderhillDiag>(),
+                self.server.add_service::<diag_proto::OpenhclDiag>(),
+            )
         };
 
-        let inspect_recv = self.server.add_service();
+        let inspect_recv = self.server.add_service::<inspect_proto::InspectService>();
 
         // TODO: split the profiler to a separate service provider.
-        let profile_recv = self.server.add_service();
+        let profile_recv = self
+            .server
+            .add_service::<azure_profiler_proto::AzureProfiler>();
 
         let diag_service = Arc::new(diag_service::DiagServiceHandler::new(
             request_send,
             self.inner.clone(),
         ));
-        let process = diag_service.process_requests(driver, diag_recv, inspect_recv, profile_recv);
+        let process = diag_service.process_requests(
+            driver,
+            diag_recv,
+            diag2_recv,
+            inspect_recv,
+            profile_recv,
+        );
 
         let serve = self.server.run(driver, self.control_listener, cancel);
         let data_connections = self

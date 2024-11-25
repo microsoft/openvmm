@@ -75,11 +75,6 @@ impl PetriVm {
         }
     }
 
-    /// Get the path to the VTL 2 vsock socket, if the VM is configured with OpenHCL.
-    pub fn vtl2_vsock_path(&self) -> anyhow::Result<&Path> {
-        self.inner.openhcl_diag().map(|x| &*x.vtl2_vsock_path)
-    }
-
     /// Get the artifact resolver constructed for this VM.
     pub fn artifact_resolver(&self) -> &petri_artifacts_core::TestArtifacts {
         &self.inner.resources.resolver
@@ -162,14 +157,6 @@ impl PetriVm {
         pub async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient>
     );
     petri_vm_fn!(
-        /// Wait for VTL 2 to report that it is ready to respond to commands.
-        /// Will fail if the VM is not running OpenHCL.
-        ///
-        /// This should only be necessary if you're doing something manual. All
-        /// Petri-provided methods will wait for VTL 2 to be ready automatically.
-        pub async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()>
-    );
-    petri_vm_fn!(
         /// Wait for a connection from a pipette agent running in VTL 2.
         /// Useful if you've reset VTL 2 or are otherwise expecting a fresh connection.
         /// Will fail if the VM is not running OpenHCL.
@@ -248,15 +235,11 @@ impl PetriVm {
 
 impl PetriVmInner {
     async fn openhcl_core_dump(&self, name: &str, path: &Path) -> anyhow::Result<()> {
-        self.openhcl_diag()?
-            .core_dump(&self.resources.driver, name, path)
-            .await
+        self.openhcl_diag()?.core_dump(name, path).await
     }
 
     async fn openhcl_crash(&self, name: &str) -> anyhow::Result<()> {
-        self.openhcl_diag()?
-            .crash(&self.resources.driver, name)
-            .await
+        self.openhcl_diag()?.crash(name).await
     }
 
     async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
@@ -369,9 +352,7 @@ impl PetriVmInner {
     }
 
     async fn test_inspect_openhcl(&self) -> anyhow::Result<()> {
-        self.openhcl_diag()?
-            .test_inspect(&self.resources.driver)
-            .await
+        self.openhcl_diag()?.test_inspect().await
     }
 
     async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
@@ -381,10 +362,6 @@ impl PetriVmInner {
             &self.resources.output_dir,
         )
         .await
-    }
-
-    async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()> {
-        self.openhcl_diag()?.wait_for_vtl2().await
     }
 
     async fn wait_for_vtl2_agent(&mut self) -> anyhow::Result<PipetteClient> {
@@ -462,7 +439,6 @@ impl PetriVmInner {
         let res = self
             .openhcl_diag()?
             .run_vtl2_command(
-                &self.resources.driver,
                 "sh",
                 &[
                     "-c",
