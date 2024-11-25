@@ -226,6 +226,8 @@ pub struct GhPrTriggers {
     /// Automatically cancel the pipeline run if a new commit lands in the
     /// branch. Defaults to `true`.
     pub auto_cancel: bool,
+    /// Run the pipeline whenever the PR trigger matches the specified types
+    pub types: Vec<String>,
 }
 
 /// Trigger Github Actions pipelines per PR
@@ -250,6 +252,12 @@ impl Default for GhPrTriggers {
         Self {
             branches: Vec::new(),
             exclude_branches: Vec::new(),
+            types: vec![
+                "opened".into(),
+                "synchronize".into(),
+                "reopened".into(),
+                "ready_for_review".into(),
+            ],
             run_on_draft: false,
             auto_cancel: true,
         }

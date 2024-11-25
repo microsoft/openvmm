@@ -15,8 +15,10 @@ on:
     branches:
     - main
     - release/*
-  pull_request_target:
     types:
+    - opened
+    - synchronize
+    - reopened
     - ready_for_review
 concurrency:
   group: ${{ github.ref }}
