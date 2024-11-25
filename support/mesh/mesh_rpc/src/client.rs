@@ -14,6 +14,7 @@ use crate::message::MESSAGE_TYPE_RESPONSE;
 use crate::rpc::status_from_err;
 use crate::rpc::ProtocolError;
 use crate::service::Code;
+use crate::service::DecodedRpc;
 use crate::service::GenericRpc;
 use crate::service::ServiceRpc;
 use crate::service::Status;
@@ -126,8 +127,28 @@ impl Client {
         self.send.send(mesh::Message::new(ClientRequest {
             service: T::NAME.to_string(),
             timeout: timeout.map(|d| d.as_nanos() as u64),
-            rpc,
+            rpc: DecodedRpc::Rpc(rpc),
         }));
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn call_raw(
+        &self,
+        service: &str,
+        method: &str,
+        data: Vec<u8>,
+    ) -> Result<Result<Vec<u8>, Status>, mesh::RecvError> {
+        let (send, recv) = mesh::oneshot();
+        self.send.send(mesh::Message::new(ClientRequest {
+            service: service.to_string(),
+            timeout: None,
+            rpc: GenericRpc {
+                method: method.to_string(),
+                data,
+                port: send.into(),
+            },
+        }));
+        recv.await
     }
 
     /// Calls a remote function `rpc` with `input` and with no timeout, and

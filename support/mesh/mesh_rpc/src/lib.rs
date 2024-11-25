@@ -19,7 +19,7 @@ extern crate self as mesh_rpc;
 mod client;
 mod message;
 mod rpc;
-mod server;
+pub mod server;
 pub mod service;
 
 pub use client::Client;

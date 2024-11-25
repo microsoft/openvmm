@@ -143,10 +143,8 @@ impl VmService {
         mut recv: mesh::Receiver<WorkerRpc<()>>,
     ) -> anyhow::Result<()> {
         let mut server = mesh_rpc::Server::new();
-        let (vm_service_send, mut vm_service_recv) = mesh::channel();
-        let (inspect_service_send, mut inspect_service_recv) = mesh::channel();
-        server.add_service::<vmservice::Vm>(vm_service_send);
-        server.add_service::<InspectService>(inspect_service_send);
+        let mut vm_service_recv = server.add_service::<vmservice::Vm>();
+        let mut inspect_service_recv = server.add_service::<InspectService>();
 
         let transport = self.transport;
         let (cancel_send, cancel_recv) = mesh::oneshot();

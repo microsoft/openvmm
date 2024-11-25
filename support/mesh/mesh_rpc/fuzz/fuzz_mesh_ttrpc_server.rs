@@ -6,7 +6,7 @@
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
-use mesh::CancelContext;
+use futures::StreamExt;
 use pal_async::socket::PolledSocket;
 use pal_async::DefaultPool;
 use unix_socket::UnixListener;
@@ -20,10 +20,9 @@ fn do_fuzz(input: &[u8]) {
     fuzz_eprintln!("{input:X?}");
 
     let (_cancel_send, cancel) = mesh::oneshot();
-    let (send, mut recv) = mesh::channel::<(CancelContext, S)>();
     let mut server = mesh_rpc::Server::new();
 
-    server.add_service(send);
+    let mut recv = server.add_service();
 
     DefaultPool::run_with(|driver| async move {
         let control_listener = tempfile::Builder::new()
@@ -45,13 +44,13 @@ fn do_fuzz(input: &[u8]) {
             let mut data = Vec::new();
             let msg = futures::select_biased! {
                 _ = server.as_mut().fuse() => unreachable!("server should never complete"),
-                msg = recv.recv().fuse() => msg,
+                msg = recv.next().fuse() => msg,
                 _ = control_sender.read_to_end(&mut data).fuse() => break,
 
             };
             // Leave all the branches in for use by coverage tools.
             match msg {
-                Ok((_c, msg)) => match msg {
+                Some((_c, msg)) => match msg {
                     S::A(_, _) => {}
                     S::B(_, _) => {}
                     S::C(_, _) => {}
@@ -75,16 +74,7 @@ fn do_fuzz(input: &[u8]) {
                     S::V(_, _) => {}
                     S::W(_, _) => {}
                 },
-                Err(e) => match e {
-                    mesh::RecvError::Closed => panic!("closed"),
-                    mesh::RecvError::Error(err) => {
-                        if let mesh::ChannelErrorKind::Corruption = err.kind() {
-                            // Expected, we're fuzzing after all
-                        } else {
-                            panic!("node failure: {err:?}")
-                        }
-                    }
-                },
+                None => panic!("closed"),
             }
         }
     });

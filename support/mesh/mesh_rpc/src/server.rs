@@ -14,15 +14,20 @@ use crate::message::MESSAGE_TYPE_RESPONSE;
 use crate::rpc::status_from_err;
 use crate::rpc::ProtocolError;
 use crate::service::Code;
+use crate::service::DecodedRpc;
 use crate::service::GenericRpc;
 use crate::service::ServiceRpc;
+use crate::service::ServiceRpcError;
 use crate::service::Status;
+use futures::stream::FusedStream;
 use futures::FutureExt;
+use futures::Stream;
 use futures::StreamExt;
 use futures_concurrency::future::TryJoin;
 use futures_concurrency::stream::Merge;
-use mesh::payload::Downcast;
+use mesh::local_node::Port;
 use mesh::CancelContext;
+use mesh::MeshPayload;
 use pal_async::driver::Driver;
 use pal_async::socket::AsSockRef;
 use pal_async::socket::Listener;
@@ -30,12 +35,64 @@ use pal_async::socket::PolledSocket;
 use std::collections::HashMap;
 use std::io::Read;
 use std::io::Write;
+use std::pin::Pin;
+use std::task::ready;
 use unicycle::FuturesUnordered;
 
 /// A ttrpc server.
 #[derive(Debug, Default)]
 pub struct Server {
     services: HashMap<&'static str, mesh::Sender<(CancelContext, GenericRpc)>>,
+}
+
+/// A receiver for RPC requests for a given service.
+#[derive(MeshPayload)]
+#[mesh(bound = "T: ServiceRpc")]
+pub struct RpcReceiver<T>(mesh::Receiver<(CancelContext, DecodedRpc<T>)>);
+
+impl<T: ServiceRpc> Stream for RpcReceiver<T> {
+    type Item = (CancelContext, T);
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        while let Some((ctx, rpc)) = ready!(Pin::new(&mut this.0).poll_next(cx)) {
+            match rpc {
+                DecodedRpc::Rpc(rpc) => return Some((ctx, rpc)).into(),
+                DecodedRpc::Err { rpc, err } => {
+                    rpc.fail(err);
+                }
+            }
+        }
+        None.into()
+    }
+}
+
+impl<T: ServiceRpc> FusedStream for RpcReceiver<T> {
+    fn is_terminated(&self) -> bool {
+        self.0.is_terminated()
+    }
+}
+
+impl GenericRpc {
+    fn fail(self, err: ServiceRpcError) {
+        let status = match err {
+            ServiceRpcError::UnknownMethod => Status {
+                code: Code::Unimplemented.into(),
+                message: format!("unknown method {}", self.method),
+                details: Vec::new(),
+            },
+            ServiceRpcError::InvalidInput(error) => Status {
+                code: Code::InvalidArgument.into(),
+                message: format!("{:#}", anyhow::Error::from(error)),
+                details: Vec::new(),
+            },
+        };
+        let send = mesh::OneshotSender::<Result<Vec<u8>, Status>>::from(self.port);
+        send.send(Err(status));
+    }
 }
 
 impl Server {
@@ -47,11 +104,10 @@ impl Server {
     }
 
     /// Adds or updates a channel for receiving service requests.
-    pub fn add_service<T: ServiceRpc>(&mut self, send: mesh::Sender<(CancelContext, T)>)
-    where
-        GenericRpc: Downcast<T>,
-    {
-        self.services.insert(T::NAME, send.force_downcast());
+    pub fn add_service<T: ServiceRpc>(&mut self) -> RpcReceiver<T> {
+        let (send, recv) = mesh::channel();
+        self.services.insert(T::NAME, Port::from(send).into());
+        RpcReceiver(recv)
     }
 
     /// Runs the server using the ttrpc transport, listening on `listener` and
@@ -162,9 +218,9 @@ impl Server {
                                 match r {
                                     Ok(Ok(payload)) => Response::Payload(payload),
                                     Ok(Err(status)) => Response::Status(status),
-                                    Err(_) => Response::Status(Status {
+                                    Err(err) => Response::Status(Status {
                                         code: Code::Internal.into(),
-                                        message: "unknown error".to_string(),
+                                        message: format!("{:#}", anyhow::Error::from(err)),
                                         details: Vec::new(),
                                     }),
                                 },
@@ -541,10 +597,10 @@ mod grpc {
 
             service.send((ctx, rpc));
 
-            Ok(recv.await.unwrap_or_else(|_| {
+            Ok(recv.await.unwrap_or_else(|err| {
                 Err(Status {
                     code: Code::Internal.into(),
-                    message: "unknown error".to_string(),
+                    message: format!("{:#}", anyhow::Error::from(err)),
                     details: Vec::new(),
                 })
             }))
@@ -554,9 +610,12 @@ mod grpc {
 
 #[cfg(test)]
 mod tests {
+    use crate::service::Code;
+    use crate::service::ServiceRpc;
     use crate::Client;
     use crate::Server;
     use futures::executor::block_on;
+    use futures::StreamExt;
     use pal_async::local::block_with_io;
     use pal_async::DefaultPool;
     use test_with_tracing::test;
@@ -569,8 +628,7 @@ mod tests {
     fn client_server() {
         let (c, s) = unix_socket::UnixStream::pair().unwrap();
         let mut server = Server::new();
-        let (send, mut recv) = mesh::channel();
-        server.add_service::<items::Example>(send);
+        let mut recv = server.add_service::<items::Example>();
         let server_thread = std::thread::spawn(move || {
             block_with_io(|driver| async move { server.run_single(&driver, s).await })
         });
@@ -592,12 +650,21 @@ mod tests {
 
                 assert_eq!(&response.foo, "abc123");
                 assert_eq!(&response.bar, "def456");
+
+                let status = client
+                    .call_raw(items::Example::NAME, "unknown", Vec::new())
+                    .await
+                    .unwrap()
+                    .unwrap_err();
+
+                assert_eq!(status.code, Code::Unimplemented as i32);
+
                 client.shutdown().await;
             })
         });
 
         block_on(async {
-            let (_, req) = recv.recv().await.unwrap();
+            let (_, req) = recv.next().await.unwrap();
             match req {
                 items::Example::Method1(input, resp) => {
                     assert_eq!(&input.foo, "abc");
@@ -610,7 +677,7 @@ mod tests {
                 _ => panic!("{:?}", &req),
             }
 
-            recv.recv().await.unwrap_err();
+            assert!(recv.next().await.is_none());
         });
 
         client_thread.join().unwrap();
