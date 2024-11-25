@@ -500,7 +500,11 @@ impl UnderhillVmWorker {
                 mesh::payload::decode(&saved_state_buf)
                     .context("failed to decode servicing state")?,
             );
-            tracing::info!("received servicing state from host");
+
+            tracing::info!(
+                saved_state_len = saved_state_buf.len(),
+                "received servicing state from host"
+            );
         }
 
         let is_post_servicing = servicing_state.is_some();
