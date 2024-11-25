@@ -2697,7 +2697,7 @@ impl mesh_rpc::client::Dial for DiagDialer {
             .await
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
-        Ok(PolledSocket::new(&self.driver, socket)?)
+        PolledSocket::new(&self.driver, socket)
     }
 }
 
