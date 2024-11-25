@@ -139,10 +139,10 @@ impl Drop for PagePoolHandle {
     fn drop(&mut self) {
         let mut inner = self.inner.lock();
 
-        let index = inner
+        let entry = inner
             .state
-            .iter()
-            .position(|state| {
+            .iter_mut()
+            .find(|state| {
                 if let State::Allocated {
                     base_pfn: base,
                     pfn_bias: offset,
@@ -158,7 +158,7 @@ impl Drop for PagePoolHandle {
             })
             .expect("must find allocation");
 
-        inner.state[index] = State::Free {
+        *entry = State::Free {
             base_pfn: self.base_pfn,
             pfn_bias: self.pfn_bias,
             size_pages: self.size_pages,
@@ -380,21 +380,15 @@ impl PagePoolAllocator {
 #[cfg(all(feature = "vfio", target_os = "linux"))]
 impl user_driver::vfio::VfioDmaBuffer for PagePoolAllocator {
     fn create_dma_buffer(&self, len: usize) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        if len == 0 {
-            anyhow::bail!("allocation of size 0 not supported");
-        }
-
         if len as u64 % HV_PAGE_SIZE != 0 {
             anyhow::bail!("not a page-size multiple");
         }
 
-        let size_pages = len as u64 / HV_PAGE_SIZE;
+        let size_pages = NonZeroU64::new(len as u64 / HV_PAGE_SIZE)
+            .context("allocation of size 0 not supported")?;
 
         let alloc = self
-            .alloc(
-                size_pages.try_into().expect("already checked nonzero"),
-                "vfio dma".into(),
-            )
+            .alloc(size_pages, "vfio dma".into())
             .context("failed to allocate shared mem")?;
 
         let gpa_fd = MshvVtlLow::new().context("failed to open gpa fd")?;
@@ -403,7 +397,7 @@ impl user_driver::vfio::VfioDmaBuffer for PagePoolAllocator {
         let gpa = alloc.base_pfn() * HV_PAGE_SIZE;
 
         // When the pool references shared memory, on hardware isolated
-        // platforms the file_offset must have bit 63 set as these are
+        // platforms the file_offset must have the shared bit set as these are
         // decrypted pages. Setting this bit is okay on non-hardware isolated
         // platforms, as it does nothing.
         let file_offset = match self.typ {
