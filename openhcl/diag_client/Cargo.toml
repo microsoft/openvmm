@@ -13,7 +13,6 @@ fs-err.workspace = true
 inspect_proto.workspace = true
 guid.workspace = true
 inspect.workspace = true
-mesh.workspace = true
 mesh_rpc.workspace = true
 unix_socket.workspace = true
 pal_async.workspace = true
