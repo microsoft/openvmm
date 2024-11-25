@@ -1201,6 +1201,7 @@ dependencies = [
  "inspect",
  "scsi_buffers",
  "stackfuture",
+ "thiserror 2.0.0",
  "vm_resource",
 ]
 
@@ -1247,6 +1248,7 @@ dependencies = [
  "parking_lot",
  "scsi_buffers",
  "stackfuture",
+ "thiserror 2.0.0",
  "tracing",
  "vm_resource",
 ]
@@ -2002,6 +2004,7 @@ dependencies = [
  "chipset_arc_mutex_device",
  "chipset_device",
  "chipset_device_fuzz",
+ "disk_backend",
  "disk_ramdisk",
  "guestmem",
  "ide",
@@ -4205,6 +4208,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "disk_backend",
  "disk_ramdisk",
  "event-listener",
  "futures",
@@ -8033,6 +8037,7 @@ dependencies = [
 name = "vmgs_lib"
 version = "0.0.0"
 dependencies = [
+ "disk_backend",
  "disk_vhd1",
  "futures",
  "vmgs",

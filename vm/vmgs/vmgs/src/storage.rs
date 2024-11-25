@@ -7,12 +7,11 @@ use disk_backend::DiskError;
 use disk_backend::SimpleDisk;
 use guestmem::GuestMemory;
 use scsi_buffers::OwnedRequestBuffers;
-use std::sync::Arc;
 use thiserror::Error;
 
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
 pub(crate) struct VmgsStorage {
-    disk: Arc<dyn SimpleDisk>,
+    disk: SimpleDisk,
     mem: GuestMemory,
     mem_size: usize,
     sector_size: u32,
@@ -31,7 +30,7 @@ pub enum StorageError {
 }
 
 impl VmgsStorage {
-    pub fn new(disk: Arc<dyn SimpleDisk>) -> Self {
+    pub fn new(disk: SimpleDisk) -> Self {
         let sector_size = disk.sector_size();
         // Max IO size. Balance between performance and memory usage.
         let mem_size = 64 * 1024;

@@ -15,7 +15,6 @@ use pal_async::DefaultPool;
 use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use thiserror::Error;
 use uefi_nvram::UefiNvramOperation;
 use vmgs::vmgs_helpers::get_active_header;
@@ -39,6 +38,8 @@ enum Error {
     VmgsFile(#[source] std::io::Error),
     #[error("VHD file error")]
     Vhd1(#[source] disk_vhd1::OpenError),
+    #[error("invalid disk")]
+    InvalidDisk(#[source] disk_backend::InvalidDisk),
     #[error("VMGS format")]
     Vmgs(#[from] vmgs::Error),
     #[error("VMGS file already exists")]
@@ -491,7 +492,7 @@ fn vhdfiledisk_create(
     path: impl AsRef<Path>,
     req_file_size: Option<u64>,
     force_create: bool,
-) -> Result<Arc<Vhd1Disk>, Error> {
+) -> Result<SimpleDisk, Error> {
     const MIN_VMGS_FILE_SIZE: u64 = 4 * VMGS_BYTES_PER_BLOCK as u64;
     const SECTOR_SIZE: u64 = 512;
 
@@ -543,12 +544,12 @@ fn vhdfiledisk_create(
 
     Vhd1Disk::make_fixed(file.file()).map_err(Error::Vhd1)?;
     let disk = Vhd1Disk::open_fixed(file.into(), false).map_err(Error::Vhd1)?;
-    Ok(Arc::new(disk))
+    Ok(SimpleDisk::new(disk).map_err(Error::InvalidDisk)?)
 }
 
 #[cfg_attr(not(with_encryption), allow(unused_mut), allow(unused_variables))]
 async fn vmgs_create(
-    disk: Arc<dyn SimpleDisk>,
+    disk: SimpleDisk,
     encryption_alg_key: Option<(EncryptionAlgorithm, &[u8])>,
 ) -> Result<Vmgs, Error> {
     let mut vmgs = Vmgs::format_new(disk).await?;
@@ -699,7 +700,8 @@ async fn vmgs_read(vmgs: &mut Vmgs, file_id: FileId, decrypt: bool) -> Result<Ve
 async fn vmgs_file_dump_headers(file_path: impl AsRef<Path>) -> Result<(), Error> {
     let file = File::open(file_path.as_ref()).map_err(Error::VmgsFile)?;
     let validate_result = vmgs_file_validate(&file);
-    let disk = Arc::new(Vhd1Disk::open_fixed(file.into(), true).map_err(Error::Vhd1)?);
+    let disk = SimpleDisk::new(Vhd1Disk::open_fixed(file.into(), true).map_err(Error::Vhd1)?)
+        .map_err(Error::InvalidDisk)?;
 
     let headers_result = match read_headers(disk).await {
         Ok((header1, header2)) => vmgs_dump_headers(&header1, &header2),
@@ -897,9 +899,10 @@ async fn vmgs_file_open(
 
     vmgs_file_validate(&file)?;
 
-    let disk = Arc::new(
+    let disk = SimpleDisk::new(
         Vhd1Disk::open_fixed(file.into(), open_mode == OpenMode::ReadOnly).map_err(Error::Vhd1)?,
-    );
+    )
+    .map_err(Error::InvalidDisk)?;
     let encryption_key = key_path.map(read_key_path).transpose()?;
 
     let res = vmgs_open(disk, encryption_key.as_deref(), encrypted_no_key_ok).await;
@@ -918,7 +921,7 @@ async fn vmgs_file_open(
 
 #[cfg_attr(not(with_encryption), allow(unused_mut), allow(unused_variables))]
 async fn vmgs_open(
-    disk: Arc<dyn SimpleDisk>,
+    disk: SimpleDisk,
     encryption_key: Option<&[u8]>,
     encrypted_no_key_ok: bool,
 ) -> Result<Vmgs, Error> {
@@ -1118,10 +1121,11 @@ mod tests {
             .open(path.as_ref())
             .map_err(Error::VmgsFile)?;
         vmgs_file_validate(&file)?;
-        let disk = Arc::new(
+        let disk = SimpleDisk::new(
             Vhd1Disk::open_fixed(file.into(), open_mode == OpenMode::ReadOnly)
                 .map_err(Error::Vhd1)?,
-        );
+        )
+        .unwrap();
         let vmgs = vmgs_open(disk, encryption_key, encrypted_no_key_ok).await?;
         Ok(vmgs)
     }

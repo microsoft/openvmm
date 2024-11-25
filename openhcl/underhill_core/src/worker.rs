@@ -55,6 +55,7 @@ use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use closeable_mutex::CloseableMutex;
 use debug_ptr::DebugPtr;
+use disk_backend::SimpleDisk;
 use disk_blockdevice::BlockDeviceResolver;
 use disk_blockdevice::OpenBlockDeviceConfig;
 use firmware_uefi::UefiCommandSet;
@@ -1329,25 +1330,30 @@ async fn new_underhill_vm(
 
     // also construct the VMGS nice and early, as much like the GET, it also
     // plays an important role during initial bringup
-    let (mut vmgs, vmgs_disk) = match servicing_state.vmgs {
+    let (vmgs_disk_metadata, mut vmgs) = match servicing_state.vmgs {
         Some((vmgs_state, vmgs_get_meta_state)) => {
             // fast path, with zero .await calls
-            let disk = Arc::new(
-                disk_get_vmgs::GetVmgsDisk::restore_with_meta(
-                    get_client.clone(),
-                    vmgs_get_meta_state,
-                )
-                .context("failed to open VMGS disk")?,
-            );
-            (Vmgs::open_from_saved(disk.clone(), vmgs_state), disk)
+            let disk = disk_get_vmgs::GetVmgsDisk::restore_with_meta(
+                get_client.clone(),
+                vmgs_get_meta_state,
+            )
+            .context("failed to open VMGS disk")?;
+            (
+                disk.save_meta(),
+                Vmgs::open_from_saved(
+                    SimpleDisk::new(disk).context("invalid vmgs disk")?,
+                    vmgs_state,
+                ),
+            )
         }
         None => {
-            let disk = Arc::new(
-                disk_get_vmgs::GetVmgsDisk::new(get_client.clone())
-                    .instrument(tracing::info_span!("vmgs_get_storage"))
-                    .await
-                    .context("failed to get VMGS client")?,
-            );
+            let disk = disk_get_vmgs::GetVmgsDisk::new(get_client.clone())
+                .instrument(tracing::info_span!("vmgs_get_storage"))
+                .await
+                .context("failed to get VMGS client")?;
+
+            let meta = disk.save_meta();
+            let disk = SimpleDisk::new(disk).context("invalid vmgs disk")?;
 
             let vmgs = if !env_cfg.reformat_vmgs {
                 match Vmgs::open(disk.clone())
@@ -1381,12 +1387,12 @@ async fn new_underhill_vm(
             let vmgs = if let Some(vmgs) = vmgs {
                 vmgs
             } else {
-                Vmgs::format_new(disk.clone())
+                Vmgs::format_new(disk)
                     .instrument(tracing::info_span!("vmgs_format"))
                     .await
                     .context("failed to format vmgs")?
             };
-            (vmgs, disk)
+            (meta, vmgs)
         }
     };
 
@@ -2870,7 +2876,7 @@ async fn new_underhill_vm(
         shutdown_relay,
 
         vmgs_thin_client,
-        vmgs_disk,
+        vmgs_disk_metadata,
         _vmgs_handle: vmgs_handle,
 
         get_client: get_client.clone(),

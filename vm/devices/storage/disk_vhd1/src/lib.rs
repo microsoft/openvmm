@@ -7,21 +7,19 @@
 
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedSimpleDisk;
-use disk_backend::AsyncDisk;
 use disk_backend::DiskError;
-use disk_backend::SimpleDisk;
-use disk_backend::ASYNC_DISK_STACK_SIZE;
+use disk_backend::DiskIo;
 use disk_backend_resources::FixedVhd1DiskHandle;
 use disk_file::FileDisk;
 use guid::Guid;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
-use stackfuture::StackFuture;
 use std::fs::File;
 use std::io;
 use std::io::Read;
 use std::io::Seek;
 use std::io::Write;
+use thiserror::Error;
 use vhd1_defs::VhdFooter;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::DiskHandleKind;
@@ -32,17 +30,26 @@ use zerocopy::FromZeroes;
 pub struct Vhd1Resolver;
 declare_static_resolver!(Vhd1Resolver, (DiskHandleKind, FixedVhd1DiskHandle));
 
+#[derive(Debug, Error)]
+pub enum ResolveVhd1DiskError {
+    #[error("failed to open VHD")]
+    Open(#[source] OpenError),
+    #[error("invalid disk")]
+    InvalidDisk(#[source] disk_backend::InvalidDisk),
+}
+
 impl ResolveResource<DiskHandleKind, FixedVhd1DiskHandle> for Vhd1Resolver {
     type Output = ResolvedSimpleDisk;
-    type Error = OpenError;
+    type Error = ResolveVhd1DiskError;
 
     fn resolve(
         &self,
         rsrc: FixedVhd1DiskHandle,
         params: ResolveDiskParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let disk = Vhd1Disk::open_fixed(rsrc.0, params.read_only)?;
-        Ok(disk.into())
+        let disk =
+            Vhd1Disk::open_fixed(rsrc.0, params.read_only).map_err(ResolveVhd1DiskError::Open)?;
+        ResolvedSimpleDisk::new(disk).map_err(ResolveVhd1DiskError::InvalidDisk)
     }
 }
 
@@ -165,7 +172,7 @@ impl Vhd1Disk {
     }
 }
 
-impl SimpleDisk for Vhd1Disk {
+impl DiskIo for Vhd1Disk {
     fn disk_type(&self) -> &str {
         "vhd1"
     }
@@ -193,35 +200,33 @@ impl SimpleDisk for Vhd1Disk {
     fn is_fua_respected(&self) -> bool {
         self.file.is_fua_respected()
     }
-}
 
-impl AsyncDisk for Vhd1Disk {
-    fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'_>,
+    async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        self.file.read_vectored(buffers, sector)
+    ) -> Result<(), DiskError> {
+        self.file.read_vectored(buffers, sector).await
     }
 
-    fn write_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'_>,
+    async fn write_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
         fua: bool,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        self.file.write_vectored(buffers, sector, fua)
+    ) -> Result<(), DiskError> {
+        self.file.write_vectored(buffers, sector, fua).await
     }
 
-    fn sync_cache(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        self.file.sync_cache()
+    async fn sync_cache(&self) -> Result<(), DiskError> {
+        self.file.sync_cache().await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Vhd1Disk;
-    use disk_backend::AsyncDisk;
+    use disk_backend::SimpleDisk;
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
@@ -234,7 +239,7 @@ mod tests {
         let data = (0..0x100000_u32).collect::<Vec<_>>();
         file.write_all(data.as_bytes()).unwrap();
         Vhd1Disk::make_fixed(&file).unwrap();
-        let vhd = Vhd1Disk::open_fixed(file, false).unwrap();
+        let vhd = SimpleDisk::new(Vhd1Disk::open_fixed(file, false).unwrap()).unwrap();
 
         let mem = GuestMemory::allocate(0x1000);
 

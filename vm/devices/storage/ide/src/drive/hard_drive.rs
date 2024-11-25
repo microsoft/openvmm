@@ -239,7 +239,7 @@ impl DriveState {
 
 #[derive(Inspect)]
 pub(crate) struct HardDrive {
-    disk: Arc<dyn SimpleDisk>,
+    disk: SimpleDisk,
     state: DriveState,
     geometry: MediaGeometry,
     disk_path: IdePath,
@@ -482,7 +482,7 @@ enum IoPortData<'a> {
 }
 
 impl HardDrive {
-    pub fn new(disk: Arc<dyn SimpleDisk>, disk_path: IdePath) -> Result<Self, NewDeviceError> {
+    pub fn new(disk: SimpleDisk, disk_path: IdePath) -> Result<Self, NewDeviceError> {
         // Initialize drive geometry
         let read_only = disk.is_read_only();
         let geometry = MediaGeometry::new(disk.sector_count(), disk.sector_size())?;
@@ -1369,7 +1369,7 @@ impl HardDrive {
     /// Sets the asynchronous IO to be polled in `poll_device`.
     fn set_io<F, Fut>(&mut self, f: F)
     where
-        F: FnOnce(Arc<dyn SimpleDisk>) -> Fut,
+        F: FnOnce(SimpleDisk) -> Fut,
         Fut: 'static + Future<Output = Result<(), DiskError>> + Send,
     {
         let fut = (f)(self.disk.clone());

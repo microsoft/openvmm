@@ -164,7 +164,7 @@ impl SimpleScsiDisk {
 impl SimpleScsiDisk {
     async fn perform_unmap(
         &self,
-        unmap: &dyn Unmap,
+        unmap: impl Unmap,
         buffer: &[u8],
         unmap_info: &mut UnmapInfo,
         block_level_only: bool,

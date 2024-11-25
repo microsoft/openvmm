@@ -13,7 +13,7 @@
 //! wart, and it would be great if we could swap out any dependant code with
 //! native-async implementations at some point in the future.
 
-use super::SimpleDisk;
+use crate::SimpleDisk;
 use futures::executor::block_on;
 use guestmem::GuestMemory;
 use scsi_buffers::OwnedRequestBuffers;
@@ -25,9 +25,9 @@ use std::io::Write;
 
 /// Wrapper around [`SimpleDisk`] that implements the synchronous [`std::io`]
 /// traits (such as `Read`, `Write`, `Seek`, etc...) using [`block_on`].
-pub struct BlockingSimpleDisk<T> {
+pub struct BlockingSimpleDisk {
     /// Inner SimpleDisk instance for base disk operations.
-    inner: T,
+    inner: SimpleDisk,
     /// The current position in the disk.
     pos: u64,
     /// Buffer for temporary data storage during read/write operations.
@@ -36,9 +36,9 @@ pub struct BlockingSimpleDisk<T> {
     buffer_dirty: bool,
 }
 
-impl<T: SimpleDisk> BlockingSimpleDisk<T> {
+impl BlockingSimpleDisk {
     /// Create a new `BlockingSimpleDisk`
-    pub fn new(inner: T) -> Self {
+    pub fn new(inner: SimpleDisk) -> Self {
         let sector_size = inner.sector_size();
         BlockingSimpleDisk {
             inner,
@@ -217,13 +217,13 @@ impl<T: SimpleDisk> BlockingSimpleDisk<T> {
     }
 }
 
-impl<T: SimpleDisk> Read for BlockingSimpleDisk<T> {
+impl Read for BlockingSimpleDisk {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.read(buf)
     }
 }
 
-impl<T: SimpleDisk> Write for BlockingSimpleDisk<T> {
+impl Write for BlockingSimpleDisk {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.write(buf)
     }
@@ -233,7 +233,7 @@ impl<T: SimpleDisk> Write for BlockingSimpleDisk<T> {
     }
 }
 
-impl<T: SimpleDisk> Seek for BlockingSimpleDisk<T> {
+impl Seek for BlockingSimpleDisk {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         self.seek(pos)
     }

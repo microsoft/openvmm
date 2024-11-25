@@ -11,27 +11,21 @@ pub mod resolver;
 use anyhow::Context;
 use disk_backend::zerodisk::InvalidGeometry;
 use disk_backend::zerodisk::ZeroDisk;
-use disk_backend::AsyncDisk;
 use disk_backend::DiskError;
+use disk_backend::DiskIo;
 use disk_backend::SimpleDisk;
 use disk_backend::Unmap;
-use disk_backend::ASYNC_DISK_STACK_SIZE;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use parking_lot::RwLock;
 use scsi_buffers::RequestBuffers;
-use stackfuture::StackFuture;
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Debug;
-use std::future::ready;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use thiserror::Error;
 
 /// A disk backed entirely by RAM.
@@ -40,7 +34,7 @@ pub struct RamDisk {
     sector_count: AtomicU64,
     read_only: bool,
     lower_is_zero: bool,
-    lower: Arc<dyn SimpleDisk>,
+    lower: SimpleDisk,
     resize_event: event_listener::Event,
 }
 
@@ -50,7 +44,6 @@ impl Inspect for RamDisk {
             .field_with("committed_size", || {
                 self.data.read().len() * size_of::<Sector>()
             })
-            .field("lower_type", self.lower.disk_type())
             .field("lower", &self.lower)
             .field_mut_with("sector_count", |new_count| {
                 if let Some(new_count) = new_count {
@@ -88,22 +81,22 @@ const SECTOR_SIZE: u32 = 512;
 impl RamDisk {
     /// Makes a new RAM disk of `size` bytes.
     pub fn new(len: u64, read_only: bool) -> Result<Self, Error> {
-        Self::new_inner(Arc::new(ZeroDisk::new(SECTOR_SIZE, len)?), read_only, true)
+        Self::new_inner(
+            SimpleDisk::new(ZeroDisk::new(SECTOR_SIZE, len)?).unwrap(),
+            read_only,
+            true,
+        )
     }
 
     /// Makes a new RAM diff disk on top of `lower`.
     ///
     /// Writes will be collected in RAM, but reads will go to the lower disk for
     /// sectors that have not yet been overwritten.
-    pub fn diff(lower: Arc<dyn SimpleDisk>, read_only: bool) -> Result<Self, Error> {
+    pub fn diff(lower: SimpleDisk, read_only: bool) -> Result<Self, Error> {
         Self::new_inner(lower, read_only, false)
     }
 
-    fn new_inner(
-        lower: Arc<dyn SimpleDisk>,
-        read_only: bool,
-        lower_is_zero: bool,
-    ) -> Result<Self, Error> {
+    fn new_inner(lower: SimpleDisk, read_only: bool, lower_is_zero: bool) -> Result<Self, Error> {
         let sector_size = lower.sector_size();
         if sector_size != SECTOR_SIZE {
             return Err(Error::UnsupportedSectorSize(sector_size));
@@ -134,7 +127,7 @@ impl RamDisk {
     }
 }
 
-impl SimpleDisk for RamDisk {
+impl DiskIo for RamDisk {
     fn disk_type(&self) -> &str {
         "ram"
     }
@@ -163,117 +156,102 @@ impl SimpleDisk for RamDisk {
         true
     }
 
-    fn unmap(&self) -> Option<&dyn Unmap> {
+    fn unmap(&self) -> Option<impl Unmap> {
         self.lower_is_zero.then_some(self)
     }
-}
 
-impl AsyncDisk for RamDisk {
-    fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
+    async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let count = (buffers.len() / SECTOR_SIZE as usize) as u64;
-            tracing::trace!(sector, count, "read");
-            // Always read the full lower and then overlay the changes.
-            // Optimizations are possible, but some heuristics are necessary to
-            // avoid lots of small reads when the disk is "Swiss cheesed".
-            //
-            // Box the future because otherwise it won't fit in this StackFuture.
-            Box::pin(self.lower.read_vectored(buffers, sector)).await?;
-            for (&s, buf) in self.data.read().range(sector..sector + count) {
-                let offset = (s - sector) as usize * SECTOR_SIZE as usize;
-                buffers
-                    .subrange(offset, SECTOR_SIZE as usize)
-                    .writer()
-                    .write(&buf.0)?;
-            }
-            Ok(())
-        })
+    ) -> Result<(), DiskError> {
+        let count = (buffers.len() / SECTOR_SIZE as usize) as u64;
+        tracing::trace!(sector, count, "read");
+        // Always read the full lower and then overlay the changes.
+        // Optimizations are possible, but some heuristics are necessary to
+        // avoid lots of small reads when the disk is "Swiss cheesed".
+        self.lower.read_vectored(buffers, sector).await?;
+        for (&s, buf) in self.data.read().range(sector..sector + count) {
+            let offset = (s - sector) as usize * SECTOR_SIZE as usize;
+            buffers
+                .subrange(offset, SECTOR_SIZE as usize)
+                .writer()
+                .write(&buf.0)?;
+        }
+        Ok(())
     }
 
-    fn write_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
+    async fn write_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
         _fua: bool,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            assert!(!self.read_only);
+    ) -> Result<(), DiskError> {
+        assert!(!self.read_only);
 
-            let count = buffers.len() / SECTOR_SIZE as usize;
-            tracing::trace!(sector, count, "write");
+        let count = buffers.len() / SECTOR_SIZE as usize;
+        tracing::trace!(sector, count, "write");
 
-            let mut data = self.data.write();
-            for i in 0..count {
-                let cur = i + sector as usize;
-                let buf = buffers.subrange(i * SECTOR_SIZE as usize, SECTOR_SIZE as usize);
-                let mut reader = buf.reader();
-                match data.entry(cur as u64) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(Sector(reader.read_plain()?));
-                    }
-                    Entry::Occupied(mut entry) => {
-                        reader.read(&mut entry.get_mut().0)?;
-                    }
+        let mut data = self.data.write();
+        for i in 0..count {
+            let cur = i + sector as usize;
+            let buf = buffers.subrange(i * SECTOR_SIZE as usize, SECTOR_SIZE as usize);
+            let mut reader = buf.reader();
+            match data.entry(cur as u64) {
+                Entry::Vacant(entry) => {
+                    entry.insert(Sector(reader.read_plain()?));
+                }
+                Entry::Occupied(mut entry) => {
+                    reader.read(&mut entry.get_mut().0)?;
                 }
             }
+        }
 
-            Ok(())
-        })
+        Ok(())
     }
 
-    fn sync_cache(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
+    async fn sync_cache(&self) -> Result<(), DiskError> {
         tracing::trace!("sync_cache");
-        StackFuture::from(ready(Ok(())))
+        Ok(())
     }
 
-    fn wait_resize<'a>(
-        &'a self,
-        sector_count: u64,
-    ) -> Pin<Box<dyn 'a + Send + Future<Output = u64>>> {
-        Box::pin(async move {
-            loop {
-                let listen = self.resize_event.listen();
-                let current = self.sector_count();
-                if current != sector_count {
-                    break current;
-                }
-                listen.await;
+    async fn wait_resize(&self, sector_count: u64) -> u64 {
+        loop {
+            let listen = self.resize_event.listen();
+            let current = self.sector_count();
+            if current != sector_count {
+                break current;
             }
-        })
+            listen.await;
+        }
     }
 }
 
 impl Unmap for RamDisk {
-    fn unmap(
+    async fn unmap(
         &self,
         sector_offset: u64,
         sector_count: u64,
         _block_level_only: bool,
-    ) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
+    ) -> Result<(), DiskError> {
         assert!(self.lower_is_zero);
-        StackFuture::from(async move {
-            tracing::trace!(sector_offset, sector_count, "unmap");
-            let mut data = self.data.write();
-            // Sadly, there appears to be no way to remove a range of entries
-            // from a btree map.
-            let mut next_sector = sector_offset;
-            let end = sector_offset + sector_count;
-            while next_sector < end {
-                let Some((&sector, _)) = data.range_mut(next_sector..).next() else {
-                    break;
-                };
-                if sector >= end {
-                    break;
-                }
-                data.remove(&sector);
-                next_sector = sector + 1;
+        tracing::trace!(sector_offset, sector_count, "unmap");
+        let mut data = self.data.write();
+        // Sadly, there appears to be no way to remove a range of entries
+        // from a btree map.
+        let mut next_sector = sector_offset;
+        let end = sector_offset + sector_count;
+        while next_sector < end {
+            let Some((&sector, _)) = data.range_mut(next_sector..).next() else {
+                break;
+            };
+            if sector >= end {
+                break;
             }
-            Ok(())
-        })
+            data.remove(&sector);
+            next_sector = sector + 1;
+        }
+        Ok(())
     }
 
     fn optimal_unmap_sectors(&self) -> u32 {
@@ -285,11 +263,11 @@ impl Unmap for RamDisk {
 mod tests {
     use super::RamDisk;
     use super::SECTOR_SIZE;
-    use crate::SimpleDisk;
+    use crate::DiskIo;
+    use disk_backend::SimpleDisk;
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
-    use std::sync::Arc;
     use zerocopy::AsBytes;
 
     const SECTOR_U64: u64 = SECTOR_SIZE as u64;
@@ -313,7 +291,7 @@ mod tests {
         }
     }
 
-    async fn read(mem: &GuestMemory, disk: &mut impl SimpleDisk, sector: u64, count: usize) {
+    async fn read(mem: &GuestMemory, disk: &mut impl DiskIo, sector: u64, count: usize) {
         disk.read_vectored(
             &OwnedRequestBuffers::linear(0, count * SECTOR_USIZE, true).buffer(mem),
             sector,
@@ -322,13 +300,7 @@ mod tests {
         .unwrap();
     }
 
-    async fn write(
-        mem: &GuestMemory,
-        disk: &mut impl SimpleDisk,
-        sector: u64,
-        count: usize,
-        high: u8,
-    ) {
+    async fn write(mem: &GuestMemory, disk: &mut impl DiskIo, sector: u64, count: usize, high: u8) {
         let buf: Vec<_> = (sector * SECTOR_U64 / 4..(sector + count as u64) * SECTOR_U64 / 4)
             .map(|x| x as u32 | ((high as u32) << 24))
             .collect();
@@ -352,7 +324,7 @@ mod tests {
 
         let mut lower = RamDisk::new(SIZE as u64, false).unwrap();
         write(&guest_mem, &mut lower, 0, SIZE / SECTOR_USIZE, 0).await;
-        let mut upper = RamDisk::diff(Arc::new(lower), false).unwrap();
+        let mut upper = RamDisk::diff(SimpleDisk::new(lower).unwrap(), false).unwrap();
         read(&guest_mem, &mut upper, 10, 2).await;
         check(&guest_mem, 10, 0, 2, 0);
         write(&guest_mem, &mut upper, 10, 2, 1).await;

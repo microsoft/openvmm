@@ -293,7 +293,7 @@ impl AsyncResolveResource<DiskHandleKind, NvmeDiskConfig> for NvmeDiskResolver {
             .await
             .context("could not open nvme namespace")?;
 
-        Ok(disk_nvme::NvmeDisk::new(namespace).into())
+        Ok(ResolvedSimpleDisk::new(disk_nvme::NvmeDisk::new(namespace)).context("invalid disk")?)
     }
 }
 

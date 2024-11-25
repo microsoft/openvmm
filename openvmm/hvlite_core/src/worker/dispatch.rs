@@ -245,7 +245,7 @@ async fn open_simple_disk(
     resolver: &ResourceResolver,
     disk_type: Resource<DiskHandleKind>,
     read_only: bool,
-) -> anyhow::Result<Arc<dyn SimpleDisk>> {
+) -> anyhow::Result<SimpleDisk> {
     let disk = resolver
         .resolve(
             disk_type,
@@ -1351,12 +1351,10 @@ impl InitializedVm {
                     .context("failed to open floppy disk")?;
                 tracing::trace!("floppy opened based on config into DriveRibbon");
 
-                let floppy = floppy::FloppyMedia::new(disk);
-
                 if index == 0 {
-                    pri_drives.push(floppy);
+                    pri_drives.push(disk);
                 } else if index == 1 {
-                    sec_drives.push(floppy)
+                    sec_drives.push(disk)
                 } else {
                     tracing::error!("more than 2 floppy controllers are not supported");
                     break;

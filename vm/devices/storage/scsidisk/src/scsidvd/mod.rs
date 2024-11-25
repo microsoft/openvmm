@@ -39,7 +39,7 @@ use zerocopy::FromZeroes;
 
 enum Media {
     Unloaded,
-    Loaded(Arc<dyn SimpleDisk>),
+    Loaded(SimpleDisk),
 }
 
 pub struct SimpleScsiDvd {
@@ -142,10 +142,7 @@ impl inspect::Inspect for SimpleScsiDvd {
         resp.field("drive_state", self.media_state.lock().drive_state);
 
         if let Media::Loaded(disk) = &*self.media.read() {
-            resp.field("logical_sector_size", ISO_SECTOR_SIZE)
-                .field("sector_count", disk.sector_count())
-                .field("backend_type", disk.disk_type())
-                .field("backend", disk);
+            resp.field("backend", disk);
         }
     }
 }
@@ -153,7 +150,7 @@ impl inspect::Inspect for SimpleScsiDvd {
 const ISO_SECTOR_SIZE: u32 = 2048;
 
 impl SimpleScsiDvd {
-    pub fn new(disk: Option<Arc<dyn SimpleDisk>>) -> Self {
+    pub fn new(disk: Option<SimpleDisk>) -> Self {
         assert!(disk.as_ref().is_none() || disk.as_ref().unwrap().sector_size() <= ISO_SECTOR_SIZE);
 
         let (media, pending_medium_event, drive_state) = if let Some(disk) = disk {
@@ -181,7 +178,7 @@ impl SimpleScsiDvd {
         }
     }
 
-    pub fn change_media(&self, disk: Option<Arc<dyn SimpleDisk>>) {
+    pub fn change_media(&self, disk: Option<SimpleDisk>) {
         if let Some(disk) = disk {
             // Insert medium
             let mut media = self.media.write();
@@ -2346,10 +2343,9 @@ mod tests {
     use crate::SavedSenseData;
     use crate::ScsiSaveRestore;
     use crate::ScsiSavedState;
-    use disk_backend::AsyncDisk;
     use disk_backend::DiskError;
+    use disk_backend::DiskIo;
     use disk_backend::SimpleDisk;
-    use disk_backend::ASYNC_DISK_STACK_SIZE;
     use guestmem::GuestMemory;
     use guestmem::MemoryWrite;
     use inspect::Inspect;
@@ -2362,9 +2358,6 @@ mod tests {
     use scsi_core::save_restore::ScsiDvdSavedState;
     use scsi_core::AsyncScsiDisk;
     use scsi_core::Request;
-    use stackfuture::StackFuture;
-    use std::future::ready;
-    use std::sync::Arc;
     use zerocopy::AsBytes;
 
     #[derive(Debug)]
@@ -2394,7 +2387,7 @@ mod tests {
         }
     }
 
-    impl SimpleDisk for TestDisk {
+    impl DiskIo for TestDisk {
         fn disk_type(&self) -> &str {
             "test"
         }
@@ -2423,56 +2416,52 @@ mod tests {
             false
         }
 
-        fn eject(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-            StackFuture::from(ready(Err(DiskError::UnsupportedEject)))
+        async fn eject(&self) -> Result<(), DiskError> {
+            Err(DiskError::UnsupportedEject)
         }
-    }
 
-    impl AsyncDisk for TestDisk {
-        fn read_vectored<'a>(
-            &'a self,
-            buffers: &'a RequestBuffers<'a>,
+        async fn read_vectored(
+            &self,
+            buffers: &RequestBuffers<'_>,
             sector: u64,
-        ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-            StackFuture::from(async move {
-                let offset = sector as usize * self.sector_size() as usize;
-                let end_point = offset + buffers.len();
+        ) -> Result<(), DiskError> {
+            let offset = sector as usize * self.sector_size() as usize;
+            let end_point = offset + buffers.len();
 
-                if self.storage.len() < end_point {
-                    println!(
-                        "exceed storage limit: storage_len {:?} offset {:?} len {:?}",
-                        self.storage.len(),
-                        offset,
-                        buffers.len()
-                    );
-                    return Err(DiskError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "exceed storage limit",
-                    )));
-                }
+            if self.storage.len() < end_point {
+                println!(
+                    "exceed storage limit: storage_len {:?} offset {:?} len {:?}",
+                    self.storage.len(),
+                    offset,
+                    buffers.len()
+                );
+                return Err(DiskError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "exceed storage limit",
+                )));
+            }
 
-                buffers.writer().write(&self.storage[offset..end_point])?;
-                Ok(())
-            })
+            buffers.writer().write(&self.storage[offset..end_point])?;
+            Ok(())
         }
 
-        fn write_vectored<'a>(
-            &'a self,
-            _buffers: &'a RequestBuffers<'a>,
+        async fn write_vectored(
+            &self,
+            _buffers: &RequestBuffers<'_>,
             _sector: u64,
             _fua: bool,
-        ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
+        ) -> Result<(), DiskError> {
             todo!()
         }
 
-        fn sync_cache(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
+        async fn sync_cache(&self) -> Result<(), DiskError> {
             todo!()
         }
     }
 
     fn new_scsi_dvd(sector_size: u32, sector_count: u64, read_only: bool) -> SimpleScsiDvd {
         let disk = TestDisk::new(sector_size, sector_count, read_only);
-        let scsi_dvd = SimpleScsiDvd::new(Some(Arc::new(disk)));
+        let scsi_dvd = SimpleScsiDvd::new(Some(SimpleDisk::new(disk).unwrap()));
         let sector_shift = ISO_SECTOR_SIZE.trailing_zeros() as u8;
         assert_eq!(scsi_dvd.sector_count(), sector_count / scsi_dvd.balancer());
         assert_eq!(scsi_dvd.sector_shift(), sector_shift);

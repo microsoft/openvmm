@@ -10,21 +10,18 @@
 #![cfg(target_os = "linux")]
 #![warn(missing_docs)]
 
-use disk_backend::AsyncDisk;
 use disk_backend::DiskError;
-use disk_backend::SimpleDisk;
-use disk_backend::ASYNC_DISK_STACK_SIZE;
+use disk_backend::DiskIo;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use save_restore::SavedBlockStorageMetadata;
 use scsi_buffers::RequestBuffers;
-use stackfuture::StackFuture;
 use std::io;
 use thiserror::Error;
 
-/// An implementation of [`SimpleDisk`] backed by the GET.
+/// An implementation of [`DiskIo`] backed by the GET.
 #[derive(Clone, Debug, Inspect)]
 pub struct GetVmgsDisk {
     get: GuestEmulationTransportClient,
@@ -147,7 +144,7 @@ impl GetVmgsDisk {
     }
 }
 
-impl SimpleDisk for GetVmgsDisk {
+impl DiskIo for GetVmgsDisk {
     fn disk_type(&self) -> &str {
         "vmgs-get"
     }
@@ -175,66 +172,57 @@ impl SimpleDisk for GetVmgsDisk {
     fn is_read_only(&self) -> bool {
         false
     }
-}
 
-impl AsyncDisk for GetVmgsDisk {
-    fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
+    async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         mut sector: u64,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from_or_box(async move {
-            let mut writer = buffers.writer();
-            let mut remaining_sectors = buffers.len() >> self.sector_shift;
-            while remaining_sectors != 0 {
-                let this_sector_count = remaining_sectors.min(self.max_transfer_sectors as usize);
-                let data = self
-                    .get
-                    .vmgs_read(sector, this_sector_count as u32, self.sector_size)
-                    .await
-                    .map_err(|err| DiskError::Io(io::Error::new(io::ErrorKind::Other, err)))?;
+    ) -> Result<(), DiskError> {
+        let mut writer = buffers.writer();
+        let mut remaining_sectors = buffers.len() >> self.sector_shift;
+        while remaining_sectors != 0 {
+            let this_sector_count = remaining_sectors.min(self.max_transfer_sectors as usize);
+            let data = self
+                .get
+                .vmgs_read(sector, this_sector_count as u32, self.sector_size)
+                .await
+                .map_err(|err| DiskError::Io(io::Error::new(io::ErrorKind::Other, err)))?;
 
-                writer.write(&data)?;
-                sector += this_sector_count as u64;
-                remaining_sectors -= this_sector_count;
-            }
-            Ok(())
-        })
+            writer.write(&data)?;
+            sector += this_sector_count as u64;
+            remaining_sectors -= this_sector_count;
+        }
+        Ok(())
     }
 
-    fn write_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
+    async fn write_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         mut sector: u64,
         _fua: bool,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from_or_box(async move {
-            let mut reader = buffers.reader();
-            let mut remaining_sector_count = buffers.len() >> self.sector_shift;
-            while remaining_sector_count != 0 {
-                let this_sector_count =
-                    remaining_sector_count.min(self.max_transfer_sectors as usize);
-                let data = reader.read_n(this_sector_count << self.sector_shift)?;
-                self.get
-                    .vmgs_write(sector, data, self.sector_size)
-                    .await
-                    .map_err(|err| DiskError::Io(io::Error::new(io::ErrorKind::Other, err)))?;
+    ) -> Result<(), DiskError> {
+        let mut reader = buffers.reader();
+        let mut remaining_sector_count = buffers.len() >> self.sector_shift;
+        while remaining_sector_count != 0 {
+            let this_sector_count = remaining_sector_count.min(self.max_transfer_sectors as usize);
+            let data = reader.read_n(this_sector_count << self.sector_shift)?;
+            self.get
+                .vmgs_write(sector, data, self.sector_size)
+                .await
+                .map_err(|err| DiskError::Io(io::Error::new(io::ErrorKind::Other, err)))?;
 
-                remaining_sector_count -= this_sector_count;
-                sector += this_sector_count as u64;
-            }
-            Ok(())
-        })
+            remaining_sector_count -= this_sector_count;
+            sector += this_sector_count as u64;
+        }
+        Ok(())
     }
 
     /// Issues an asynchronous flush operation to the disk.
-    fn sync_cache(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from_or_box(async move {
-            self.get
-                .vmgs_flush()
-                .await
-                .map_err(|err| DiskError::Io(io::Error::new(io::ErrorKind::Other, err)))
-        })
+    async fn sync_cache(&self) -> Result<(), DiskError> {
+        self.get
+            .vmgs_flush()
+            .await
+            .map_err(|err| DiskError::Io(io::Error::new(io::ErrorKind::Other, err)))
     }
 }
 
@@ -243,7 +231,7 @@ pub mod save_restore {
     use mesh::payload::Protobuf;
 
     /// Metadata for a saved block storage device.
-    #[derive(Protobuf)]
+    #[derive(Protobuf, Clone)]
     #[mesh(package = "vmgs")]
     pub struct SavedBlockStorageMetadata {
         /// The byte capacity. Redundant with sector_count * sector_size.
@@ -271,13 +259,13 @@ pub mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use disk_backend::SimpleDisk;
     use guest_emulation_transport::api::ProtocolVersion;
     use guest_emulation_transport::test_utilities::new_transport_pair;
     use guest_emulation_transport::test_utilities::TestGet;
     use pal_async::async_test;
     use pal_async::task::Task;
     use pal_async::DefaultDriver;
-    use std::sync::Arc;
     use vmgs::FileId;
     use vmgs::Vmgs;
     use vmgs_broker::spawn_vmgs_broker;
@@ -286,7 +274,9 @@ mod tests {
     async fn spawn_vmgs(driver: &DefaultDriver) -> (VmgsClient, TestGet, Task<()>) {
         let get = new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV2).await;
         let vmgs_get = GetVmgsDisk::new(get.client.clone()).await.unwrap();
-        let vmgs = Vmgs::format_new(Arc::new(vmgs_get)).await.unwrap();
+        let vmgs = Vmgs::format_new(SimpleDisk::new(vmgs_get).unwrap())
+            .await
+            .unwrap();
         let (vmgs, task) = spawn_vmgs_broker(driver, vmgs);
         (vmgs, get, task)
     }
@@ -392,7 +382,9 @@ mod tests {
     async fn test_read_write_encryption(driver: DefaultDriver) {
         let get = new_transport_pair(&driver, None, ProtocolVersion::NICKEL_REV2).await;
         let vmgs_get = GetVmgsDisk::new(get.client.clone()).await.unwrap();
-        let mut vmgs = Vmgs::format_new(Arc::new(vmgs_get)).await.unwrap();
+        let mut vmgs = Vmgs::format_new(SimpleDisk::new(vmgs_get).unwrap())
+            .await
+            .unwrap();
         let file_id = FileId::BIOS_NVRAM;
         let encryption_key = vec![1; 32];
 
@@ -414,7 +406,9 @@ mod tests {
         drop(vmgs);
 
         let vmgs_get = GetVmgsDisk::new(get.client.clone()).await.unwrap();
-        let mut vmgs = Vmgs::open(Arc::new(vmgs_get)).await.unwrap();
+        let mut vmgs = Vmgs::open(SimpleDisk::new(vmgs_get).unwrap())
+            .await
+            .unwrap();
 
         let read_buf = vmgs.read_file(file_id).await.unwrap();
 

@@ -14,7 +14,6 @@ use inspect::Inspect;
 use inspect_counters::Counter;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
-use std::sync::Arc;
 use vmgs_format::EncryptionAlgorithm;
 use vmgs_format::FileAttribute;
 use vmgs_format::FileId;
@@ -134,7 +133,7 @@ mod vmgs_inspect {
 
 impl Vmgs {
     /// Format and open a new VMGS file.
-    pub async fn format_new(disk: Arc<dyn SimpleDisk>) -> Result<Self, Error> {
+    pub async fn format_new(disk: SimpleDisk) -> Result<Self, Error> {
         let mut storage = VmgsStorage::new(disk);
         tracing::debug!("formatting and initializing VMGS datastore");
         // Errors from validate_file are fatal, as they involve invalid device metadata
@@ -146,7 +145,7 @@ impl Vmgs {
     }
 
     /// Open the VMGS file.
-    pub async fn open(disk: Arc<dyn SimpleDisk>) -> Result<Self, Error> {
+    pub async fn open(disk: SimpleDisk) -> Result<Self, Error> {
         tracing::debug!("opening VMGS datastore");
         let mut storage = VmgsStorage::new(disk);
         // Errors from validate_file are fatal, as they involve invalid device metadata
@@ -1369,7 +1368,7 @@ impl Vmgs {
 
 /// Read both headers. For compatibility with the V1 format, the headers are
 /// at logical sectors 0 and 1
-pub async fn read_headers(disk: Arc<dyn SimpleDisk>) -> Result<(VmgsHeader, VmgsHeader), Error> {
+pub async fn read_headers(disk: SimpleDisk) -> Result<(VmgsHeader, VmgsHeader), Error> {
     read_headers_inner(&mut VmgsStorage::new(disk)).await
 }
 
@@ -1712,7 +1711,7 @@ pub mod save_restore {
         /// failures, encryption errors, etc... (though, notably: it will _not_
         /// result in any memory-unsafety, hence why the function isn't marked
         /// `unsafe`).
-        pub fn open_from_saved(disk: Arc<dyn SimpleDisk>, state: state::SavedVmgsState) -> Self {
+        pub fn open_from_saved(disk: SimpleDisk, state: state::SavedVmgsState) -> Self {
             let state::SavedVmgsState {
                 active_header_index,
                 active_header_sequence_number,
@@ -1872,8 +1871,8 @@ mod tests {
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 
-    fn new_test_file() -> Arc<RamDisk> {
-        Arc::new(RamDisk::new(4 * ONE_MEGA_BYTE, false).unwrap())
+    fn new_test_file() -> SimpleDisk {
+        SimpleDisk::new(RamDisk::new(4 * ONE_MEGA_BYTE, false).unwrap()).unwrap()
     }
 
     #[async_test]

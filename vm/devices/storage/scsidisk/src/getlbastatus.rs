@@ -59,7 +59,7 @@ impl SimpleScsiDisk {
 
         let lba_status = self.disk.lba_status().unwrap();
         let mut block_index_info = lba_status.file_offset_to_device_block_index_and_length(
-            &*self.disk,
+            &self.disk,
             start_offset,
             get_lba_status_range_length,
             block_size,

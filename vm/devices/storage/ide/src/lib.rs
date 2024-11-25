@@ -185,24 +185,11 @@ struct EnlightenedHddWrite {
     drive_index: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
+#[inspect(tag = "drive_type")]
 enum EnlightenedWrite {
-    Hard(EnlightenedHddWrite),
-    Optical(EnlightenedCdWrite),
-}
-
-impl Inspect for EnlightenedWrite {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        let mut resp = req.respond();
-        match self {
-            EnlightenedWrite::Hard(write) => resp
-                .field("drive_type", DriveType::Hard)
-                .field("write", write),
-            EnlightenedWrite::Optical(write) => resp
-                .field("drive_type", DriveType::Optical)
-                .field("write", write),
-        };
-    }
+    Hard(#[inspect(rename = "write")] EnlightenedHddWrite),
+    Optical(#[inspect(rename = "write")] EnlightenedCdWrite),
 }
 
 #[derive(Debug, Error)]
@@ -1022,30 +1009,15 @@ enum ChannelType {
     Secondary,
 }
 
+#[derive(Inspect)]
+#[inspect(tag = "drive_type")]
 pub enum DriveMedia {
-    HardDrive(Arc<dyn SimpleDisk>),
-    OpticalDrive(Arc<dyn AsyncScsiDisk>),
-}
-
-impl Inspect for DriveMedia {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        let mut resp = req.respond();
-        match self {
-            DriveMedia::HardDrive(device) => resp
-                .field("drive_type", DriveType::Hard)
-                .field("backend_type", device.disk_type())
-                .field("backend", device)
-                .field("sector_size", device.sector_size())
-                .field("sector_count", device.sector_count()),
-            DriveMedia::OpticalDrive(device) => resp
-                .field("drive_type", DriveType::Optical)
-                .field("backend", device),
-        };
-    }
+    HardDrive(#[inspect(rename = "backend")] SimpleDisk),
+    OpticalDrive(#[inspect(rename = "backend")] Arc<dyn AsyncScsiDisk>),
 }
 
 impl DriveMedia {
-    pub fn hard_disk(disk: Arc<dyn SimpleDisk>) -> Self {
+    pub fn hard_disk(disk: SimpleDisk) -> Self {
         DriveMedia::HardDrive(disk)
     }
 
@@ -1465,7 +1437,7 @@ impl Channel {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Inspect)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 enum DriveType {
     Hard,
     Optical,
@@ -1859,10 +1831,9 @@ mod tests {
         let data = (0..0x100000_u32).collect::<Vec<_>>();
         handle1.write_all(data.as_bytes()).unwrap();
 
-        let disk = FileDisk::open(handle1, false).unwrap();
+        let disk = SimpleDisk::new(FileDisk::open(handle1, false).unwrap()).unwrap();
         let geometry = MediaGeometry::new(disk.sector_count(), disk.sector_size()).unwrap();
 
-        let disk = Arc::new(disk);
         let media = match drive_type {
             DriveType::Hard => DriveMedia::hard_disk(disk),
             DriveType::Optical => DriveMedia::optical_disk(Arc::new(AtapiScsiDisk::new(Arc::new(

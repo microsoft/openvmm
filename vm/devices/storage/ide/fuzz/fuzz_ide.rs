@@ -7,6 +7,7 @@ use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
 use chipset_arc_mutex_device::services::PortIoInterceptServices;
 use chipset_device::pci::PciConfigSpace;
+use disk_backend::SimpleDisk;
 use disk_ramdisk::RamDisk;
 use guestmem::GuestMemory;
 use ide::DriveMedia;
@@ -29,14 +30,14 @@ impl FuzzDriveMedia {
     fn reify(self) -> DriveMedia {
         // we don't  care about drive contents for fuzzing
         match self {
-            FuzzDriveMedia::HardDrive => {
-                DriveMedia::hard_disk(Arc::new(RamDisk::new(0x100000 * 4, false).unwrap()))
-            }
-            FuzzDriveMedia::OpticalDrive => {
-                DriveMedia::optical_disk(Arc::new(AtapiScsiDisk::new(Arc::new(
-                    SimpleScsiDvd::new(Some(Arc::new(RamDisk::new(0x100000 * 4, false).unwrap()))),
-                ))))
-            }
+            FuzzDriveMedia::HardDrive => DriveMedia::hard_disk(
+                SimpleDisk::new(RamDisk::new(0x100000 * 4, false).unwrap()).unwrap(),
+            ),
+            FuzzDriveMedia::OpticalDrive => DriveMedia::optical_disk(Arc::new(AtapiScsiDisk::new(
+                Arc::new(SimpleScsiDvd::new(Some(
+                    SimpleDisk::new(RamDisk::new(0x100000 * 4, false).unwrap()).unwrap(),
+                ))),
+            ))),
         }
     }
 }

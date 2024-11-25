@@ -23,7 +23,6 @@ use crate::NVME_VERSION;
 use crate::PAGE_MASK;
 use crate::PAGE_SIZE;
 use crate::VENDOR_ID;
-use disk_backend::SimpleDisk;
 use futures::FutureExt;
 use futures::SinkExt;
 use futures::StreamExt;
@@ -52,6 +51,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
+use disk_backend::SimpleDisk;
 
 const IOSQES: u8 = 6;
 const IOCQES: u8 = 4;
@@ -366,7 +366,7 @@ impl AdminHandler {
         &mut self,
         state: Option<&mut AdminState>,
         nsid: u32,
-        disk: Arc<dyn SimpleDisk>,
+        disk: SimpleDisk,
     ) -> Result<(), NsidConflict> {
         let namespace = &*match self.namespaces.entry(nsid) {
             btree_map::Entry::Vacant(entry) => entry.insert(Arc::new(Namespace::new(

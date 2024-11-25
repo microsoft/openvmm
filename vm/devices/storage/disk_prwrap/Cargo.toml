@@ -16,6 +16,7 @@ async-trait.workspace = true
 vm_resource.workspace = true
 parking_lot.workspace = true
 stackfuture.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 [lints]

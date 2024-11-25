@@ -47,7 +47,6 @@ use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
 use std::io::IoSlice;
-use std::sync::Arc;
 use task_control::StopTask;
 use thiserror::Error;
 use video_core::FramebufferControl;
@@ -188,7 +187,7 @@ pub struct GuestEmulationDevice {
 #[derive(Inspect)]
 struct VmgsState {
     /// The underlying VMGS disk.
-    disk: Arc<dyn SimpleDisk>,
+    disk: SimpleDisk,
     /// Memory for the disk to DMA to/from.
     mem: GuestMemory,
     /// Memory to buffer data for sending to the guest.
@@ -204,7 +203,7 @@ impl GuestEmulationDevice {
         firmware_event_send: Option<mesh::MpscSender<FirmwareEvent>>,
         guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         framebuffer_control: Option<Box<dyn FramebufferControl>>,
-        vmgs_disk: Option<Arc<dyn SimpleDisk>>,
+        vmgs_disk: Option<SimpleDisk>,
     ) -> Self {
         Self {
             config,

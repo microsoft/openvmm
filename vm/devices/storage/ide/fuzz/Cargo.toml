@@ -13,6 +13,7 @@ ide.workspace = true
 chipset_arc_mutex_device.workspace = true
 chipset_device_fuzz.workspace = true
 chipset_device.workspace = true
+disk_backend.workspace = true
 disk_ramdisk.workspace = true
 pci_core.workspace = true
 scsidisk.workspace = true

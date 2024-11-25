@@ -3,8 +3,9 @@
 
 //! Resolver-related definitions for disk resources.
 
+use crate::DiskIo;
+use crate::InvalidDisk;
 use crate::SimpleDisk;
-use std::sync::Arc;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::CanResolveTo;
 
@@ -25,10 +26,11 @@ pub struct ResolveDiskParameters<'a> {
 }
 
 /// A resolved [`SimpleDisk`].
-pub struct ResolvedSimpleDisk(pub Arc<dyn SimpleDisk>);
+pub struct ResolvedSimpleDisk(pub SimpleDisk);
 
-impl<T: 'static + SimpleDisk> From<T> for ResolvedSimpleDisk {
-    fn from(value: T) -> Self {
-        Self(Arc::new(value))
+impl ResolvedSimpleDisk {
+    /// Create a new `ResolvedSimpleDisk`.
+    pub fn new<T: DiskIo>(value: T) -> Result<Self, InvalidDisk> {
+        Ok(Self(SimpleDisk::new(value)?))
     }
 }

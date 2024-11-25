@@ -8,16 +8,13 @@
 
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedSimpleDisk;
-use disk_backend::AsyncDisk;
 use disk_backend::DiskError;
-use disk_backend::SimpleDisk;
-use disk_backend::ASYNC_DISK_STACK_SIZE;
+use disk_backend::DiskIo;
 use disk_file::FileDisk;
 use guid::Guid;
 use inspect::Inspect;
 use mesh::MeshPayload;
 use scsi_buffers::RequestBuffers;
-use stackfuture::StackFuture;
 use std::fs;
 use std::os::windows::prelude::*;
 use std::path::Path;
@@ -350,20 +347,31 @@ impl ResourceId<DiskHandleKind> for OpenVhdmpDiskConfig {
 pub struct VhdmpDiskResolver;
 declare_static_resolver!(VhdmpDiskResolver, (DiskHandleKind, OpenVhdmpDiskConfig));
 
+#[derive(Debug, Error)]
+pub enum ResolveVhdmpDiskError {
+    #[error("failed to open VHD")]
+    Vhdmp(#[source] Error),
+    #[error("invalid disk")]
+    InvalidDisk(#[source] disk_backend::InvalidDisk),
+}
+
 impl ResolveResource<DiskHandleKind, OpenVhdmpDiskConfig> for VhdmpDiskResolver {
     type Output = ResolvedSimpleDisk;
-    type Error = Error;
+    type Error = ResolveVhdmpDiskError;
 
     fn resolve(
         &self,
         rsrc: OpenVhdmpDiskConfig,
         input: ResolveDiskParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        Ok(VhdmpDisk::new(rsrc.0, input.read_only)?.into())
+        ResolvedSimpleDisk::new(
+            VhdmpDisk::new(rsrc.0, input.read_only).map_err(ResolveVhdmpDiskError::Vhdmp)?,
+        )
+        .map_err(ResolveVhdmpDiskError::InvalidDisk)
     }
 }
 
-/// Implementation of SimpleDisk for VHD and VHDX files, using the VHDMP driver
+/// Implementation of [`DiskIo`] for VHD and VHDX files, using the VHDMP driver
 /// as the parser.
 #[derive(Debug, Inspect)]
 pub struct VhdmpDisk {
@@ -420,7 +428,7 @@ impl VhdmpDisk {
     }
 }
 
-impl SimpleDisk for VhdmpDisk {
+impl DiskIo for VhdmpDisk {
     fn disk_type(&self) -> &str {
         "vhdmp"
     }
@@ -448,37 +456,29 @@ impl SimpleDisk for VhdmpDisk {
     fn is_fua_respected(&self) -> bool {
         self.vhd.is_fua_respected()
     }
-}
 
-impl AsyncDisk for VhdmpDisk {
-    fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'_>,
+    async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let _locked = self.io_lock.lock().await;
-            self.vhd.read(buffers, sector).await
-        })
+    ) -> Result<(), DiskError> {
+        let _locked = self.io_lock.lock().await;
+        self.vhd.read(buffers, sector).await
     }
 
-    fn write_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'_>,
+    async fn write_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
         fua: bool,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let _locked = self.io_lock.lock().await;
-            self.vhd.write(buffers, sector, fua).await
-        })
+    ) -> Result<(), DiskError> {
+        let _locked = self.io_lock.lock().await;
+        self.vhd.write(buffers, sector, fua).await
     }
 
-    fn sync_cache(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let _locked = self.io_lock.lock().await;
-            self.vhd.flush().await
-        })
+    async fn sync_cache(&self) -> Result<(), DiskError> {
+        let _locked = self.io_lock.lock().await;
+        self.vhd.flush().await
     }
 }
 

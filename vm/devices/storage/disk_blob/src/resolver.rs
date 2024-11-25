@@ -41,6 +41,6 @@ impl AsyncResolveResource<DiskHandleKind, BlobDiskHandle> for BlobDiskResolver {
             BlobDiskFormat::FixedVhd1 => BlobDisk::new_fixed_vhd1(blob).await?,
         };
 
-        Ok(disk.into())
+        Ok(ResolvedSimpleDisk::new(disk)?)
     }
 }

@@ -9,18 +9,16 @@ use self::readwriteat::ReadWriteAt;
 use blocking::unblock;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedSimpleDisk;
-use disk_backend::AsyncDisk;
 use disk_backend::DiskError;
-use disk_backend::SimpleDisk;
-use disk_backend::ASYNC_DISK_STACK_SIZE;
+use disk_backend::DiskIo;
 use disk_backend_resources::FileDiskHandle;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
-use stackfuture::StackFuture;
 use std::fs;
 use std::sync::Arc;
+use thiserror::Error;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::ResolveResource;
@@ -28,16 +26,27 @@ use vm_resource::ResolveResource;
 pub struct FileDiskResolver;
 declare_static_resolver!(FileDiskResolver, (DiskHandleKind, FileDiskHandle));
 
+#[derive(Debug, Error)]
+pub enum ResolveFileDiskError {
+    #[error("i/o error")]
+    Io(#[source] std::io::Error),
+    #[error("invalid disk")]
+    InvalidDisk(#[source] disk_backend::InvalidDisk),
+}
+
 impl ResolveResource<DiskHandleKind, FileDiskHandle> for FileDiskResolver {
     type Output = ResolvedSimpleDisk;
-    type Error = std::io::Error;
+    type Error = ResolveFileDiskError;
 
     fn resolve(
         &self,
         rsrc: FileDiskHandle,
         input: ResolveDiskParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        Ok(FileDisk::open(rsrc.0, input.read_only)?.into())
+        ResolvedSimpleDisk::new(
+            FileDisk::open(rsrc.0, input.read_only).map_err(ResolveFileDiskError::Io)?,
+        )
+        .map_err(ResolveFileDiskError::InvalidDisk)
     }
 }
 
@@ -130,7 +139,7 @@ impl FileDisk {
     }
 }
 
-impl SimpleDisk for FileDisk {
+impl DiskIo for FileDisk {
     fn disk_type(&self) -> &str {
         "file"
     }
@@ -158,27 +167,25 @@ impl SimpleDisk for FileDisk {
     fn is_fua_respected(&self) -> bool {
         false
     }
-}
 
-impl AsyncDisk for FileDisk {
-    fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
+    async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move { self.read(buffers, sector).await })
+    ) -> Result<(), DiskError> {
+        self.read(buffers, sector).await
     }
 
-    fn write_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
+    async fn write_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
         fua: bool,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move { self.write(buffers, sector, fua).await })
+    ) -> Result<(), DiskError> {
+        self.write(buffers, sector, fua).await
     }
 
-    fn sync_cache(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(self.flush())
+    async fn sync_cache(&self) -> Result<(), DiskError> {
+        self.flush().await
     }
 }

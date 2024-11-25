@@ -11,10 +11,10 @@ use crate::prp::PrpRange;
 use crate::spec;
 use crate::spec::nvm;
 use disk_backend::SimpleDisk;
+use disk_backend::Unmap;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
-use std::sync::Arc;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
@@ -22,7 +22,7 @@ use zerocopy::FromZeroes;
 /// An NVMe namespace built on top of a [`SimpleDisk`].
 #[derive(Inspect)]
 pub struct Namespace {
-    disk: Arc<dyn SimpleDisk>,
+    disk: SimpleDisk,
     nsid: u32,
     mem: GuestMemory,
     block_shift: u32,
@@ -30,7 +30,7 @@ pub struct Namespace {
 }
 
 impl Namespace {
-    pub fn new(mem: GuestMemory, nsid: u32, disk: Arc<dyn SimpleDisk>) -> Self {
+    pub fn new(mem: GuestMemory, nsid: u32, disk: SimpleDisk) -> Self {
         Self {
             block_shift: disk.sector_size().trailing_zeros(),
             pr: disk.pr().is_some(),

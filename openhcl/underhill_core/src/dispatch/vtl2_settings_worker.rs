@@ -31,7 +31,6 @@ use std::error::Error as _;
 use std::fmt::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 use storage_string::InvalidAsciiString;
 use storvsp_resources::ScsiControllerHandle;
@@ -545,7 +544,7 @@ pub async fn disk_from_disk_type<'a>(
     disk_type: Resource<DiskHandleKind>,
     read_only: bool,
     resolver: &ResourceResolver,
-) -> Result<Arc<dyn SimpleDisk>, Vtl2SettingsErrorInfo> {
+) -> Result<SimpleDisk, Vtl2SettingsErrorInfo> {
     let disk = resolver
         .resolve(
             disk_type,

@@ -8,18 +8,16 @@
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedSimpleDisk;
-use disk_backend::AsyncDisk;
 use disk_backend::DiskError;
+use disk_backend::DiskIo;
 use disk_backend::GetLbaStatus;
 use disk_backend::SimpleDisk;
 use disk_backend::Unmap;
-use disk_backend::ASYNC_DISK_STACK_SIZE;
 use disk_backend_resources::StripedDiskHandle;
 use futures::future::join_all;
 use futures::future::try_join_all;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
-use stackfuture::StackFuture;
 use std::fmt::Debug;
 use thiserror::Error;
 use vm_resource::declare_static_async_resolver;
@@ -47,13 +45,17 @@ impl AsyncResolveResource<DiskHandleKind, StripedDiskHandle> for StripedDiskReso
                 .map(|device| async { resolver.resolve(device, input).await.map(|r| r.0) }),
         )
         .await?;
-        Ok(StripedDisk::new(disks, rsrc.chunk_size_in_bytes, rsrc.logic_sector_count)?.into())
+        Ok(ResolvedSimpleDisk::new(StripedDisk::new(
+            disks,
+            rsrc.chunk_size_in_bytes,
+            rsrc.logic_sector_count,
+        )?)?)
     }
 }
 
 #[derive(Debug)]
-pub struct StripedDisk<T> {
-    block_devices: Vec<T>,
+pub struct StripedDisk {
+    block_devices: Vec<SimpleDisk>,
     sector_size: u32,
     sector_shift: u32,
     sector_count: u64,
@@ -62,7 +64,7 @@ pub struct StripedDisk<T> {
     supports_unmap: bool,
 }
 
-impl<T: SimpleDisk> Inspect for StripedDisk<T> {
+impl Inspect for StripedDisk {
     fn inspect(&self, req: inspect::Request<'_>) {
         let &Self {
             ref block_devices,
@@ -75,7 +77,6 @@ impl<T: SimpleDisk> Inspect for StripedDisk<T> {
         } = self;
         req.respond()
             .field("sector_count_per_chunk", sector_count_per_chunk)
-            .field("stripe_type", block_devices[0].disk_type())
             .fields("stripes", block_devices.iter().enumerate())
             .field("sector_size", sector_size)
             .field("sector_count", sector_count)
@@ -223,7 +224,7 @@ impl Iterator for ChunkIter {
     }
 }
 
-impl<T> StripedDisk<T> {
+impl StripedDisk {
     fn get_chunk_iter(&self, start_sector: u64, end_sector: u64) -> Result<ChunkIter, DiskError> {
         // The valid range is [start_sector, end_sector).
         if end_sector > self.sector_count {
@@ -254,7 +255,7 @@ impl<T> StripedDisk<T> {
     }
 }
 
-impl<T: SimpleDisk> StripedDisk<T> {
+impl StripedDisk {
     /// Constructs a new `StripedDisk` backed by the vector of file.
     ///
     /// # Arguments
@@ -263,7 +264,7 @@ impl<T: SimpleDisk> StripedDisk<T> {
     /// * 'logic_sector_count' - The sector count of the striped disk, and the default value is the sum of the sector count of the backing devices.
     ///
     pub fn new(
-        devices: Vec<T>,
+        devices: Vec<SimpleDisk>,
         chunk_size_in_bytes: Option<u32>,
         logic_sector_count: Option<u64>,
     ) -> Result<Self, NewDeviceError> {
@@ -345,7 +346,7 @@ impl<T: SimpleDisk> StripedDisk<T> {
     }
 }
 
-impl<T: SimpleDisk> SimpleDisk for StripedDisk<T> {
+impl DiskIo for StripedDisk {
     fn disk_type(&self) -> &str {
         "striped"
     }
@@ -362,7 +363,7 @@ impl<T: SimpleDisk> SimpleDisk for StripedDisk<T> {
         self.read_only
     }
 
-    fn unmap(&self) -> Option<&dyn Unmap> {
+    fn unmap(&self) -> Option<impl Unmap> {
         self.supports_unmap.then_some(self)
     }
 
@@ -386,124 +387,23 @@ impl<T: SimpleDisk> SimpleDisk for StripedDisk<T> {
         self.block_devices.iter().all(|d| d.is_fua_respected())
     }
 
-    fn eject(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let mut futures = Vec::new();
-            for disk in &self.block_devices {
-                futures.push(disk.eject());
-            }
-            await_all_and_check(futures).await?;
-            Ok(())
-        })
+    async fn eject(&self) -> Result<(), DiskError> {
+        let mut futures = Vec::new();
+        for disk in &self.block_devices {
+            futures.push(disk.eject());
+        }
+        await_all_and_check(futures).await?;
+        Ok(())
     }
-}
 
-impl<T: SimpleDisk> Unmap for StripedDisk<T> {
-    fn unmap(
+    async fn read_vectored(
         &self,
+        buffers: &RequestBuffers<'_>,
         start_sector: u64,
-        sector_count: u64,
-        block_level_only: bool,
-    ) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let end_sector = start_sector + sector_count;
-
-            if end_sector > self.sector_count {
-                return Err(IoError::UnmapInvalidInput {
-                    start_sector,
-                    end_sector,
-                    disk_sector_count: self.sector_count,
-                }
-                .into());
-            }
-
-            let chunk_iter = match self.get_chunk_iter(start_sector, end_sector) {
-                Ok(iter) => iter,
-                Err(err) => {
-                    return Err(err);
-                }
-            };
-
-            // Create a vector to group chunks by disk index
-            let mut disk_sectors: Vec<(u64, u64)> = vec![(0, 0); self.block_devices.len()];
-            let mut trimmed_sectors: u64 = 0;
-
-            for chunk in chunk_iter {
-                let start = chunk.disk_sector_index;
-                let length = chunk.chunk_length_in_sectors as u64;
-                let (disk_start, disk_len) = &mut disk_sectors[chunk.disk_index];
-                if *disk_len == 0 {
-                    *disk_start = start; // set the start of the unmap operation
-                }
-                *disk_len += length; // add the length to the total
-
-                trimmed_sectors += length;
-            }
-
-            if trimmed_sectors != sector_count {
-                return Err(IoError::InternalErrorTrimLengthMismatch {
-                    trimmed_sectors,
-                    sector_count,
-                }
-                .into());
-            }
-
-            // Create a future for each disk's combined unmap operations
-            let mut all_futures = Vec::new();
-
-            for (disk_index, &(start, length)) in disk_sectors.iter().enumerate() {
-                let disk = &self.block_devices[disk_index];
-                if let Some(unmap) = disk.unmap() {
-                    // Check if the length is non-zero before pushing to all_futures
-                    if length > 0 {
-                        all_futures.push(unmap.unmap(start, length, block_level_only));
-                    }
-                }
-            }
-            await_all_and_check(all_futures).await?;
-            Ok(())
-        })
-    }
-
-    fn optimal_unmap_sectors(&self) -> u32 {
-        self.block_devices
-            .iter()
-            .filter_map(|disk| Some(disk.unmap()?.optimal_unmap_sectors()))
-            .max()
-            .unwrap_or(1)
-    }
-}
-
-impl<T: SimpleDisk> GetLbaStatus for StripedDisk<T> {}
-
-async fn await_all_and_check<T, E>(futures: T) -> Result<(), E>
-where
-    T: IntoIterator,
-    T::Item: core::future::Future<Output = Result<(), E>>,
-{
-    // Use join_all to wait for all IOs even if one fails. This is necessary to
-    // avoid dropping IOs while they are in flight.
-    let results = join_all(futures).await;
-    for result in results {
-        result?;
-    }
-    Ok(())
-}
-
-impl<W: SimpleDisk + AsyncDisk + Sync> AsyncDisk for StripedDisk<W> {
-    fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
-        start_sector: u64,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
+    ) -> Result<(), DiskError> {
         let buf_total_size = buffers.len();
         let end_sector = start_sector + ((buf_total_size as u64) >> self.sector_shift);
-        let chunk_iter = match self.get_chunk_iter(start_sector, end_sector) {
-            Ok(iter) => iter,
-            Err(err) => {
-                return StackFuture::from(async move { Err(err) });
-            }
-        };
+        let chunk_iter = self.get_chunk_iter(start_sector, end_sector)?;
 
         let mut all_futures = Vec::new();
         let mut cur_buf_offset: usize = 0;
@@ -527,35 +427,26 @@ impl<W: SimpleDisk + AsyncDisk + Sync> AsyncDisk for StripedDisk<W> {
         }
 
         if cur_buf_offset != buf_total_size {
-            return StackFuture::from(async move {
-                Err(IoError::InternalErrorBufferLengthMismatch {
-                    cur_buf_offset,
-                    buf_total_size,
-                }
-                .into())
-            });
+            return Err(IoError::InternalErrorBufferLengthMismatch {
+                cur_buf_offset,
+                buf_total_size,
+            }
+            .into());
         }
 
-        StackFuture::from(async move {
-            await_all_and_check(all_futures).await?;
-            Ok(())
-        })
+        await_all_and_check(all_futures).await?;
+        Ok(())
     }
 
-    fn write_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
+    async fn write_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         start_sector: u64,
         fua: bool,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
+    ) -> Result<(), DiskError> {
         let buf_total_size = buffers.len();
         let end_sector = start_sector + ((buf_total_size as u64) >> self.sector_shift);
-        let chunk_iter = match self.get_chunk_iter(start_sector, end_sector) {
-            Ok(iter) => iter,
-            Err(err) => {
-                return StackFuture::from(async move { Err(err) });
-            }
-        };
+        let chunk_iter = self.get_chunk_iter(start_sector, end_sector)?;
 
         let mut all_futures = Vec::new();
         let mut cur_buf_offset: usize = 0;
@@ -579,22 +470,18 @@ impl<W: SimpleDisk + AsyncDisk + Sync> AsyncDisk for StripedDisk<W> {
         }
 
         if cur_buf_offset != buf_total_size {
-            return StackFuture::from(async move {
-                Err(IoError::InternalErrorBufferLengthMismatch {
-                    cur_buf_offset,
-                    buf_total_size,
-                }
-                .into())
-            });
+            return Err(IoError::InternalErrorBufferLengthMismatch {
+                cur_buf_offset,
+                buf_total_size,
+            }
+            .into());
         }
 
-        StackFuture::from(async move {
-            await_all_and_check(all_futures).await?;
-            Ok(())
-        })
+        await_all_and_check(all_futures).await?;
+        Ok(())
     }
 
-    fn sync_cache(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
+    async fn sync_cache(&self) -> Result<(), DiskError> {
         let mut all_futures = Vec::new();
         for (disk_index, disk) in self.block_devices.iter().enumerate() {
             all_futures.push(async move {
@@ -604,12 +491,100 @@ impl<W: SimpleDisk + AsyncDisk + Sync> AsyncDisk for StripedDisk<W> {
                 })
             });
         }
-
-        StackFuture::from(async move {
-            await_all_and_check(all_futures).await?;
-            Ok(())
-        })
+        await_all_and_check(all_futures).await?;
+        Ok(())
     }
+}
+
+impl Unmap for StripedDisk {
+    async fn unmap(
+        &self,
+        start_sector: u64,
+        sector_count: u64,
+        block_level_only: bool,
+    ) -> Result<(), DiskError> {
+        let end_sector = start_sector + sector_count;
+
+        if end_sector > self.sector_count {
+            return Err(IoError::UnmapInvalidInput {
+                start_sector,
+                end_sector,
+                disk_sector_count: self.sector_count,
+            }
+            .into());
+        }
+
+        let chunk_iter = match self.get_chunk_iter(start_sector, end_sector) {
+            Ok(iter) => iter,
+            Err(err) => {
+                return Err(err);
+            }
+        };
+
+        // Create a vector to group chunks by disk index
+        let mut disk_sectors: Vec<(u64, u64)> = vec![(0, 0); self.block_devices.len()];
+        let mut trimmed_sectors: u64 = 0;
+
+        for chunk in chunk_iter {
+            let start = chunk.disk_sector_index;
+            let length = chunk.chunk_length_in_sectors as u64;
+            let (disk_start, disk_len) = &mut disk_sectors[chunk.disk_index];
+            if *disk_len == 0 {
+                *disk_start = start; // set the start of the unmap operation
+            }
+            *disk_len += length; // add the length to the total
+
+            trimmed_sectors += length;
+        }
+
+        if trimmed_sectors != sector_count {
+            return Err(IoError::InternalErrorTrimLengthMismatch {
+                trimmed_sectors,
+                sector_count,
+            }
+            .into());
+        }
+
+        // Create a future for each disk's combined unmap operations
+        let mut all_futures = Vec::new();
+
+        for (disk_index, &(start, length)) in disk_sectors.iter().enumerate() {
+            let disk = &self.block_devices[disk_index];
+            if let Some(unmap) = disk.unmap() {
+                // Check if the length is non-zero before pushing to all_futures
+                if length > 0 {
+                    all_futures
+                        .push(async move { unmap.unmap(start, length, block_level_only).await });
+                }
+            }
+        }
+        await_all_and_check(all_futures).await?;
+        Ok(())
+    }
+
+    fn optimal_unmap_sectors(&self) -> u32 {
+        self.block_devices
+            .iter()
+            .filter_map(|disk| Some(disk.unmap()?.optimal_unmap_sectors()))
+            .max()
+            .unwrap_or(1)
+    }
+}
+
+impl GetLbaStatus for StripedDisk {}
+
+async fn await_all_and_check<T, E>(futures: T) -> Result<(), E>
+where
+    T: IntoIterator,
+    T::Item: core::future::Future<Output = Result<(), E>>,
+{
+    // Use join_all to wait for all IOs even if one fails. This is necessary to
+    // avoid dropping IOs while they are in flight.
+    let results = join_all(futures).await;
+    for result in results {
+        result?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -626,13 +601,13 @@ mod tests {
         disk_size_in_bytes: Option<u64>,
         chunk_size_in_bytes: Option<u32>,
         logic_sector_count: Option<u64>,
-    ) -> StripedDisk<RamDisk> {
+    ) -> StripedDisk {
         let mut devices = Vec::new();
 
         for _i in 0..disk_count {
             let ramdisk =
                 RamDisk::new(disk_size_in_bytes.unwrap_or(1024 * 1024 * 64), false).unwrap();
-            devices.push(ramdisk);
+            devices.push(SimpleDisk::new(ramdisk).unwrap());
         }
 
         StripedDisk::new(devices, chunk_size_in_bytes, logic_sector_count).unwrap()
@@ -661,7 +636,7 @@ mod tests {
     }
 
     async fn validate_async_striping_disk_ios(
-        disk: &StripedDisk<RamDisk>,
+        disk: &StripedDisk,
         start_sectors: &[u64],
         offset: &[usize],
         length: usize,
@@ -692,7 +667,7 @@ mod tests {
     /// * `read_gpns` - The read GPN index.
     ///
     async fn validate_async_striping_disk_io(
-        disk: &StripedDisk<RamDisk>,
+        disk: &StripedDisk,
         start_sector: u64,
         offset: usize,
         length: usize,
@@ -969,7 +944,7 @@ mod tests {
         let mut devices = Vec::new();
         for i in 0..2 {
             let ramdisk = RamDisk::new(1024 * 1024 + i * 64 * 1024, false).unwrap();
-            devices.push(ramdisk);
+            devices.push(SimpleDisk::new(ramdisk).unwrap());
         }
 
         match StripedDisk::new(devices, None, None) {
@@ -986,7 +961,7 @@ mod tests {
         let mut block_devices = Vec::new();
         for _ in 0..2 {
             let ramdisk = RamDisk::new(1024 * 1024, false).unwrap();
-            block_devices.push(ramdisk);
+            block_devices.push(SimpleDisk::new(ramdisk).unwrap());
         }
 
         match StripedDisk::new(block_devices, Some(4 * 1024 + 1), None) {
@@ -1000,7 +975,7 @@ mod tests {
         let mut block_devices = Vec::new();
         for _ in 0..2 {
             let ramdisk = RamDisk::new(1024 * 1024, false).unwrap();
-            block_devices.push(ramdisk);
+            block_devices.push(SimpleDisk::new(ramdisk).unwrap());
         }
 
         match StripedDisk::new(
@@ -1021,10 +996,10 @@ mod tests {
         let mut block_devices = Vec::new();
         for _ in 0..2 {
             let ramdisk = RamDisk::new(1024 * 1024, false).unwrap();
-            block_devices.push(ramdisk);
+            block_devices.push(SimpleDisk::new(ramdisk).unwrap());
         }
 
-        let disk = match StripedDisk::<RamDisk>::new(block_devices, Some(8 * 1024), None) {
+        let disk = match StripedDisk::new(block_devices, Some(8 * 1024), None) {
             Err(err) => panic!("{}", err),
             Ok(strip_disk) => strip_disk,
         };

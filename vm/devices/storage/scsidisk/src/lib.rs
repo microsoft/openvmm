@@ -46,7 +46,6 @@ use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use thiserror::Error;
 use tracing::Instrument;
 use tracing_helpers::ErrorValueExt;
@@ -106,7 +105,7 @@ impl ScsiSaveRestore for SimpleScsiDisk {
 }
 
 pub struct SimpleScsiDisk {
-    disk: Arc<dyn SimpleDisk>,
+    disk: SimpleDisk,
     sector_shift: u8,
     physical_extra_shift: u8,
     sector_size: u32,
@@ -133,7 +132,7 @@ struct ScsiParameters {
 }
 
 impl SimpleScsiDisk {
-    pub fn new(disk: Arc<dyn SimpleDisk>, disk_parameters: DiskParameters) -> Self {
+    pub fn new(disk: SimpleDisk, disk_parameters: DiskParameters) -> Self {
         let sector_size = disk.sector_size();
         let sector_shift = sector_size.trailing_zeros() as u8;
         let mut sector_count = disk.sector_count();
@@ -1301,7 +1300,6 @@ impl Inspect for SimpleScsiDisk {
             .field("scsi_parameters", &self.scsi_parameters)
             .field("lba", self.support_get_lba_status)
             .field("pr", self.support_pr)
-            .field("backend_type", self.disk.disk_type())
             .field("backend", &self.disk);
     }
 }

@@ -3,14 +3,11 @@
 
 //! A read-only disk that always returns zero on read.
 
-use super::SimpleDisk;
-use crate::AsyncDisk;
+use super::DiskIo;
 use crate::DiskError;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
-use stackfuture::StackFuture;
-use std::future::ready;
 
 /// A read-only disk that always returns zero on read.
 #[derive(Debug, Inspect)]
@@ -19,13 +16,22 @@ pub struct ZeroDisk {
     sector_count: u64,
 }
 
+/// Error returned by [`ZeroDisk::new`] when the disk geometry is invalid.
 #[derive(Debug, thiserror::Error)]
 #[error("disk size {0:#x} is not a multiple of the sector size {1}")]
 pub enum InvalidGeometry {
+    /// The sector size is invalid.
     #[error("sector size {0} is invalid")]
     InvalidSectorSize(u32),
+    /// The disk size is not a multiple of the sector size.
     #[error("disk size {disk_size:#x} is not a multiple of the sector size {sector_size}")]
-    NotSectorMultiple { disk_size: u64, sector_size: u32 },
+    NotSectorMultiple {
+        /// The disk size.
+        disk_size: u64,
+        /// The sector size.
+        sector_size: u32,
+    },
+    /// The disk has no sectors.
     #[error("disk has no sectors")]
     EmptyDisk,
 }
@@ -52,7 +58,7 @@ impl ZeroDisk {
     }
 }
 
-impl SimpleDisk for ZeroDisk {
+impl DiskIo for ZeroDisk {
     fn disk_type(&self) -> &str {
         "zero"
     }
@@ -80,31 +86,25 @@ impl SimpleDisk for ZeroDisk {
     fn is_fua_respected(&self) -> bool {
         true
     }
-}
 
-impl AsyncDisk for ZeroDisk {
-    fn read_vectored(
+    async fn read_vectored(
         &self,
         buffers: &RequestBuffers<'_>,
         _sector: u64,
-    ) -> StackFuture<'_, Result<(), DiskError>, { crate::ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(ready(
-            buffers.writer().zero(buffers.len()).map_err(Into::into),
-        ))
+    ) -> Result<(), DiskError> {
+        buffers.writer().zero(buffers.len()).map_err(Into::into)
     }
 
-    fn write_vectored(
+    async fn write_vectored(
         &self,
         _buffers: &RequestBuffers<'_>,
         _sector: u64,
         _fua: bool,
-    ) -> StackFuture<'_, Result<(), DiskError>, { crate::ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(ready(Err(DiskError::ReadOnly)))
+    ) -> Result<(), DiskError> {
+        Err(DiskError::ReadOnly)
     }
 
-    fn sync_cache(
-        &self,
-    ) -> StackFuture<'_, Result<(), DiskError>, { crate::ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(ready(Ok(())))
+    async fn sync_cache(&self) -> Result<(), DiskError> {
+        Ok(())
     }
 }

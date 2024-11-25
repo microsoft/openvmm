@@ -24,10 +24,24 @@ declare_static_async_resolver!(
     (DiskHandleKind, RamDiffDiskHandle)
 );
 
+/// Error type for [`RamDiskResolver`].
+#[derive(Debug, Error)]
+pub enum ResolveRamDiskError {
+    /// Failed to create the RAM disk.
+    #[error("failed to create ram disk")]
+    Ram(#[source] Error),
+    /// Failed to resolve the inner disk.
+    #[error("failed to resolve inner disk")]
+    Resolve(#[source] vm_resource::ResolveError),
+    /// Invalid disk.
+    #[error("invalid disk")]
+    InvalidDisk(#[source] disk_backend::InvalidDisk),
+}
+
 #[async_trait]
 impl AsyncResolveResource<DiskHandleKind, RamDiskHandle> for RamDiskResolver {
     type Output = ResolvedSimpleDisk;
-    type Error = Error;
+    type Error = ResolveRamDiskError;
 
     async fn resolve(
         &self,
@@ -35,14 +49,17 @@ impl AsyncResolveResource<DiskHandleKind, RamDiskHandle> for RamDiskResolver {
         rsrc: RamDiskHandle,
         input: ResolveDiskParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        Ok(RamDisk::new(rsrc.len, input.read_only)?.into())
+        ResolvedSimpleDisk::new(
+            RamDisk::new(rsrc.len, input.read_only).map_err(ResolveRamDiskError::Ram)?,
+        )
+        .map_err(ResolveRamDiskError::InvalidDisk)
     }
 }
 
 #[async_trait]
 impl AsyncResolveResource<DiskHandleKind, RamDiffDiskHandle> for RamDiskResolver {
     type Output = ResolvedSimpleDisk;
-    type Error = anyhow::Error;
+    type Error = ResolveRamDiskError;
 
     async fn resolve(
         &self,
@@ -58,7 +75,11 @@ impl AsyncResolveResource<DiskHandleKind, RamDiffDiskHandle> for RamDiskResolver
                     _async_trait_workaround: &(),
                 },
             )
-            .await?;
-        Ok(RamDisk::diff(lower.0, input.read_only)?.into())
+            .await
+            .map_err(ResolveRamDiskError::Resolve)?;
+        ResolvedSimpleDisk::new(
+            RamDisk::diff(lower.0, input.read_only).map_err(ResolveRamDiskError::Ram)?,
+        )
+        .map_err(ResolveRamDiskError::InvalidDisk)
     }
 }
