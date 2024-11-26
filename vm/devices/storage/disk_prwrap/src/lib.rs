@@ -134,21 +134,21 @@ impl DiskIo for DiskWithReservations {
         Some(self)
     }
 
-    fn read_vectored(
+    async fn read_vectored(
         &self,
         buffers: &RequestBuffers<'_>,
         sector: u64,
-    ) -> impl Future<Output = Result<(), DiskError>> + Send {
-        self.inner.read_vectored(buffers, sector)
+    ) -> Result<(), DiskError> {
+        self.inner.read_vectored(buffers, sector).await
     }
 
-    fn write_vectored(
+    async fn write_vectored(
         &self,
         buffers: &RequestBuffers<'_>,
         sector: u64,
         fua: bool,
-    ) -> impl Future<Output = Result<(), DiskError>> + Send {
-        self.inner.write_vectored(buffers, sector, fua)
+    ) -> Result<(), DiskError> {
+        self.inner.write_vectored(buffers, sector, fua).await
     }
 
     fn sync_cache(&self) -> impl Future<Output = Result<(), DiskError>> + Send {

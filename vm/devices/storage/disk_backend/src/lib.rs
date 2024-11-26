@@ -316,7 +316,7 @@ impl SimpleDisk {
     }
 
     /// Issues an asynchronous eject media operation to the disk.
-    pub fn eject(&self) -> impl '_ + Future<Output = Result<(), DiskError>> {
+    pub fn eject(&self) -> impl use<'_> + Future<Output = Result<(), DiskError>> + Send {
         self.0.disk.eject()
     }
 
@@ -325,12 +325,12 @@ impl SimpleDisk {
     /// # Arguments
     /// * `buffers` - An object representing the data buffers into which the disk data will be transferred.
     /// * `sector` - The logical sector at which the read operation starts.
-    pub async fn read_vectored(
-        &self,
-        buffers: &RequestBuffers<'_>,
+    pub fn read_vectored<'a>(
+        &'a self,
+        buffers: &'a RequestBuffers<'_>,
         sector: u64,
-    ) -> Result<(), DiskError> {
-        self.0.disk.read_vectored(buffers, sector).await
+    ) -> impl use<'a> + Future<Output = Result<(), DiskError>> + Send {
+        self.0.disk.read_vectored(buffers, sector)
     }
 
     /// Issues an asynchronous write-gather operation to the disk.
@@ -338,23 +338,23 @@ impl SimpleDisk {
     /// * `buffers` - An object representing the data buffers containing the data to transfer to the disk.
     /// * `sector` - The logical sector at which the write operation starts.
     /// * `fua` - A flag indicates if FUA (force unit access) is requested.
-    pub async fn write_vectored(
-        &self,
-        buffers: &RequestBuffers<'_>,
+    pub fn write_vectored<'a>(
+        &'a self,
+        buffers: &'a RequestBuffers<'_>,
         sector: u64,
         fua: bool,
-    ) -> Result<(), DiskError> {
-        self.0.disk.write_vectored(buffers, sector, fua).await
+    ) -> impl use<'a> + Future<Output = Result<(), DiskError>> + Send {
+        self.0.disk.write_vectored(buffers, sector, fua)
     }
 
     /// Issues an asynchronous flush operation to the disk.
-    pub async fn sync_cache(&self) -> Result<(), DiskError> {
-        self.0.disk.sync_cache().await
+    pub fn sync_cache(&self) -> impl use<'_> + Future<Output = Result<(), DiskError>> + Send {
+        self.0.disk.sync_cache()
     }
 
     /// Waits for the disk sector size to be different than the specified value.
-    pub async fn wait_resize(&self, sector_count: u64) -> u64 {
-        self.0.disk.wait_resize(sector_count).await
+    pub fn wait_resize(&self, sector_count: u64) -> impl use<'_> + Future<Output = u64> {
+        self.0.disk.wait_resize(sector_count)
     }
 }
 
@@ -362,16 +362,15 @@ impl SimpleDisk {
 pub struct SimpleDiskUnmap<'a>(&'a SimpleDiskInner);
 
 impl Unmap for SimpleDiskUnmap<'_> {
-    async fn unmap(
+    fn unmap(
         &self,
         sector_offset: u64,
         sector_count: u64,
         block_level_only: bool,
-    ) -> Result<(), DiskError> {
+    ) -> impl Future<Output = Result<(), DiskError>> + Send {
         self.0
             .disk
             .unmap(sector_offset, sector_count, block_level_only)
-            .await
     }
 
     fn optimal_unmap_sectors(&self) -> u32 {
@@ -499,36 +498,29 @@ impl Unmap for NoUnmap {
 /// size that was given in the failure message
 const ASYNC_DISK_STACK_SIZE: usize = 1256;
 
+type IoFuture<'a> = StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }>;
+
 trait DynSimpleDisk: Send + Sync + Inspect {
     fn disk_type(&self) -> &str;
     fn sector_count(&self) -> u64;
 
-    fn unmap(
-        &self,
-        sector_offset: u64,
-        sector_count: u64,
-        block_level_only: bool,
-    ) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }>;
+    fn unmap(&self, sector_offset: u64, sector_count: u64, block_level_only: bool) -> IoFuture<'_>;
 
     fn optimal_unmap_sectors(&self) -> u32;
     fn lba_status(&self) -> Option<&dyn GetLbaStatus>;
     fn pr(&self) -> Option<&dyn pr::PersistentReservation>;
-    fn eject(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }>;
+    fn eject(&self) -> IoFuture<'_>;
 
-    fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
-        sector: u64,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }>;
+    fn read_vectored<'a>(&'a self, buffers: &'a RequestBuffers<'_>, sector: u64) -> IoFuture<'a>;
 
     fn write_vectored<'a>(
         &'a self,
-        buffers: &'a RequestBuffers<'a>,
+        buffers: &'a RequestBuffers<'_>,
         sector: u64,
         fua: bool,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }>;
+    ) -> IoFuture<'a>;
 
-    fn sync_cache(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }>;
+    fn sync_cache(&self) -> IoFuture<'_>;
 
     fn wait_resize<'a>(
         &'a self,
@@ -574,15 +566,11 @@ impl<T: DiskIo> DynSimpleDisk for T {
         self.pr()
     }
 
-    fn eject(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
+    fn eject(&self) -> IoFuture<'_> {
         StackFuture::from_or_box(self.eject())
     }
 
-    fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
-        sector: u64,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
+    fn read_vectored<'a>(&'a self, buffers: &'a RequestBuffers<'_>, sector: u64) -> IoFuture<'a> {
         StackFuture::from_or_box(self.read_vectored(buffers, sector))
     }
 
@@ -591,11 +579,11 @@ impl<T: DiskIo> DynSimpleDisk for T {
         buffers: &'a RequestBuffers<'a>,
         sector: u64,
         fua: bool,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
+    ) -> IoFuture<'a> {
         StackFuture::from_or_box(self.write_vectored(buffers, sector, fua))
     }
 
-    fn sync_cache(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
+    fn sync_cache(&self) -> IoFuture<'_> {
         StackFuture::from_or_box(self.sync_cache())
     }
 }
