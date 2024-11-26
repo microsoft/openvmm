@@ -1648,6 +1648,7 @@ impl LocalNode {
     /// process of being sent to another node.
     pub async fn wait_for_ports(&self, all_ports: bool) {
         loop {
+            // #[allow(clippy::disallowed_methods, reason = "TODO")] // TODO
             let (send, recv) = oneshot::channel::<()>();
             let ports: Vec<_> = {
                 let mut state = self.inner.state.lock();

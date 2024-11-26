@@ -407,7 +407,6 @@ const FSCTL_PIPE_EVENT_ENUM: u32 = ctl_code(
 );
 
 #[repr(C)]
-#[expect(clippy::upper_case_acronyms, reason = "C type")]
 struct FILE_PIPE_EVENT_SELECT_BUFFER {
     event_types: u32,
     event_handle: u64,
