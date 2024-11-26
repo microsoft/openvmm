@@ -1288,6 +1288,8 @@ dependencies = [
  "parking_lot",
  "rusqlite",
  "scsi_buffers",
+ "serde",
+ "serde_json",
  "stackfuture",
  "tracing",
  "vm_resource",

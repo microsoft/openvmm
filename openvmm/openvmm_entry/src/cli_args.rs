@@ -626,6 +626,8 @@ pub enum DiskCliKind {
     Memory(u64),
     // memdiff:<kind>
     MemoryDiff(Box<DiskCliKind>),
+    // sql:<path>:<len>
+    Sqlite(PathBuf, u64),
     // sqldiff:<path>:<kind>
     SqliteDiff(PathBuf, Box<DiskCliKind>),
     // prwrap:<kind>
@@ -667,6 +669,10 @@ impl FromStr for DiskCliKind {
             Some((kind, arg)) => match kind {
                 "mem" => DiskCliKind::Memory(parse_memory(arg)?),
                 "memdiff" => DiskCliKind::MemoryDiff(Box::new(arg.parse()?)),
+                "sql" => {
+                    let (path, len) = arg.split_once(':').context("expected path,len")?;
+                    DiskCliKind::Sqlite(path.into(), parse_memory(len)?)
+                }
                 "sqldiff" => {
                     let (path, kind) = arg.split_once(':').context("expected path,kind")?;
                     DiskCliKind::SqliteDiff(path.into(), Box::new(kind.parse()?))

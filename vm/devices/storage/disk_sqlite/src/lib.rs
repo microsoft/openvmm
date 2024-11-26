@@ -53,23 +53,93 @@ use std::sync::Arc;
 /// Resolvers for different SqliteDisk constructors
 pub mod resolver;
 
+mod schema {
+    use inspect::Inspect;
+    use serde::Deserialize;
+    use serde::Serialize;
+
+    // DENOTE: SQLite actually saves the _plaintext_ of CREATE TABLE
+    // statements in its file format, which makes it a pretty good place to
+    // stash inline comments about the schema being used
+    //
+    // DEVNOTE: the choice to use the len of the blob as a marker for all
+    // zero / all one sectors has not been profiled relative to other
+    // implementation (e.g: having a third "kind" column).
+    pub const DEFINE_TABLE_SECTORS: &str = r#"
+CREATE TABLE IF NOT EXISTS sectors (
+    -- schema includes a minimal "fast path" for skipping all-zero
+    -- and all-one sectors.
+    --
+    -- if len == 0: represents all 0x00 sector
+    -- if len == 1: represents all 0xff sector
+    --
+    -- otherwise, data has len == SECTOR_SIZE, and contains the raw
+    -- sector data.
+    sector INTEGER NOT NULL,
+    data   BLOB NOT NULL,
+    PRIMARY KEY (sector)
+) WITHOUT ROWID
+"#; // TODO?: enforce sqlite >3.37.0 so we can use STRICT
+
+    // DEVNOTE: Given that this is a singleton table, we might as well use JSON
+    // + serde to store whatever metadata we want here, vs. trying to bend our
+    // metadata structure to sqlite's native data types.
+    //
+    // Using JSON (vs, say, protobuf) has the added benefit of allowing existing
+    // external sqlite tooling to more easily read and manipulate the metadata
+    // using sqlite's built-in JSON handling functions.
+    pub const DEFINE_TABLE_METADATA: &str = r#"
+CREATE TABLE IF NOT EXISTS meta (
+    metadata TEXT NOT NULL -- stored as JSON
+)
+"#;
+
+    #[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Serialize, Deserialize, Inspect)]
+    pub enum DiskKind {
+        /// A standard, raw disk.
+        ///
+        /// - Writes are persisted.
+        /// - Reads return existing data.
+        Raw,
+        /// A differencing disk on-top of an existing read-only disk.
+        ///
+        /// - Writes are persisted to the differencing disk, leaving the
+        ///   underlying disk untouched.
+        /// - Reads return data from the differencing disk, only reading from
+        ///   the underlying disk if the sector hasn't been modified.
+        Diff,
+        /// A read-through cache on-top of an exsting disk.
+        ///
+        /// - Reads check if the requested data is already in the cache before
+        ///   reading from the underlying disk.
+        /// - Writes are passed through to the underlying disk implementaiton.
+        ReadCache,
+    }
+
+    #[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Serialize, Deserialize, Inspect)]
+    pub struct DiskMeta {
+        pub disk_kind: DiskKind,
+        pub sector_count: u64,
+        pub sector_size: u32,
+        pub physical_sector_size: u32,
+        pub disk_id: Option<[u8; 16]>,
+    }
+}
+
 /// Disk backend implementation backed by a SQLite database file.
 #[derive(Inspect)]
 pub struct SqliteDisk {
-    lower: Arc<dyn SimpleDisk>,
-    lower_is_zero: bool,
-
-    read_only: bool,
-    sector_size: u32,
-
     #[inspect(skip)]
     conn: Arc<Mutex<Connection>>,
+    meta: schema::DiskMeta,
+    read_only: bool,
+    lower: Arc<dyn SimpleDisk>,
 }
 
 impl SqliteDisk {
     /// Makes a new blank SQLite disk of `size` bytes.
     pub fn new(len: u64, dbhd_path: &Path, read_only: bool) -> Result<Self, anyhow::Error> {
-        // choice of sector_size here was pretty much arbitrary.
+        // the choice of `sector_size` here was chosen entirely arbirarily.
         Self::new_inner(
             Arc::new(ZeroDisk::new(512, len)?),
             dbhd_path,
@@ -109,80 +179,66 @@ impl SqliteDisk {
         let conn = Connection::open(dbhd_path)?;
 
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        // DENOTE: SQLite actually saves the _plaintext_ of CREATE TABLE
-        // statements in its file format, which makes it a pretty good place to
-        // stash inline comments about the schema being used
-        conn.execute(
-            r#"CREATE TABLE IF NOT EXISTS sec_table (
-                -- schema includes a minimal "fast path" for skipping all-zero
-                -- and all-one sectors
-                --
-                -- if len == 0: represents all 0x00 sector
-                -- if len == 1: represents all 0xff sector
-                --
-                -- otherwise, data has len == SECTOR_SIZE, and contains the raw
-                -- sector data.
-                sector INTEGER NOT NULL,
-                data   BLOB NOT NULL,
-                PRIMARY KEY (sector)
-            ) WITHOUT ROWID"#, // TODO?: enforce sqlite >3.37.0 so we can use STRICT
-            [],
-        )?;
-        conn.execute(
-            r#"CREATE TABLE IF NOT EXISTS disk_meta (
-                is_diff_disk         BOOL NOT NULL,
-                sector_count         INTEGER NOT NULL,
-                sector_size          INTEGER NOT NULL,
-                physical_sector_size INTEGER NOT NULL,
-                disk_id              BLOB(16) -- optional
-            )"#,
-            [],
-        )?;
+        conn.execute(schema::DEFINE_TABLE_SECTORS, [])?;
+        conn.execute(schema::DEFINE_TABLE_METADATA, [])?;
 
-        let is_fresh_disk = conn
-            .prepare("SELECT count(*) FROM disk_meta")?
-            .query([])?
-            .next()?
-            .is_none();
-
-        if is_fresh_disk {
+        let meta = {
             let sector_count = lower.sector_count();
             let sector_size = lower.sector_size();
             let physical_sector_size = lower.physical_sector_size();
             let disk_id = lower.disk_id();
 
+            schema::DiskMeta {
+                disk_kind: if lower_is_zero {
+                    schema::DiskKind::Raw
+                } else {
+                    schema::DiskKind::Diff
+                },
+                sector_count,
+                sector_size,
+                physical_sector_size,
+                disk_id,
+            }
+        };
+
+        let meta_existing: Option<schema::DiskMeta> = {
+            use rusqlite::OptionalExtension;
+
+            let data: Option<String> = conn
+                .query_row("SELECT json_extract(metadata, '$') FROM meta", [], |row| {
+                    row.get(0)
+                })
+                .optional()?;
+
+            data.as_deref().map(serde_json::from_str).transpose()?
+        };
+
+        if let Some(meta_existing) = meta_existing {
+            // FUTURE: we may want to support some leeway here, (e.g: handling
+            // cases where the underlying disk has been resized, or had its
+            // sector sizes tweaked, or tweaked its disk id, etc...), but for
+            // now, we'll take the strict approach of requiring an identical
+            // configuration.
+            if meta_existing != meta {
+                anyhow::bail!(
+                    "invalid disk configuration. expected: {:?}, found: {:?}",
+                    meta_existing,
+                    meta
+                )
+            }
+        } else {
+            // this is a fresh fisk
             conn.execute(
-                "INSERT INTO disk_meta
-                    (is_diff_disk, sector_count, sector_size, physical_sector_size, disk_id)
-                VALUES
-                    (?, ?, ?, ?, ?)",
-                rusqlite::params![
-                    !lower_is_zero,
-                    sector_count,
-                    sector_size,
-                    physical_sector_size,
-                    disk_id
-                ],
+                "INSERT OR REPLACE INTO meta VALUES (json(?))",
+                [serde_json::to_string(&meta).unwrap()],
             )?;
-        }
-
-        // TODO: read metadata from the `disk_meta` table
-        //
-        // TODO: for diff-disks: assert the disk_meta table matches the
-        // underlying disk
-        //
-        // TODO: for non diff-disks: assert the disk_meta table hasn't recorded
-        // this disk as a diff-disk (that would be not good UX)
-
-        // TEMP: for now, just set the sector size to 512
-        let sector_size = 512;
+        };
 
         Ok(SqliteDisk {
-            lower,
-            lower_is_zero,
             conn: Arc::new(Mutex::new(conn)),
+            meta,
             read_only,
-            sector_size,
+            lower,
         })
     }
 }
@@ -193,12 +249,11 @@ impl SimpleDisk for SqliteDisk {
     }
 
     fn sector_count(&self) -> u64 {
-        // FIXME: should be read from the disk_meta table
-        self.lower.sector_count()
+        self.meta.sector_count
     }
 
     fn sector_size(&self) -> u32 {
-        self.sector_size
+        self.meta.sector_size
     }
 
     fn is_read_only(&self) -> bool {
@@ -206,13 +261,11 @@ impl SimpleDisk for SqliteDisk {
     }
 
     fn disk_id(&self) -> Option<[u8; 16]> {
-        // FIXME: should be read from the disk_meta table
-        self.lower.disk_id()
+        self.meta.disk_id
     }
 
     fn physical_sector_size(&self) -> u32 {
-        // FIXME: should be read from the disk_meta table
-        self.lower.physical_sector_size()
+        self.meta.physical_sector_size
     }
 
     fn is_fua_respected(&self) -> bool {
@@ -241,7 +294,7 @@ fn read_sectors(
 
     let mut select_stmt = conn.prepare_cached(
         "SELECT sector, data
-        FROM sec_table
+        FROM sectors
         WHERE sector >= ? AND sector < ?
         ORDER BY sector ASC",
     )?;
@@ -278,7 +331,7 @@ fn write_sectors(
     let tx = conn.transaction()?;
     {
         let mut stmt =
-            tx.prepare_cached("INSERT OR REPLACE INTO sec_table (sector, data) VALUES (?, ?)")?;
+            tx.prepare_cached("INSERT OR REPLACE INTO sectors (sector, data) VALUES (?, ?)")?;
 
         for chunk in buf.chunks_exact(sector_size as usize) {
             let chunk = if chunk.iter().all(|x| *x == 0) {
@@ -305,7 +358,7 @@ impl AsyncDisk for SqliteDisk {
         sector: u64,
     ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
         StackFuture::from(async move {
-            let count = (buffers.len() / self.sector_size as usize) as u64;
+            let count = (buffers.len() / self.meta.sector_size as usize) as u64;
             tracing::debug!(sector, count, "read");
 
             // Always read the full lower and then overlay the changes.
@@ -317,21 +370,20 @@ impl AsyncDisk for SqliteDisk {
 
             let valid_sectors = unblock({
                 let conn = self.conn.clone();
-                let end_sector = sector + (buffers.len() as u64 / self.sector_size as u64);
-                let sector_size = self.sector_size;
+                let end_sector = sector + (buffers.len() as u64 / self.meta.sector_size as u64);
+                let sector_size = self.meta.sector_size;
                 move || read_sectors(conn, sector_size, sector, end_sector)
             })
             .await
             .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 
             for (s, data) in valid_sectors {
-                let offset = (s - sector) as usize * self.sector_size as usize;
-                let subrange = buffers.subrange(offset, self.sector_size as usize);
+                let offset = (s - sector) as usize * self.meta.sector_size as usize;
+                let subrange = buffers.subrange(offset, self.meta.sector_size as usize);
                 let mut writer = subrange.writer();
                 match data {
-                    SectorKind::AllZero => writer.zero(self.sector_size as usize)?,
-                    // FIXME: don't allocate this vec over and over again lol
-                    SectorKind::AllOne => writer.write(&vec![0xff; self.sector_size as usize])?,
+                    SectorKind::AllZero => writer.zero(self.meta.sector_size as usize)?,
+                    SectorKind::AllOne => writer.fill(0xff, self.meta.sector_size as usize)?,
                     SectorKind::Data(data) => writer.write(&data)?,
                 };
             }
@@ -349,13 +401,13 @@ impl AsyncDisk for SqliteDisk {
         StackFuture::from(async move {
             assert!(!self.read_only);
 
-            let count = buffers.len() / self.sector_size as usize;
+            let count = buffers.len() / self.meta.sector_size as usize;
             tracing::debug!(sector, count, "write");
 
             let buf = buffers.reader().read_all()?;
             unblock({
                 let conn = self.conn.clone();
-                let sector_size = self.sector_size;
+                let sector_size = self.meta.sector_size;
                 move || write_sectors(conn, sector_size, sector, buf)
             })
             .await
@@ -387,7 +439,7 @@ fn unmap_sectors(
 
     if lower_is_zero {
         let mut clear_stmt =
-            conn.prepare_cached("DELETE FROM sec_table WHERE sector BETWEEN ? AND ?")?;
+            conn.prepare_cached("DELETE FROM sectors WHERE sector BETWEEN ? AND ?")?;
         clear_stmt.execute(rusqlite::params![
             sector_offset,
             sector_offset + sector_count - 1
@@ -396,7 +448,7 @@ fn unmap_sectors(
         let tx = conn.transaction()?;
         {
             let mut stmt =
-                tx.prepare_cached("INSERT OR REPLACE INTO sec_table (sector, data) VALUES (?, ?)")?;
+                tx.prepare_cached("INSERT OR REPLACE INTO sectors (sector, data) VALUES (?, ?)")?;
 
             for sector in sector_offset..(sector_offset + sector_count) {
                 let zero_blob = &[];
@@ -421,7 +473,7 @@ impl Unmap for SqliteDisk {
 
             unblock({
                 let conn = self.conn.clone();
-                let lower_is_zero = self.lower_is_zero;
+                let lower_is_zero = matches!(self.meta.disk_kind, schema::DiskKind::Raw);
                 move || unmap_sectors(conn, sector_offset, sector_count, lower_is_zero)
             })
             .await

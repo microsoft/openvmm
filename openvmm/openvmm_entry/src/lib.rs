@@ -1485,6 +1485,10 @@ fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource
             },
             key: fs_err::read(key_file).context("failed to read key file")?,
         }),
+        DiskCliKind::Sqlite(path, len) => Resource::new(disk_backend_resources::SqliteDiskHandle {
+            len: *len,
+            dbhd_path: path.to_string_lossy().into(),
+        }),
         DiskCliKind::SqliteDiff(path, inner) => {
             Resource::new(disk_backend_resources::SqliteDiffDiskHandle {
                 lower: disk_open(inner, true)?,
