@@ -544,7 +544,7 @@ fn vhdfiledisk_create(
 
     Vhd1Disk::make_fixed(file.file()).map_err(Error::Vhd1)?;
     let disk = Vhd1Disk::open_fixed(file.into(), false).map_err(Error::Vhd1)?;
-    Ok(SimpleDisk::new(disk).map_err(Error::InvalidDisk)?)
+    SimpleDisk::new(disk).map_err(Error::InvalidDisk)
 }
 
 #[cfg_attr(not(with_encryption), allow(unused_mut), allow(unused_variables))]

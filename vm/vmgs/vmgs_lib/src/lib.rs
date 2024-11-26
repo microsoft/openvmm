@@ -112,7 +112,7 @@ fn open_disk(file_path: &str, read_only: bool) -> Result<SimpleDisk, VmgsError> 
         .map_err(|_| VmgsError::FileDisk)?;
 
     let disk = Vhd1Disk::open_fixed(file, read_only).map_err(|_| VmgsError::FileDisk)?;
-    Ok(SimpleDisk::new(disk).map_err(|_| VmgsError::FileDisk)?)
+    SimpleDisk::new(disk).map_err(|_| VmgsError::FileDisk)
 }
 
 async fn do_read(
