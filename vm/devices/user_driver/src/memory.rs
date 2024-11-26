@@ -163,33 +163,3 @@ impl MemoryBlock {
         self.base as u64
     }
 }
-
-pub mod save_restore {
-    use mesh::payload::Protobuf;
-
-    #[derive(Protobuf)]
-    #[mesh(package = "page_pool")]
-    pub struct MemPoolState {
-        /// Base PFN for the chunk.
-        #[mesh(1)]
-        pub base_pfn: u64,
-        /// Number of pages for this chunk.
-        #[mesh(2)]
-        pub size_pages: u64,
-        /// Allocated or free.
-        #[mesh(3)]
-        pub allocated: bool,
-        /// ID tag.
-        #[mesh(4)]
-        pub tag: String,
-    }
-
-    #[derive(Protobuf)]
-    #[mesh(package = "page_pool")]
-    /// Save-restore memory allocation mapping.
-    pub struct MemPoolSavedState {
-        /// Memory pool allocation map.
-        #[mesh(1)]
-        pub mem_pool: Vec<MemPoolState>,
-    }
-}

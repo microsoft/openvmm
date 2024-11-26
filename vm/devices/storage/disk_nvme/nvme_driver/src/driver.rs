@@ -4,7 +4,7 @@
 //! Implementation of the device driver core.
 
 use super::spec;
-use crate::driver::save_restore::QueuePairSavedState;
+use crate::driver::save_restore::IoQueueSavedState;
 use crate::queue_pair::admin_cmd;
 use crate::queue_pair::Issuer;
 use crate::queue_pair::QueuePair;
@@ -106,11 +106,12 @@ struct IoQueue {
 }
 
 impl IoQueue {
-    pub async fn save(&self) -> anyhow::Result<QueuePairSavedState> {
-        let mut saved_state = self.queue.save().await?;
-        saved_state.cpu = self.cpu;
-        saved_state.msix = self.iv as u32;
-        Ok(saved_state)
+    pub async fn save(&self) -> anyhow::Result<IoQueueSavedState> {
+        Ok(IoQueueSavedState {
+            cpu: self.cpu,
+            msix: self.iv as u32,
+            queue_data: self.queue.save().await?,
+        })
     }
 
     pub fn restore(
@@ -118,14 +119,14 @@ impl IoQueue {
         interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
         mem_block: MemoryBlock,
-        saved_state: &QueuePairSavedState,
+        saved_state: &IoQueueSavedState,
     ) -> anyhow::Result<Self> {
         let queue = QueuePair::restore(
             spawner,
             interrupt,
             registers.clone(),
             mem_block,
-            saved_state,
+            &saved_state.queue_data,
         )?;
 
         Ok(Self {
@@ -639,7 +640,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 .map_interrupt(q_state.msix, q_state.cpu)
                 .context("failed to map interrupt")?;
 
-            let mem_block = dma_buffer.attach_dma_buffer(q_state.mem_len, q_state.base_pfn)?;
+            let mem_block = dma_buffer
+                .attach_dma_buffer(q_state.queue_data.mem_len, q_state.queue_data.base_pfn)?;
             let q = IoQueue::restore(
                 driver.clone(),
                 interrupt,
@@ -952,7 +954,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             None => None,
         };
 
-        let mut io: Vec<QueuePairSavedState> = Vec::new();
+        let mut io: Vec<IoQueueSavedState> = Vec::new();
         for io_q in self.io.iter() {
             io.push(io_q.save().await?);
         }
@@ -1011,7 +1013,7 @@ pub mod save_restore {
         pub admin: Option<QueuePairSavedState>,
         /// IO queue states.
         #[mesh(2)]
-        pub io: Vec<QueuePairSavedState>,
+        pub io: Vec<IoQueueSavedState>,
         /// Queue size as determined by CAP.MQES.
         #[mesh(3)]
         pub qsize: u16,
@@ -1024,6 +1026,31 @@ pub mod save_restore {
     #[derive(Protobuf, Clone, Debug)]
     #[mesh(package = "nvme_driver")]
     pub struct QueuePairSavedState {
+        /// Allocated memory size in bytes.
+        #[mesh(1)]
+        pub mem_len: usize,
+        /// First PFN of the physically contiguous block.
+        #[mesh(2)]
+        pub base_pfn: u64,
+        /// Queue ID used when creating the pair
+        /// (SQ and CQ IDs are using same number).
+        #[mesh(3)]
+        pub qid: u16,
+        /// Submission queue entries.
+        #[mesh(4)]
+        pub sq_entries: u16,
+        /// Completion queue entries.
+        #[mesh(5)]
+        pub cq_entries: u16,
+        /// QueueHandler task data.
+        #[mesh(6)]
+        pub handler_data: QueueHandlerSavedState,
+    }
+
+    /// Save/restore state for IoQueue.
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "nvme_driver")]
+    pub struct IoQueueSavedState {
         #[mesh(1)]
         /// Which CPU handles requests.
         pub cpu: u32,
@@ -1031,12 +1058,7 @@ pub mod save_restore {
         /// Interrupt vector (MSI-X)
         pub msix: u32,
         #[mesh(3)]
-        pub mem_len: usize,
-        /// First PFN of the physically contiguous block.
-        #[mesh(4)]
-        pub base_pfn: u64,
-        #[mesh(5)]
-        pub handler_data: QueueHandlerSavedState,
+        pub queue_data: QueuePairSavedState,
     }
 
     /// Save/restore state for QueueHandler task.

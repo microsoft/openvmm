@@ -9,6 +9,8 @@
 mod mapped_dma;
 
 pub use mapped_dma::FixedDmaBuffer;
+pub use save_restore::MemPoolSavedState;
+pub use save_restore::MemPoolState;
 
 use anyhow::Context;
 use hvdef::HV_PAGE_SIZE;
@@ -18,8 +20,6 @@ use parking_lot::Mutex;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use thiserror::Error;
-use user_driver::memory::save_restore::MemPoolSavedState;
-use user_driver::memory::save_restore::MemPoolState;
 use user_driver::memory::MemoryBlock;
 use user_driver::vfio::VfioDmaBuffer;
 use user_driver::HostDmaAllocator;
@@ -490,6 +490,38 @@ impl HostDmaAllocator for FixedPoolAllocator {
 
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock> {
         self.restore_dma_buffer(len, base_pfn)
+    }
+}
+
+/// Save and restore memory allocation pool state for servicing.
+pub mod save_restore {
+    use mesh::payload::Protobuf;
+
+    #[derive(Protobuf)]
+    #[mesh(package = "page_pool")]
+    /// Fixed pool single chunk state for save/restore.
+    pub struct MemPoolState {
+        /// Base PFN for the chunk.
+        #[mesh(1)]
+        pub base_pfn: u64,
+        /// Number of pages for this chunk.
+        #[mesh(2)]
+        pub size_pages: u64,
+        /// Allocated or free.
+        #[mesh(3)]
+        pub allocated: bool,
+        /// ID tag.
+        #[mesh(4)]
+        pub tag: String,
+    }
+
+    #[derive(Protobuf)]
+    #[mesh(package = "page_pool")]
+    /// Save-restore memory allocation mapping.
+    pub struct MemPoolSavedState {
+        /// Memory pool allocation map.
+        #[mesh(1)]
+        pub mem_pool: Vec<MemPoolState>,
     }
 }
 

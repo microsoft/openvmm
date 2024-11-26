@@ -15,6 +15,7 @@ hcl.workspace = true
 hvdef.workspace = true
 inspect.workspace = true
 memory_range.workspace = true
+mesh.workspace = true
 parking_lot.workspace = true
 sparse_mmap.workspace = true
 thiserror.workspace = true

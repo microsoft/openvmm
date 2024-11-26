@@ -82,13 +82,18 @@ impl SubmissionQueue {
     }
 
     /// Restores queue data after servicing.
-    pub fn restore(&mut self, saved_state: &SubmissionQueueSavedState) -> anyhow::Result<()> {
-        self.sqid = saved_state.sqid;
-        self.head = saved_state.head;
-        self.tail = saved_state.tail;
-        self.committed_tail = saved_state.committed_tail;
-        self.len = saved_state.len;
-        Ok(())
+    pub fn restore(
+        mem: MemoryBlock,
+        saved_state: &SubmissionQueueSavedState,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            sqid: saved_state.sqid,
+            head: saved_state.head,
+            tail: saved_state.tail,
+            committed_tail: saved_state.committed_tail,
+            len: saved_state.len,
+            mem,
+        })
     }
 }
 
@@ -155,13 +160,18 @@ impl CompletionQueue {
     }
 
     /// Restores queue data after servicing.
-    pub fn restore(&mut self, saved_state: &CompletionQueueSavedState) -> anyhow::Result<()> {
-        self.cqid = saved_state.cqid;
-        self.head = saved_state.head;
-        self.committed_head = saved_state.committed_head;
-        self.len = saved_state.len;
-        self.phase = saved_state.phase;
-        Ok(())
+    pub fn restore(
+        mem: MemoryBlock,
+        saved_state: &CompletionQueueSavedState,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            cqid: saved_state.cqid,
+            head: saved_state.head,
+            committed_head: saved_state.committed_head,
+            len: saved_state.len,
+            phase: saved_state.phase,
+            mem,
+        })
     }
 }
 
