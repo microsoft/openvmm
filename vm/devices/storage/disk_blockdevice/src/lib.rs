@@ -1,10 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![cfg(target_os = "linux")]
+
 //! Implements the [`DiskIo`] trait for virtual disks backed by a raw block
 //! device.
 
-#![cfg(target_os = "linux")]
 // UNSAFETY: Issuing IOs and calling ioctls.
 #![allow(unsafe_code)]
 
