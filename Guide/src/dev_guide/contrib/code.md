@@ -150,8 +150,11 @@ justification for the suppressed lint.
 e.g:
 
 ```rust
-#[expect(clippy::needless_update, clippy::useless_conversion,
-reason = "x86_64-unknown-linux-musl targets have a different type defn for `libc::cmsghdr`")]
+#[expect(
+    clippy::needless_update,
+    clippy::useless_conversion,
+    reason = "x86_64-unknown-linux-musl targets have a different type defn for `libc::cmsghdr`"
+)]
 libc::cmsghdr {
     cmsg_level: libc::SOL_SOCKET,
     cmsg_type: libc::SCM_RIGHTS,
