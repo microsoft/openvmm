@@ -62,30 +62,10 @@ async fn boot_with_tpm(config: PetriVmConfig) -> anyhow::Result<()> {
             let agent = vm.wait_for_agent().await?;
             vm.wait_for_successful_boot_event().await?;
 
-            // Use the following python script to read AK cert from TPM nv index
+            // Use the python script to read AK cert from TPM nv index
             // TODO: Replace the script with tpm2-tools
             const TEST_FILE: &str = "tpm.py";
-            const TEST_CONTENT: &str = r#"
-command = b'\x80\x02\x00\x00\x00\x23\x00\x00\x01\x4e\x40\x00\x00\x01\x01\xc1\x01\xd0\x00\x00\x00\x09\x40\x00\x00\x09\x00\x00\x00\x00\x00'
-expected_output = bytearray([0xab] * 2500  + [0x00] * 1596)
-
-output = b'';
-with open('/dev/tpmrm0', 'r+b', buffering=0) as tpm:
-    size = 1024
-    offset = 0
-    for i in range(4):
-        tpm.write(command + size.to_bytes(2, 'big') + offset.to_bytes(2, 'big'))
-        response = tpm.read()
-        output += response[16:len(response) - 5]
-        offset += size
-
-print(f"output (size full {len(output)}, nonzero {output.index(0)}): {output}")
-
-if output == expected_output:
-    print('succeeded')
-else:
-    print('failed')
-"#;
+            const TEST_CONTENT: &str = include_str!("../../test_data/tpm.py");
 
             agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
             assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());

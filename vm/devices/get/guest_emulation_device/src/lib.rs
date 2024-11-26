@@ -26,6 +26,7 @@ use get_protocol::BatteryStatusNotification;
 use get_protocol::HeaderGeneric;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
+use get_protocol::IgvmAttestRequest;
 use get_protocol::RegisterState;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::StartVtl0Status;
@@ -91,6 +92,12 @@ enum Error {
     InvalidFieldValue,
     #[error("large device platform settings v2 is currently unimplemented")]
     LargeDpsV2Unimplemented,
+    #[error("invalid IGVM_ATTEST request")]
+    InvalidIgvmAttestRequest,
+    #[error("unsupported igvm attest request type: {0:?}")]
+    UnsupportedIgvmAttestRequestType(u32),
+    #[error("failed to write to shared memory")]
+    SharedMemoryWriteFailed(#[source] guestmem::GuestMemoryError),
 }
 
 impl From<task_control::Cancelled> for Error {
@@ -562,7 +569,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostRequests::GUEST_STATE_PROTECTION_BY_ID => {
                 self.handle_guest_state_protection_by_id()?;
             }
-            HostRequests::IGVM_ATTEST => self.handle_igvm_attest(message_buf)?,
+            HostRequests::IGVM_ATTEST => self.handle_igvm_attest(message_buf, state)?,
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2 => {
                 self.handle_device_platform_settings_v2(state)?
             }
@@ -791,18 +798,52 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         Ok(())
     }
 
-    fn handle_igvm_attest(&mut self, _message_buf: &[u8]) -> Result<(), Error> {
-        let response = get_protocol::IgvmAttestResponse {
-            message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
-            length: 2508,
+    fn handle_igvm_attest(
+        &mut self,
+        message_buf: &[u8],
+        state: &mut GuestEmulationDevice,
+    ) -> Result<(), Error> {
+        let request =
+            IgvmAttestRequest::read_from_prefix(message_buf).ok_or(Error::MessageTooSmall)?;
+
+        // Request sanitization (match GED behavior)
+        if request.agent_data_length as usize > request.agent_data.len()
+            || request.report_length as usize > request.report.len()
+            || request.number_gpa as usize > get_protocol::IGVM_ATTEST_MSG_MAX_SHARED_GPA
+        {
+            Err(Error::InvalidIgvmAttestRequest)?
+        }
+
+        let request_payload =
+            get_protocol::IgvmAttestRequestReportHeader::read_from_prefix(&request.report)
+                .ok_or(Error::MessageTooSmall)?;
+
+        let response = match request_payload.request_type {
+            get_protocol::IgvmAttestRequestType::AK_CERT_REQUEST => {
+                let payload: Vec<u8> = vec![];
+                // let header = vec![0xcc, 0x09, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00];
+                // let data = vec![0xab; 2500];
+                // let payload = [header, data].concat();
+
+                // TODO: Write payload to shared page
+                // if let Some(guest_memory) = &state.guest_memory {
+                //     guest_memory
+                //         .write_at(request.shared_gpa[0], &payload)
+                //         .map_err(Error::SharedMemoryWriteFailed)?;
+                // }
+
+                get_protocol::IgvmAttestResponse {
+                    message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
+                    length: payload.len() as u32,
+                }
+            }
+            ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
         };
-        // TODO: Write payload to shared page
-        // let header = vec![0xcc, 0x09, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00];
-        // let data = vec![0xab; 2500];
-        // let payload = [header, data].concat();
+
         self.channel
             .try_send(response.as_bytes())
             .map_err(Error::Vmbus)?;
+
         Ok(())
     }
 
