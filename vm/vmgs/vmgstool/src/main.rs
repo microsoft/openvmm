@@ -584,9 +584,6 @@ async fn vmgs_file_write(
     let mut file = File::open(data_path.as_ref()).map_err(Error::DataFile)?;
     let mut buf = Vec::new();
 
-    // manually allow, since we want to differentiate between the file not being
-    // accessible, and a read operation failing
-    #[expect(clippy::verbose_file_reads)]
     file.read_to_end(&mut buf).map_err(Error::DataFile)?;
 
     println!("Size: {} bytes", buf.len());

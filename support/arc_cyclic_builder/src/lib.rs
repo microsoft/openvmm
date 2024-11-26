@@ -174,7 +174,7 @@ impl<T> ArcCyclicBuilderExt<T> for Arc<T> {
 }
 
 #[expect(
-    clippy::disallowed_methods,
+    clippy::disallowed_types,
     reason = "Requiring parking_lot just for a test? nah"
 )]
 #[cfg(test)]
