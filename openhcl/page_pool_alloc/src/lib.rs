@@ -58,12 +58,32 @@ enum PoolType {
     Shared,
 }
 
+#[derive(Inspect, Debug, Clone, PartialEq, Eq)]
+#[inspect(tag = "state")]
+enum DeviceId {
+    /// A device id that is in use by an allocator.
+    Used(#[inspect(rename = "name")] String),
+    /// A device id that was dropped and can be reused if an allocator with the
+    /// same name is created.
+    Unassigned(#[inspect(rename = "name")] String),
+}
+
+impl DeviceId {
+    fn name(&self) -> &str {
+        match self {
+            DeviceId::Used(name) => name,
+            DeviceId::Unassigned(name) => name,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct PagePoolInner {
     /// The internal state of the pool.
     state: Vec<State>,
-    /// The list of device ids for outstanding allocators. Each must be unique.
-    device_ids: Vec<String>,
+    /// The list of device ids for outstanding allocators. Each name must be
+    /// unique.
+    device_ids: Vec<DeviceId>,
 }
 
 // Manually implement inspect so device_ids can be rendered as strings, not
@@ -144,14 +164,16 @@ impl Drop for PagePoolHandle {
             .iter_mut()
             .find(|state| {
                 if let State::Allocated {
-                    base_pfn: base,
-                    pfn_bias: offset,
-                    size_pages: len,
+                    base_pfn,
+                    pfn_bias,
+                    size_pages,
                     device_id: _,
                     tag: _,
                 } = state
                 {
-                    *base == self.base_pfn && *offset == self.pfn_bias && *len == self.size_pages
+                    *base_pfn == self.base_pfn
+                        && *pfn_bias == self.pfn_bias
+                        && *size_pages == self.size_pages
                 } else {
                     false
                 }
@@ -275,16 +297,17 @@ impl PagePoolAllocatorSpawner {
 ///
 /// Pages are allocated via the [`Self::alloc`] method and freed by dropping the
 /// associated handle returned.
+///
+/// When an allocator is dropped, outstanding allocations for that device
+/// are left as-is in the pool. A new allocator can then be created with the
+/// same name. Exisitng allocations with that same device_name will be
+/// linked to the new allocator.
 #[derive(Debug)]
 pub struct PagePoolAllocator {
     inner: Arc<Mutex<PagePoolInner>>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     typ: PoolType,
     device_id: usize,
-    // TODO: To be used for save/restore. Keep it around just for debuggging,
-    // since otherwise getting the actual name from device_id requires locking
-    // inner.
-    _device_name: String,
 }
 
 impl PagePoolAllocator {
@@ -297,20 +320,37 @@ impl PagePoolAllocator {
         {
             let mut inner = inner.lock();
 
-            // device_id must be unique
-            if inner.device_ids.iter().any(|id| id == &device_name) {
-                anyhow::bail!("device name {device_name} already in use");
-            }
+            let index = inner
+                .device_ids
+                .iter()
+                .position(|id| id.name() == device_name);
 
-            inner.device_ids.push(device_name.clone());
-            device_id = inner.device_ids.len() - 1;
+            // Device ID must be unique, or be unassigned.
+            match index {
+                Some(index) => {
+                    let entry = &mut inner.device_ids[index];
+
+                    match entry {
+                        DeviceId::Unassigned(_) => {
+                            *entry = DeviceId::Used(device_name);
+                            device_id = index;
+                        }
+                        DeviceId::Used(_) => {
+                            anyhow::bail!("device name {device_name} already in use");
+                        }
+                    }
+                }
+                None => {
+                    inner.device_ids.push(DeviceId::Used(device_name));
+                    device_id = inner.device_ids.len() - 1;
+                }
+            }
         }
 
         Ok(Self {
             inner: inner.clone(),
             typ,
             device_id,
-            _device_name: device_name,
         })
     }
 
@@ -374,6 +414,18 @@ impl PagePoolAllocator {
             pfn_bias,
             size_pages,
         })
+    }
+}
+
+impl Drop for PagePoolAllocator {
+    fn drop(&mut self) {
+        let mut inner = self.inner.lock();
+        let device_name = inner.device_ids[self.device_id].name().to_string();
+        let prev = std::mem::replace(
+            &mut inner.device_ids[self.device_id],
+            DeviceId::Unassigned(device_name),
+        );
+        assert!(matches!(prev, DeviceId::Used(_)));
     }
 }
 
@@ -484,5 +536,29 @@ mod test {
         let _alloc = pool.allocator("test".into()).unwrap();
 
         assert!(pool.allocator("test".into()).is_err());
+    }
+
+    #[test]
+    fn test_dropping_allocator() {
+        let pool = PagePool::new_shared_visibility_pool(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::from_4k_gpn_range(10..40),
+                vnode: 0,
+            }],
+            0,
+        )
+        .unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+        let _alloc2 = pool.allocator("test2".into()).unwrap();
+
+        let _a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
+        let _a2 = alloc
+            .alloc(15.try_into().unwrap(), "alloc2".into())
+            .unwrap();
+
+        drop(alloc);
+
+        let alloc = pool.allocator("test".into()).unwrap();
+        let _a3 = alloc.alloc(5.try_into().unwrap(), "alloc3".into()).unwrap();
     }
 }
