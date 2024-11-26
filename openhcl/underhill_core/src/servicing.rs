@@ -109,7 +109,7 @@ impl From<Firmware> for FirmwareType {
     }
 }
 
-#[allow(clippy::option_option)]
+#[expect(clippy::option_option)]
 pub mod transposed {
     use super::*;
     use vmcore::save_restore::SaveRestore;

@@ -1452,7 +1452,7 @@ impl Emulator {
         }
 
         if self.state.persistent_state.crt_regs_locked {
-            #[allow(clippy::comparison_chain)]
+            #[expect(clippy::comparison_chain)]
             if reg == CrtControlReg::OVERFLOW_REGISTER {
                 // Only update bit 4.
                 value &= 0x10;
@@ -2403,7 +2403,6 @@ impl Emulator {
         // Linux special case #1
         // When the depth is 16 on a Trio 64, the Linux driver doubles all of the
         // horizontal register values.
-        #[allow(clippy::if_same_then_else)]
         if self.state.persistent_state.bits_per_pixel == 16 {
             new_width /= 2;
         } else if self.state.persistent_state.bits_per_pixel == 2 {

@@ -410,7 +410,7 @@ pub trait Processor: InspectMut {
     ///
     /// Returns when an error occurs, the VP halts, or the VP is requested to
     /// stop via `stop`.
-    #[allow(async_fn_in_trait)] // don't or want Send bound
+    #[expect(async_fn_in_trait, reason = "don't need or want Send bound")]
     async fn run_vp(
         &mut self,
         stop: StopVp<'_>,

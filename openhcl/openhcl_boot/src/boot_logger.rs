@@ -101,7 +101,7 @@ pub(crate) use log;
 //
 // Allow unused macros for the same reason as unused_imports below, as there
 // should be no usage of this macro normally.
-#[allow(unused_macros)]
+#[expect(unused_macros)]
 macro_rules! debug_log {
     ($($arg:tt)*) => {
         $crate::boot_logger::log!($($arg)*)

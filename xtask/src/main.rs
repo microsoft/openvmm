@@ -61,7 +61,7 @@ struct Cli {
     custom_root: Option<PathBuf>,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Commands {
     #[clap(hide = true)]

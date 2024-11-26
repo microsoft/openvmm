@@ -559,7 +559,7 @@ impl Partition {
         }
     }
 
-    #[allow(clippy::missing_safety_doc)]
+    #[expect(clippy::missing_safety_doc)]
     pub unsafe fn map_range(
         &self,
         process: Option<BorrowedHandle<'_>>,
@@ -743,7 +743,7 @@ impl Partition {
         self.get_property(abi::WhvPartitionPropertyCodePhysicalAddressWidth)
     }
 
-    #[allow(clippy::missing_safety_doc)]
+    #[expect(clippy::missing_safety_doc)]
     pub unsafe fn register_doorbell(&self, m: &DoorbellMatch, event: RawHandle) -> Result<()> {
         unsafe {
             check_hresult(api::WHvRegisterPartitionDoorbellEvent(
@@ -1914,9 +1914,9 @@ macro_rules! set_registers {
     ($vp:expr, [$(($name:expr, $value:expr)),+ $(,)? ] $(,)? ) => {
         {
             let names = [$($crate::RegisterName::as_abi(&($name))),+];
-            #[allow(unused_parens)]
+            #[expect(unused_parens)]
             let values = [$($crate::inject_helper(($name), &($value))),+];
-            #[allow(unused_parens)]
+            #[expect(unused_parens)]
             ($vp).set_registers(&names, &values)
         }
     }
@@ -1930,7 +1930,7 @@ macro_rules! get_registers {
             let mut values = [$($crate::get_registers!(@def $name)),+];
             ($vp).get_registers(&names, &mut values).map(|_| {
                 let mut vs = &values[..];
-                #[allow(unused_assignments, clippy::mixed_read_write_in_expression)]
+                #[expect(unused_assignments, clippy::mixed_read_write_in_expression)]
                 ($({
                     let n = $name;
                     let v = &vs[0];

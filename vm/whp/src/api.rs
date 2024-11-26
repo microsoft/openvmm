@@ -53,7 +53,7 @@ macro_rules! delayload {
         }
         $(
             $(#[$a])*
-            #[allow(non_snake_case)]
+            #[expect(non_snake_case)]
             pub unsafe fn $name($($params: $types,)*) -> HRESULT {
                 let fnval = funcs::$name();
                 if fnval == 0 {

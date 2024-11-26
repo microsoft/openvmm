@@ -451,7 +451,7 @@ impl Timer {
         if !self.tp_timer.set(duration) {
             // Donate the reference to be released in tp_timer_callback() or
             // in drop().
-            #[allow(clippy::let_underscore_lock)] // false positive
+            #[expect(clippy::let_underscore_lock, reason = "false positive")]
             let _ = Arc::into_raw(inner_ref);
         }
     }

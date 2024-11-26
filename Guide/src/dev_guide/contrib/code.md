@@ -142,17 +142,16 @@ project, and will fast-fail if it catches any warnings / errors.
 ### Suppressing Lints
 
 In general, lints should be fixed by modifying the code to satisfy the lint.
-However, there are cases where a lint may need to be `allow`'d inline.
+However, there are cases where a lint may need to be `expect`'d inline.
 
-In these cases, you _must_ provide a inline comment providing reasonable
+In these cases, you _must_ provide a reason providing
 justification for the suppressed lint.
 
 e.g:
 
 ```rust
-// x86_64-unknown-linux-musl targets have a different type defn for
-// `libc::cmsghdr`, hence why these lints are being suppressed.
-#[allow(clippy::needless_update, clippy::useless_conversion)]
+#[expect(clippy::needless_update, clippy::useless_conversion,
+reason = "x86_64-unknown-linux-musl targets have a different type defn for `libc::cmsghdr`")]
 libc::cmsghdr {
     cmsg_level: libc::SOL_SOCKET,
     cmsg_type: libc::SCM_RIGHTS,

@@ -75,7 +75,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
         fb: F,
         input: I,
     ) -> Server<F, I> {
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods, reason = "TODO")] // TODO
         let (update_send, update_recv) = mpsc::channel(1);
         Self {
             socket,

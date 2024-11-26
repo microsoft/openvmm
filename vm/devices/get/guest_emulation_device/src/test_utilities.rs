@@ -326,7 +326,7 @@ pub struct TestGedClient {
     sender: mesh::Sender<GuestEmulationRequest>,
 }
 
-#[allow(dead_code)] // Tasks are spawned and just need to be held.
+#[expect(dead_code, reason = "Tasks are spawned and just need to be held.")]
 enum TestTask {
     Test(Task<Result<(), Error>>),
     Prod(TaskControl<GuestEmulationDevice, GedChannel<FlatRingMem>>),

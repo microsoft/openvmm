@@ -390,7 +390,10 @@ pub struct TdxBacked {
     #[inspect(iter_by_index)]
     direct_overlays_pfns: [u64; UhDirectOverlay::Count as usize],
     #[inspect(skip)]
-    #[allow(dead_code)] // Allocation handle for direct overlays held until drop
+    #[expect(
+        dead_code,
+        reason = "Allocation handle for direct overlays held until drop"
+    )]
     direct_overlay_pfns_handle: shared_pool_alloc::SharedPoolHandle,
 
     untrusted_synic: Option<ProcessorSynic>,

@@ -8,7 +8,7 @@ use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 mod packed_nums {
     pub type u16_be = zerocopy::U16<zerocopy::BigEndian>;
     pub type u32_be = zerocopy::U32<zerocopy::BigEndian>;

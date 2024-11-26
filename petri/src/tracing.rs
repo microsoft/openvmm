@@ -77,8 +77,10 @@ impl<'a> MakeWriter<'a> for PetriWriter {
 /// that the file makes it into the test results.
 pub fn trace_attachment(path: impl AsRef<Path>) {
     fn trace(path: &Path) {
-        // ATTACHMENT is most reliable when using true canonicalized paths
-        #[allow(clippy::disallowed_methods)]
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ATTACHMENT is most reliable when using true canonicalized paths"
+        )]
         match path.canonicalize() {
             Ok(path) => {
                 // Use the inline junit syntax to attach the file to the test

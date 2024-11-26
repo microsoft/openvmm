@@ -18,7 +18,7 @@ impl WakerList {
         }
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub fn push(&mut self, waker: Waker) {
         self.0.push(waker);
     }

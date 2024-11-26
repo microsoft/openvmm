@@ -267,7 +267,7 @@ pub enum RestoreError {
 /// Encapsulates a response from the server when requesting offers.
 /// Signifies either an offer from the server or the cessation of offers.
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 enum Offer {
     Offer(OfferInfo),
     AllOffersDelivered,

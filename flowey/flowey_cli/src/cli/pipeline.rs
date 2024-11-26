@@ -143,7 +143,7 @@ pub struct Pipeline<P: clap::Subcommand> {
     /// today may not work after making changes to the pipeline definition /
     /// updating flowey.
     #[clap(help_heading = "Global Options (flowey)", global = true, long)]
-    #[allow(clippy::option_option)] // for clap derive
+    #[expect(clippy::option_option, reason = "For clap derive")]
     include_jobs: Option<Option<IncludeJobs>>,
 
     #[clap(subcommand)]
@@ -370,7 +370,7 @@ enum EarlyExit {
     No,
 }
 
-#[allow(clippy::option_option)] // for clap derive
+#[expect(clippy::option_option, reason = "For clap derive")]
 fn resolve_include_jobs(
     resolved_pipeline: &mut crate::pipeline_resolver::generic::ResolvedPipeline,
     include_jobs: Option<Option<IncludeJobs>>,

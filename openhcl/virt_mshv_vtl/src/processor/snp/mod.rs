@@ -80,7 +80,10 @@ pub struct SnpBacked {
     #[inspect(iter_by_index)]
     direct_overlays_pfns: [u64; UhDirectOverlay::Count as usize],
     #[inspect(skip)]
-    #[allow(dead_code)] // Allocation handle for direct overlays held until drop
+    #[expect(
+        dead_code,
+        reason = "Allocation handle for direct overlays held until drop"
+    )]
     direct_overlay_pfns_handle: shared_pool_alloc::SharedPoolHandle,
     #[inspect(hex)]
     hv_sint_notifications: u16,
@@ -1682,7 +1685,7 @@ impl<T> hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, T, SnpBac
     }
 }
 
-#[allow(unused)]
+#[expect(unused)]
 impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
     type Error = vp_state::Error;
 

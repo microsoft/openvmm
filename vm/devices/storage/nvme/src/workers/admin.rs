@@ -141,7 +141,7 @@ impl AdminState {
     pub fn new(handler: &AdminHandler, asq: u64, asqs: u16, acq: u64, acqs: u16) -> Self {
         // Start polling for namespace changes. Use a bounded channel to avoid
         // unbounded memory allocation when the queue is stuck.
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods, reason = "TODO")] // TODO
         let (send_changed_namespace, recv_changed_namespace) = futures::channel::mpsc::channel(256);
         let poll_namespace_change = handler
             .namespaces

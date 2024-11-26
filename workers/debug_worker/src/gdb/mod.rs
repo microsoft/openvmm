@@ -64,7 +64,7 @@ impl VmProxy {
         NonZeroUsize::new(vp as usize + 1).unwrap()
     }
 
-    #[allow(dead_code)] // TODO: add monitor command to inspect physical memory?
+    #[expect(dead_code, reason = "TODO")] // TODO: add monitor command to inspect physical memory?
     fn read_guest_physical_memory(&mut self, gpa: u64, data: &mut [u8]) -> anyhow::Result<()> {
         let buf = block_on(self.req_chan.call(
             DebugRequest::ReadMemory,

@@ -13,17 +13,17 @@ use thiserror::Error;
 pub use string::LxStr;
 pub use string::LxString;
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 pub type uid_t = u32;
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 pub type gid_t = u32;
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 pub type mode_t = u32;
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 pub type ino_t = u64;
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 pub type off_t = i64;
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 pub type dev_t = usize;
 
 pub const MODE_INVALID: mode_t = mode_t::MAX;

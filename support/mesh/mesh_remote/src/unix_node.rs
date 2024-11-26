@@ -502,7 +502,7 @@ fn start_connection(
     handle: RemoteNodeHandle,
     socket: UnixSocket,
 ) {
-    #[allow(clippy::disallowed_methods)] // TODO
+    #[expect(clippy::disallowed_methods)] // TODO
     let (send, recv) = mpsc::unbounded();
     let socket = Arc::new(socket);
     let sender = PacketSender {
@@ -1163,7 +1163,7 @@ impl UnixSocket {
 /// ErrorKind::WouldBlock.
 // x86_64-unknown-linux-musl targets have a different type defn for
 // `libc::cmsghdr`, hence why these lints are being suppressed.
-#[allow(clippy::needless_update, clippy::useless_conversion)]
+#[expect(clippy::needless_update, clippy::useless_conversion)]
 fn try_send(socket: &Socket, msg: &[IoSlice<'_>], fds: &[OsResource]) -> io::Result<usize> {
     let mut cmsg = CmsgScmRights {
         hdr: libc::cmsghdr {

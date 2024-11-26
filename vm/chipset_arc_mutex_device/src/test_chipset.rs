@@ -85,7 +85,6 @@ impl ControlMmioIntercept for TestDeviceRange {
     fn offset_of(&self, addr: u64) -> Option<u64> {
         let base = self.addr?;
 
-        #[allow(clippy::unnecessary_lazy_evaluations)] // prevents underflow error
         (base..(base + self.len))
             .contains(&addr)
             .then(|| addr - base)

@@ -29,7 +29,7 @@ pub struct Agent {
     watch_send: mesh::OneshotSender<()>,
 }
 
-#[allow(dead_code)] // Not used on all platforms yet
+#[allow(dead_code, reason = "Not used on all platforms yet")]
 #[derive(Clone)]
 pub struct DiagnosticSender(Arc<mesh::Sender<DiagnosticFile>>);
 
@@ -167,7 +167,7 @@ async fn write_file(mut request: pipette_protocol::WriteFileRequest) -> anyhow::
 }
 
 impl DiagnosticSender {
-    #[allow(dead_code)] // Not used on all platforms yet
+    #[expect(dead_code)] // Not used on all platforms yet
     pub async fn send(&self, filename: &str) -> anyhow::Result<()> {
         tracing::debug!(filename, "Beginning diagnostic file request");
         let file = fs_err::File::open(filename)?;

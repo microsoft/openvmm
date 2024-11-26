@@ -1573,7 +1573,7 @@ async fn new_underhill_vm(
     // `agent_data` and `guest_secret_key` may also be used by vTPM
     // initialization.
     let platform_attestation_data = {
-        #[allow(clippy::if_same_then_else)] // clearer
+        #[expect(clippy::if_same_then_else, reason = "clearer")]
         if is_restoring {
             // TODO CVM: Save and restore last returned data when live servicing is supported.
             // We also need to revisit what states should be saved and restored.

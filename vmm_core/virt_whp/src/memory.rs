@@ -343,7 +343,7 @@ impl MemoryMapper for WhpMemoryMapper {
 
 /// What VTL access to apply to a page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect)]
-#[allow(dead_code)]
+#[expect(dead_code)]
 pub enum VtlAccess {
     /// No access
     NoAccess,

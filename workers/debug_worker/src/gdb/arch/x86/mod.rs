@@ -9,7 +9,8 @@ use gdbstub::arch::SingleStepGdbBehavior;
 pub mod reg;
 
 /// Implements `Arch` for 64-bit x86 the same way QEMU does
-#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+#[expect(non_camel_case_types)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum X86_64_QEMU {}
 
 impl Arch for X86_64_QEMU {

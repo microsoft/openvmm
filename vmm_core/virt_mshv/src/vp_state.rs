@@ -83,7 +83,7 @@ fn hvdef_to_mshv_mut(regs: &mut [HvRegisterAssoc]) -> &mut [hv_register_assoc] {
     unsafe { std::mem::transmute(regs) }
 }
 
-#[allow(unused_variables)]
+#[expect(unused_variables)]
 impl AccessVpState for &'_ mut MshvProcessor<'_> {
     type Error = Error;
 

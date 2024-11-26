@@ -1037,9 +1037,9 @@ impl Default for LxVolumeOptions {
 #[derive(Default)]
 pub struct LxCreateOptions {
     mode: lx::mode_t,
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     uid: lx::uid_t,
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     gid: lx::gid_t,
 }
 

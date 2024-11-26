@@ -5,7 +5,7 @@
 
 pub use packed_nums::*;
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 mod packed_nums {
     pub type u16_le = zerocopy::U16<zerocopy::LittleEndian>;
     pub type u32_le = zerocopy::U32<zerocopy::LittleEndian>;

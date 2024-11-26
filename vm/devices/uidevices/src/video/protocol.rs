@@ -41,7 +41,7 @@ pub const MAX_DIRTY_REGIONS: u8 = 255;
 
 macro_rules! packed {
     ($wrap:ident, $prim:ident, $count:literal) => {
-        #[allow(non_camel_case_types)]
+        #[expect(non_camel_case_types)]
         #[repr(transparent)]
         #[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
         pub struct $wrap([u8; $count]);

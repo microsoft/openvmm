@@ -352,7 +352,7 @@ impl<T: RingMem + Unpin> MouseChannel<T> {
 }
 
 //transforms MouseData from the vnc server to an HID input report (mouse packet) by scaling coordinates and marking button flags
-#[allow(clippy::field_reassign_with_default)] // performing protocol translation
+
 async fn post_mouse_packet(
     mouse_data: MouseData,
     channel: &mut (impl AsyncSend + Unpin),
@@ -368,7 +368,7 @@ async fn post_mouse_packet(
         protocol::HID_MOUSE_BUTTON_RIGHT,
     ];
 
-    #[allow(clippy::needless_range_loop)] // rare case of a clippy misfire
+    #[expect(clippy::needless_range_loop, reason = "rare case of a clippy misfire")]
     for i in 0..protocol::MOUSE_NUMBER_BUTTONS {
         if ((1u8 << i) & mouse_data.button_mask) == (1u8 << i) {
             if i < 3 {

@@ -20,7 +20,7 @@ pub(crate) struct OpenHclDiagHandler {
 
 /// The result of running a VTL2 command.
 #[derive(Debug)]
-#[allow(dead_code)] // Fields output via Debug for debugging purposes.
+#[expect(dead_code, reason = "Fields output via Debug for debugging purposes.")]
 pub(crate) struct Vtl2CommandResult {
     /// The stdout of the command.
     pub stdout: String,

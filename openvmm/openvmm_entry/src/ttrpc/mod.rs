@@ -111,7 +111,7 @@ impl Worker for TtrpcWorker {
                 RpcTransport::Ttrpc => ResolvedTransport::Ttrpc,
                 #[cfg(feature = "grpc")]
                 RpcTransport::Grpc => ResolvedTransport::Grpc,
-                #[allow(unreachable_patterns)]
+                #[expect(unreachable_patterns)]
                 transport => bail!("unsupported transport {transport}"),
             },
         })

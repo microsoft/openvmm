@@ -361,7 +361,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
     /// When the object is dropped, all channels will be closed and revoked
     /// automatically.
     pub fn build(self) -> anyhow::Result<VmbusServer> {
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods, reason = "TODO")] // TODO
         let (message_send, message_recv) = mpsc::channel(64);
         let message_sender = Arc::new(MessageSender {
             send: message_send.clone(),

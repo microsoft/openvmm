@@ -64,7 +64,7 @@ pub const BATTERY_STATUS_IRQ_NO: u32 = 4;
 // No functionality is lost by not using this constant, but we prefer
 // ACPI_DEVICE_NOTIFY_BIX_CHANGED because it tells the guest to check for both
 // the BST and BIX registers.
-#[allow(unused)]
+#[allow(unused, reason = "Deprecated")]
 pub const ACPI_DEVICE_NOTIFY_BST_CHANGED: u32 = 0x1;
 pub const ACPI_DEVICE_NOTIFY_BIX_CHANGED: u32 = 0x2;
 

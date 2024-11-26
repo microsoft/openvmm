@@ -465,7 +465,7 @@ impl Partition {
         Ok(())
     }
 
-    #[allow(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
+    #[expect(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
     pub unsafe fn set_user_memory_region(
         &self,
         slot: u32,

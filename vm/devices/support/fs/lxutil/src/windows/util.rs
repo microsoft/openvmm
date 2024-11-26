@@ -365,7 +365,10 @@ pub fn check_lx_error_size(result: isize) -> lx::Result<usize> {
 }
 
 // Convert a DOS path to an NT path depending on whether the root is set.
-#[allow(clippy::join_absolute_paths)] // https://github.com/rust-lang/rust-clippy/issues/12244
+#[expect(
+    clippy::join_absolute_paths,
+    reason = "https://github.com/rust-lang/rust-clippy/issues/12244"
+)]
 pub fn dos_to_nt_path(
     root: Option<&OwnedHandle>,
     path: &Path,
@@ -791,7 +794,7 @@ pub fn create_link(
 
     // This matches the public definition of FILE_LINK_INFORMATION in ntifs.h, with the variable length payload field
     // at the end removed. u8 arrays are used for fields to remove the need for padding and repr(packed).
-    #[allow(non_snake_case)]
+    #[expect(non_snake_case)]
     #[repr(C)]
     #[derive(Debug, Clone, Copy, AsBytes, FromBytes, FromZeroes)]
     struct FILE_LINK_INFORMATION {

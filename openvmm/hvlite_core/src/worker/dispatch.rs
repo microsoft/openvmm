@@ -704,7 +704,6 @@ impl InitializedVm {
         }
     }
 
-    #[allow(dead_code)]
     async fn new_with_hypervisor<P, H>(
         driver_source: VmTaskDriverSource,
         hypervisor: &mut H,
@@ -2417,7 +2416,7 @@ impl LoadedVmInner {
                 };
                 super::vm_loaders::igvm::load_igvm(params)?
             }
-            #[allow(unreachable_patterns)]
+            #[expect(unreachable_patterns)]
             _ => anyhow::bail!("load mode not supported on this platform"),
         };
 

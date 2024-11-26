@@ -173,7 +173,10 @@ impl<T> ArcCyclicBuilderExt<T> for Arc<T> {
     }
 }
 
-#[allow(clippy::disallowed_types)] // requiring parking_lot just for a test? nah
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Requiring parking_lot just for a test? nah"
+)]
 #[cfg(test)]
 mod test {
     use super::*;

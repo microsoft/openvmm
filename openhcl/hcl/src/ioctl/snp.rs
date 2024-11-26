@@ -109,7 +109,7 @@ impl MshvVtl {
             return Ok(());
         }
 
-        #[allow(clippy::undocumented_unsafe_blocks)] // TODO SNP
+        #[expect(clippy::undocumented_unsafe_blocks, reason = "TODO")] // TODO SNP
         let ret = unsafe {
             hcl_rmpadjust_pages(
                 self.file.as_raw_fd(),

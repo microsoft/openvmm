@@ -16,7 +16,6 @@ pub mod base64_vec {
     use crate::prelude::*;
     use base64::Engine;
 
-    #[allow(clippy::ptr_arg)] // required by serde
     pub fn serialize<S: Serializer>(v: &Vec<u8>, ser: S) -> Result<S::Ok, S::Error> {
         ser.serialize_str(&base64::engine::general_purpose::STANDARD.encode(v))
     }
@@ -120,7 +119,6 @@ pub mod opt_base64_vec {
     use base64::Engine;
     use serde::*;
 
-    #[allow(clippy::ptr_arg)] // required by serde
     pub fn serialize<S: Serializer>(v: &Option<Vec<u8>>, ser: S) -> Result<S::Ok, S::Error> {
         match v {
             Some(v) => ser.serialize_str(&base64::engine::general_purpose::STANDARD.encode(v)),

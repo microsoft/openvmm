@@ -315,7 +315,7 @@ impl IoCompletionPort {
 
     // Per MSDN, overlapped values are not dereferenced by PostQueuedCompletionStatus,
     // they are passed as-is to the caller of GetQueuedCompletionStatus.
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[expect(clippy::not_unsafe_ptr_arg_deref)]
     pub fn post(&self, bytes: u32, key: usize, overlapped: *mut OVERLAPPED) {
         unsafe {
             if PostQueuedCompletionStatus(self.0.as_raw_handle(), bytes, key, overlapped) == 0 {
@@ -996,14 +996,14 @@ macro_rules! delayload {
     };
 
     (@func pub fn $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty) => {
-        #[allow(non_snake_case, clippy::too_many_arguments, clippy::diverging_sub_expression)]
+        #[expect(non_snake_case, clippy::too_many_arguments, clippy::diverging_sub_expression)]
         pub unsafe fn $name($($params: $types,)*) -> $result {
             $crate::delayload!(@body $name($($params : $types),*) -> $result)
         }
     };
 
     (@func fn $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty) => {
-        #[allow(non_snake_case, clippy::diverging_sub_expression)]
+        #[expect(non_snake_case, clippy::diverging_sub_expression)]
         unsafe fn $name($($params: $types,)*) -> $result {
             $crate::delayload!(@body $name($($params : $types),*) -> $result)
         }
@@ -1021,7 +1021,7 @@ macro_rules! delayload {
             static FNCELL: AtomicUsize = AtomicUsize::new(0);
             let mut fnval = FNCELL.load(Ordering::Relaxed);
             if fnval == 0 {
-                #[allow(unreachable_code)]
+                #[expect(unreachable_code)]
                 match get_module() {
                     Ok(module) => {
                         fnval = GetProcAddress(
@@ -1037,7 +1037,7 @@ macro_rules! delayload {
                 FNCELL.store(fnval, Ordering::Relaxed);
             }
             if fnval == 1 {
-                #[allow(unreachable_code)]
+                #[expect(unreachable_code)]
                 return $crate::delayload!(@result_from_win32(($result), ERROR_PROC_NOT_FOUND));
             }
             type FnType = unsafe extern "stdcall" fn($($params: $types,)*) -> $result;

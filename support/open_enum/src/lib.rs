@@ -24,7 +24,7 @@
 /// # #[macro_use] extern crate open_enum; fn main() {
 /// use open_enum::open_enum;
 /// open_enum! {
-///     #[allow(dead_code)] // This will apply to the generated struct defn
+///     #[expect(dead_code)] // This will apply to the generated struct defn
 ///     pub enum ExampleEnumName: u32 {
 ///         #![allow(missing_docs)] // This will apply to all subfields of the enum
 ///         THIS_IS_AN_ENUM = 32,
@@ -34,10 +34,10 @@
 /// //
 /// // #[repr(transparent)]
 //  // #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
-/// // #[allow(dead_code)]
+/// // #[expect(dead_code)]
 /// // struct ExampleEnumName(u32);
 /// //
-/// // #[allow(missing_docs)]
+/// // #[expect(missing_docs)]
 /// // impl ExampleEnumName {
 /// //     pub const THIS_IS_AN_ENUM: ExampleEnumName = ExampleEnumName(0)
 /// // }

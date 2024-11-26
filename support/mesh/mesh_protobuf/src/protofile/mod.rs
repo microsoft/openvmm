@@ -220,7 +220,6 @@ impl<'a> FieldType<'a> {
     }
 
     /// Returns a field type for an anonymous tuple.
-    #[allow(clippy::redundant_guards)] // https://github.com/rust-lang/rust-clippy/issues/12243
     pub const fn tuple(field_types: &'a [Self]) -> Self {
         // Use well-known types instead of new anonymous ones when possible.
         match field_types {

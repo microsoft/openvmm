@@ -238,7 +238,7 @@ impl LxVolume {
             let block_size = api::LxUtilFsGetFileSystemBlockSize(root.as_raw_handle());
             Ok(Self {
                 root,
-                #[allow(clippy::disallowed_methods)] // need actual canonical path here
+                #[expect(clippy::disallowed_methods, reason = "need actual canonical path here")]
                 root_path: root_path.canonicalize()?,
                 state: VolumeState::new(fs_context, options, block_size),
             })
@@ -1036,7 +1036,7 @@ impl LxVolume {
 
             /// Only the required header for FSCTL_SET_REPARSE_POINT, with data length of zero.
             /// See ntifs.h REPARSE_DATA_BUFFER.
-            #[allow(non_snake_case)]
+            #[expect(non_snake_case)]
             #[repr(C)]
             #[derive(Clone, Copy, AsBytes, FromBytes, FromZeroes)]
             struct REPARSE_DATA_BUFFER {
@@ -1227,7 +1227,7 @@ impl LxVolume {
         path.push(symlink_parent);
         path.push(target);
         path = {
-            #[allow(clippy::disallowed_methods)] // need actual canonical path here
+            #[expect(clippy::disallowed_methods)] // need actual canonical path here
             match path.canonicalize() {
                 Ok(p) => p,
                 Err(_) => return SymlinkType::Lx,

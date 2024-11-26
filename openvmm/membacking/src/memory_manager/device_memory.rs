@@ -145,7 +145,6 @@ struct DeviceMemoryControl(Arc<DeviceMemoryRegion>);
 impl MappableGuestMemory for DeviceMemoryControl {
     fn map_to_guest(&mut self, gpa: u64, writable: bool) -> io::Result<()> {
         let mut state = self.0.state.lock();
-        #[allow(clippy::await_holding_lock)] // Treat all this as sync for now.
         block_on(async {
             if let Some(handle) = state.handle.take() {
                 handle.teardown().await;

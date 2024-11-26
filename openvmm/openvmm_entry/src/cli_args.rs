@@ -382,7 +382,7 @@ flags:
     ///
     /// Used internally for debugging and diagnostics.
     #[clap(long, default_value = "control", hide(true))]
-    #[allow(clippy::option_option)]
+    #[expect(clippy::option_option)]
     pub internal_worker: Option<Option<String>>,
 
     /// redirect the VTL 0 vmbus control plane to a proxy in VTL 2.

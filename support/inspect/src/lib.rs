@@ -1886,7 +1886,10 @@ impl InternalNode {
     any(feature = "defer", feature = "initiate"),
     derive(mesh::MeshPayload)
 )]
-#[allow(unused)] // some invariants are unused in some configurations, but order matters in their mesh derive, so keep them
+#[allow(
+    unused,
+    reason = "some invariants are unused in some configurations, but order matters in their mesh derive, so keep them"
+)]
 enum InternalError {
     Immutable,
     Update(String),
@@ -2682,7 +2685,7 @@ mod tests {
         struct Tr2(#[inspect(debug)] ());
 
         #[derive(Inspect)]
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         enum Enum {
             Foo,
             BarBaz,
@@ -2727,16 +2730,16 @@ mod tests {
 
     #[test]
     fn test_derive_enum() {
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         enum EmptyUnitEmum {}
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(untagged)]
         enum EmptyUntaggedEmum {}
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         enum UnitEnum {
             A,
@@ -2746,7 +2749,7 @@ mod tests {
 
         assert_eq!(inspect_sync("", None, &UnitEnum::B).to_string(), r#""b""#);
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(tag = "tag")]
         enum TaggedEnum {
@@ -2759,7 +2762,7 @@ mod tests {
             r#"{tag: "b", y: true}"#
         );
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(external_tag)]
         enum ExternallyTaggedEnum {
@@ -2781,7 +2784,7 @@ mod tests {
             r#"{c: 5}"#
         );
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(untagged)]
         enum UntaggedEnum {

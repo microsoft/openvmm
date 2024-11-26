@@ -156,7 +156,7 @@ impl QueuePair {
         });
 
         const PER_QUEUE_PAGES: usize = 128;
-        #[allow(clippy::assertions_on_constants)]
+        #[expect(clippy::assertions_on_constants)]
         const _: () = assert!(
             PER_QUEUE_PAGES * PAGE_SIZE >= 128 * 1024 + PAGE_SIZE,
             "not enough room for an ATAPI IO plus a PRP list"

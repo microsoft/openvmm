@@ -116,7 +116,7 @@ impl KernelVmNic {
 
 #[derive(Debug)]
 // Just a newtype to give a better name and ergonomics, field needs to be held to keep handle alive.
-pub struct SwitchPort(#[allow(dead_code)] OwnedHandle);
+pub struct SwitchPort(#[expect(dead_code)] OwnedHandle);
 
 impl SwitchPort {
     pub fn new(id: &SwitchPortId) -> io::Result<Self> {

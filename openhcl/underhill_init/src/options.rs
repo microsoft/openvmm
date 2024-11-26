@@ -18,7 +18,7 @@ pub struct Options {
 }
 
 impl Options {
-    #[allow(clippy::expect_fun_call)]
+    #[expect(clippy::expect_fun_call)]
     pub(crate) fn parse() -> Self {
         let mut opts = Self::default();
 
@@ -69,7 +69,7 @@ impl Options {
         opts
     }
 
-    #[allow(clippy::expect_fun_call)]
+    #[expect(clippy::expect_fun_call)]
     #[must_use]
     fn parse_value_arg(opts: &mut Self, name: &str, value: &str) -> bool {
         match name {

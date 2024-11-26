@@ -370,7 +370,7 @@ pub(crate) mod serialized_request {
     use serde::Deserializer;
     use serde::Serializer;
 
-    #[allow(clippy::borrowed_box)] // required by serde
+    #[expect(clippy::borrowed_box, reason = "Required by serde")]
     pub fn serialize<S: Serializer>(v: &Box<[u8]>, ser: S) -> Result<S::Ok, S::Error> {
         ser.serialize_str(
             &serde_json::to_string(&serde_json::from_slice::<serde_json::Value>(v).unwrap())

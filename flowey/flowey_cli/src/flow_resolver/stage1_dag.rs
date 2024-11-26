@@ -719,7 +719,7 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
             step: Step::Rust {
                 idx: self.step_idx_tracker,
                 label: label.into(),
-                #[allow(clippy::arc_with_non_send_sync)]
+                #[expect(clippy::arc_with_non_send_sync)]
                 code: Arc::new(Mutex::new(Some(code))),
             },
         });
@@ -763,7 +763,7 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
                 label: label.into(),
                 raw_yaml,
                 code_idx: self.step_idx_tracker,
-                #[allow(clippy::arc_with_non_send_sync)]
+                #[expect(clippy::arc_with_non_send_sync)]
                 code: Arc::new(Mutex::new(code)),
                 ado_to_rust,
                 rust_to_ado,

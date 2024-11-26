@@ -133,7 +133,6 @@ pub fn encode_dword(value: u32) -> Vec<u8> {
     byte_stream
 }
 
-#[allow(clippy::vec_init_then_push)] // vec![0xd] followed by extend_from_slice looks weird
 pub fn encode_string(value: &[u8]) -> Vec<u8> {
     let mut byte_stream: Vec<u8> = Vec::new();
     byte_stream.push(0xd);

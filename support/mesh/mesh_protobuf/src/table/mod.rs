@@ -49,7 +49,7 @@ pub unsafe trait StructMetadata {
 }
 
 #[cfg(test)]
-#[allow(clippy::undocumented_unsafe_blocks)]
+#[expect(clippy::undocumented_unsafe_blocks)]
 mod tests {
     use super::decode::ErasedDecoderEntry;
     use super::decode::StructDecodeMetadata;

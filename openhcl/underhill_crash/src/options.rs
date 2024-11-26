@@ -29,7 +29,7 @@ pub struct Options {
 }
 
 impl Options {
-    #[allow(clippy::expect_fun_call)]
+    #[expect(clippy::expect_fun_call)]
     pub(crate) fn parse() -> Self {
         let mut args = std::env::args_os();
 
