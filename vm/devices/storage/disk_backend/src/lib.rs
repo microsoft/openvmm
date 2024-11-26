@@ -119,6 +119,9 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
 
     /// Optionally returns a trait object to issue unmap (trim/discard)
     /// requests.
+    ///
+    /// This uses `impl Unmap` instead of the usual IDET pattern of `&dyn Unmap`
+    /// because `Unmap` is not object safe.
     fn unmap(&self) -> Option<impl Unmap> {
         None::<NoUnmap>
     }
