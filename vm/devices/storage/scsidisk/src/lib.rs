@@ -16,8 +16,8 @@ mod tests;
 
 pub use inquiry::INQUIRY_DATA_TEMPLATE;
 
+use disk_backend::Disk;
 use disk_backend::DiskError;
-use disk_backend::SimpleDisk;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
@@ -105,7 +105,7 @@ impl ScsiSaveRestore for SimpleScsiDisk {
 }
 
 pub struct SimpleScsiDisk {
-    disk: SimpleDisk,
+    disk: Disk,
     sector_shift: u8,
     physical_extra_shift: u8,
     sector_size: u32,
@@ -132,7 +132,7 @@ struct ScsiParameters {
 }
 
 impl SimpleScsiDisk {
-    pub fn new(disk: SimpleDisk, disk_parameters: DiskParameters) -> Self {
+    pub fn new(disk: Disk, disk_parameters: DiskParameters) -> Self {
         let sector_size = disk.sector_size();
         let sector_shift = sector_size.trailing_zeros() as u8;
         let mut sector_count = disk.sector_count();

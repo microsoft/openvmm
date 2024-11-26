@@ -255,11 +255,11 @@ pub mod save_restore {
     }
 }
 
-// TODO: remove the VMGS specific tests and just test the SimpleDisk interfaces.
+// TODO: remove the VMGS specific tests and just test the `DiskIo` interfaces.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use disk_backend::SimpleDisk;
+    use disk_backend::Disk;
     use guest_emulation_transport::api::ProtocolVersion;
     use guest_emulation_transport::test_utilities::new_transport_pair;
     use guest_emulation_transport::test_utilities::TestGet;
@@ -274,7 +274,7 @@ mod tests {
     async fn spawn_vmgs(driver: &DefaultDriver) -> (VmgsClient, TestGet, Task<()>) {
         let get = new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV2).await;
         let vmgs_get = GetVmgsDisk::new(get.client.clone()).await.unwrap();
-        let vmgs = Vmgs::format_new(SimpleDisk::new(vmgs_get).unwrap())
+        let vmgs = Vmgs::format_new(Disk::new(vmgs_get).unwrap())
             .await
             .unwrap();
         let (vmgs, task) = spawn_vmgs_broker(driver, vmgs);
@@ -382,7 +382,7 @@ mod tests {
     async fn test_read_write_encryption(driver: DefaultDriver) {
         let get = new_transport_pair(&driver, None, ProtocolVersion::NICKEL_REV2).await;
         let vmgs_get = GetVmgsDisk::new(get.client.clone()).await.unwrap();
-        let mut vmgs = Vmgs::format_new(SimpleDisk::new(vmgs_get).unwrap())
+        let mut vmgs = Vmgs::format_new(Disk::new(vmgs_get).unwrap())
             .await
             .unwrap();
         let file_id = FileId::BIOS_NVRAM;
@@ -406,9 +406,7 @@ mod tests {
         drop(vmgs);
 
         let vmgs_get = GetVmgsDisk::new(get.client.clone()).await.unwrap();
-        let mut vmgs = Vmgs::open(SimpleDisk::new(vmgs_get).unwrap())
-            .await
-            .unwrap();
+        let mut vmgs = Vmgs::open(Disk::new(vmgs_get).unwrap()).await.unwrap();
 
         let read_buf = vmgs.read_file(file_id).await.unwrap();
 

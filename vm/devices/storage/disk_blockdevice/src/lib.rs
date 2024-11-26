@@ -19,7 +19,7 @@ use disk_backend::pr::ReservationCapabilities;
 use disk_backend::pr::ReservationReport;
 use disk_backend::pr::ReservationType;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedSimpleDisk;
+use disk_backend::resolve::ResolvedDisk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
 use disk_backend::GetLbaStatus;
@@ -100,7 +100,7 @@ pub enum ResolveDiskError {
 
 #[async_trait]
 impl AsyncResolveResource<DiskHandleKind, OpenBlockDeviceConfig> for BlockDeviceResolver {
-    type Output = ResolvedSimpleDisk;
+    type Output = ResolvedDisk;
     type Error = ResolveDiskError;
 
     async fn resolve(
@@ -119,7 +119,7 @@ impl AsyncResolveResource<DiskHandleKind, OpenBlockDeviceConfig> for BlockDevice
         )
         .await
         .map_err(ResolveDiskError::NewDevice)?;
-        ResolvedSimpleDisk::new(disk).map_err(ResolveDiskError::InvalidDisk)
+        ResolvedDisk::new(disk).map_err(ResolveDiskError::InvalidDisk)
     }
 }
 

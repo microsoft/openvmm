@@ -6,7 +6,7 @@
 #![forbid(unsafe_code)]
 
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedSimpleDisk;
+use disk_backend::resolve::ResolvedDisk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
 use disk_backend_resources::FixedVhd1DiskHandle;
@@ -39,7 +39,7 @@ pub enum ResolveVhd1DiskError {
 }
 
 impl ResolveResource<DiskHandleKind, FixedVhd1DiskHandle> for Vhd1Resolver {
-    type Output = ResolvedSimpleDisk;
+    type Output = ResolvedDisk;
     type Error = ResolveVhd1DiskError;
 
     fn resolve(
@@ -49,7 +49,7 @@ impl ResolveResource<DiskHandleKind, FixedVhd1DiskHandle> for Vhd1Resolver {
     ) -> Result<Self::Output, Self::Error> {
         let disk =
             Vhd1Disk::open_fixed(rsrc.0, params.read_only).map_err(ResolveVhd1DiskError::Open)?;
-        ResolvedSimpleDisk::new(disk).map_err(ResolveVhd1DiskError::InvalidDisk)
+        ResolvedDisk::new(disk).map_err(ResolveVhd1DiskError::InvalidDisk)
     }
 }
 
@@ -226,7 +226,7 @@ impl DiskIo for Vhd1Disk {
 #[cfg(test)]
 mod tests {
     use super::Vhd1Disk;
-    use disk_backend::SimpleDisk;
+    use disk_backend::Disk;
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
@@ -239,7 +239,7 @@ mod tests {
         let data = (0..0x100000_u32).collect::<Vec<_>>();
         file.write_all(data.as_bytes()).unwrap();
         Vhd1Disk::make_fixed(&file).unwrap();
-        let vhd = SimpleDisk::new(Vhd1Disk::open_fixed(file, false).unwrap()).unwrap();
+        let vhd = Disk::new(Vhd1Disk::open_fixed(file, false).unwrap()).unwrap();
 
         let mem = GuestMemory::allocate(0x1000);
 

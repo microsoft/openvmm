@@ -1,17 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! VMGS storage implementation on top of [`SimpleDisk`].
+//! VMGS storage implementation on top of [`Disk`].
 
+use disk_backend::Disk;
 use disk_backend::DiskError;
-use disk_backend::SimpleDisk;
 use guestmem::GuestMemory;
 use scsi_buffers::OwnedRequestBuffers;
 use thiserror::Error;
 
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
 pub(crate) struct VmgsStorage {
-    disk: SimpleDisk,
+    disk: Disk,
     mem: GuestMemory,
     mem_size: usize,
     sector_size: u32,
@@ -30,7 +30,7 @@ pub enum StorageError {
 }
 
 impl VmgsStorage {
-    pub fn new(disk: SimpleDisk) -> Self {
+    pub fn new(disk: Disk) -> Self {
         let sector_size = disk.sector_size();
         // Max IO size. Balance between performance and memory usage.
         let mem_size = 64 * 1024;

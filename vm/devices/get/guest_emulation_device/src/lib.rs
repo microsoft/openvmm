@@ -16,7 +16,7 @@ pub mod test_utilities;
 
 use async_trait::async_trait;
 use core::mem::size_of;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use futures::FutureExt;
 use futures::StreamExt;
 use get_protocol::dps_json::HclSecureBootTemplateId;
@@ -187,7 +187,7 @@ pub struct GuestEmulationDevice {
 #[derive(Inspect)]
 struct VmgsState {
     /// The underlying VMGS disk.
-    disk: SimpleDisk,
+    disk: Disk,
     /// Memory for the disk to DMA to/from.
     mem: GuestMemory,
     /// Memory to buffer data for sending to the guest.
@@ -203,7 +203,7 @@ impl GuestEmulationDevice {
         firmware_event_send: Option<mesh::MpscSender<FirmwareEvent>>,
         guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         framebuffer_control: Option<Box<dyn FramebufferControl>>,
-        vmgs_disk: Option<SimpleDisk>,
+        vmgs_disk: Option<Disk>,
     ) -> Self {
         Self {
             config,

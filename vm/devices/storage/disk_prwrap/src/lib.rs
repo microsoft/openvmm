@@ -11,10 +11,10 @@ use async_trait::async_trait;
 use disk_backend::pr;
 use disk_backend::pr::ReservationType;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedSimpleDisk;
+use disk_backend::resolve::ResolvedDisk;
+use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
-use disk_backend::SimpleDisk;
 use disk_backend_resources::DiskWithReservationsHandle;
 use inspect::Inspect;
 use parking_lot::Mutex;
@@ -47,7 +47,7 @@ pub enum ResolvePrDiskError {
 impl AsyncResolveResource<DiskHandleKind, DiskWithReservationsHandle>
     for DiskWithReservationsResolver
 {
-    type Output = ResolvedSimpleDisk;
+    type Output = ResolvedDisk;
     type Error = ResolvePrDiskError;
 
     async fn resolve(
@@ -61,7 +61,7 @@ impl AsyncResolveResource<DiskHandleKind, DiskWithReservationsHandle>
             .await
             .map_err(ResolvePrDiskError::Resolve)?;
 
-        ResolvedSimpleDisk::new(DiskWithReservations::new(inner.0))
+        ResolvedDisk::new(DiskWithReservations::new(inner.0))
             .map_err(ResolvePrDiskError::InvalidDisk)
     }
 }
@@ -72,7 +72,7 @@ impl AsyncResolveResource<DiskHandleKind, DiskWithReservationsHandle>
 /// actually share a disk.
 #[derive(Inspect)]
 pub struct DiskWithReservations {
-    inner: SimpleDisk,
+    inner: Disk,
     #[inspect(flatten)]
     state: Mutex<ReservationState>,
 }
@@ -87,7 +87,7 @@ struct ReservationState {
 
 impl DiskWithReservations {
     /// Wraps `inner` with persistent reservations support.
-    pub fn new(inner: SimpleDisk) -> Self {
+    pub fn new(inner: Disk) -> Self {
         Self {
             inner,
             state: Default::default(),

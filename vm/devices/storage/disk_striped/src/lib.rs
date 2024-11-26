@@ -1,17 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Implements the SimpleDisk and AsyncDisk traits for virtual disks backed by multiple raw block devices.
+//! Implements the [`DiskIo`] trait for virtual disks backed by multiple raw
+//! block devices.
 
 #![forbid(unsafe_code)]
 
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedSimpleDisk;
+use disk_backend::resolve::ResolvedDisk;
+use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
 use disk_backend::GetLbaStatus;
-use disk_backend::SimpleDisk;
 use disk_backend::Unmap;
 use disk_backend_resources::StripedDiskHandle;
 use futures::future::join_all;
@@ -30,7 +31,7 @@ declare_static_async_resolver!(StripedDiskResolver, (DiskHandleKind, StripedDisk
 
 #[async_trait]
 impl AsyncResolveResource<DiskHandleKind, StripedDiskHandle> for StripedDiskResolver {
-    type Output = ResolvedSimpleDisk;
+    type Output = ResolvedDisk;
     type Error = anyhow::Error;
 
     async fn resolve(
@@ -45,7 +46,7 @@ impl AsyncResolveResource<DiskHandleKind, StripedDiskHandle> for StripedDiskReso
                 .map(|device| async { resolver.resolve(device, input).await.map(|r| r.0) }),
         )
         .await?;
-        Ok(ResolvedSimpleDisk::new(StripedDisk::new(
+        Ok(ResolvedDisk::new(StripedDisk::new(
             disks,
             rsrc.chunk_size_in_bytes,
             rsrc.logic_sector_count,
@@ -55,7 +56,7 @@ impl AsyncResolveResource<DiskHandleKind, StripedDiskHandle> for StripedDiskReso
 
 #[derive(Debug)]
 pub struct StripedDisk {
-    block_devices: Vec<SimpleDisk>,
+    block_devices: Vec<Disk>,
     sector_size: u32,
     sector_shift: u32,
     sector_count: u64,
@@ -264,7 +265,7 @@ impl StripedDisk {
     /// * 'logic_sector_count' - The sector count of the striped disk, and the default value is the sum of the sector count of the backing devices.
     ///
     pub fn new(
-        devices: Vec<SimpleDisk>,
+        devices: Vec<Disk>,
         chunk_size_in_bytes: Option<u32>,
         logic_sector_count: Option<u64>,
     ) -> Result<Self, NewDeviceError> {
@@ -607,7 +608,7 @@ mod tests {
         for _i in 0..disk_count {
             let ramdisk =
                 RamDisk::new(disk_size_in_bytes.unwrap_or(1024 * 1024 * 64), false).unwrap();
-            devices.push(SimpleDisk::new(ramdisk).unwrap());
+            devices.push(Disk::new(ramdisk).unwrap());
         }
 
         StripedDisk::new(devices, chunk_size_in_bytes, logic_sector_count).unwrap()
@@ -944,7 +945,7 @@ mod tests {
         let mut devices = Vec::new();
         for i in 0..2 {
             let ramdisk = RamDisk::new(1024 * 1024 + i * 64 * 1024, false).unwrap();
-            devices.push(SimpleDisk::new(ramdisk).unwrap());
+            devices.push(Disk::new(ramdisk).unwrap());
         }
 
         match StripedDisk::new(devices, None, None) {
@@ -961,7 +962,7 @@ mod tests {
         let mut block_devices = Vec::new();
         for _ in 0..2 {
             let ramdisk = RamDisk::new(1024 * 1024, false).unwrap();
-            block_devices.push(SimpleDisk::new(ramdisk).unwrap());
+            block_devices.push(Disk::new(ramdisk).unwrap());
         }
 
         match StripedDisk::new(block_devices, Some(4 * 1024 + 1), None) {
@@ -975,7 +976,7 @@ mod tests {
         let mut block_devices = Vec::new();
         for _ in 0..2 {
             let ramdisk = RamDisk::new(1024 * 1024, false).unwrap();
-            block_devices.push(SimpleDisk::new(ramdisk).unwrap());
+            block_devices.push(Disk::new(ramdisk).unwrap());
         }
 
         match StripedDisk::new(
@@ -996,7 +997,7 @@ mod tests {
         let mut block_devices = Vec::new();
         for _ in 0..2 {
             let ramdisk = RamDisk::new(1024 * 1024, false).unwrap();
-            block_devices.push(SimpleDisk::new(ramdisk).unwrap());
+            block_devices.push(Disk::new(ramdisk).unwrap());
         }
 
         let disk = match StripedDisk::new(block_devices, Some(8 * 1024), None) {

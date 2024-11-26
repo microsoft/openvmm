@@ -9,8 +9,8 @@ use super::ScsiSaveRestore;
 use crate::Request;
 use crate::ScsiSavedState;
 use crate::SenseDataSlot;
+use disk_backend::Disk;
 use disk_backend::DiskError;
-use disk_backend::SimpleDisk;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
@@ -39,7 +39,7 @@ use zerocopy::FromZeroes;
 
 enum Media {
     Unloaded,
-    Loaded(SimpleDisk),
+    Loaded(Disk),
 }
 
 pub struct SimpleScsiDvd {
@@ -150,7 +150,7 @@ impl inspect::Inspect for SimpleScsiDvd {
 const ISO_SECTOR_SIZE: u32 = 2048;
 
 impl SimpleScsiDvd {
-    pub fn new(disk: Option<SimpleDisk>) -> Self {
+    pub fn new(disk: Option<Disk>) -> Self {
         assert!(disk.as_ref().is_none() || disk.as_ref().unwrap().sector_size() <= ISO_SECTOR_SIZE);
 
         let (media, pending_medium_event, drive_state) = if let Some(disk) = disk {
@@ -178,7 +178,7 @@ impl SimpleScsiDvd {
         }
     }
 
-    pub fn change_media(&self, disk: Option<SimpleDisk>) {
+    pub fn change_media(&self, disk: Option<Disk>) {
         if let Some(disk) = disk {
             // Insert medium
             let mut media = self.media.write();
@@ -2343,9 +2343,9 @@ mod tests {
     use crate::SavedSenseData;
     use crate::ScsiSaveRestore;
     use crate::ScsiSavedState;
+    use disk_backend::Disk;
     use disk_backend::DiskError;
     use disk_backend::DiskIo;
-    use disk_backend::SimpleDisk;
     use guestmem::GuestMemory;
     use guestmem::MemoryWrite;
     use inspect::Inspect;
@@ -2461,7 +2461,7 @@ mod tests {
 
     fn new_scsi_dvd(sector_size: u32, sector_count: u64, read_only: bool) -> SimpleScsiDvd {
         let disk = TestDisk::new(sector_size, sector_count, read_only);
-        let scsi_dvd = SimpleScsiDvd::new(Some(SimpleDisk::new(disk).unwrap()));
+        let scsi_dvd = SimpleScsiDvd::new(Some(Disk::new(disk).unwrap()));
         let sector_shift = ISO_SECTOR_SIZE.trailing_zeros() as u8;
         assert_eq!(scsi_dvd.sector_count(), sector_count / scsi_dvd.balancer());
         assert_eq!(scsi_dvd.sector_shift(), sector_shift);

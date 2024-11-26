@@ -7,9 +7,9 @@ use crate::atapi_scsi::AtapiScsiDisk;
 use crate::scsi;
 use crate::scsidvd::SimpleScsiDvd;
 use crate::SimpleScsiDisk;
+use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
-use disk_backend::SimpleDisk;
 use disk_prwrap::DiskWithReservations;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
@@ -180,9 +180,9 @@ pub fn new_scsi_disk(
     );
 
     let simple_disk = if pr {
-        SimpleDisk::new(DiskWithReservations::new(SimpleDisk::new(disk).unwrap())).unwrap()
+        Disk::new(DiskWithReservations::new(Disk::new(disk).unwrap())).unwrap()
     } else {
-        SimpleDisk::new(disk).unwrap()
+        Disk::new(disk).unwrap()
     };
 
     let scsi_disk = SimpleScsiDisk::new(simple_disk, Default::default());
@@ -217,7 +217,7 @@ pub fn new_scsi_dvd(
         true,
         storage,
     );
-    let scsi_dvd = SimpleScsiDvd::new(Some(SimpleDisk::new(disk).unwrap()));
+    let scsi_dvd = SimpleScsiDvd::new(Some(Disk::new(disk).unwrap()));
     (scsi_dvd, state)
 }
 

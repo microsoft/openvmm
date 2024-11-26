@@ -9,9 +9,9 @@
 pub mod resolver;
 
 use block_crypto::XtsAes256;
+use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
-use disk_backend::SimpleDisk;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
@@ -23,7 +23,7 @@ use thiserror::Error;
 /// An encrypted disk.
 #[derive(Inspect)]
 pub struct CryptDisk {
-    inner: SimpleDisk,
+    inner: Disk,
     #[inspect(skip)]
     cipher: XtsAes256,
 }
@@ -45,7 +45,7 @@ impl CryptDisk {
     pub fn new(
         cipher: disk_crypt_resources::Cipher,
         key: &[u8],
-        inner: SimpleDisk,
+        inner: Disk,
     ) -> Result<Self, NewDiskError> {
         match cipher {
             disk_crypt_resources::Cipher::XtsAes256 => {}

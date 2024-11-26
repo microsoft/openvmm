@@ -11,7 +11,7 @@ use crate::ScsiController;
 use crate::ScsiControllerDisk;
 use crate::ScsiPath;
 use disk_backend::zerodisk::ZeroDisk;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use guestmem::GuestMemory;
 use pal_async::driver::SpawnDriver;
 use scsi_defs::srb::SrbStatus;
@@ -32,7 +32,7 @@ impl PerfTester {
         let device = ZeroDisk::new(512, 64 * 1024).unwrap();
         let controller = ScsiController::new();
         let disk = ScsiControllerDisk::new(Arc::new(SimpleScsiDisk::new(
-            SimpleDisk::new(device).unwrap(),
+            Disk::new(device).unwrap(),
             Default::default(),
         )));
         controller

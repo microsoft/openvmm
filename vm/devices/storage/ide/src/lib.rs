@@ -22,7 +22,7 @@ use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
 use chipset_device::ChipsetDevice;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use drive::DiskDrive;
 use drive::DriveRegister;
 use guestmem::GuestMemory;
@@ -1012,12 +1012,12 @@ enum ChannelType {
 #[derive(Inspect)]
 #[inspect(tag = "drive_type")]
 pub enum DriveMedia {
-    HardDrive(#[inspect(rename = "backend")] SimpleDisk),
+    HardDrive(#[inspect(rename = "backend")] Disk),
     OpticalDrive(#[inspect(rename = "backend")] Arc<dyn AsyncScsiDisk>),
 }
 
 impl DriveMedia {
-    pub fn hard_disk(disk: SimpleDisk) -> Self {
+    pub fn hard_disk(disk: Disk) -> Self {
         DriveMedia::HardDrive(disk)
     }
 
@@ -1831,7 +1831,7 @@ mod tests {
         let data = (0..0x100000_u32).collect::<Vec<_>>();
         handle1.write_all(data.as_bytes()).unwrap();
 
-        let disk = SimpleDisk::new(FileDisk::open(handle1, false).unwrap()).unwrap();
+        let disk = Disk::new(FileDisk::open(handle1, false).unwrap()).unwrap();
         let geometry = MediaGeometry::new(disk.sector_count(), disk.sector_size()).unwrap();
 
         let media = match drive_type {

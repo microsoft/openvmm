@@ -7,7 +7,7 @@
 use anyhow::Context;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedSimpleDisk;
+use disk_backend::resolve::ResolvedDisk;
 use futures::future::join_all;
 use futures::StreamExt;
 use futures::TryFutureExt;
@@ -278,7 +278,7 @@ impl NvmeDiskResolver {
 
 #[async_trait]
 impl AsyncResolveResource<DiskHandleKind, NvmeDiskConfig> for NvmeDiskResolver {
-    type Output = ResolvedSimpleDisk;
+    type Output = ResolvedDisk;
     type Error = anyhow::Error;
 
     async fn resolve(
@@ -293,7 +293,7 @@ impl AsyncResolveResource<DiskHandleKind, NvmeDiskConfig> for NvmeDiskResolver {
             .await
             .context("could not open nvme namespace")?;
 
-        Ok(ResolvedSimpleDisk::new(disk_nvme::NvmeDisk::new(namespace)).context("invalid disk")?)
+        Ok(ResolvedDisk::new(disk_nvme::NvmeDisk::new(namespace)).context("invalid disk")?)
     }
 }
 

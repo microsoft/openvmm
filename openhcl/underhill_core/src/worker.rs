@@ -55,7 +55,7 @@ use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use closeable_mutex::CloseableMutex;
 use debug_ptr::DebugPtr;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use disk_blockdevice::BlockDeviceResolver;
 use disk_blockdevice::OpenBlockDeviceConfig;
 use firmware_uefi::UefiCommandSet;
@@ -1340,10 +1340,7 @@ async fn new_underhill_vm(
             .context("failed to open VMGS disk")?;
             (
                 disk.save_meta(),
-                Vmgs::open_from_saved(
-                    SimpleDisk::new(disk).context("invalid vmgs disk")?,
-                    vmgs_state,
-                ),
+                Vmgs::open_from_saved(Disk::new(disk).context("invalid vmgs disk")?, vmgs_state),
             )
         }
         None => {
@@ -1353,7 +1350,7 @@ async fn new_underhill_vm(
                 .context("failed to get VMGS client")?;
 
             let meta = disk.save_meta();
-            let disk = SimpleDisk::new(disk).context("invalid vmgs disk")?;
+            let disk = Disk::new(disk).context("invalid vmgs disk")?;
 
             let vmgs = if !env_cfg.reformat_vmgs {
                 match Vmgs::open(disk.clone())

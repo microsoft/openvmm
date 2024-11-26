@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! Implements a generic ATA disk drive with 48-bit LBA support, wrapping a
-//! [`SimpleDisk`].
+//! [`Disk`].
 
 use super::DriveRegister;
 use crate::protocol;
@@ -13,8 +13,8 @@ use crate::protocol::IdeCommand;
 use crate::protocol::Status;
 use crate::DmaType;
 use crate::NewDeviceError;
+use disk_backend::Disk;
 use disk_backend::DiskError;
-use disk_backend::SimpleDisk;
 use guestmem::ranges::PagedRange;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
@@ -239,7 +239,7 @@ impl DriveState {
 
 #[derive(Inspect)]
 pub(crate) struct HardDrive {
-    disk: SimpleDisk,
+    disk: Disk,
     state: DriveState,
     geometry: MediaGeometry,
     disk_path: IdePath,
@@ -482,7 +482,7 @@ enum IoPortData<'a> {
 }
 
 impl HardDrive {
-    pub fn new(disk: SimpleDisk, disk_path: IdePath) -> Result<Self, NewDeviceError> {
+    pub fn new(disk: Disk, disk_path: IdePath) -> Result<Self, NewDeviceError> {
         // Initialize drive geometry
         let read_only = disk.is_read_only();
         let geometry = MediaGeometry::new(disk.sector_count(), disk.sector_size())?;
@@ -1369,7 +1369,7 @@ impl HardDrive {
     /// Sets the asynchronous IO to be polled in `poll_device`.
     fn set_io<F, Fut>(&mut self, f: F)
     where
-        F: FnOnce(SimpleDisk) -> Fut,
+        F: FnOnce(Disk) -> Fut,
         Fut: 'static + Future<Output = Result<(), DiskError>> + Send,
     {
         let fut = (f)(self.disk.clone());

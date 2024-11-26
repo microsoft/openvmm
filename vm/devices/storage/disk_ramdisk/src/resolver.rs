@@ -7,7 +7,7 @@ use super::Error;
 use super::RamDisk;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedSimpleDisk;
+use disk_backend::resolve::ResolvedDisk;
 use disk_backend_resources::RamDiffDiskHandle;
 use disk_backend_resources::RamDiskHandle;
 use vm_resource::declare_static_async_resolver;
@@ -40,7 +40,7 @@ pub enum ResolveRamDiskError {
 
 #[async_trait]
 impl AsyncResolveResource<DiskHandleKind, RamDiskHandle> for RamDiskResolver {
-    type Output = ResolvedSimpleDisk;
+    type Output = ResolvedDisk;
     type Error = ResolveRamDiskError;
 
     async fn resolve(
@@ -49,7 +49,7 @@ impl AsyncResolveResource<DiskHandleKind, RamDiskHandle> for RamDiskResolver {
         rsrc: RamDiskHandle,
         input: ResolveDiskParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        ResolvedSimpleDisk::new(
+        ResolvedDisk::new(
             RamDisk::new(rsrc.len, input.read_only).map_err(ResolveRamDiskError::Ram)?,
         )
         .map_err(ResolveRamDiskError::InvalidDisk)
@@ -58,7 +58,7 @@ impl AsyncResolveResource<DiskHandleKind, RamDiskHandle> for RamDiskResolver {
 
 #[async_trait]
 impl AsyncResolveResource<DiskHandleKind, RamDiffDiskHandle> for RamDiskResolver {
-    type Output = ResolvedSimpleDisk;
+    type Output = ResolvedDisk;
     type Error = ResolveRamDiskError;
 
     async fn resolve(
@@ -77,7 +77,7 @@ impl AsyncResolveResource<DiskHandleKind, RamDiffDiskHandle> for RamDiskResolver
             )
             .await
             .map_err(ResolveRamDiskError::Resolve)?;
-        ResolvedSimpleDisk::new(
+        ResolvedDisk::new(
             RamDisk::diff(lower.0, input.read_only).map_err(ResolveRamDiskError::Ram)?,
         )
         .map_err(ResolveRamDiskError::InvalidDisk)

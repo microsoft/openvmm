@@ -8,7 +8,7 @@
 #![allow(unsafe_code)]
 
 use core::slice;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use disk_vhd1::Vhd1Disk;
 use futures::executor::block_on;
 use std::ffi::c_char;
@@ -104,7 +104,7 @@ pub unsafe extern "C" fn read_vmgs(
     VmgsError::Ok
 }
 
-fn open_disk(file_path: &str, read_only: bool) -> Result<SimpleDisk, VmgsError> {
+fn open_disk(file_path: &str, read_only: bool) -> Result<Disk, VmgsError> {
     let file = File::options()
         .read(true)
         .write(!read_only)
@@ -112,7 +112,7 @@ fn open_disk(file_path: &str, read_only: bool) -> Result<SimpleDisk, VmgsError> 
         .map_err(|_| VmgsError::FileDisk)?;
 
     let disk = Vhd1Disk::open_fixed(file, read_only).map_err(|_| VmgsError::FileDisk)?;
-    SimpleDisk::new(disk).map_err(|_| VmgsError::FileDisk)
+    Disk::new(disk).map_err(|_| VmgsError::FileDisk)
 }
 
 async fn do_read(
@@ -317,7 +317,7 @@ async fn do_create(
 
     let disk = Vhd1Disk::open_fixed(file, false).map_err(|_| VmgsError::FileDisk)?;
 
-    let mut vmgs = Vmgs::format_new(SimpleDisk::new(disk).map_err(|_| VmgsError::FileDisk)?)
+    let mut vmgs = Vmgs::format_new(Disk::new(disk).map_err(|_| VmgsError::FileDisk)?)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 

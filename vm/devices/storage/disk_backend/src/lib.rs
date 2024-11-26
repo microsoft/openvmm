@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Defines the [`SimpleDisk`] type, which provides an interface to a block
+//! Defines the [`Disk`] type, which provides an interface to a block
 //! device, used for different disk frontends (such as the floppy disk, IDE,
 //! SCSI, or NVMe emulators) as well as direct disk access for other purposes
 //! (such as the VMGS file system).
 //!
-//! `SimpleDisk`s are backed by a [`DiskIo`] implementation. Specific disk
+//! `Disk`s are backed by a [`DiskIo`] implementation. Specific disk
 //! backends should be in their own crates. The exceptions that prove the rule
 //! is [`ZeroDisk`][], which is small enough to be in this crate and serve as an
 //! example.
@@ -89,7 +89,7 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
     /// Returns the current sector count.
     ///
     /// For some backing stores, this may change at runtime. If it does, then
-    /// the backing store must also implement [`AsyncDisk::wait_resize`].
+    /// the backing store must also implement [`DiskIo::wait_resize`].
     fn sector_count(&self) -> u64;
 
     /// Returns the logical sector size of the backing store.
@@ -109,7 +109,7 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
     /// This must not change at runtime.
     fn physical_sector_size(&self) -> u32;
 
-    /// Returns true if the `fua` parameter to [`AsyncDisk::write_vectored`] is
+    /// Returns true if the `fua` parameter to [`DiskIo::write_vectored`] is
     /// respected by the backing store by ensuring that the IO is immediately
     /// committed to disk.
     fn is_fua_respected(&self) -> bool;
@@ -178,9 +178,9 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
 /// users.
 #[derive(Inspect, Clone)]
 #[inspect(extra = "Self::inspect_extra")]
-pub struct SimpleDisk(#[inspect(flatten)] Arc<SimpleDiskInner>);
+pub struct Disk(#[inspect(flatten)] Arc<DiskInner>);
 
-impl SimpleDisk {
+impl Disk {
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
         resp.field("disk_type", self.0.disk.disk_type())
             .field("sector_count", self.0.disk.sector_count())
@@ -193,15 +193,15 @@ impl SimpleDisk {
     }
 }
 
-impl Debug for SimpleDisk {
+impl Debug for Disk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("SimpleDisk").finish()
+        f.debug_tuple("Disk").finish()
     }
 }
 
 #[derive(Inspect)]
-#[inspect(bound = "T: DynSimpleDisk")]
-struct SimpleDiskInner<T: ?Sized = dyn DynSimpleDisk> {
+#[inspect(bound = "T: DynDisk")]
+struct DiskInner<T: ?Sized = dyn DynDisk> {
     sector_size: u32,
     sector_shift: u32,
     physical_sector_size: u32,
@@ -212,7 +212,7 @@ struct SimpleDiskInner<T: ?Sized = dyn DynSimpleDisk> {
     disk: T,
 }
 
-/// Errors that can occur when creating a `SimpleDisk`.
+/// Errors that can occur when creating a `Disk`.
 #[derive(Debug, Error)]
 pub enum InvalidDisk {
     /// The sector size is invalid.
@@ -223,8 +223,8 @@ pub enum InvalidDisk {
     InvalidPhysicalSectorSize(u32),
 }
 
-impl SimpleDisk {
-    /// Returns a new `SimpleDisk` wrapping the given backing disk.
+impl Disk {
+    /// Returns a new disk wrapping the given backing object.
     pub fn new(disk: impl 'static + DiskIo) -> Result<Self, InvalidDisk> {
         // Cache the metadata locally to validate it and so that it can be
         // accessed without needing to go through the trait object. This is more
@@ -239,7 +239,7 @@ impl SimpleDisk {
             return Err(InvalidDisk::InvalidPhysicalSectorSize(physical_sector_size));
         }
         let supports_unmap = disk.unmap().is_some();
-        Ok(Self(Arc::new(SimpleDiskInner {
+        Ok(Self(Arc::new(DiskInner {
             supports_unmap,
             sector_size,
             sector_shift: sector_size.trailing_zeros(),
@@ -253,8 +253,8 @@ impl SimpleDisk {
 
     /// Returns the current sector count.
     ///
-    /// For some backing stores, this may change at runtime. If it does, then
-    /// the backing store must also implement [`AsyncDisk::wait_resize`].
+    /// For some backing stores, this may change at runtime. Use
+    /// [`wait_resize`](Self::wait_resize) to detect this change.
     pub fn sector_count(&self) -> u64 {
         self.0.disk.sector_count()
     }
@@ -282,9 +282,9 @@ impl SimpleDisk {
         self.0.physical_sector_size
     }
 
-    /// Returns true if the `fua` parameter to [`AsyncDisk::write_vectored`] is
-    /// respected by the backing store by ensuring that the IO is immediately
-    /// committed to disk.
+    /// Returns true if the `fua` parameter to
+    /// [`write_vectored`](Self::write_vectored) is respected by the backing
+    /// store by ensuring that the IO is immediately committed to disk.
     pub fn is_fua_respected(&self) -> bool {
         self.0.is_fua_respected
     }
@@ -296,9 +296,9 @@ impl SimpleDisk {
 
     /// Optionally returns a trait object to issue unmap (trim/discard)
     /// requests.
-    pub fn unmap(&self) -> Option<SimpleDiskUnmap<'_>> {
+    pub fn unmap(&self) -> Option<DiskUnmap<'_>> {
         if self.0.supports_unmap {
-            Some(SimpleDiskUnmap(&self.0))
+            Some(DiskUnmap(&self.0))
         } else {
             None
         }
@@ -358,10 +358,10 @@ impl SimpleDisk {
     }
 }
 
-/// Access to a disk's unmap operations. Returned by [`SimpleDisk::unmap`].
-pub struct SimpleDiskUnmap<'a>(&'a SimpleDiskInner);
+/// Access to a disk's unmap operations. Returned by [`Disk::unmap`].
+pub struct DiskUnmap<'a>(&'a DiskInner);
 
-impl Unmap for SimpleDiskUnmap<'_> {
+impl Unmap for DiskUnmap<'_> {
     fn unmap(
         &self,
         sector_offset: u64,
@@ -383,7 +383,7 @@ pub trait GetLbaStatus {
     /// Returns the block index information for the given file offset.
     fn file_offset_to_device_block_index_and_length(
         &self,
-        disk: &SimpleDisk,
+        disk: &Disk,
         _start_offset: u64,
         _get_lba_status_range_length: u64,
         _block_size: u64,
@@ -500,7 +500,7 @@ const ASYNC_DISK_STACK_SIZE: usize = 1256;
 
 type IoFuture<'a> = StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }>;
 
-trait DynSimpleDisk: Send + Sync + Inspect {
+trait DynDisk: Send + Sync + Inspect {
     fn disk_type(&self) -> &str;
     fn sector_count(&self) -> u64;
 
@@ -531,7 +531,7 @@ trait DynSimpleDisk: Send + Sync + Inspect {
     }
 }
 
-impl<T: DiskIo> DynSimpleDisk for T {
+impl<T: DiskIo> DynDisk for T {
     fn disk_type(&self) -> &str {
         self.disk_type()
     }

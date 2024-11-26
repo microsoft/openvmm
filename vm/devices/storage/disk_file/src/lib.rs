@@ -8,7 +8,7 @@ mod readwriteat;
 use self::readwriteat::ReadWriteAt;
 use blocking::unblock;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedSimpleDisk;
+use disk_backend::resolve::ResolvedDisk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
 use disk_backend_resources::FileDiskHandle;
@@ -35,7 +35,7 @@ pub enum ResolveFileDiskError {
 }
 
 impl ResolveResource<DiskHandleKind, FileDiskHandle> for FileDiskResolver {
-    type Output = ResolvedSimpleDisk;
+    type Output = ResolvedDisk;
     type Error = ResolveFileDiskError;
 
     fn resolve(
@@ -43,7 +43,7 @@ impl ResolveResource<DiskHandleKind, FileDiskHandle> for FileDiskResolver {
         rsrc: FileDiskHandle,
         input: ResolveDiskParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        ResolvedSimpleDisk::new(
+        ResolvedDisk::new(
             FileDisk::open(rsrc.0, input.read_only).map_err(ResolveFileDiskError::Io)?,
         )
         .map_err(ResolveFileDiskError::InvalidDisk)

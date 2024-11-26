@@ -19,7 +19,7 @@ use vm_resource::ResourceId;
 /// Resource handle for an emulated SCSI disk.
 #[derive(MeshPayload)]
 pub struct SimpleScsiDiskHandle {
-    /// The backing simple disk handle.
+    /// The backing disk handle.
     pub disk: Resource<DiskHandleKind>,
     /// Whether the disk is read only.
     pub read_only: bool,

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A wrapper around [`SimpleDisk`] that adapts the trait for use with
+//! A wrapper around [`Disk`] that adapts the trait for use with
 //! synchronous [`std::io`] traits (such as `Read`, `Write`, `Seek`, etc...).
 //!
 //! NOTE: this is _not_ code that should see wide use across the HvLite
@@ -13,7 +13,7 @@
 //! wart, and it would be great if we could swap out any dependant code with
 //! native-async implementations at some point in the future.
 
-use crate::SimpleDisk;
+use crate::Disk;
 use futures::executor::block_on;
 use guestmem::GuestMemory;
 use scsi_buffers::OwnedRequestBuffers;
@@ -23,11 +23,11 @@ use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
 
-/// Wrapper around [`SimpleDisk`] that implements the synchronous [`std::io`]
+/// Wrapper around [`Disk`] that implements the synchronous [`std::io`]
 /// traits (such as `Read`, `Write`, `Seek`, etc...) using [`block_on`].
-pub struct BlockingSimpleDisk {
-    /// Inner SimpleDisk instance for base disk operations.
-    inner: SimpleDisk,
+pub struct BlockingDisk {
+    /// Inner disk instance for base operations.
+    inner: Disk,
     /// The current position in the disk.
     pos: u64,
     /// Buffer for temporary data storage during read/write operations.
@@ -36,11 +36,11 @@ pub struct BlockingSimpleDisk {
     buffer_dirty: bool,
 }
 
-impl BlockingSimpleDisk {
-    /// Create a new `BlockingSimpleDisk`
-    pub fn new(inner: SimpleDisk) -> Self {
+impl BlockingDisk {
+    /// Create a new blocking disk wrapping `inner`.
+    pub fn new(inner: Disk) -> Self {
         let sector_size = inner.sector_size();
-        BlockingSimpleDisk {
+        BlockingDisk {
             inner,
             pos: 0,
             buffer: vec![0; sector_size as usize],
@@ -217,13 +217,13 @@ impl BlockingSimpleDisk {
     }
 }
 
-impl Read for BlockingSimpleDisk {
+impl Read for BlockingDisk {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.read(buf)
     }
 }
 
-impl Write for BlockingSimpleDisk {
+impl Write for BlockingDisk {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.write(buf)
     }
@@ -233,7 +233,7 @@ impl Write for BlockingSimpleDisk {
     }
 }
 
-impl Seek for BlockingSimpleDisk {
+impl Seek for BlockingDisk {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         self.seek(pos)
     }

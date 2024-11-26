@@ -8,7 +8,7 @@ mod vmgs_json;
 use anyhow::Result;
 use clap::Args;
 use clap::Parser;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use disk_vhd1::Vhd1Disk;
 use fs_err::File;
 use pal_async::DefaultPool;
@@ -492,7 +492,7 @@ fn vhdfiledisk_create(
     path: impl AsRef<Path>,
     req_file_size: Option<u64>,
     force_create: bool,
-) -> Result<SimpleDisk, Error> {
+) -> Result<Disk, Error> {
     const MIN_VMGS_FILE_SIZE: u64 = 4 * VMGS_BYTES_PER_BLOCK as u64;
     const SECTOR_SIZE: u64 = 512;
 
@@ -544,12 +544,12 @@ fn vhdfiledisk_create(
 
     Vhd1Disk::make_fixed(file.file()).map_err(Error::Vhd1)?;
     let disk = Vhd1Disk::open_fixed(file.into(), false).map_err(Error::Vhd1)?;
-    SimpleDisk::new(disk).map_err(Error::InvalidDisk)
+    Disk::new(disk).map_err(Error::InvalidDisk)
 }
 
 #[cfg_attr(not(with_encryption), allow(unused_mut), allow(unused_variables))]
 async fn vmgs_create(
-    disk: SimpleDisk,
+    disk: Disk,
     encryption_alg_key: Option<(EncryptionAlgorithm, &[u8])>,
 ) -> Result<Vmgs, Error> {
     let mut vmgs = Vmgs::format_new(disk).await?;
@@ -700,7 +700,7 @@ async fn vmgs_read(vmgs: &mut Vmgs, file_id: FileId, decrypt: bool) -> Result<Ve
 async fn vmgs_file_dump_headers(file_path: impl AsRef<Path>) -> Result<(), Error> {
     let file = File::open(file_path.as_ref()).map_err(Error::VmgsFile)?;
     let validate_result = vmgs_file_validate(&file);
-    let disk = SimpleDisk::new(Vhd1Disk::open_fixed(file.into(), true).map_err(Error::Vhd1)?)
+    let disk = Disk::new(Vhd1Disk::open_fixed(file.into(), true).map_err(Error::Vhd1)?)
         .map_err(Error::InvalidDisk)?;
 
     let headers_result = match read_headers(disk).await {
@@ -899,7 +899,7 @@ async fn vmgs_file_open(
 
     vmgs_file_validate(&file)?;
 
-    let disk = SimpleDisk::new(
+    let disk = Disk::new(
         Vhd1Disk::open_fixed(file.into(), open_mode == OpenMode::ReadOnly).map_err(Error::Vhd1)?,
     )
     .map_err(Error::InvalidDisk)?;
@@ -921,7 +921,7 @@ async fn vmgs_file_open(
 
 #[cfg_attr(not(with_encryption), allow(unused_mut), allow(unused_variables))]
 async fn vmgs_open(
-    disk: SimpleDisk,
+    disk: Disk,
     encryption_key: Option<&[u8]>,
     encrypted_no_key_ok: bool,
 ) -> Result<Vmgs, Error> {
@@ -1121,7 +1121,7 @@ mod tests {
             .open(path.as_ref())
             .map_err(Error::VmgsFile)?;
         vmgs_file_validate(&file)?;
-        let disk = SimpleDisk::new(
+        let disk = Disk::new(
             Vhd1Disk::open_fixed(file.into(), open_mode == OpenMode::ReadOnly)
                 .map_err(Error::Vhd1)?,
         )

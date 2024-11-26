@@ -7,7 +7,7 @@ use crate::blob::http::HttpBlob;
 use crate::BlobDisk;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedSimpleDisk;
+use disk_backend::resolve::ResolvedDisk;
 use disk_backend_resources::BlobDiskFormat;
 use disk_backend_resources::BlobDiskHandle;
 use vm_resource::declare_static_async_resolver;
@@ -22,7 +22,7 @@ declare_static_async_resolver!(BlobDiskResolver, (DiskHandleKind, BlobDiskHandle
 
 #[async_trait]
 impl AsyncResolveResource<DiskHandleKind, BlobDiskHandle> for BlobDiskResolver {
-    type Output = ResolvedSimpleDisk;
+    type Output = ResolvedDisk;
     type Error = anyhow::Error;
 
     async fn resolve(
@@ -41,6 +41,6 @@ impl AsyncResolveResource<DiskHandleKind, BlobDiskHandle> for BlobDiskResolver {
             BlobDiskFormat::FixedVhd1 => BlobDisk::new_fixed_vhd1(blob).await?,
         };
 
-        Ok(ResolvedSimpleDisk::new(disk)?)
+        Ok(ResolvedDisk::new(disk)?)
     }
 }

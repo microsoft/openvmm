@@ -6,7 +6,7 @@ use crate::GedChannel;
 use crate::GuestConfig;
 use crate::GuestEmulationDevice;
 use crate::GuestFirmwareConfig;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use get_protocol::test_utilities::TEST_VMGS_CAPACITY;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
@@ -265,7 +265,7 @@ pub fn create_host_channel(
         recv,
         None,
         Some(
-            SimpleDisk::new(disk_ramdisk::RamDisk::new(TEST_VMGS_CAPACITY as u64, false).unwrap())
+            Disk::new(disk_ramdisk::RamDisk::new(TEST_VMGS_CAPACITY as u64, false).unwrap())
                 .unwrap(),
         ),
     );

@@ -7,7 +7,7 @@
 #![allow(clippy::undocumented_unsafe_blocks)]
 
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedSimpleDisk;
+use disk_backend::resolve::ResolvedDisk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
 use disk_file::FileDisk;
@@ -356,7 +356,7 @@ pub enum ResolveVhdmpDiskError {
 }
 
 impl ResolveResource<DiskHandleKind, OpenVhdmpDiskConfig> for VhdmpDiskResolver {
-    type Output = ResolvedSimpleDisk;
+    type Output = ResolvedDisk;
     type Error = ResolveVhdmpDiskError;
 
     fn resolve(
@@ -364,7 +364,7 @@ impl ResolveResource<DiskHandleKind, OpenVhdmpDiskConfig> for VhdmpDiskResolver 
         rsrc: OpenVhdmpDiskConfig,
         input: ResolveDiskParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        ResolvedSimpleDisk::new(
+        ResolvedDisk::new(
             VhdmpDisk::new(rsrc.0, input.read_only).map_err(ResolveVhdmpDiskError::Vhdmp)?,
         )
         .map_err(ResolveVhdmpDiskError::InvalidDisk)

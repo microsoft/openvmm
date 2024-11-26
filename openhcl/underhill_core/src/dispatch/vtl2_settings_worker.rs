@@ -8,7 +8,7 @@ use crate::nvme_manager::NvmeDiskConfig;
 use crate::worker::NicConfig;
 use anyhow::Context;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use disk_backend_resources::AutoFormattedDiskHandle;
 use disk_blockdevice::OpenBlockDeviceConfig;
 use futures::StreamExt;
@@ -544,7 +544,7 @@ pub async fn disk_from_disk_type<'a>(
     disk_type: Resource<DiskHandleKind>,
     read_only: bool,
     resolver: &ResourceResolver,
-) -> Result<SimpleDisk, Vtl2SettingsErrorInfo> {
+) -> Result<Disk, Vtl2SettingsErrorInfo> {
     let disk = resolver
         .resolve(
             disk_type,

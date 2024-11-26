@@ -11,9 +11,9 @@ pub mod resolver;
 use anyhow::Context;
 use disk_backend::zerodisk::InvalidGeometry;
 use disk_backend::zerodisk::ZeroDisk;
+use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
-use disk_backend::SimpleDisk;
 use disk_backend::Unmap;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
@@ -34,7 +34,7 @@ pub struct RamDisk {
     sector_count: AtomicU64,
     read_only: bool,
     lower_is_zero: bool,
-    lower: SimpleDisk,
+    lower: Disk,
     resize_event: event_listener::Event,
 }
 
@@ -82,7 +82,7 @@ impl RamDisk {
     /// Makes a new RAM disk of `size` bytes.
     pub fn new(len: u64, read_only: bool) -> Result<Self, Error> {
         Self::new_inner(
-            SimpleDisk::new(ZeroDisk::new(SECTOR_SIZE, len)?).unwrap(),
+            Disk::new(ZeroDisk::new(SECTOR_SIZE, len)?).unwrap(),
             read_only,
             true,
         )
@@ -92,11 +92,11 @@ impl RamDisk {
     ///
     /// Writes will be collected in RAM, but reads will go to the lower disk for
     /// sectors that have not yet been overwritten.
-    pub fn diff(lower: SimpleDisk, read_only: bool) -> Result<Self, Error> {
+    pub fn diff(lower: Disk, read_only: bool) -> Result<Self, Error> {
         Self::new_inner(lower, read_only, false)
     }
 
-    fn new_inner(lower: SimpleDisk, read_only: bool, lower_is_zero: bool) -> Result<Self, Error> {
+    fn new_inner(lower: Disk, read_only: bool, lower_is_zero: bool) -> Result<Self, Error> {
         let sector_size = lower.sector_size();
         if sector_size != SECTOR_SIZE {
             return Err(Error::UnsupportedSectorSize(sector_size));
@@ -264,7 +264,7 @@ mod tests {
     use super::RamDisk;
     use super::SECTOR_SIZE;
     use crate::DiskIo;
-    use disk_backend::SimpleDisk;
+    use disk_backend::Disk;
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
@@ -324,7 +324,7 @@ mod tests {
 
         let mut lower = RamDisk::new(SIZE as u64, false).unwrap();
         write(&guest_mem, &mut lower, 0, SIZE / SECTOR_USIZE, 0).await;
-        let mut upper = RamDisk::diff(SimpleDisk::new(lower).unwrap(), false).unwrap();
+        let mut upper = RamDisk::diff(Disk::new(lower).unwrap(), false).unwrap();
         read(&guest_mem, &mut upper, 10, 2).await;
         check(&guest_mem, 10, 0, 2, 0);
         write(&guest_mem, &mut upper, 10, 2, 1).await;

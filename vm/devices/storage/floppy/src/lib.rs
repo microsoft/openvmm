@@ -44,7 +44,7 @@ use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
 use chipset_device::ChipsetDevice;
 use core::sync::atomic::Ordering;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use guestmem::ranges::PagedRange;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
@@ -942,7 +942,7 @@ pub enum DriveRibbon {
     /// No drives connected
     None,
     /// Single drive connected
-    Single(#[inspect(rename = "media")] SimpleDisk),
+    Single(#[inspect(rename = "media")] Disk),
     // TODO: consider supporting multiple disks per controller?
     // real hardware can support up to 4 per controller...
 }
@@ -953,8 +953,8 @@ pub enum DriveRibbon {
 pub struct TooManyDrives;
 
 impl DriveRibbon {
-    /// Create a new `DriveRibbon` from a vector of `SimpleDisk`s.
-    pub fn from_vec(drives: Vec<SimpleDisk>) -> Result<Self, TooManyDrives> {
+    /// Create a new `DriveRibbon` from a vector of `Disk`s.
+    pub fn from_vec(drives: Vec<Disk>) -> Result<Self, TooManyDrives> {
         match drives.len() {
             0 => Ok(Self::None),
             1 => Ok(Self::Single(drives.into_iter().next().unwrap())),
@@ -1029,7 +1029,7 @@ impl FloppyDiskController {
     /// Sets the asynchronous IO to be polled in `poll_device`.
     fn set_io<F, Fut>(&mut self, f: F)
     where
-        F: FnOnce(SimpleDisk) -> Fut,
+        F: FnOnce(Disk) -> Fut,
         Fut: 'static + Future<Output = Result<(), disk_backend::DiskError>> + Send,
     {
         let DriveRibbon::Single(disk) = &self.disk_drive else {
