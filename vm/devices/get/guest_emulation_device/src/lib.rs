@@ -820,17 +820,15 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
         let response = match request_payload.request_type {
             get_protocol::IgvmAttestRequestType::AK_CERT_REQUEST => {
-                let payload: Vec<u8> = vec![];
-                // let header = vec![0xcc, 0x09, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00];
-                // let data = vec![0xab; 2500];
-                // let payload = [header, data].concat();
+                let header = vec![0xcc, 0x09, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00];
+                let data = vec![0xab; 2500];
+                let payload = [header, data].concat();
 
-                // TODO: Write payload to shared page
-                // if let Some(guest_memory) = &state.guest_memory {
-                //     guest_memory
-                //         .write_at(request.shared_gpa[0], &payload)
-                //         .map_err(Error::SharedMemoryWriteFailed)?;
-                // }
+                if let Some(guest_memory) = &state.guest_memory {
+                    guest_memory
+                        .write_at(request.shared_gpa[0], &payload)
+                        .map_err(Error::SharedMemoryWriteFailed)?;
+                }
 
                 get_protocol::IgvmAttestResponse {
                     message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),

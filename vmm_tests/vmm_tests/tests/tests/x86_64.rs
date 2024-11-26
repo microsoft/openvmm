@@ -46,11 +46,7 @@ async fn boot_alias_map(config: PetriVmConfig) -> anyhow::Result<()> {
 )]
 async fn boot_with_tpm(config: PetriVmConfig) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-
-    // TODO: Support shared pool (which does not work correctly)
-    let config = config
-        .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
-        .with_tpm();
+    let config = config.with_tpm();
 
     let (vm, agent) = match os_flavor {
         OsFlavor::Windows => config.run().await?,
@@ -71,10 +67,10 @@ async fn boot_with_tpm(config: PetriVmConfig) -> anyhow::Result<()> {
             assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
 
             let sh = agent.unix_shell();
-            let _output = cmd!(sh, "python3 tpm.py").read().await?;
+            let output = cmd!(sh, "python3 tpm.py").read().await?;
 
-            // Enable when shared memory is supported
-            // assert!(output.contains("succeeded"));
+            // Check if the content is as expected
+            assert!(output.contains("succeeded"));
 
             (vm, agent)
         }
