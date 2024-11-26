@@ -5,7 +5,6 @@
 //! sent to and received from the IGVm agent runs on the host via GET
 //! `IGVM_ATTEST` host request.
 
-use get_protocol;
 use open_enum::open_enum;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
