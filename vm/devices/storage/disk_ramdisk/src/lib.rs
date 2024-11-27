@@ -16,6 +16,7 @@ use disk_backend::layered::SectorMarker;
 use disk_backend::layered::UnmapBehavior;
 use disk_backend::layered::WriteNoOverwrite;
 use disk_backend::zerodisk::InvalidGeometry;
+use disk_backend::Disk;
 use disk_backend::DiskError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
@@ -34,7 +35,6 @@ use thiserror::Error;
 pub struct RamLayer {
     data: RwLock<BTreeMap<u64, Sector>>,
     sector_count: AtomicU64,
-    read_only: bool,
     resize_event: event_listener::Event,
 }
 
@@ -57,7 +57,6 @@ impl Debug for RamLayer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RamLayer")
             .field("sector_count", &self.sector_count)
-            .field("read_only", &self.read_only)
             .finish()
     }
 }
@@ -76,7 +75,7 @@ const SECTOR_SIZE: u32 = 512;
 
 impl RamLayer {
     /// Makes a new RAM disk of `size` bytes.
-    pub fn new(size: u64, read_only: bool) -> Result<Self, Error> {
+    pub fn new(size: u64) -> Result<Self, Error> {
         if size == 0 {
             return Err(Error::InvalidGeometry(InvalidGeometry::EmptyDisk));
         }
@@ -90,7 +89,6 @@ impl RamLayer {
         Ok(Self {
             data: RwLock::new(BTreeMap::new()),
             sector_count: sector_count.into(),
-            read_only,
             resize_event: Default::default(),
         })
     }
@@ -116,7 +114,6 @@ impl RamLayer {
         sector: u64,
         overwrite: bool,
     ) -> Result<(), DiskError> {
-        assert!(!self.read_only);
         let count = buffers.len() / SECTOR_SIZE as usize;
         tracing::trace!(sector, count, "write");
         let mut data = self.data.write();
@@ -152,7 +149,7 @@ impl LayerIo for RamLayer {
     }
 
     fn is_read_only(&self) -> bool {
-        self.read_only
+        false
     }
 
     fn disk_id(&self) -> Option<[u8; 16]> {
@@ -267,12 +264,12 @@ impl WriteNoOverwrite for RamLayer {
 /// This is a convenience function for creating a layered disk with a single RAM
 /// layer. It is useful since non-layered RAM disks are used all over the place,
 /// especially in tests.
-pub fn ram_disk(size: u64, read_only: bool) -> anyhow::Result<LayeredDisk> {
-    let layer = LayeredDisk::new(vec![DiskLayer::new(
-        RamLayer::new(size, read_only)?,
-        Default::default(),
-    )?])?;
-    Ok(layer)
+pub fn ram_disk(size: u64, read_only: bool) -> anyhow::Result<Disk> {
+    let disk = Disk::new(LayeredDisk::new(
+        read_only,
+        vec![DiskLayer::new(RamLayer::new(size)?, Default::default())?],
+    )?)?;
+    Ok(disk)
 }
 
 #[cfg(test)]
@@ -363,13 +360,16 @@ mod tests {
 
         let guest_mem = GuestMemory::allocate(SIZE);
 
-        let mut lower = RamLayer::new(SIZE as u64, false).unwrap();
+        let mut lower = RamLayer::new(SIZE as u64).unwrap();
         write_layer(&guest_mem, &mut lower, 0, SIZE / SECTOR_USIZE, 0).await;
-        let upper = RamLayer::new(SIZE as u64, false).unwrap();
-        let mut upper = LayeredDisk::new(vec![
-            DiskLayer::new(upper, Default::default()).unwrap(),
-            DiskLayer::new(lower, Default::default()).unwrap(),
-        ])
+        let upper = RamLayer::new(SIZE as u64).unwrap();
+        let mut upper = LayeredDisk::new(
+            false,
+            vec![
+                DiskLayer::new(upper, Default::default()).unwrap(),
+                DiskLayer::new(lower, Default::default()).unwrap(),
+            ],
+        )
         .unwrap();
         read(&guest_mem, &mut upper, 10, 2).await;
         check(&guest_mem, 10, 0, 2, 0);

@@ -1871,7 +1871,7 @@ mod tests {
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 
     fn new_test_file() -> Disk {
-        Disk::new(disk_ramdisk::ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()).unwrap()
+        disk_ramdisk::ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
     }
 
     #[async_test]

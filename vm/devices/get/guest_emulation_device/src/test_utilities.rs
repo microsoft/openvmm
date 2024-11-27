@@ -6,7 +6,6 @@ use crate::GedChannel;
 use crate::GuestConfig;
 use crate::GuestEmulationDevice;
 use crate::GuestFirmwareConfig;
-use disk_backend::Disk;
 use get_protocol::test_utilities::TEST_VMGS_CAPACITY;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
@@ -264,7 +263,7 @@ pub fn create_host_channel(
         None,
         recv,
         None,
-        Some(Disk::new(disk_ramdisk::ram_disk(TEST_VMGS_CAPACITY as u64, false).unwrap()).unwrap()),
+        Some(disk_ramdisk::ram_disk(TEST_VMGS_CAPACITY as u64, false).unwrap()),
     );
 
     if let Some(ged_responses) = ged_responses {

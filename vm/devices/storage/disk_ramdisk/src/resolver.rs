@@ -58,11 +58,14 @@ impl AsyncResolveResource<DiskHandleKind, RamDiskHandle> for RamDiskResolver {
         input: ResolveDiskParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
         ResolvedDisk::new(
-            LayeredDisk::new(vec![DiskLayer::new(
-                RamLayer::new(rsrc.len, input.read_only).map_err(ResolveRamDiskError::Ram)?,
-                Default::default(),
+            LayeredDisk::new(
+                input.read_only,
+                vec![DiskLayer::new(
+                    RamLayer::new(rsrc.len).map_err(ResolveRamDiskError::Ram)?,
+                    Default::default(),
+                )
+                .map_err(ResolveRamDiskError::InvalidLayer)?],
             )
-            .map_err(ResolveRamDiskError::InvalidLayer)?])
             .map_err(ResolveRamDiskError::InvalidLayeredDisk)?,
         )
         .map_err(ResolveRamDiskError::InvalidDisk)
@@ -91,18 +94,18 @@ impl AsyncResolveResource<DiskHandleKind, RamDiffDiskHandle> for RamDiskResolver
             .await
             .map_err(ResolveRamDiskError::Resolve)?;
 
-        let upper = RamLayer::new(
-            lower.0.sector_count() * lower.0.sector_size() as u64,
-            input.read_only,
-        )
-        .map_err(ResolveRamDiskError::Ram)?;
+        let upper = RamLayer::new(lower.0.sector_count() * lower.0.sector_size() as u64)
+            .map_err(ResolveRamDiskError::Ram)?;
 
         ResolvedDisk::new(
-            LayeredDisk::new(vec![
-                DiskLayer::new(upper, Default::default())
-                    .map_err(ResolveRamDiskError::InvalidLayer)?,
-                DiskLayer::from_disk(lower.0),
-            ])
+            LayeredDisk::new(
+                input.read_only,
+                vec![
+                    DiskLayer::new(upper, Default::default())
+                        .map_err(ResolveRamDiskError::InvalidLayer)?,
+                    DiskLayer::from_disk(lower.0),
+                ],
+            )
             .map_err(ResolveRamDiskError::InvalidLayeredDisk)?,
         )
         .map_err(ResolveRamDiskError::InvalidDisk)

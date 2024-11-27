@@ -608,7 +608,7 @@ mod tests {
             let ramdisk =
                 disk_ramdisk::ram_disk(disk_size_in_bytes.unwrap_or(1024 * 1024 * 64), false)
                     .unwrap();
-            devices.push(Disk::new(ramdisk).unwrap());
+            devices.push(ramdisk);
         }
 
         StripedDisk::new(devices, chunk_size_in_bytes, logic_sector_count).unwrap()
@@ -945,7 +945,7 @@ mod tests {
         let mut devices = Vec::new();
         for i in 0..2 {
             let ramdisk = disk_ramdisk::ram_disk(1024 * 1024 + i * 64 * 1024, false).unwrap();
-            devices.push(Disk::new(ramdisk).unwrap());
+            devices.push(ramdisk);
         }
 
         match StripedDisk::new(devices, None, None) {
@@ -962,7 +962,7 @@ mod tests {
         let mut block_devices = Vec::new();
         for _ in 0..2 {
             let ramdisk = disk_ramdisk::ram_disk(1024 * 1024, false).unwrap();
-            block_devices.push(Disk::new(ramdisk).unwrap());
+            block_devices.push(ramdisk);
         }
 
         match StripedDisk::new(block_devices, Some(4 * 1024 + 1), None) {
@@ -976,7 +976,7 @@ mod tests {
         let mut block_devices = Vec::new();
         for _ in 0..2 {
             let ramdisk = disk_ramdisk::ram_disk(1024 * 1024, false).unwrap();
-            block_devices.push(Disk::new(ramdisk).unwrap());
+            block_devices.push(ramdisk);
         }
 
         match StripedDisk::new(
@@ -997,7 +997,7 @@ mod tests {
         let mut block_devices = Vec::new();
         for _ in 0..2 {
             let ramdisk = disk_ramdisk::ram_disk(1024 * 1024, false).unwrap();
-            block_devices.push(Disk::new(ramdisk).unwrap());
+            block_devices.push(ramdisk);
         }
 
         let disk = match StripedDisk::new(block_devices, Some(8 * 1024), None) {
