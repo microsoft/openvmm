@@ -609,44 +609,6 @@ pub struct IgvmAttestRequest {
 
 const_assert_eq!(6288, size_of::<IgvmAttestRequest>());
 
-open_enum! {
-    /// This enum is the same as `IgvmAttestRequestType` defined in `underhill_attestation`.
-    /// Have a copy of the enum to avoid adding additional dependency. The enum is used by
-    /// test only.
-    #[derive(AsBytes, FromBytes, FromZeroes)]
-    pub enum IgvmAttestRequestType: u32 {
-        /// Invalid request
-        INVALID_REQUEST = 0,
-        /// Request for getting wrapped key from AKV.
-        KEY_RELEASE_REQUEST = 1,
-        /// Request to getting attestation key certificate.
-        AK_CERT_REQUEST = 2,
-        /// Request for getting VMMD blob from CPS.
-        WRAPPED_KEY_REQUEST = 3,
-    }
-}
-
-/// The header of [`header`] in [`IgvmAttestRequest`].
-/// This struct is the same as `IgvmAttestRequestHeader` defined in `underhill_attestation`.
-/// Have a copy of the struct to avoid adding additional dependency. The struct is used by
-/// test only.
-#[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
-pub struct IgvmAttestRequestReportHeader {
-    /// Signature
-    pub signature: u32,
-    /// Version
-    pub version: u32,
-    /// Report size
-    pub report_size: u32,
-    /// Request type
-    pub request_type: IgvmAttestRequestType,
-    /// Status
-    pub status: u32,
-    /// Reserved
-    pub reserved: [u32; 3],
-}
-
 impl IgvmAttestRequest {
     pub fn new(
         shared_gpa: [u64; IGVM_ATTEST_MSG_MAX_SHARED_GPA],

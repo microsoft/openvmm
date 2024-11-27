@@ -89,6 +89,7 @@ use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
 use pal_async::DefaultDriver;
@@ -1546,7 +1547,7 @@ async fn new_underhill_vm(
     // Create the `AttestationVmConfig` from `dps`, which will be used in
     // - stateful mode (the attestation is not suppressed)
     // - stateless mode (isolated VM with attestation suppressed)
-    let attestation_vm_config = underhill_attestation::AttestationVmConfig {
+    let attestation_vm_config = AttestationVmConfig {
         current_time: None,
         // TODO CVM: Support vmgs provisioning config
         root_cert_thumbprint: String::new(),

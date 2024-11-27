@@ -4,8 +4,8 @@
 //! The module for `WRAPPED_KEY_REQUEST` request type that supports parsing the
 //! response in JSON format defined by Azure CVM Provisioning Service (CPS).
 
-use crate::protocol;
-use crate::protocol::igvm_attest::cps;
+use openhcl_attestation_protocol;
+use openhcl_attestation_protocol::igvm_attest::cps;
 use thiserror::Error;
 
 #[allow(missing_docs)] // self-explanatory fields
@@ -37,8 +37,9 @@ pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, W
     const CIPHER_TEXT_KEY: &str = r#"{"ciphertext":""}"#;
     const MINIMUM_WRAPPED_KEY_SIZE: usize = 256;
     const MINIMUM_WRAPPED_KEY_BASE64_URL_SIZE: usize = MINIMUM_WRAPPED_KEY_SIZE / 3 * 4;
-    const HEADER_SIZE: usize =
-        size_of::<protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader>();
+    const HEADER_SIZE: usize = size_of::<
+        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader,
+    >();
     const MINIMUM_RESPONSE_SIZE: usize =
         CIPHER_TEXT_KEY.len() + MINIMUM_WRAPPED_KEY_BASE64_URL_SIZE + HEADER_SIZE;
 
@@ -201,7 +202,7 @@ mod tests {
         assert!(result.is_ok());
         let payload = result.unwrap();
 
-        let header = protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader::new_zeroed();
+        let header = openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader::new_zeroed();
         let response = [header.as_bytes(), payload.as_bytes()].concat();
 
         response

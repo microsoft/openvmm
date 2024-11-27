@@ -6,14 +6,13 @@
 
 use crate::crypto;
 use crate::igvm_attest;
-use crate::protocol;
-use crate::protocol::igvm_attest::get::KEY_RELEASE_RESPONSE_BUFFER_PAGES;
-use crate::protocol::igvm_attest::get::WRAPPED_KEY_RESPONSE_BUFFER_PAGES;
-use crate::protocol::vmgs::AGENT_DATA_MAX_SIZE;
-use crate::AttestationVmConfig;
 use crate::IgvmAttestRequestHelper;
 use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::GuestEmulationTransportClient;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+use openhcl_attestation_protocol::igvm_attest::get::KEY_RELEASE_RESPONSE_BUFFER_SIZE;
+use openhcl_attestation_protocol::igvm_attest::get::WRAPPED_KEY_RESPONSE_BUFFER_SIZE;
+use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use pal_async::local::LocalDriver;
@@ -230,13 +229,13 @@ async fn make_igvm_attest_requests(
 ) -> Result<WrappedKeyVmgsEncryptionKeys, RequestVmgsEncryptionKeysError> {
     // Attempt to get wrapped DiskEncryptionSettings key
     igvm_attest_request_helper.request_type =
-        protocol::igvm_attest::get::IgvmAttestRequestType::WRAPPED_KEY_REQUEST;
+        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType::WRAPPED_KEY_REQUEST;
     let request = igvm_attest_request_helper
         .create_request(attestation_report)
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestWrappedKeyRequest)?;
 
     let response = get
-        .igvm_attest([].into(), request, WRAPPED_KEY_RESPONSE_BUFFER_PAGES)
+        .igvm_attest([].into(), request, WRAPPED_KEY_RESPONSE_BUFFER_SIZE)
         .await
         .map_err(RequestVmgsEncryptionKeysError::SendIgvmAttestWrappedKeyRequest)?;
 
@@ -277,7 +276,7 @@ async fn make_igvm_attest_requests(
     };
 
     igvm_attest_request_helper.request_type =
-        protocol::igvm_attest::get::IgvmAttestRequestType::KEY_RELEASE_REQUEST;
+        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType::KEY_RELEASE_REQUEST;
     let request = igvm_attest_request_helper
         .create_request(attestation_report)
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestKeyReleaseRequest)?;
@@ -287,7 +286,7 @@ async fn make_igvm_attest_requests(
         .igvm_attest(
             agent_data.to_vec(),
             request,
-            KEY_RELEASE_RESPONSE_BUFFER_PAGES,
+            KEY_RELEASE_RESPONSE_BUFFER_SIZE,
         )
         .await
         .map_err(RequestVmgsEncryptionKeysError::SendIgvmAttestKeyReleaseRequest)?;

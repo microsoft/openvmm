@@ -164,6 +164,7 @@ underhill_dump = { path = "openhcl/underhill_dump" }
 underhill_entry = { path = "openhcl/underhill_entry" }
 underhill_init = { path = "openhcl/underhill_init" }
 underhill_mem = { path = "openhcl/underhill_mem" }
+openhcl_attestation_protocol = { path = "openhcl/underhill_attestation/openhcl_attestation_protocol" }
 openvmm_hcl_resources = { path = "openhcl/openvmm_hcl_resources" }
 underhill_threadpool = { path = "openhcl/underhill_threadpool" }
 virt_mshv_vtl = { path = "openhcl/virt_mshv_vtl" }

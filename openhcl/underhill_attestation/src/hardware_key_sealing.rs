@@ -6,10 +6,10 @@
 //! entry of the VMGS file, which can be unsealed later.
 
 use crate::crypto;
-use crate::protocol::igvm_attest;
-use crate::protocol::vmgs;
-use crate::protocol::vmgs::HardwareKeyProtector;
 use cvm_tracing::CVM_ALLOWED;
+use openhcl_attestation_protocol::igvm_attest;
+use openhcl_attestation_protocol::vmgs;
+use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
 use openssl_kdf::kdf::Kbkdf;
 use thiserror::Error;
 use zerocopy::AsBytes;

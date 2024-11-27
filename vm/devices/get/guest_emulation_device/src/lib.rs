@@ -44,6 +44,8 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestHeader;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
@@ -814,21 +816,20 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             Err(Error::InvalidIgvmAttestRequest)?
         }
 
-        let request_payload =
-            get_protocol::IgvmAttestRequestReportHeader::read_from_prefix(&request.report)
-                .ok_or(Error::MessageTooSmall)?;
+        let request_payload = IgvmAttestRequestHeader::read_from_prefix(&request.report)
+            .ok_or(Error::MessageTooSmall)?;
 
         let response = match request_payload.request_type {
-            get_protocol::IgvmAttestRequestType::AK_CERT_REQUEST => {
+            IgvmAttestRequestType::AK_CERT_REQUEST => {
                 let header = vec![0xcc, 0x09, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00];
                 let data = vec![0xab; 2500];
                 let payload = [header, data].concat();
 
-                if let Some(guest_memory) = &state.guest_memory {
-                    guest_memory
-                        .write_at(request.shared_gpa[0], &payload)
-                        .map_err(Error::SharedMemoryWriteFailed)?;
-                }
+                // if let Some(guest_memory) = &state.guest_memory {
+                //     guest_memory
+                //         .write_at(request.shared_gpa[0], &payload)
+                //         .map_err(Error::SharedMemoryWriteFailed)?;
+                // }
 
                 get_protocol::IgvmAttestResponse {
                     message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),

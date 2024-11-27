@@ -14,15 +14,12 @@ mod crypto;
 mod hardware_key_sealing;
 mod igvm_attest;
 mod key_protector;
-mod protocol;
 mod secure_key_release;
 mod vmgs;
 
 pub use igvm_attest::ak_cert::parse_response as parse_ak_cert_response;
 pub use igvm_attest::Error as IgvmAttestError;
 pub use igvm_attest::IgvmAttestRequestHelper;
-pub use protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
-pub use protocol::igvm_attest::get::AK_CERT_RESPONSE_BUFFER_PAGES;
 
 use ::vmgs::EncryptionAlgorithm;
 use ::vmgs::Vmgs;
@@ -37,12 +34,14 @@ use hardware_key_sealing::HardwareKeyProtectorExt as _;
 use key_protector::GetKeysFromKeyProtectorError;
 use key_protector::KeyProtectorExt as _;
 use mesh::MeshPayload;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
+use openhcl_attestation_protocol::vmgs::KeyProtector;
+use openhcl_attestation_protocol::vmgs::SecurityProfile;
+use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use pal_async::local::LocalDriver;
-use protocol::vmgs::HardwareKeyProtector;
-use protocol::vmgs::SecurityProfile;
-use protocol::vmgs::AES_GCM_KEY_LENGTH;
 use secure_key_release::VmgsEncryptionKeys;
 use static_assertions::const_assert_eq;
 use std::fmt::Debug;
@@ -186,7 +185,7 @@ struct KeyProtectorSettings {
 /// Helper struct for [`protocol::vmgs::KeyProtectorById`]
 struct KeyProtectorById {
     /// The instance of [`protocol::vmgs::KeyProtectorById`].
-    pub inner: protocol::vmgs::KeyProtectorById,
+    pub inner: openhcl_attestation_protocol::vmgs::KeyProtectorById,
     /// Indicate if the instance is read from the VMGS file.
     pub found_id: bool,
 }
@@ -329,7 +328,7 @@ pub async fn initialize_platform_security(
             found_id: true,
         },
         Err(vmgs::ReadFromVmgsError::EntryNotFound(_)) => KeyProtectorById {
-            inner: protocol::vmgs::KeyProtectorById::new_zeroed(),
+            inner: openhcl_attestation_protocol::vmgs::KeyProtectorById::new_zeroed(),
             found_id: false,
         },
         Err(e) => { Err(AttestationErrorInner::ReadKeyProtectorById(e)) }?,
@@ -421,7 +420,7 @@ pub async fn initialize_platform_security(
 async fn unlock_vmgs_data_store(
     vmgs: &mut Vmgs,
     vmgs_encrypted: bool,
-    key_protector: &mut protocol::vmgs::KeyProtector,
+    key_protector: &mut KeyProtector,
     key_protector_by_id: &mut KeyProtectorById,
     derived_keys: Option<Keys>,
     key_protector_settings: KeyProtectorSettings,
@@ -558,7 +557,7 @@ async fn get_derived_keys(
     get: &GuestEmulationTransportClient,
     tee_call: Option<&dyn TeeCall>,
     vmgs: &mut Vmgs,
-    key_protector: &mut protocol::vmgs::KeyProtector,
+    key_protector: &mut KeyProtector,
     key_protector_by_id: &mut KeyProtectorById,
     bios_guid: Guid,
     attestation_vm_config: &AttestationVmConfig,
@@ -993,10 +992,10 @@ fn get_derived_keys_by_id(
 /// Prepare the request payload and request GSP from the host via GET.
 async fn get_gsp_data(
     get: &GuestEmulationTransportClient,
-    key_protector: &mut protocol::vmgs::KeyProtector,
+    key_protector: &mut KeyProtector,
 ) -> GuestStateProtection {
-    use protocol::vmgs::GSP_BUFFER_SIZE;
-    use protocol::vmgs::NUMBER_KP;
+    use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
+    use openhcl_attestation_protocol::vmgs::NUMBER_KP;
 
     const_assert_eq!(guest_emulation_transport::api::NUMBER_GSP, NUMBER_KP as u32);
     const_assert_eq!(
@@ -1026,12 +1025,12 @@ async fn get_gsp_data(
 /// Update Key Protector to remove 2nd protector, and write to VMGS
 async fn persist_all_key_protectors(
     vmgs: &mut Vmgs,
-    key_protector: &mut protocol::vmgs::KeyProtector,
+    key_protector: &mut KeyProtector,
     key_protector_by_id: &mut KeyProtectorById,
     bios_guid: Guid,
     key_protector_settings: KeyProtectorSettings,
 ) -> Result<(), PersistAllKeyProtectorsError> {
-    use protocol::vmgs::NUMBER_KP;
+    use openhcl_attestation_protocol::vmgs::NUMBER_KP;
 
     if key_protector_settings.use_gsp_by_id && !key_protector_settings.should_write_kp {
         vmgs::write_key_protector_by_id(&mut key_protector_by_id.inner, vmgs, false, bios_guid)

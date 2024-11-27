@@ -157,7 +157,7 @@ pub(crate) mod msg {
     pub(crate) struct IgvmAttestRequestData {
         pub(crate) agent_data: Vec<u8>,
         pub(crate) report: Vec<u8>,
-        pub(crate) response_buffer_pages: usize,
+        pub(crate) response_buffer_len: usize,
     }
 
     /// A list specifying control messages to send to the process loop.
@@ -1819,10 +1819,9 @@ async fn request_igvm_attest(
         Err(FatalError::SharedMemoryUnavailable)?
     };
 
-    // Allocate shared memory. The allocated memory size should match the requested size if allocation succeeds.
-    let allocated_shared_memory_size = request.response_buffer_pages * hvdef::HV_PAGE_SIZE_USIZE;
-    let size_pages =
-        std::num::NonZeroU64::new(request.response_buffer_pages as u64).expect("is nonzero");
+    let requested_pages =
+        (request.response_buffer_len + hvdef::HV_PAGE_SIZE_USIZE - 1) / hvdef::HV_PAGE_SIZE_USIZE;
+    let size_pages = std::num::NonZeroU64::new(requested_pages as u64).expect("is nonzero");
     let handle = shared_pool_allocator
         .alloc(size_pages, "igvm_attest".to_string())
         .map_err(FatalError::SharedMemoryAllocationError)?;
@@ -1832,6 +1831,7 @@ async fn request_igvm_attest(
     let allocated_gpa = pfns
         .map(|pfn| pfn * hvdef::HV_PAGE_SIZE)
         .collect::<Vec<_>>();
+    let allocated_shared_memory_size = size_pages.get() as usize * hvdef::HV_PAGE_SIZE_USIZE;
 
     let mut shared_gpa = [0u64; get_protocol::IGVM_ATTEST_MSG_MAX_SHARED_GPA];
     shared_gpa[..allocated_gpa.len()].copy_from_slice(&allocated_gpa);

@@ -5,9 +5,9 @@
 //! runtime claims, which is a part of the request, and parsing the response, which
 //! can be either in JSON or JSON web token (JWT) format defined by Azure Key Vault (AKV).
 
-use crate::protocol;
-use crate::protocol::igvm_attest::akv;
 use base64::Engine;
+use openhcl_attestation_protocol;
+use openhcl_attestation_protocol::igvm_attest::akv;
 use openssl::hash::MessageDigest;
 use openssl::pkey::PKey;
 use openssl::rsa::Padding;
@@ -120,8 +120,9 @@ pub fn parse_response(
     // Minimum acceptable payload would look like {"ciphertext":"base64URL wrapped key"}
     const AES_IC_SIZE: usize = 8;
     const CIPHER_TEXT_KEY: &str = r#"{"ciphertext":""}"#;
-    const HEADER_SIZE: usize =
-        size_of::<protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader>();
+    const HEADER_SIZE: usize = size_of::<
+        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader,
+    >();
 
     let wrapped_key_size = rsa_modulus_size + rsa_modulus_size + AES_IC_SIZE;
     let wrapped_key_base64_url_size = wrapped_key_size / 3 * 4;

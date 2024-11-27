@@ -90,6 +90,7 @@ underhill_confidentiality = { workspace = true, features = ["std"] }
 underhill_config.workspace = true
 underhill_mem.workspace = true
 underhill_threadpool.workspace = true
+openhcl_attestation_protocol.workspace = true
 bootloader_fdt_parser.workspace = true
 vga_proxy.workspace = true
 video_core.workspace = true
