@@ -98,8 +98,8 @@ enum Error {
     InvalidIgvmAttestRequest,
     #[error("unsupported igvm attest request type: {0:?}")]
     UnsupportedIgvmAttestRequestType(u32),
-    #[error("failed to write to shared memory")]
-    SharedMemoryWriteFailed(#[source] guestmem::GuestMemoryError),
+    // #[error("failed to write to shared memory")]
+    // SharedMemoryWriteFailed(#[source] guestmem::GuestMemoryError),
 }
 
 impl From<task_control::Cancelled> for Error {
@@ -803,7 +803,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     fn handle_igvm_attest(
         &mut self,
         message_buf: &[u8],
-        state: &mut GuestEmulationDevice,
+        _state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
         let request =
             IgvmAttestRequest::read_from_prefix(message_buf).ok_or(Error::MessageTooSmall)?;
