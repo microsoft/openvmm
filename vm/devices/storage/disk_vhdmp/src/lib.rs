@@ -485,7 +485,12 @@ impl DiskIo for VhdmpDisk {
 #[cfg(test)]
 mod tests {
     use super::VhdmpDisk;
+    use disk_backend::DiskError;
+    use disk_backend::DiskIo;
     use disk_vhd1::Vhd1Disk;
+    use guestmem::GuestMemory;
+    use pal_async::async_test;
+    use scsi_buffers::OwnedRequestBuffers;
     use std::io::Write;
     use tempfile::TempPath;
 
@@ -503,5 +508,23 @@ mod tests {
         let _vhd = VhdmpDisk::open_vhd(path.as_ref(), true).unwrap();
         let _vhd = VhdmpDisk::open_vhd(path.as_ref(), true).unwrap();
         let _vhd = VhdmpDisk::open_vhd(path.as_ref(), false).unwrap_err();
+    }
+
+    #[async_test]
+    async fn test_invalid_lba() {
+        let path = make_test_vhd();
+        let vhd = VhdmpDisk::open_vhd(path.as_ref(), true).unwrap();
+        let disk = VhdmpDisk::new(vhd, true).unwrap();
+        let gm = GuestMemory::allocate(512);
+        match disk
+            .read_vectored(
+                &OwnedRequestBuffers::linear(0, 512, true).buffer(&gm),
+                0x10000000,
+            )
+            .await
+        {
+            Err(DiskError::IllegalBlock) => {}
+            r => panic!("unexpected result: {:?}", r),
+        }
     }
 }

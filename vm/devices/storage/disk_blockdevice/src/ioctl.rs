@@ -70,12 +70,9 @@ open_enum! {
 }
 
 pub fn discard(file: &fs::File, start: u64, len: u64) -> std::io::Result<()> {
-    let info = file.metadata()?;
-    if info.file_type().is_block_device() {
-        // SAFETY: The FD is owned by the corresponding File, and this IOCTL is legal to call on any valid FD.
-        //         More documentation on this specific ioctl can be found in fs.h.
-        unsafe { blk_discard_ioctl(file.as_raw_fd(), &[start, len])? };
-    }
+    // SAFETY: The FD is owned by the corresponding File, and this IOCTL is legal to call on any valid FD.
+    //         More documentation on this specific ioctl can be found in fs.h.
+    unsafe { blk_discard_ioctl(file.as_raw_fd(), &[start, len])? };
     Ok(())
 }
 

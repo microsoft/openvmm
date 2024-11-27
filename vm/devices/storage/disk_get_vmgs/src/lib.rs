@@ -180,6 +180,9 @@ impl DiskIo for GetVmgsDisk {
     ) -> Result<(), DiskError> {
         let mut writer = buffers.writer();
         let mut remaining_sectors = buffers.len() >> self.sector_shift;
+        if sector + remaining_sectors as u64 > self.sector_count {
+            return Err(DiskError::IllegalBlock);
+        }
         while remaining_sectors != 0 {
             let this_sector_count = remaining_sectors.min(self.max_transfer_sectors as usize);
             let data = self
@@ -203,6 +206,9 @@ impl DiskIo for GetVmgsDisk {
     ) -> Result<(), DiskError> {
         let mut reader = buffers.reader();
         let mut remaining_sector_count = buffers.len() >> self.sector_shift;
+        if sector + remaining_sector_count as u64 > self.sector_count {
+            return Err(DiskError::IllegalBlock);
+        }
         while remaining_sector_count != 0 {
             let this_sector_count = remaining_sector_count.min(self.max_transfer_sectors as usize);
             let data = reader.read_n(this_sector_count << self.sector_shift)?;

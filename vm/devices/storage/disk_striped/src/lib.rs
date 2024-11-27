@@ -133,14 +133,6 @@ enum IoError {
         end_sector: u64,
         disk_sector_count: u64,
     },
-    #[error(
-        "Sector out of range: start_sector-{start_sector}, end_sector-{end_sector}, self.sector_count-{disk_sector_count}"
-    )]
-    UnmapInvalidInput {
-        start_sector: u64,
-        end_sector: u64,
-        disk_sector_count: u64,
-    },
     #[error("error in lower disk {index}")]
     LowerError {
         index: usize,
@@ -404,6 +396,9 @@ impl DiskIo for StripedDisk {
     ) -> Result<(), DiskError> {
         let buf_total_size = buffers.len();
         let end_sector = start_sector + ((buf_total_size as u64) >> self.sector_shift);
+        if end_sector > self.sector_count {
+            return Err(DiskError::IllegalBlock);
+        }
         let chunk_iter = self.get_chunk_iter(start_sector, end_sector)?;
 
         let mut all_futures = Vec::new();
@@ -447,6 +442,9 @@ impl DiskIo for StripedDisk {
     ) -> Result<(), DiskError> {
         let buf_total_size = buffers.len();
         let end_sector = start_sector + ((buf_total_size as u64) >> self.sector_shift);
+        if end_sector > self.sector_count {
+            return Err(DiskError::IllegalBlock);
+        }
         let chunk_iter = self.get_chunk_iter(start_sector, end_sector)?;
 
         let mut all_futures = Vec::new();
@@ -507,12 +505,7 @@ impl Unmap for StripedDisk {
         let end_sector = start_sector + sector_count;
 
         if end_sector > self.sector_count {
-            return Err(IoError::UnmapInvalidInput {
-                start_sector,
-                end_sector,
-                disk_sector_count: self.sector_count,
-            }
-            .into());
+            return Err(DiskError::IllegalBlock);
         }
 
         let chunk_iter = match self.get_chunk_iter(start_sector, end_sector) {

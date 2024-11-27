@@ -173,7 +173,9 @@ struct ResizeEpoch {
 #[derive(Debug, Copy, Clone, Inspect)]
 #[inspect(tag = "device_type")]
 enum DeviceType {
-    File,
+    File {
+        sector_count: u64,
+    },
     UnknownBlock,
     NVMe {
         ns_id: u32,
@@ -190,7 +192,7 @@ impl BlockDevice {
                 });
             }
             DeviceType::UnknownBlock => {}
-            DeviceType::File => {}
+            DeviceType::File { .. } => {}
         }
     }
 
@@ -362,12 +364,14 @@ impl BlockDevice {
     }
 
     fn map_io_error(&self, err: std::io::Error) -> DiskError {
-        if !matches!(self.device_type, DeviceType::File) && err.raw_os_error() == Some(libc::EBADE)
-        {
-            DiskError::ReservationConflict
-        } else {
-            DiskError::Io(err)
+        if !matches!(self.device_type, DeviceType::File { .. }) {
+            match err.raw_os_error() {
+                Some(libc::EBADE) => return DiskError::ReservationConflict,
+                Some(libc::ENOSPC) => return DiskError::IllegalBlock,
+                _ => {}
+            }
         }
+        DiskError::Io(err)
     }
 }
 
@@ -451,10 +455,13 @@ impl DeviceMetadata {
     }
 
     fn from_file(metadata: &fs::Metadata) -> anyhow::Result<Self> {
+        let logical_block_size = 512;
         Self {
-            device_type: DeviceType::File,
+            device_type: DeviceType::File {
+                sector_count: metadata.len() / logical_block_size as u64,
+            },
             disk_size: metadata.size(),
-            logical_block_size: 512,
+            logical_block_size,
             physical_block_size: metadata.blksize() as u32,
             discard_granularity: 0,
             supports_pr: false,
@@ -596,7 +603,7 @@ impl DiskIo for BlockDevice {
         let bytes_read = r.map_err(|err| self.map_io_error(err))?;
         tracing::trace!(bytes_read, "read_vectored");
         if bytes_read != io_size as i32 {
-            return Err(DiskError::Io(std::io::ErrorKind::UnexpectedEof.into()));
+            return Err(DiskError::IllegalBlock);
         }
 
         if let Some(mut bounce_buffer) = bounce_buffer {
@@ -615,6 +622,13 @@ impl DiskIo for BlockDevice {
     ) -> Result<(), DiskError> {
         let io_size = buffers.len();
         tracing::trace!(sector, io_size, "write_vectored");
+
+        // Ensure the write doesn't extend the file.
+        if let DeviceType::File { sector_count } = self.device_type {
+            if sector + (io_size as u64 >> self.sector_shift) > sector_count {
+                return Err(DiskError::IllegalBlock);
+            }
+        }
 
         let mut bounce_buffer;
         let locked;
@@ -656,7 +670,7 @@ impl DiskIo for BlockDevice {
         let bytes_written = r.map_err(|err| self.map_io_error(err))?;
         tracing::trace!(bytes_written, "write_vectored");
         if bytes_written != io_size as i32 {
-            return Err(DiskError::Io(std::io::ErrorKind::UnexpectedEof.into()));
+            return Err(DiskError::IllegalBlock);
         }
 
         Ok(())
@@ -699,9 +713,13 @@ impl Unmap for BlockDevice {
         let file_offset = sector_offset << self.sector_shift;
         let length = sector_count << self.sector_shift;
         tracing::debug!(file = ?file, file_offset, length, "unmap_async");
-        unblock(move || ioctl::discard(&file, file_offset, length))
-            .await
-            .map_err(|err| self.map_io_error(err))?;
+        match unblock(move || ioctl::discard(&file, file_offset, length)).await {
+            Ok(()) => {}
+            Err(_) if sector_offset + sector_count > self.sector_count() => {
+                return Err(DiskError::IllegalBlock)
+            }
+            Err(err) => return Err(self.map_io_error(err)),
+        }
         Ok(())
     }
 
@@ -719,7 +737,7 @@ impl PersistentReservation for BlockDevice {
             &DeviceType::NVMe { rescap, .. } => {
                 nvme_common::from_nvme_reservation_capabilities(rescap)
             }
-            DeviceType::File | DeviceType::UnknownBlock => unreachable!(),
+            DeviceType::File { .. } | DeviceType::UnknownBlock => unreachable!(),
         }
     }
 
@@ -974,5 +992,22 @@ mod tests {
     #[async_test]
     async fn test_async_disk_io_unaligned_fua() {
         run_async_disk_io_unaligned(true).await;
+    }
+
+    #[async_test]
+    async fn test_illegal_lba() {
+        let disk = get_block_device_or_skip!();
+        let gm = GuestMemory::allocate(512);
+        match disk
+            .write_vectored(
+                &OwnedRequestBuffers::linear(0, 512, true).buffer(&gm),
+                i64::MAX as u64 / 512,
+                false,
+            )
+            .await
+        {
+            Err(DiskError::IllegalBlock) => {}
+            r => panic!("unexpected result: {:?}", r),
+        }
     }
 }

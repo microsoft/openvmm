@@ -155,6 +155,9 @@ impl RamLayer {
         let count = buffers.len() / SECTOR_SIZE as usize;
         tracing::trace!(sector, count, "write");
         let mut state = self.state.write();
+        if sector + count as u64 > state.sector_count {
+            return Err(DiskError::IllegalBlock);
+        }
         for i in 0..count {
             let cur = i + sector as usize;
             let buf = buffers.subrange(i * SECTOR_SIZE as usize, SECTOR_SIZE as usize);
@@ -213,6 +216,9 @@ impl LayerIo for RamLayer {
         let end = sector + count;
         tracing::trace!(sector, count, "read");
         let state = self.state.read();
+        if end > state.sector_count {
+            return Err(DiskError::IllegalBlock);
+        }
         let mut range = state.data.range(sector..end);
         let mut last = sector;
         while last < end {
@@ -280,6 +286,9 @@ impl LayerIo for RamLayer {
     ) -> Result<(), DiskError> {
         tracing::trace!(sector_offset, sector_count, "unmap");
         let mut state = self.state.write();
+        if sector_offset + sector_count > state.sector_count {
+            return Err(DiskError::IllegalBlock);
+        }
         if !next_is_zero {
             // This would create a hole of zeroes, which we cannot represent in
             // the tree. Ignore the unmap.

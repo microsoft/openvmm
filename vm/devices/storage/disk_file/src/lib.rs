@@ -99,7 +99,9 @@ impl FileDisk {
 
 impl FileDisk {
     pub async fn read(&self, buffers: &RequestBuffers<'_>, sector: u64) -> Result<(), DiskError> {
-        assert!(((sector << self.sector_shift) + buffers.len() as u64) <= self.metadata.disk_size);
+        if ((sector << self.sector_shift) + buffers.len() as u64) > self.metadata.disk_size {
+            return Err(DiskError::IllegalBlock);
+        }
         let mut buffer = vec![0; buffers.len()];
         let file = self.file.clone();
         let offset = sector << self.sector_shift;
@@ -119,7 +121,9 @@ impl FileDisk {
         sector: u64,
         _fua: bool,
     ) -> Result<(), DiskError> {
-        assert!(((sector << self.sector_shift) + buffers.len() as u64) <= self.metadata.disk_size);
+        if ((sector << self.sector_shift) + buffers.len() as u64) > self.metadata.disk_size {
+            return Err(DiskError::IllegalBlock);
+        }
         let mut buffer = vec![0; buffers.len()];
         let file = self.file.clone();
         buffers.reader().read(&mut buffer)?;
