@@ -58,8 +58,6 @@ pub trait DeviceRegisterIo: Send + Sync {
     fn write_u32(&self, offset: usize, data: u32);
     /// Writes a `u64` register.
     fn write_u64(&self, offset: usize, data: u64);
-    /// Returns base virtual address.
-    fn base_va(&self) -> u64;
 }
 
 pub trait HostDmaAllocator: Send + Sync {

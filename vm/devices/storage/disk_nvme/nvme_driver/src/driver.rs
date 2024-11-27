@@ -678,11 +678,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         Ok(this)
     }
 
-    /// Return estimated DMA size for single NvmeDriver.
-    pub fn required_dma_size(expect_q_count: usize) -> usize {
-        QueuePair::required_dma_size() * expect_q_count
-    }
-
     /// Change device's behavior when servicing.
     pub fn update_servicing_flags(&mut self, nvme_keepalive: bool) {
         self.nvme_keepalive = nvme_keepalive;

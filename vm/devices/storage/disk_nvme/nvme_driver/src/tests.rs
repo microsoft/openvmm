@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::queue_pair::QueuePair;
 use crate::NvmeDriver;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_ramdisk::RamDisk;
@@ -36,7 +35,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     const CPU_COUNT: u32 = 64;
 
     let base_len = 64 << 20;
-    let payload_len = QueuePair::required_dma_size() * 4;
+    let payload_len = 4 << 30;
     let mem = DeviceSharedMemory::new(base_len, payload_len);
     let payload_mem = mem
         .guest_memory()
@@ -158,7 +157,7 @@ async fn test_nvme_save_restore(driver: DefaultDriver) {
     const CPU_COUNT: u32 = 64;
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-    let payload_len = QueuePair::required_dma_size() * 4;
+    let payload_len = 4 << 20;
     let emu_mem = DeviceSharedMemory::new(64 * 1024 * 1024, payload_len);
     let mut msi_x = MsiInterruptSet::new();
     let nvme_ctrl = nvme::NvmeController::new(
