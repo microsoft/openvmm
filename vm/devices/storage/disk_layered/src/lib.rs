@@ -31,7 +31,7 @@ use bitmap::Bitmap;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
-use disk_backend::Unmap;
+use disk_backend::UnmapBehavior;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
@@ -49,7 +49,8 @@ pub struct LayeredDisk {
     sector_shift: u32,
     disk_id: Option<[u8; 16]>,
     physical_sector_size: u32,
-    optimal_unmap_sectors: Option<u32>,
+    unmap_behavior: UnmapBehavior,
+    optimal_unmap_sectors: u32,
 }
 
 #[derive(Inspect)]
@@ -163,9 +164,10 @@ impl LayeredDisk {
         // Collect the common properties of the layers.
         let mut last_write_through = true;
         let mut is_fua_respected = true;
-        let mut optimal_unmap_sectors = Some(1);
+        let mut optimal_unmap_sectors = 1;
         let mut unmap_must_zero = false;
         let mut disk_id = None;
+        let mut unmap_behavior = UnmapBehavior::Zeroes;
         for (i, config) in layers.iter().enumerate() {
             let layer_error = |e| InvalidLayeredDisk::Layer(i, e);
             if config.read_cache && !config.layer.can_read_cache {
@@ -187,33 +189,33 @@ impl LayeredDisk {
                 }));
             }
 
-            if config.write_through {
-                // If using write-through, then unmap only works if the unmap
-                // operation will produce the same result in all the layers that
-                // are being written to. Otherwise, the guest could see
-                // inconsistent disk contents when the write through layer is
-                // removed.
-                unmap_must_zero = true;
-                // The write-through layers must all come first.
-                if !last_write_through {
-                    return Err(layer_error(InvalidLayer::UselessWriteThrough));
-                }
-            }
             if last_write_through {
                 if config.layer.read_only && !read_only {
                     return Err(layer_error(InvalidLayer::ReadOnly));
                 }
                 is_fua_respected &= config.layer.is_fua_respected;
-                let unmap = match config.layer.unmap_behavior {
-                    UnmapBehavior::Zeroes => true,
-                    UnmapBehavior::Unspecified => !unmap_must_zero,
-                    UnmapBehavior::Ignored => false,
+                // Merge the unmap behavior. If any affected layer ignores
+                // unmap, then force the whole disk to. If all affected layers
+                // zero the sectors, then report that the disk zeroes sectors.
+                //
+                // If there is at least one write-through layer, then unmap only
+                // works if the unmap operation will produce the same result in
+                // all the layers that are being written to. Otherwise, the
+                // guest could see inconsistent disk contents when the write
+                // through layer is removed.
+                unmap_must_zero |= config.write_through;
+                unmap_behavior = match (unmap_behavior, config.layer.unmap_behavior) {
+                    (UnmapBehavior::Zeroes, UnmapBehavior::Zeroes) => UnmapBehavior::Zeroes,
+                    _ if unmap_must_zero => UnmapBehavior::Ignored,
+                    (UnmapBehavior::Ignored, _) => UnmapBehavior::Ignored,
+                    (_, UnmapBehavior::Ignored) => UnmapBehavior::Ignored,
+                    _ => UnmapBehavior::Unspecified,
                 };
-                if !unmap {
-                    optimal_unmap_sectors = None;
-                } else if let Some(n) = &mut optimal_unmap_sectors {
-                    *n = (*n).max(config.layer.optimal_unmap_sectors);
-                }
+                optimal_unmap_sectors =
+                    optimal_unmap_sectors.max(config.layer.optimal_unmap_sectors);
+            } else if config.write_through {
+                // The write-through layers must all come first.
+                return Err(layer_error(InvalidLayer::UselessWriteThrough));
             }
             last_write_through = config.write_through;
             if disk_id.is_none() {
@@ -261,6 +263,7 @@ impl LayeredDisk {
             sector_shift: sector_size.trailing_zeros(),
             disk_id,
             physical_sector_size,
+            unmap_behavior,
             optimal_unmap_sectors,
             layers,
         })
@@ -457,17 +460,6 @@ pub trait LayerIo: 'static + Send + Sync + Inspect {
     }
 }
 
-/// The behavior of unmap.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UnmapBehavior {
-    /// Unmaps are ignored.
-    Ignored,
-    /// Unmap may or may not change the content, and not necessarily to zero.
-    Unspecified,
-    /// Unmap will deterministically zero the content.
-    Zeroes,
-}
-
 enum NoIdet {}
 
 /// Writes to the layer without overwriting existing data.
@@ -618,22 +610,20 @@ impl DiskIo for LayeredDisk {
         Ok(())
     }
 
-    fn unmap(&self) -> Option<impl Unmap> {
-        self.optimal_unmap_sectors.map(|_| self)
-    }
-
     fn wait_resize(&self, sector_count: u64) -> impl Future<Output = u64> + Send {
         self.layers[0].backing.wait_resize(sector_count)
     }
-}
 
-impl Unmap for LayeredDisk {
     async fn unmap(
         &self,
         sector_offset: u64,
         sector_count: u64,
         block_level_only: bool,
     ) -> Result<(), DiskError> {
+        if self.unmap_behavior == UnmapBehavior::Ignored {
+            return Ok(());
+        }
+
         for (layer, next_layer) in self
             .layers
             .iter()
@@ -661,8 +651,12 @@ impl Unmap for LayeredDisk {
         Ok(())
     }
 
+    fn unmap_behavior(&self) -> UnmapBehavior {
+        self.unmap_behavior
+    }
+
     fn optimal_unmap_sectors(&self) -> u32 {
-        self.optimal_unmap_sectors.unwrap()
+        self.optimal_unmap_sectors
     }
 }
 
@@ -724,24 +718,17 @@ impl LayerIo for DiskAsLayer {
         self.0.write_vectored(buffers, sector, fua).await
     }
 
-    async fn unmap(
+    fn unmap(
         &self,
         sector: u64,
         count: u64,
         block_level_only: bool,
         _lower_is_zero: bool,
-    ) -> Result<(), DiskError> {
-        if let Some(unmap) = self.0.unmap() {
-            unmap.unmap(sector, count, block_level_only).await?;
-        }
-        Ok(())
+    ) -> impl Future<Output = Result<(), DiskError>> + Send {
+        self.0.unmap(sector, count, block_level_only)
     }
 
     fn unmap_behavior(&self) -> UnmapBehavior {
-        if self.0.unmap().is_some() {
-            UnmapBehavior::Unspecified
-        } else {
-            UnmapBehavior::Ignored
-        }
+        self.0.unmap_behavior()
     }
 }

@@ -143,6 +143,19 @@ impl DiskIo for TestDisk {
     async fn sync_cache(&self) -> Result<(), DiskError> {
         Ok(())
     }
+
+    fn unmap(
+        &self,
+        _sector: u64,
+        _count: u64,
+        _block_level_only: bool,
+    ) -> impl std::future::Future<Output = Result<(), DiskError>> + Send {
+        async move { Ok(()) }
+    }
+
+    fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
+        disk_backend::UnmapBehavior::Ignored
+    }
 }
 
 pub fn new_scsi_disk(

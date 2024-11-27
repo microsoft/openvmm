@@ -88,12 +88,6 @@ impl DiskIo for CryptDisk {
         self.inner.is_read_only()
     }
 
-    /// Optionally returns a trait object to issue unmap (trim/discard)
-    /// requests.
-    fn unmap(&self) -> Option<impl disk_backend::Unmap> {
-        self.inner.unmap()
-    }
-
     /// Optionally returns a trait object to issue persistent reservation
     /// requests.
     fn pr(&self) -> Option<&dyn disk_backend::pr::PersistentReservation> {
@@ -163,6 +157,23 @@ impl DiskIo for CryptDisk {
     /// Waits for the disk sector size to be different than the specified value.
     async fn wait_resize(&self, sector_count: u64) -> u64 {
         self.inner.wait_resize(sector_count).await
+    }
+
+    fn unmap(
+        &self,
+        sector: u64,
+        count: u64,
+        block_level_only: bool,
+    ) -> impl std::future::Future<Output = Result<(), DiskError>> + Send {
+        self.inner.unmap(sector, count, block_level_only)
+    }
+
+    fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
+        self.inner.unmap_behavior()
+    }
+
+    fn optimal_unmap_sectors(&self) -> u32 {
+        self.inner.optimal_unmap_sectors()
     }
 }
 

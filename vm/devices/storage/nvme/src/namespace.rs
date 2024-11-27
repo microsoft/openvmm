@@ -11,7 +11,6 @@ use crate::prp::PrpRange;
 use crate::spec;
 use crate::spec::nvm;
 use disk_backend::Disk;
-use disk_backend::Unmap;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
@@ -187,13 +186,11 @@ impl Namespace {
                 prp.read(&self.mem, dsm_ranges.as_bytes_mut())?;
                 tracing::debug!(nsid = self.nsid, ?cdw11, ?dsm_ranges, "dsm");
                 if cdw11.ad() {
-                    if let Some(unmap) = self.disk.unmap() {
-                        for range in dsm_ranges.as_ref() {
-                            unmap
-                                .unmap(range.starting_lba, range.lba_count.into(), false)
-                                .await
-                                .map_err(map_disk_error)?;
-                        }
+                    for range in dsm_ranges.as_ref() {
+                        self.disk
+                            .unmap(range.starting_lba, range.lba_count.into(), false)
+                            .await
+                            .map_err(map_disk_error)?;
                     }
                 }
             }

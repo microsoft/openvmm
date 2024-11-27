@@ -23,7 +23,7 @@ use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
-use disk_backend::Unmap;
+use disk_backend::UnmapBehavior;
 use fs_err::PathExt;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
@@ -529,10 +529,6 @@ impl DiskIo for BlockDevice {
         self.read_only
     }
 
-    fn unmap(&self) -> Option<impl Unmap> {
-        (self.optimal_unmap_sectors != 0).then_some(self)
-    }
-
     fn pr(&self) -> Option<&dyn PersistentReservation> {
         if self.supports_pr {
             Some(self)
@@ -695,9 +691,7 @@ impl DiskIo for BlockDevice {
             listen.await;
         }
     }
-}
 
-impl Unmap for BlockDevice {
     async fn unmap(
         &self,
         sector_offset: u64,
@@ -716,6 +710,14 @@ impl Unmap for BlockDevice {
             Err(err) => return Err(self.map_io_error(err)),
         }
         Ok(())
+    }
+
+    fn unmap_behavior(&self) -> UnmapBehavior {
+        if self.optimal_unmap_sectors == 0 {
+            UnmapBehavior::Ignored
+        } else {
+            UnmapBehavior::Unspecified
+        }
     }
 
     fn optimal_unmap_sectors(&self) -> u32 {

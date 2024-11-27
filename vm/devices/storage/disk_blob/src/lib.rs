@@ -13,6 +13,7 @@ pub mod resolver;
 use blob::Blob;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
+use disk_backend::UnmapBehavior;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
@@ -167,10 +168,23 @@ impl DiskIo for BlobDisk {
         _sector: u64,
         _fua: bool,
     ) -> Result<(), DiskError> {
-        unreachable!()
+        Err(DiskError::ReadOnly)
     }
 
     async fn sync_cache(&self) -> Result<(), DiskError> {
-        unreachable!()
+        Err(DiskError::ReadOnly)
+    }
+
+    async fn unmap(
+        &self,
+        _sector: u64,
+        _count: u64,
+        _block_level_only: bool,
+    ) -> Result<(), DiskError> {
+        Err(DiskError::ReadOnly)
+    }
+
+    fn unmap_behavior(&self) -> UnmapBehavior {
+        UnmapBehavior::Ignored
     }
 }

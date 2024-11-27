@@ -112,13 +112,20 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
     /// Returns true if the disk is read only.
     fn is_read_only(&self) -> bool;
 
-    /// Optionally returns a trait object to issue unmap (trim/discard)
-    /// requests.
-    ///
-    /// This uses `impl Unmap` instead of the usual IDET pattern of `&dyn Unmap`
-    /// because `Unmap` is not object safe.
-    fn unmap(&self) -> Option<impl Unmap> {
-        None::<NoUnmap>
+    /// Unmap sectors from the layer.
+    fn unmap(
+        &self,
+        sector: u64,
+        count: u64,
+        block_level_only: bool,
+    ) -> impl Future<Output = Result<(), DiskError>> + Send;
+
+    /// Returns the behavior of the unmap operation.
+    fn unmap_behavior(&self) -> UnmapBehavior;
+
+    /// Returns the optimal granularity for unmaps, in sectors.
+    fn optimal_unmap_sectors(&self) -> u32 {
+        1
     }
 
     /// Optionally returns a trait object to issue persistent reservation
@@ -177,11 +184,7 @@ impl Disk {
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
         resp.field("disk_type", self.0.disk.disk_type())
             .field("sector_count", self.0.disk.sector_count())
-            .field("supports_pr", self.0.disk.pr().is_some())
-            .field(
-                "optimal_unmap_sectors",
-                self.unmap().map(|u| u.optimal_unmap_sectors()),
-            );
+            .field("supports_pr", self.0.disk.pr().is_some());
     }
 }
 
@@ -200,7 +203,8 @@ struct DiskInner<T: ?Sized = dyn DynDisk> {
     disk_id: Option<[u8; 16]>,
     is_fua_respected: bool,
     is_read_only: bool,
-    supports_unmap: bool,
+    unmap_behavior: UnmapBehavior,
+    optimal_unmap_sectors: u32,
     disk: T,
 }
 
@@ -230,15 +234,15 @@ impl Disk {
         if !physical_sector_size.is_power_of_two() || physical_sector_size < sector_size {
             return Err(InvalidDisk::InvalidPhysicalSectorSize(physical_sector_size));
         }
-        let supports_unmap = disk.unmap().is_some();
         Ok(Self(Arc::new(DiskInner {
-            supports_unmap,
             sector_size,
             sector_shift: sector_size.trailing_zeros(),
             physical_sector_size,
             disk_id: disk.disk_id(),
             is_fua_respected: disk.is_fua_respected(),
             is_read_only: disk.is_read_only(),
+            optimal_unmap_sectors: disk.optimal_unmap_sectors(),
+            unmap_behavior: disk.unmap_behavior(),
             disk,
         })))
     }
@@ -286,14 +290,24 @@ impl Disk {
         self.0.is_read_only
     }
 
-    /// Optionally returns a trait object to issue unmap (trim/discard)
-    /// requests.
-    pub fn unmap(&self) -> Option<DiskUnmap<'_>> {
-        if self.0.supports_unmap {
-            Some(DiskUnmap(&self.0))
-        } else {
-            None
-        }
+    /// Unmap sectors from the disk.
+    pub fn unmap(
+        &self,
+        sector: u64,
+        count: u64,
+        block_level_only: bool,
+    ) -> impl use<'_> + Future<Output = Result<(), DiskError>> + Send {
+        self.0.disk.unmap(sector, count, block_level_only)
+    }
+
+    /// Returns the behavior of the unmap operation.
+    pub fn unmap_behavior(&self) -> UnmapBehavior {
+        self.0.unmap_behavior
+    }
+
+    /// Returns the optimal granularity for unmaps, in sectors.
+    pub fn optimal_unmap_sectors(&self) -> u32 {
+        self.0.optimal_unmap_sectors
     }
 
     /// Optionally returns a trait object to issue persistent reservation
@@ -345,70 +359,15 @@ impl Disk {
     }
 }
 
-/// Access to a disk's unmap operations. Returned by [`Disk::unmap`].
-pub struct DiskUnmap<'a>(&'a DiskInner);
-
-impl Unmap for DiskUnmap<'_> {
-    fn unmap(
-        &self,
-        sector_offset: u64,
-        sector_count: u64,
-        block_level_only: bool,
-    ) -> impl Future<Output = Result<(), DiskError>> + Send {
-        self.0
-            .disk
-            .unmap(sector_offset, sector_count, block_level_only)
-    }
-
-    fn optimal_unmap_sectors(&self) -> u32 {
-        self.0.disk.optimal_unmap_sectors()
-    }
-}
-
-/// Unmap disk sectors that are no longer in use.
-pub trait Unmap: Send + Sync {
-    /// Unmaps the specified sectors.
-    fn unmap(
-        &self,
-        sector_offset: u64,
-        sector_count: u64,
-        block_level_only: bool,
-    ) -> impl Future<Output = Result<(), DiskError>> + Send;
-
-    /// Returns the optimal number of sectors to unmap in a single operation.
-    fn optimal_unmap_sectors(&self) -> u32;
-}
-
-impl<T: Unmap> Unmap for &T {
-    fn unmap(
-        &self,
-        sector_offset: u64,
-        sector_count: u64,
-        block_level_only: bool,
-    ) -> impl Future<Output = Result<(), DiskError>> {
-        (*self).unmap(sector_offset, sector_count, block_level_only)
-    }
-
-    fn optimal_unmap_sectors(&self) -> u32 {
-        (*self).optimal_unmap_sectors()
-    }
-}
-
-struct NoUnmap;
-
-impl Unmap for NoUnmap {
-    async fn unmap(
-        &self,
-        _sector_offset: u64,
-        _sector_count: u64,
-        _block_level_only: bool,
-    ) -> Result<(), DiskError> {
-        unreachable!()
-    }
-
-    fn optimal_unmap_sectors(&self) -> u32 {
-        unreachable!()
-    }
+/// The behavior of unmap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Inspect)]
+pub enum UnmapBehavior {
+    /// Unmap may or may not change the content, and not necessarily to zero.
+    Unspecified,
+    /// Unmaps are guaranteed to be ignored.
+    Ignored,
+    /// Unmap will deterministically zero the content.
+    Zeroes,
 }
 
 /// The amount of space reserved for a DiskIo future
@@ -425,7 +384,6 @@ trait DynDisk: Send + Sync + Inspect {
 
     fn unmap(&self, sector_offset: u64, sector_count: u64, block_level_only: bool) -> IoFuture<'_>;
 
-    fn optimal_unmap_sectors(&self) -> u32;
     fn pr(&self) -> Option<&dyn pr::PersistentReservation>;
     fn eject(&self) -> IoFuture<'_>;
 
@@ -464,16 +422,7 @@ impl<T: DiskIo> DynDisk for T {
         sector_count: u64,
         block_level_only: bool,
     ) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from_or_box(async move {
-            self.unmap()
-                .unwrap()
-                .unmap(sector_offset, sector_count, block_level_only)
-                .await
-        })
-    }
-
-    fn optimal_unmap_sectors(&self) -> u32 {
-        self.unmap().unwrap().optimal_unmap_sectors()
+        StackFuture::from_or_box(self.unmap(sector_offset, sector_count, block_level_only))
     }
 
     fn pr(&self) -> Option<&dyn pr::PersistentReservation> {

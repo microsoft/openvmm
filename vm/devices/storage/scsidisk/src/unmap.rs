@@ -5,7 +5,6 @@ use super::ScsiError;
 use super::SimpleScsiDisk;
 use crate::scsi;
 use crate::UNMAP_RANGE_DESCRIPTOR_COUNT_MAX;
-use disk_backend::Unmap;
 use guestmem::MemoryRead;
 use scsi::AdditionalSenseCode;
 use scsi_buffers::RequestBuffers;
@@ -164,7 +163,6 @@ impl SimpleScsiDisk {
 impl SimpleScsiDisk {
     async fn perform_unmap(
         &self,
-        unmap: impl Unmap,
         buffer: &[u8],
         unmap_info: &mut UnmapInfo,
         block_level_only: bool,
@@ -214,7 +212,11 @@ impl SimpleScsiDisk {
                 "dispatching inner unmap"
             );
 
-            if let Err(e) = unmap.unmap(start_lba, lba_count, block_level_only).await {
+            if let Err(e) = self
+                .disk
+                .unmap(start_lba, lba_count, block_level_only)
+                .await
+            {
                 tracing::debug!(error = ?e, "Unmap failures ignored")
             }
         }
@@ -233,21 +235,15 @@ impl SimpleScsiDisk {
 
         // We sometimes say we support thin provisioning even if the parser
         // doesn't support it.
-        let Some(unmap) = self.disk.unmap() else {
+        if self.disk.unmap_behavior() == disk_backend::UnmapBehavior::Ignored {
             return Ok(0);
-        };
+        }
 
         self.set_unmap_descriptor(&buffer, &mut unmap_info, sector_count)?;
 
         let block_level_only = request.srb_flags & scsi::SRB_FLAGS_BLOCK_LEVEL_ONLY != 0;
-        self.perform_unmap(
-            unmap,
-            &buffer,
-            &mut unmap_info,
-            block_level_only,
-            sector_count,
-        )
-        .await?;
+        self.perform_unmap(&buffer, &mut unmap_info, block_level_only, sector_count)
+            .await?;
 
         Ok(0)
     }

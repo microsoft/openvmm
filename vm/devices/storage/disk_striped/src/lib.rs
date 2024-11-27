@@ -12,7 +12,7 @@ use disk_backend::resolve::ResolvedDisk;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
-use disk_backend::Unmap;
+use disk_backend::UnmapBehavior;
 use disk_backend_resources::StripedDiskHandle;
 use futures::future::join_all;
 use futures::future::try_join_all;
@@ -53,36 +53,16 @@ impl AsyncResolveResource<DiskHandleKind, StripedDiskHandle> for StripedDiskReso
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 pub struct StripedDisk {
+    #[inspect(iter_by_index)]
     block_devices: Vec<Disk>,
     sector_size: u32,
     sector_shift: u32,
     sector_count: u64,
     read_only: bool,
     sector_count_per_chunk: u32,
-    supports_unmap: bool,
-}
-
-impl Inspect for StripedDisk {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        let &Self {
-            ref block_devices,
-            sector_size,
-            sector_shift: _,
-            sector_count,
-            read_only,
-            sector_count_per_chunk,
-            supports_unmap,
-        } = self;
-        req.respond()
-            .field("sector_count_per_chunk", sector_count_per_chunk)
-            .fields("stripes", block_devices.iter().enumerate())
-            .field("sector_size", sector_size)
-            .field("sector_count", sector_count)
-            .field("read_only", read_only)
-            .field("supports_unmap", supports_unmap);
-    }
+    unmap_behavior: UnmapBehavior,
 }
 
 const CHUNK_SIZE_128K: u32 = 128 * 1024;
@@ -321,7 +301,16 @@ impl StripedDisk {
             ));
         }
 
-        let supports_unmap = devices.iter().any(|d| d.unmap().is_some());
+        // Unify the unmap behavior of all devices. If all disks specify the
+        // same behavior, use it. Otherwise, report unspecified behavior and
+        // send unmap to all disks.
+        let unmap_behavior = devices.iter().fold(UnmapBehavior::Zeroes, |rest, d| {
+            match (rest, d.unmap_behavior()) {
+                (UnmapBehavior::Zeroes, UnmapBehavior::Zeroes) => UnmapBehavior::Zeroes,
+                (UnmapBehavior::Ignored, UnmapBehavior::Ignored) => UnmapBehavior::Ignored,
+                _ => UnmapBehavior::Unspecified,
+            }
+        });
 
         let stripped_block_device = StripedDisk {
             block_devices: devices,
@@ -330,7 +319,7 @@ impl StripedDisk {
             sector_count: logic_sector_count,
             read_only,
             sector_count_per_chunk: (sector_count_per_chunk as u32),
-            supports_unmap,
+            unmap_behavior,
         };
 
         tracing::info!("stripped block device start completed.");
@@ -353,10 +342,6 @@ impl DiskIo for StripedDisk {
 
     fn is_read_only(&self) -> bool {
         self.read_only
-    }
-
-    fn unmap(&self) -> Option<impl Unmap> {
-        self.supports_unmap.then_some(self)
     }
 
     fn disk_id(&self) -> Option<[u8; 16]> {
@@ -488,9 +473,7 @@ impl DiskIo for StripedDisk {
         await_all_and_check(all_futures).await?;
         Ok(())
     }
-}
 
-impl Unmap for StripedDisk {
     async fn unmap(
         &self,
         start_sector: u64,
@@ -539,22 +522,23 @@ impl Unmap for StripedDisk {
 
         for (disk_index, &(start, length)) in disk_sectors.iter().enumerate() {
             let disk = &self.block_devices[disk_index];
-            if let Some(unmap) = disk.unmap() {
-                // Check if the length is non-zero before pushing to all_futures
-                if length > 0 {
-                    all_futures
-                        .push(async move { unmap.unmap(start, length, block_level_only).await });
-                }
+            // Check if the length is non-zero before pushing to all_futures
+            if length > 0 {
+                all_futures.push(async move { disk.unmap(start, length, block_level_only).await });
             }
         }
         await_all_and_check(all_futures).await?;
         Ok(())
     }
 
+    fn unmap_behavior(&self) -> UnmapBehavior {
+        self.unmap_behavior
+    }
+
     fn optimal_unmap_sectors(&self) -> u32 {
         self.block_devices
             .iter()
-            .filter_map(|disk| Some(disk.unmap()?.optimal_unmap_sectors()))
+            .map(|disk| disk.optimal_unmap_sectors())
             .max()
             .unwrap_or(1)
     }
@@ -699,8 +683,7 @@ mod tests {
 
         // async_trim test
         // Since the discard function doesn't trim the file content, the test doesn't check if the file content is ZERO after the trim.
-        Unmap::unmap(
-            disk,
+        disk.unmap(
             start_sector,
             (length / disk.sector_size() as usize) as u64,
             true,
@@ -1036,13 +1019,13 @@ mod tests {
             }
         }
 
-        match Unmap::unmap(
-            &disk,
-            (disk.sector_count() - 2) * disk.sector_size as u64,
-            disk.sector_size as u64 * 3,
-            true,
-        )
-        .await
+        match disk
+            .unmap(
+                (disk.sector_count() - 2) * disk.sector_size as u64,
+                disk.sector_size as u64 * 3,
+                true,
+            )
+            .await
         {
             Ok(_) => {
                 panic!("{:?}", disk);
@@ -1093,13 +1076,13 @@ mod tests {
             }
         }
 
-        match Unmap::unmap(
-            &disk,
-            (disk.sector_count() - 2) * disk.sector_size as u64,
-            disk.sector_size as u64 * 2 + 1,
-            true,
-        )
-        .await
+        match disk
+            .unmap(
+                (disk.sector_count() - 2) * disk.sector_size as u64,
+                disk.sector_size as u64 * 2 + 1,
+                true,
+            )
+            .await
         {
             Ok(_) => {
                 panic!("{:?}", disk);
@@ -1116,34 +1099,25 @@ mod tests {
         assert_eq!(disk.sector_size, 512);
         assert_eq!(disk.sector_count_per_chunk, 4096 / 512);
         assert_eq!(disk.sector_count(), 128 * 1024 * 1024 * 2 / 512); //sector_count =  524288
-        Unmap::unmap(&disk, 0, 1, false).await.unwrap();
-        Unmap::unmap(&disk, 0, 524288, false).await.unwrap();
-        Unmap::unmap(&disk, 8, 524280, false).await.unwrap();
-        Unmap::unmap(&disk, disk.sector_count() / 2 - 512, 1024, false)
+        disk.unmap(0, 1, false).await.unwrap();
+        disk.unmap(0, 524288, false).await.unwrap();
+        disk.unmap(8, 524280, false).await.unwrap();
+        disk.unmap(disk.sector_count() / 2 - 512, 1024, false)
             .await
             .unwrap();
-        Unmap::unmap(&disk, disk.sector_count() - 1024, 1024, false)
+        disk.unmap(disk.sector_count() - 1024, 1024, false)
             .await
             .unwrap();
-        Unmap::unmap(&disk, 0, disk.sector_count() / 2, false)
+        disk.unmap(0, disk.sector_count() / 2, false).await.unwrap();
+        disk.unmap(disk.sector_count() / 2, disk.sector_count() / 2, false)
             .await
             .unwrap();
-        Unmap::unmap(
-            &disk,
-            disk.sector_count() / 2,
-            disk.sector_count() / 2,
-            false,
-        )
-        .await
-        .unwrap();
-        Unmap::unmap(&disk, disk.sector_count() / 2 - 500, 1000, false)
+        disk.unmap(disk.sector_count() / 2 - 500, 1000, false)
             .await
             .unwrap();
         //this one should fail, out of bounds
-        assert!(Unmap::unmap(&disk, disk.sector_count(), 100, false)
-            .await
-            .is_err());
+        assert!(disk.unmap(disk.sector_count(), 100, false).await.is_err());
         //unmap zero sector
-        Unmap::unmap(&disk, 1000, 0, false).await.unwrap();
+        disk.unmap(1000, 0, false).await.unwrap();
     }
 }

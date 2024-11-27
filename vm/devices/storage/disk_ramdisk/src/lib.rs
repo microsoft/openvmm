@@ -11,12 +11,12 @@ pub mod resolver;
 use anyhow::Context;
 use disk_backend::Disk;
 use disk_backend::DiskError;
+use disk_backend::UnmapBehavior;
 use disk_layered::DiskLayer;
 use disk_layered::LayerConfiguration;
 use disk_layered::LayerIo;
 use disk_layered::LayeredDisk;
 use disk_layered::SectorMarker;
-use disk_layered::UnmapBehavior;
 use disk_layered::WriteNoOverwrite;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
@@ -370,7 +370,6 @@ mod tests {
     use super::RamLayer;
     use super::SECTOR_SIZE;
     use disk_backend::DiskIo;
-    use disk_backend::Unmap;
     use disk_layered::DiskLayer;
     use disk_layered::LayerConfiguration;
     use disk_layered::LayerIo;
@@ -518,12 +517,11 @@ mod tests {
         const SECTORS: usize = SIZE / SECTOR_USIZE;
 
         let (guest_mem, mut upper) = prep_disk(SIZE).await;
-        Unmap::unmap(&upper, 0, SECTORS as u64 - 1, false)
-            .await
-            .unwrap();
+        upper.unmap(0, SECTORS as u64 - 1, false).await.unwrap();
         read(&guest_mem, &mut upper, 0, SECTORS).await;
         check(&guest_mem, 0, 0, SECTORS, 0);
-        Unmap::unmap(&upper, SECTORS as u64 / 2, SECTORS as u64 / 2, false)
+        upper
+            .unmap(SECTORS as u64 / 2, SECTORS as u64 / 2, false)
             .await
             .unwrap();
         read(&guest_mem, &mut upper, 0, SECTORS).await;

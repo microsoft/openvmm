@@ -124,7 +124,22 @@ impl DiskIo for DiskWithReservations {
         self.inner.is_read_only()
     }
 
-    // TODO: Implement unmap
+    fn unmap(
+        &self,
+        sector: u64,
+        count: u64,
+        block_level_only: bool,
+    ) -> impl Future<Output = Result<(), DiskError>> + Send {
+        self.inner.unmap(sector, count, block_level_only)
+    }
+
+    fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
+        self.inner.unmap_behavior()
+    }
+
+    fn optimal_unmap_sectors(&self) -> u32 {
+        self.inner.optimal_unmap_sectors()
+    }
 
     fn pr(&self) -> Option<&dyn pr::PersistentReservation> {
         Some(self)

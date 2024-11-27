@@ -230,6 +230,19 @@ impl DiskIo for GetVmgsDisk {
             .await
             .map_err(|err| DiskError::Io(io::Error::new(io::ErrorKind::Other, err)))
     }
+
+    async fn unmap(
+        &self,
+        _sector: u64,
+        _count: u64,
+        _block_level_only: bool,
+    ) -> Result<(), DiskError> {
+        Ok(())
+    }
+
+    fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
+        disk_backend::UnmapBehavior::Ignored
+    }
 }
 
 /// Save/restore structure definitions.

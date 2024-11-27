@@ -18,6 +18,7 @@ pub use inquiry::INQUIRY_DATA_TEMPLATE;
 
 use disk_backend::Disk;
 use disk_backend::DiskError;
+use disk_backend::UnmapBehavior;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
@@ -183,8 +184,8 @@ impl SimpleScsiDisk {
                 support_fua: fua.unwrap_or_else(|| disk.is_fua_respected()),
                 write_cache_enabled: write_cache.unwrap_or(true),
                 support_odx: odx.unwrap_or(false),
-                support_unmap: unmap.unwrap_or(disk.unmap().is_some()),
                 support_get_lba_status: get_lba_status,
+                support_unmap: unmap.unwrap_or(disk.unmap_behavior() != UnmapBehavior::Ignored),
                 maximum_transfer_length: max_transfer_length.unwrap_or(8 * 1024 * 1024),
                 identity: identity.unwrap_or_else(DiskIdentity::msft),
                 serial_number,
