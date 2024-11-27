@@ -44,8 +44,10 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
+use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
@@ -821,9 +823,12 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
         let response = match request_payload.request_type {
             IgvmAttestRequestType::AK_CERT_REQUEST => {
-                let header = vec![0xcc, 0x09, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00];
                 let data = vec![0xab; 2500];
-                let payload = [header, data].concat();
+                let header = IgvmAttestAkCertResponseHeader {
+                    data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>()) as u32,
+                    version: AK_CERT_RESPONSE_HEADER_VERSION,
+                };
+                let payload = [header.as_bytes(), &data].concat();
 
                 if let Some(guest_memory) = &state.guest_memory {
                     guest_memory
