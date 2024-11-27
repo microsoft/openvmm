@@ -6,7 +6,6 @@
 //! `IGVM_ATTEST` host request.
 
 use base64_serde::base64_serde_type;
-use openhcl_attestation_protocol;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestHashType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestReportType;
@@ -21,6 +20,12 @@ pub mod key_release;
 pub mod wrapped_key;
 
 base64_serde_type!(Base64Url, base64::engine::general_purpose::URL_SAFE_NO_PAD);
+
+const VBS_VM_REPORT_SIZE: usize = 0x230;
+const SNP_VM_REPORT_SIZE: usize = sev_guest_device::protocol::SNP_REPORT_SIZE;
+const TDX_VM_REPORT_SIZE: usize = tdx_guest_device::protocol::TDX_REPORT_SIZE;
+/// No TEE attestation report for TVM
+const TVM_REPORT_SIZE: usize = 0;
 
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
@@ -182,18 +187,10 @@ fn create_request(
 /// Get the expected size of the given report type.
 fn get_report_size(report_type: IgvmAttestReportType) -> Result<usize, Error> {
     let size = match report_type {
-        IgvmAttestReportType::VBS_VM_REPORT => {
-            openhcl_attestation_protocol::igvm_attest::get::VBS_VM_REPORT_SIZE
-        }
-        IgvmAttestReportType::SNP_VM_REPORT => {
-            openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE
-        }
-        IgvmAttestReportType::TDX_VM_REPORT => {
-            openhcl_attestation_protocol::igvm_attest::get::TDX_VM_REPORT_SIZE
-        }
-        IgvmAttestReportType::TVM_REPORT => {
-            openhcl_attestation_protocol::igvm_attest::get::TVM_REPORT_SIZE
-        }
+        IgvmAttestReportType::VBS_VM_REPORT => VBS_VM_REPORT_SIZE,
+        IgvmAttestReportType::SNP_VM_REPORT => SNP_VM_REPORT_SIZE,
+        IgvmAttestReportType::TDX_VM_REPORT => TDX_VM_REPORT_SIZE,
+        IgvmAttestReportType::TVM_REPORT => TVM_REPORT_SIZE,
         ty => Err(Error::InvalidAttestationReportType(ty.0))?,
     };
 
@@ -227,7 +224,7 @@ mod tests {
         let result = create_request(
             IgvmAttestRequestType::AK_CERT_REQUEST,
             &[],
-            &[0u8; openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE],
+            &[0u8; SNP_VM_REPORT_SIZE],
             IgvmAttestReportType::SNP_VM_REPORT,
             IgvmAttestHashType::SHA_256,
         );
@@ -236,7 +233,7 @@ mod tests {
         let result = create_request(
             IgvmAttestRequestType::AK_CERT_REQUEST,
             &[],
-            &[0u8; openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE + 1],
+            &[0u8; SNP_VM_REPORT_SIZE + 1],
             IgvmAttestReportType::SNP_VM_REPORT,
             IgvmAttestHashType::SHA_256,
         );

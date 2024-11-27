@@ -6,7 +6,7 @@ name = "openhcl_attestation_protocol"
 edition = "2021"
 rust-version.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[dependencies]
 open_enum.workspace = true
 guid.workspace = true
 mesh.workspace = true
