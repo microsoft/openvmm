@@ -34,7 +34,7 @@ pub const AK_CERT_RESPONSE_BUFFER_SIZE: usize = PAGE_SIZE;
 pub const AK_CERT_RESPONSE_HEADER_VERSION: u32 = 1;
 
 /// Request structure (C-style)
-/// The struct (includes the appended [`RuntimeClaims`]) also serves as the
+/// The struct (includes the appended [`runtime_claims::RuntimeClaims`]) also serves as the
 /// attestation report in vTPM guest attestation.
 #[repr(C)]
 #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
@@ -45,9 +45,9 @@ pub struct IgvmAttestRequest {
     pub attestation_report: [u8; ATTESTATION_REPORT_SIZE_MAX],
     /// Request data (unmeasured)
     pub request_data: IgvmAttestRequestData,
-    // Variable-length [`RuntimeClaims`] (JSON string) in raw bytes will be
+    // Variable-length [`runtime_claims::RuntimeClaims`] (JSON string) in raw bytes will be
     // appended to here.
-    // The hash of [`RuntimeClaims`] in [`IgvmAttestHashType`] will be captured
+    // The hash of [`runtime_claims::RuntimeClaims`] in [`IgvmAttestHashType`] will be captured
     // in the `report_data` or equivalent field of the TEE attestation report.
 }
 
