@@ -46,7 +46,11 @@ async fn boot_alias_map(config: PetriVmConfig) -> anyhow::Result<()> {
 )]
 async fn boot_with_tpm(config: PetriVmConfig) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let config = config.with_tpm();
+    let config = config
+        // OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1 is currently required to make test pass
+        // TODO: remove this
+        .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
+        .with_tpm();
 
     let (vm, agent) = match os_flavor {
         OsFlavor::Windows => config.run().await?,
