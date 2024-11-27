@@ -667,7 +667,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 this.identify.clone().unwrap(),
                 &this.io_issuers,
                 this.device_id.as_ref(),
-                ns.identify_ns.clone(),
                 ns,
             )?));
         }
@@ -1115,9 +1114,7 @@ pub mod save_restore {
     pub struct SavedNamespaceData {
         #[mesh(1)]
         pub nsid: u32,
-        #[mesh(2)]
-        pub block_count: u64,
-        #[mesh(3, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+        #[mesh(2, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
         pub identify_ns: nvme_spec::nvm::IdentifyNamespace,
     }
 }
