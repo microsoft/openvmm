@@ -98,8 +98,8 @@ enum Error {
     InvalidIgvmAttestRequest,
     #[error("unsupported igvm attest request type: {0:?}")]
     UnsupportedIgvmAttestRequestType(u32),
-    // #[error("failed to write to shared memory")]
-    // SharedMemoryWriteFailed(#[source] guestmem::GuestMemoryError),
+    #[error("failed to write to shared memory")]
+    SharedMemoryWriteFailed(#[source] guestmem::GuestMemoryError),
 }
 
 impl From<task_control::Cancelled> for Error {
@@ -803,7 +803,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     fn handle_igvm_attest(
         &mut self,
         message_buf: &[u8],
-        _state: &mut GuestEmulationDevice,
+        state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
         let request =
             IgvmAttestRequest::read_from_prefix(message_buf).ok_or(Error::MessageTooSmall)?;
@@ -825,11 +825,11 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 let data = vec![0xab; 2500];
                 let payload = [header, data].concat();
 
-                // if let Some(guest_memory) = &state.guest_memory {
-                //     guest_memory
-                //         .write_at(request.shared_gpa[0], &payload)
-                //         .map_err(Error::SharedMemoryWriteFailed)?;
-                // }
+                if let Some(guest_memory) = &state.guest_memory {
+                    guest_memory
+                        .write_at(request.shared_gpa[0], &payload)
+                        .map_err(Error::SharedMemoryWriteFailed)?;
+                }
 
                 get_protocol::IgvmAttestResponse {
                     message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
