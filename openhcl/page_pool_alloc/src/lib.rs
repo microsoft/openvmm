@@ -23,6 +23,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use vm_topology::memory::MemoryRangeWithNode;
 
+/// Save restore suport for [`PagePool`].
 pub mod save_restore {
     use super::DeviceId;
     use super::PagePool;
@@ -159,7 +160,8 @@ pub mod save_restore {
         }
     }
 
-    // TODO: okay to make MemoryRangeWithNode in vm_topology also stable save/restore?
+    // TODO: It seems unfortunate to define this type which is the same as
+    // MemoryRangeWithNode in vm_topology.
     #[derive(Protobuf)]
     #[mesh(package = "openhcl.pagepool")]
     struct MemoryRangeWithNode {
@@ -203,6 +205,7 @@ pub mod save_restore {
         }
     }
 
+    /// The saved state for [`PagePool`].
     #[derive(Protobuf, SavedStateRoot)]
     #[mesh(package = "openhcl.pagepool")]
     pub struct PagePoolState {
@@ -254,24 +257,16 @@ pub mod save_restore {
 
             let mut inner = self.inner.lock();
 
-            // Verify that there are no existing allocations present - we cannot
-            // easily restore if so.
-            if inner.state.iter().any(|state| match state {
-                State::Free { .. } => false,
-                State::Allocated { .. } => true,
-                State::AllocatedPendingRestore { .. } => true,
-                State::Leaked { .. } => true,
-            }) {
-                return Err(vmcore::save_restore::RestoreError::InvalidSavedState(
-                    anyhow::anyhow!("existing allocations present"),
-                ));
-            }
-
             // Verify there are no existing allocators present, as we rely on
-            // the pool being completely free.
+            // the pool being completely free because device_ids are durable
+            // indices into a vec.
+            //
+            // Note that this also means that the pool does not have any pending
+            // allocations, as it's impossible to allocate without creating an
+            // allocator.
             if !inner.device_ids.is_empty() {
                 return Err(vmcore::save_restore::RestoreError::InvalidSavedState(
-                    anyhow::anyhow!("existing allocators present"),
+                    anyhow::anyhow!("existing allocators present, pool must be empty to restore"),
                 ));
             }
 
@@ -328,12 +323,13 @@ enum State {
     },
 }
 
+/// What kind of memory this pool is.
 #[derive(Inspect, Debug, Clone, Copy, PartialEq, Eq)]
 enum PoolType {
-    // Private memory, that is not visible to the host.
+    /// Private memory, that is not visible to the host.
     Private,
-    // Shared memory, that is visible to the host. This requires mapping pages
-    // with the decrypted bit set on mmap calls.
+    /// Shared memory, that is visible to the host. This requires mapping pages
+    /// with the decrypted bit set on mmap calls.
     Shared,
 }
 
@@ -515,9 +511,6 @@ impl Drop for PagePoolHandle {
 /// [`PagePoolAllocatorSpawner::allocator`].
 ///
 /// This struct is considered the "owner" of the pool allowing for save/restore.
-///
-// TODO SNP: Implement save restore. This means additionally having some sort of
-// restore_alloc method that maps to an existing allocation.
 #[derive(Inspect)]
 pub struct PagePool {
     #[inspect(flatten)]
@@ -592,9 +585,10 @@ impl PagePool {
     /// Validate that all allocations have been restored. This should be called
     /// after all devices have been restored.
     ///
-    /// `leak_unrestored` controls what to do if a matching allocation was not restored.
-    /// If true, the allocation is marked as leaked and the function returns Ok.
-    /// If false, the function returns an error if any are unmatched.
+    /// `leak_unrestored` controls what to do if a matching allocation was not
+    /// restored. If true, the allocation is marked as leaked and the function
+    /// returns Ok. If false, the function returns an error if any are
+    /// unmatched.
     ///
     /// Unmatched allocations are always logged via a `tracing::warn!` log.
     pub fn validate_restore(&self, leak_unrestored: bool) -> anyhow::Result<()> {
@@ -703,7 +697,7 @@ impl PagePoolAllocator {
                 .iter()
                 .position(|id| id.name() == device_name);
 
-            // Device ID must be unique, or be unassigned.
+            // Device ID must be unique, or be unassigned or pending a restore.
             match index {
                 Some(index) => {
                     let entry = &mut inner.device_ids[index];
@@ -916,7 +910,7 @@ impl user_driver::vfio::VfioDmaBuffer for PagePoolAllocator {
     }
 }
 
-// TODO: provide function to convert alloc handle to vfio dma buffer memory
+// TODO: Provide function to convert alloc handle to vfio dma buffer memory
 // block for restoring drivers.
 
 #[cfg(test)]
@@ -1014,10 +1008,17 @@ mod test {
         .unwrap();
         let alloc = pool.allocator("test".into()).unwrap();
 
-        let _a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
-        let _a2 = alloc
+        let a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
+        let a1_pfn = a1.base_pfn();
+        let a1_pfn_bias = a1.pfn_bias;
+        let a1_size = a1.size_pages;
+
+        let a2 = alloc
             .alloc(15.try_into().unwrap(), "alloc2".into())
             .unwrap();
+        let a2_pfn = a2.base_pfn();
+        let a2_pfn_bias = a2.pfn_bias;
+        let a2_size = a2.size_pages;
 
         let state = pool.save().unwrap();
 
@@ -1035,8 +1036,44 @@ mod test {
         let allocs = alloc.restore_allocations();
         assert_eq!(allocs.len(), 2);
 
-        // TODO: check individual allocs
+        assert_eq!(allocs[0].base_pfn(), a1_pfn);
+        assert_eq!(allocs[0].pfn_bias, a1_pfn_bias);
+        assert_eq!(allocs[0].size_pages, a1_size);
+
+        assert_eq!(allocs[1].base_pfn(), a2_pfn);
+        assert_eq!(allocs[1].pfn_bias, a2_pfn_bias);
+        assert_eq!(allocs[1].size_pages, a2_size);
 
         pool.validate_restore(false).unwrap();
+    }
+
+    #[test]
+    fn test_save_restore_unmatched_allocations() {
+        let mut pool = PagePool::new_shared_visibility_pool(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::from_4k_gpn_range(10..30),
+                vnode: 0,
+            }],
+            0,
+        )
+        .unwrap();
+
+        let alloc = pool.allocator("test".into()).unwrap();
+        let _a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
+
+        let state = pool.save().unwrap();
+
+        let mut pool = PagePool::new_shared_visibility_pool(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::from_4k_gpn_range(10..30),
+                vnode: 0,
+            }],
+            0,
+        )
+        .unwrap();
+
+        pool.restore(state).unwrap();
+
+        assert!(pool.validate_restore(false).is_err());
     }
 }

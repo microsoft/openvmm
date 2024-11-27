@@ -77,9 +77,6 @@ mod state {
         #[mesh(10000)]
         pub nvme_state: Option<NvmeSavedState>,
         /// Shared pool information.
-        ///
-        /// BUGBUG: Think about if this should be an enum or substruct for all
-        /// pools (there will be more in the future).
         #[mesh(8)]
         pub shared_pool_state: Option<page_pool_alloc::save_restore::PagePoolState>,
     }
