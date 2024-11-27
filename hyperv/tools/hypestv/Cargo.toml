@@ -12,6 +12,7 @@ console_relay.workspace = true
 diag_client.workspace = true
 guid.workspace = true
 inspect.workspace = true
+kmsg.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 

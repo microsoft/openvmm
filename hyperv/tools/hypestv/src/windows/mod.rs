@@ -56,11 +56,11 @@ pub(crate) enum InteractiveCommand {
 #[derive(Parser)]
 pub(crate) enum VmCommand {
     /// Start the VM.
-    Start {
-        /// Tell the paravisor to start the VM.
-        #[clap(short, long)]
-        paravisor: bool,
-    },
+    Start,
+
+    /// Paravisor commands.
+    #[clap(subcommand, visible_alias = "pv")]
+    Paravisor(ParavisorCommand),
 
     /// Power off the VM.
     Kill {
@@ -96,25 +96,21 @@ pub(crate) enum VmCommand {
         /// The serial output mode.
         mode: Option<SerialMode>,
     },
+}
 
-    /// Inspect host or paravisor state.
-    #[clap(visible_alias = "x")]
-    Inspect {
-        /// Enumerate state recursively.
-        #[clap(short, long)]
-        recursive: bool,
-        /// The recursive depth limit.
-        #[clap(short, long, requires("recursive"))]
-        limit: Option<usize>,
-        /// Send the inspect request to the paravisor running in the VM.
-        #[clap(short = 'p', short_alias = 'v', long)]
-        paravisor: bool,
-        /// Update the path with a new value.
-        #[clap(short, long, conflicts_with("recursive"))]
-        update: Option<String>,
-        /// The element path to inspect.
-        element: Option<String>,
-    },
+#[derive(Parser)]
+pub(crate) struct InspectArgs {
+    /// Enumerate state recursively.
+    #[clap(short, long)]
+    recursive: bool,
+    /// The recursive depth limit.
+    #[clap(short, long, requires("recursive"))]
+    limit: Option<usize>,
+    /// Update the path with a new value.
+    #[clap(short, long, conflicts_with("recursive"))]
+    update: Option<String>,
+    /// The element path to inspect.
+    element: Option<String>,
 }
 
 #[derive(ValueEnum, Copy, Clone)]
@@ -135,6 +131,35 @@ impl Display for SerialMode {
     }
 }
 
+#[derive(Parser)]
+pub(crate) enum ParavisorCommand {
+    /// Tell the paravisor to start the VM.
+    Start,
+
+    /// Get or set the output mode for paravisor kmsg logs.
+    Kmsg { mode: Option<LogMode> },
+
+    /// Inpsect paravisor state.
+    #[clap(visible_alias = "x")]
+    Inspect(InspectArgs),
+}
+
+#[derive(ValueEnum, Copy, Clone)]
+pub enum LogMode {
+    /// The log output is disabled.
+    Off,
+    /// The log is written to standard output.
+    Log,
+    /// The log is written to a new terminal emulator window.
+    Term,
+}
+
+impl Display for LogMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(self.to_possible_value().unwrap().get_name())
+    }
+}
+
 pub(crate) enum Request {
     Prompt(mesh::rpc::Rpc<(), String>),
     Inspect(mesh::rpc::Rpc<(InspectTarget, String), anyhow::Result<inspect::Node>>),
@@ -142,7 +167,6 @@ pub(crate) enum Request {
 }
 
 pub(crate) enum InspectTarget {
-    Host,
     Paravisor,
 }
 

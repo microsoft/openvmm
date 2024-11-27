@@ -7,13 +7,17 @@ use super::hyperv::hvc_output;
 use super::hyperv::run_hcsdiag;
 use super::hyperv::run_hvc;
 use super::rustyline_printer::Printer;
+use super::InspectArgs;
 use super::InspectTarget;
+use super::LogMode;
+use super::ParavisorCommand;
 use super::SerialMode;
 use super::VmCommand;
 use anyhow::Context as _;
 use diag_client::DiagClient;
 use futures::io::BufReader;
 use futures::AsyncBufReadExt;
+use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::future::Race;
@@ -26,19 +30,26 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub struct Vm {
-    paravisor_diag: DiagClient,
     inner: Arc<VmInner>,
     serial: Vec<Option<SerialTask>>,
+    pv_kmsg: Option<KmsgTask>,
 }
 
 struct SerialTask {
     mode: SerialMode,
     task: Task<()>,
-    req: mesh::Sender<SerialRequest>,
+    req: mesh::Sender<IoRequest>,
+}
+
+struct KmsgTask {
+    mode: LogMode,
+    task: Task<()>,
+    req: mesh::Sender<IoRequest>,
 }
 
 struct VmInner {
     driver: DefaultDriver,
+    paravisor_diag: DiagClient,
     name: String,
     id: Guid,
     printer: Printer,
@@ -49,14 +60,15 @@ impl Vm {
         let id = diag_client::hyperv::vm_id_from_name(&name).context("failed to get vm id")?;
         let inner = Arc::new(VmInner {
             driver: driver.clone(),
+            paravisor_diag: DiagClient::from_hyperv_id(driver, id),
             printer,
             name,
             id,
         });
         Ok(Self {
-            paravisor_diag: DiagClient::from_hyperv_id(driver, id),
             serial: (0..4).map(|_| None).collect(),
             inner,
+            pv_kmsg: None,
         })
     }
 
@@ -75,11 +87,9 @@ impl Vm {
         path: &str,
     ) -> anyhow::Result<inspect::Node> {
         match target {
-            InspectTarget::Host => {
-                anyhow::bail!("host inspect not supported yet");
-            }
             InspectTarget::Paravisor => {
-                self.paravisor_diag
+                self.inner
+                    .paravisor_diag
                     .inspect(path, Some(0), Some(Duration::from_secs(1)))
                     .await
             }
@@ -88,22 +98,11 @@ impl Vm {
 
     pub async fn handle_command(&mut self, cmd: VmCommand) -> anyhow::Result<()> {
         match cmd {
-            VmCommand::Start { paravisor } => {
-                if paravisor {
-                    self.paravisor_diag
-                        .start([], [])
-                        .await
-                        .context("start failed")?;
-
-                    writeln!(self.inner.printer.out(), "guest started within paravisor")?;
-                } else {
-                    self.delay(move |inner| {
-                        run_hvc(|cmd| cmd.arg("start").arg(&inner.name))?;
-                        writeln!(inner.printer.out(), "VM started")?;
-                        Ok(())
-                    })
-                }
-            }
+            VmCommand::Start => self.delay(move |inner| {
+                run_hvc(|cmd| cmd.arg("start").arg(&inner.name))?;
+                writeln!(inner.printer.out(), "VM started")?;
+                Ok(())
+            }),
             VmCommand::Kill { force } => self.delay(move |inner| {
                 if force {
                     run_hcsdiag(|cmd| cmd.arg("kill").arg(inner.id.to_string()))?;
@@ -177,8 +176,8 @@ impl Vm {
                         }
                         None
                     }
-                    SerialMode::Log => Some(SerialTarget::Printer),
-                    SerialMode::Term => Some(SerialTarget::Console(
+                    SerialMode::Log => Some(IoTarget::Printer),
+                    SerialMode::Term => Some(IoTarget::Console(
                         console_relay::Console::new(self.inner.driver.clone(), None)
                             .context("failed to launch console")?,
                     )),
@@ -186,7 +185,7 @@ impl Vm {
                 if let Some(target) = target {
                     if let Some(task) = task {
                         task.mode = mode;
-                        task.req.send(SerialRequest::NewTarget(target));
+                        task.req.send(IoRequest::NewTarget(target));
                     } else {
                         let (req, recv) = mesh::channel();
                         let inner = self.inner.clone();
@@ -199,18 +198,65 @@ impl Vm {
                     }
                 }
             }
-            VmCommand::Inspect {
+            VmCommand::Paravisor(cmd) => self.handle_paravisor_command(cmd).await?,
+        }
+        Ok(())
+    }
+
+    async fn handle_paravisor_command(&mut self, cmd: ParavisorCommand) -> anyhow::Result<()> {
+        match cmd {
+            ParavisorCommand::Start => {
+                self.inner
+                    .paravisor_diag
+                    .start([], [])
+                    .await
+                    .context("start failed")?;
+
+                writeln!(self.inner.printer.out(), "guest started within paravisor")?;
+            }
+            ParavisorCommand::Kmsg { mode: None } => {
+                println!("{}", self.pv_kmsg.as_ref().map_or(LogMode::Off, |t| t.mode));
+            }
+            ParavisorCommand::Kmsg { mode: Some(mode) } => {
+                let target = match mode {
+                    LogMode::Off => {
+                        if let Some(task) = self.pv_kmsg.take() {
+                            drop(task.req);
+                            task.task.await;
+                        }
+                        None
+                    }
+                    LogMode::Log => Some(IoTarget::Printer),
+                    LogMode::Term => Some(IoTarget::Console(
+                        console_relay::Console::new(self.inner.driver.clone(), None)
+                            .context("failed to launch console")?,
+                    )),
+                };
+                if let Some(target) = target {
+                    if let Some(task) = &mut self.pv_kmsg {
+                        task.mode = mode;
+                        task.req.send(IoRequest::NewTarget(target));
+                    } else {
+                        let (req, recv) = mesh::channel();
+                        let inner = self.inner.clone();
+                        let t = self.inner.driver.spawn("kmsg", async move {
+                            if let Err(err) = inner.handle_kmsg(recv, target).await {
+                                writeln!(inner.printer.out(), "kmsg failed: {:#}", err).ok();
+                            }
+                        });
+                        self.pv_kmsg = Some(KmsgTask { task: t, mode, req });
+                    }
+                }
+            }
+            ParavisorCommand::Inspect(InspectArgs {
                 recursive,
                 limit,
-                paravisor,
                 update,
                 element,
-            } => {
-                if !paravisor {
-                    anyhow::bail!("no host inspect yet");
-                }
+            }) => {
                 if let Some(update) = update {
                     let value = self
+                        .inner
                         .paravisor_diag
                         .update(element.unwrap_or_default(), update)
                         .await
@@ -219,6 +265,7 @@ impl Vm {
                     println!("{:#}", value);
                 } else {
                     let node = self
+                        .inner
                         .paravisor_diag
                         .inspect(
                             element.unwrap_or_default(),
@@ -250,11 +297,11 @@ impl Vm {
     }
 }
 
-enum SerialRequest {
-    NewTarget(SerialTarget),
+enum IoRequest {
+    NewTarget(IoTarget),
 }
 
-enum SerialTarget {
+enum IoTarget {
     Printer,
     Console(console_relay::Console),
 }
@@ -262,15 +309,15 @@ enum SerialTarget {
 impl VmInner {
     async fn handle_serial(
         &self,
-        mut req: mesh::Receiver<SerialRequest>,
-        mut target: SerialTarget,
+        mut req: mesh::Receiver<IoRequest>,
+        mut target: IoTarget,
         port: u32,
     ) -> anyhow::Result<()> {
         let mut current_serial = None;
 
         enum Event {
             TaskDone(anyhow::Result<()>),
-            Request(Option<SerialRequest>),
+            Request(Option<IoRequest>),
         }
 
         loop {
@@ -286,31 +333,31 @@ impl VmInner {
                     .await
                     .context("failed to open serial port")?;
 
+                    writeln!(self.printer.out(), "com{port} connected").ok();
+
                     current_serial.insert(BufReader::new(
                         PolledPipe::new(&self.driver, new_serial)
                             .context("failed to create polled pipe")?,
                     ))
                 };
 
-                writeln!(self.printer.out(), "COM{port} connected").ok();
-
                 match &mut target {
-                    SerialTarget::Printer => {
+                    IoTarget::Printer => {
                         let mut line = String::new();
                         while let Ok(n) = serial.read_line(&mut line).await {
                             if n == 0 {
                                 break;
                             }
-                            write!(self.printer.out(), "[COM{port}]: {}", line).ok();
+                            write!(self.printer.out(), "[com{port}]: {}", line).ok();
                             line.clear();
                         }
                     }
-                    SerialTarget::Console(console) => {
+                    IoTarget::Console(console) => {
                         console.relay(serial).await?;
                     }
                 }
 
-                writeln!(self.printer.out(), "COM{port} disconnected").ok();
+                writeln!(self.printer.out(), "com{port} disconnected").ok();
                 current_serial = None;
                 Ok(())
             };
@@ -321,7 +368,7 @@ impl VmInner {
             match event {
                 Event::TaskDone(r) => r?,
                 Event::Request(Some(y)) => match y {
-                    SerialRequest::NewTarget(new_target) => {
+                    IoRequest::NewTarget(new_target) => {
                         target = new_target;
                     }
                 },
@@ -333,7 +380,91 @@ impl VmInner {
 
         if let Some(serial) = current_serial {
             drop(serial);
-            writeln!(self.printer.out(), "COM{port} disconnected").ok();
+            writeln!(self.printer.out(), "com{port} disconnected").ok();
+        }
+
+        Ok(())
+    }
+
+    async fn handle_kmsg(
+        &self,
+        mut req: mesh::Receiver<IoRequest>,
+        mut target: IoTarget,
+    ) -> anyhow::Result<()> {
+        let mut current = None;
+
+        enum Event {
+            TaskDone(anyhow::Result<()>),
+            Request(Option<IoRequest>),
+        }
+
+        loop {
+            let task = async {
+                let kmsg = if let Some(kmsg) = &mut current {
+                    kmsg
+                } else {
+                    self.paravisor_diag.wait_for_server().await?;
+                    let new_kmsg = self
+                        .paravisor_diag
+                        .kmsg(true)
+                        .await
+                        .context("failed to open kmsg stream")?;
+
+                    writeln!(self.printer.out(), "kmsg connected").ok();
+
+                    current.insert(new_kmsg)
+                };
+
+                while let Some(data) = kmsg.next().await {
+                    match data {
+                        Ok(data) => {
+                            let message = kmsg::KmsgParsedEntry::new(&data)?;
+                            match &mut target {
+                                IoTarget::Printer => {
+                                    writeln!(
+                                        self.printer.out(),
+                                        "[kmsg]: {}",
+                                        message.display(true)
+                                    )
+                                    .ok();
+                                }
+                                IoTarget::Console(console) => {
+                                    let line = format!("{}\r\n", message.display(true));
+                                    console.write_all(line.as_bytes()).await?;
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("kmsg failure: {:#}", anyhow::Error::from(err));
+                            return Ok(());
+                        }
+                    }
+                }
+
+                writeln!(self.printer.out(), "kmsg disconnected").ok();
+                current = None;
+                Ok(())
+            };
+
+            let event = (task.map(Event::TaskDone), req.next().map(Event::Request))
+                .race()
+                .await;
+            match event {
+                Event::TaskDone(r) => r?,
+                Event::Request(Some(y)) => match y {
+                    IoRequest::NewTarget(new_target) => {
+                        target = new_target;
+                    }
+                },
+                Event::Request(None) => {
+                    break;
+                }
+            }
+        }
+
+        if let Some(kmsg) = current {
+            drop(kmsg);
+            writeln!(self.printer.out(), "kmsg disconnected").ok();
         }
 
         Ok(())
