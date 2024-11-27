@@ -141,30 +141,31 @@ impl PendingCommands {
 
     /// Restore pending commands from the saved state.
     pub fn restore(saved_state: &PendingCommandsSavedState) -> anyhow::Result<Self> {
-        let commands: Vec<(usize, PendingCommand)> = saved_state
-            .commands
-            .iter()
-            .map(|state| {
-                let (send, mut _recv) = mesh::oneshot::<nvme_spec::Completion>();
-                // To correctly restore Slab we need both the command index,
-                // inherited from command's CID, and the command itself.
-                (
-                    // Remove high CID bits to be used as a key.
-                    (state.command.cdw0.cid() & Self::CID_KEY_MASK) as usize,
-                    PendingCommand {
-                        command: state.command,
-                        respond: send,
-                    },
-                )
-            })
-            .collect();
-
-        // Re-create identical Slab where CIDs are correctly mapped.
-        let commands = commands.into_iter().collect::<Slab<PendingCommand>>();
+        let PendingCommandsSavedState {
+            commands,
+            next_cid_high_bits,
+            cid_key_bits: _, // TODO: For future use.
+        } = saved_state;
 
         Ok(Self {
-            commands,
-            next_cid_high_bits: Wrapping(saved_state.next_cid_high_bits),
+            // Re-create identical Slab where CIDs are correctly mapped.
+            commands: commands
+                .iter()
+                .map(|state| {
+                    let (send, mut _recv) = mesh::oneshot::<nvme_spec::Completion>();
+                    // To correctly restore Slab we need both the command index,
+                    // inherited from command's CID, and the command itself.
+                    (
+                        // Remove high CID bits to be used as a key.
+                        (state.command.cdw0.cid() & Self::CID_KEY_MASK) as usize,
+                        PendingCommand {
+                            command: state.command,
+                            respond: send,
+                        },
+                    )
+                })
+                .collect::<Slab<PendingCommand>>(),
+            next_cid_high_bits: Wrapping(*next_cid_high_bits),
         })
     }
 }
@@ -224,35 +225,28 @@ impl QueuePair {
         mut interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
         mem: MemoryBlock,
-        saved_state: Option<&QueuePairSavedState>,
+        saved_state: Option<&QueueHandlerSavedState>,
     ) -> anyhow::Result<Self> {
+        // MemoryBlock is either allocated or restored prior calling here.
         let sq_mem_block = mem.subblock(0, PAGE_SIZE);
         let cq_mem_block = mem.subblock(PAGE_SIZE, PAGE_SIZE);
         let data_offset = sq_mem_block.len() + cq_mem_block.len();
-        let (sq, cq) = match saved_state {
-            Some(s) => (
-                SubmissionQueue::restore(sq_mem_block, &s.handler_data.sq_state)?,
-                CompletionQueue::restore(cq_mem_block, &s.handler_data.cq_state)?,
-            ),
-            None => (
-                SubmissionQueue::new(qid, sq_entries, sq_mem_block),
-                CompletionQueue::new(qid, cq_entries, cq_mem_block),
-            ),
+
+        let mut queue_handler = match saved_state {
+            Some(s) => QueueHandler::restore(sq_mem_block, cq_mem_block, s)?,
+            None => {
+                // Create a new one.
+                QueueHandler {
+                    sq: SubmissionQueue::new(qid, sq_entries, sq_mem_block),
+                    cq: CompletionQueue::new(qid, cq_entries, cq_mem_block),
+                    commands: PendingCommands::new(),
+                    stats: Default::default(),
+                }
+            }
         };
 
         let (send, recv) = mesh::channel();
         let (mut ctx, cancel) = CancelContext::new().with_cancel();
-
-        let mut queue_handler = match saved_state {
-            Some(s) => QueueHandler::restore(sq, cq, &s.handler_data)?,
-            None => QueueHandler {
-                sq,
-                cq,
-                commands: PendingCommands::new(),
-                stats: Default::default(),
-            },
-        };
-
         let task = spawner.spawn("nvme-queue", {
             async move {
                 ctx.until_cancelled(async {
@@ -324,19 +318,24 @@ impl QueuePair {
         mem: MemoryBlock,
         saved_state: &QueuePairSavedState,
     ) -> anyhow::Result<Self> {
-        let qid = saved_state.qid;
-        let sq_entries = saved_state.sq_entries;
-        let cq_entries = saved_state.cq_entries;
-
-        QueuePair::new_or_restore(
-            spawner,
+        let QueuePairSavedState {
+            mem_len: _,  // Used to restore DMA buffer before calling this.
+            base_pfn: _, // Used to restore DMA buffer before calling this.
             qid,
             sq_entries,
             cq_entries,
+            handler_data,
+        } = saved_state;
+
+        QueuePair::new_or_restore(
+            spawner,
+            *qid,
+            *sq_entries,
+            *cq_entries,
             interrupt,
             registers,
             mem,
-            Some(saved_state),
+            Some(handler_data),
         )
     }
 }
@@ -684,14 +683,20 @@ impl QueueHandler {
 
     /// Restore queue data after servicing.
     pub fn restore(
-        sq: SubmissionQueue,
-        cq: CompletionQueue,
+        sq_mem_block: MemoryBlock,
+        cq_mem_block: MemoryBlock,
         saved_state: &QueueHandlerSavedState,
     ) -> anyhow::Result<Self> {
+        let QueueHandlerSavedState {
+            sq_state,
+            cq_state,
+            pending_cmds,
+        } = saved_state;
+
         Ok(Self {
-            sq,
-            cq,
-            commands: PendingCommands::restore(&saved_state.pending_cmds)?,
+            sq: SubmissionQueue::restore(sq_mem_block, sq_state)?,
+            cq: CompletionQueue::restore(cq_mem_block, cq_state)?,
+            commands: PendingCommands::restore(pending_cmds)?,
             stats: Default::default(),
         })
     }

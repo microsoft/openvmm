@@ -121,18 +121,18 @@ impl IoQueue {
         mem_block: MemoryBlock,
         saved_state: &IoQueueSavedState,
     ) -> anyhow::Result<Self> {
-        let queue = QueuePair::restore(
-            spawner,
-            interrupt,
-            registers.clone(),
-            mem_block,
-            &saved_state.queue_data,
-        )?;
+        let IoQueueSavedState {
+            cpu,
+            msix,
+            queue_data,
+        } = saved_state;
+        let queue =
+            QueuePair::restore(spawner, interrupt, registers.clone(), mem_block, queue_data)?;
 
         Ok(Self {
             queue,
-            iv: saved_state.msix as u16,
-            cpu: saved_state.cpu,
+            iv: *msix as u16,
+            cpu: *cpu,
         })
     }
 }
@@ -633,35 +633,27 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         // Restore I/O queues.
         // Interrupt vector 0 is shared between Admin queue and I/O queue #1.
-        let mut ioq: Vec<IoQueue> = Vec::new();
-        for q_state in &saved_state.worker_data.io {
-            let interrupt = worker
-                .device
-                .map_interrupt(q_state.msix, q_state.cpu)
-                .context("failed to map interrupt")?;
-
-            let mem_block = dma_buffer
-                .attach_dma_buffer(q_state.queue_data.mem_len, q_state.queue_data.base_pfn)?;
-            let q = IoQueue::restore(
-                driver.clone(),
-                interrupt,
-                registers.clone(),
-                mem_block,
-                q_state,
-            )
-            .unwrap();
-
-            let issuer = IoIssuer {
-                issuer: q.queue.issuer().clone(),
-                cpu: q_state.cpu,
-            };
-            this.io_issuers.per_cpu[q_state.cpu as usize]
-                .set(issuer)
-                .unwrap();
-
-            ioq.push(q);
-        }
-        worker.io = ioq;
+        worker.io = saved_state
+            .worker_data
+            .io
+            .iter()
+            .flat_map(|q| -> Result<IoQueue, anyhow::Error> {
+                let interrupt = worker
+                    .device
+                    .map_interrupt(q.msix, q.cpu)
+                    .context("failed to map interrupt")?;
+                let mem_block =
+                    dma_buffer.attach_dma_buffer(q.queue_data.mem_len, q.queue_data.base_pfn)?;
+                let q =
+                    IoQueue::restore(driver.clone(), interrupt, registers.clone(), mem_block, q)?;
+                let issuer = IoIssuer {
+                    issuer: q.queue.issuer().clone(),
+                    cpu: q.cpu,
+                };
+                this.io_issuers.per_cpu[q.cpu as usize].set(issuer).unwrap();
+                Ok(q)
+            })
+            .collect();
 
         // Restore namespace(s).
         for ns in &saved_state.namespaces {

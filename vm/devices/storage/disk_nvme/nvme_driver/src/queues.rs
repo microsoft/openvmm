@@ -86,12 +86,19 @@ impl SubmissionQueue {
         mem: MemoryBlock,
         saved_state: &SubmissionQueueSavedState,
     ) -> anyhow::Result<Self> {
+        let SubmissionQueueSavedState {
+            sqid,
+            head,
+            tail,
+            committed_tail,
+            len,
+        } = saved_state;
         Ok(Self {
-            sqid: saved_state.sqid,
-            head: saved_state.head,
-            tail: saved_state.tail,
-            committed_tail: saved_state.committed_tail,
-            len: saved_state.len,
+            sqid: *sqid,
+            head: *head,
+            tail: *tail,
+            committed_tail: *committed_tail,
+            len: *len,
             mem,
         })
     }
@@ -164,12 +171,20 @@ impl CompletionQueue {
         mem: MemoryBlock,
         saved_state: &CompletionQueueSavedState,
     ) -> anyhow::Result<Self> {
+        let CompletionQueueSavedState {
+            cqid,
+            head,
+            committed_head,
+            len,
+            phase,
+        } = saved_state;
+
         Ok(Self {
-            cqid: saved_state.cqid,
-            head: saved_state.head,
-            committed_head: saved_state.committed_head,
-            len: saved_state.len,
-            phase: saved_state.phase,
+            cqid: *cqid,
+            head: *head,
+            committed_head: *committed_head,
+            len: *len,
+            phase: *phase,
             mem,
         })
     }
