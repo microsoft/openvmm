@@ -4333,8 +4333,6 @@ dependencies = [
  "open_enum",
  "serde",
  "serde_json",
- "sev_guest_device",
- "tdx_guest_device",
  "zerocopy",
 ]
 
