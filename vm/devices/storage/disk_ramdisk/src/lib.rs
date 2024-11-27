@@ -358,6 +358,7 @@ mod tests {
     use disk_backend::layered::LayerIo;
     use disk_backend::layered::LayeredDisk;
     use disk_backend::DiskIo;
+    use disk_backend::Unmap;
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
@@ -432,16 +433,12 @@ mod tests {
         .unwrap();
     }
 
-    #[async_test]
-    async fn diff() {
-        const SIZE: usize = 1024 * 1024;
-
-        let guest_mem = GuestMemory::allocate(SIZE);
-
-        let mut lower = RamLayer::new(Some(SIZE as u64)).unwrap();
-        write_layer(&guest_mem, &mut lower, 0, SIZE / SECTOR_USIZE, 0).await;
-        let upper = RamLayer::new(Some(SIZE as u64)).unwrap();
-        let mut upper = LayeredDisk::new(
+    async fn prep_disk(size: usize) -> (GuestMemory, LayeredDisk) {
+        let guest_mem = GuestMemory::allocate(size);
+        let mut lower = RamLayer::new(Some(size as u64)).unwrap();
+        write_layer(&guest_mem, &mut lower, 0, size / SECTOR_USIZE, 0).await;
+        let upper = RamLayer::new(Some(size as u64)).unwrap();
+        let upper = LayeredDisk::new(
             false,
             Vec::from_iter([upper, lower].map(|layer| LayerConfiguration {
                 layer: DiskLayer::new(layer),
@@ -450,6 +447,14 @@ mod tests {
             })),
         )
         .unwrap();
+        (guest_mem, upper)
+    }
+
+    #[async_test]
+    async fn diff() {
+        const SIZE: usize = 1024 * 1024;
+
+        let (guest_mem, mut upper) = prep_disk(SIZE).await;
         read(&guest_mem, &mut upper, 10, 2).await;
         check(&guest_mem, 10, 0, 2, 0);
         write(&guest_mem, &mut upper, 10, 2, 1).await;
@@ -478,27 +483,35 @@ mod tests {
         const SIZE: usize = 1024 * 1024;
         const SECTORS: usize = SIZE / SECTOR_USIZE;
 
-        let guest_mem = GuestMemory::allocate(SIZE);
-        let mut lower = RamLayer::new(Some(SIZE as u64)).unwrap();
-        write_layer(&guest_mem, &mut lower, 0, SECTORS, 1).await;
-        let upper = RamLayer::new(Some(SIZE as u64)).unwrap();
-        let mut upper = LayeredDisk::new(
-            false,
-            Vec::from_iter([upper, lower].map(|layer| LayerConfiguration {
-                layer: DiskLayer::new(layer),
-                write_through: false,
-                read_cache: false,
-            })),
-        )
-        .unwrap();
-        check(&guest_mem, 0, 0, SECTORS, 1);
+        let (guest_mem, mut upper) = prep_disk(SIZE).await;
+        check(&guest_mem, 0, 0, SECTORS, 0);
         resize(&upper, SECTORS as u64 / 2).await;
         resize(&upper, SECTORS as u64).await;
-        let mut inspection = inspect::inspect("", &upper);
-        inspection.resolve().await;
-        println!("{:#}", inspection.results());
         read(&guest_mem, &mut upper, 0, SECTORS).await;
-        check(&guest_mem, 0, 0, SECTORS / 2, 1);
+        check(&guest_mem, 0, 0, SECTORS / 2, 0);
+        for s in SECTORS / 2..SECTORS {
+            let mut buf = [0u8; SECTOR_USIZE];
+            guest_mem.read_at(s as u64 * SECTOR_U64, &mut buf).unwrap();
+            assert_eq!(buf, [0u8; SECTOR_USIZE]);
+        }
+    }
+
+    #[async_test]
+    async fn test_unmap() {
+        const SIZE: usize = 1024 * 1024;
+        const SECTORS: usize = SIZE / SECTOR_USIZE;
+
+        let (guest_mem, mut upper) = prep_disk(SIZE).await;
+        Unmap::unmap(&upper, 0, SECTORS as u64 - 1, false)
+            .await
+            .unwrap();
+        read(&guest_mem, &mut upper, 0, SECTORS).await;
+        check(&guest_mem, 0, 0, SECTORS, 0);
+        Unmap::unmap(&upper, SECTORS as u64 / 2, SECTORS as u64 / 2, false)
+            .await
+            .unwrap();
+        read(&guest_mem, &mut upper, 0, SECTORS).await;
+        check(&guest_mem, 0, 0, SECTORS / 2, 0);
         for s in SECTORS / 2..SECTORS {
             let mut buf = [0u8; SECTOR_USIZE];
             guest_mem.read_at(s as u64 * SECTOR_U64, &mut buf).unwrap();
