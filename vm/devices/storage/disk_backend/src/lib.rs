@@ -7,20 +7,14 @@
 //! (such as the VMGS file system).
 //!
 //! `Disk`s are backed by a [`DiskIo`] implementation. Specific disk
-//! backends should be in their own crates. The exceptions that prove the rule
-//! is [`ZeroDisk`][], which is small enough to be in this crate and serve as an
-//! example.
-//!
-//! [`ZeroDisk`]: crate::zerodisk::ZeroDisk
+//! backends should be in their own crates.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-pub mod layered;
 pub mod pr;
 pub mod resolve;
 pub mod sync_wrapper;
-pub mod zerodisk;
 
 use guestmem::AccessError;
 use inspect::Inspect;

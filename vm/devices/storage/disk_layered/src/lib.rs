@@ -27,11 +27,11 @@ pub mod resolver;
 
 pub use bitmap::SectorMarker;
 
-use crate::Disk;
-use crate::DiskError;
-use crate::DiskIo;
-use crate::Unmap;
 use bitmap::Bitmap;
+use disk_backend::Disk;
+use disk_backend::DiskError;
+use disk_backend::DiskIo;
+use disk_backend::Unmap;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;

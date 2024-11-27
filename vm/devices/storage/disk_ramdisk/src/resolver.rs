@@ -5,9 +5,9 @@
 
 use super::Error;
 use super::RamLayer;
-use disk_backend::layered::resolve::ResolveDiskLayerParameters;
-use disk_backend::layered::resolve::ResolvedDiskLayer;
-use disk_backend_resources::RamDiskLayerHandle;
+use disk_backend_resources::layer::RamDiskLayerHandle;
+use disk_layered::resolve::ResolveDiskLayerParameters;
+use disk_layered::resolve::ResolvedDiskLayer;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::DiskLayerHandleKind;
 use vm_resource::ResolveResource;

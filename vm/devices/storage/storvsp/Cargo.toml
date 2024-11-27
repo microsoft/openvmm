@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 disk_backend.workspace = true
+disk_ramdisk.workspace = true # For `ioperf` modules
 scsi_buffers.workspace = true
 scsi_core.workspace = true
 scsi_defs.workspace = true

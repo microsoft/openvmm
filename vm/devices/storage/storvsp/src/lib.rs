@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
 pub mod ioperf;
 mod protocol;
 pub mod resolver;

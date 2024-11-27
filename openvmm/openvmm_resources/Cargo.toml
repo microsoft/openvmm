@@ -31,10 +31,10 @@ vm_resource.workspace = true
 # Serial
 serial_core.workspace = true
 serial_socket.workspace = true
-disk_backend.workspace = true
 disk_blob = { workspace = true, optional = true }
 disk_crypt = { workspace = true, optional = true }
 disk_file.workspace = true
+disk_layered.workspace = true
 disk_prwrap.workspace = true
 disk_ramdisk.workspace = true
 disk_vhd1.workspace = true

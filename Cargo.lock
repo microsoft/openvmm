@@ -1087,7 +1087,6 @@ name = "disk_backend"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "disk_backend_resources",
  "futures",
  "guestmem",
  "inspect",
@@ -1219,6 +1218,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "disk_layered"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "disk_backend",
+ "disk_backend_resources",
+ "futures",
+ "guestmem",
+ "inspect",
+ "scsi_buffers",
+ "thiserror 2.0.0",
+ "vm_resource",
+]
+
+[[package]]
 name = "disk_nvme"
 version = "0.0.0"
 dependencies = [
@@ -1254,6 +1268,7 @@ dependencies = [
  "anyhow",
  "disk_backend",
  "disk_backend_resources",
+ "disk_layered",
  "event-listener",
  "guestmem",
  "inspect",
@@ -4546,10 +4561,10 @@ dependencies = [
  "build_rs_guest_arch",
  "chipset",
  "debug_worker",
- "disk_backend",
  "disk_blob",
  "disk_crypt",
  "disk_file",
+ "disk_layered",
  "disk_prwrap",
  "disk_ramdisk",
  "disk_vhd1",

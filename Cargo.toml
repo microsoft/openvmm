@@ -244,6 +244,7 @@ disk_crypt = { path = "vm/devices/storage/disk_crypt" }
 disk_crypt_resources = { path = "vm/devices/storage/disk_crypt_resources" }
 disk_file = { path = "vm/devices/storage/disk_file" }
 disk_get_vmgs = { path = "vm/devices/storage/disk_get_vmgs" }
+disk_layered = { path = "vm/devices/storage/disk_layered" }
 disk_nvme = { path = "vm/devices/storage/disk_nvme" }
 disk_ramdisk = { path = "vm/devices/storage/disk_ramdisk" }
 disk_striped = { path = "vm/devices/storage/disk_striped" }

@@ -9,16 +9,15 @@
 pub mod resolver;
 
 use anyhow::Context;
-use disk_backend::layered::DiskLayer;
-use disk_backend::layered::LayerConfiguration;
-use disk_backend::layered::LayerIo;
-use disk_backend::layered::LayeredDisk;
-use disk_backend::layered::SectorMarker;
-use disk_backend::layered::UnmapBehavior;
-use disk_backend::layered::WriteNoOverwrite;
-use disk_backend::zerodisk::InvalidGeometry;
 use disk_backend::Disk;
 use disk_backend::DiskError;
+use disk_layered::DiskLayer;
+use disk_layered::LayerConfiguration;
+use disk_layered::LayerIo;
+use disk_layered::LayeredDisk;
+use disk_layered::SectorMarker;
+use disk_layered::UnmapBehavior;
+use disk_layered::WriteNoOverwrite;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
@@ -78,9 +77,17 @@ impl Debug for RamLayer {
 /// An error creating a RAM disk.
 #[derive(Error, Debug)]
 pub enum Error {
-    /// Invalid disk geometry.
-    #[error(transparent)]
-    InvalidGeometry(#[from] InvalidGeometry),
+    /// The disk size is not a multiple of the sector size.
+    #[error("disk size {disk_size:#x} is not a multiple of the sector size {sector_size}")]
+    NotSectorMultiple {
+        /// The disk size.
+        disk_size: u64,
+        /// The sector size.
+        sector_size: u32,
+    },
+    /// The disk has no sectors.
+    #[error("disk has no sectors")]
+    EmptyDisk,
 }
 
 struct Sector([u8; 512]);
@@ -95,13 +102,13 @@ impl RamLayer {
     pub fn new(size: Option<u64>) -> Result<Self, Error> {
         let sector_count = if let Some(size) = size {
             if size == 0 {
-                return Err(Error::InvalidGeometry(InvalidGeometry::EmptyDisk));
+                return Err(Error::EmptyDisk);
             }
             if size % SECTOR_SIZE as u64 != 0 {
-                return Err(Error::InvalidGeometry(InvalidGeometry::NotSectorMultiple {
+                return Err(Error::NotSectorMultiple {
                     disk_size: size,
                     sector_size: SECTOR_SIZE,
-                }));
+                });
             }
             size / SECTOR_SIZE as u64
         } else {
@@ -353,12 +360,12 @@ pub fn ram_disk(size: u64, read_only: bool) -> anyhow::Result<Disk> {
 mod tests {
     use super::RamLayer;
     use super::SECTOR_SIZE;
-    use disk_backend::layered::DiskLayer;
-    use disk_backend::layered::LayerConfiguration;
-    use disk_backend::layered::LayerIo;
-    use disk_backend::layered::LayeredDisk;
     use disk_backend::DiskIo;
     use disk_backend::Unmap;
+    use disk_layered::DiskLayer;
+    use disk_layered::LayerConfiguration;
+    use disk_layered::LayerIo;
+    use disk_layered::LayeredDisk;
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
