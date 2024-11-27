@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! RAM-backed disk backend implementation.
+//! RAM-backed disk layer implementation.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -9,12 +9,14 @@
 pub mod resolver;
 
 use anyhow::Context;
+use disk_backend::layered::DiskLayer;
+use disk_backend::layered::LayerIo;
+use disk_backend::layered::LayeredDisk;
+use disk_backend::layered::SectorMarker;
+use disk_backend::layered::UnmapBehavior;
+use disk_backend::layered::WriteNoOverwrite;
 use disk_backend::zerodisk::InvalidGeometry;
-use disk_backend::zerodisk::ZeroDisk;
-use disk_backend::Disk;
 use disk_backend::DiskError;
-use disk_backend::DiskIo;
-use disk_backend::Unmap;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
@@ -29,22 +31,19 @@ use std::sync::atomic::Ordering;
 use thiserror::Error;
 
 /// A disk backed entirely by RAM.
-pub struct RamDisk {
+pub struct RamLayer {
     data: RwLock<BTreeMap<u64, Sector>>,
     sector_count: AtomicU64,
     read_only: bool,
-    lower_is_zero: bool,
-    lower: Disk,
     resize_event: event_listener::Event,
 }
 
-impl Inspect for RamDisk {
+impl Inspect for RamLayer {
     fn inspect(&self, req: inspect::Request<'_>) {
         req.respond()
             .field_with("committed_size", || {
                 self.data.read().len() * size_of::<Sector>()
             })
-            .field("lower", &self.lower)
             .field_mut_with("sector_count", |new_count| {
                 if let Some(new_count) = new_count {
                     self.resize(new_count.parse().context("invalid sector count")?)?;
@@ -54,9 +53,9 @@ impl Inspect for RamDisk {
     }
 }
 
-impl Debug for RamDisk {
+impl Debug for RamLayer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RamDisk")
+        f.debug_struct("RamLayer")
             .field("sector_count", &self.sector_count)
             .field("read_only", &self.read_only)
             .finish()
@@ -69,45 +68,29 @@ pub enum Error {
     /// Invalid disk geometry.
     #[error(transparent)]
     InvalidGeometry(#[from] InvalidGeometry),
-    /// Unsupported sector size.
-    #[error("unsupported sector size {0}")]
-    UnsupportedSectorSize(u32),
 }
 
 struct Sector([u8; 512]);
 
 const SECTOR_SIZE: u32 = 512;
 
-impl RamDisk {
+impl RamLayer {
     /// Makes a new RAM disk of `size` bytes.
-    pub fn new(len: u64, read_only: bool) -> Result<Self, Error> {
-        Self::new_inner(
-            Disk::new(ZeroDisk::new(SECTOR_SIZE, len)?).unwrap(),
-            read_only,
-            true,
-        )
-    }
-
-    /// Makes a new RAM diff disk on top of `lower`.
-    ///
-    /// Writes will be collected in RAM, but reads will go to the lower disk for
-    /// sectors that have not yet been overwritten.
-    pub fn diff(lower: Disk, read_only: bool) -> Result<Self, Error> {
-        Self::new_inner(lower, read_only, false)
-    }
-
-    fn new_inner(lower: Disk, read_only: bool, lower_is_zero: bool) -> Result<Self, Error> {
-        let sector_size = lower.sector_size();
-        if sector_size != SECTOR_SIZE {
-            return Err(Error::UnsupportedSectorSize(sector_size));
+    pub fn new(size: u64, read_only: bool) -> Result<Self, Error> {
+        if size == 0 {
+            return Err(Error::InvalidGeometry(InvalidGeometry::EmptyDisk));
         }
-        let sector_count = lower.sector_count();
+        if size % SECTOR_SIZE as u64 != 0 {
+            return Err(Error::InvalidGeometry(InvalidGeometry::NotSectorMultiple {
+                disk_size: size,
+                sector_size: SECTOR_SIZE,
+            }));
+        }
+        let sector_count = size / SECTOR_SIZE as u64;
         Ok(Self {
             data: RwLock::new(BTreeMap::new()),
             sector_count: sector_count.into(),
             read_only,
-            lower_is_zero,
-            lower,
             resize_event: Default::default(),
         })
     }
@@ -119,16 +102,44 @@ impl RamDisk {
         // Remove any truncated data and update the sector count under the lock.
         let _removed = {
             let mut data = self.data.write();
+            // TODO: remember when growing the disk that missing sectors are zero.
             self.sector_count.store(new_sector_count, Ordering::Relaxed);
             data.split_off(&new_sector_count)
         };
         self.resize_event.notify(usize::MAX);
         Ok(())
     }
+
+    fn write_maybe_overwrite(
+        &self,
+        buffers: &RequestBuffers<'_>,
+        sector: u64,
+        overwrite: bool,
+    ) -> Result<(), DiskError> {
+        assert!(!self.read_only);
+        let count = buffers.len() / SECTOR_SIZE as usize;
+        tracing::trace!(sector, count, "write");
+        let mut data = self.data.write();
+        Ok(for i in 0..count {
+            let cur = i + sector as usize;
+            let buf = buffers.subrange(i * SECTOR_SIZE as usize, SECTOR_SIZE as usize);
+            let mut reader = buf.reader();
+            match data.entry(cur as u64) {
+                Entry::Vacant(entry) => {
+                    entry.insert(Sector(reader.read_plain()?));
+                }
+                Entry::Occupied(mut entry) => {
+                    if overwrite {
+                        reader.read(&mut entry.get_mut().0)?;
+                    }
+                }
+            }
+        })
+    }
 }
 
-impl DiskIo for RamDisk {
-    fn disk_type(&self) -> &str {
+impl LayerIo for RamLayer {
+    fn layer_type(&self) -> &str {
         "ram"
     }
 
@@ -145,69 +156,44 @@ impl DiskIo for RamDisk {
     }
 
     fn disk_id(&self) -> Option<[u8; 16]> {
-        self.lower.disk_id()
+        None
     }
 
     fn physical_sector_size(&self) -> u32 {
-        self.lower.physical_sector_size()
+        SECTOR_SIZE
     }
 
     fn is_fua_respected(&self) -> bool {
         true
     }
 
-    fn unmap(&self) -> Option<impl Unmap> {
-        self.lower_is_zero.then_some(self)
-    }
-
-    async fn read_vectored(
+    async fn read(
         &self,
         buffers: &RequestBuffers<'_>,
         sector: u64,
+        mut bitmap: SectorMarker<'_>,
     ) -> Result<(), DiskError> {
         let count = (buffers.len() / SECTOR_SIZE as usize) as u64;
         tracing::trace!(sector, count, "read");
-        // Always read the full lower and then overlay the changes.
-        // Optimizations are possible, but some heuristics are necessary to
-        // avoid lots of small reads when the disk is "Swiss cheesed".
-        self.lower.read_vectored(buffers, sector).await?;
         for (&s, buf) in self.data.read().range(sector..sector + count) {
             let offset = (s - sector) as usize * SECTOR_SIZE as usize;
             buffers
                 .subrange(offset, SECTOR_SIZE as usize)
                 .writer()
                 .write(&buf.0)?;
+
+            bitmap.set(s);
         }
         Ok(())
     }
 
-    async fn write_vectored(
+    async fn write(
         &self,
         buffers: &RequestBuffers<'_>,
         sector: u64,
         _fua: bool,
     ) -> Result<(), DiskError> {
-        assert!(!self.read_only);
-
-        let count = buffers.len() / SECTOR_SIZE as usize;
-        tracing::trace!(sector, count, "write");
-
-        let mut data = self.data.write();
-        for i in 0..count {
-            let cur = i + sector as usize;
-            let buf = buffers.subrange(i * SECTOR_SIZE as usize, SECTOR_SIZE as usize);
-            let mut reader = buf.reader();
-            match data.entry(cur as u64) {
-                Entry::Vacant(entry) => {
-                    entry.insert(Sector(reader.read_plain()?));
-                }
-                Entry::Occupied(mut entry) => {
-                    reader.read(&mut entry.get_mut().0)?;
-                }
-            }
-        }
-
-        Ok(())
+        self.write_maybe_overwrite(buffers, sector, true)
     }
 
     async fn sync_cache(&self) -> Result<(), DiskError> {
@@ -225,16 +211,17 @@ impl DiskIo for RamDisk {
             listen.await;
         }
     }
-}
 
-impl Unmap for RamDisk {
     async fn unmap(
         &self,
         sector_offset: u64,
         sector_count: u64,
         _block_level_only: bool,
+        lower_is_zero: bool,
     ) -> Result<(), DiskError> {
-        assert!(self.lower_is_zero);
+        if !lower_is_zero {
+            return Ok(());
+        }
         tracing::trace!(sector_offset, sector_count, "unmap");
         let mut data = self.data.write();
         // Sadly, there appears to be no way to remove a range of entries
@@ -254,20 +241,52 @@ impl Unmap for RamDisk {
         Ok(())
     }
 
+    fn unmap_behavior(&self) -> UnmapBehavior {
+        // This layer zeroes if the lower layer is zero, but otherwise does
+        // nothing, so we must report unspecified.
+        UnmapBehavior::Unspecified
+    }
+
     fn optimal_unmap_sectors(&self) -> u32 {
         1
     }
 }
 
+impl WriteNoOverwrite for RamLayer {
+    async fn write_no_overwrite(
+        &self,
+        buffers: &RequestBuffers<'_>,
+        sector: u64,
+    ) -> Result<(), DiskError> {
+        self.write_maybe_overwrite(buffers, sector, false)
+    }
+}
+
+/// Create a RAM disk of `size` bytes.
+///
+/// This is a convenience function for creating a layered disk with a single RAM
+/// layer. It is useful since non-layered RAM disks are used all over the place,
+/// especially in tests.
+pub fn ram_disk(size: u64, read_only: bool) -> anyhow::Result<LayeredDisk> {
+    let layer = LayeredDisk::new(vec![DiskLayer::new(
+        RamLayer::new(size, read_only)?,
+        Default::default(),
+    )?])?;
+    Ok(layer)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::RamDisk;
+    use super::RamLayer;
     use super::SECTOR_SIZE;
-    use crate::DiskIo;
-    use disk_backend::Disk;
+    use disk_backend::layered::DiskLayer;
+    use disk_backend::layered::LayerIo;
+    use disk_backend::layered::LayeredDisk;
+    use disk_backend::DiskIo;
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
+    use test_with_tracing::test;
     use zerocopy::AsBytes;
 
     const SECTOR_U64: u64 = SECTOR_SIZE as u64;
@@ -300,6 +319,28 @@ mod tests {
         .unwrap();
     }
 
+    async fn write_layer(
+        mem: &GuestMemory,
+        disk: &mut impl LayerIo,
+        sector: u64,
+        count: usize,
+        high: u8,
+    ) {
+        let buf: Vec<_> = (sector * SECTOR_U64 / 4..(sector + count as u64) * SECTOR_U64 / 4)
+            .map(|x| x as u32 | ((high as u32) << 24))
+            .collect();
+        let len = SECTOR_USIZE * count;
+        mem.write_at(0, &buf.as_bytes()[..len]).unwrap();
+
+        disk.write(
+            &OwnedRequestBuffers::linear(0, len, false).buffer(mem),
+            sector,
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
     async fn write(mem: &GuestMemory, disk: &mut impl DiskIo, sector: u64, count: usize, high: u8) {
         let buf: Vec<_> = (sector * SECTOR_U64 / 4..(sector + count as u64) * SECTOR_U64 / 4)
             .map(|x| x as u32 | ((high as u32) << 24))
@@ -322,9 +363,14 @@ mod tests {
 
         let guest_mem = GuestMemory::allocate(SIZE);
 
-        let mut lower = RamDisk::new(SIZE as u64, false).unwrap();
-        write(&guest_mem, &mut lower, 0, SIZE / SECTOR_USIZE, 0).await;
-        let mut upper = RamDisk::diff(Disk::new(lower).unwrap(), false).unwrap();
+        let mut lower = RamLayer::new(SIZE as u64, false).unwrap();
+        write_layer(&guest_mem, &mut lower, 0, SIZE / SECTOR_USIZE, 0).await;
+        let upper = RamLayer::new(SIZE as u64, false).unwrap();
+        let mut upper = LayeredDisk::new(vec![
+            DiskLayer::new(upper, Default::default()).unwrap(),
+            DiskLayer::new(lower, Default::default()).unwrap(),
+        ])
+        .unwrap();
         read(&guest_mem, &mut upper, 10, 2).await;
         check(&guest_mem, 10, 0, 2, 0);
         write(&guest_mem, &mut upper, 10, 2, 1).await;

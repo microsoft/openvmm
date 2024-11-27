@@ -4,8 +4,10 @@
 //! Resource resolver for RAM disks.
 
 use super::Error;
-use super::RamDisk;
+use super::RamLayer;
 use async_trait::async_trait;
+use disk_backend::layered::DiskLayer;
+use disk_backend::layered::LayeredDisk;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
 use disk_backend_resources::RamDiffDiskHandle;
@@ -50,7 +52,12 @@ impl AsyncResolveResource<DiskHandleKind, RamDiskHandle> for RamDiskResolver {
         input: ResolveDiskParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
         ResolvedDisk::new(
-            RamDisk::new(rsrc.len, input.read_only).map_err(ResolveRamDiskError::Ram)?,
+            LayeredDisk::new(vec![DiskLayer::new(
+                RamLayer::new(rsrc.len, input.read_only).map_err(ResolveRamDiskError::Ram)?,
+                Default::default(),
+            )
+            .expect("BUGBUG")])
+            .expect("BUGBUG"),
         )
         .map_err(ResolveRamDiskError::InvalidDisk)
     }
@@ -77,8 +84,19 @@ impl AsyncResolveResource<DiskHandleKind, RamDiffDiskHandle> for RamDiskResolver
             )
             .await
             .map_err(ResolveRamDiskError::Resolve)?;
+
+        let upper = RamLayer::new(
+            lower.0.sector_count() * lower.0.sector_size() as u64,
+            input.read_only,
+        )
+        .map_err(ResolveRamDiskError::Ram)?;
+
         ResolvedDisk::new(
-            RamDisk::diff(lower.0, input.read_only).map_err(ResolveRamDiskError::Ram)?,
+            LayeredDisk::new(vec![
+                DiskLayer::from_disk(lower.0).expect("BUGBUG"),
+                DiskLayer::new(upper, Default::default()).expect("BUGBUG"),
+            ])
+            .expect("BUGBUG"),
         )
         .map_err(ResolveRamDiskError::InvalidDisk)
     }

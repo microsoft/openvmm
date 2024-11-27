@@ -264,10 +264,7 @@ pub fn create_host_channel(
         None,
         recv,
         None,
-        Some(
-            Disk::new(disk_ramdisk::RamDisk::new(TEST_VMGS_CAPACITY as u64, false).unwrap())
-                .unwrap(),
-        ),
+        Some(Disk::new(disk_ramdisk::ram_disk(TEST_VMGS_CAPACITY as u64, false).unwrap()).unwrap()),
     );
 
     if let Some(ged_responses) = ged_responses {

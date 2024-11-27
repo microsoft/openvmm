@@ -1260,6 +1260,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "scsi_buffers",
+ "test_with_tracing",
  "thiserror 2.0.0",
  "tracing",
  "vm_resource",

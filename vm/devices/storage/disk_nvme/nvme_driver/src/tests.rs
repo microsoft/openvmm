@@ -4,7 +4,6 @@
 use crate::NvmeDriver;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_backend::Disk;
-use disk_ramdisk::RamDisk;
 use guid::Guid;
 use nvme::NvmeControllerCaps;
 use nvme_spec::nvm::DsmRange;
@@ -60,7 +59,10 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         },
     );
     nvme.client()
-        .add_namespace(1, Disk::new(RamDisk::new(1 << 20, false).unwrap()).unwrap())
+        .add_namespace(
+            1,
+            Disk::new(disk_ramdisk::ram_disk(1 << 20, false).unwrap()).unwrap(),
+        )
         .await
         .unwrap();
 

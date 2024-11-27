@@ -1864,7 +1864,6 @@ pub mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use disk_ramdisk::RamDisk;
     use pal_async::async_test;
     #[cfg(with_encryption)]
     use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
@@ -1872,7 +1871,7 @@ mod tests {
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 
     fn new_test_file() -> Disk {
-        Disk::new(RamDisk::new(4 * ONE_MEGA_BYTE, false).unwrap()).unwrap()
+        Disk::new(disk_ramdisk::ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()).unwrap()
     }
 
     #[async_test]
