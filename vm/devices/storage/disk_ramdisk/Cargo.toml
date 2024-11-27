@@ -17,7 +17,6 @@ inspect.workspace = true
 pal_async.workspace = true
 
 anyhow.workspace = true
-async-trait.workspace = true
 parking_lot.workspace = true
 event-listener.workspace = true
 thiserror.workspace = true

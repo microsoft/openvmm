@@ -4,7 +4,8 @@
 //! Integration tests for x86_64 Linux direct boot with OpenHCL.
 
 use anyhow::Context;
-use disk_backend_resources::RamDiskHandle;
+use disk_backend_resources::LayeredDiskHandle;
+use disk_backend_resources::RamDiskLayerHandle;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
 use guid::Guid;
@@ -130,9 +131,9 @@ async fn storvsp(config: PetriVmConfig) -> Result<(), anyhow::Error> {
                             lun: vtl2_lun as u8,
                         },
                         device: SimpleScsiDiskHandle {
-                            disk: RamDiskHandle {
-                                len: scsi_disk_sectors * sector_size,
-                            }
+                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(scsi_disk_sectors * sector_size),
+                            })
                             .into_resource(),
                             read_only: false,
                             parameters: Default::default(),
@@ -153,9 +154,9 @@ async fn storvsp(config: PetriVmConfig) -> Result<(), anyhow::Error> {
                     msix_count: 64,
                     namespaces: vec![NamespaceDefinition {
                         nsid: vtl2_nsid,
-                        disk: (RamDiskHandle {
-                            len: nvme_disk_sectors * sector_size,
-                        }
+                        disk: (LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                            len: Some(nvme_disk_sectors * sector_size),
+                        })
                         .into_resource()),
                         read_only: false,
                     }],
@@ -337,7 +338,12 @@ async fn openhcl_linux_storvsp_dvd(config: PetriVmConfig) -> Result<(), anyhow::
     hot_plug_send
         .call_failable(
             SimpleScsiDvdRequest::ChangeMedia,
-            Some(RamDiskHandle { len: len as u64 }.into_resource()),
+            Some(
+                LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                    len: Some(len as u64),
+                })
+                .into_resource(),
+            ),
         )
         .await
         .context("failed to change media")?;
@@ -408,9 +414,9 @@ async fn openhcl_linux_stripe_storvsp(config: PetriVmConfig) -> Result<(), anyho
                         msix_count: 64,
                         namespaces: vec![NamespaceDefinition {
                             nsid: vtl2_nsid,
-                            disk: (RamDiskHandle {
-                                len: nvme_disk_sectors * sector_size,
-                            }
+                            disk: (LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(nvme_disk_sectors * sector_size),
+                            })
                             .into_resource()),
                             read_only: false,
                         }],
@@ -426,9 +432,9 @@ async fn openhcl_linux_stripe_storvsp(config: PetriVmConfig) -> Result<(), anyho
                         msix_count: 64,
                         namespaces: vec![NamespaceDefinition {
                             nsid: vtl2_nsid,
-                            disk: (RamDiskHandle {
-                                len: nvme_disk_sectors * sector_size,
-                            }
+                            disk: (LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(nvme_disk_sectors * sector_size),
+                            })
                             .into_resource()),
                             read_only: false,
                         }],

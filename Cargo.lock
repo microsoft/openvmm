@@ -1087,6 +1087,7 @@ name = "disk_backend"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "disk_backend_resources",
  "futures",
  "guestmem",
  "inspect",
@@ -1251,7 +1252,6 @@ name = "disk_ramdisk"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "disk_backend",
  "disk_backend_resources",
  "event-listener",
@@ -1994,7 +1994,6 @@ dependencies = [
  "chipset_arc_mutex_device",
  "chipset_device",
  "chipset_device_fuzz",
- "disk_backend",
  "disk_ramdisk",
  "guestmem",
  "ide",
@@ -4198,7 +4197,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
- "disk_backend",
  "disk_ramdisk",
  "event-listener",
  "futures",
@@ -4548,6 +4546,7 @@ dependencies = [
  "build_rs_guest_arch",
  "chipset",
  "debug_worker",
+ "disk_backend",
  "disk_blob",
  "disk_crypt",
  "disk_file",

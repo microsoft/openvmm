@@ -42,6 +42,7 @@ vm_resource::register_static_resolvers! {
     net_dio::resolver::DioResolver,
 
     // Disks
+    disk_backend::layered::resolver::LayeredDiskResolver,
     #[cfg(feature = "disk_crypt")]
     disk_crypt::resolver::DiskCryptResolver,
     disk_ramdisk::resolver::RamDiskResolver,

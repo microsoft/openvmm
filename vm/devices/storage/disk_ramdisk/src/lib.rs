@@ -10,6 +10,7 @@ pub mod resolver;
 
 use anyhow::Context;
 use disk_backend::layered::DiskLayer;
+use disk_backend::layered::LayerConfiguration;
 use disk_backend::layered::LayerIo;
 use disk_backend::layered::LayeredDisk;
 use disk_backend::layered::SectorMarker;
@@ -75,17 +76,24 @@ const SECTOR_SIZE: u32 = 512;
 
 impl RamLayer {
     /// Makes a new RAM disk of `size` bytes.
-    pub fn new(size: u64) -> Result<Self, Error> {
-        if size == 0 {
-            return Err(Error::InvalidGeometry(InvalidGeometry::EmptyDisk));
-        }
-        if size % SECTOR_SIZE as u64 != 0 {
-            return Err(Error::InvalidGeometry(InvalidGeometry::NotSectorMultiple {
-                disk_size: size,
-                sector_size: SECTOR_SIZE,
-            }));
-        }
-        let sector_count = size / SECTOR_SIZE as u64;
+    ///
+    /// If `None` is specified, then the disk will inherit its size from the
+    /// lower layer when it is attached to a [`LayeredDisk`].
+    pub fn new(size: Option<u64>) -> Result<Self, Error> {
+        let sector_count = if let Some(size) = size {
+            if size == 0 {
+                return Err(Error::InvalidGeometry(InvalidGeometry::EmptyDisk));
+            }
+            if size % SECTOR_SIZE as u64 != 0 {
+                return Err(Error::InvalidGeometry(InvalidGeometry::NotSectorMultiple {
+                    disk_size: size,
+                    sector_size: SECTOR_SIZE,
+                }));
+            }
+            size / SECTOR_SIZE as u64
+        } else {
+            0
+        };
         Ok(Self {
             data: RwLock::new(BTreeMap::new()),
             sector_count: sector_count.into(),
@@ -168,7 +176,7 @@ impl LayerIo for RamLayer {
         &self,
         buffers: &RequestBuffers<'_>,
         sector: u64,
-        mut bitmap: SectorMarker<'_>,
+        mut marker: SectorMarker<'_>,
     ) -> Result<(), DiskError> {
         let count = (buffers.len() / SECTOR_SIZE as usize) as u64;
         tracing::trace!(sector, count, "read");
@@ -179,7 +187,7 @@ impl LayerIo for RamLayer {
                 .writer()
                 .write(&buf.0)?;
 
-            bitmap.set(s);
+            marker.set(s);
         }
         Ok(())
     }
@@ -191,6 +199,10 @@ impl LayerIo for RamLayer {
         _fua: bool,
     ) -> Result<(), DiskError> {
         self.write_maybe_overwrite(buffers, sector, true)
+    }
+
+    fn write_no_overwrite(&self) -> Option<impl WriteNoOverwrite> {
+        Some(self)
     }
 
     async fn sync_cache(&self) -> Result<(), DiskError> {
@@ -247,6 +259,15 @@ impl LayerIo for RamLayer {
     fn optimal_unmap_sectors(&self) -> u32 {
         1
     }
+
+    fn attach(&mut self, lower_sector_count: Option<u64>) {
+        if let Some(lower_sector_count) = lower_sector_count {
+            let count = self.sector_count.get_mut();
+            if *count == 0 {
+                *count = lower_sector_count;
+            }
+        }
+    }
 }
 
 impl WriteNoOverwrite for RamLayer {
@@ -267,7 +288,11 @@ impl WriteNoOverwrite for RamLayer {
 pub fn ram_disk(size: u64, read_only: bool) -> anyhow::Result<Disk> {
     let disk = Disk::new(LayeredDisk::new(
         read_only,
-        vec![DiskLayer::new(RamLayer::new(size)?, Default::default())?],
+        vec![LayerConfiguration {
+            layer: DiskLayer::new(RamLayer::new(Some(size))?),
+            write_through: false,
+            read_cache: false,
+        }],
     )?)?;
     Ok(disk)
 }
@@ -277,6 +302,7 @@ mod tests {
     use super::RamLayer;
     use super::SECTOR_SIZE;
     use disk_backend::layered::DiskLayer;
+    use disk_backend::layered::LayerConfiguration;
     use disk_backend::layered::LayerIo;
     use disk_backend::layered::LayeredDisk;
     use disk_backend::DiskIo;
@@ -360,15 +386,16 @@ mod tests {
 
         let guest_mem = GuestMemory::allocate(SIZE);
 
-        let mut lower = RamLayer::new(SIZE as u64).unwrap();
+        let mut lower = RamLayer::new(Some(SIZE as u64)).unwrap();
         write_layer(&guest_mem, &mut lower, 0, SIZE / SECTOR_USIZE, 0).await;
-        let upper = RamLayer::new(SIZE as u64).unwrap();
+        let upper = RamLayer::new(Some(SIZE as u64)).unwrap();
         let mut upper = LayeredDisk::new(
             false,
-            vec![
-                DiskLayer::new(upper, Default::default()).unwrap(),
-                DiskLayer::new(lower, Default::default()).unwrap(),
-            ],
+            Vec::from_iter([upper, lower].map(|layer| LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                write_through: false,
+                read_cache: false,
+            })),
         )
         .unwrap();
         read(&guest_mem, &mut upper, 10, 2).await;

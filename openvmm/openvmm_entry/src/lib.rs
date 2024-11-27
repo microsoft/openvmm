@@ -27,6 +27,8 @@ use cli_args::EndpointConfigCli;
 use cli_args::NicConfigCli;
 use cli_args::SerialConfigCli;
 use cli_args::UefiConsoleModeCli;
+use disk_backend_resources::DiskLayerHandle;
+use disk_backend_resources::RamDiskLayerHandle;
 use floppy_resources::FloppyDiskConfig;
 use framebuffer::FramebufferAccess;
 use framebuffer::FRAMEBUFFER_SIZE;
@@ -844,9 +846,9 @@ fn vm_config_from_command_line(
         let vmgs_disk = if let Some(disk) = &opt.get_vmgs {
             disk_open(disk, false).context("failed to open GET vmgs disk")?
         } else {
-            disk_backend_resources::RamDiskHandle {
-                len: vmgs_format::VMGS_DEFAULT_CAPACITY,
-            }
+            disk_backend_resources::LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
+            })
             .into_resource()
         };
         vmbus_devices.extend([
@@ -1416,7 +1418,11 @@ impl NicConfig {
 
 fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource<DiskHandleKind>> {
     let disk_type = match disk_cli {
-        &DiskCliKind::Memory(len) => Resource::new(disk_backend_resources::RamDiskHandle { len }),
+        &DiskCliKind::Memory(len) => {
+            Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
+                RamDiskLayerHandle { len: Some(len) },
+            ))
+        }
         DiskCliKind::File(path) => open_disk_type(path, read_only)
             .with_context(|| format!("failed to open {}", path.display()))?,
         DiskCliKind::Blob { kind, url } => Resource::new(disk_backend_resources::BlobDiskHandle {
@@ -1427,8 +1433,13 @@ fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource
             },
         }),
         DiskCliKind::MemoryDiff(inner) => {
-            Resource::new(disk_backend_resources::RamDiffDiskHandle {
-                lower: disk_open(inner, true)?,
+            Resource::new(disk_backend_resources::LayeredDiskHandle {
+                layers: vec![
+                    RamDiskLayerHandle { len: None }.into_resource().into(),
+                    DiskLayerHandle(disk_open(inner, true)?)
+                        .into_resource()
+                        .into(),
+                ],
             })
         }
         DiskCliKind::PersistentReservationsWrapper(inner) => Resource::new(
@@ -2363,7 +2374,9 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                                 .with_context(|| format!("failed to open {}", path.display()))?
                         }
                         Some(size) => {
-                            Resource::new(disk_backend_resources::RamDiskHandle { len: size })
+                            Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
+                                RamDiskLayerHandle { len: Some(size) },
+                            ))
                         }
                     };
 

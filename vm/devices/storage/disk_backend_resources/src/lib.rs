@@ -8,35 +8,27 @@
 
 use mesh::MeshPayload;
 use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::DiskLayerHandleKind;
+use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 
 // Define config types here so that you don't have to pull in the individual
 // crates just to describe the configuration.
 
-/// RAM disk handle.
+/// RAM disk layer handle.
 ///
 /// FUTURE: allocate shared memory here so that the disk can be migrated between
 /// processes.
 #[derive(MeshPayload)]
-pub struct RamDiskHandle {
-    /// Size of the disk, in bytes.
-    pub len: u64,
+pub struct RamDiskLayerHandle {
+    /// The size of the layer. If `None`, the layer will be the same size as the
+    /// lower disk.
+    pub len: Option<u64>,
 }
 
-impl ResourceId<DiskHandleKind> for RamDiskHandle {
+impl ResourceId<DiskLayerHandleKind> for RamDiskLayerHandle {
     const ID: &'static str = "ram";
-}
-
-/// RAM diff disk handle.
-#[derive(MeshPayload)]
-pub struct RamDiffDiskHandle {
-    /// The lower disk resource.
-    pub lower: Resource<DiskHandleKind>,
-}
-
-impl ResourceId<DiskHandleKind> for RamDiffDiskHandle {
-    const ID: &'static str = "ramdiff";
 }
 
 /// File-backed disk handle.
@@ -120,4 +112,53 @@ pub enum BlobDiskFormat {
     Flat,
     /// A fixed VHD1, with a VHD footer specifying disk metadata.
     FixedVhd1,
+}
+
+/// Handle for a disk that is backed by one or more layers.
+#[derive(MeshPayload)]
+pub struct LayeredDiskHandle {
+    /// The layers that make up the disk. The first layer is the top-most layer.
+    pub layers: Vec<DiskLayerDescription>,
+}
+
+impl LayeredDiskHandle {
+    /// Create a new layered disk handle with a single layer.
+    pub fn single_layer(layer: impl IntoResource<DiskLayerHandleKind>) -> Self {
+        Self {
+            layers: vec![layer.into_resource().into()],
+        }
+    }
+}
+
+impl ResourceId<DiskHandleKind> for LayeredDiskHandle {
+    const ID: &'static str = "layered";
+}
+
+/// Description of a disk layer.
+#[derive(MeshPayload)]
+pub struct DiskLayerDescription {
+    /// The layer resource.
+    pub layer: Resource<DiskLayerHandleKind>,
+    /// If true, reads that miss this layer are written back to this layer.
+    pub read_cache: bool,
+    /// If true, writes are written both to this layer and the next one.
+    pub write_through: bool,
+}
+
+impl From<Resource<DiskLayerHandleKind>> for DiskLayerDescription {
+    fn from(layer: Resource<DiskLayerHandleKind>) -> Self {
+        Self {
+            layer,
+            read_cache: false,
+            write_through: false,
+        }
+    }
+}
+
+/// Handle for a disk layer backed by a full disk.
+#[derive(MeshPayload)]
+pub struct DiskLayerHandle(pub Resource<DiskHandleKind>);
+
+impl ResourceId<DiskLayerHandleKind> for DiskLayerHandle {
+    const ID: &'static str = "disk";
 }
