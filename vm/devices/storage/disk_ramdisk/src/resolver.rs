@@ -38,6 +38,12 @@ pub enum ResolveRamDiskError {
     /// Invalid disk.
     #[error("invalid disk")]
     InvalidDisk(#[source] disk_backend::InvalidDisk),
+    /// Invalid layer.
+    #[error("invalid layer")]
+    InvalidLayer(#[source] disk_backend::layered::InvalidLayer),
+    /// Invalid layered disk.
+    #[error("invalid layered disk")]
+    InvalidLayeredDisk(#[source] disk_backend::layered::InvalidLayeredDisk),
 }
 
 #[async_trait]
@@ -56,8 +62,8 @@ impl AsyncResolveResource<DiskHandleKind, RamDiskHandle> for RamDiskResolver {
                 RamLayer::new(rsrc.len, input.read_only).map_err(ResolveRamDiskError::Ram)?,
                 Default::default(),
             )
-            .expect("BUGBUG")])
-            .expect("BUGBUG"),
+            .map_err(ResolveRamDiskError::InvalidLayer)?])
+            .map_err(ResolveRamDiskError::InvalidLayeredDisk)?,
         )
         .map_err(ResolveRamDiskError::InvalidDisk)
     }
@@ -93,10 +99,11 @@ impl AsyncResolveResource<DiskHandleKind, RamDiffDiskHandle> for RamDiskResolver
 
         ResolvedDisk::new(
             LayeredDisk::new(vec![
-                DiskLayer::from_disk(lower.0).expect("BUGBUG"),
-                DiskLayer::new(upper, Default::default()).expect("BUGBUG"),
+                DiskLayer::new(upper, Default::default())
+                    .map_err(ResolveRamDiskError::InvalidLayer)?,
+                DiskLayer::from_disk(lower.0),
             ])
-            .expect("BUGBUG"),
+            .map_err(ResolveRamDiskError::InvalidLayeredDisk)?,
         )
         .map_err(ResolveRamDiskError::InvalidDisk)
     }

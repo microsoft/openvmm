@@ -1,4 +1,25 @@
-#![allow(missing_docs)]
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! A layered disk implementation, [`LayeredDisk`].
+//!
+//! A layered disk is a disk composed of multiple layers. Each layer is a block
+//! device made up of sectors, but with the added per-sector state of whether
+//! the sector is present or not. When reading a sector, the layered disk will
+//! read from the topmost layer that has the sector present. When writing, the
+//! disk will write to the topmost layer.
+//!
+//! A layer can also have caching behavior. If a layer is configured to cache
+//! reads, then sectors that are read from lower layers are written back to the
+//! layer. If a layer is configured to write through, then writes are written to
+//! the layer and the next layer. These can be useful to implement simple
+//! persistent and non-persistent caches, primarily designed for lazily
+//! populating local backing stores from remote sources.
+//!
+//! Missing from this implementation is write-back caching and cache eviction,
+//! which would be needed for caches that are smaller than the disk. These
+//! require potentially complicated cache management policies and are probably
+//! best implemented in a separate disk implementation.
 
 mod bitmap;
 
@@ -12,9 +33,9 @@ use bitmap::Bitmap;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
-use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
+use thiserror::Error;
 
 /// A disk composed of multiple layers.
 #[derive(Inspect)]
@@ -45,6 +66,7 @@ pub struct LayerBehavior {
     pub read_cache: bool,
 }
 
+/// A disk layer, for use in [`LayeredDisk`].
 pub struct DiskLayer {
     backing: Box<dyn DynLayer>,
     behavior: LayerBehavior,
@@ -58,18 +80,39 @@ pub struct DiskLayer {
     optimal_unmap_sectors: u32,
 }
 
+/// An error returned when creating a [`DiskLayer`].
+#[derive(Debug, Error)]
+pub enum InvalidLayer {
+    /// Read caching was requested but is not supported.
+    #[error("read caching was requested but is not supported")]
+    ReadCacheNotSupported,
+    /// Caching was requested but the layer is read only.
+    #[error("caching was requested but the layer is read only")]
+    ReadOnlyCache,
+    /// The sector size is invalid.
+    #[error("sector size {0} is invalid")]
+    InvalidSectorSize(u32),
+}
+
 impl DiskLayer {
-    pub fn new<T: LayerIo>(backing: T, behavior: LayerBehavior) -> Result<Self, Infallible> {
+    /// Creates a new layer from a backing store.
+    ///
+    /// `behavior` specifies the caching behavior of the layer.
+    pub fn new<T: LayerIo>(backing: T, behavior: LayerBehavior) -> Result<Self, InvalidLayer> {
         if behavior.read_cache && backing.write_no_overwrite().is_none() {
-            todo!()
+            return Err(InvalidLayer::ReadCacheNotSupported);
         }
         if (behavior.read_cache || behavior.write_through) && backing.is_read_only() {
-            todo!()
+            return Err(InvalidLayer::ReadOnlyCache);
+        }
+        let sector_size = backing.sector_size();
+        if !sector_size.is_power_of_two() {
+            return Err(InvalidLayer::InvalidSectorSize(sector_size));
         }
         Ok(Self {
             disk_id: backing.disk_id(),
             is_fua_respected: backing.is_fua_respected(),
-            sector_size: backing.sector_size(),
+            sector_size,
             physical_sector_size: backing.physical_sector_size(),
             sector_count: backing.sector_count(),
             unmap_behavior: backing.unmap_behavior(),
@@ -82,7 +125,7 @@ impl DiskLayer {
 
     /// Creates a layer from a disk. The resulting layer is always fully
     /// present.
-    pub fn from_disk(disk: Disk) -> Result<Self, Infallible> {
+    pub fn from_disk(disk: Disk) -> Self {
         Self::new(
             DiskAsLayer(disk),
             LayerBehavior {
@@ -90,11 +133,38 @@ impl DiskLayer {
                 read_cache: false,
             },
         )
+        .expect("disks are always valid layers")
     }
 }
 
+/// An error returned when creating a [`LayeredDisk`].
+#[derive(Debug, Error)]
+pub enum InvalidLayeredDisk {
+    /// The sector size of the layers do not match.
+    #[error("layer {layer}: mismatched sector size in layers: {expected} vs {found}")]
+    MismatchedSectorSize {
+        /// The expected sector size.
+        expected: u32,
+        /// The sector size found in the layer.
+        found: u32,
+        /// The layer that has the mismatched sector size.
+        layer: usize,
+    },
+    /// A write-through layer is preceeded by a layer that is not write-through, or
+    /// the last layer is write-through.
+    #[error("layer {layer}: nothing to write through")]
+    UselessWriteThrough {
+        /// The layer that is uselessly configured for write-through.
+        layer: usize,
+    },
+}
+
 impl LayeredDisk {
-    pub fn new(layers: Vec<DiskLayer>) -> Result<Self, Infallible> {
+    /// Creates a new layered disk from a list of layers.
+    ///
+    /// The layers must be ordered from top to bottom, with the top layer being
+    /// the first in the list.
+    pub fn new(layers: Vec<DiskLayer>) -> Result<Self, InvalidLayeredDisk> {
         // Collect the common properties of the layers.
         let mut last_write_through = true;
         let mut is_read_only = false;
@@ -102,9 +172,14 @@ impl LayeredDisk {
         let mut optimal_unmap_sectors = Some(1);
         let mut unmap_must_zero = false;
         let mut disk_id = None;
-        for layer in &layers {
+        for (i, layer) in layers.iter().enumerate() {
             if layer.sector_size != layers[0].sector_size {
-                todo!();
+                // FUTURE: consider supporting different sector sizes, within reason.
+                return Err(InvalidLayeredDisk::MismatchedSectorSize {
+                    expected: layers[0].sector_size,
+                    found: layer.sector_size,
+                    layer: i,
+                });
             }
 
             if layer.behavior.write_through {
@@ -116,7 +191,7 @@ impl LayeredDisk {
                 unmap_must_zero = true;
                 // The write-through layers must all come first.
                 if !last_write_through {
-                    todo!();
+                    return Err(InvalidLayeredDisk::UselessWriteThrough { layer: i });
                 }
             }
             if last_write_through {
@@ -139,14 +214,12 @@ impl LayeredDisk {
             }
         }
         if last_write_through {
-            todo!();
+            return Err(InvalidLayeredDisk::UselessWriteThrough {
+                layer: layers.len() - 1,
+            });
         }
 
         let sector_size = layers[0].sector_size;
-        if !sector_size.is_power_of_two() {
-            todo!();
-        }
-
         let physical_sector_size = layers[0].physical_sector_size;
 
         let mut visible_sector_count = !0;
@@ -199,7 +272,7 @@ trait DynLayer: Send + Sync + Inspect {
         sector: u64,
         count: u64,
         block_level_only: bool,
-        lower_is_zero: bool,
+        next_is_zero: bool,
     ) -> Pin<Box<dyn '_ + Future<Output = Result<(), DiskError>> + Send>>;
 
     fn wait_resize(&self, sector_count: u64) -> Pin<Box<dyn '_ + Future<Output = u64> + Send>>;
@@ -247,9 +320,9 @@ impl<T: LayerIo> DynLayer for T {
         sector: u64,
         count: u64,
         block_level_only: bool,
-        lower_is_zero: bool,
+        next_is_zero: bool,
     ) -> Pin<Box<dyn '_ + Future<Output = Result<(), DiskError>> + Send>> {
-        Box::pin(self.unmap(sector, count, block_level_only, lower_is_zero))
+        Box::pin(self.unmap(sector, count, block_level_only, next_is_zero))
     }
 
     fn wait_resize(&self, sector_count: u64) -> Pin<Box<dyn '_ + Future<Output = u64> + Send>> {
@@ -257,6 +330,7 @@ impl<T: LayerIo> DynLayer for T {
     }
 }
 
+/// Metadata and IO for disk layers.
 pub trait LayerIo: 'static + Send + Sync + Inspect {
     /// Returns the layer type name as a string.
     ///
@@ -297,13 +371,19 @@ pub trait LayerIo: 'static + Send + Sync + Inspect {
     /// Issues an asynchronous flush operation to the disk.
     fn sync_cache(&self) -> impl Future<Output = Result<(), DiskError>> + Send;
 
+    /// Reads sectors from the layer.
+    ///
+    /// `marker` is used to specify which sectors have been read. Those that are
+    /// not read will be passed to the next layer, or zeroed if there are no
+    /// more layers.
     fn read(
         &self,
         buffers: &RequestBuffers<'_>,
         sector: u64,
-        bitmap: SectorMarker<'_>,
+        marker: SectorMarker<'_>,
     ) -> impl Future<Output = Result<(), DiskError>> + Send;
 
+    /// Writes sectors to the layer.
     fn write(
         &self,
         buffers: &RequestBuffers<'_>,
@@ -311,20 +391,28 @@ pub trait LayerIo: 'static + Send + Sync + Inspect {
         fua: bool,
     ) -> impl Future<Output = Result<(), DiskError>> + Send;
 
+    /// Unmap sectors from the layer.
+    ///
+    /// If `next_is_zero` is true, then the next layer's content's are known to
+    /// be zero. A layer can use this information to just discard the sectors
+    /// rather than putting them in the zero state (which make take more space).
     fn unmap(
         &self,
         sector: u64,
         count: u64,
         block_level_only: bool,
-        lower_is_zero: bool,
+        next_is_zero: bool,
     ) -> impl Future<Output = Result<(), DiskError>> + Send;
 
+    /// Returns the behavior of the unmap operation.
     fn unmap_behavior(&self) -> UnmapBehavior;
 
+    /// Returns the optimal granularity for unmaps, in sectors.
     fn optimal_unmap_sectors(&self) -> u32 {
         1
     }
 
+    /// Optionally returns a write-no-overwrite implementation.
     fn write_no_overwrite(&self) -> Option<impl WriteNoOverwrite> {
         None::<NoIdet>
     }
@@ -336,16 +424,26 @@ pub trait LayerIo: 'static + Send + Sync + Inspect {
     }
 }
 
+/// The behavior of unmap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnmapBehavior {
+    /// Unmaps are ignored.
     Ignored,
+    /// Unmap may or may not change the content, and not necessarily to zero.
     Unspecified,
+    /// Unmap will deterministically zero the content.
     Zeroes,
 }
 
 enum NoIdet {}
 
+/// Writes to the layer without overwriting existing data.
 pub trait WriteNoOverwrite: Send + Sync {
+    /// Write to the layer without overwriting existing data. Existing sectors
+    /// must be preserved.
+    ///
+    /// This is used to support read caching, where the data being written may
+    /// be stale by the time it is written back to the layer.
     fn write_no_overwrite(
         &self,
         buffers: &RequestBuffers<'_>,
@@ -368,40 +466,6 @@ impl WriteNoOverwrite for NoIdet {
         &self,
         _buffers: &RequestBuffers<'_>,
         _sector: u64,
-    ) -> Result<(), DiskError> {
-        unreachable!()
-    }
-}
-
-pub trait UnmapLayer: Send + Sync {
-    fn unmap(
-        &self,
-        sector: u64,
-        count: u64,
-        block_level_only: bool,
-        lower_is_zero: bool,
-    ) -> impl Future<Output = Result<(), DiskError>> + Send;
-}
-
-impl<T: UnmapLayer> UnmapLayer for &T {
-    fn unmap(
-        &self,
-        sector: u64,
-        count: u64,
-        block_level_only: bool,
-        lower_is_zero: bool,
-    ) -> impl Future<Output = Result<(), DiskError>> + Send {
-        (*self).unmap(sector, count, block_level_only, lower_is_zero)
-    }
-}
-
-impl UnmapLayer for NoIdet {
-    async fn unmap(
-        &self,
-        _sector: u64,
-        _count: u64,
-        _block_level_only: bool,
-        _lower_is_zero: bool,
     ) -> Result<(), DiskError> {
         unreachable!()
     }
@@ -444,6 +508,7 @@ impl DiskIo for LayeredDisk {
         let sector_count = buffers.len() >> self.sector_shift;
         let mut bitmap = Bitmap::new(sector, sector_count);
         let mut bits_set = 0;
+        // FUTURE: queue the reads to the layers in parallel.
         'done: for (i, layer) in self.layers.iter().enumerate() {
             if bits_set == sector_count {
                 break;
@@ -541,7 +606,7 @@ impl Unmap for LayeredDisk {
             .iter()
             .zip(self.layers.iter().map(Some).skip(1).chain([None]))
         {
-            let lower_is_zero = if let Some(next_layer) = next_layer {
+            let next_is_zero = if let Some(next_layer) = next_layer {
                 // Sectors beyond the layer's visible sector count are logically
                 // zero.
                 //
@@ -554,7 +619,7 @@ impl Unmap for LayeredDisk {
 
             layer
                 .backing
-                .unmap(sector_offset, sector_count, block_level_only, lower_is_zero)
+                .unmap(sector_offset, sector_count, block_level_only, next_is_zero)
                 .await?;
             if !layer.behavior.write_through {
                 break;
@@ -568,6 +633,7 @@ impl Unmap for LayeredDisk {
     }
 }
 
+/// A disk layer wrapping a full disk.
 #[derive(Inspect)]
 #[inspect(transparent)]
 struct DiskAsLayer(Disk);
@@ -612,6 +678,7 @@ impl LayerIo for DiskAsLayer {
         mut bitmap: SectorMarker<'_>,
     ) -> impl Future<Output = Result<(), DiskError>> + Send {
         async move {
+            // The disk is fully populated.
             bitmap.set_all();
             self.0.read_vectored(buffers, sector).await
         }

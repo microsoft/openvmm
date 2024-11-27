@@ -1,3 +1,10 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Sector bitmaps for tracking read sectors during layered read operations.
+//!
+//! FUTURE: use real bitmaps instead of bool vectors.
+
 use std::ops::Range;
 
 pub(crate) struct Bitmap {
@@ -72,6 +79,8 @@ impl SectorBitmapRange<'_> {
     }
 }
 
+/// A type to mark sectors that have been read by a layer as part of a
+/// [`LayerIo::read`](super::LayerIo::read) operation.
 pub struct SectorMarker<'a> {
     bits: &'a mut [bool],
     sector_base: u64,
@@ -88,6 +97,7 @@ impl SectorMarker<'_> {
         i as usize
     }
 
+    /// Mark the specified sector number as having been read.
     #[track_caller]
     pub fn set(&mut self, sector: u64) {
         let i = self.sector_to_index(sector);
@@ -95,6 +105,7 @@ impl SectorMarker<'_> {
         self.bits[i] = true;
     }
 
+    /// Mark the range of sectors as having been read.
     #[track_caller]
     pub fn set_range(&mut self, range: Range<u64>) {
         for sector in range {
@@ -102,6 +113,7 @@ impl SectorMarker<'_> {
         }
     }
 
+    /// Mark all the sectors as having been read.
     pub fn set_all(&mut self) {
         self.set_range(self.sector_base..self.sector_base + self.bits.len() as u64);
     }

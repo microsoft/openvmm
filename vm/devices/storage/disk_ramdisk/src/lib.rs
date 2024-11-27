@@ -217,9 +217,9 @@ impl LayerIo for RamLayer {
         sector_offset: u64,
         sector_count: u64,
         _block_level_only: bool,
-        lower_is_zero: bool,
+        next_is_zero: bool,
     ) -> Result<(), DiskError> {
-        if !lower_is_zero {
+        if !next_is_zero {
             return Ok(());
         }
         tracing::trace!(sector_offset, sector_count, "unmap");
