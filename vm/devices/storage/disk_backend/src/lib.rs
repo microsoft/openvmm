@@ -121,11 +121,6 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
         None::<NoUnmap>
     }
 
-    /// Optionally returns a trait object to issue get LBA status requests.
-    fn lba_status(&self) -> Option<&dyn GetLbaStatus> {
-        None
-    }
-
     /// Optionally returns a trait object to issue persistent reservation
     /// requests.
     fn pr(&self) -> Option<&dyn pr::PersistentReservation> {
@@ -182,7 +177,6 @@ impl Disk {
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
         resp.field("disk_type", self.0.disk.disk_type())
             .field("sector_count", self.0.disk.sector_count())
-            .field("supports_lba_status", self.0.disk.lba_status().is_some())
             .field("supports_pr", self.0.disk.pr().is_some())
             .field(
                 "optimal_unmap_sectors",
@@ -302,11 +296,6 @@ impl Disk {
         }
     }
 
-    /// Optionally returns a trait object to issue get LBA status requests.
-    pub fn lba_status(&self) -> Option<&dyn GetLbaStatus> {
-        self.0.disk.lba_status()
-    }
-
     /// Optionally returns a trait object to issue persistent reservation
     /// requests.
     pub fn pr(&self) -> Option<&dyn pr::PersistentReservation> {
@@ -376,74 +365,6 @@ impl Unmap for DiskUnmap<'_> {
     }
 }
 
-/// A trait to get LBA status and block index information.
-pub trait GetLbaStatus {
-    /// Returns the block index information for the given file offset.
-    fn file_offset_to_device_block_index_and_length(
-        &self,
-        disk: &Disk,
-        _start_offset: u64,
-        _get_lba_status_range_length: u64,
-        _block_size: u64,
-    ) -> DeviceBlockIndexInfo {
-        let sector_size = disk.sector_size() as u64;
-        let sector_count = disk.sector_count();
-        let disk_size = sector_size * sector_count;
-
-        // Treat fully allocation disk or fixed disk as one large block and just return
-        // enough descriptors from the LBA requested till the last LBA on disk.
-        //
-        // LbaPerBlock is a ULONG and technically with MAXULONG * 512 byte sectors,
-        // we can get upto 1.99 TB. The LBA descriptor also holds a ULONG
-        // LogicalBlockCount and can have an issue for larger than 2TB disks.
-        let lba_per_block = std::cmp::min(sector_count, u32::MAX.into());
-        let block_size_large = lba_per_block * sector_size;
-        let block_count = ((disk_size + block_size_large - 1) / block_size_large) as u32;
-        DeviceBlockIndexInfo {
-            first_partial_block_size: 0,
-            first_full_block_index: 0,
-            block_count,
-            last_partial_block_size: 0,
-            lba_per_block,
-        }
-    }
-
-    /// Returns the LBA status for the given block number.
-    fn get_block_lba_status(
-        &self,
-        _block_number: u32,
-        _leaf_node_state_only: bool,
-    ) -> Result<LbaStatus, DiskError> {
-        Ok(LbaStatus::Mapped)
-    }
-}
-
-/// The LBA status of a block.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum LbaStatus {
-    /// The block is mapped.
-    Mapped,
-    /// The block is deallocated.
-    Deallocated,
-    /// The block is anchored.
-    Anchored,
-}
-
-/// Result of a get LBA status request.
-#[derive(Debug, Default, Copy, Clone)]
-pub struct DeviceBlockIndexInfo {
-    /// The size of the first partial block.
-    pub first_partial_block_size: u32,
-    /// The index of the first full block.
-    pub first_full_block_index: u32,
-    /// The number of blocks.
-    pub block_count: u32,
-    /// The size of the last partial block.
-    pub last_partial_block_size: u32,
-    /// The number of LBAs per block.
-    pub lba_per_block: u64,
-}
-
 /// Unmap disk sectors that are no longer in use.
 pub trait Unmap: Send + Sync {
     /// Unmaps the specified sectors.
@@ -505,7 +426,6 @@ trait DynDisk: Send + Sync + Inspect {
     fn unmap(&self, sector_offset: u64, sector_count: u64, block_level_only: bool) -> IoFuture<'_>;
 
     fn optimal_unmap_sectors(&self) -> u32;
-    fn lba_status(&self) -> Option<&dyn GetLbaStatus>;
     fn pr(&self) -> Option<&dyn pr::PersistentReservation>;
     fn eject(&self) -> IoFuture<'_>;
 
@@ -554,10 +474,6 @@ impl<T: DiskIo> DynDisk for T {
 
     fn optimal_unmap_sectors(&self) -> u32 {
         self.unmap().unwrap().optimal_unmap_sectors()
-    }
-
-    fn lba_status(&self) -> Option<&dyn GetLbaStatus> {
-        self.lba_status()
     }
 
     fn pr(&self) -> Option<&dyn pr::PersistentReservation> {

@@ -111,7 +111,6 @@ pub struct SimpleScsiDisk {
     sector_size: u32,
     sense_data: SenseDataSlot,
     scsi_parameters: ScsiParameters,
-    support_get_lba_status: bool,
     support_pr: bool,
     last_sector_count: AtomicU64,
 }
@@ -124,6 +123,7 @@ struct ScsiParameters {
     write_cache_enabled: bool,
     support_odx: bool,
     support_unmap: bool,
+    support_get_lba_status: bool,
     maximum_transfer_length: usize,
     identity: DiskIdentity,
     serial_number: Vec<u8>,
@@ -158,6 +158,7 @@ impl SimpleScsiDisk {
                 unmap,
                 max_transfer_length,
                 optimal_unmap_sectors,
+                get_lba_status,
             } = disk_parameters;
 
             fn nonzero_id(id: [u8; 16]) -> Option<[u8; 16]> {
@@ -183,6 +184,7 @@ impl SimpleScsiDisk {
                 write_cache_enabled: write_cache.unwrap_or(true),
                 support_odx: odx.unwrap_or(false),
                 support_unmap: unmap.unwrap_or(disk.unmap().is_some()),
+                support_get_lba_status: get_lba_status,
                 maximum_transfer_length: max_transfer_length.unwrap_or(8 * 1024 * 1024),
                 identity: identity.unwrap_or_else(DiskIdentity::msft),
                 serial_number,
@@ -193,7 +195,6 @@ impl SimpleScsiDisk {
 
         let physical_extra_shift =
             scsi_parameters.physical_sector_size.trailing_zeros() as u8 - sector_shift;
-        let support_get_lba_status = disk.lba_status().is_some();
         let support_pr = disk.pr().is_some();
 
         SimpleScsiDisk {
@@ -203,7 +204,6 @@ impl SimpleScsiDisk {
             sector_size,
             sense_data: Default::default(),
             scsi_parameters,
-            support_get_lba_status,
             support_pr,
             last_sector_count: AtomicU64::new(sector_count),
         }
@@ -572,7 +572,7 @@ impl SimpleScsiDisk {
                 Ok(tx)
             }
             scsi::SERVICE_ACTION_GET_LBA_STATUS => {
-                if !self.support_get_lba_status {
+                if !self.scsi_parameters.support_get_lba_status {
                     tracing::debug!("doesn't support get lba status");
                     Err(ScsiError::IllegalRequest(
                         AdditionalSenseCode::ILLEGAL_COMMAND,
@@ -1298,7 +1298,6 @@ impl Inspect for SimpleScsiDisk {
                 self.last_sector_count.load(Ordering::Relaxed),
             )
             .field("scsi_parameters", &self.scsi_parameters)
-            .field("lba", self.support_get_lba_status)
             .field("pr", self.support_pr)
             .field("backend", &self.disk);
     }

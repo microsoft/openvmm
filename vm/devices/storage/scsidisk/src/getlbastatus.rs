@@ -1,9 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Support for the SCSI "Get LBA Status" command.
+//!
+//! Currently, this command just returns that all blocks are "mapped".
+
 use super::ScsiError;
 use super::SimpleScsiDisk;
-use disk_backend::LbaStatus;
+use disk_backend::Disk;
+use disk_backend::DiskError;
 use guestmem::MemoryWrite;
 use scsi::AdditionalSenseCode;
 use scsi_buffers::RequestBuffers;
@@ -12,6 +17,72 @@ use scsi_defs as scsi;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
+
+/// Result of a get LBA status request.
+#[derive(Debug, Default, Copy, Clone)]
+struct DeviceBlockIndexInfo {
+    /// The size of the first partial block.
+    first_partial_block_size: u32,
+    /// The index of the first full block.
+    first_full_block_index: u32,
+    /// The number of blocks.
+    block_count: u32,
+    /// The size of the last partial block.
+    #[allow(dead_code)]
+    last_partial_block_size: u32,
+    /// The number of LBAs per block.
+    lba_per_block: u64,
+}
+
+/// The LBA status of a block.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum LbaStatus {
+    /// The block is mapped.
+    Mapped,
+    /// The block is deallocated.
+    #[allow(dead_code)]
+    Deallocated,
+    /// The block is anchored.
+    #[allow(dead_code)]
+    Anchored,
+}
+
+/// Returns the block index information for the given file offset.
+fn file_offset_to_device_block_index_and_length(
+    disk: &Disk,
+    _start_offset: u64,
+    _get_lba_status_range_length: u64,
+    _block_size: u64,
+) -> DeviceBlockIndexInfo {
+    let sector_size = disk.sector_size() as u64;
+    let sector_count = disk.sector_count();
+    let disk_size = sector_size * sector_count;
+
+    // Treat fully allocation disk or fixed disk as one large block and just return
+    // enough descriptors from the LBA requested till the last LBA on disk.
+    //
+    // LbaPerBlock is a ULONG and technically with MAXULONG * 512 byte sectors,
+    // we can get upto 1.99 TB. The LBA descriptor also holds a ULONG
+    // LogicalBlockCount and can have an issue for larger than 2TB disks.
+    let lba_per_block = std::cmp::min(sector_count, u32::MAX.into());
+    let block_size_large = lba_per_block * sector_size;
+    let block_count = ((disk_size + block_size_large - 1) / block_size_large) as u32;
+    DeviceBlockIndexInfo {
+        first_partial_block_size: 0,
+        first_full_block_index: 0,
+        block_count,
+        last_partial_block_size: 0,
+        lba_per_block,
+    }
+}
+
+/// Returns the LBA status for the given block number.
+fn get_block_lba_status(
+    _block_number: u32,
+    _leaf_node_state_only: bool,
+) -> Result<LbaStatus, DiskError> {
+    Ok(LbaStatus::Mapped)
+}
 
 impl SimpleScsiDisk {
     pub(crate) fn handle_get_lba_status(
@@ -57,8 +128,7 @@ impl SimpleScsiDisk {
 
         let mut lba_count_remaining = total_lba_count_requested;
 
-        let lba_status = self.disk.lba_status().unwrap();
-        let mut block_index_info = lba_status.file_offset_to_device_block_index_and_length(
+        let mut block_index_info = file_offset_to_device_block_index_and_length(
             &self.disk,
             start_offset,
             get_lba_status_range_length,
@@ -118,11 +188,11 @@ impl SimpleScsiDisk {
         // Get the LBA status for the very first block.
         let leaf_node_state_only =
             request.srb_flags & scsi::SRB_FLAGS_CONSOLIDATEABLE_BLOCKS_ONLY != 0;
-        let mut provisioning_status =
-            match lba_status.get_block_lba_status(block_number, leaf_node_state_only) {
-                Ok(status) => status,
-                Err(e) => return Err(ScsiError::Disk(e)),
-            };
+        let mut provisioning_status = match get_block_lba_status(block_number, leaf_node_state_only)
+        {
+            Ok(status) => status,
+            Err(e) => return Err(ScsiError::Disk(e)),
+        };
 
         let mut provisioning_status_in_previous_block;
         let mut lba_count_in_current_block;
@@ -150,11 +220,11 @@ impl SimpleScsiDisk {
             while block_number < block_number_max {
                 // Get the LBA status for the next block.
                 // Usually it's a full block except when we get to the last block.
-                provisioning_status =
-                    match lba_status.get_block_lba_status(block_number, leaf_node_state_only) {
-                        Ok(status) => status,
-                        Err(e) => return Err(ScsiError::Disk(e)),
-                    };
+                provisioning_status = match get_block_lba_status(block_number, leaf_node_state_only)
+                {
+                    Ok(status) => status,
+                    Err(e) => return Err(ScsiError::Disk(e)),
+                };
 
                 // This block has a different status from what we are looking for.
                 // Break out of here so we can composite a new LBA_STATUS_DESCRIPTOR.

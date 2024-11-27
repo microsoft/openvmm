@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use disk_backend::pr;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
-use disk_backend::GetLbaStatus;
 use disk_backend::MediumErrorDetails;
 use disk_backend::Unmap;
 use inspect::Inspect;
@@ -68,10 +67,6 @@ impl DiskIo for NvmeDisk {
 
     fn unmap(&self) -> Option<impl Unmap> {
         self.namespace.supports_dataset_management().then_some(self)
-    }
-
-    fn lba_status(&self) -> Option<&dyn GetLbaStatus> {
-        Some(self)
     }
 
     fn pr(&self) -> Option<&dyn pr::PersistentReservation> {
@@ -154,8 +149,6 @@ impl DiskIo for NvmeDisk {
         self.namespace.wait_resize(sector_count).await
     }
 }
-
-impl GetLbaStatus for NvmeDisk {}
 
 impl Unmap for NvmeDisk {
     async fn unmap(

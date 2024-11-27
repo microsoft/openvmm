@@ -1145,6 +1145,7 @@ fn make_disk_config_inner(
         scsi_disk_size_in_bytes: disk_params.scsi_disk_size_in_bytes,
         odx: disk_params.odx,
         unmap: disk_params.unmap,
+        get_lba_status: true,
         max_transfer_length: disk_params.max_transfer_length,
         optimal_unmap_sectors: None, // TODO
     })

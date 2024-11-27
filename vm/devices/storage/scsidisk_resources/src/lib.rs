@@ -63,6 +63,11 @@ pub struct DiskParameters {
     pub max_transfer_length: Option<usize>,
     /// The minimum optimal number of sectors to unmap in a request.
     pub optimal_unmap_sectors: Option<u32>,
+    /// Report LBA status to the guest.
+    ///
+    /// Note that this will always report fully mapped LBAs, since the
+    /// underlying disk implementation has no mechanism to report unmapped LBAs.
+    pub get_lba_status: bool,
 }
 
 /// The disk identity.

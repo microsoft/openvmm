@@ -94,11 +94,6 @@ impl DiskIo for CryptDisk {
         self.inner.unmap()
     }
 
-    /// Optionally returns a trait object to issue get LBA status requests.
-    fn lba_status(&self) -> Option<&dyn disk_backend::GetLbaStatus> {
-        self.inner.lba_status()
-    }
-
     /// Optionally returns a trait object to issue persistent reservation
     /// requests.
     fn pr(&self) -> Option<&dyn disk_backend::pr::PersistentReservation> {

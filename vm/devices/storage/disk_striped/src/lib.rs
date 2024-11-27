@@ -12,7 +12,6 @@ use disk_backend::resolve::ResolvedDisk;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
-use disk_backend::GetLbaStatus;
 use disk_backend::Unmap;
 use disk_backend_resources::StripedDiskHandle;
 use futures::future::join_all;
@@ -368,10 +367,6 @@ impl DiskIo for StripedDisk {
         self.supports_unmap.then_some(self)
     }
 
-    fn lba_status(&self) -> Option<&dyn GetLbaStatus> {
-        Some(self)
-    }
-
     fn disk_id(&self) -> Option<[u8; 16]> {
         None
     }
@@ -571,8 +566,6 @@ impl Unmap for StripedDisk {
             .unwrap_or(1)
     }
 }
-
-impl GetLbaStatus for StripedDisk {}
 
 async fn await_all_and_check<T, E>(futures: T) -> Result<(), E>
 where

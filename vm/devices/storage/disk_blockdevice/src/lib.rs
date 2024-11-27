@@ -23,7 +23,6 @@ use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
-use disk_backend::GetLbaStatus;
 use disk_backend::Unmap;
 use fs_err::PathExt;
 use guestmem::MemoryRead;
@@ -527,10 +526,6 @@ impl DiskIo for BlockDevice {
         (self.optimal_unmap_sectors != 0).then_some(self)
     }
 
-    fn lba_status(&self) -> Option<&dyn GetLbaStatus> {
-        Some(self)
-    }
-
     fn pr(&self) -> Option<&dyn PersistentReservation> {
         if self.supports_pr {
             Some(self)
@@ -709,8 +704,6 @@ impl Unmap for BlockDevice {
         self.optimal_unmap_sectors
     }
 }
-
-impl GetLbaStatus for BlockDevice {}
 
 #[async_trait::async_trait]
 impl PersistentReservation for BlockDevice {

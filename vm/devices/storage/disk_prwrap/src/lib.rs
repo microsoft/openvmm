@@ -126,10 +126,6 @@ impl DiskIo for DiskWithReservations {
 
     // TODO: Implement unmap
 
-    fn lba_status(&self) -> Option<&dyn disk_backend::GetLbaStatus> {
-        self.inner.lba_status()
-    }
-
     fn pr(&self) -> Option<&dyn pr::PersistentReservation> {
         Some(self)
     }
