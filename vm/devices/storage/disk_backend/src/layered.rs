@@ -386,7 +386,7 @@ pub trait LayerIo: 'static + Send + Sync + Inspect {
     /// This must not change at runtime.
     fn physical_sector_size(&self) -> u32;
 
-    /// Returns true if the `fua` parameter to [`LayerIo::write_vectored`] is
+    /// Returns true if the `fua` parameter to [`LayerIo::write`] is
     /// respected by the backing store by ensuring that the IO is immediately
     /// committed to disk.
     fn is_fua_respected(&self) -> bool;
