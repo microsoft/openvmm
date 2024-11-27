@@ -148,7 +148,7 @@ impl RamLayer {
         let count = buffers.len() / SECTOR_SIZE as usize;
         tracing::trace!(sector, count, "write");
         let mut state = self.state.write();
-        Ok(for i in 0..count {
+        for i in 0..count {
             let cur = i + sector as usize;
             let buf = buffers.subrange(i * SECTOR_SIZE as usize, SECTOR_SIZE as usize);
             let mut reader = buf.reader();
@@ -162,7 +162,8 @@ impl RamLayer {
                     }
                 }
             }
-        })
+        }
+        Ok(())
     }
 }
 

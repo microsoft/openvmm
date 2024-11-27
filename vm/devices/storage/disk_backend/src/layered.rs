@@ -600,7 +600,7 @@ impl DiskIo for LayeredDisk {
         fua: bool,
     ) -> Result<(), DiskError> {
         for layer in &self.layers {
-            layer.backing.write(&buffers, sector, fua, false).await?;
+            layer.backing.write(buffers, sector, fua, false).await?;
             if !layer.write_through {
                 break;
             }
@@ -704,41 +704,37 @@ impl LayerIo for DiskAsLayer {
         self.0.sync_cache()
     }
 
-    fn read(
+    async fn read(
         &self,
         buffers: &RequestBuffers<'_>,
         sector: u64,
         mut bitmap: SectorMarker<'_>,
-    ) -> impl Future<Output = Result<(), DiskError>> + Send {
-        async move {
-            // The disk is fully populated.
-            bitmap.set_all();
-            self.0.read_vectored(buffers, sector).await
-        }
+    ) -> Result<(), DiskError> {
+        // The disk is fully populated.
+        bitmap.set_all();
+        self.0.read_vectored(buffers, sector).await
     }
 
-    fn write(
+    async fn write(
         &self,
         buffers: &RequestBuffers<'_>,
         sector: u64,
         fua: bool,
-    ) -> impl Future<Output = Result<(), DiskError>> + Send {
-        async move { self.0.write_vectored(buffers, sector, fua).await }
+    ) -> Result<(), DiskError> {
+        self.0.write_vectored(buffers, sector, fua).await
     }
 
-    fn unmap(
+    async fn unmap(
         &self,
         sector: u64,
         count: u64,
         block_level_only: bool,
         _lower_is_zero: bool,
-    ) -> impl Future<Output = Result<(), DiskError>> + Send {
-        async move {
-            if let Some(unmap) = self.0.unmap() {
-                unmap.unmap(sector, count, block_level_only).await?;
-            }
-            Ok(())
+    ) -> Result<(), DiskError> {
+        if let Some(unmap) = self.0.unmap() {
+            unmap.unmap(sector, count, block_level_only).await?;
         }
+        Ok(())
     }
 
     fn unmap_behavior(&self) -> UnmapBehavior {
