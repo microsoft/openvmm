@@ -201,7 +201,14 @@ impl Namespace {
         self.issuers.get(cpu).await
     }
 
-    /// Reads from the namespace.
+    /// Reads the required number of blocks in to guest memory.
+    ///
+    /// # Arguments
+    /// * `target_cpu` - Cpu to target
+    /// * `lba` - Logical block address in the disk to start reading from.
+    /// * `block_count` - Number of blocks to read.
+    /// * `guest_memory` -  
+    /// * `mem` - 
     pub async fn read(
         &self,
         target_cpu: u32,

@@ -8,18 +8,19 @@ publish = false
 edition = "2021"
 
 [dependencies]
-disk_ramdisk.workspace = true
-nvme_driver.workspace = true
-xtask_fuzz.workspace = true
-user_driver.workspace = true
-scsi_buffers.workspace = true
-pci_core.workspace = true
-vmcore.workspace = true
-pal_async.workspace = true
 chipset_device.workspace = true
+disk_ramdisk.workspace = true
+guestmem.workspace = true
 guid.workspace = true
 nvme.workspace = true
+nvme_driver.workspace = true
 nvme_spec.workspace = true
+pal_async.workspace = true
+pci_core.workspace = true
+scsi_buffers.workspace = true
+user_driver.workspace = true
+vmcore.workspace = true
+xtask_fuzz.workspace = true
 
 arbitrary = { workspace = true, features = ["derive"] }
 
