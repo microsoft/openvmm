@@ -6,7 +6,6 @@
 //! can be either in JSON or JSON web token (JWT) format defined by Azure Key Vault (AKV).
 
 use base64::Engine;
-use openhcl_attestation_protocol;
 use openhcl_attestation_protocol::igvm_attest::akv;
 use openssl::hash::MessageDigest;
 use openssl::pkey::PKey;

@@ -4,7 +4,6 @@
 //! The module for `WRAPPED_KEY_REQUEST` request type that supports parsing the
 //! response in JSON format defined by Azure CVM Provisioning Service (CPS).
 
-use openhcl_attestation_protocol;
 use openhcl_attestation_protocol::igvm_attest::cps;
 use thiserror::Error;
 
