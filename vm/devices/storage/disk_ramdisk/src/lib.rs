@@ -33,24 +33,37 @@ use std::sync::atomic::Ordering;
 use thiserror::Error;
 
 /// A disk backed entirely by RAM.
+#[derive(Inspect)]
+#[inspect(extra = "Self::inspect_extra")]
 pub struct RamLayer {
-    data: RwLock<BTreeMap<u64, Sector>>,
+    #[inspect(flatten)]
+    state: RwLock<RamState>,
+    #[inspect(skip)]
     sector_count: AtomicU64,
+    #[inspect(skip)]
     resize_event: event_listener::Event,
 }
 
-impl Inspect for RamLayer {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        req.respond()
-            .field_with("committed_size", || {
-                self.data.read().len() * size_of::<Sector>()
-            })
-            .field_mut_with("sector_count", |new_count| {
-                if let Some(new_count) = new_count {
-                    self.resize(new_count.parse().context("invalid sector count")?)?;
-                }
-                anyhow::Ok(self.sector_count())
-            });
+#[derive(Inspect)]
+struct RamState {
+    #[inspect(skip)]
+    data: BTreeMap<u64, Sector>,
+    #[inspect(skip)] // handled in inspect_extra()
+    sector_count: u64,
+    zero_after: u64,
+}
+
+impl RamLayer {
+    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
+        resp.field_with("committed_size", || {
+            self.state.read().data.len() * size_of::<Sector>()
+        })
+        .field_mut_with("sector_count", |new_count| {
+            if let Some(new_count) = new_count {
+                self.resize(new_count.parse().context("invalid sector count")?)?;
+            }
+            anyhow::Ok(self.sector_count())
+        });
     }
 }
 
@@ -95,7 +108,11 @@ impl RamLayer {
             0
         };
         Ok(Self {
-            data: RwLock::new(BTreeMap::new()),
+            state: RwLock::new(RamState {
+                data: BTreeMap::new(),
+                sector_count,
+                zero_after: sector_count,
+            }),
             sector_count: sector_count.into(),
             resize_event: Default::default(),
         })
@@ -107,10 +124,16 @@ impl RamLayer {
         }
         // Remove any truncated data and update the sector count under the lock.
         let _removed = {
-            let mut data = self.data.write();
-            // TODO: remember when growing the disk that missing sectors are zero.
+            let mut state = self.state.write();
+            // Remember that any non-present sectors after this point need to be zeroed.
+            state.zero_after = new_sector_count.min(state.zero_after);
+            state.sector_count = new_sector_count;
+            // Cache the sector count in an atomic for the fast path.
+            //
+            // FUTURE: remove uses of .sector_count() in the IO path,
+            // eliminating the need for this.
             self.sector_count.store(new_sector_count, Ordering::Relaxed);
-            data.split_off(&new_sector_count)
+            state.data.split_off(&new_sector_count)
         };
         self.resize_event.notify(usize::MAX);
         Ok(())
@@ -124,12 +147,12 @@ impl RamLayer {
     ) -> Result<(), DiskError> {
         let count = buffers.len() / SECTOR_SIZE as usize;
         tracing::trace!(sector, count, "write");
-        let mut data = self.data.write();
+        let mut state = self.state.write();
         Ok(for i in 0..count {
             let cur = i + sector as usize;
             let buf = buffers.subrange(i * SECTOR_SIZE as usize, SECTOR_SIZE as usize);
             let mut reader = buf.reader();
-            match data.entry(cur as u64) {
+            match state.data.entry(cur as u64) {
                 Entry::Vacant(entry) => {
                     entry.insert(Sector(reader.read_plain()?));
                 }
@@ -179,15 +202,34 @@ impl LayerIo for RamLayer {
         mut marker: SectorMarker<'_>,
     ) -> Result<(), DiskError> {
         let count = (buffers.len() / SECTOR_SIZE as usize) as u64;
+        let end = sector + count;
         tracing::trace!(sector, count, "read");
-        for (&s, buf) in self.data.read().range(sector..sector + count) {
-            let offset = (s - sector) as usize * SECTOR_SIZE as usize;
-            buffers
-                .subrange(offset, SECTOR_SIZE as usize)
-                .writer()
-                .write(&buf.0)?;
+        let state = self.state.read();
+        let mut range = state.data.range(sector..end);
+        let mut last = sector;
+        while last < end {
+            let r = range.next();
+            let next = r.map(|(&s, _)| s).unwrap_or(end);
+            if next > last && next > state.zero_after {
+                // Some non-present sectors need to be zeroed, since they are
+                // after the zero-after point (due to a resize).
+                let zero_start = last.max(state.zero_after);
+                let zero_count = next - zero_start;
+                let offset = (zero_start - sector) as usize * SECTOR_SIZE as usize;
+                let len = zero_count as usize * SECTOR_SIZE as usize;
+                buffers.subrange(offset, len).writer().zero(len)?;
+                marker.set_range(zero_start..next);
+            }
+            if let Some((&s, buf)) = r {
+                let offset = (s - sector) as usize * SECTOR_SIZE as usize;
+                buffers
+                    .subrange(offset, SECTOR_SIZE as usize)
+                    .writer()
+                    .write(&buf.0)?;
 
-            marker.set(s);
+                marker.set(s);
+            }
+            last = next;
         }
         Ok(())
     }
@@ -228,23 +270,30 @@ impl LayerIo for RamLayer {
         _block_level_only: bool,
         next_is_zero: bool,
     ) -> Result<(), DiskError> {
-        if !next_is_zero {
-            return Ok(());
-        }
         tracing::trace!(sector_offset, sector_count, "unmap");
-        let mut data = self.data.write();
+        let mut state = self.state.write();
+        if !next_is_zero {
+            // This would create a hole of zeroes, which we cannot represent in
+            // the tree. Ignore the unmap.
+            if sector_offset + sector_count < state.zero_after {
+                return Ok(());
+            }
+            // The unmap is within or will extend the not-present-is-zero
+            // region, so allow it.
+            state.zero_after = state.zero_after.min(sector_offset);
+        }
         // Sadly, there appears to be no way to remove a range of entries
         // from a btree map.
         let mut next_sector = sector_offset;
         let end = sector_offset + sector_count;
         while next_sector < end {
-            let Some((&sector, _)) = data.range_mut(next_sector..).next() else {
+            let Some((&sector, _)) = state.data.range_mut(next_sector..).next() else {
                 break;
             };
             if sector >= end {
                 break;
             }
-            data.remove(&sector);
+            state.data.remove(&sector);
             next_sector = sector + 1;
         }
         Ok(())
@@ -260,11 +309,13 @@ impl LayerIo for RamLayer {
         1
     }
 
-    fn attach(&mut self, lower_sector_count: Option<u64>) {
+    fn on_attach(&mut self, lower_sector_count: Option<u64>) {
         if let Some(lower_sector_count) = lower_sector_count {
-            let count = self.sector_count.get_mut();
-            if *count == 0 {
-                *count = lower_sector_count;
+            let mut state = self.state.write();
+            if state.sector_count == 0 {
+                state.sector_count = lower_sector_count;
+                state.zero_after = lower_sector_count;
+                *self.sector_count.get_mut() = lower_sector_count;
             }
         }
     }
@@ -407,5 +458,50 @@ mod tests {
         check(&guest_mem, 10, 1, 1, 1);
         check(&guest_mem, 11, 2, 1, 2);
         check(&guest_mem, 12, 3, 1, 0);
+    }
+
+    async fn resize(disk: &LayeredDisk, new_size: u64) {
+        let inspect::ValueKind::Unsigned(v) =
+            inspect::update("layers/0/backing/sector_count", &new_size.to_string(), disk)
+                .await
+                .unwrap()
+                .kind
+        else {
+            panic!("bad inspect value")
+        };
+        assert_eq!(new_size, v);
+    }
+
+    #[async_test]
+    async fn test_resize() {
+        const SIZE: usize = 1024 * 1024;
+        const SECTORS: usize = SIZE / SECTOR_USIZE;
+
+        let guest_mem = GuestMemory::allocate(SIZE);
+        let mut lower = RamLayer::new(Some(SIZE as u64)).unwrap();
+        write_layer(&guest_mem, &mut lower, 0, SECTORS, 1).await;
+        let upper = RamLayer::new(Some(SIZE as u64)).unwrap();
+        let mut upper = LayeredDisk::new(
+            false,
+            Vec::from_iter([upper, lower].map(|layer| LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                write_through: false,
+                read_cache: false,
+            })),
+        )
+        .unwrap();
+        check(&guest_mem, 0, 0, SECTORS, 1);
+        resize(&upper, SECTORS as u64 / 2).await;
+        resize(&upper, SECTORS as u64).await;
+        let mut inspection = inspect::inspect("", &upper);
+        inspection.resolve().await;
+        println!("{:#}", inspection.results());
+        read(&guest_mem, &mut upper, 0, SECTORS).await;
+        check(&guest_mem, 0, 0, SECTORS / 2, 1);
+        for s in SECTORS / 2..SECTORS {
+            let mut buf = [0u8; SECTOR_USIZE];
+            guest_mem.read_at(s as u64 * SECTOR_U64, &mut buf).unwrap();
+            assert_eq!(buf, [0u8; SECTOR_USIZE]);
+        }
     }
 }

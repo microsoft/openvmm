@@ -302,7 +302,7 @@ trait DynLayer: Send + Sync + Inspect {
 
 impl<T: LayerIo> DynLayer for T {
     fn attach(&mut self, lower_sector_count: Option<u64>) {
-        self.attach(lower_sector_count);
+        self.on_attach(lower_sector_count);
     }
 
     fn sector_count(&self) -> u64 {
@@ -452,7 +452,7 @@ pub trait LayerIo: 'static + Send + Sync + Inspect {
     /// Called when the layer is attached to a disk. The sector count of the
     /// next lower layer is provided for the layer to optionally size/resize
     /// itself.
-    fn attach(&mut self, lower_sector_count: Option<u64>) {
+    fn on_attach(&mut self, lower_sector_count: Option<u64>) {
         let _ = lower_sector_count;
     }
 }
