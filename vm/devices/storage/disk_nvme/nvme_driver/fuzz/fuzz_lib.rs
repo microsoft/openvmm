@@ -84,14 +84,16 @@ impl FuzzNvmeDriver {
      * * `lba` - The logical block address where to read from
      * * `block_count` - Number of blocks to read
      */
-    pub async fn read_arbitrary(&self, lba: u64, block_count: u32) {
+    pub async fn read_arbitrary(&self, lba: u64, block_count: u32, target_cpu: u32) {
+        // TODO: What if the size of this buffer needs to be moved around? What then? Maybe look in
+        // to the payload_mem and see what is going on.
         // Request buffer defiition, the actual buffer will be created later.
         let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
 
         // Read from then namespace from arbitrary address and arbitrary amount of data
         self.namespace
             .read(
-                1,
+                target_cpu,
                 lba,
                 block_count,
                 &self.payload_mem,
@@ -107,19 +109,34 @@ impl FuzzNvmeDriver {
      * * `lba` - The logical block address where to read from
      * * `block_count` - Number of blocks to read
      */
-    pub async fn write_arbitrary(&self, lba: u64, block_count: u32) {
+    pub async fn write_arbitrary(&self, lba: u64, block_count: u32, target_cpu: u32) {
         // Request buffer defiition, the actual buffer will be created later.
         let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
 
         // Write to the namespace from arbitrary passed in address and arbitrary amount of data.
         self.namespace
             .write(
-                0,
+                target_cpu,
                 lba,
                 block_count,
                 false,
                 &self.payload_mem,
                 buf_range.buffer(&self.payload_mem).range(),
+            )
+            .await
+            .unwrap();        
+    }
+
+    /** Flushes the provided_target CPU
+     *
+     * # Arguments
+     * * `target_cpu` - The CPU to flush
+     */
+    pub async fn flush_arbitrary(&self, target_cpu: u32) {
+        // Flush CPU
+        self.namespace
+            .flush(
+                target_cpu
             )
             .await
             .unwrap();        
@@ -159,11 +176,14 @@ impl FuzzNvmeDriver {
     /// Executes an action
     pub async fn execute_action(&self, action: NvmeDriverAction) {
         match action {
-            NvmeDriverAction::Read { lba, block_count } => {
-                self.read_arbitrary(lba, block_count).await
+            NvmeDriverAction::Read { lba, block_count, target_cpu} => {
+                self.read_arbitrary(lba, block_count, target_cpu).await
             }
-            NvmeDriverAction::Write { lba, block_count } => {
-                self.write_arbitrary(lba, block_count).await
+            NvmeDriverAction::Write { lba, block_count, target_cpu } => {
+                self.write_arbitrary(lba, block_count, target_cpu).await
+            }
+            NvmeDriverAction::Flush { target_cpu } => {
+                self.flush_arbitrary(target_cpu).await
             }
         } 
     }
@@ -174,9 +194,14 @@ pub enum NvmeDriverAction {
     Read {
         lba: u64,
         block_count: u32,
+        target_cpu: u32,
     },
     Write {
         lba: u64,
         block_count: u32,
+        target_cpu: u32,
+    },
+    Flush {
+        target_cpu: u32,
     }
 }
