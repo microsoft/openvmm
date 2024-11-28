@@ -41,7 +41,7 @@ fuzz_nvme_driver = ["**/*.rs", "../src/**/*.rs"]
 
 [[bin]]
 name = "fuzz_nvme_driver"
-path = "fuzz_nvme_driver.rs"
+path = "fuzz_main.rs"
 test = false
 doc = false
 doctest = false
