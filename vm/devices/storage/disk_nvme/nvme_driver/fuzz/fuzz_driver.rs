@@ -58,6 +58,7 @@ impl FuzzDriver {
         let namespace = nvme_driver.namespace(1).await.unwrap();
 
         (namespace,
+         device,
          Self {
             driver: Some(nvme_driver),
          })

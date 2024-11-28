@@ -11,6 +11,7 @@ pub struct FuzzNvmeDriver {
     driver: FuzzDriver,
     namespace: FuzzNamespace,  // TODO: This can be implemented as a queue to test 'create' for
                                // namespaces. Essentially have a list of namespaces we can fuzz.
+    emulated_device: FuzzEmulatedDevice,
 }
 
 impl FuzzNvmeDriver {
@@ -22,6 +23,7 @@ impl FuzzNvmeDriver {
         Self {
             driver: fuzz_driver,
             namespace: fuzz_namespace,
+            emulated_device: fuzz_emulated_device,
         }
     }
 
@@ -45,6 +47,9 @@ impl FuzzNvmeDriver {
             NvmeDriverAction::DriverAction { action } => {
                 self.driver.execute_action(action).await
             }
+            NvmeDriverAction::FuzzEmulatedDeviceAction { action } => {
+                self.emulated_device.execute_action(action)
+            }
         } 
     }
 }
@@ -56,5 +61,8 @@ pub enum NvmeDriverAction {
     },
     DriverAction {
         action: DriverAction
-    }
+    },
+    FuzzEmulatedDeviceAction {
+        action: FuzzemulatedDeviceAction
+    },
 }
