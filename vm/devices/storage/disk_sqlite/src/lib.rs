@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS sectors (
     sector INTEGER NOT NULL,
     data   BLOB NOT NULL,
     PRIMARY KEY (sector)
-) WITHOUT ROWID
+)
 "#; // TODO?: enforce sqlite >3.37.0 so we can use STRICT
 
     // DEVNOTE: Given that this is a singleton table, we might as well use JSON
@@ -284,6 +284,8 @@ enum SectorKind {
     Data(Vec<u8>),
 }
 
+// FUTURE: pass RequestBuffers into this function directly, and avoid the alloc
+// overhead.
 fn read_sectors(
     conn: Arc<Mutex<Connection>>,
     sector_size: u32,
@@ -300,26 +302,53 @@ fn read_sectors(
     )?;
     let mut rows = select_stmt.query(rusqlite::params![start_sector, end_sector])?;
 
+    // reuse the same blob handle across all reads.
+    //
+    // this handle isn't easy to persist across multiple calls to
+    // `read_sectors`, due to the lifetime restrictions imposed by using a
+    // `Arc<Mutex<Connection>>`.
+    let Some(first_row) = rows.next()? else {
+        return Ok(Vec::new());
+    };
+    let mut sector: u64 = first_row.get(0)?;
+    let mut blob = conn.blob_open(
+        rusqlite::DatabaseName::Main,
+        "sectors",
+        "data",
+        sector as i64,
+        true,
+    )?;
+
+    let mut buf = vec![0; sector_size as usize];
     let mut res = Vec::new();
-    while let Some(row) = rows.next()? {
-        let sector: u64 = row.get(0)?;
-        let data: &[u8] = row.get_ref(1)?.as_blob()?;
-        let data = match data.len() {
+    loop {
+        let data = match blob.len() {
             0 => SectorKind::AllZero,
             1 => SectorKind::AllOne,
-            _ => {
-                if data.len() != sector_size as usize {
+            len => {
+                if len != sector_size as usize {
                     return Err(rusqlite::Error::BlobSizeError);
                 }
-                SectorKind::Data(data.into())
+                blob.read_at(&mut buf, 0)?;
+                SectorKind::Data(buf.clone())
             }
         };
+
         res.push((sector, data));
+
+        let Some(next_row) = rows.next()? else {
+            break;
+        };
+
+        sector = next_row.get(0)?;
+        blob.reopen(sector as i64)?;
     }
 
     Ok(res)
 }
 
+// FUTURE: pass RequestBuffers into this function directly, and avoid the alloc
+// overhead.
 fn write_sectors(
     conn: Arc<Mutex<Connection>>,
     sector_size: u32,
@@ -333,7 +362,11 @@ fn write_sectors(
         let mut stmt =
             tx.prepare_cached("INSERT OR REPLACE INTO sectors (sector, data) VALUES (?, ?)")?;
 
-        for chunk in buf.chunks_exact(sector_size as usize) {
+        let chunks = buf.chunks_exact(sector_size as usize);
+        if !chunks.remainder().is_empty() {
+            return Err(rusqlite::Error::BlobSizeError);
+        }
+        for chunk in chunks {
             let chunk = if chunk.iter().all(|x| *x == 0) {
                 &[]
             } else if chunk.iter().all(|x| *x == 0xff) {
