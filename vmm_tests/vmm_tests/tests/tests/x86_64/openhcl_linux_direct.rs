@@ -4,8 +4,8 @@
 //! Integration tests for x86_64 Linux direct boot with OpenHCL.
 
 use anyhow::Context;
-use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
+use disk_backend_resources::LayeredDiskHandle;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
 use guid::Guid;

@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
 use disk_backend::InvalidDisk;
-use disk_backend_resources::DiskLayerHandle;
+use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::LayeredDiskHandle;
 use futures::future::TryJoinAll;
 use thiserror::Error;

@@ -141,11 +141,3 @@ impl From<Resource<DiskLayerHandleKind>> for DiskLayerDescription {
         }
     }
 }
-
-/// Handle for a disk layer backed by a full disk.
-#[derive(MeshPayload)]
-pub struct DiskLayerHandle(pub Resource<DiskHandleKind>);
-
-impl ResourceId<DiskLayerHandleKind> for DiskLayerHandle {
-    const ID: &'static str = "disk";
-}

@@ -4,7 +4,9 @@
 //! Disk layer resources.
 
 use mesh::MeshPayload;
+use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::DiskLayerHandleKind;
+use vm_resource::Resource;
 use vm_resource::ResourceId;
 
 /// RAM disk layer handle.
@@ -20,4 +22,12 @@ pub struct RamDiskLayerHandle {
 
 impl ResourceId<DiskLayerHandleKind> for RamDiskLayerHandle {
     const ID: &'static str = "ram";
+}
+
+/// Handle for a disk layer backed by a full disk.
+#[derive(MeshPayload)]
+pub struct DiskLayerHandle(pub Resource<DiskHandleKind>);
+
+impl ResourceId<DiskLayerHandleKind> for DiskLayerHandle {
+    const ID: &'static str = "disk";
 }

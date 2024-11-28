@@ -5998,7 +5998,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "criterion",
- "disk_backend",
  "disk_ramdisk",
  "event-listener",
  "fast_select",
