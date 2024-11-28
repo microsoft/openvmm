@@ -4,6 +4,8 @@
 //! Provides access to NVMe namespaces that are backed by the user-mode NVMe
 //! VFIO driver. Keeps track of all the NVMe drivers.
 
+use crate::nvme_manager::save_restore::NvmeManagerSavedState;
+use crate::nvme_manager::save_restore::NvmeSavedDiskConfig;
 use crate::servicing::NvmeSavedState;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -13,7 +15,6 @@ use futures::future::join_all;
 use futures::StreamExt;
 use futures::TryFutureExt;
 use inspect::Inspect;
-use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh::MeshPayload;
@@ -30,7 +31,6 @@ use vm_resource::kind::DiskHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceId;
 use vm_resource::ResourceResolver;
-use vmcore::save_restore::SavedStateRoot;
 use vmcore::vm_task::VmTaskDriverSource;
 
 #[derive(Debug, Error)]
@@ -57,19 +57,12 @@ enum InnerError {
     },
 }
 
-/// Save/restore errors.
-#[derive(Debug, Error)]
-pub enum SaveRestoreError {
-    #[error("save explicitly disabled")]
-    ExplicitlyDisabled,
-}
-
 #[derive(Debug)]
 pub struct NvmeManager {
     task: Task<()>,
     client: NvmeManagerClient,
-    /// Flags controlling servicing behavior.
-    nvme_keepalive: bool,
+    /// Running environment (memory layout) supports save/restore.
+    save_restore_supported: bool,
 }
 
 impl Inspect for NvmeManager {
@@ -97,7 +90,7 @@ impl NvmeManager {
         driver_source: &VmTaskDriverSource,
         vp_count: u32,
         dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
-        nvme_keepalive: bool,
+        save_restore_supported: bool,
         saved_state: Option<NvmeSavedState>,
     ) -> Self {
         let (send, recv) = mesh::channel();
@@ -107,7 +100,7 @@ impl NvmeManager {
             devices: HashMap::new(),
             vp_count,
             dma_buffer_spawner,
-            nvme_keepalive,
+            save_restore_supported,
         };
         let task = driver.spawn("nvme-manager", async move {
             // Restore saved data (if present) before async worker thread runs.
@@ -123,7 +116,7 @@ impl NvmeManager {
             client: NvmeManagerClient {
                 sender: Arc::new(send),
             },
-            nvme_keepalive,
+            save_restore_supported,
         }
     }
 
@@ -131,31 +124,29 @@ impl NvmeManager {
         &self.client
     }
 
-    pub async fn shutdown(self) {
+    pub async fn shutdown(self, nvme_keepalive: bool) {
         // Early return is faster way to skip shutdown.
         // but we need to thoroughly test the data integrity.
-        //
-        // TODO: Enable this after discussed and approved.
+        // TODO: Enable this once tested and approved.
         //
         // if self.nvme_keepalive { return }
         self.client.sender.send(Request::Shutdown {
             span: tracing::info_span!("shutdown_nvme_manager"),
-            nvme_keepalive: self.nvme_keepalive,
+            nvme_keepalive,
         });
         self.task.await;
     }
 
     /// Save NVMe manager's state during servicing.
-    pub async fn save(&self) -> anyhow::Result<NvmeManagerSavedState> {
+    pub async fn save(&self, nvme_keepalive: bool) -> Option<NvmeManagerSavedState> {
         // NVMe manager has no own data to save, everything will be done
         // in the Worker task which can be contacted through Client.
-        if self.nvme_keepalive {
-            self.client().save().await
+        if self.save_restore_supported && nvme_keepalive {
+            Some(self.client().save().await?)
         } else {
-            // If nvme_keepalive was explicitly disabled,
-            // return an error which is non-fatal indication
-            // that there is no save data.
-            Err(anyhow::Error::from(SaveRestoreError::ExplicitlyDisabled {}))
+            // Do not save any state if nvme_keepalive
+            // was explicitly disabled.
+            None
         }
     }
 
@@ -171,11 +162,6 @@ impl NvmeManager {
             .await?;
 
         Ok(())
-    }
-
-    /// Override (explicitly disable) the default behavior.
-    pub fn override_nvme_keepalive_flag(&mut self, nvme_keepalive: bool) {
-        self.nvme_keepalive = nvme_keepalive;
     }
 }
 
@@ -218,8 +204,11 @@ impl NvmeManagerClient {
     }
 
     /// Send an RPC call to save NVMe worker data.
-    pub async fn save(&self) -> anyhow::Result<NvmeManagerSavedState> {
-        self.sender.call(Request::Save, ()).await?
+    pub async fn save(&self) -> Option<NvmeManagerSavedState> {
+        match self.sender.call(Request::Save, ()).await {
+            Ok(s) => s.ok(),
+            Err(_) => None,
+        }
     }
 }
 
@@ -234,8 +223,8 @@ struct NvmeManagerWorker {
     #[inspect(skip)]
     dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
     vp_count: u32,
-    /// Bypass device shutdown.
-    nvme_keepalive: bool,
+    /// Running environment (memory layout) allows save/restore.
+    save_restore_supported: bool,
 }
 
 impl NvmeManagerWorker {
@@ -275,10 +264,13 @@ impl NvmeManagerWorker {
                     span,
                     nvme_keepalive,
                 } => {
+                    // nvme_keepalive is received from host but it is only valid
+                    // when memory pool allocator supports save/restore.
+                    let do_not_reset = nvme_keepalive && self.save_restore_supported;
                     // Update the flag for all connected devices.
                     for (_s, dev) in self.devices.iter_mut() {
                         // Prevent devices from originating controller reset in drop().
-                        dev.update_servicing_flags(nvme_keepalive);
+                        dev.update_servicing_flags(do_not_reset);
                     }
                     break (span, nvme_keepalive);
                 }
@@ -289,7 +281,7 @@ impl NvmeManagerWorker {
         // because the Shutdown request is never sent.
         //
         // Tear down all the devices if nvme_keepalive is not set.
-        if !nvme_keepalive {
+        if !nvme_keepalive || !self.save_restore_supported {
             async {
                 join_all(self.devices.drain().map(|(pci_id, driver)| {
                     driver
@@ -357,15 +349,10 @@ impl NvmeManagerWorker {
             });
         }
 
-        let nvme_state = NvmeManagerSavedState {
+        Ok(NvmeManagerSavedState {
             cpu_count: self.vp_count,
             nvme_disks,
-        };
-
-        // Bypass device shutdown.
-        self.nvme_keepalive = true;
-
-        Ok(nvme_state)
+        })
     }
 
     /// Restore NVMe manager and device states from the buffer after servicing.
@@ -446,20 +433,25 @@ impl ResourceId<DiskHandleKind> for NvmeDiskConfig {
     const ID: &'static str = "nvme";
 }
 
-#[derive(Protobuf, SavedStateRoot)]
-#[mesh(package = "underhill")]
-pub struct NvmeManagerSavedState {
-    #[mesh(1)]
-    pub cpu_count: u32,
-    #[mesh(2)]
-    pub nvme_disks: Vec<NvmeSavedDiskConfig>,
-}
+pub mod save_restore {
+    use mesh::payload::Protobuf;
+    use vmcore::save_restore::SavedStateRoot;
 
-#[derive(Protobuf, Clone)]
-#[mesh(package = "underhill")]
-pub struct NvmeSavedDiskConfig {
-    #[mesh(1)]
-    pub pci_id: String,
-    #[mesh(2)]
-    pub driver_state: nvme_driver::NvmeDriverSavedState,
+    #[derive(Protobuf, SavedStateRoot)]
+    #[mesh(package = "underhill")]
+    pub struct NvmeManagerSavedState {
+        #[mesh(1)]
+        pub cpu_count: u32,
+        #[mesh(2)]
+        pub nvme_disks: Vec<NvmeSavedDiskConfig>,
+    }
+
+    #[derive(Protobuf, Clone)]
+    #[mesh(package = "underhill")]
+    pub struct NvmeSavedDiskConfig {
+        #[mesh(1)]
+        pub pci_id: String,
+        #[mesh(2)]
+        pub driver_state: nvme_driver::NvmeDriverSavedState,
+    }
 }

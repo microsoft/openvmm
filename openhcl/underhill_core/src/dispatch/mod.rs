@@ -265,7 +265,7 @@ impl LoadedVm {
                     WorkerRpc::Restart(response) => {
                         let state = async {
                             let running = self.stop().await;
-                            match self.save(None).await {
+                            match self.save(None, false).await {
                                 Ok(servicing_state) => Some((response, servicing_state)),
                                 Err(err) => {
                                     if running {
@@ -327,7 +327,7 @@ impl LoadedVm {
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(|()| async {
                             let running = self.stop().await;
-                            let r = self.save(None).await;
+                            let r = self.save(None, false).await;
                             if running {
                                 self.start(None).await;
                             }
@@ -478,12 +478,6 @@ impl LoadedVm {
         // capabilities_flags used to explicitly disable the feature
         // which is enabled by default.
         let nvme_keepalive = !capabilities_flags.disable_nvme_keepalive();
-        if let Some(m) = self.nvme_manager.as_mut() {
-            // Only override if explicitly disabled from host.
-            if !nvme_keepalive {
-                m.override_nvme_keepalive_flag(nvme_keepalive);
-            }
-        }
 
         // Do everything before the log flush under a span.
         let mut state = async {
@@ -498,7 +492,7 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
-            let mut state = self.save(Some(deadline)).await?;
+            let mut state = self.save(Some(deadline), nvme_keepalive).await?;
             state.init_state.correlation_id = Some(correlation_id);
 
             // Unload any network devices.
@@ -515,7 +509,7 @@ impl LoadedVm {
             let shutdown_nvme = async {
                 if let Some(nvme_manager) = self.nvme_manager.take() {
                     nvme_manager
-                        .shutdown()
+                        .shutdown(nvme_keepalive)
                         .instrument(tracing::info_span!("shutdown_nvme_vfio", %correlation_id, %nvme_keepalive))
                         .await;
                 }
@@ -627,6 +621,7 @@ impl LoadedVm {
     async fn save(
         &mut self,
         _deadline: Option<std::time::Instant>,
+        vf_keepalive_flag: bool,
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
@@ -638,31 +633,23 @@ impl LoadedVm {
 
         // Only save NVMe state when there are NVMe controllers and nvme_keepalive
         // wasn't explicitly disabled through capabilities_flags, otherwise save None.
-        let nvme_state = match self.nvme_manager.as_ref() {
-            Some(n) => {
-                // Do not save NVMe state if there was an error during save
-                // or nvme_keepalive was explicitly disabled,
-                // revert back to the regular nvme_init after boot.
-                match n
-                    .save()
-                    .instrument(tracing::info_span!("nvme_manager_save"))
-                    .await
-                {
-                    Ok(s) => Some(NvmeSavedState { nvme_state: s }),
-                    Err(_) => None,
-                }
-            }
-            _ => {
-                // No NVMe controllers present.
-                None
-            }
+        let nvme_state = if let Some(n) = &self.nvme_manager {
+            n.save(vf_keepalive_flag)
+                .instrument(tracing::info_span!("nvme_manager_save"))
+                .await
+                .map(|s| NvmeSavedState { nvme_state: s })
+        } else {
+            None
         };
 
-        let mem_pool_state = self
-            .fixed_mem_pool
-            .as_ref()
-            .map(|f| f.save().ok())
-            .and_then(|s| s);
+        let mem_pool_state = if vf_keepalive_flag {
+            self.fixed_mem_pool
+                .as_ref()
+                .map(|f| f.save().ok())
+                .and_then(|s| s)
+        } else {
+            None
+        };
 
         let units = self.save_units().await.context("state unit save failed")?;
         let vmgs = self
