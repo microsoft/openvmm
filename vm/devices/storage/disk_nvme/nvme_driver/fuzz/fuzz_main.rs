@@ -6,6 +6,7 @@
 mod fuzz_lib; 
 mod fuzz_namespace;
 mod fuzz_driver;
+mod fuzz_emulated_device;
 
 use arbitrary::Unstructured;
 use pal_async::DefaultPool;

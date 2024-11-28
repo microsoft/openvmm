@@ -52,7 +52,7 @@ impl FuzzDriver {
             .await
             .unwrap();
 
-        let device = EmulatedDevice::new(nvme, msi_set, mem);
+        let device = FuzzEmulatedDevice::new(nvme, msi_set, mem);
         let nvme_driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();
 
         let namespace = nvme_driver.namespace(1).await.unwrap();
