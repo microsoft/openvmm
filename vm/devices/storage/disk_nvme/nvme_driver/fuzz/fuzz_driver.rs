@@ -12,13 +12,13 @@ use nvme_driver::NvmeDriver;
 use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use std::sync::Arc;
-use user_driver::emulated::EmulatedDevice;
 use user_driver::emulated::DeviceSharedMemory;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
+use crate::fuzz_emulated_device::FuzzEmulatedDevice;
 
 pub struct FuzzDriver {
-    driver: Option<NvmeDriver<EmulatedDevice<NvmeController>>>,
+    driver: Option<NvmeDriver<FuzzEmulatedDevice<NvmeController>>>,
 }
 
 impl FuzzDriver {

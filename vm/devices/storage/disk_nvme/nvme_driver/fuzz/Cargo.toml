@@ -8,10 +8,12 @@ publish = false
 edition = "2021"
 
 [dependencies]
+anyhow.workspace = true
 chipset_device.workspace = true
 disk_ramdisk.workspace = true
 guestmem.workspace = true
 guid.workspace = true
+inspect.workspace = true
 nvme.workspace = true
 nvme_driver.workspace = true
 nvme_spec.workspace = true

@@ -3,16 +3,24 @@
 
 //! A shim layer for an EmulatedDevice to inject aribtrary responses for fuzzing the nvme driver.
 
+use anyhow::Result;
+use chipset_device::mmio::MmioIntercept;
+use chipset_device::pci::PciConfigSpace;
+use inspect::Inspect;
+use inspect::InspectMut;
+use pci_core::msi::MsiInterruptSet;
+use user_driver::DeviceBacking;
+use user_driver::emulated::{EmulatedDevice, Mapping, EmulatedDmaAllocator, DeviceSharedMemory};
 use user_driver::interrupt::DeviceInterrupt;
 
 /// An emulated device.
 pub struct FuzzEmulatedDevice<T> {
-    device: EmulatedDevice,
+    device: EmulatedDevice<T>,
 }
 
 impl<T: InspectMut> Inspect for FuzzEmulatedDevice<T> {
     fn inspect(&self, req: inspect::Request<'_>) {
-        self.device.inspect();
+        self.device.inspect(req);
     }
 }
 
