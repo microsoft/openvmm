@@ -1,13 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::partition::OpenhclPartition;
 use async_trait::async_trait;
 use hvdef::Vtl;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
 use std::sync::Arc;
 use virt::PageVisibility;
-use virt_mshv_vtl::UhPartition;
 use vmcore::save_restore::NoSavedState;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -17,7 +17,7 @@ use vmm_core::partition_unit::VmPartition;
 /// Wraps `Arc<UhPartition>` and implements [`VmPartition`].
 #[derive(InspectMut)]
 #[inspect(transparent)]
-pub struct WrappedPartition(pub Arc<UhPartition>);
+pub struct WrappedPartition(pub Arc<dyn OpenhclPartition>);
 
 #[async_trait]
 impl VmPartition for WrappedPartition {

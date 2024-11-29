@@ -20,6 +20,11 @@ openssl-vendored = ["underhill_attestation/openssl-vendored"]
 # Enable VPCI device support
 vpci = []
 
+# Enable support for running the guest OS via nested virtualization with KVM.
+# (Note that the virt_kvm crate is always a dependency just to avoid build
+# breaks.)
+virt_kvm = []
+
 [target.'cfg(target_os = "linux")'.dependencies]
 vmotherboard = { workspace = true, features = [
     "encryption",
@@ -93,6 +98,7 @@ underhill_threadpool.workspace = true
 bootloader_fdt_parser.workspace = true
 vga_proxy.workspace = true
 video_core.workspace = true
+virt_kvm.workspace = true
 virt_mshv_vtl.workspace = true
 vm_manifest_builder.workspace = true
 vmbus_async.workspace = true

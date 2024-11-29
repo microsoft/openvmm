@@ -6847,6 +6847,7 @@ dependencies = [
  "vga_proxy",
  "video_core",
  "virt",
+ "virt_kvm",
  "virt_mshv_vtl",
  "vm_loader",
  "vm_manifest_builder",
@@ -6930,9 +6931,11 @@ dependencies = [
  "libc",
  "log",
  "nix 0.26.4",
+ "safe_intrinsics",
  "underhill_confidentiality",
  "vergen",
  "walkdir",
+ "x86defs",
 ]
 
 [[package]]
@@ -6941,6 +6944,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "build_rs_guest_arch",
+ "fs-err",
  "futures",
  "guestmem",
  "hcl",

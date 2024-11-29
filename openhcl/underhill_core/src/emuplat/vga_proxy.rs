@@ -1,11 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::partition::OpenhclPartition;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
-use virt_mshv_vtl::UhPartition;
 
-pub struct UhRegisterHostIoFastPath(pub Arc<UhPartition>);
+pub struct UhRegisterHostIoFastPath(pub Arc<dyn OpenhclPartition>);
 
 impl vga_proxy::RegisterHostIoPortFastPath for UhRegisterHostIoFastPath {
     fn register(&self, range: RangeInclusive<u16>) -> Box<dyn Send> {

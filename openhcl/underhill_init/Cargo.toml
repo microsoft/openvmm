@@ -18,6 +18,10 @@ log = { workspace = true, features = ["std"] }
 nix = { workspace = true, features = ["ioctl"] }
 walkdir.workspace = true
 
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+safe_intrinsics.workspace = true
+x86defs.workspace = true
+
 [build-dependencies]
 vergen = { workspace = true, features = ["git", "gitcl"] }
 

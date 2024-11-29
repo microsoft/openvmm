@@ -19,6 +19,9 @@ uidevices = ["openvmm_hcl_resources/uidevices", "openvmm_hcl_resources/vnc_worke
 # Enable NVMe emulation.
 nvme = ["openvmm_hcl_resources/nvme", "underhill_entry/vpci"]
 
+# Enable KVM and nested virtualization support.
+virt_kvm = ["underhill_entry/virt_kvm"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
 underhill_entry.workspace = true
 openvmm_hcl_resources.workspace = true

@@ -24,6 +24,7 @@ pal_async.workspace = true
 sparse_mmap.workspace = true
 
 anyhow.workspace = true
+fs-err.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true

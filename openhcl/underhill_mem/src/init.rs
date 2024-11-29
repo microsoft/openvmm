@@ -6,6 +6,7 @@
 use crate::mapping::GuestMemoryMapping;
 use crate::mapping::HardwareIsolatedMemoryProtector;
 use crate::mapping::MemoryAcceptor;
+use crate::AccessGuestMemory;
 use anyhow::Context;
 use futures::future::try_join_all;
 use guestmem::GuestMemory;
@@ -48,24 +49,20 @@ pub struct MemoryMappings {
     isolation: IsolationType,
 }
 
-impl MemoryMappings {
-    /// Includes all VTL0-accessible memory (private and shared).
-    pub fn vtl0(&self) -> &GuestMemory {
+impl AccessGuestMemory for MemoryMappings {
+    fn vtl0(&self) -> &GuestMemory {
         &self.vtl0_gm
     }
-    pub fn vtl1(&self) -> Option<&GuestMemory> {
+    fn vtl1(&self) -> Option<&GuestMemory> {
         self.vtl1_gm.as_ref()
     }
-    pub fn shared_memory(&self) -> Option<&GuestMemory> {
+    fn shared_memory(&self) -> Option<&GuestMemory> {
         self.shared_memory.as_ref()
     }
-    /// Includes only private VTL0 memory, not pages that have been made shared.
-    pub fn private_vtl0_memory(&self) -> Option<&GuestMemory> {
+    fn private_vtl0_memory(&self) -> Option<&GuestMemory> {
         self.private_vtl0_memory.as_ref()
     }
-    pub fn isolated_memory_protector(
-        &self,
-    ) -> anyhow::Result<Option<Arc<dyn ProtectIsolatedMemory>>> {
+    fn isolated_memory_protector(&self) -> anyhow::Result<Option<Arc<dyn ProtectIsolatedMemory>>> {
         match self.isolation {
             IsolationType::Snp | IsolationType::Tdx => Ok(self.shared.as_ref().map(|shared| {
                 Arc::new(HardwareIsolatedMemoryProtector::new(
@@ -77,6 +74,20 @@ impl MemoryMappings {
             })),
             _ => Ok(None),
         }
+    }
+
+    fn map_partition(
+        &mut self,
+        _partition: &dyn virt::PartitionMemoryMapper,
+    ) -> anyhow::Result<()> {
+        // Currently we assume this is used with UhPartition, which does not
+        // issue a map call.
+        //
+        // FUTURE: once the driver works without mshv_vtl, we should map here,
+        // too. Alternatively, perhaps UhPartition could be made to work via
+        // this map call as well, transparently altering memory protections as
+        // needed. This would be nice from a consistency perspective.
+        todo!()
     }
 }
 
