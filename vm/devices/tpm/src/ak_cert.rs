@@ -34,16 +34,15 @@ impl<T: 'static + GetAttestationReport> From<T> for ResolvedGetAttestationReport
     }
 }
 
+// Use the value defined by `tee_call::REPORT_DATA_SIZE`
+const REPORT_DATA_SIZE: usize = 64;
+
 /// A trait for getting an attestation report.
 pub trait GetAttestationReport: Send + Sync {
-    /// Helper function to get an attestation report needed by `request_ak_cert`.
-    fn get_attestation_report(
+    /// Helper function to get an attestation report
+    fn get_report(
         &self,
-        ak_pub_modulus: &[u8],
-        ak_pub_exponent: &[u8],
-        ek_pub_modulus: &[u8],
-        ek_pub_exponent: &[u8],
-        guest_input: &[u8],
+        report_data: &[u8; REPORT_DATA_SIZE],
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
@@ -64,10 +63,21 @@ impl<T: 'static + RequestAkCert> From<T> for ResolvedRequestAkCert {
 /// A trait for requesting an AK cert.
 #[async_trait::async_trait]
 pub trait RequestAkCert: Send + Sync {
+    /// Helper function to create the request needed by `request_ak_cert`.
+    fn create_ak_cert_request(
+        &self,
+        get_attestation_report: Option<&dyn GetAttestationReport>,
+        ak_pub_modulus: &[u8],
+        ak_pub_exponent: &[u8],
+        ek_pub_modulus: &[u8],
+        ek_pub_exponent: &[u8],
+        guest_input: &[u8],
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
+
     /// Helper function to request an AK cert.
     async fn request_ak_cert(
         &self,
-        attestation_report: Option<Vec<u8>>,
+        request: Vec<u8>,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>>;
 
     /// Get a clone of the trait object.

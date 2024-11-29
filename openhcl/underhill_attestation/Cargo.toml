@@ -14,6 +14,7 @@ openssl-vendored = ["openssl/vendored"]
 [target.'cfg(target_os = "linux")'.dependencies]
 get_protocol.workspace = true
 guest_emulation_transport.workspace = true
+openhcl_attestation_protocol.workspace = true
 vmgs = { workspace = true, features = ["encryption_ossl"] }
 
 open_enum.workspace = true

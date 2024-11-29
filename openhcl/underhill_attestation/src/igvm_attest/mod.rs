@@ -5,12 +5,11 @@
 //! sent to and received from the IGVm agent runs on the host via GET
 //! `IGVM_ATTEST` host request.
 
-use crate::protocol;
-use crate::protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
-use crate::protocol::igvm_attest::get::IgvmAttestHashType;
-use crate::protocol::igvm_attest::get::IgvmAttestReportType;
-use crate::protocol::igvm_attest::get::IgvmAttestRequestType;
 use base64_serde::base64_serde_type;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestHashType;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestReportType;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use tee_call::TeeType;
 use thiserror::Error;
 use zerocopy::AsBytes;
@@ -22,11 +21,17 @@ pub mod wrapped_key;
 
 base64_serde_type!(Base64Url, base64::engine::general_purpose::URL_SAFE_NO_PAD);
 
+const VBS_VM_REPORT_SIZE: usize = 0x230;
+const SNP_VM_REPORT_SIZE: usize = sev_guest_device::protocol::SNP_REPORT_SIZE;
+const TDX_VM_REPORT_SIZE: usize = tdx_guest_device::protocol::TDX_REPORT_SIZE;
+/// No TEE attestation report for TVM
+const TVM_REPORT_SIZE: usize = 0;
+
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("the type of the attestation report is invalid")]
-    InvalidAttestationReportType,
+    #[error("the type of the attestation report {0} is invalid")]
+    InvalidAttestationReportType(u32),
     #[error(
         "the size of the attestation report {report_size} is invalid, expected {expected_size}"
     )]
@@ -68,7 +73,7 @@ impl IgvmAttestRequestHelper {
         let attestation_vm_config =
             attestation_vm_config_with_time(attestation_vm_config, host_time);
         let runtime_claims =
-            protocol::igvm_attest::get::runtime_claims::RuntimeClaims::key_release_request_runtime_claims(rsa_exponent, rsa_modulus, &attestation_vm_config);
+            openhcl_attestation_protocol::igvm_attest::get::runtime_claims::RuntimeClaims::key_release_request_runtime_claims(rsa_exponent, rsa_modulus, &attestation_vm_config);
         let runtime_claims = runtime_claims_to_bytes(&runtime_claims);
 
         let hash_type = IgvmAttestHashType::SHA_256;
@@ -87,7 +92,7 @@ impl IgvmAttestRequestHelper {
 
     /// Prepare the data necessary for creating the `AK_CERT` request.
     pub fn prepare_ak_cert_request(
-        tee_type: TeeType,
+        tee_type: Option<TeeType>,
         ak_pub_exponent: &[u8],
         ak_pub_modulus: &[u8],
         ek_pub_exponent: &[u8],
@@ -96,12 +101,13 @@ impl IgvmAttestRequestHelper {
         guest_input: &[u8],
     ) -> Self {
         let report_type = match tee_type {
-            TeeType::Snp => IgvmAttestReportType::SNP_VM_REPORT,
-            TeeType::Tdx => IgvmAttestReportType::TDX_VM_REPORT,
+            Some(TeeType::Snp) => IgvmAttestReportType::SNP_VM_REPORT,
+            Some(TeeType::Tdx) => IgvmAttestReportType::TDX_VM_REPORT,
+            None => IgvmAttestReportType::TVM_REPORT,
         };
 
         let runtime_claims =
-            protocol::igvm_attest::get::runtime_claims::RuntimeClaims::ak_cert_runtime_claims(
+            openhcl_attestation_protocol::igvm_attest::get::runtime_claims::RuntimeClaims::ak_cert_runtime_claims(
                 ak_pub_exponent,
                 ak_pub_modulus,
                 ek_pub_exponent,
@@ -148,9 +154,9 @@ fn create_request(
     report_type: IgvmAttestReportType,
     hash_type: IgvmAttestHashType,
 ) -> Result<Vec<u8>, Error> {
-    use protocol::igvm_attest::get::IgvmAttestRequest;
-    use protocol::igvm_attest::get::IgvmAttestRequestData;
-    use protocol::igvm_attest::get::IgvmAttestRequestHeader;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequest;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestData;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestHeader;
 
     let expected_report_size = get_report_size(report_type)?;
     if attestation_report.len() != expected_report_size {
@@ -181,10 +187,11 @@ fn create_request(
 /// Get the expected size of the given report type.
 fn get_report_size(report_type: IgvmAttestReportType) -> Result<usize, Error> {
     let size = match report_type {
-        IgvmAttestReportType::VBS_VM_REPORT => protocol::igvm_attest::get::VBS_VM_REPORT_SIZE,
-        IgvmAttestReportType::SNP_VM_REPORT => protocol::igvm_attest::get::SNP_VM_REPORT_SIZE,
-        IgvmAttestReportType::TDX_VM_REPORT => protocol::igvm_attest::get::TDX_VM_REPORT_SIZE,
-        _ => Err(Error::InvalidAttestationReportType)?,
+        IgvmAttestReportType::VBS_VM_REPORT => VBS_VM_REPORT_SIZE,
+        IgvmAttestReportType::SNP_VM_REPORT => SNP_VM_REPORT_SIZE,
+        IgvmAttestReportType::TDX_VM_REPORT => TDX_VM_REPORT_SIZE,
+        IgvmAttestReportType::TVM_REPORT => TVM_REPORT_SIZE,
+        ty => Err(Error::InvalidAttestationReportType(ty.0))?,
     };
 
     Ok(size)
@@ -202,7 +209,7 @@ fn attestation_vm_config_with_time(
 
 /// Helper function that converts the `RuntimeClaims` to raw bytes.
 fn runtime_claims_to_bytes(
-    runtime_claims: &protocol::igvm_attest::get::runtime_claims::RuntimeClaims,
+    runtime_claims: &openhcl_attestation_protocol::igvm_attest::get::runtime_claims::RuntimeClaims,
 ) -> Vec<u8> {
     let runtime_claims = serde_json::to_string(runtime_claims).expect("JSON serialization failed");
     runtime_claims.as_bytes().to_vec()
@@ -217,7 +224,7 @@ mod tests {
         let result = create_request(
             IgvmAttestRequestType::AK_CERT_REQUEST,
             &[],
-            &[0u8; protocol::igvm_attest::get::SNP_VM_REPORT_SIZE],
+            &[0u8; SNP_VM_REPORT_SIZE],
             IgvmAttestReportType::SNP_VM_REPORT,
             IgvmAttestHashType::SHA_256,
         );
@@ -226,7 +233,7 @@ mod tests {
         let result = create_request(
             IgvmAttestRequestType::AK_CERT_REQUEST,
             &[],
-            &[0u8; protocol::igvm_attest::get::SNP_VM_REPORT_SIZE + 1],
+            &[0u8; SNP_VM_REPORT_SIZE + 1],
             IgvmAttestReportType::SNP_VM_REPORT,
             IgvmAttestHashType::SHA_256,
         );
@@ -237,7 +244,7 @@ mod tests {
     fn test_transfer_key_jwk() {
         const EXPECTED_JWK: &str = r#"[{"kid":"HCLTransferKey","key_ops":["encrypt"],"kty":"RSA","e":"RVhQT05FTlQ","n":"TU9EVUxVUw"}]"#;
 
-        let rsa_jwk = protocol::igvm_attest::get::runtime_claims::RsaJwk::get_transfer_key_jwks(
+        let rsa_jwk = openhcl_attestation_protocol::igvm_attest::get::runtime_claims::RsaJwk::get_transfer_key_jwks(
             b"EXPONENT",
             b"MODULUS",
         );

@@ -90,6 +90,7 @@ use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
 use pal_async::DefaultDriver;
@@ -113,6 +114,7 @@ use tpm_resources::TpmRegisterLayout;
 use tracing::instrument;
 use tracing::Instrument;
 use uevent::UeventListener;
+use underhill_attestation::AttestationType;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::lockmem::LockedMemorySpawner;
@@ -1214,7 +1216,7 @@ async fn new_underhill_vm(
     let boot_info = runtime_params.parsed_openhcl_boot();
 
     // The amount of memory required by the GET igvm_attest request
-    let attestation = get_protocol::IGVM_ATTEST_MSG_SHARED_GPA as u64 * hvdef::HV_PAGE_SIZE;
+    let attestation = get_protocol::IGVM_ATTEST_MSG_MAX_SHARED_GPA as u64 * hvdef::HV_PAGE_SIZE;
 
     // TODO: determine actual memory usage by NVME/MANA. hardcode as 10MB
     let device_dma = 10 * 1024 * 1024;
@@ -1548,7 +1550,7 @@ async fn new_underhill_vm(
     // Create the `AttestationVmConfig` from `dps`, which will be used in
     // - stateful mode (the attestation is not suppressed)
     // - stateless mode (isolated VM with attestation suppressed)
-    let attestation_vm_config = underhill_attestation::AttestationVmConfig {
+    let attestation_vm_config = AttestationVmConfig {
         current_time: None,
         // TODO CVM: Support vmgs provisioning config
         root_cert_thumbprint: String::new(),
@@ -1563,10 +1565,10 @@ async fn new_underhill_vm(
     };
 
     let attestation_type = match isolation {
-        virt::IsolationType::Snp => underhill_attestation::AttestationType::Snp,
-        virt::IsolationType::Tdx => underhill_attestation::AttestationType::Tdx,
-        virt::IsolationType::Vbs => underhill_attestation::AttestationType::Unsupported, // TODO VBS
-        virt::IsolationType::None => underhill_attestation::AttestationType::Host,
+        virt::IsolationType::Snp => AttestationType::Snp,
+        virt::IsolationType::Tdx => AttestationType::Tdx,
+        virt::IsolationType::Vbs => AttestationType::VbsUnsupported, // TODO VBS
+        virt::IsolationType::None => AttestationType::Host,
     };
 
     // Decrypt VMGS state before the VMGS file is used for anything.
@@ -2376,30 +2378,33 @@ async fn new_underhill_vm(
             )
         };
 
-        let (get_attestation_report, request_ak_cert) = {
-            // Ak cert renewal depends on the ability to get an attestation report
-            let get_attestation_report = match isolation {
-                virt::IsolationType::Snp | virt::IsolationType::Tdx => Some(
-                    GetTpmGetAttestationReportHelperHandle::new(
+        // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
+        let (get_attestation_report, request_ak_cert) =
+            if !matches!(attestation_type, AttestationType::VbsUnsupported) {
+                // Ak cert request for isolated VMs depends on the ability to get an attestation report
+                let get_attestation_report = if !matches!(attestation_type, AttestationType::Host) {
+                    Some(
+                        GetTpmGetAttestationReportHelperHandle::new(attestation_type)
+                            .into_resource(),
+                    )
+                } else {
+                    None
+                };
+
+                // AK cert request depends on the availability of the shared memory
+                let request_ak_cert = shared_vis_pages_pool.as_ref().map(|_| {
+                    GetTpmRequestAkCertHelperHandle::new(
                         attestation_type,
                         attestation_vm_config,
+                        platform_attestation_data.agent_data,
                     )
-                    .into_resource(),
-                ),
-                // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
-                virt::IsolationType::Vbs => None,
-                virt::IsolationType::None => None,
+                    .into_resource()
+                });
+
+                (get_attestation_report, request_ak_cert)
+            } else {
+                (None, None)
             };
-
-            // Always attempt AK cert and let TPM to decide the course of action
-            // based on the response.
-            let request_ak_cert = Some(
-                GetTpmRequestAkCertHelperHandle::new(platform_attestation_data.agent_data)
-                    .into_resource(),
-            );
-
-            (get_attestation_report, request_ak_cert)
-        };
 
         let register_layout = if cfg!(guest_arch = "x86_64") {
             TpmRegisterLayout::IoPort
