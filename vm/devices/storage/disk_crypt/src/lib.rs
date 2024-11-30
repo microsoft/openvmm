@@ -12,6 +12,7 @@ use block_crypto::XtsAes256;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
+use disk_backend::UnmapBehavior;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
@@ -168,8 +169,13 @@ impl DiskIo for CryptDisk {
         self.inner.unmap(sector, count, block_level_only)
     }
 
-    fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
-        self.inner.unmap_behavior()
+    fn unmap_behavior(&self) -> UnmapBehavior {
+        match self.inner.unmap_behavior() {
+            // Even if the inner disk zeroes on unmap, the decrypted view of
+            // those zeroes will be random data.
+            UnmapBehavior::Unspecified | UnmapBehavior::Zeroes => UnmapBehavior::Unspecified,
+            UnmapBehavior::Ignored => UnmapBehavior::Ignored,
+        }
     }
 
     fn optimal_unmap_sectors(&self) -> u32 {
