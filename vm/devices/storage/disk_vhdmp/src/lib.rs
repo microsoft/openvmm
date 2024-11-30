@@ -480,6 +480,19 @@ impl DiskIo for VhdmpDisk {
         let _locked = self.io_lock.lock().await;
         self.vhd.flush().await
     }
+
+    async fn unmap(
+        &self,
+        _sector: u64,
+        _count: u64,
+        _block_level_only: bool,
+    ) -> Result<(), DiskError> {
+        Ok(())
+    }
+
+    fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
+        disk_backend::UnmapBehavior::Ignored
+    }
 }
 
 #[cfg(test)]
