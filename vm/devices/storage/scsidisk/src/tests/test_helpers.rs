@@ -114,16 +114,7 @@ impl DiskIo for TestDisk {
         let end_point = offset + buffers.len();
         let mut state = self.state.lock();
         if state.storage.len() < end_point {
-            println!(
-                "exceed storage limit: storage_len {:?} offset {:?} len {:?}",
-                state.storage.len(),
-                offset,
-                buffers.len()
-            );
-            return Err(DiskError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "exceed storage limit",
-            )));
+            return Err(DiskError::IllegalBlock);
         }
         buffers.writer().write(&state.storage[offset..end_point])?;
         state.is_fua_set = false;
@@ -140,16 +131,7 @@ impl DiskIo for TestDisk {
         let end_point = offset + buffers.len();
         let mut state = self.state.lock();
         if state.storage.len() < end_point {
-            println!(
-                "exceed storage limit: storage_len {:?} offset {:?} len {:?}",
-                state.storage.len(),
-                offset,
-                buffers.len()
-            );
-            return Err(DiskError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "exceed storage limit",
-            )));
+            return Err(DiskError::IllegalBlock);
         }
         buffers
             .reader()

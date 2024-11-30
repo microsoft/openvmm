@@ -2429,16 +2429,7 @@ mod tests {
             let end_point = offset + buffers.len();
 
             if self.storage.len() < end_point {
-                println!(
-                    "exceed storage limit: storage_len {:?} offset {:?} len {:?}",
-                    self.storage.len(),
-                    offset,
-                    buffers.len()
-                );
-                return Err(DiskError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "exceed storage limit",
-                )));
+                return Err(DiskError::IllegalBlock);
             }
 
             buffers.writer().write(&self.storage[offset..end_point])?;
