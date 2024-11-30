@@ -2449,13 +2449,13 @@ mod tests {
             todo!()
         }
 
-        fn unmap(
+        async fn unmap(
             &self,
             _sector: u64,
             _count: u64,
             _block_level_only: bool,
-        ) -> impl std::future::Future<Output = Result<(), DiskError>> + Send {
-            async move { Ok(()) }
+        ) -> Result<(), DiskError> {
+            Ok(())
         }
 
         fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
