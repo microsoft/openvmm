@@ -58,7 +58,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         },
     );
     nvme.client()
-        .add_namespace(1, disk_ramdisk::ram_disk(1 << 20, false).unwrap())
+        .add_namespace(1, disk_ramdisk::ram_disk(2 << 20, false).unwrap())
         .await
         .unwrap();
 
