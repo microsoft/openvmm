@@ -1172,38 +1172,39 @@ fn vm_config_from_command_line(
         );
     }
 
-    for (tag, root_path) in &opt.virtio_fs {
+    for args in &opt.virtio_fs {
         add_virtio_device(
             opt.virtio_fs_bus,
             virtio_resources::fs::VirtioFsHandle {
-                tag: tag.clone(),
+                tag: args.tag.clone(),
                 fs: virtio_resources::fs::VirtioFsBackend::HostFs {
-                    root_path: root_path.clone(),
+                    root_path: args.path.clone(),
+                    mount_options: args.options.clone(),
                 },
             }
             .into_resource(),
         );
     }
 
-    for (tag, root_path) in &opt.virtio_fs_shmem {
+    for args in &opt.virtio_fs_shmem {
         add_virtio_device(
             opt.virtio_fs_bus,
             virtio_resources::fs::VirtioFsHandle {
-                tag: tag.clone(),
+                tag: args.tag.clone(),
                 fs: virtio_resources::fs::VirtioFsBackend::SectionFs {
-                    root_path: root_path.clone(),
+                    root_path: args.path.clone(),
                 },
             }
             .into_resource(),
         );
     }
 
-    for (tag, root_path) in &opt.virtio_9p {
+    for args in &opt.virtio_9p {
         add_virtio_device(
             VirtioBusCli::Auto,
             virtio_resources::p9::VirtioPlan9Handle {
-                tag: tag.clone(),
-                root_path: root_path.clone(),
+                tag: args.tag.clone(),
+                root_path: args.path.clone(),
                 debug: opt.virtio_9p_debug,
             }
             .into_resource(),

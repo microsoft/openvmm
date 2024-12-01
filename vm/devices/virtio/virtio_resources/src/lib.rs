@@ -52,8 +52,13 @@ pub mod fs {
 
     #[derive(MeshPayload)]
     pub enum VirtioFsBackend {
-        HostFs { root_path: String },
-        SectionFs { root_path: String },
+        HostFs {
+            root_path: String,
+            mount_options: String,
+        },
+        SectionFs {
+            root_path: String,
+        },
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioFsHandle {

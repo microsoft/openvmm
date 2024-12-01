@@ -546,6 +546,7 @@ impl VmService {
                     tag: virtiofs.tag,
                     fs: virtio_resources::fs::VirtioFsBackend::HostFs {
                         root_path: virtiofs.root_path,
+                        mount_options: String::new(),
                     },
                 }
                 .into_resource();

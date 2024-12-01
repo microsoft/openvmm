@@ -5,6 +5,7 @@
 
 use crate::virtio::VirtioFsDevice;
 use crate::VirtioFs;
+use lxutil::LxVolumeOptions;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio_resources::fs::VirtioFsBackend;
@@ -31,10 +32,16 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
         input: VirtioResolveInput<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let device = match &resource.fs {
-            VirtioFsBackend::HostFs { root_path } => VirtioFsDevice::new(
+            VirtioFsBackend::HostFs {
+                root_path,
+                mount_options,
+            } => VirtioFsDevice::new(
                 input.driver_source,
                 &resource.tag,
-                VirtioFs::new(root_path, None)?,
+                VirtioFs::new(
+                    root_path,
+                    Some(&LxVolumeOptions::from_option_string(mount_options)),
+                )?,
                 input.guest_memory.clone(),
                 0,
                 None,

@@ -316,21 +316,21 @@ flags:
     #[clap(long, requires("igvm"), default_value = "auto=filesize", value_parser = parse_vtl2_relocation)]
     pub igvm_vtl2_relocation_type: Vtl2BaseAddressType,
 
-    /// add a virtio_9p device (e.g. myfs:C:\)
-    #[clap(long, value_name = "tag:root_path", value_parser = parse_fs_arg)]
-    pub virtio_9p: Vec<(String, String)>,
+    /// add a virtio_9p device (e.g. myfs,C:\)
+    #[clap(long, value_name = "tag,root_path")]
+    pub virtio_9p: Vec<FsArgs>,
 
     /// output debug info from the 9p server
     #[clap(long)]
     pub virtio_9p_debug: bool,
 
-    /// add a virtio_fs device (e.g. myfs:C:\)
-    #[clap(long, value_name = "tag:root_path", value_parser = parse_fs_arg)]
-    pub virtio_fs: Vec<(String, String)>,
+    /// add a virtio_fs device (e.g. myfs,C:\,uid=1000,gid=2000)
+    #[clap(long, value_name = "tag,root_path,[options]")]
+    pub virtio_fs: Vec<FsArgsWithOptions>,
 
-    /// add a virtio_fs device for sharing memory (e.g. myfs:\SectionDirectoryPath)
-    #[clap(long, value_name = "tag:root_path", value_parser = parse_fs_arg)]
-    pub virtio_fs_shmem: Vec<(String, String)>,
+    /// add a virtio_fs device for sharing memory (e.g. myfs,\SectionDirectoryPath)
+    #[clap(long, value_name = "tag,root_path")]
+    pub virtio_fs_shmem: Vec<FsArgs>,
 
     /// add a virtio_fs device under either the PCI or MMIO bus, or whatever the hypervisor supports (pci | mmio | auto)
     #[clap(long, value_name = "BUS", default_value = "auto")]
@@ -525,9 +525,52 @@ flags:
     pub uefi_console_mode: Option<UefiConsoleModeCli>,
 }
 
-fn parse_fs_arg(opt: &str) -> Result<(String, String), &'static str> {
-    let (tag, root_path) = opt.split_once(':').ok_or("invalid value")?;
-    Ok((tag.to_owned(), root_path.to_owned()))
+#[derive(Clone)]
+pub struct FsArgs {
+    pub tag: String,
+    pub path: String,
+}
+
+impl FromStr for FsArgs {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut s = s.split(',');
+        let (Some(tag), Some(path), None) = (s.next(), s.next(), s.next()) else {
+            anyhow::bail!("expected <tag>,<path>");
+        };
+        Ok(Self {
+            tag: tag.to_owned(),
+            path: path.to_owned(),
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct FsArgsWithOptions {
+    /// The file system tag.
+    pub tag: String,
+    /// The root path.
+    pub path: String,
+    /// The extra options, joined with ';'.
+    pub options: String,
+}
+
+impl FromStr for FsArgsWithOptions {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut s = s.split(',');
+        let (Some(tag), Some(path)) = (s.next(), s.next()) else {
+            anyhow::bail!("expected <tag>,<path>[,<options>]");
+        };
+        let options = s.collect::<Vec<_>>().join(";");
+        Ok(Self {
+            tag: tag.to_owned(),
+            path: path.to_owned(),
+            options,
+        })
+    }
 }
 
 #[derive(Copy, Clone, clap::ValueEnum)]
