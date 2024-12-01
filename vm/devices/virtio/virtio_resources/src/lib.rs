@@ -8,6 +8,20 @@
 
 #![forbid(unsafe_code)]
 
+use mesh::MeshPayload;
+use vm_resource::kind::PciDeviceHandleKind;
+use vm_resource::kind::VirtioDeviceHandle;
+use vm_resource::Resource;
+use vm_resource::ResourceId;
+
+/// A resource for mapping a virtio device as a PCI device.
+#[derive(MeshPayload)]
+pub struct VirtioPciDeviceHandle(pub Resource<VirtioDeviceHandle>);
+
+impl ResourceId<PciDeviceHandleKind> for VirtioPciDeviceHandle {
+    const ID: &'static str = "virtio";
+}
+
 pub mod p9 {
     use mesh::MeshPayload;
     use vm_resource::kind::VirtioDeviceHandle;

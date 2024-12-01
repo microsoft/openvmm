@@ -24,7 +24,6 @@ use clap::ValueEnum;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::PcatBootDevice;
-use hvlite_defs::config::VirtioBus;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use hvlite_defs::config::X2ApicConfig;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
@@ -334,8 +333,8 @@ flags:
     pub virtio_fs_shmem: Vec<(String, String)>,
 
     /// add a virtio_fs device under either the PCI or MMIO bus, or whatever the hypervisor supports (pci | mmio | auto)
-    #[clap(long, value_name = "BUS", default_value = "auto", value_parser = parse_virtio_bus_arg)]
-    pub virtio_fs_bus: VirtioBus,
+    #[clap(long, value_name = "BUS", default_value = "auto")]
+    pub virtio_fs_bus: VirtioBusCli,
 
     /// virtio PMEM device
     #[clap(long, value_name = "PATH")]
@@ -531,14 +530,12 @@ fn parse_fs_arg(opt: &str) -> Result<(String, String), &'static str> {
     Ok((tag.to_owned(), root_path.to_owned()))
 }
 
-fn parse_virtio_bus_arg(opt: &str) -> Result<VirtioBus, &'static str> {
-    Ok(match opt {
-        "auto" => VirtioBus::Auto,
-        "mmio" => VirtioBus::Mmio,
-        "pci" => VirtioBus::Pci,
-        "vpci" => VirtioBus::Vpci,
-        _ => return Err("expected one of [auto, mmio, pci, vpci]"),
-    })
+#[derive(Copy, Clone, clap::ValueEnum)]
+pub enum VirtioBusCli {
+    Auto,
+    Mmio,
+    Pci,
+    Vpci,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy)]

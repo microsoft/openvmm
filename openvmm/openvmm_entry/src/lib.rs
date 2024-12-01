@@ -27,6 +27,7 @@ use cli_args::EndpointConfigCli;
 use cli_args::NicConfigCli;
 use cli_args::SerialConfigCli;
 use cli_args::UefiConsoleModeCli;
+use cli_args::VirtioBusCli;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use floppy_resources::FloppyDiskConfig;
@@ -118,12 +119,14 @@ use uidevices_resources::SynthKeyboardHandle;
 use uidevices_resources::SynthMouseHandle;
 use uidevices_resources::SynthVideoHandle;
 use video_core::SharedFramebufferHandle;
+use virtio_resources::VirtioPciDeviceHandle;
 use vm_manifest_builder::BaseChipsetType;
 use vm_manifest_builder::MachineArch;
 use vm_manifest_builder::VmChipsetResult;
 use vm_manifest_builder::VmManifestBuilder;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::NetEndpointHandleKind;
+use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
@@ -1127,24 +1130,50 @@ fn vm_config_from_command_line(
     }
 
     let mut virtio_devices = Vec::new();
+    let mut add_virtio_device = |bus, resource: Resource<VirtioDeviceHandle>| {
+        let bus = match bus {
+            VirtioBusCli::Auto => {
+                // Use VPCI when possible (currently only on Windows and macOS due
+                // to KVM backend limitations).
+                if with_hv && (cfg!(windows) || cfg!(target_os = "macos")) {
+                    None
+                } else {
+                    Some(VirtioBus::Pci)
+                }
+            }
+            VirtioBusCli::Mmio => Some(VirtioBus::Mmio),
+            VirtioBusCli::Pci => Some(VirtioBus::Pci),
+            VirtioBusCli::Vpci => None,
+        };
+        if let Some(bus) = bus {
+            virtio_devices.push((bus, resource));
+        } else {
+            vpci_devices.push(VpciDeviceConfig {
+                vtl: DeviceVtl::Vtl0,
+                instance_id: Guid::new_random(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        }
+    };
+
     for cli_cfg in &opt.virtio_net {
         if cli_cfg.underhill {
             anyhow::bail!("use --net uh:[...] to add underhill NICs")
         }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
-        virtio_devices.push((
-            VirtioBus::Auto,
+        add_virtio_device(
+            VirtioBusCli::Auto,
             virtio_resources::net::VirtioNetHandle {
                 max_queues: vport.max_queues,
                 mac_address: vport.mac_address,
                 endpoint: vport.endpoint,
             }
             .into_resource(),
-        ));
+        );
     }
 
     for (tag, root_path) in &opt.virtio_fs {
-        virtio_devices.push((
+        add_virtio_device(
             opt.virtio_fs_bus,
             virtio_resources::fs::VirtioFsHandle {
                 tag: tag.clone(),
@@ -1153,11 +1182,11 @@ fn vm_config_from_command_line(
                 },
             }
             .into_resource(),
-        ));
+        );
     }
 
     for (tag, root_path) in &opt.virtio_fs_shmem {
-        virtio_devices.push((
+        add_virtio_device(
             opt.virtio_fs_bus,
             virtio_resources::fs::VirtioFsHandle {
                 tag: tag.clone(),
@@ -1166,26 +1195,26 @@ fn vm_config_from_command_line(
                 },
             }
             .into_resource(),
-        ));
+        );
     }
 
     for (tag, root_path) in &opt.virtio_9p {
-        virtio_devices.push((
-            VirtioBus::Auto,
+        add_virtio_device(
+            VirtioBusCli::Auto,
             virtio_resources::p9::VirtioPlan9Handle {
                 tag: tag.clone(),
                 root_path: root_path.clone(),
                 debug: opt.virtio_9p_debug,
             }
             .into_resource(),
-        ));
+        );
     }
 
     if let Some(path) = &opt.virtio_pmem {
-        virtio_devices.push((
-            VirtioBus::Auto,
+        add_virtio_device(
+            VirtioBusCli::Auto,
             virtio_resources::pmem::VirtioPmemHandle { path: path.clone() }.into_resource(),
-        ));
+        );
     }
 
     let (vmgs_disk, format_vmgs) = if let Some(path) = &opt.vmgs_file {

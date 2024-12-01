@@ -5,8 +5,8 @@
 
 use crate::virtio::VirtioFsDevice;
 use crate::VirtioFs;
+use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
-use virtio::VirtioDevice;
 use virtio_resources::fs::VirtioFsBackend;
 use virtio_resources::fs::VirtioFsHandle;
 use vm_resource::declare_static_resolver;
@@ -22,7 +22,7 @@ declare_static_resolver! {
 }
 
 impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
-    type Output = Box<dyn VirtioDevice>;
+    type Output = ResolvedVirtioDevice;
     type Error = anyhow::Error;
 
     fn resolve(
@@ -55,6 +55,6 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
                 anyhow::bail!("section fs not supported on this platform")
             }
         };
-        Ok(Box::new(device))
+        Ok(device.into())
     }
 }

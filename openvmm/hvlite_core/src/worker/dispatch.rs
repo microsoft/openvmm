@@ -1841,6 +1841,12 @@ impl InitializedVm {
                             .context("VTL2 vmbus not enabled")?,
                     };
 
+                    let vtl = match dev_cfg.vtl {
+                        DeviceVtl::Vtl0 => Vtl::Vtl0,
+                        DeviceVtl::Vtl1 => Vtl::Vtl1,
+                        DeviceVtl::Vtl2 => Vtl::Vtl2,
+                    };
+
                     vmm_core::device_builder::build_vpci_device(
                         &driver_source,
                         &resolver,
@@ -1849,6 +1855,8 @@ impl InitializedVm {
                         dev_cfg.instance_id,
                         dev_cfg.resource,
                         &mut chipset_builder,
+                        partition.clone().into_doorbell_registration(vtl),
+                        Some(&mapper),
                         |device_id| {
                             let hv_device = partition.new_virtual_device(
                                 match dev_cfg.vtl {
@@ -1976,15 +1984,6 @@ impl InitializedVm {
                     },
                 )
                 .await?;
-            let bus = if bus == VirtioBus::Auto {
-                if partition.supports_virtual_devices() {
-                    VirtioBus::Vpci
-                } else {
-                    VirtioBus::Mmio
-                }
-            } else {
-                bus
-            };
             match bus {
                 VirtioBus::Mmio => {
                     let mmio_start = virtio_mmio_start - 0x1000;
@@ -1992,7 +1991,7 @@ impl InitializedVm {
                     let id = format!("{id}-{mmio_start}");
                     chipset_builder.arc_mutex_device(id).add(|services| {
                         VirtioMmioDevice::new(
-                            device,
+                            device.0,
                             services.new_line(IRQ_LINE_SET, "interrupt", virtio_mmio_irq),
                             partition.clone().into_doorbell_registration(Vtl::Vtl0),
                             mmio_start,
@@ -2020,7 +2019,7 @@ impl InitializedVm {
                         .on_pci_bus(bus)
                         .try_add(|services| {
                             VirtioPciDevice::new(
-                                device,
+                                device.0,
                                 PciInterruptModel::IntX(
                                     PciInterruptPin::IntA,
                                     services.new_line(IRQ_LINE_SET, "interrupt", pci_inta_line),
@@ -2031,19 +2030,6 @@ impl InitializedVm {
                             )
                         })?;
                 }
-                VirtioBus::Vpci => {
-                    add_virtio_vpci(
-                        &driver_source,
-                        &partition,
-                        &vmbus_server,
-                        &mapper,
-                        &id,
-                        &mut chipset_builder,
-                        device,
-                    )
-                    .await?;
-                }
-                VirtioBus::Auto => unreachable!(),
             }
         }
 

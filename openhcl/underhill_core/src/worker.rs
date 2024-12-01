@@ -2648,6 +2648,8 @@ async fn new_underhill_vm(
                 instance_id,
                 resource,
                 &mut chipset_builder,
+                None,
+                None,
                 |device_id| {
                     let device = partition
                         .new_virtual_device()
