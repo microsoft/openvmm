@@ -168,9 +168,7 @@ impl NvmeManager {
 enum Request {
     Inspect(inspect::Deferred),
     ForceLoadDriver(inspect::DeferredUpdate),
-    GetNamespace(
-        Rpc<(String, u32, tracing::Span), Result<Arc<nvme_driver::Namespace>, NamespaceError>>,
-    ),
+    GetNamespace(Rpc<(String, u32), Result<Arc<nvme_driver::Namespace>, NamespaceError>>),
     Save(Rpc<(), Result<NvmeManagerSavedState, anyhow::Error>>),
     Shutdown {
         span: tracing::Span,
@@ -191,14 +189,8 @@ impl NvmeManagerClient {
     ) -> anyhow::Result<Arc<nvme_driver::Namespace>> {
         Ok(self
             .sender
-            .call(
-                Request::GetNamespace,
-                (
-                    pci_id.clone(),
-                    nsid,
-                    tracing::info_span!("nvme_get_namespace", pci_id, nsid),
-                ),
-            )
+            .call(Request::GetNamespace, (pci_id.clone(), nsid))
+            .instrument(tracing::info_span!("nvme_get_namespace", pci_id, nsid))
             .await
             .context("nvme manager is shut down")??)
     }
@@ -247,10 +239,9 @@ impl NvmeManagerWorker {
                     }
                 }
                 Request::GetNamespace(rpc) => {
-                    rpc.handle(|(pci_id, nsid, span)| {
+                    rpc.handle(|(pci_id, nsid)| {
                         self.get_namespace(pci_id.clone(), nsid)
                             .map_err(|source| NamespaceError { pci_id, source })
-                            .instrument(span)
                     })
                     .await
                 }
@@ -345,7 +336,10 @@ impl NvmeManagerWorker {
         for (pci_id, driver) in self.devices.iter_mut() {
             nvme_disks.push(NvmeSavedDiskConfig {
                 pci_id: pci_id.clone(),
-                driver_state: driver.save().await?,
+                driver_state: driver
+                    .save()
+                    .instrument(tracing::info_span!("nvme_driver_save", %pci_id))
+                    .await?,
             });
         }
 
