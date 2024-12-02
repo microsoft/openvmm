@@ -22,7 +22,7 @@ pub struct FuzzDriver {
 }
 
 impl FuzzDriver {
-    pub async fn new(driver: DefaultDriver) -> (Namespace, Self) {
+    pub async fn new(driver: DefaultDriver) -> (Namespace, FuzzEmulatedDevice<NvmeController>, Self) {
         // Physical storage to back the disk
         let ram_disk = RamDisk::new(1 << 20, false).unwrap();
 

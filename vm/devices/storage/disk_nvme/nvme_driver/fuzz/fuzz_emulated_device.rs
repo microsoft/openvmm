@@ -17,14 +17,38 @@ use user_driver::interrupt::DeviceInterrupt;
 // TODO: Add a polling mechnanism here. Basically every time we hit the FuzzEmulatedDeviceAction
 // we add the given action to the mapping of actions that exists. If there exists a map, we execute
 // said action. If there is nothing we can go business as usual!
-pub struct FuzzEmulatedDeviceActionsQueue<T> {
-    actions: HashSet<T>::new(),
+pub struct FuzzEmulatedDeviceActionsMap {
+    actions: FuzzEmulatedDeviceAction,
+}
+
+impl FuzzEmulatedDeviceActionsMap {
+    /// Default with no Action
+    pub fn new() -> Self {
+        Self {
+            actions: None,
+        }
+    }
+
+    // Returns true if an action exists
+    pub fn has_action(&self) -> bool {
+        self.action == None
+    }
+
+    // Consumes the action if anything exists. Returns an action if one exists, None otherwise
+    pub fn consume_action(&mut self) -> FuzzEmulatedDeviceAction {
+        self.take()   
+    }
+
+    // Sets action to the provided action
+    pub fn set_action(&mut self, action: FuzzEmulatedDeviceAction) -> bool {
+        self.actions = action;
+    }
 }
 
 /// An emulated device fuzzer
 pub struct FuzzEmulatedDevice<T> {
     device: EmulatedDevice<T>,
-    pending_actions: &'a FuzzEmulatedDeviceActionsQueue,
+    pending_action: FuzzEmulatedDeviceActionsMap,
 }
 
 impl<T: InspectMut> Inspect for FuzzEmulatedDevice<T> {
@@ -38,8 +62,14 @@ impl<T: PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<T> {
     pub fn new(mut device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory) -> Self {
         Self {
             device: EmulatedDevice::new(device, msi_set, shared_mem),
+            pending_action: FuzzEmulatedDeviceActionsMap::new(),
         }
     }
+
+    /// Sets up the mock to execute the given action on the next call to the appropriate function
+    pub fn execute_action(&self, action: FuzzEmulatedDeviceAction) {
+        self.pending_action.set_action(action);
+    } 
 }
 
 impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<T> {
@@ -59,7 +89,19 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmula
         self.device.host_allocator()
     }
 
+    /// Returns the max_interrupt_count using the set mock response. Passthrough if nothing was
+    /// set.
     fn max_interrupt_count(&self) -> u32 {
+        // Check if we wanted to mock the given action. If so, intercept the call
+        if self.pending_action.has_action() {
+            let action = self.pending_action.consume_action();
+
+            if let FuzzEmulatedDeviceAction::MaxInterruptCount(count) = action {
+                return count;        
+            }
+        }
+
+        // Passthrough branch
         self.device.max_interrupt_count()
     }
 

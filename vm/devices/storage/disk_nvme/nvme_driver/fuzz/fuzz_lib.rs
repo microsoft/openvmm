@@ -4,6 +4,8 @@
 use arbitrary::{Arbitrary, Unstructured};
 use crate::fuzz_driver::{FuzzDriver, DriverAction};
 use crate::fuzz_namespace::{FuzzNamespace, NamespaceAction};
+use crate::fuzz_emulated_device::{FuzzEmulatedDevice, FuzzEmulatedDeviceAction};
+use nvme::NvmeController;
 use pal_async::DefaultDriver;
 
 /// Struct that stores variables to fuzz the nvme driver
@@ -11,13 +13,13 @@ pub struct FuzzNvmeDriver {
     driver: FuzzDriver,
     namespace: FuzzNamespace,  // TODO: This can be implemented as a queue to test 'create' for
                                // namespaces. Essentially have a list of namespaces we can fuzz.
-    emulated_device: FuzzEmulatedDevice,
+    emulated_device: FuzzEmulatedDevice<NvmeController>,
 }
 
 impl FuzzNvmeDriver {
     /// Setup a new fuzz driver that will
     pub async fn new(driver: DefaultDriver) -> Self {
-        let (namespace, fuzz_driver) = FuzzDriver::new(driver).await;
+        let (namespace, fuzz_emulated_device, fuzz_driver) = FuzzDriver::new(driver).await;
         let fuzz_namespace = FuzzNamespace::new(namespace);
 
         Self {
@@ -63,6 +65,6 @@ pub enum NvmeDriverAction {
         action: DriverAction
     },
     FuzzEmulatedDeviceAction {
-        action: FuzzemulatedDeviceAction
+        action: FuzzEmulatedDeviceAction
     },
 }
