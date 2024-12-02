@@ -187,8 +187,6 @@ impl DiskIo for NvmeDisk {
     }
 }
 
-impl GetLbaStatus for NvmeDisk {}
-
 #[async_trait]
 impl pr::PersistentReservation for NvmeDisk {
     fn capabilities(&self) -> pr::ReservationCapabilities {
