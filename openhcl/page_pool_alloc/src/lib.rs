@@ -1030,9 +1030,9 @@ mod test {
             0,
         )
         .unwrap();
+        pool.restore(state).unwrap();
         let alloc = pool.allocator("test".into()).unwrap();
 
-        pool.restore(state).unwrap();
         let allocs = alloc.restore_allocations();
         assert_eq!(allocs.len(), 2);
 
