@@ -38,9 +38,9 @@ disk_crypt = { workspace = true, optional = true }
 disk_file.workspace = true
 disk_layered.workspace = true
 disk_prwrap.workspace = true
-disk_sqlite = { workspace = true, optional = true }
 disk_vhd1.workspace = true
 disklayer_ram.workspace = true
+disklayer_sqlite = { workspace = true, optional = true }
 
 # Chipset devices
 chipset.workspace = true

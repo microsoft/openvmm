@@ -248,11 +248,11 @@ disk_get_vmgs = { path = "vm/devices/storage/disk_get_vmgs" }
 disk_layered = { path = "vm/devices/storage/disk_layered" }
 disk_nvme = { path = "vm/devices/storage/disk_nvme" }
 disk_prwrap = { path = "vm/devices/storage/disk_prwrap" }
-disk_sqlite = { path = "vm/devices/storage/disk_sqlite" }
 disk_striped = { path = "vm/devices/storage/disk_striped" }
 disk_vhd1 = { path = "vm/devices/storage/disk_vhd1" }
 disk_vhdmp = { path = "vm/devices/storage/disk_vhdmp" }
 disklayer_ram = { path = "vm/devices/storage/disklayer_ram" }
+disklayer_sqlite = { path = "vm/devices/storage/disklayer_sqlite" }
 floppy = { path = "vm/devices/storage/floppy" }
 floppy_pcat_stub = { path = "vm/devices/storage/floppy_pcat_stub" }
 floppy_resources = { path = "vm/devices/storage/floppy_resources" }

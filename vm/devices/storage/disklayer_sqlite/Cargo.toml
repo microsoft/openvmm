@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "disk_sqlite"
+name = "disklayer_sqlite"
 edition = "2021"
 rust-version.workspace = true
 

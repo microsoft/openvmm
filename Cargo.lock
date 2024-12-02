@@ -1275,27 +1275,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "disk_sqlite"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "blocking",
- "disk_backend",
- "disk_backend_resources",
- "guestmem",
- "inspect",
- "parking_lot",
- "rusqlite",
- "scsi_buffers",
- "serde",
- "serde_json",
- "stackfuture",
- "tracing",
- "vm_resource",
-]
-
-[[package]]
 name = "disk_striped"
 version = "0.0.0"
 dependencies = [
@@ -1375,6 +1354,27 @@ dependencies = [
  "tracing",
  "vm_resource",
  "zerocopy",
+]
+
+[[package]]
+name = "disklayer_sqlite"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "blocking",
+ "disk_backend",
+ "disk_backend_resources",
+ "guestmem",
+ "inspect",
+ "parking_lot",
+ "rusqlite",
+ "scsi_buffers",
+ "serde",
+ "serde_json",
+ "stackfuture",
+ "tracing",
+ "vm_resource",
 ]
 
 [[package]]
@@ -4656,10 +4656,10 @@ dependencies = [
  "disk_file",
  "disk_layered",
  "disk_prwrap",
- "disk_sqlite",
  "disk_vhd1",
  "disk_vhdmp",
  "disklayer_ram",
+ "disklayer_sqlite",
  "gdma",
  "guest_crash_device",
  "guest_emulation_device",
