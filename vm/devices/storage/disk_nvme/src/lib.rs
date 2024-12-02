@@ -150,6 +150,9 @@ impl DiskIo for NvmeDisk {
         sector_count: u64,
         _block_level_only: bool,
     ) -> Result<(), DiskError> {
+        if !self.namespace.supports_dataset_management() {
+            return Ok(());
+        }
         let mut processed = 0;
         let max = self.namespace.dataset_management_range_size_limit();
         while processed < sector_count {
