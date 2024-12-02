@@ -388,7 +388,7 @@ impl GuestEmulationTransportClient {
     /// Set the shared memory allocator, which is required by ['igvm_attest'].
     pub fn set_shared_memory_allocator(
         &mut self,
-        shared_pool_allocator: shared_pool_alloc::SharedPoolAllocator,
+        shared_pool_allocator: page_pool_alloc::PagePoolAllocator,
         shared_guest_memory: guestmem::GuestMemory,
     ) {
         self.control.notify(msg::Msg::SetupSharedMemoryAllocator(

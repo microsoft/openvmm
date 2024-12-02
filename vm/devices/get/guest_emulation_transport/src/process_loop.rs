@@ -85,7 +85,7 @@ pub(crate) enum FatalError {
     #[error("failed to make the IgvmAttest request because shared memory is unavailable")]
     SharedMemoryUnavailable,
     #[error("failed to allocated shared memory")]
-    SharedMemoryAllocationError(#[source] shared_pool_alloc::SharedPoolOutOfMemory),
+    SharedMemoryAllocationError(#[source] page_pool_alloc::PagePoolOutOfMemory),
     #[error("failed to read the `IGVM_ATTEST` response from shared memory")]
     ReadSharedMemory(#[source] guestmem::GuestMemoryError),
     #[error("failed to deserialize the asynchronous `IGVM_ATTEST` response")]
@@ -174,10 +174,7 @@ pub(crate) mod msg {
         Inspect(inspect::Deferred),
         /// Store the shared memory allocator and guest memory for later use by
         /// IGVM attestation.
-        SetupSharedMemoryAllocator(
-            shared_pool_alloc::SharedPoolAllocator,
-            guestmem::GuestMemory,
-        ),
+        SetupSharedMemoryAllocator(page_pool_alloc::PagePoolAllocator, guestmem::GuestMemory),
 
         // Late bound receivers for Guest Notifications
         /// Take the late-bound GuestRequest receiver for Generation Id updates.
@@ -471,7 +468,7 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     igvm_attest_read_send: mesh::Sender<Vec<u8>>,
     #[inspect(skip)]
-    shared_pool_allocator: Option<Arc<shared_pool_alloc::SharedPoolAllocator>>,
+    shared_pool_allocator: Option<Arc<page_pool_alloc::PagePoolAllocator>>,
     shared_guest_memory: Option<Arc<guestmem::GuestMemory>>,
     stats: Stats,
 
@@ -1809,7 +1806,7 @@ async fn request_saved_state(
 async fn request_igvm_attest(
     mut access: HostRequestPipeAccess,
     request: msg::IgvmAttestRequestData,
-    shared_pool_allocator: Option<Arc<shared_pool_alloc::SharedPoolAllocator>>,
+    shared_pool_allocator: Option<Arc<page_pool_alloc::PagePoolAllocator>>,
     shared_guest_memory: Option<Arc<guestmem::GuestMemory>>,
 ) -> Result<Result<Vec<u8>, IgvmAttestError>, FatalError> {
     const ALLOCATED_SHARED_MEMORY_SIZE: usize =

@@ -32,7 +32,7 @@ cvm_tracing.workspace = true
 diag_proto.workspace = true
 diag_server.workspace = true
 debug_worker_defs = { workspace = true, optional = true }
-shared_pool_alloc =  { workspace = true, features = ["vfio"] }
+page_pool_alloc =  { workspace = true, features = ["vfio"] }
 virt.workspace = true
 vmm_core.workspace = true
 vmm_core_defs.workspace = true

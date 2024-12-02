@@ -119,7 +119,7 @@ impl UhProcessor<'_, TdxBacked> {
         partition_flush_state: &TdxPartitionFlushState,
         gva_list_count: &mut Wrapping<usize>,
         runner: &mut ProcessorRunner<'_, Tdx>,
-        flush_page: &shared_pool_alloc::SharedPoolHandle,
+        flush_page: &page_pool_alloc::PagePoolHandle,
     ) -> bool {
         // Check quickly to see whether any new addresses are in the list.
         if partition_flush_state.s.gva_list_count == *gva_list_count {
@@ -155,7 +155,7 @@ impl UhProcessor<'_, TdxBacked> {
         target_vtl: GuestVtl,
         flush_addrs: &[HvGvaRange],
         runner: &mut ProcessorRunner<'_, Tdx>,
-        flush_page: &shared_pool_alloc::SharedPoolHandle,
+        flush_page: &page_pool_alloc::PagePoolHandle,
     ) {
         // Now we can build the TDX structs and actually call INVGLA.
         tracing::trace!(
