@@ -34,19 +34,16 @@
 #![warn(missing_docs)]
 
 use blocking::unblock;
-use disk_backend::zerodisk::ZeroDisk;
-use disk_backend::AsyncDisk;
+use disk_backend::Disk;
 use disk_backend::DiskError;
-use disk_backend::SimpleDisk;
-use disk_backend::Unmap;
-use disk_backend::ASYNC_DISK_STACK_SIZE;
+use disk_backend::DiskIo;
+use disk_backend::UnmapBehavior;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use scsi_buffers::RequestBuffers;
-use stackfuture::StackFuture;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -133,35 +130,32 @@ pub struct SqliteDisk {
     conn: Arc<Mutex<Connection>>,
     meta: schema::DiskMeta,
     read_only: bool,
-    lower: Arc<dyn SimpleDisk>,
+    lower: Disk,
 }
 
 impl SqliteDisk {
     /// Makes a new blank SQLite disk of `size` bytes.
     pub fn new(len: u64, dbhd_path: &Path, read_only: bool) -> Result<Self, anyhow::Error> {
-        // the choice of `sector_size` here was chosen entirely arbirarily.
-        Self::new_inner(
-            Arc::new(ZeroDisk::new(512, len)?),
-            dbhd_path,
-            read_only,
-            true,
-        )
+        // // the choice of `sector_size` here was chosen entirely arbirarily.
+        // Self::new_inner(
+        //     Arc::new(ZeroDisk::new(512, len)?),
+        //     dbhd_path,
+        //     read_only,
+        //     true,
+        // )
+        todo!()
     }
 
     /// Makes a new SQLite diff disk on top of `lower`.
     ///
     /// Writes will be collected in SQLite, but reads will go to the lower disk
     /// for sectors that have not yet been overwritten.
-    pub fn diff(
-        lower: Arc<dyn SimpleDisk>,
-        dbhd_path: &Path,
-        read_only: bool,
-    ) -> Result<Self, anyhow::Error> {
+    pub fn diff(lower: Disk, dbhd_path: &Path, read_only: bool) -> Result<Self, anyhow::Error> {
         Self::new_inner(lower, dbhd_path, read_only, false)
     }
 
     fn new_inner(
-        lower: Arc<dyn SimpleDisk>,
+        lower: Disk,
         dbhd_path: &Path,
         read_only: bool,
         lower_is_zero: bool,
@@ -240,40 +234,6 @@ impl SqliteDisk {
             read_only,
             lower,
         })
-    }
-}
-
-impl SimpleDisk for SqliteDisk {
-    fn disk_type(&self) -> &str {
-        "sqlite"
-    }
-
-    fn sector_count(&self) -> u64 {
-        self.meta.sector_count
-    }
-
-    fn sector_size(&self) -> u32 {
-        self.meta.sector_size
-    }
-
-    fn is_read_only(&self) -> bool {
-        self.read_only
-    }
-
-    fn disk_id(&self) -> Option<[u8; 16]> {
-        self.meta.disk_id
-    }
-
-    fn physical_sector_size(&self) -> u32 {
-        self.meta.physical_sector_size
-    }
-
-    fn is_fua_respected(&self) -> bool {
-        true
-    }
-
-    fn unmap(&self) -> Option<&dyn Unmap> {
-        Some(self)
     }
 }
 
@@ -384,84 +344,6 @@ fn write_sectors(
     Ok(())
 }
 
-impl AsyncDisk for SqliteDisk {
-    fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
-        sector: u64,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let count = (buffers.len() / self.meta.sector_size as usize) as u64;
-            tracing::debug!(sector, count, "read");
-
-            // Always read the full lower and then overlay the changes.
-            // Optimizations are possible, but some heuristics are necessary to
-            // avoid lots of small reads when the disk is "Swiss cheesed".
-            //
-            // Box the future because otherwise it won't fit in this StackFuture.
-            Box::pin(self.lower.read_vectored(buffers, sector)).await?;
-
-            let valid_sectors = unblock({
-                let conn = self.conn.clone();
-                let end_sector = sector + (buffers.len() as u64 / self.meta.sector_size as u64);
-                let sector_size = self.meta.sector_size;
-                move || read_sectors(conn, sector_size, sector, end_sector)
-            })
-            .await
-            .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-
-            for (s, data) in valid_sectors {
-                let offset = (s - sector) as usize * self.meta.sector_size as usize;
-                let subrange = buffers.subrange(offset, self.meta.sector_size as usize);
-                let mut writer = subrange.writer();
-                match data {
-                    SectorKind::AllZero => writer.zero(self.meta.sector_size as usize)?,
-                    SectorKind::AllOne => writer.fill(0xff, self.meta.sector_size as usize)?,
-                    SectorKind::Data(data) => writer.write(&data)?,
-                };
-            }
-
-            Ok(())
-        })
-    }
-
-    fn write_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
-        sector: u64,
-        _fua: bool,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            assert!(!self.read_only);
-
-            let count = buffers.len() / self.meta.sector_size as usize;
-            tracing::debug!(sector, count, "write");
-
-            let buf = buffers.reader().read_all()?;
-            unblock({
-                let conn = self.conn.clone();
-                let sector_size = self.meta.sector_size;
-                move || write_sectors(conn, sector_size, sector, buf)
-            })
-            .await
-            .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-
-            Ok(())
-        })
-    }
-
-    fn sync_cache(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        tracing::debug!("sync_cache");
-
-        StackFuture::from(async move {
-            (self.conn.lock())
-                .pragma_update(None, "wal_checkpoint", "FULL")
-                .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-            Ok(())
-        })
-    }
-}
-
 fn unmap_sectors(
     conn: Arc<Mutex<Connection>>,
     sector_offset: u64,
@@ -494,29 +376,129 @@ fn unmap_sectors(
     Ok(())
 }
 
-impl Unmap for SqliteDisk {
-    fn unmap(
+impl DiskIo for SqliteDisk {
+    fn disk_type(&self) -> &str {
+        "sqlite"
+    }
+
+    fn sector_count(&self) -> u64 {
+        self.meta.sector_count
+    }
+
+    fn sector_size(&self) -> u32 {
+        self.meta.sector_size
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    fn disk_id(&self) -> Option<[u8; 16]> {
+        self.meta.disk_id
+    }
+
+    fn physical_sector_size(&self) -> u32 {
+        self.meta.physical_sector_size
+    }
+
+    fn is_fua_respected(&self) -> bool {
+        true
+    }
+
+    async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
+        sector: u64,
+    ) -> Result<(), DiskError> {
+        let count = (buffers.len() / self.meta.sector_size as usize) as u64;
+        tracing::debug!(sector, count, "read");
+
+        // Always read the full lower and then overlay the changes.
+        // Optimizations are possible, but some heuristics are necessary to
+        // avoid lots of small reads when the disk is "Swiss cheesed".
+        //
+        // Box the future because otherwise it won't fit in this StackFuture.
+        Box::pin(self.lower.read_vectored(buffers, sector)).await?;
+
+        let valid_sectors = unblock({
+            let conn = self.conn.clone();
+            let end_sector = sector + (buffers.len() as u64 / self.meta.sector_size as u64);
+            let sector_size = self.meta.sector_size;
+            move || read_sectors(conn, sector_size, sector, end_sector)
+        })
+        .await
+        .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+        for (s, data) in valid_sectors {
+            let offset = (s - sector) as usize * self.meta.sector_size as usize;
+            let subrange = buffers.subrange(offset, self.meta.sector_size as usize);
+            let mut writer = subrange.writer();
+            match data {
+                SectorKind::AllZero => writer.zero(self.meta.sector_size as usize)?,
+                SectorKind::AllOne => writer.fill(0xff, self.meta.sector_size as usize)?,
+                SectorKind::Data(data) => writer.write(&data)?,
+            };
+        }
+
+        Ok(())
+    }
+
+    async fn write_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
+        sector: u64,
+        _fua: bool,
+    ) -> Result<(), DiskError> {
+        assert!(!self.read_only);
+
+        let count = buffers.len() / self.meta.sector_size as usize;
+        tracing::debug!(sector, count, "write");
+
+        let buf = buffers.reader().read_all()?;
+        unblock({
+            let conn = self.conn.clone();
+            let sector_size = self.meta.sector_size;
+            move || write_sectors(conn, sector_size, sector, buf)
+        })
+        .await
+        .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+        Ok(())
+    }
+
+    async fn sync_cache(&self) -> Result<(), DiskError> {
+        tracing::debug!("sync_cache");
+
+        (self.conn.lock())
+            .pragma_update(None, "wal_checkpoint", "FULL")
+            .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        Ok(())
+    }
+
+    async fn unmap(
         &self,
         sector_offset: u64,
         sector_count: u64,
         _block_level_only: bool,
-    ) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            tracing::debug!(sector_offset, sector_count, "unmap");
+    ) -> Result<(), DiskError> {
+        tracing::debug!(sector_offset, sector_count, "unmap");
 
-            unblock({
-                let conn = self.conn.clone();
-                let lower_is_zero = matches!(self.meta.disk_kind, schema::DiskKind::Raw);
-                move || unmap_sectors(conn, sector_offset, sector_count, lower_is_zero)
-            })
-            .await
-            .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-
-            Ok(())
+        unblock({
+            let conn = self.conn.clone();
+            let lower_is_zero = matches!(self.meta.disk_kind, schema::DiskKind::Raw);
+            move || unmap_sectors(conn, sector_offset, sector_count, lower_is_zero)
         })
+        .await
+        .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+        Ok(())
     }
 
     fn optimal_unmap_sectors(&self) -> u32 {
         1
+    }
+
+    fn unmap_behavior(&self) -> UnmapBehavior {
+        UnmapBehavior::Zeroes
     }
 }

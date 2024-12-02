@@ -4,7 +4,7 @@
 use crate::SqliteDisk;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedSimpleDisk;
+use disk_backend::resolve::ResolvedDisk;
 use disk_backend_resources::SqliteDiffDiskHandle;
 use disk_backend_resources::SqliteDiskHandle;
 use std::path::Path;
@@ -24,7 +24,7 @@ declare_static_async_resolver!(
 
 #[async_trait]
 impl AsyncResolveResource<DiskHandleKind, SqliteDiskHandle> for SqliteDiskResolver {
-    type Output = ResolvedSimpleDisk;
+    type Output = ResolvedDisk;
     type Error = anyhow::Error;
 
     async fn resolve(
@@ -33,13 +33,17 @@ impl AsyncResolveResource<DiskHandleKind, SqliteDiskHandle> for SqliteDiskResolv
         rsrc: SqliteDiskHandle,
         input: ResolveDiskParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        Ok(SqliteDisk::new(rsrc.len, Path::new(&rsrc.dbhd_path), input.read_only)?.into())
+        Ok(ResolvedDisk::new(SqliteDisk::new(
+            rsrc.len,
+            Path::new(&rsrc.dbhd_path),
+            input.read_only,
+        )?)?)
     }
 }
 
 #[async_trait]
 impl AsyncResolveResource<DiskHandleKind, SqliteDiffDiskHandle> for SqliteDiskResolver {
-    type Output = ResolvedSimpleDisk;
+    type Output = ResolvedDisk;
     type Error = anyhow::Error;
 
     async fn resolve(
@@ -57,6 +61,10 @@ impl AsyncResolveResource<DiskHandleKind, SqliteDiffDiskHandle> for SqliteDiskRe
                 },
             )
             .await?;
-        Ok(SqliteDisk::diff(lower.0, Path::new(&rsrc.dbhd_path), input.read_only)?.into())
+        Ok(ResolvedDisk::new(SqliteDisk::diff(
+            lower.0,
+            Path::new(&rsrc.dbhd_path),
+            input.read_only,
+        )?)?)
     }
 }
