@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Resource resolver for SQLite-backed disk layers.
+
 use crate::SqliteDisk;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;

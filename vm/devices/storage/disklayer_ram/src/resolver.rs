@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Resource resolver for RAM disks.
+//! Resource resolver for RAM-backed disk layers.
 
 use super::Error;
 use super::RamDiskLayer;

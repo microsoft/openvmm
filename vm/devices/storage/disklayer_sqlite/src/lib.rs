@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Disk backend implementation that stores data in a SQLite database.
+//! SQLite-backed disk layer implementation.
+//!
+//! At this time, **this layer is only designed for use in dev/test scenarios!**
 //!
 //! # DISCLAIMER: Stability
 //!
@@ -13,22 +15,49 @@
 //! This implementation has only been minimally optimized! Don't expect to get
 //! incredible perf from this disk backend!
 //!
-//! ...But you probably expected that already, right? After all, who in their
-//! right mind would seriously try to "productize" a virtual disk format that's
-//! just throwing arbitrary sectors as BLOBs into a SQLite database??
+//! Notably:
 //!
-//! # Intended Uses
+//! - Data is stored within a single `sectors` table as tuples of `(sector:
+//!   INTEGER, sector_data: BLOB(sector_size))`. All data is accessed in
+//!   `sector_size` chunks (i.e: without performing any kind of adjacent-sector
+//!   coalescing).
+//! - Reads and writes currently allocate many temporary `Vec<u8>` buffers per
+//!   operation, without any buffer reuse.
 //!
-//! This is a good choice for simple dev-loop scenarios, such as when you want:
+//! These design choices were made with simplicity and expediency in mind, given
+//! that the primary use-case for this backend is for dev/test scenarios. If
+//! performance ever becomes a concern, there are various optimizations that
+//! should be possible to implement here, though quite frankly, investing in a
+//! cross-platform QCOW2 or VHDX disk backend is likely a far more worthwhile
+//! endeavor.
 //!
-//! - A quick-and-dirty cross-platform "sparse" virtual disk file
-//!     - ...which won't be needed in the future, if/when someone implements
-//!       QCOW2 or user-mode VHDX disk backends
-//! - A simple and _persistent_ diff-disk on-top of an existing disk
-//!     - ...as opposed to `ramdiff`, which is in-memory and _ephemeral_
-//! - A simple way to cache sectors from a backing disk
-//!     - e.g: pre-saving `disk_blob` sectors which would otherwise get fetched
-//!       on-demand over the network
+//! # Context
+//!
+//! In late 2024, OpenVMM was missing a _cross-platform_ disk backend that
+//! supported the following key features:
+//!
+//! - Used a dynamically-sized file as the disks's backing store
+//! - Supported snapshots / differencing disks
+//!
+//! While OpenVMM will eventually need to support for one or more of the current
+//! "industry standard" virtual disk formats that supports these features (e.g:
+//! QCOW2, VHDX), we really wanted some sort of "stop-gap" solution to unblock
+//! various dev/test use-cases.
+//!
+//! And thus, `disklayer_sqlite` was born!
+//!
+//! The initial implementation took less than a day to get up and running, and
+//! worked "well enough" to support the dev/test scenarios we were interested
+//! in, such as:
+//!
+//! - Having a cross-platform _sparsely allocated_ virtual disk file.
+//! - Having a _persistent_ diff-disk on-top of an existing disk (as opposed to
+//!   `ramdiff`, which is in-memory and _ephemeral_)
+//! - Having a "cache" layer for JIT-accessed disks, such as `disk_blob`
+//!
+//! The idea of using SQLite as a backing store - while wacky - proved to be an
+//! excellent way to quickly bring up a dynamically-sized, sparsely-allocated
+//! disk format for testing in OpenVMM.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -105,11 +134,11 @@ CREATE TABLE IF NOT EXISTS meta (
         /// - Reads return data from the differencing disk, only reading from
         ///   the underlying disk if the sector hasn't been modified.
         Diff,
-        /// A read-through cache on-top of an exsting disk.
+        /// A read-through cache on-top of an existing disk.
         ///
         /// - Reads check if the requested data is already in the cache before
         ///   reading from the underlying disk.
-        /// - Writes are passed through to the underlying disk implementaiton.
+        /// - Writes are passed through to the underlying disk implementation.
         ReadCache,
     }
 
@@ -136,7 +165,7 @@ pub struct SqliteDisk {
 impl SqliteDisk {
     /// Makes a new blank SQLite disk of `size` bytes.
     pub fn new(len: u64, dbhd_path: &Path, read_only: bool) -> Result<Self, anyhow::Error> {
-        // // the choice of `sector_size` here was chosen entirely arbirarily.
+        // // the choice of `sector_size` here was chosen entirely arbitrarily.
         // Self::new_inner(
         //     Arc::new(ZeroDisk::new(512, len)?),
         //     dbhd_path,
