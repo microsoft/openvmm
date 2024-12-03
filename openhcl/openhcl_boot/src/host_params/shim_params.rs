@@ -3,10 +3,14 @@
 
 //! Parameters that are fixed at IGVM build time by the underhill loader.
 
+use crate::arch::address_space::init_local_map;
+use crate::arch::address_space::LocalMap;
 use crate::arch::get_isolation_type;
+use core::cell::RefCell;
 use core::slice;
 use loader_defs::paravisor::ImportedRegionDescriptor;
 use loader_defs::paravisor::ParavisorCommandLine;
+use loader_defs::paravisor::PARAVISOR_LOCAL_MAP_VA;
 use loader_defs::shim::ShimParamsRaw;
 use memory_range::MemoryRange;
 
@@ -107,6 +111,10 @@ pub struct ShimParams {
     /// Memory used by the shim.
     pub used: MemoryRange,
     pub bounce_buffer: Option<MemoryRange>,
+    /// Memory to be used for the heap.
+    pub heap: MemoryRange,
+    /// The local map available for mapping.
+    pub local_map: RefCell<LocalMap<'static>>,
 }
 
 impl ShimParams {
@@ -133,6 +141,8 @@ impl ShimParams {
             used_end,
             bounce_buffer_start,
             bounce_buffer_size,
+            heap_start_offset,
+            heap_size,
         } = raw;
 
         let isolation_type = get_isolation_type(supported_isolation_type);
@@ -143,6 +153,13 @@ impl ShimParams {
             let base = shim_base_address.wrapping_add_signed(bounce_buffer_start);
             Some(MemoryRange::new(base..base + bounce_buffer_size))
         };
+
+        let heap_start_addr = shim_base_address.wrapping_add_signed(heap_start_offset);
+        let heap_end_addr = heap_start_addr + heap_size;
+        let heap = MemoryRange::new(heap_start_addr..heap_end_addr);
+
+        // Initialize the local map with the fixed at build va.
+        let local_map = init_local_map(PARAVISOR_LOCAL_MAP_VA);
 
         Self {
             kernel_entry_address: shim_base_address.wrapping_add_signed(kernel_entry_offset),
@@ -166,6 +183,8 @@ impl ShimParams {
                     ..shim_base_address.wrapping_add_signed(used_end),
             ),
             bounce_buffer,
+            heap,
+            local_map: RefCell::new(local_map),
         }
     }
 

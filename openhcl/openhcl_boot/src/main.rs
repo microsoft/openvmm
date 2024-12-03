@@ -9,6 +9,7 @@
 // UNSAFETY: Interacting with low level hardware and bootloader primitives.
 #![expect(unsafe_code)]
 
+mod alloc;
 mod arch;
 mod boot_logger;
 mod cmdline;
@@ -342,6 +343,9 @@ enum ReservedMemoryType {
     /// memory is persisted, both location and contents, across servicing.
     /// Today, we only support a single range.
     Vtl2GpaPool,
+    /// Persisted state for VTL2, which is state shared between both usermode
+    /// and the bootshim.
+    Vtl2PersistedState,
 }
 
 /// Construct a slice representing the reserved memory ranges to be reported to
@@ -382,6 +386,11 @@ fn reserved_memory_regions(
             ReservedMemoryType::Vtl2GpaPool,
         ));
     }
+
+    reserved.push((
+        partition_info.vtl2_persisted_state,
+        ReservedMemoryType::Vtl2PersistedState,
+    ));
 
     reserved
         .as_mut()
@@ -940,6 +949,7 @@ mod test {
             vtl2_config_region_reclaim: MemoryRange::EMPTY,
             vtl2_reserved_region: MemoryRange::EMPTY,
             vtl2_pool_memory: MemoryRange::EMPTY,
+            vtl2_persisted_state: MemoryRange::EMPTY,
             vtl2_used_ranges: ArrayVec::new(),
             partition_ram: ArrayVec::new(),
             isolation: IsolationType::None,

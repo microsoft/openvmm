@@ -13,6 +13,7 @@
 use crate::single_threaded::SingleThreaded;
 use core::arch::asm;
 use core::cell::Cell;
+use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
@@ -130,6 +131,12 @@ pub struct LocalMap<'a> {
     pte_ptr: *mut PageTableEntry,
     va: u64,
     _dummy: PhantomData<&'a ()>,
+}
+
+impl Debug for LocalMap<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LocalMap").field("va", &self.va).finish()
+    }
 }
 
 impl<'a> LocalMap<'a> {

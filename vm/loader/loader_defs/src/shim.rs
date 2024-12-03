@@ -3,6 +3,10 @@
 
 //! Loader definitions for the openhcl boot loader (`openhcl_boot`).
 
+extern crate alloc;
+
+use alloc::vec::Vec;
+use memory_range::MemoryRange;
 use open_enum::open_enum;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -31,6 +35,10 @@ pub struct ShimParamsRaw {
     pub memory_start_offset: i64,
     /// The size of the VTL2 memory region.
     pub memory_size: u64,
+    /// The offset to the start of the bootshim heap.
+    pub heap_start_offset: i64,
+    /// The size of the bootshim heap.
+    pub heap_size: u64,
     /// The offset to the parameter region.
     pub parameter_region_offset: i64,
     /// The size of the parameter region.
@@ -75,6 +83,8 @@ open_enum! {
 open_enum! {
     /// The memory type reported from the bootshim to usermode, for which VTL a
     /// given memory range is for.
+    #[derive(mesh_protobuf::Protobuf)]
+    #[mesh(package = "openhcl.openhcl_boot")]
     pub enum MemoryVtlType: u32 {
         /// This memory is for VTL0.
         VTL0 = 0,
@@ -101,6 +111,11 @@ open_enum! {
         /// This memory is part of VTL2's address space, not VTL0's. It is
         /// marked as reserved to the kernel.
         VTL2_GPA_POOL = 8,
+        /// This memory is used to persist information from one OpenHCL instance
+        /// to the next. This memory is marked as reserved to the kernel, and is
+        /// used by usermode to store the information for the next OpenHCL
+        /// instance.
+        VTL2_PERSISTED_STATE = 9,
     }
 }
 
@@ -116,6 +131,85 @@ impl MemoryVtlType {
                 | MemoryVtlType::VTL2_SIDECAR_NODE
                 | MemoryVtlType::VTL2_RESERVED
                 | MemoryVtlType::VTL2_GPA_POOL
+                | MemoryVtlType::VTL2_PERSISTED_STATE
         )
     }
+}
+
+/// This is the header used to describe the overall persisted state region. The
+/// region by convention is located at the top of the VTL2 file region.
+///
+/// This header should never change, instead for new information to be stored
+/// add it to the protobuf payload described below.
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct PersistedStateHeader {
+    /// A magic value. If this is not set to [`PersistedStateHeader::MAGIC`],
+    /// then the previous instance did not support this region.
+    pub magic: u64,
+    /// Overall region size in bytes, including the header. This should be a
+    /// multiple of 4K.
+    pub region_len: u64,
+    /// The start offset for the protobuf blob, from the start of the persisted
+    /// state region.
+    pub protobuf_offset: u64,
+    /// The size of the protobuf blob in bytes.
+    pub protobuf_len: u64,
+}
+
+impl PersistedStateHeader {
+    /// "OHCLPHDR" in ASCII.
+    pub const MAGIC: u64 = 0x4F48434C50484452;
+}
+
+/// A local newtype wrapper that represents a [`igvm_defs::MemoryMapEntryType`].
+///
+/// This is required to make it protobuf deriveable.
+#[derive(mesh_protobuf::Protobuf, Debug)]
+#[mesh(package = "openhcl.openhcl_boot")]
+pub struct IgvmMemoryType(#[mesh(1)] u16);
+
+impl From<igvm_defs::MemoryMapEntryType> for IgvmMemoryType {
+    fn from(igvm_type: igvm_defs::MemoryMapEntryType) -> Self {
+        Self(igvm_type.0)
+    }
+}
+
+impl From<IgvmMemoryType> for igvm_defs::MemoryMapEntryType {
+    fn from(igvm_type: IgvmMemoryType) -> Self {
+        igvm_defs::MemoryMapEntryType(igvm_type.0)
+    }
+}
+
+#[derive(mesh_protobuf::Protobuf, Debug)]
+#[mesh(package = "openhcl.openhcl_boot")]
+pub struct MemoryEntry {
+    #[mesh(1)]
+    pub range: MemoryRange,
+    #[mesh(2)]
+    pub vnode: u32,
+    #[mesh(3)]
+    pub vtl_type: MemoryVtlType,
+    #[mesh(4)]
+    pub igvm_type: IgvmMemoryType,
+}
+
+#[derive(mesh_protobuf::Protobuf, Debug)]
+#[mesh(package = "openhcl.openhcl_boot")]
+pub struct MmioEntry {
+    #[mesh(1)]
+    pub range: MemoryRange,
+    #[mesh(2)]
+    pub vtl_type: MemoryVtlType,
+}
+
+/// The format for saved state between the previous instance of OpenHCL and the
+/// next.
+#[derive(mesh_protobuf::Protobuf, Debug)]
+#[mesh(package = "openhcl.openhcl_boot")]
+pub struct SavedState {
+    #[mesh(1)]
+    pub partition_memory: Vec<MemoryEntry>,
+    #[mesh(2)]
+    pub partition_mmio: Vec<MmioEntry>,
 }

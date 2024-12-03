@@ -335,6 +335,23 @@ where
 
     tracing::debug!(parameter_region_start);
 
+    // Reserve 64 pages for a bootshim heap. This is only used to parse the
+    // protobuf payload from the previous instance in a servicing boot.
+    //
+    // Import these pages as it greatly simplifies the early startup code in the
+    // bootshim for isolated guests. This allows the bootshim to use these pages
+    // early on without extra acceptance calls.
+    let heap_start = offset;
+    let heap_size = 64 * HV_PAGE_SIZE;
+    importer.import_pages(
+        heap_start / HV_PAGE_SIZE,
+        heap_size / HV_PAGE_SIZE,
+        "ohcl-boot-shim-heap",
+        BootPageAcceptance::Exclusive,
+        &[],
+    )?;
+    offset += heap_size;
+
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = offset;
 
@@ -353,12 +370,13 @@ where
     //         changing how the e820 map is constructed for the kernel along
     //         with changing the contract on where the IGVM parameters live
     //         within VTL2's memory.
-    let local_map = match isolation_type {
-        IsolationType::Snp | IsolationType::Tdx => {
-            Some((PARAVISOR_LOCAL_MAP_VA, PARAVISOR_LOCAL_MAP_SIZE))
-        }
-        _ => None,
-    };
+    // let local_map = match isolation_type {
+    //     IsolationType::Snp | IsolationType::Tdx => {
+    //         Some((PARAVISOR_LOCAL_MAP_VA, PARAVISOR_LOCAL_MAP_SIZE))
+    //     }
+    //     _ => None,
+    // };
+    let local_map = Some((PARAVISOR_LOCAL_MAP_VA, PARAVISOR_LOCAL_MAP_SIZE));
 
     let page_table_base_page_count = 5;
     let page_table_dynamic_page_count = {
@@ -468,6 +486,8 @@ where
         used_end: calculate_shim_offset(offset),
         bounce_buffer_start: bounce_buffer.map_or(0, |r| calculate_shim_offset(r.start())),
         bounce_buffer_size: bounce_buffer.map_or(0, |r| r.len()),
+        heap_start_offset: calculate_shim_offset(heap_start),
+        heap_size,
     };
 
     tracing::debug!(boot_params_base, "shim gpa");
@@ -1009,6 +1029,23 @@ where
 
     tracing::debug!(parameter_region_start);
 
+    // Reserve 64 pages for a bootshim heap. This is only used to parse the
+    // protobuf payload from the previous instance in a servicing boot.
+    //
+    // Import these pages as it greatly simplifies the early startup code in the
+    // bootshim for isolated guests. This allows the bootshim to use these pages
+    // early on without extra acceptance calls.
+    let heap_start = next_addr;
+    let heap_size = 64 * HV_PAGE_SIZE;
+    importer.import_pages(
+        heap_start / HV_PAGE_SIZE,
+        heap_size / HV_PAGE_SIZE,
+        "ohcl-boot-shim-heap",
+        BootPageAcceptance::Exclusive,
+        &[],
+    )?;
+    next_addr += heap_size;
+
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = next_addr;
 
@@ -1058,6 +1095,8 @@ where
         used_end: calculate_shim_offset(next_addr),
         bounce_buffer_start: 0,
         bounce_buffer_size: 0,
+        heap_start_offset: calculate_shim_offset(heap_start),
+        heap_size,
     };
 
     importer

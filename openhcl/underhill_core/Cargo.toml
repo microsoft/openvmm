@@ -149,6 +149,8 @@ uevent.workspace = true
 user_driver.workspace = true
 vmsocket.workspace = true
 
+mesh_protobuf.workspace = true
+
 anyhow.workspace = true
 async-trait.workspace = true
 blocking.workspace = true
