@@ -29,11 +29,11 @@ impl FuzzDriveMedia {
         // we don't  care about drive contents for fuzzing
         match self {
             FuzzDriveMedia::HardDrive => {
-                DriveMedia::hard_disk(disk_ramdisk::ram_disk(0x100000 * 4, false).unwrap())
+                DriveMedia::hard_disk(disklayer_ram::ram_disk(0x100000 * 4, false).unwrap())
             }
             FuzzDriveMedia::OpticalDrive => {
                 DriveMedia::optical_disk(Arc::new(AtapiScsiDisk::new(Arc::new(
-                    SimpleScsiDvd::new(Some(disk_ramdisk::ram_disk(0x100000 * 4, false).unwrap())),
+                    SimpleScsiDvd::new(Some(disklayer_ram::ram_disk(0x100000 * 4, false).unwrap())),
                 ))))
             }
         }

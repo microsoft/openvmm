@@ -31,10 +31,10 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use thiserror::Error;
 
-/// A disk backed entirely by RAM.
+/// A disk layer backed entirely by RAM.
 #[derive(Inspect)]
 #[inspect(extra = "Self::inspect_extra")]
-pub struct RamLayer {
+pub struct RamDiskLayer {
     #[inspect(flatten)]
     state: RwLock<RamState>,
     #[inspect(skip)]
@@ -52,7 +52,7 @@ struct RamState {
     zero_after: u64,
 }
 
-impl RamLayer {
+impl RamDiskLayer {
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
         resp.field_with("committed_size", || {
             self.state.read().data.len() * size_of::<Sector>()
@@ -66,9 +66,9 @@ impl RamLayer {
     }
 }
 
-impl Debug for RamLayer {
+impl Debug for RamDiskLayer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RamLayer")
+        f.debug_struct("RamDiskLayer")
             .field("sector_count", &self.sector_count)
             .finish()
     }
@@ -94,7 +94,7 @@ struct Sector([u8; 512]);
 
 const SECTOR_SIZE: u32 = 512;
 
-impl RamLayer {
+impl RamDiskLayer {
     /// Makes a new RAM disk of `size` bytes.
     ///
     /// If `None` is specified, then the disk will inherit its size from the
@@ -177,7 +177,7 @@ impl RamLayer {
     }
 }
 
-impl LayerIo for RamLayer {
+impl LayerIo for RamDiskLayer {
     fn layer_type(&self) -> &str {
         "ram"
     }
@@ -338,7 +338,7 @@ impl LayerIo for RamLayer {
     }
 }
 
-impl WriteNoOverwrite for RamLayer {
+impl WriteNoOverwrite for RamDiskLayer {
     async fn write_no_overwrite(
         &self,
         buffers: &RequestBuffers<'_>,
@@ -357,7 +357,7 @@ pub fn ram_disk(size: u64, read_only: bool) -> anyhow::Result<Disk> {
     let disk = Disk::new(LayeredDisk::new(
         read_only,
         vec![LayerConfiguration {
-            layer: DiskLayer::new(RamLayer::new(Some(size))?),
+            layer: DiskLayer::new(RamDiskLayer::new(Some(size))?),
             write_through: false,
             read_cache: false,
         }],
@@ -367,7 +367,7 @@ pub fn ram_disk(size: u64, read_only: bool) -> anyhow::Result<Disk> {
 
 #[cfg(test)]
 mod tests {
-    use super::RamLayer;
+    use super::RamDiskLayer;
     use super::SECTOR_SIZE;
     use disk_backend::DiskIo;
     use disk_layered::DiskLayer;
@@ -450,9 +450,9 @@ mod tests {
 
     async fn prep_disk(size: usize) -> (GuestMemory, LayeredDisk) {
         let guest_mem = GuestMemory::allocate(size);
-        let mut lower = RamLayer::new(Some(size as u64)).unwrap();
+        let mut lower = RamDiskLayer::new(Some(size as u64)).unwrap();
         write_layer(&guest_mem, &mut lower, 0, size / SECTOR_USIZE, 0).await;
-        let upper = RamLayer::new(Some(size as u64)).unwrap();
+        let upper = RamDiskLayer::new(Some(size as u64)).unwrap();
         let upper = LayeredDisk::new(
             false,
             Vec::from_iter([upper, lower].map(|layer| LayerConfiguration {

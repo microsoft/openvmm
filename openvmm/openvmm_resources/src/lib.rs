@@ -45,7 +45,6 @@ vm_resource::register_static_resolvers! {
     disk_layered::resolver::LayeredDiskResolver,
     #[cfg(feature = "disk_crypt")]
     disk_crypt::resolver::DiskCryptResolver,
-    disk_ramdisk::resolver::RamDiskResolver,
     disk_file::FileDiskResolver,
     disk_prwrap::DiskWithReservationsResolver,
     disk_vhd1::Vhd1Resolver,
@@ -53,6 +52,9 @@ vm_resource::register_static_resolvers! {
     disk_vhdmp::VhdmpDiskResolver,
     #[cfg(feature = "disk_blob")]
     disk_blob::resolver::BlobDiskResolver,
+
+    // Disk Layers
+    disklayer_ram::resolver::RamDiskLayerResolver,
 
     // PCI devices
     gdma::resolver::GdmaDeviceResolver,

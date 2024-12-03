@@ -1261,27 +1261,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "disk_ramdisk"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "disk_backend",
- "disk_backend_resources",
- "disk_layered",
- "event-listener",
- "guestmem",
- "inspect",
- "pal_async",
- "parking_lot",
- "scsi_buffers",
- "test_with_tracing",
- "thiserror 2.0.0",
- "tracing",
- "vm_resource",
- "zerocopy",
-]
-
-[[package]]
 name = "disk_striped"
 version = "0.0.0"
 dependencies = [
@@ -1289,7 +1268,7 @@ dependencies = [
  "async-trait",
  "disk_backend",
  "disk_backend_resources",
- "disk_ramdisk",
+ "disklayer_ram",
  "futures",
  "guestmem",
  "hvdef",
@@ -1339,6 +1318,27 @@ dependencies = [
  "thiserror 2.0.0",
  "vm_resource",
  "winapi",
+]
+
+[[package]]
+name = "disklayer_ram"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "disk_backend",
+ "disk_backend_resources",
+ "disk_layered",
+ "event-listener",
+ "guestmem",
+ "inspect",
+ "pal_async",
+ "parking_lot",
+ "scsi_buffers",
+ "test_with_tracing",
+ "thiserror 2.0.0",
+ "tracing",
+ "vm_resource",
+ "zerocopy",
 ]
 
 [[package]]
@@ -2010,7 +2010,7 @@ dependencies = [
  "chipset_arc_mutex_device",
  "chipset_device",
  "chipset_device_fuzz",
- "disk_ramdisk",
+ "disklayer_ram",
  "guestmem",
  "ide",
  "libfuzzer-sys",
@@ -2329,7 +2329,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "disk_backend",
- "disk_ramdisk",
+ "disklayer_ram",
  "futures",
  "get_protocol",
  "get_resources",
@@ -4214,7 +4214,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
- "disk_ramdisk",
+ "disklayer_ram",
  "event-listener",
  "futures",
  "guestmem",
@@ -4568,9 +4568,9 @@ dependencies = [
  "disk_file",
  "disk_layered",
  "disk_prwrap",
- "disk_ramdisk",
  "disk_vhd1",
  "disk_vhdmp",
+ "disklayer_ram",
  "gdma",
  "guest_crash_device",
  "guest_emulation_device",
@@ -6002,7 +6002,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "criterion",
- "disk_ramdisk",
+ "disklayer_ram",
  "event-listener",
  "fast_select",
  "futures",
@@ -7998,7 +7998,7 @@ dependencies = [
  "cfg-if",
  "crc32fast",
  "disk_backend",
- "disk_ramdisk",
+ "disklayer_ram",
  "getrandom",
  "guestmem",
  "inspect",

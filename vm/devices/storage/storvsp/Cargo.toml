@@ -7,7 +7,7 @@ edition = "2021"
 rust-version.workspace = true
 
 [dependencies]
-disk_ramdisk.workspace = true # For `ioperf` modules
+disklayer_ram.workspace = true # For `ioperf` modules
 scsi_buffers.workspace = true
 scsi_core.workspace = true
 scsi_defs.workspace = true
@@ -48,7 +48,7 @@ zerocopy.workspace = true
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async"] }
-disk_ramdisk.workspace = true
+disklayer_ram.workspace = true
 test_with_tracing.workspace = true
 
 [[bench]]
