@@ -102,7 +102,7 @@ fn derive(
         syn::Data::Struct(data) => derive_struct(input, modifiers, data),
         syn::Data::Enum(data) => derive_enum(input, modifiers, data),
         syn::Data::Union(data) => Err(syn::Error::new_spanned(
-            &data.union_token,
+            data.union_token,
             "unions not supported for MeshPayload",
         )),
     }
