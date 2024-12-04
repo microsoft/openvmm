@@ -110,7 +110,7 @@ pub struct VmbusServerBuilder<'a, T: Spawn> {
     external_requests: Option<mesh::Receiver<InitiateContactRequest>>,
     use_message_redirect: bool,
     channel_id_offset: u16,
-    max_version: Option<u32>,
+    max_version: Option<MaxVersionInfo>,
     delay_max_version: bool,
     enable_mnf: bool,
     force_confidential_external_memory: bool,
@@ -327,7 +327,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
     /// Tells the server to limit the protocol version offered to the guest.
     ///
     /// N.B. This is used for testing older protocols without requiring a specific guest OS.
-    pub fn max_version(mut self, max_version: Option<u32>) -> Self {
+    pub fn max_version(mut self, max_version: Option<MaxVersionInfo>) -> Self {
         self.max_version = max_version;
         self
     }
@@ -422,9 +422,9 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
 
         let mut server = channels::Server::new(self.vtl, connection_id, self.channel_id_offset);
 
-        // If requested for testing purposes, limit the maximum protocol version.
+        // If requested, limit the maximum protocol version and feature flags.
         if let Some(version) = self.max_version {
-            server.set_compatibility_version(MaxVersionInfo::new(version), self.delay_max_version);
+            server.set_compatibility_version(version, self.delay_max_version);
         }
         let (relay_request_send, relay_response_recv) =
             if let Some(server_relay) = self.server_relay {

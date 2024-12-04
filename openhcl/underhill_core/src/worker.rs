@@ -2598,6 +2598,30 @@ async fn new_underhill_vm(
             .unwrap_or(!controllers.mana.is_empty());
         tracing::info!(enable_mnf, "Underhill MNF enabled?");
 
+        let max_version = env_cfg
+            .vmbus_max_version
+            .map(vmbus_core::MaxVersionInfo::new)
+            .or_else(|| {
+                // For compatibility with rollback, any additional features are currently disabled,
+                // except for isolated guests which do not support servicing.
+                (!hardware_isolated).then_some(vmbus_core::MaxVersionInfo {
+                    version: vmbus_core::protocol::Version::Copper as u32,
+                    feature_flags: vmbus_core::protocol::FeatureFlags::new()
+                        .with_guest_specified_signal_parameters(true)
+                        .with_channel_interrupt_redirection(true)
+                        .with_modify_connection(true),
+                })
+            });
+
+        // Delay the max version if the requested version is older than what the UEFI firmware
+        // supports.
+        let delay_max_version = if let Some(max_version) = max_version {
+            firmware_type == FirmwareType::Uefi
+                && max_version.version < vmbus_core::protocol::Version::Win10 as u32
+        } else {
+            false
+        };
+
         // Channel ID offsets are enabled for the Underhill server if the relay is not in use. This
         // prevents them from conflicting with channels offered by the host, for which Hyper-V vmbus
         // allocates ports even if not connected.
@@ -2615,8 +2639,8 @@ async fn new_underhill_vm(
             .hvsock_notify(hvsock_notify)
             .server_relay(server_relay)
             .enable_channel_id_offset(!with_vmbus_relay)
-            .max_version(env_cfg.vmbus_max_version)
-            .delay_max_version(firmware_type == FirmwareType::Uefi)
+            .max_version(max_version)
+            .delay_max_version(delay_max_version)
             .enable_mnf(enable_mnf)
             .force_confidential_external_memory(env_cfg.vmbus_force_confidential_external_memory)
             .build()
