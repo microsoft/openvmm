@@ -352,6 +352,7 @@ impl NvmeManagerWorker {
     pub async fn restore(&mut self, saved_state: &NvmeManagerSavedState) -> anyhow::Result<()> {
         self.devices = HashMap::new();
         for disk in &saved_state.nvme_disks {
+            let pci_id = disk.pci_id.clone();
             let vfio_device =
                 // This code can wait on each VFIO device until it is arrived.
                 // A potential optimization would be to delay VFIO operation
@@ -359,11 +360,11 @@ impl NvmeManagerWorker {
                 VfioDevice::restore(
                     &self.driver_source,
                     &disk.pci_id.clone(),
-                    (self.dma_buffer_spawner)(format!("nvme_{}", 0)) // YSP: FIXME: missing 'key'
+                    (self.dma_buffer_spawner)(format!("nvme_{}", pci_id))
                         .map_err(InnerError::DmaBuffer)?,
                     true,
                 )
-                .instrument(tracing::info_span!("vfio_device_restore", pci_id = disk.pci_id.clone()))
+                .instrument(tracing::info_span!("vfio_device_restore", pci_id))
                 .await?;
 
             let nvme_driver = nvme_driver::NvmeDriver::restore(
