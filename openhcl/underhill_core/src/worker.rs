@@ -2592,11 +2592,14 @@ async fn new_underhill_vm(
             .vmbus_max_version
             .map(vmbus_core::MaxVersionInfo::new)
             .or_else(|| {
-                // For compatibility with rollback, the client ID feature is currently disabled,
+                // For compatibility with rollback, any additional features are currently disabled,
                 // except for isolated guests which do not support servicing.
                 (!hardware_isolated).then_some(vmbus_core::MaxVersionInfo {
-                    version: u32::MAX,
-                    feature_flags: vmbus_core::protocol::FeatureFlags::all().with_client_id(false),
+                    version: vmbus_core::protocol::Version::Copper as u32,
+                    feature_flags: vmbus_core::protocol::FeatureFlags::new()
+                        .with_guest_specified_signal_parameters(true)
+                        .with_channel_interrupt_redirection(true)
+                        .with_modify_connection(true),
                 })
             });
 
