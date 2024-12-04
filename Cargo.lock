@@ -6872,6 +6872,7 @@ dependencies = [
  "vm_topology",
  "vmbus_async",
  "vmbus_channel",
+ "vmbus_client_hcl",
  "vmbus_core",
  "vmbus_relay",
  "vmbus_relay_intercept_device",
@@ -7730,12 +7731,29 @@ dependencies = [
  "inspect",
  "mesh",
  "pal_async",
+ "pal_event",
  "parking_lot",
  "thiserror 2.0.0",
  "tracing",
  "vmbus_async",
  "vmbus_channel",
  "vmbus_core",
+ "zerocopy",
+]
+
+[[package]]
+name = "vmbus_client_hcl"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "hcl",
+ "hvdef",
+ "pal_async",
+ "pal_event",
+ "tracing",
+ "vmbus_async",
+ "vmbus_client",
  "zerocopy",
 ]
 
@@ -7778,8 +7796,6 @@ dependencies = [
  "anyhow",
  "futures",
  "guid",
- "hcl",
- "hvdef",
  "inspect",
  "mesh",
  "mesh_protobuf",
@@ -7789,7 +7805,6 @@ dependencies = [
  "parking_lot",
  "tracelimit",
  "tracing",
- "vmbus_async",
  "vmbus_channel",
  "vmbus_client",
  "vmbus_core",
@@ -7805,7 +7820,6 @@ dependencies = [
  "anyhow",
  "futures",
  "guid",
- "hcl",
  "hvdef",
  "inspect",
  "mesh",
