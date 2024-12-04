@@ -63,6 +63,13 @@ use protofile::TypeUrl;
 
 /// Associates the default encoder/decoder type for converting an object to/from
 /// protobuf format.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be encoded as a mesh message",
+    note = "consider deriving the necessary trait on `{Self}` with one of:
+    #[derive(MeshPayload)]
+    #[derive(Protobuf)]",
+    note = "alternatively, consider using an explicit encoder with #[mesh(encoding = \"MyEncoding\")]"
+)]
 pub trait DefaultEncoding {
     /// The encoding to use for the serialization.
     ///
