@@ -2743,6 +2743,7 @@ dependencies = [
  "vm_resource",
  "vm_topology",
  "vmbus_channel",
+ "vmbus_core",
  "vmbus_server",
  "vmcore",
  "vmgs",
