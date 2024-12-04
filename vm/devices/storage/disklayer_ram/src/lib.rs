@@ -12,6 +12,7 @@ use anyhow::Context;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::UnmapBehavior;
+use disk_layered::AttachLayer;
 use disk_layered::DiskLayer;
 use disk_layered::LayerConfiguration;
 use disk_layered::LayerIo;
@@ -31,39 +32,52 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use thiserror::Error;
 
+#[doc(hidden)]
+pub enum PreAttach {}
+#[doc(hidden)]
+pub enum PostAttach {}
+
 /// A disk layer backed entirely by RAM.
-#[derive(Inspect)]
-#[inspect(extra = "Self::inspect_extra")]
-pub struct RamDiskLayer {
-    #[inspect(flatten)]
+pub struct RamDiskLayer<S = PreAttach> {
     state: RwLock<RamState>,
-    #[inspect(skip)]
     sector_count: AtomicU64,
-    #[inspect(skip)]
     resize_event: event_listener::Event,
+    _state: std::marker::PhantomData<S>,
+}
+
+impl Inspect for RamDiskLayer<PreAttach> {
+    fn inspect(&self, req: ::inspect::Request<'_>) {
+        req.respond()
+            .field_with("committed_size", || {
+                self.state.read().data.len() * size_of::<Sector>()
+            })
+            .merge(&self.state);
+    }
+}
+
+impl Inspect for RamDiskLayer<PostAttach> {
+    fn inspect(&self, req: ::inspect::Request<'_>) {
+        req.respond()
+            .field_with("committed_size", || {
+                self.state.read().data.len() * size_of::<Sector>()
+            })
+            .field_mut_with("sector_count", |new_count| {
+                if let Some(new_count) = new_count {
+                    self.resize(new_count.parse().context("invalid sector count")?)?;
+                }
+                anyhow::Ok(self.sector_count())
+            })
+            .merge(&self.state);
+    }
 }
 
 #[derive(Inspect)]
 struct RamState {
     #[inspect(skip)]
     data: BTreeMap<u64, Sector>,
-    #[inspect(skip)] // handled in inspect_extra()
+    #[inspect(skip)] // handled in root inspect
     sector_count: u64,
     zero_after: u64,
-}
-
-impl RamDiskLayer {
-    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
-        resp.field_with("committed_size", || {
-            self.state.read().data.len() * size_of::<Sector>()
-        })
-        .field_mut_with("sector_count", |new_count| {
-            if let Some(new_count) = new_count {
-                self.resize(new_count.parse().context("invalid sector count")?)?;
-            }
-            anyhow::Ok(self.sector_count())
-        });
-    }
 }
 
 impl Debug for RamDiskLayer {
@@ -94,7 +108,25 @@ struct Sector([u8; 512]);
 
 const SECTOR_SIZE: u32 = 512;
 
-impl RamDiskLayer {
+impl<S> RamDiskLayer<S> {
+    fn transition<S2>(self) -> RamDiskLayer<S2> {
+        let RamDiskLayer {
+            state,
+            sector_count,
+            resize_event,
+            _state,
+        } = self;
+
+        RamDiskLayer {
+            state,
+            sector_count,
+            resize_event,
+            _state: std::marker::PhantomData,
+        }
+    }
+}
+
+impl RamDiskLayer<PreAttach> {
     /// Makes a new RAM disk of `size` bytes.
     ///
     /// If `None` is specified, then the disk will inherit its size from the
@@ -122,9 +154,12 @@ impl RamDiskLayer {
             }),
             sector_count: sector_count.into(),
             resize_event: Default::default(),
+            _state: std::marker::PhantomData,
         })
     }
+}
 
+impl RamDiskLayer<PostAttach> {
     fn resize(&self, new_sector_count: u64) -> anyhow::Result<()> {
         if new_sector_count == 0 {
             anyhow::bail!("invalid sector count");
@@ -177,7 +212,28 @@ impl RamDiskLayer {
     }
 }
 
-impl LayerIo for RamDiskLayer {
+impl AttachLayer for RamDiskLayer<PreAttach> {
+    type Error = std::convert::Infallible;
+    type Layer = RamDiskLayer<PostAttach>;
+
+    async fn attach(
+        mut self,
+        lower_layer_metadata: Option<disk_layered::LowerLayerMetadata>,
+    ) -> Result<Self::Layer, Self::Error> {
+        if let Some(lower_layer_metadata) = lower_layer_metadata {
+            let mut state = self.state.write();
+            if state.sector_count == 0 {
+                state.sector_count = lower_layer_metadata.sector_count;
+                state.zero_after = lower_layer_metadata.sector_count;
+                *self.sector_count.get_mut() = lower_layer_metadata.sector_count;
+            }
+        }
+
+        Ok(self.transition())
+    }
+}
+
+impl LayerIo for RamDiskLayer<PostAttach> {
     fn layer_type(&self) -> &str {
         "ram"
     }
@@ -325,20 +381,9 @@ impl LayerIo for RamDiskLayer {
     fn optimal_unmap_sectors(&self) -> u32 {
         1
     }
-
-    fn on_attach(&mut self, lower_sector_count: Option<u64>) {
-        if let Some(lower_sector_count) = lower_sector_count {
-            let mut state = self.state.write();
-            if state.sector_count == 0 {
-                state.sector_count = lower_sector_count;
-                state.zero_after = lower_sector_count;
-                *self.sector_count.get_mut() = lower_sector_count;
-            }
-        }
-    }
 }
 
-impl WriteNoOverwrite for RamDiskLayer {
+impl WriteNoOverwrite for RamDiskLayer<PostAttach> {
     async fn write_no_overwrite(
         &self,
         buffers: &RequestBuffers<'_>,
@@ -354,14 +399,17 @@ impl WriteNoOverwrite for RamDiskLayer {
 /// layer. It is useful since non-layered RAM disks are used all over the place,
 /// especially in tests.
 pub fn ram_disk(size: u64, read_only: bool) -> anyhow::Result<Disk> {
-    let disk = Disk::new(LayeredDisk::new(
-        read_only,
-        vec![LayerConfiguration {
-            layer: DiskLayer::new(RamDiskLayer::new(Some(size))?),
-            write_through: false,
-            read_cache: false,
-        }],
-    )?)?;
+    let layer = RamDiskLayer::new(Some(size))?;
+    let disk = Disk::new(pal_async::local::block_with_io(|_| {
+        LayeredDisk::new(
+            read_only,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+    })?)?;
     Ok(disk)
 }
 
@@ -450,17 +498,18 @@ mod tests {
 
     async fn prep_disk(size: usize) -> (GuestMemory, LayeredDisk) {
         let guest_mem = GuestMemory::allocate(size);
-        let mut lower = RamDiskLayer::new(Some(size as u64)).unwrap();
+        let mut lower = RamDiskLayer::new(Some(size as u64)).unwrap().transition();
         write_layer(&guest_mem, &mut lower, 0, size / SECTOR_USIZE, 0).await;
         let upper = RamDiskLayer::new(Some(size as u64)).unwrap();
         let upper = LayeredDisk::new(
             false,
-            Vec::from_iter([upper, lower].map(|layer| LayerConfiguration {
+            Vec::from_iter([upper, lower.transition()].map(|layer| LayerConfiguration {
                 layer: DiskLayer::new(layer),
                 write_through: false,
                 read_cache: false,
             })),
         )
+        .await
         .unwrap();
         (guest_mem, upper)
     }
