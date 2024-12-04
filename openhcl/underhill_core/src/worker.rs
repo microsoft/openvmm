@@ -1816,12 +1816,13 @@ async fn new_underhill_vm(
     };
 
     let nvme_manager = if env_cfg.nvme_vfio {
-        let nvme_keepalive = fixed_mem_pool.is_some();
-        let nvme_saved_state = servicing_state.nvme_state.unwrap_or(None);
         let shared_vis_pool_spawner = shared_vis_pages_pool
             .as_ref()
             .map(|p| p.allocator_spawner());
 
+        let fixed_mem_allocator = fixed_mem_pool.as_ref().map(|f| f.allocator_spawner());
+
+        let save_restore_supported = fixed_mem_pool.is_some();
         let vfio_dma_buffer_spawner = Box::new(
             move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
                 shared_vis_pool_spawner
@@ -1831,7 +1832,12 @@ async fn new_underhill_vm(
                             .allocator(device_id)
                             .map(|alloc| Arc::new(alloc) as _)
                     })
-                    .unwrap_or_else(|| Ok(Arc::new(LockedMemorySpawner) as _))
+                    .unwrap_or_else(|| {
+                        fixed_mem_allocator
+                            .as_ref()
+                            .map(|f| f.allocator().map(|a| Arc::new(a) as _))
+                            .unwrap_or(Ok(Arc::new(LockedMemorySpawner) as _))
+                    })
             },
         );
 
