@@ -632,12 +632,12 @@ fn impl_upcast(
                 t.ident = mapped.get(&t.ident).unwrap().clone();
             }
         }
-        quote_spanned! {type_ident.span()=>
+        quote! {
             impl #impl_generics #protobuf_mod::Downcast<#type_ident #alt_ty_generics> for #type_ident #ty_generics #where_clause {}
         }
     } else {
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-        quote_spanned! {type_ident.span()=>
+        quote! {
             impl #impl_generics #protobuf_mod::Downcast<#type_ident #ty_generics> for #type_ident #ty_generics #where_clause {}
         }
     }
@@ -774,7 +774,7 @@ fn derive_struct(
     let decode_impl_generics = add_encoding_params(&modifiers, &decode_impl_generics, false);
 
     if modifiers.prost {
-        return Ok(quote_spanned! {type_ident.span()=>
+        return Ok(quote! {
             impl #message_impl_generics #protobuf_mod::DefaultEncoding for #type_ident #message_ty_generics #message_where_clause {
                 type Encoding = #protobuf_mod::encoding::MessageEncoding<#protobuf_mod::prost::ProstMessage>;
             }
@@ -856,7 +856,7 @@ fn derive_struct(
         .map(|field| &field.field_encoding_type)
         .collect::<Vec<_>>();
 
-    Ok(quote_spanned! {input.ident.span()=>
+    Ok(quote! {
         unsafe impl #message_impl_generics #protobuf_mod::table::StructMetadata for #this #message_where_clause {
             const NUMBERS: &'static [u32] = &[#(#field_numbers,)*];
             const OFFSETS: &'static [usize] = &[#(::core::mem::offset_of!(Self, #field_names),)*];
