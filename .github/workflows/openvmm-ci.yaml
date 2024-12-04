@@ -22,6 +22,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -211,6 +212,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -413,6 +415,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -773,6 +776,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -1196,6 +1200,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -1610,6 +1615,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -2196,6 +2202,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -2520,6 +2527,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -2892,6 +2900,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -3262,6 +3271,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -3548,6 +3558,7 @@ jobs:
     - job9
     - job9
     - job9
+    if: github.event.pull_request.draft == false
     steps:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
@@ -3906,6 +3917,7 @@ jobs:
     - job9
     - job9
     - job9
+    if: github.event.pull_request.draft == false
     steps:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
@@ -4257,6 +4269,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -4479,6 +4492,7 @@ jobs:
     - job11
     - job9
     - job11
+    if: github.event.pull_request.draft == false
     steps:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
@@ -4838,6 +4852,7 @@ jobs:
     - job7
     - job7
     - job7
+    if: github.event.pull_request.draft == false
     steps:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
@@ -5189,6 +5204,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -5321,6 +5337,7 @@ jobs:
     - job1
     - job2
     - job0
+    if: github.event.pull_request.draft == false
     steps:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
@@ -5398,6 +5415,7 @@ jobs:
       id-token: write
     needs:
     - job5
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -5587,6 +5605,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -5787,6 +5806,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -5869,6 +5889,8 @@ jobs:
         cat <<'EOF' | flowey.exe v 6 'param0' --update-from-stdin
         ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
         EOF
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-windows-hypestv"
+        echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-hypestv" | flowey.exe v 6 'artifact_publish_from_aarch64-windows-hypestv' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-windows-igvmfilegen"
         echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-igvmfilegen" | flowey.exe v 6 'artifact_publish_from_aarch64-windows-igvmfilegen' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-windows-ohcldiag-dev"
@@ -5958,13 +5980,31 @@ jobs:
       run: flowey.exe e 6 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
       shell: bash
     - name: inject cross env
-      run: flowey.exe e 6 flowey_lib_hvlite::init_cross_build 2
+      run: flowey.exe e 6 flowey_lib_hvlite::init_cross_build 3
       shell: bash
-    - name: cargo build ohcldiag-dev
+    - name: cargo build igvmfilegen
       run: flowey.exe e 6 flowey_lib_common::run_cargo_build 1
       shell: bash
     - name: 🌼 write_into Var
       run: flowey.exe e 6 flowey_lib_hvlite::run_cargo_build 1
+      shell: bash
+    - name: report built igvmfilegen
+      run: flowey.exe e 6 flowey_lib_hvlite::build_igvmfilegen 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 6 flowey_lib_hvlite::artifact_igvmfilegen::publish 0
+      shell: bash
+    - name: copying igvmfilegen to artifact dir
+      run: flowey.exe e 6 flowey_lib_common::copy_to_artifact_dir 1
+      shell: bash
+    - name: inject cross env
+      run: flowey.exe e 6 flowey_lib_hvlite::init_cross_build 4
+      shell: bash
+    - name: cargo build ohcldiag-dev
+      run: flowey.exe e 6 flowey_lib_common::run_cargo_build 2
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 6 flowey_lib_hvlite::run_cargo_build 2
       shell: bash
     - name: report built ohcldiag_dev
       run: flowey.exe e 6 flowey_lib_hvlite::build_ohcldiag_dev 0
@@ -5973,16 +6013,16 @@ jobs:
       run: flowey.exe e 6 flowey_lib_hvlite::artifact_ohcldiag_dev::publish 0
       shell: bash
     - name: copying ohcldiag-dev to artifact dir
-      run: flowey.exe e 6 flowey_lib_common::copy_to_artifact_dir 1
+      run: flowey.exe e 6 flowey_lib_common::copy_to_artifact_dir 2
       shell: bash
     - name: inject cross env
-      run: flowey.exe e 6 flowey_lib_hvlite::init_cross_build 0
+      run: flowey.exe e 6 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build vmgstool
-      run: flowey.exe e 6 flowey_lib_common::run_cargo_build 3
+      run: flowey.exe e 6 flowey_lib_common::run_cargo_build 4
       shell: bash
     - name: 🌼 write_into Var
-      run: flowey.exe e 6 flowey_lib_hvlite::run_cargo_build 3
+      run: flowey.exe e 6 flowey_lib_hvlite::run_cargo_build 4
       shell: bash
     - name: report built vmgstool
       run: flowey.exe e 6 flowey_lib_hvlite::build_vmgstool 0
@@ -5991,16 +6031,34 @@ jobs:
       run: flowey.exe e 6 flowey_lib_hvlite::artifact_vmgstool::publish 0
       shell: bash
     - name: copying vmgstool to artifact dir
-      run: flowey.exe e 6 flowey_lib_common::copy_to_artifact_dir 3
+      run: flowey.exe e 6 flowey_lib_common::copy_to_artifact_dir 4
       shell: bash
     - name: inject cross env
-      run: flowey.exe e 6 flowey_lib_hvlite::init_cross_build 3
+      run: flowey.exe e 6 flowey_lib_hvlite::init_cross_build 2
       shell: bash
-    - name: cargo build vmgs_lib
-      run: flowey.exe e 6 flowey_lib_common::run_cargo_build 2
+    - name: cargo build hypestv
+      run: flowey.exe e 6 flowey_lib_common::run_cargo_build 0
       shell: bash
     - name: 🌼 write_into Var
-      run: flowey.exe e 6 flowey_lib_hvlite::run_cargo_build 2
+      run: flowey.exe e 6 flowey_lib_hvlite::run_cargo_build 0
+      shell: bash
+    - name: report built hypestv
+      run: flowey.exe e 6 flowey_lib_hvlite::build_hypestv 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 6 flowey_lib_hvlite::artifact_hypestv::publish 0
+      shell: bash
+    - name: copying hypestv to artifact dir
+      run: flowey.exe e 6 flowey_lib_common::copy_to_artifact_dir 0
+      shell: bash
+    - name: inject cross env
+      run: flowey.exe e 6 flowey_lib_hvlite::init_cross_build 0
+      shell: bash
+    - name: cargo build vmgs_lib
+      run: flowey.exe e 6 flowey_lib_common::run_cargo_build 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 6 flowey_lib_hvlite::run_cargo_build 3
       shell: bash
     - name: check built vmgs_lib
       run: flowey.exe e 6 flowey_lib_hvlite::build_and_test_vmgs_lib 0
@@ -6012,29 +6070,16 @@ jobs:
       run: flowey.exe e 6 flowey_lib_hvlite::artifact_vmgs_lib::publish 0
       shell: bash
     - name: copying vmgs_lib to artifact dir
-      run: flowey.exe e 6 flowey_lib_common::copy_to_artifact_dir 2
-      shell: bash
-    - name: inject cross env
-      run: flowey.exe e 6 flowey_lib_hvlite::init_cross_build 1
-      shell: bash
-    - name: cargo build igvmfilegen
-      run: flowey.exe e 6 flowey_lib_common::run_cargo_build 0
-      shell: bash
-    - name: 🌼 write_into Var
-      run: flowey.exe e 6 flowey_lib_hvlite::run_cargo_build 0
-      shell: bash
-    - name: report built igvmfilegen
-      run: flowey.exe e 6 flowey_lib_hvlite::build_igvmfilegen 0
-      shell: bash
-    - name: 🌼 write_into Var
-      run: flowey.exe e 6 flowey_lib_hvlite::artifact_igvmfilegen::publish 0
-      shell: bash
-    - name: copying igvmfilegen to artifact dir
-      run: flowey.exe e 6 flowey_lib_common::copy_to_artifact_dir 0
+      run: flowey.exe e 6 flowey_lib_common::copy_to_artifact_dir 3
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey.exe e 6 flowey_lib_common::cache 3
       shell: bash
+    - name: 🌼📦 Publish aarch64-windows-hypestv
+      uses: actions/upload-artifact@v4
+      with:
+        name: aarch64-windows-hypestv
+        path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-hypestv/
     - name: 🌼📦 Publish aarch64-windows-igvmfilegen
       uses: actions/upload-artifact@v4
       with:
@@ -6061,6 +6106,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -6355,6 +6401,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -6437,6 +6484,8 @@ jobs:
         cat <<'EOF' | flowey.exe v 8 'param0' --update-from-stdin
         ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
         EOF
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-hypestv"
+        echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-hypestv" | flowey.exe v 8 'artifact_publish_from_x64-windows-hypestv' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-igvmfilegen"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-igvmfilegen" | flowey.exe v 8 'artifact_publish_from_x64-windows-igvmfilegen' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-ohcldiag-dev"
@@ -6526,13 +6575,13 @@ jobs:
       run: flowey.exe e 8 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
       shell: bash
     - name: inject cross env
-      run: flowey.exe e 8 flowey_lib_hvlite::init_cross_build 0
+      run: flowey.exe e 8 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build vmgstool
-      run: flowey.exe e 8 flowey_lib_common::run_cargo_build 3
+      run: flowey.exe e 8 flowey_lib_common::run_cargo_build 4
       shell: bash
     - name: 🌼 write_into Var
-      run: flowey.exe e 8 flowey_lib_hvlite::run_cargo_build 3
+      run: flowey.exe e 8 flowey_lib_hvlite::run_cargo_build 4
       shell: bash
     - name: report built vmgstool
       run: flowey.exe e 8 flowey_lib_hvlite::build_vmgstool 0
@@ -6541,16 +6590,34 @@ jobs:
       run: flowey.exe e 8 flowey_lib_hvlite::artifact_vmgstool::publish 0
       shell: bash
     - name: copying vmgstool to artifact dir
-      run: flowey.exe e 8 flowey_lib_common::copy_to_artifact_dir 3
+      run: flowey.exe e 8 flowey_lib_common::copy_to_artifact_dir 4
       shell: bash
     - name: inject cross env
-      run: flowey.exe e 8 flowey_lib_hvlite::init_cross_build 3
+      run: flowey.exe e 8 flowey_lib_hvlite::init_cross_build 2
       shell: bash
-    - name: cargo build vmgs_lib
-      run: flowey.exe e 8 flowey_lib_common::run_cargo_build 2
+    - name: cargo build hypestv
+      run: flowey.exe e 8 flowey_lib_common::run_cargo_build 0
       shell: bash
     - name: 🌼 write_into Var
-      run: flowey.exe e 8 flowey_lib_hvlite::run_cargo_build 2
+      run: flowey.exe e 8 flowey_lib_hvlite::run_cargo_build 0
+      shell: bash
+    - name: report built hypestv
+      run: flowey.exe e 8 flowey_lib_hvlite::build_hypestv 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 8 flowey_lib_hvlite::artifact_hypestv::publish 0
+      shell: bash
+    - name: copying hypestv to artifact dir
+      run: flowey.exe e 8 flowey_lib_common::copy_to_artifact_dir 0
+      shell: bash
+    - name: inject cross env
+      run: flowey.exe e 8 flowey_lib_hvlite::init_cross_build 0
+      shell: bash
+    - name: cargo build vmgs_lib
+      run: flowey.exe e 8 flowey_lib_common::run_cargo_build 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 8 flowey_lib_hvlite::run_cargo_build 3
       shell: bash
     - name: check built vmgs_lib
       run: flowey.exe e 8 flowey_lib_hvlite::build_and_test_vmgs_lib 0
@@ -6565,16 +6632,16 @@ jobs:
       run: flowey.exe e 8 flowey_lib_hvlite::artifact_vmgs_lib::publish 0
       shell: bash
     - name: copying vmgs_lib to artifact dir
-      run: flowey.exe e 8 flowey_lib_common::copy_to_artifact_dir 2
+      run: flowey.exe e 8 flowey_lib_common::copy_to_artifact_dir 3
       shell: bash
     - name: inject cross env
-      run: flowey.exe e 8 flowey_lib_hvlite::init_cross_build 1
+      run: flowey.exe e 8 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build igvmfilegen
-      run: flowey.exe e 8 flowey_lib_common::run_cargo_build 0
+      run: flowey.exe e 8 flowey_lib_common::run_cargo_build 1
       shell: bash
     - name: 🌼 write_into Var
-      run: flowey.exe e 8 flowey_lib_hvlite::run_cargo_build 0
+      run: flowey.exe e 8 flowey_lib_hvlite::run_cargo_build 1
       shell: bash
     - name: report built igvmfilegen
       run: flowey.exe e 8 flowey_lib_hvlite::build_igvmfilegen 0
@@ -6583,16 +6650,16 @@ jobs:
       run: flowey.exe e 8 flowey_lib_hvlite::artifact_igvmfilegen::publish 0
       shell: bash
     - name: copying igvmfilegen to artifact dir
-      run: flowey.exe e 8 flowey_lib_common::copy_to_artifact_dir 0
+      run: flowey.exe e 8 flowey_lib_common::copy_to_artifact_dir 1
       shell: bash
     - name: inject cross env
-      run: flowey.exe e 8 flowey_lib_hvlite::init_cross_build 2
+      run: flowey.exe e 8 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build ohcldiag-dev
-      run: flowey.exe e 8 flowey_lib_common::run_cargo_build 1
+      run: flowey.exe e 8 flowey_lib_common::run_cargo_build 2
       shell: bash
     - name: 🌼 write_into Var
-      run: flowey.exe e 8 flowey_lib_hvlite::run_cargo_build 1
+      run: flowey.exe e 8 flowey_lib_hvlite::run_cargo_build 2
       shell: bash
     - name: report built ohcldiag_dev
       run: flowey.exe e 8 flowey_lib_hvlite::build_ohcldiag_dev 0
@@ -6601,11 +6668,16 @@ jobs:
       run: flowey.exe e 8 flowey_lib_hvlite::artifact_ohcldiag_dev::publish 0
       shell: bash
     - name: copying ohcldiag-dev to artifact dir
-      run: flowey.exe e 8 flowey_lib_common::copy_to_artifact_dir 1
+      run: flowey.exe e 8 flowey_lib_common::copy_to_artifact_dir 2
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey.exe e 8 flowey_lib_common::cache 3
       shell: bash
+    - name: 🌼📦 Publish x64-windows-hypestv
+      uses: actions/upload-artifact@v4
+      with:
+        name: x64-windows-hypestv
+        path: ${{ runner.temp }}/publish_artifacts/x64-windows-hypestv/
     - name: 🌼📦 Publish x64-windows-igvmfilegen
       uses: actions/upload-artifact@v4
       with:
@@ -6632,6 +6704,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey

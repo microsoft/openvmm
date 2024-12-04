@@ -10,7 +10,7 @@ use crate::test_helpers::TestWorker;
 use crate::ScsiController;
 use crate::ScsiControllerDisk;
 use crate::ScsiPath;
-use disk_backend::zerodisk::ZeroDisk;
+use disklayer_ram::ram_disk;
 use guestmem::GuestMemory;
 use pal_async::driver::SpawnDriver;
 use scsi_defs::srb::SrbStatus;
@@ -28,12 +28,10 @@ pub struct PerfTester {
 impl PerfTester {
     pub async fn new(driver: impl SpawnDriver + Clone) -> Self {
         let io_queue_depth = None;
-        let device = ZeroDisk::new(512, 64 * 1024).unwrap();
+        let device = ram_disk(64 * 1024, true).unwrap();
         let controller = ScsiController::new();
-        let disk = ScsiControllerDisk::new(Arc::new(SimpleScsiDisk::new(
-            Arc::new(device),
-            Default::default(),
-        )));
+        let disk =
+            ScsiControllerDisk::new(Arc::new(SimpleScsiDisk::new(device, Default::default())));
         controller
             .attach(
                 ScsiPath {

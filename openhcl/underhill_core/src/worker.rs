@@ -55,6 +55,7 @@ use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use closeable_mutex::CloseableMutex;
 use debug_ptr::DebugPtr;
+use disk_backend::Disk;
 use disk_blockdevice::BlockDeviceResolver;
 use disk_blockdevice::OpenBlockDeviceConfig;
 use firmware_uefi::UefiCommandSet;
@@ -89,6 +90,7 @@ use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
+use page_pool_alloc::PagePool;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
 use pal_async::DefaultDriver;
@@ -96,7 +98,6 @@ use pal_async::DefaultPool;
 use parking_lot::Mutex;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
-use shared_pool_alloc::SharedPool;
 use socket2::Socket;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
@@ -500,7 +501,11 @@ impl UnderhillVmWorker {
                 mesh::payload::decode(&saved_state_buf)
                     .context("failed to decode servicing state")?,
             );
-            tracing::info!("received servicing state from host");
+
+            tracing::info!(
+                saved_state_len = saved_state_buf.len(),
+                "received servicing state from host"
+            );
         }
 
         let is_post_servicing = servicing_state.is_some();
@@ -722,7 +727,7 @@ impl UhVmNetworkSettings {
         driver_source: &VmTaskDriverSource,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        shared_vis_pages_pool: &Option<SharedPool>,
+        shared_vis_pages_pool: &Option<PagePool>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         tp: &AffinitizedThreadpool,
@@ -744,7 +749,8 @@ impl UhVmNetworkSettings {
             vps_count as u32,
             nic_max_sub_channels,
             servicing_netvsp_state,
-            vfio_dma_buffer(shared_vis_pages_pool),
+            vfio_dma_buffer(shared_vis_pages_pool, format!("nic_{}", instance_id))
+                .context("creating vfio dma buffer")?,
             self.dma_mode,
         )
         .await?;
@@ -853,7 +859,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         threadpool: &AffinitizedThreadpool,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        shared_vis_pages_pool: &Option<SharedPool>,
+        shared_vis_pages_pool: &Option<PagePool>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
@@ -1064,11 +1070,17 @@ fn round_up_to_2mb(bytes: u64) -> u64 {
     (bytes + (2 * 1024 * 1024) - 1) & !((2 * 1024 * 1024) - 1)
 }
 
-fn vfio_dma_buffer(shared_vis_pages_pool: &Option<SharedPool>) -> Arc<dyn VfioDmaBuffer> {
+fn vfio_dma_buffer(
+    shared_vis_pages_pool: &Option<PagePool>,
+    device_name: String,
+) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
     shared_vis_pages_pool
         .as_ref()
-        .map(|p| -> Arc<dyn VfioDmaBuffer> { Arc::new(p.allocator()) })
-        .unwrap_or(Arc::new(LockedMemorySpawner))
+        .map(|p| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
+            p.allocator(device_name)
+                .map(|alloc| Arc::new(alloc) as Arc<dyn VfioDmaBuffer>)
+        })
+        .unwrap_or(Ok(Arc::new(LockedMemorySpawner)))
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
@@ -1329,25 +1341,27 @@ async fn new_underhill_vm(
 
     // also construct the VMGS nice and early, as much like the GET, it also
     // plays an important role during initial bringup
-    let (mut vmgs, vmgs_disk) = match servicing_state.vmgs {
+    let (vmgs_disk_metadata, mut vmgs) = match servicing_state.vmgs {
         Some((vmgs_state, vmgs_get_meta_state)) => {
             // fast path, with zero .await calls
-            let disk = Arc::new(
-                disk_get_vmgs::GetVmgsDisk::restore_with_meta(
-                    get_client.clone(),
-                    vmgs_get_meta_state,
-                )
-                .context("failed to open VMGS disk")?,
-            );
-            (Vmgs::open_from_saved(disk.clone(), vmgs_state), disk)
+            let disk = disk_get_vmgs::GetVmgsDisk::restore_with_meta(
+                get_client.clone(),
+                vmgs_get_meta_state,
+            )
+            .context("failed to open VMGS disk")?;
+            (
+                disk.save_meta(),
+                Vmgs::open_from_saved(Disk::new(disk).context("invalid vmgs disk")?, vmgs_state),
+            )
         }
         None => {
-            let disk = Arc::new(
-                disk_get_vmgs::GetVmgsDisk::new(get_client.clone())
-                    .instrument(tracing::info_span!("vmgs_get_storage"))
-                    .await
-                    .context("failed to get VMGS client")?,
-            );
+            let disk = disk_get_vmgs::GetVmgsDisk::new(get_client.clone())
+                .instrument(tracing::info_span!("vmgs_get_storage"))
+                .await
+                .context("failed to get VMGS client")?;
+
+            let meta = disk.save_meta();
+            let disk = Disk::new(disk).context("invalid vmgs disk")?;
 
             let vmgs = if !env_cfg.reformat_vmgs {
                 match Vmgs::open(disk.clone())
@@ -1381,12 +1395,12 @@ async fn new_underhill_vm(
             let vmgs = if let Some(vmgs) = vmgs {
                 vmgs
             } else {
-                Vmgs::format_new(disk.clone())
+                Vmgs::format_new(disk)
                     .instrument(tracing::info_span!("vmgs_format"))
                     .await
                     .context("failed to format vmgs")?
             };
-            (vmgs, disk)
+            (meta, vmgs)
         }
     };
 
@@ -1480,7 +1494,7 @@ async fn new_underhill_vm(
 
     let shared_vis_pages_pool = if shared_pool_size != 0 {
         Some(
-            SharedPool::new(
+            PagePool::new_shared_visibility_pool(
                 &shared_pool,
                 measured_vtl2_info
                     .vtom_offset_bit
@@ -1528,9 +1542,12 @@ async fn new_underhill_vm(
     }
 
     // Set the shared memory allocator to GET that is required by attestation call-out.
-    if let Some(allocator) = shared_vis_pages_pool.as_ref().map(|p| p.allocator()) {
+    if let Some(allocator) = shared_vis_pages_pool
+        .as_ref()
+        .map(|p| p.allocator("get".into()))
+    {
         get_client.set_shared_memory_allocator(
-            allocator,
+            allocator.context("get shared memory allocator")?,
             gm.shared_memory()
                 .or_else(|| env_cfg.enable_shared_visibility_pool.then(|| gm.vtl0()))
                 .context("missing shared memory for shared pool allocator")?
@@ -1692,7 +1709,10 @@ async fn new_underhill_vm(
         emulate_apic,
         vmtime: &vmtime_source,
         isolated_memory_protector: gm.isolated_memory_protector()?,
-        shared_vis_pages_pool: shared_vis_pages_pool.as_ref().map(|p| p.allocator()),
+        shared_vis_pages_pool: shared_vis_pages_pool.as_ref().map(|p| {
+            p.allocator("partition".into())
+                .expect("partition name should be unique")
+        }),
     };
 
     let (partition, vps) = proto_partition
@@ -1781,10 +1801,27 @@ async fn new_underhill_vm(
     );
 
     let nvme_manager = if env_cfg.nvme_vfio {
+        let shared_vis_pool_spawner = shared_vis_pages_pool
+            .as_ref()
+            .map(|p| p.allocator_spawner());
+
+        let vfio_dma_buffer_spawner = Box::new(
+            move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
+                shared_vis_pool_spawner
+                    .as_ref()
+                    .map(|spawner| {
+                        spawner
+                            .allocator(device_id)
+                            .map(|alloc| Arc::new(alloc) as _)
+                    })
+                    .unwrap_or_else(|| Ok(Arc::new(LockedMemorySpawner) as _))
+            },
+        );
+
         let manager = NvmeManager::new(
             &driver_source,
             processor_topology.vp_count(),
-            vfio_dma_buffer(&shared_vis_pages_pool),
+            vfio_dma_buffer_spawner,
         );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
@@ -2551,14 +2588,38 @@ async fn new_underhill_vm(
             .unwrap_or(!controllers.mana.is_empty());
         tracing::info!(enable_mnf, "Underhill MNF enabled?");
 
+        let max_version = env_cfg
+            .vmbus_max_version
+            .map(vmbus_core::MaxVersionInfo::new)
+            .or_else(|| {
+                // For compatibility with rollback, any additional features are currently disabled,
+                // except for isolated guests which do not support servicing.
+                (!hardware_isolated).then_some(vmbus_core::MaxVersionInfo {
+                    version: vmbus_core::protocol::Version::Copper as u32,
+                    feature_flags: vmbus_core::protocol::FeatureFlags::new()
+                        .with_guest_specified_signal_parameters(true)
+                        .with_channel_interrupt_redirection(true)
+                        .with_modify_connection(true),
+                })
+            });
+
+        // Delay the max version if the requested version is older than what the UEFI firmware
+        // supports.
+        let delay_max_version = if let Some(max_version) = max_version {
+            firmware_type == FirmwareType::Uefi
+                && max_version.version < vmbus_core::protocol::Version::Win10 as u32
+        } else {
+            false
+        };
+
         // N.B. VmBus uses untrusted memory by default for relay channels, and uses additional
         //      trusted memory only for confidential channels offered by Underhill itself.
         let vmbus = VmbusServer::builder(&tp, synic.clone(), device_memory.clone())
             .private_gm(gm.private_vtl0_memory().cloned())
             .hvsock_notify(hvsock_notify)
             .server_relay(server_relay)
-            .max_version(env_cfg.vmbus_max_version)
-            .delay_max_version(firmware_type == FirmwareType::Uefi)
+            .max_version(max_version)
+            .delay_max_version(delay_max_version)
             .enable_mnf(enable_mnf)
             .force_confidential_external_memory(env_cfg.vmbus_force_confidential_external_memory)
             .build()
@@ -2641,6 +2702,8 @@ async fn new_underhill_vm(
                 instance_id,
                 resource,
                 &mut chipset_builder,
+                None,
+                None,
                 |device_id| {
                     let device = partition
                         .new_virtual_device()
@@ -2870,7 +2933,7 @@ async fn new_underhill_vm(
         shutdown_relay,
 
         vmgs_thin_client,
-        vmgs_disk,
+        vmgs_disk_metadata,
         _vmgs_handle: vmgs_handle,
 
         get_client: get_client.clone(),

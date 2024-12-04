@@ -16,10 +16,8 @@ use crate::table::TableEncoder;
 use crate::DecodeError;
 use crate::MessageDecode;
 use crate::MessageEncode;
+use core::time::Duration;
 use mesh_protobuf::Protobuf;
-use std::time::Duration;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 use thiserror::Error;
 
 const NANOS_PER_SEC: u32 = 1_000_000_000;
@@ -42,9 +40,10 @@ pub struct Timestamp {
     pub nanos: i32,
 }
 
-impl From<SystemTime> for Timestamp {
-    fn from(value: SystemTime) -> Self {
-        match value.duration_since(UNIX_EPOCH) {
+#[cfg(feature = "std")]
+impl From<std::time::SystemTime> for Timestamp {
+    fn from(value: std::time::SystemTime) -> Self {
+        match value.duration_since(std::time::UNIX_EPOCH) {
             Ok(since_epoch) => Self {
                 seconds: since_epoch.as_secs() as i64,
                 nanos: since_epoch.subsec_nanos() as i32,
@@ -71,7 +70,8 @@ impl From<SystemTime> for Timestamp {
 #[error("timestamp out of range for system time")]
 pub struct TimestampOutOfRange;
 
-impl TryFrom<Timestamp> for SystemTime {
+#[cfg(feature = "std")]
+impl TryFrom<Timestamp> for std::time::SystemTime {
     type Error = TimestampOutOfRange;
 
     fn try_from(value: Timestamp) -> Result<Self, Self::Error> {
@@ -79,14 +79,14 @@ impl TryFrom<Timestamp> for SystemTime {
             return Err(TimestampOutOfRange);
         }
         if value.seconds >= 0 {
-            SystemTime::UNIX_EPOCH
+            std::time::SystemTime::UNIX_EPOCH
                 .checked_add(Duration::new(value.seconds as u64, value.nanos as u32))
         } else {
             let secs = value.seconds.checked_neg().ok_or(TimestampOutOfRange)? as u64;
             if value.nanos == 0 {
-                SystemTime::UNIX_EPOCH.checked_sub(Duration::new(secs, 0))
+                std::time::SystemTime::UNIX_EPOCH.checked_sub(Duration::new(secs, 0))
             } else {
-                SystemTime::UNIX_EPOCH
+                std::time::SystemTime::UNIX_EPOCH
                     .checked_sub(Duration::new(secs - 1, NANOS_PER_SEC - value.nanos as u32))
             }
         }
@@ -134,25 +134,27 @@ impl<R> MessageDecode<'_, Duration, R> for DurationEncoding {
 
 #[cfg(test)]
 mod tests {
-    use super::Timestamp;
-    use std::time::SystemTime;
 
+    #[cfg(feature = "std")]
     #[test]
     fn test_timestamp_system_time() {
+        use super::Timestamp;
+        use std::time::SystemTime;
+
         let check = |st: SystemTime| {
             let st2 = SystemTime::try_from(Timestamp::from(st)).unwrap();
             assert_eq!(st, st2);
         };
 
         check(SystemTime::now());
-        check(SystemTime::now() + std::time::Duration::from_secs(1));
-        check(SystemTime::now() - std::time::Duration::from_secs(1));
-        check(SystemTime::UNIX_EPOCH - std::time::Duration::from_nanos(1_500_000_000));
-        check(SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(1_500_000_000));
+        check(SystemTime::now() + core::time::Duration::from_secs(1));
+        check(SystemTime::now() - core::time::Duration::from_secs(1));
+        check(SystemTime::UNIX_EPOCH - core::time::Duration::from_nanos(1_500_000_000));
+        check(SystemTime::UNIX_EPOCH + core::time::Duration::from_nanos(1_500_000_000));
 
         assert_eq!(
             Timestamp::from(
-                SystemTime::UNIX_EPOCH - std::time::Duration::from_nanos(1_500_000_000)
+                SystemTime::UNIX_EPOCH - core::time::Duration::from_nanos(1_500_000_000)
             ),
             Timestamp {
                 seconds: -2,

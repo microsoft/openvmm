@@ -446,6 +446,30 @@ impl Pte {
 
 #[bitfield(u64)]
 #[derive(PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+pub struct LargePde {
+    pub present: bool,
+    pub read_write: bool,
+    pub user: bool,
+    pub write_through: bool,
+    pub cache_disable: bool,
+    pub accessed: bool,
+    pub dirty: bool,
+    pub large_page: bool,
+    pub global: bool,
+    #[bits(3)]
+    pub available0: u64,
+    pub pat: bool,
+    #[bits(8)]
+    _reserved0: u64,
+    #[bits(31)]
+    pub large_page_base: u64,
+    #[bits(11)]
+    pub available1: u64,
+    pub no_execute: bool,
+}
+
+#[bitfield(u64)]
+#[derive(PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
 pub struct X86xMcgStatusRegister {
     pub ripv: bool, // Restart IP is valid
     pub eipv: bool, // Error IP is valid

@@ -3,6 +3,7 @@
 
 use anyhow::Context;
 use futures::executor::block_on;
+use futures::StreamExt;
 use pal_async::local::block_with_io;
 use unix_socket::UnixListener;
 
@@ -28,16 +29,15 @@ fn server(path: &str) -> anyhow::Result<()> {
     let listener = UnixListener::bind(path).context("bind failed")?;
     tracing::info!(path, "listening");
     let mut server = mesh_rpc::Server::new();
-    let (send, mut recv) = mesh::channel::<(mesh::CancelContext, items::Example)>();
     let (_s, stop_listening) = mesh::oneshot();
-    server.add_service(send);
+    let mut recv = server.add_service();
     let thread = std::thread::spawn(move || {
         block_with_io(
             |driver| async move { drop(server.run(&driver, listener, stop_listening).await) },
         )
     });
     block_on(async {
-        while let Ok((_, message)) = recv.recv().await {
+        while let Some((_, message)) = recv.next().await {
             match message {
                 items::Example::Method1(req, response) => {
                     response.send(Ok(items::Method1Response {

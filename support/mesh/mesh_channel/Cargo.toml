@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 mesh_node.workspace = true
-mesh_protobuf.workspace = true
+mesh_protobuf = { workspace = true, features = ["std"] }
 
 futures-core.workspace = true
 futures-io.workspace = true

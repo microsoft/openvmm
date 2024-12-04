@@ -13,6 +13,7 @@ grpc = ["dep:base64", "dep:h2", "dep:tokio", "dep:http", "dep:urlencoding"]
 mesh = { workspace = true, features = ["prost"] }
 pal_async.workspace = true
 test_with_tracing.workspace = true
+unix_socket.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true

@@ -10,19 +10,18 @@ use crate::error::NvmeError;
 use crate::prp::PrpRange;
 use crate::spec;
 use crate::spec::nvm;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
-use std::sync::Arc;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
 
-/// An NVMe namespace built on top of a [`SimpleDisk`].
+/// An NVMe namespace built on top of a [`Disk`].
 #[derive(Inspect)]
 pub struct Namespace {
-    disk: Arc<dyn SimpleDisk>,
+    disk: Disk,
     nsid: u32,
     mem: GuestMemory,
     block_shift: u32,
@@ -30,7 +29,7 @@ pub struct Namespace {
 }
 
 impl Namespace {
-    pub fn new(mem: GuestMemory, nsid: u32, disk: Arc<dyn SimpleDisk>) -> Self {
+    pub fn new(mem: GuestMemory, nsid: u32, disk: Disk) -> Self {
         Self {
             block_shift: disk.sector_size().trailing_zeros(),
             pr: disk.pr().is_some(),
@@ -187,13 +186,11 @@ impl Namespace {
                 prp.read(&self.mem, dsm_ranges.as_bytes_mut())?;
                 tracing::debug!(nsid = self.nsid, ?cdw11, ?dsm_ranges, "dsm");
                 if cdw11.ad() {
-                    if let Some(unmap) = self.disk.unmap() {
-                        for range in dsm_ranges.as_ref() {
-                            unmap
-                                .unmap(range.starting_lba, range.lba_count.into(), false)
-                                .await
-                                .map_err(map_disk_error)?;
-                        }
+                    for range in dsm_ranges.as_ref() {
+                        self.disk
+                            .unmap(range.starting_lba, range.lba_count.into(), false)
+                            .await
+                            .map_err(map_disk_error)?;
                     }
                 }
             }

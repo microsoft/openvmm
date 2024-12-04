@@ -36,7 +36,7 @@ impl std::fmt::Display for IdePath {
 pub enum GuestMedia {
     /// An ATAPI drive, backed by a SCSI device.
     Dvd(Resource<ScsiDeviceHandleKind>),
-    /// An ATA disk, backed by a simple disk.
+    /// An ATA disk, backed by a disk.
     Disk {
         /// The backing disk.
         disk_type: Resource<DiskHandleKind>,

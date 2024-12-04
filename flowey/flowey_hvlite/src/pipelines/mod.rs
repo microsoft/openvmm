@@ -6,6 +6,7 @@ use restore_packages::RestorePackagesCli;
 
 pub mod build_igvm;
 pub mod checkin_gates;
+pub mod custom_vmfirmwareigvm_dll;
 pub mod restore_packages;
 
 #[derive(clap::Subcommand)]
@@ -19,6 +20,7 @@ pub enum OpenvmmPipelines {
     },
 
     BuildIgvm(build_igvm::BuildIgvmCli),
+    CustomVmfirmwareigvmDll(custom_vmfirmwareigvm_dll::CustomVmfirmwareigvmDllCli),
 
     /// Flowey pipelines primarily designed to run in CI.
     #[clap(subcommand)]
@@ -54,6 +56,7 @@ impl IntoPipeline for OpenvmmPipelines {
             }
 
             OpenvmmPipelines::BuildIgvm(cmd) => cmd.into_pipeline(pipeline_hint),
+            OpenvmmPipelines::CustomVmfirmwareigvmDll(cmd) => cmd.into_pipeline(pipeline_hint),
 
             OpenvmmPipelines::Ci(cmd) => match cmd {
                 OpenvmmPipelinesCi::CheckinGates(cmd) => cmd.into_pipeline(pipeline_hint),

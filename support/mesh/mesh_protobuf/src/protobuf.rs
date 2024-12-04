@@ -13,8 +13,10 @@ use super::MessageEncode;
 use super::RefCell;
 use super::Result;
 use crate::DefaultEncoding;
-use std::marker::PhantomData;
-use std::ops::Range;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::marker::PhantomData;
+use core::ops::Range;
 
 /// Writes a variable-length integer, as defined in the protobuf specification.
 fn write_varint(v: &mut Buf<'_>, mut n: u64) {
@@ -116,7 +118,7 @@ impl<'a, R> DecodeState<'a, R> {
 
 struct EncodeState<'a, R> {
     data: Buf<'a>,
-    message_sizes: std::slice::Iter<'a, MessageSize>,
+    message_sizes: core::slice::Iter<'a, MessageSize>,
     resources: &'a mut Vec<R>,
     field_number: u32,
     in_sequence: bool,
@@ -366,7 +368,7 @@ impl<'a> FieldSizer<'a> {
         let index = self.state.message_sizes.len();
         self.state.message_sizes.push(MessageSize::default());
         PreviousSizeParams {
-            index: std::mem::replace(&mut self.state.index, index) as u32,
+            index: core::mem::replace(&mut self.state.index, index) as u32,
             tag_size: self.state.tag_size,
             in_sequence: self.state.in_sequence,
         }
@@ -374,7 +376,7 @@ impl<'a> FieldSizer<'a> {
 
     fn set_cached_message_size(&mut self, prev: PreviousSizeParams) {
         let size = self.state.message_sizes[self.state.index];
-        let index = std::mem::replace(&mut self.state.index, prev.index as usize);
+        let index = core::mem::replace(&mut self.state.index, prev.index as usize);
         let parent_size = &mut self.state.message_sizes[self.state.index];
         let mut len = varint_size(size.len as u64) + size.len;
         if size.num_resources > 0 {
@@ -831,7 +833,7 @@ pub struct PackedReader<'a> {
 impl<'a> PackedReader<'a> {
     /// Reads the remaining bytes.
     pub fn bytes(&mut self) -> &'a [u8] {
-        std::mem::take(&mut self.data)
+        core::mem::take(&mut self.data)
     }
 
     /// Reads a varint.
@@ -970,8 +972,11 @@ pub fn decode_with<'a, E: MessageDecode<'a, T, R>, T, R>(
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
     use crate::buffer;
+    use std::eprintln;
 
     #[test]
     fn test_zigzag() {

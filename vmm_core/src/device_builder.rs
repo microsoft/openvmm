@@ -4,6 +4,7 @@
 //! Functions for resolving and building devices.
 
 use anyhow::Context as _;
+use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
@@ -27,6 +28,8 @@ pub async fn build_vpci_device(
     instance_id: Guid,
     resource: Resource<PciDeviceHandleKind>,
     chipset_builder: &mut ChipsetBuilder<'_>,
+    doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
+    mapper: Option<&dyn guestmem::MemoryMapper>,
     new_virtual_device: impl FnOnce(
         u64,
     ) -> anyhow::Result<(
@@ -52,6 +55,8 @@ pub async fn build_vpci_device(
                             register_mmio: &mut register_mmio,
                             driver_source,
                             guest_memory,
+                            doorbell_registration,
+                            shared_mem_mapper: mapper,
                         },
                     )
                     .await

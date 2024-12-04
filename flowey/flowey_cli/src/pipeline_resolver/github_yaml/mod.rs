@@ -570,7 +570,9 @@ EOF
                         })
                         .collect()
                 },
-                r#if: gh_override_if.clone(),
+                r#if: gh_override_if
+                    .clone()
+                    .or_else(|| Some("github.event.pull_request.draft == false".to_string())),
                 env: gh_global_env.clone(),
                 steps: gh_steps,
             },
@@ -638,6 +640,7 @@ EOF
                 Some(github_yaml_defs::PrTrigger {
                     branches: gh_pr_triggers.branches.clone(),
                     branches_ignore: gh_pr_triggers.exclude_branches.clone(),
+                    types: gh_pr_triggers.types.clone(),
                 })
             }
             None => None,

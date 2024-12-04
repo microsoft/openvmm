@@ -2,13 +2,14 @@
 # Licensed under the MIT License.
 
 [package]
-name = "disk_ramdisk"
+name = "disklayer_ram"
 edition = "2021"
 rust-version.workspace = true
 
 [dependencies]
 disk_backend.workspace = true
 disk_backend_resources.workspace = true
+disk_layered.workspace = true
 guestmem.workspace = true
 scsi_buffers.workspace = true
 vm_resource.workspace = true
@@ -17,13 +18,15 @@ inspect.workspace = true
 pal_async.workspace = true
 
 anyhow.workspace = true
-async-trait.workspace = true
 parking_lot.workspace = true
 event-listener.workspace = true
-stackfuture.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
+[dev-dependencies]
+inspect = { workspace = true, features = ["initiate"] }
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

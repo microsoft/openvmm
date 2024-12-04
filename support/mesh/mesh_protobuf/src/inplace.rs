@@ -3,8 +3,9 @@
 
 //! Provides an `Option`-like type for constructing values in place.
 
-use std::mem::MaybeUninit;
-use std::sync::Arc;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use core::mem::MaybeUninit;
 
 /// A type with methods like `Option` but that operates on a mutable reference
 /// to possibly-initialized data.
@@ -51,7 +52,7 @@ impl<'a, T> InplaceOption<'a, T> {
             self.init = false;
             // SAFETY: val is initialized
             unsafe {
-                let val = std::ptr::read(&*self.val);
+                let val = core::ptr::read(&*self.val);
                 Some(val.assume_init())
             }
         } else {
@@ -227,12 +228,12 @@ macro_rules! inplace {
         let mut $v;
         let mut $v = match opt {
             Some(v) => {
-                $v = std::mem::MaybeUninit::new(v);
+                $v = core::mem::MaybeUninit::new(v);
                 // SAFETY: We just initialized the value.
                 unsafe { $crate::inplace::InplaceOption::new_init_unchecked(&mut $v) }
             }
             None => {
-                $v = std::mem::MaybeUninit::uninit();
+                $v = core::mem::MaybeUninit::uninit();
                 $crate::inplace::InplaceOption::uninit(&mut $v)
             }
         };
@@ -243,7 +244,7 @@ macro_rules! inplace {
 #[macro_export]
 macro_rules! inplace_some {
     ($v:ident) => {
-        let mut $v = std::mem::MaybeUninit::new($v);
+        let mut $v = core::mem::MaybeUninit::new($v);
         #[allow(unused_mut)]
         // SAFETY: We just initialized the value.
         let mut $v = unsafe { $crate::inplace::InplaceOption::new_init_unchecked(&mut $v) };
@@ -254,12 +255,12 @@ macro_rules! inplace_some {
 #[macro_export]
 macro_rules! inplace_none {
     ($v:ident) => {
-        let mut $v = std::mem::MaybeUninit::uninit();
+        let mut $v = core::mem::MaybeUninit::uninit();
         #[allow(unused_mut)]
         let mut $v = $crate::inplace::InplaceOption::uninit(&mut $v);
     };
     ($v:ident : $t:ty) => {
-        let mut $v = std::mem::MaybeUninit::<$t>::uninit();
+        let mut $v = core::mem::MaybeUninit::<$t>::uninit();
         #[allow(unused_mut)]
         let mut $v = $crate::inplace::InplaceOption::uninit(&mut $v);
     };
@@ -267,7 +268,10 @@ macro_rules! inplace_none {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use alloc::boxed::Box;
+    use alloc::string::String;
+    use alloc::string::ToString;
+    use alloc::sync::Arc;
 
     #[test]
     fn test_inplace_some() {

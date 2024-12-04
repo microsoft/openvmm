@@ -474,7 +474,7 @@ pub enum MsrError {
     /// The MSR is not implemented. Depending on the configuration, this should
     /// either be ignored (returning 0 for reads) or should result in a #GP.
     Unknown,
-    /// The msr is implemented but this is an invalid read or write and should
+    /// The MSR is implemented but this is an invalid read or write and should
     /// always result in a #GP.
     InvalidAccess,
 }

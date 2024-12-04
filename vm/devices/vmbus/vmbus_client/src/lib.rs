@@ -65,9 +65,16 @@ pub struct VmbusClient {
     task_send: mesh::Sender<TaskRequest>,
     client_request_send: mesh::Sender<ClientRequest>,
     _thread: Task<()>,
-    connect_recv: mesh::Receiver<Option<VersionInfo>>,
-    request_offers_recv: mesh::Receiver<Option<Offer>>,
-    unload_recv: mesh::Receiver<()>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConnectError {
+    #[error("invalid state to connect to the server")]
+    InvalidState,
+    #[error("no supported protocol versions")]
+    NoSupportedVersions,
+    #[error("failed to connect to the server: {0:?}")]
+    FailedToConnect(ConnectionState),
 }
 
 impl VmbusClient {
@@ -80,9 +87,6 @@ impl VmbusClient {
     ) -> Self {
         let (task_send, task_recv) = mesh::channel();
         let (client_request_send, client_request_recv) = mesh::channel();
-        let (connect_send, connect_recv) = mesh::channel();
-        let (request_offers_send, request_offers_recv) = mesh::channel();
-        let (unload_send, unload_recv) = mesh::channel();
 
         let inner = ClientTaskInner {
             synic: Box::new(synic),
@@ -100,9 +104,6 @@ impl VmbusClient {
             msg_source,
             client_request_recv,
             state: ClientState::Disconnected,
-            connect_send,
-            request_offers_send,
-            unload_send,
             modify_request: None,
         };
 
@@ -112,9 +113,6 @@ impl VmbusClient {
             client_request_send,
             task_send,
             _thread: thread,
-            connect_recv,
-            request_offers_recv,
-            unload_recv,
         }
     }
 
@@ -124,7 +122,7 @@ impl VmbusClient {
         target_message_vp: u32,
         monitor_page: Option<MonitorPageGpas>,
         client_id: Guid,
-    ) -> Option<VersionInfo> {
+    ) -> Result<VersionInfo, ConnectError> {
         let request = InitiateContactRequest {
             target_message_vp,
             monitor_page,
@@ -132,41 +130,26 @@ impl VmbusClient {
         };
 
         self.client_request_send
-            .send(ClientRequest::InitiateContact(request));
-
-        self.connect_recv.next().await.unwrap()
+            .call(ClientRequest::InitiateContact, request)
+            .await
+            .unwrap()
     }
 
     /// Send the RequestOffers message to the server, providing a sender to
     /// which the client can forward received offers to.
     pub async fn request_offers(&mut self) -> Vec<OfferInfo> {
-        self.client_request_send.send(ClientRequest::RequestOffers);
-
-        let mut result = Vec::new();
-        loop {
-            let offer = match self.request_offers_recv.next().await {
-                Some(Some(Offer::Offer(o))) => o,
-                Some(Some(Offer::AllOffersDelivered)) => break,
-                // Client was not connected to the host
-                Some(None) => return result,
-                None => {
-                    tracing::warn!("offer channel unexpectedly dropped");
-                    break;
-                }
-            };
-
-            result.push(offer);
-        }
-
-        result
+        let (send, recv) = mesh::channel();
+        self.client_request_send
+            .send(ClientRequest::RequestOffers(send));
+        recv.collect().await
     }
 
     /// Send the Unload message to the server.
-    pub async fn unload(&mut self) -> Result<()> {
-        self.client_request_send.send(ClientRequest::Unload);
-
-        self.unload_recv.next().await.unwrap();
-        Ok(())
+    pub async fn unload(&mut self) {
+        self.client_request_send
+            .call(ClientRequest::Unload, ())
+            .await
+            .unwrap();
     }
 
     pub async fn modify(&mut self, request: ModifyConnectionRequest) -> ConnectionState {
@@ -264,15 +247,6 @@ pub enum RestoreError {
     DuplicateGpadlId(u32),
 }
 
-/// Encapsulates a response from the server when requesting offers.
-/// Signifies either an offer from the server or the cessation of offers.
-#[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
-enum Offer {
-    Offer(OfferInfo),
-    AllOffersDelivered,
-}
-
 /// Provides the offer details from the server in addition to both a channel
 /// to request client actions and a channel to receive server responses.
 #[derive(Debug, Inspect)]
@@ -293,9 +267,9 @@ pub enum ClientNotification {
 
 #[derive(Debug)]
 enum ClientRequest {
-    InitiateContact(InitiateContactRequest),
-    RequestOffers,
-    Unload,
+    InitiateContact(Rpc<InitiateContactRequest, Result<VersionInfo, ConnectError>>),
+    RequestOffers(mesh::Sender<OfferInfo>),
+    Unload(Rpc<(), ()>),
     Modify(Rpc<ModifyConnectionRequest, ConnectionState>),
     HvsockConnect(HvsockConnectRequest),
 }
@@ -304,8 +278,8 @@ impl std::fmt::Display for ClientRequest {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ClientRequest::InitiateContact(..) => write!(fmt, "InitiateContact"),
-            ClientRequest::RequestOffers => write!(fmt, "RequestOffers"),
-            ClientRequest::Unload => write!(fmt, "Unload"),
+            ClientRequest::RequestOffers { .. } => write!(fmt, "RequestOffers"),
+            ClientRequest::Unload { .. } => write!(fmt, "Unload"),
             ClientRequest::Modify(..) => write!(fmt, "Modify"),
             ClientRequest::HvsockConnect(..) => write!(fmt, "HvsockConnect"),
         }
@@ -332,26 +306,28 @@ pub struct RestoredChannel {
 /// The overall state machine used to drive which actions the client can legally
 /// take. This primarily pertains to overall client activity but has a
 /// side-effect of limiting whether or not channels can perform actions.
-#[derive(Clone, Copy)]
 enum ClientState {
     /// The client has yet to connect to the server.
     Disconnected,
     /// The client has initiated contact with the server.
-    Connecting(Version, InitiateContactRequest),
+    Connecting(
+        Version,
+        Rpc<InitiateContactRequest, Result<VersionInfo, ConnectError>>,
+    ),
     /// The client has negotiated the protocol version with the server.
     Connected(VersionInfo),
     /// The client has requested offers from the server.
-    RequestingOffers(VersionInfo),
+    RequestingOffers(VersionInfo, mesh::Sender<OfferInfo>),
     /// The client has initiated an unload from the server.
-    Disconnecting(VersionInfo),
+    Disconnecting(VersionInfo, Rpc<(), ()>),
 }
 
 impl ClientState {
     fn get_version(&self) -> Option<VersionInfo> {
         match self {
             ClientState::Connected(version) => Some(*version),
-            ClientState::RequestingOffers(version) => Some(*version),
-            ClientState::Disconnecting(version) => Some(*version),
+            ClientState::RequestingOffers(version, _) => Some(*version),
+            ClientState::Disconnecting(version, _) => Some(*version),
             ClientState::Disconnected | ClientState::Connecting(..) => None,
         }
     }
@@ -493,19 +469,22 @@ struct ClientTask<T: VmbusMessageSource> {
     notify_send: mesh::Sender<ClientNotification>,
     task_recv: mesh::Receiver<TaskRequest>,
     client_request_recv: mesh::Receiver<ClientRequest>,
-    connect_send: mesh::Sender<Option<VersionInfo>>,
-    request_offers_send: mesh::Sender<Option<Offer>>,
-    unload_send: mesh::Sender<()>,
 }
 
 impl<T: VmbusMessageSource> ClientTask<T> {
-    fn handle_initiate_contact(&mut self, request: InitiateContactRequest, version: Version) {
+    fn handle_initiate_contact(
+        &mut self,
+        rpc: Rpc<InitiateContactRequest, Result<VersionInfo, ConnectError>>,
+        version: Version,
+    ) {
         if let ClientState::Disconnected = self.state {
             let feature_flags = if version >= Version::Copper {
                 SUPPORTED_FEATURE_FLAGS
             } else {
                 FeatureFlags::new()
             };
+
+            let request = &rpc.0;
 
             tracing::debug!(version = ?version, ?feature_flags, "VmBus client connecting");
             let target_info = protocol::TargetInfo::new(SINT, VTL, feature_flags);
@@ -521,32 +500,33 @@ impl<T: VmbusMessageSource> ClientTask<T> {
                 client_id: request.client_id,
             };
 
-            self.state = ClientState::Connecting(version, request);
+            self.state = ClientState::Connecting(version, rpc);
             if version < Version::Copper {
                 self.inner.send(&msg.initiate_contact)
             } else {
                 self.inner.send(&msg);
             }
         } else {
-            self.connect_send.send(None);
             tracing::warn!(client_state = %self.state, "invalid client state for InitiateContact");
+            rpc.complete(Err(ConnectError::InvalidState));
         }
     }
 
-    fn handle_request_offers(&mut self) {
+    fn handle_request_offers(&mut self, send: mesh::Sender<OfferInfo>) {
         if let ClientState::Connected(version) = self.state {
-            self.state = ClientState::RequestingOffers(version);
+            self.state = ClientState::RequestingOffers(version, send);
             self.inner.send(&protocol::RequestOffers {});
         } else {
-            self.request_offers_send.send(None);
             tracing::warn!(client_state = %self.state, "invalid client state for RequestOffers");
         }
     }
 
-    fn handle_unload(&mut self) {
+    fn handle_unload(&mut self, rpc: Rpc<(), ()>) {
         tracing::debug!(%self.state, "VmBus client disconnecting");
-        self.state =
-            ClientState::Disconnecting(self.state.get_version().expect("invalid state for unload"));
+        self.state = ClientState::Disconnecting(
+            self.state.get_version().expect("invalid state for unload"),
+            rpc,
+        );
 
         self.inner.send(&protocol::Unload {});
     }
@@ -580,14 +560,14 @@ impl<T: VmbusMessageSource> ClientTask<T> {
 
     fn handle_client_request(&mut self, request: ClientRequest) {
         match request {
-            ClientRequest::InitiateContact(request) => {
-                self.handle_initiate_contact(request, *SUPPORTED_VERSIONS.last().unwrap());
+            ClientRequest::InitiateContact(rpc) => {
+                self.handle_initiate_contact(rpc, *SUPPORTED_VERSIONS.last().unwrap());
             }
-            ClientRequest::RequestOffers => {
-                self.handle_request_offers();
+            ClientRequest::RequestOffers(send) => {
+                self.handle_request_offers(send);
             }
-            ClientRequest::Unload => {
-                self.handle_unload();
+            ClientRequest::Unload(rpc) => {
+                self.handle_unload(rpc);
             }
             ClientRequest::Modify(request) => self.handle_modify(request),
             ClientRequest::HvsockConnect(request) => self.handle_tl_connect(request),
@@ -596,10 +576,13 @@ impl<T: VmbusMessageSource> ClientTask<T> {
 
     fn handle_version_response(&mut self, msg: protocol::VersionResponse2) {
         let old_state = std::mem::replace(&mut self.state, ClientState::Disconnected);
-        if let ClientState::Connecting(version, request) = old_state {
+        if let ClientState::Connecting(version, rpc) = old_state {
             if msg.version_response.version_supported > 0 {
                 if msg.version_response.connection_state != ConnectionState::SUCCESSFUL {
-                    panic!("Host encountered an error establishing the connection");
+                    rpc.complete(Err(ConnectError::FailedToConnect(
+                        msg.version_response.connection_state,
+                    )));
+                    return;
                 }
 
                 let feature_flags = if version >= Version::Copper {
@@ -615,7 +598,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
 
                 self.state = ClientState::Connected(version);
                 tracing::info!(?version, "VmBus client connected");
-                self.connect_send.send(Some(version));
+                rpc.complete(Ok(version));
             } else {
                 let index = SUPPORTED_VERSIONS
                     .iter()
@@ -623,18 +606,19 @@ impl<T: VmbusMessageSource> ClientTask<T> {
                     .unwrap();
 
                 if index == 0 {
-                    panic!("Unable to negotiate a supported vmbus version");
+                    rpc.complete(Err(ConnectError::NoSupportedVersions));
+                    return;
                 }
-
                 let next_version = SUPPORTED_VERSIONS[index - 1];
                 tracing::debug!(
                     version = version as u32,
                     next_version = next_version as u32,
                     "Unsupported version, retrying"
                 );
-                self.handle_initiate_contact(request, next_version);
+                self.handle_initiate_contact(rpc, next_version);
             }
         } else {
+            self.state = old_state;
             tracing::warn!(client_state = %self.state, "invalid client state to handle VersionResponse");
         }
     }
@@ -687,9 +671,8 @@ impl<T: VmbusMessageSource> ClientTask<T> {
                 subchannel_index = offer.subchannel_index,
                 "received offer");
 
-            if let ClientState::RequestingOffers(_) = &self.state {
-                self.request_offers_send
-                    .send(Some(Offer::Offer(offer_info)));
+            if let ClientState::RequestingOffers(_, send) = &self.state {
+                send.send(offer_info);
             } else {
                 self.notify_send.send(ClientNotification::Offer(offer_info));
             }
@@ -744,9 +727,8 @@ impl<T: VmbusMessageSource> ClientTask<T> {
     }
 
     fn handle_offers_delivered(&mut self) {
-        if let ClientState::RequestingOffers(version) = &self.state {
-            self.request_offers_send
-                .send(Some(Offer::AllOffersDelivered));
+        if let ClientState::RequestingOffers(version, _send) = &self.state {
+            // This will drop the sender and cause the client to know the offers are done.
             self.state = ClientState::Connected(*version);
         } else {
             tracing::warn!(client_state = %self.state, "invalid client state to handle AllOffersDelivered");
@@ -869,9 +851,15 @@ impl<T: VmbusMessageSource> ClientTask<T> {
     }
 
     fn handle_unload_complete(&mut self) {
-        self.state = ClientState::Disconnected;
-        tracing::info!("VmBus client disconnected");
-        self.unload_send.send(());
+        match std::mem::replace(&mut self.state, ClientState::Disconnected) {
+            ClientState::Disconnecting(_, rpc) => {
+                tracing::info!("VmBus client disconnected");
+                rpc.complete(());
+            }
+            state => {
+                tracing::warn!(client_state = %state, "invalid client state for UnloadComplete");
+            }
+        }
     }
 
     fn handle_modify_complete(&mut self, response: protocol::ModifyConnectionResponse) {
@@ -1414,11 +1402,10 @@ mod tests {
         }
 
         async fn connect(&self, client: &mut VmbusClient) {
-            client
-                .client_request_send
-                .send(ClientRequest::InitiateContact(
-                    InitiateContactRequest::default(),
-                ));
+            let recv = client.client_request_send.call(
+                ClientRequest::InitiateContact,
+                InitiateContactRequest::default(),
+            );
 
             let _ = self.next().unwrap();
 
@@ -1435,7 +1422,7 @@ mod tests {
                 },
             ));
 
-            let version = client.connect_recv.next().await.unwrap().unwrap();
+            let version = recv.await.unwrap().unwrap();
             assert_eq!(version.version, Version::Copper);
             assert_eq!(version.feature_flags, FeatureFlags::all());
         }
@@ -1443,9 +1430,10 @@ mod tests {
         async fn get_channel(&self, client: &mut VmbusClient) -> OfferInfo {
             self.connect(client).await;
 
+            let (send, mut recv) = mesh::channel();
             client
                 .client_request_send
-                .send(ClientRequest::RequestOffers);
+                .send(ClientRequest::RequestOffers(send));
 
             let _ = self.next().unwrap();
 
@@ -1467,17 +1455,11 @@ mod tests {
 
             self.send(in_msg(MessageType::OFFER_CHANNEL, offer));
 
-            let received_offer = match client.request_offers_recv.next().await.unwrap() {
-                Some(Offer::Offer(o)) => o,
-                _ => panic!("unexpected"),
-            };
+            let received_offer = recv.next().await.unwrap();
 
             self.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
 
-            match client.request_offers_recv.next().await.unwrap() {
-                Some(Offer::AllOffersDelivered) => {}
-                _ => panic!("failed to receive expected all offers delivered"),
-            }
+            assert!(recv.next().await.is_none());
 
             received_offer
         }
@@ -1546,14 +1528,13 @@ mod tests {
         (server, client, notify_recv)
     }
 
-    #[test]
-    fn test_initiate_contact_success() {
+    #[async_test]
+    async fn test_initiate_contact_success() {
         let (server, client, _) = test_init();
-        client
-            .client_request_send
-            .send(ClientRequest::InitiateContact(
-                InitiateContactRequest::default(),
-            ));
+        let _recv = client.client_request_send.call(
+            ClientRequest::InitiateContact,
+            InitiateContactRequest::default(),
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -1568,17 +1549,16 @@ mod tests {
                 },
                 ..FromZeroes::new_zeroed()
             })
-        )
+        );
     }
 
     #[async_test]
     async fn test_connect_success() {
-        let (server, mut client, _) = test_init();
-        client
-            .client_request_send
-            .send(ClientRequest::InitiateContact(
-                InitiateContactRequest::default(),
-            ));
+        let (server, client, _) = test_init();
+        let recv = client.client_request_send.call(
+            ClientRequest::InitiateContact,
+            InitiateContactRequest::default(),
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -1608,7 +1588,7 @@ mod tests {
             },
         ));
 
-        let version = client.connect_recv.next().await.unwrap().unwrap();
+        let version = recv.await.unwrap().unwrap();
 
         assert_eq!(version.version, Version::Copper);
         assert_eq!(version.feature_flags, FeatureFlags::all());
@@ -1616,12 +1596,11 @@ mod tests {
 
     #[async_test]
     async fn test_feature_flags() {
-        let (server, mut client, _) = test_init();
-        client
-            .client_request_send
-            .send(ClientRequest::InitiateContact(
-                InitiateContactRequest::default(),
-            ));
+        let (server, client, _) = test_init();
+        let recv = client.client_request_send.call(
+            ClientRequest::InitiateContact,
+            InitiateContactRequest::default(),
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -1653,7 +1632,7 @@ mod tests {
             },
         ));
 
-        let version = client.connect_recv.next().await.unwrap().unwrap();
+        let version = recv.await.unwrap().unwrap();
 
         assert_eq!(version.version, Version::Copper);
         assert_eq!(
@@ -1669,9 +1648,9 @@ mod tests {
             client_id: VMBUS_TEST_CLIENT_ID,
             ..Default::default()
         };
-        client
+        let _recv = client
             .client_request_send
-            .send(ClientRequest::InitiateContact(initiate_contact));
+            .call(ClientRequest::InitiateContact, initiate_contact);
 
         assert_eq!(
             server.next().unwrap(),
@@ -1691,12 +1670,11 @@ mod tests {
 
     #[async_test]
     async fn test_version_negotiation() {
-        let (server, mut client, _) = test_init();
-        client
-            .client_request_send
-            .send(ClientRequest::InitiateContact(
-                InitiateContactRequest::default(),
-            ));
+        let (server, client, _) = test_init();
+        let recv = client.client_request_send.call(
+            ClientRequest::InitiateContact,
+            InitiateContactRequest::default(),
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -1744,7 +1722,7 @@ mod tests {
             },
         ));
 
-        let version = client.connect_recv.next().await.unwrap().unwrap();
+        let version = recv.await.unwrap().unwrap();
 
         assert_eq!(version.version, Version::Iron);
         assert_eq!(version.feature_flags, FeatureFlags::new());
@@ -1756,9 +1734,10 @@ mod tests {
 
         server.connect(&mut client).await;
 
+        let (send, mut recv) = mesh::channel();
         client
             .client_request_send
-            .send(ClientRequest::RequestOffers);
+            .send(ClientRequest::RequestOffers(send));
 
         assert_eq!(
             server.next().unwrap(),
@@ -1783,19 +1762,13 @@ mod tests {
 
         server.send(in_msg(MessageType::OFFER_CHANNEL, offer));
 
-        let received_offer = match client.request_offers_recv.next().await.unwrap() {
-            Some(Offer::Offer(o)) => o,
-            _ => panic!("unexpected"),
-        };
+        let received_offer = recv.next().await.unwrap();
 
         assert_eq!(received_offer.offer, offer);
 
         server.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
 
-        match client.request_offers_recv.next().await.unwrap() {
-            Some(Offer::AllOffersDelivered) => {}
-            _ => panic!("failed to receive expected all offers delivered"),
-        }
+        assert!(recv.next().await.is_none());
     }
 
     #[async_test]
@@ -1970,8 +1943,8 @@ mod tests {
     async fn test_connect_fails_on_incorrect_state() {
         let (server, mut client, _) = test_init();
         server.connect(&mut client).await;
-        let ret = client.connect(0, None, Guid::ZERO).await;
-        assert!(ret.is_none())
+        let err = client.connect(0, None, Guid::ZERO).await.unwrap_err();
+        assert!(matches!(err, ConnectError::InvalidState), "{:?}", err);
     }
 
     #[async_test]

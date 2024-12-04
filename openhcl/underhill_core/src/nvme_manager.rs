@@ -7,7 +7,7 @@
 use anyhow::Context;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedSimpleDisk;
+use disk_backend::resolve::ResolvedDisk;
 use futures::future::join_all;
 use futures::StreamExt;
 use futures::TryFutureExt;
@@ -44,6 +44,8 @@ enum InnerError {
     Vfio(#[source] anyhow::Error),
     #[error("failed to initialize nvme device")]
     DeviceInitFailed(#[source] anyhow::Error),
+    #[error("failed to create dma buffer for device")]
+    DmaBuffer(#[source] anyhow::Error),
     #[error("failed to get namespace {nsid}")]
     Namespace {
         nsid: u32,
@@ -82,7 +84,7 @@ impl NvmeManager {
     pub fn new(
         driver_source: &VmTaskDriverSource,
         vp_count: u32,
-        dma_buffer: Arc<dyn VfioDmaBuffer>,
+        dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
     ) -> Self {
         let (send, recv) = mesh::channel();
         let driver = driver_source.simple();
@@ -90,7 +92,7 @@ impl NvmeManager {
             driver_source: driver_source.clone(),
             devices: HashMap::new(),
             vp_count,
-            dma_buffer,
+            dma_buffer_spawner,
         };
         let task = driver.spawn("nvme-manager", async move { worker.run(recv).await });
         Self {
@@ -164,8 +166,10 @@ struct NvmeManagerWorker {
     driver_source: VmTaskDriverSource,
     #[inspect(iter_by_key)]
     devices: HashMap<String, nvme_driver::NvmeDriver<VfioDevice>>,
+    // TODO: Revisit this Box<fn> into maybe a trait, once we refactor DMA to a
+    // central manager.
     #[inspect(skip)]
-    dma_buffer: Arc<dyn VfioDmaBuffer>,
+    dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
     vp_count: u32,
 }
 
@@ -232,11 +236,15 @@ impl NvmeManagerWorker {
         let driver = match self.devices.entry(pci_id.to_owned()) {
             hash_map::Entry::Occupied(entry) => entry.into_mut(),
             hash_map::Entry::Vacant(entry) => {
-                let device =
-                    VfioDevice::new(&self.driver_source, entry.key(), self.dma_buffer.clone())
-                        .instrument(tracing::info_span!("vfio_device_open", pci_id))
-                        .await
-                        .map_err(InnerError::Vfio)?;
+                let device = VfioDevice::new(
+                    &self.driver_source,
+                    entry.key(),
+                    (self.dma_buffer_spawner)(format!("nvme_{}", entry.key()))
+                        .map_err(InnerError::DmaBuffer)?,
+                )
+                .instrument(tracing::info_span!("vfio_device_open", pci_id))
+                .await
+                .map_err(InnerError::Vfio)?;
 
                 let driver =
                     nvme_driver::NvmeDriver::new(&self.driver_source, self.vp_count, device)
@@ -278,7 +286,7 @@ impl NvmeDiskResolver {
 
 #[async_trait]
 impl AsyncResolveResource<DiskHandleKind, NvmeDiskConfig> for NvmeDiskResolver {
-    type Output = ResolvedSimpleDisk;
+    type Output = ResolvedDisk;
     type Error = anyhow::Error;
 
     async fn resolve(
@@ -293,7 +301,7 @@ impl AsyncResolveResource<DiskHandleKind, NvmeDiskConfig> for NvmeDiskResolver {
             .await
             .context("could not open nvme namespace")?;
 
-        Ok(disk_nvme::NvmeDisk::new(namespace).into())
+        Ok(ResolvedDisk::new(disk_nvme::NvmeDisk::new(namespace)).context("invalid disk")?)
     }
 }
 

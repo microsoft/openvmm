@@ -11,14 +11,12 @@ pub mod blob;
 pub mod resolver;
 
 use blob::Blob;
-use disk_backend::AsyncDisk;
 use disk_backend::DiskError;
-use disk_backend::SimpleDisk;
-use disk_backend::ASYNC_DISK_STACK_SIZE;
+use disk_backend::DiskIo;
+use disk_backend::UnmapBehavior;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
-use stackfuture::StackFuture;
 use std::sync::Arc;
 use thiserror::Error;
 use vhd1_defs::VhdFooter;
@@ -120,7 +118,7 @@ impl BlobDisk {
     }
 }
 
-impl SimpleDisk for BlobDisk {
+impl DiskIo for BlobDisk {
     fn disk_type(&self) -> &str {
         "blob"
     }
@@ -148,36 +146,45 @@ impl SimpleDisk for BlobDisk {
     fn is_read_only(&self) -> bool {
         true
     }
-}
 
-impl AsyncDisk for BlobDisk {
-    fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
+    async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let mut buf = vec![0; buffers.len()];
-            self.blob
-                .read(&mut buf, sector << self.sector_shift)
-                .await
-                .map_err(DiskError::Io)?;
+    ) -> Result<(), DiskError> {
+        let mut buf = vec![0; buffers.len()];
+        self.blob
+            .read(&mut buf, sector << self.sector_shift)
+            .await
+            .map_err(DiskError::Io)?;
 
-            buffers.writer().write(&buf)?;
-            Ok(())
-        })
+        buffers.writer().write(&buf)?;
+        Ok(())
     }
 
-    fn write_vectored<'a>(
-        &'a self,
-        _buffers: &'a RequestBuffers<'a>,
+    async fn write_vectored(
+        &self,
+        _buffers: &RequestBuffers<'_>,
         _sector: u64,
         _fua: bool,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        unreachable!()
+    ) -> Result<(), DiskError> {
+        Err(DiskError::ReadOnly)
     }
 
-    fn sync_cache(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        unreachable!()
+    async fn sync_cache(&self) -> Result<(), DiskError> {
+        Err(DiskError::ReadOnly)
+    }
+
+    async fn unmap(
+        &self,
+        _sector: u64,
+        _count: u64,
+        _block_level_only: bool,
+    ) -> Result<(), DiskError> {
+        Err(DiskError::ReadOnly)
+    }
+
+    fn unmap_behavior(&self) -> UnmapBehavior {
+        UnmapBehavior::Ignored
     }
 }

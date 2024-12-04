@@ -77,74 +77,80 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
         self.vtls_tlb_locked.set(requesting_vtl, target_vtl, true);
     }
 
-    /// Unlocks the TLBs of all lower VTLs as required upon VTL exit.
-    pub fn unlock_tlb_lock(&mut self, unlocking_vtl: Vtl) {
+    /// Unlocks the TLBs of a specific lower VTL
+    pub fn unlock_tlb_lock_target(&mut self, unlocking_vtl: Vtl, target_vtl: GuestVtl) {
         debug_assert!(unlocking_vtl != Vtl::Vtl0);
+
         let self_index = self.vp_index().index() as usize;
-        for &target_vtl in &[GuestVtl::Vtl1, GuestVtl::Vtl0][(2 - unlocking_vtl as usize)..] {
-            // If this VP hasn't taken a lock, no need to do anything.
-            if self.vtls_tlb_locked.get(unlocking_vtl, target_vtl) {
-                self.vtls_tlb_locked.set(unlocking_vtl, target_vtl, false);
-                // A memory fence is required after indicating that the target VTL is no
-                // longer locked, because other VPs will make decisions about how to
-                // handle blocking based on this information, and the loop below relies on
-                // those processors having an accurate view of the lock state.
-                std::sync::atomic::fence(Ordering::SeqCst);
+        // If this VP hasn't taken a lock, no need to do anything.
+        if self.vtls_tlb_locked.get(unlocking_vtl, target_vtl) {
+            self.vtls_tlb_locked.set(unlocking_vtl, target_vtl, false);
+            // A memory fence is required after indicating that the target VTL is no
+            // longer locked, because other VPs will make decisions about how to
+            // handle blocking based on this information, and the loop below relies on
+            // those processors having an accurate view of the lock state.
+            std::sync::atomic::fence(Ordering::SeqCst);
 
-                // If the lock for VTL 0 is being released by VTL 2, then check
-                // to see whether VTL 1 also holds a lock for VTL 0. If so, no
-                // wait can be unblocked until VTL 1 also releases its lock.
-                if unlocking_vtl == Vtl::Vtl2
-                    && target_vtl == GuestVtl::Vtl0
-                    && self.vtls_tlb_locked.get(Vtl::Vtl1, GuestVtl::Vtl0)
-                {
-                    return;
-                }
+            // If the lock for VTL 0 is being released by VTL 2, then check
+            // to see whether VTL 1 also holds a lock for VTL 0. If so, no
+            // wait can be unblocked until VTL 1 also releases its lock.
+            if unlocking_vtl == Vtl::Vtl2
+                && target_vtl == GuestVtl::Vtl0
+                && self.vtls_tlb_locked.get(Vtl::Vtl1, GuestVtl::Vtl0)
+            {
+                return;
+            }
 
-                // Now we can remove ourselves from the global TLB lock.
-                self.cvm_partition().tlb_locked_vps[target_vtl].set_aliased(self_index, false);
+            // Now we can remove ourselves from the global TLB lock.
+            self.cvm_partition().tlb_locked_vps[target_vtl].set_aliased(self_index, false);
 
-                // Check to see whether any other VPs are waiting for this VP to release
-                // the TLB lock. Note that other processors may be in the process of
-                // inserting themselves into this set because they may have observed that
-                // the TLB lock was still held on the current processor, but they will
-                // take responsibility for removing themselves after insertion because
-                // they will once again observe the TLB lock as not held. Because the set
-                // of blocked VPs may be changing, it must be captured locally, since the
-                // VP set scan below cannot safely be performed on a VP set that may be
-                // changing.
-                for blocked_vp in self.cvm_partition().tlb_lock_info[self_index][target_vtl]
+            // Check to see whether any other VPs are waiting for this VP to release
+            // the TLB lock. Note that other processors may be in the process of
+            // inserting themselves into this set because they may have observed that
+            // the TLB lock was still held on the current processor, but they will
+            // take responsibility for removing themselves after insertion because
+            // they will once again observe the TLB lock as not held. Because the set
+            // of blocked VPs may be changing, it must be captured locally, since the
+            // VP set scan below cannot safely be performed on a VP set that may be
+            // changing.
+            for blocked_vp in self.cvm_partition().tlb_lock_info[self_index][target_vtl]
+                .blocked_vps
+                .clone()
+                .iter_ones()
+            {
+                self.cvm_partition().tlb_lock_info[self_index][target_vtl]
                     .blocked_vps
-                    .clone()
-                    .iter_ones()
-                {
-                    self.cvm_partition().tlb_lock_info[self_index][target_vtl]
-                        .blocked_vps
-                        .set_aliased(blocked_vp, false);
+                    .set_aliased(blocked_vp, false);
 
-                    // Mark the target VP as no longer blocked by the current VP.
-                    // Note that the target VP may have already marked itself as not
-                    // blocked if is has already noticed that the lock has already
-                    // been released on the current VP.
-                    let other_lock = &self.cvm_partition().tlb_lock_info[blocked_vp][target_vtl];
-                    if other_lock.blocking_vps.set_aliased(self_index, false) {
-                        let other_old_count =
-                            other_lock.blocking_vp_count.fetch_sub(1, Ordering::Relaxed);
+                // Mark the target VP as no longer blocked by the current VP.
+                // Note that the target VP may have already marked itself as not
+                // blocked if is has already noticed that the lock has already
+                // been released on the current VP.
+                let other_lock = &self.cvm_partition().tlb_lock_info[blocked_vp][target_vtl];
+                if other_lock.blocking_vps.set_aliased(self_index, false) {
+                    let other_old_count =
+                        other_lock.blocking_vp_count.fetch_sub(1, Ordering::Relaxed);
 
-                        if other_old_count == 1 {
-                            // The current VP was the last one to be removed from the
-                            // blocking set of the target VP. If it is asleep, it must
-                            // be woken now. Sending an IPI is sufficient to cause it to
-                            // reevaluate the blocking state. It is not necessary to
-                            // synchronize with its sleep state as a spurious IPI is not
-                            // harmful.
-                            if other_lock.sleeping.load(Ordering::SeqCst) {
-                                self.partition.vps[blocked_vp].wake_vtl2();
-                            }
+                    if other_old_count == 1 {
+                        // The current VP was the last one to be removed from the
+                        // blocking set of the target VP. If it is asleep, it must
+                        // be woken now. Sending an IPI is sufficient to cause it to
+                        // reevaluate the blocking state. It is not necessary to
+                        // synchronize with its sleep state as a spurious IPI is not
+                        // harmful.
+                        if other_lock.sleeping.load(Ordering::SeqCst) {
+                            self.partition.vps[blocked_vp].wake_vtl2();
                         }
                     }
                 }
             }
+        }
+    }
+
+    /// Unlocks the TLBs of all lower VTLs as required upon VTL exit.
+    pub fn unlock_tlb_lock(&mut self, unlocking_vtl: Vtl) {
+        for &target_vtl in &[GuestVtl::Vtl1, GuestVtl::Vtl0][(2 - unlocking_vtl as usize)..] {
+            self.unlock_tlb_lock_target(unlocking_vtl, target_vtl);
         }
     }
 

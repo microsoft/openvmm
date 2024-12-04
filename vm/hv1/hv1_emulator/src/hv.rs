@@ -301,18 +301,8 @@ impl ProcessorVtlHv {
                 }
                 self.vp_assist_page = vp_assist_page;
             }
-            msr @ 0x40000080..=0x4000009f => {
-                return self.synic.write_nontimer_msr(&self.guest_memory, msr, v)
-            }
-            msr @ hvdef::HV_X64_MSR_STIMER0_CONFIG..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
-                let offset = msr - hvdef::HV_X64_MSR_STIMER0_CONFIG;
-                let timer = (offset >> 1) as _;
-                let is_count = offset & 1 != 0;
-                if is_count {
-                    self.synic.set_stimer_count(timer, v);
-                } else {
-                    self.synic.set_stimer_config(timer, v);
-                }
+            msr @ hvdef::HV_X64_MSR_SCONTROL..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
+                self.synic.write_msr(&self.guest_memory, msr, v)?
             }
             _ => return Err(MsrError::Unknown),
         }
@@ -369,16 +359,8 @@ impl ProcessorVtlHv {
             hvdef::HV_X64_MSR_REFERENCE_TSC => self.vtl_state.lock().reference_tsc.into(),
             hvdef::HV_X64_MSR_TSC_FREQUENCY => self.partition_state.tsc_frequency,
             hvdef::HV_X64_MSR_VP_ASSIST_PAGE => self.vp_assist_page.into(),
-            msr @ 0x40000080..=0x4000009f => return self.synic.read_nontimer_msr(msr),
-            msr @ hvdef::HV_X64_MSR_STIMER0_CONFIG..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
-                let offset = msr - hvdef::HV_X64_MSR_STIMER0_CONFIG;
-                let timer = (offset >> 1) as _;
-                let is_count = offset & 1 != 0;
-                if is_count {
-                    self.synic.stimer_count(timer)
-                } else {
-                    self.synic.stimer_config(timer)
-                }
+            msr @ hvdef::HV_X64_MSR_SCONTROL..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
+                self.synic.read_msr(msr)?
             }
             _ => {
                 return Err(MsrError::Unknown);

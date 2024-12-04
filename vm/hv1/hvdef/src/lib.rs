@@ -332,6 +332,7 @@ pub const HV_X64_MSR_STIMER2_CONFIG: u32 = 0x400000b4;
 pub const HV_X64_MSR_STIMER2_COUNT: u32 = 0x400000b5;
 pub const HV_X64_MSR_STIMER3_CONFIG: u32 = 0x400000b6;
 pub const HV_X64_MSR_STIMER3_COUNT: u32 = 0x400000b7;
+pub const HV_X64_MSR_GUEST_IDLE: u32 = 0x400000F0;
 pub const HV_X64_MSR_GUEST_CRASH_P0: u32 = 0x40000100;
 pub const HV_X64_MSR_GUEST_CRASH_P1: u32 = 0x40000101;
 pub const HV_X64_MSR_GUEST_CRASH_P2: u32 = 0x40000102;
@@ -1884,6 +1885,17 @@ macro_rules! registers {
                 Sipp = 0x000A0013,
                 Eom = 0x000A0014,
                 Sirbp = 0x000A0015,
+
+                Stimer0Config = 0x000B0000,
+                Stimer0Count = 0x000B0001,
+                Stimer1Config = 0x000B0002,
+                Stimer1Count = 0x000B0003,
+                Stimer2Config = 0x000B0004,
+                Stimer2Count = 0x000B0005,
+                Stimer3Config = 0x000B0006,
+                Stimer3Count = 0x000B0007,
+                StimeUnhaltedTimerConfig = 0x000B0100,
+                StimeUnhaltedTimerCount = 0x000B0101,
 
                 VsmCodePageOffsets = 0x000D0002,
                 VsmVpStatus = 0x000D0003,

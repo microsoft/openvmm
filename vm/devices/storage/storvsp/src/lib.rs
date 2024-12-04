@@ -1727,7 +1727,6 @@ mod tests {
     use crate::test_helpers::parse_guest_completion;
     use crate::test_helpers::parse_guest_completion_check_flags_status;
     use crate::test_helpers::TestWorker;
-    use disk_ramdisk::RamDisk;
     use pal_async::async_test;
     use pal_async::DefaultDriver;
     use scsi::srb::SrbStatus;
@@ -1743,7 +1742,7 @@ mod tests {
         let test_guest_mem = GuestMemory::allocate(16384);
         let controller = ScsiController::new();
         let disk = scsidisk::SimpleScsiDisk::new(
-            Arc::new(RamDisk::new(10 * 1024 * 1024, false).unwrap()),
+            disklayer_ram::ram_disk(10 * 1024 * 1024, false).unwrap(),
             Default::default(),
         );
         controller
@@ -2148,7 +2147,7 @@ mod tests {
         // Add some disks while the guest is running.
         for lun in 0..4 {
             let disk = scsidisk::SimpleScsiDisk::new(
-                Arc::new(RamDisk::new(10 * 1024 * 1024, false).unwrap()),
+                disklayer_ram::ram_disk(10 * 1024 * 1024, false).unwrap(),
                 Default::default(),
             );
             controller
@@ -2255,10 +2254,10 @@ mod tests {
 
     #[async_test]
     pub async fn test_async_disk(driver: DefaultDriver) {
-        let device = RamDisk::new(64 * 1024, false).unwrap();
+        let device = disklayer_ram::ram_disk(64 * 1024, false).unwrap();
         let controller = ScsiController::new();
         let disk = ScsiControllerDisk::new(Arc::new(scsidisk::SimpleScsiDisk::new(
-            Arc::new(device),
+            device,
             Default::default(),
         )));
         controller

@@ -9,8 +9,17 @@ use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::CanResolveTo;
 use vmcore::vm_task::VmTaskDriverSource;
 
-impl CanResolveTo<Box<dyn VirtioDevice>> for VirtioDeviceHandle {
+impl CanResolveTo<ResolvedVirtioDevice> for VirtioDeviceHandle {
     type Input<'a> = VirtioResolveInput<'a>;
+}
+
+/// A resolved virtio device.
+pub struct ResolvedVirtioDevice(pub Box<dyn VirtioDevice>);
+
+impl<T: 'static + VirtioDevice> From<T> for ResolvedVirtioDevice {
+    fn from(value: T) -> Self {
+        Self(Box::new(value))
+    }
 }
 
 /// Resolver input for [`VirtioDeviceHandle`].

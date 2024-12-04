@@ -19,7 +19,6 @@ guid = { workspace = true, features = ["inspect"] }
 inspect.workspace = true
 pal_async.workspace = true
 thiserror.workspace = true
-stackfuture.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]

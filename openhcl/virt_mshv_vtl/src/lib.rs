@@ -135,7 +135,7 @@ pub enum Error {
     #[error("failed to map overlay page")]
     MapOverlay(#[source] std::io::Error),
     #[error("failed to allocate shared visibility pages for overlay")]
-    AllocateSharedVisOverlay(#[source] shared_pool_alloc::SharedPoolOutOfMemory),
+    AllocateSharedVisOverlay(#[source] page_pool_alloc::PagePoolOutOfMemory),
     #[error("failed to open msr device")]
     OpenMsr(#[source] std::io::Error),
     #[error("cpuid did not contain valid TSC frequency information")]
@@ -218,7 +218,7 @@ struct UhPartitionInner {
     isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(skip)]
-    shared_vis_pages_pool: Option<shared_pool_alloc::SharedPoolAllocator>,
+    shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
     #[inspect(with = "inspect::AtomicMut")]
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
@@ -313,16 +313,22 @@ pub struct UhCvmVpState {
     exit_vtl: GuestVtl,
     /// Hypervisor enlightenment emulator state.
     hv: VtlArray<ProcessorVtlHv, 2>,
+    /// LAPIC state.
+    lapics: VtlArray<processor::LapicState, 2>,
 }
 
 #[cfg(guest_arch = "x86_64")]
 impl UhCvmVpState {
     /// Creates a new CVM VP state.
-    pub fn new(hv: VtlArray<ProcessorVtlHv, 2>) -> Self {
+    pub fn new(
+        hv: VtlArray<ProcessorVtlHv, 2>,
+        lapics: VtlArray<processor::LapicState, 2>,
+    ) -> Self {
         Self {
             vtls_tlb_waiting: VtlArray::new(false),
             exit_vtl: GuestVtl::Vtl0,
             hv,
+            lapics,
         }
     }
 }
@@ -391,6 +397,16 @@ impl GuestVsmState {
                 vtl1: GuestVsmVtl1State::HardwareCvm { state },
             } => Some(state),
 
+            _ => None,
+        }
+    }
+
+    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    fn get_hardware_cvm(&self) -> Option<&HardwareCvmVtl1State> {
+        match self {
+            GuestVsmState::Enabled {
+                vtl1: GuestVsmVtl1State::HardwareCvm { state },
+            } => Some(state),
             _ => None,
         }
     }
@@ -1153,7 +1169,7 @@ pub struct UhLateParams<'a> {
     /// An object to call to change host visibility on guest memory.
     pub isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     /// Allocator for shared visibility pages.
-    pub shared_vis_pages_pool: Option<shared_pool_alloc::SharedPoolAllocator>,
+    pub shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
 }
 
 /// Trait for CVM-related protections on guest memory.

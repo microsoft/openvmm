@@ -20,6 +20,9 @@ use crate::Error;
 use crate::MessageDecode;
 use crate::MessageEncode;
 use crate::Protobuf;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 use thiserror::Error;
 
 /// An opaque protobuf message.
@@ -130,10 +133,13 @@ impl ProtobufAny {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use crate::encode;
     use crate::message::ProtobufAny;
     use crate::message::ProtobufMessage;
     use crate::Protobuf;
+    use std::println;
 
     #[test]
     fn test_message() {

@@ -56,67 +56,61 @@ impl prost_build::ServiceGenerator for MeshServiceGenerator {
                 }
             }
 
-            impl ::mesh::payload::MessageEncode<#ident, ::mesh::resource::Resource> for ::mesh::payload::encoding::DerivedEncoding<#ident> {
-                fn write_message(item: #ident, mut writer: ::mesh::payload::protobuf::MessageWriter<'_, '_, ::mesh::resource::Resource>) {
-                    let (method, port) = match item {
-                        #(
-                            #ident::#method_idents(req, port) => {
-                                writer.field(2).message(|message| {
-                                    <#request_types as ::mesh::payload::DefaultEncoding>::Encoding::write_message(req, message);
-                                });
-                                (#method_names, port.force_downcast())
-                            }
-                        )*
-                    };
-                    ::mesh_rpc::service::write_rpc_message(writer, method, port);
-                }
-
-                fn compute_message_size(item: &mut #ident, mut sizer: ::mesh::payload::protobuf::MessageSizer<'_>) {
-                    let method = match item {
-                        #(
-                            #ident::#method_idents(req, _) => {
-                                sizer.field(2).message(|message| {
-                                    <<#request_types as ::mesh::payload::DefaultEncoding>::Encoding as ::mesh::payload::MessageEncode::<_, ::mesh::resource::Resource>>::compute_message_size(
-                                        req,
-                                        message);
-                                });
-                                #method_names
-                            }
-                        )*
-                    };
-                    ::mesh_rpc::service::compute_size_rpc_message(sizer, method);
-                }
-            }
-
-            impl<'encoding> ::mesh::payload::MessageDecode<'encoding, #ident, ::mesh::resource::Resource> for ::mesh::payload::encoding::DerivedEncoding<#ident> {
-                fn read_message(
-                    item: &mut ::mesh::payload::inplace::InplaceOption<'_, #ident>,
-                    reader: ::mesh::payload::protobuf::MessageReader<'encoding, '_, ::mesh::resource::Resource>,
-                ) -> ::mesh::payload::Result<()> {
-                    use ::mesh::payload::ResultExt;
-                    let (method, data, port) = ::mesh_rpc::service::read_rpc_message(reader).typed::<#ident>()?;
-                    item.set(match method {
-                        #(
-                            #method_names => {
-                                #ident::#method_idents(mesh::payload::decode(data)?, port.upcast())
-                            }
-                        )*
-                        _ => return Err(mesh::payload::Error::new(mesh_rpc::service::UnknownMethod(method.to_string())).typed::<#ident>()),
-                    });
-                    Ok(())
-                }
-            }
-
-            impl ::mesh::payload::DefaultEncoding for #ident {
-                type Encoding = ::mesh::payload::encoding::MessageEncoding<mesh::payload::encoding::DerivedEncoding<Self>>;
-            }
-
             impl ::mesh_rpc::service::ServiceRpc for #ident {
                 const NAME: &'static str = #name;
-            }
 
-            impl ::mesh::payload::Downcast<#ident> for #ident {}
-            impl ::mesh::payload::Downcast<#ident> for ::mesh_rpc::service::GenericRpc {}
+                fn method(&self) -> &'static str {
+                    match self {
+                        #(
+                            #ident::#method_idents(_, _) => #method_names,
+                        )*
+                    }
+                }
+
+                fn encode(
+                    self,
+                    writer: ::mesh::payload::protobuf::FieldWriter<'_, '_, ::mesh::resource::Resource>,
+                ) -> ::mesh::local_node::Port {
+                    match self {
+                        #(
+                            #ident::#method_idents(req, port) => {
+                                <<#request_types as ::mesh::payload::DefaultEncoding>::Encoding as ::mesh::payload::FieldEncode<_, _>>::write_field(req, writer);
+                                port.into()
+                            }
+                        )*
+                    }
+                }
+
+                fn compute_size(&mut self, sizer: ::mesh::payload::protobuf::FieldSizer<'_>) {
+                    match self {
+                        #(
+                            #ident::#method_idents(req, _) => {
+                                <<#request_types as ::mesh::payload::DefaultEncoding>::Encoding as ::mesh::payload::FieldEncode::<_, ::mesh::resource::Resource>>::compute_field_size(
+                                    req,
+                                    sizer);
+                            }
+                        )*
+                    }
+                }
+
+                fn decode(
+                    method: &str,
+                    port: ::mesh::local_node::Port,
+                    data: &[u8],
+                ) -> Result<Self, (::mesh_rpc::service::ServiceRpcError, ::mesh::local_node::Port)> {
+                    match method {
+                        #(
+                            #method_names => {
+                                match mesh::payload::decode(data) {
+                                    Ok(req) => Ok(#ident::#method_idents(req, port.into())),
+                                    Err(e) => Err((::mesh_rpc::service::ServiceRpcError::InvalidInput(e), port)),
+                                }
+                            }
+                        )*
+                        _ => Err((::mesh_rpc::service::ServiceRpcError::UnknownMethod, port)),
+                    }
+                }
+            }
         }
         .to_string();
     }

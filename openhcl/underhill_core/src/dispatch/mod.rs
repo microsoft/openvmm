@@ -40,10 +40,10 @@ use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
+use page_pool_alloc::PagePool;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
-use shared_pool_alloc::SharedPool;
 use socket2::Socket;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
@@ -104,7 +104,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         threadpool: &AffinitizedThreadpool,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        shared_vis_pages_pool: &Option<SharedPool>,
+        shared_vis_pages_pool: &Option<PagePool>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
@@ -160,7 +160,7 @@ pub(crate) struct LoadedVm {
     )>,
 
     pub vmgs_thin_client: vmgs_broker::VmgsThinClient,
-    pub vmgs_disk: Arc<disk_get_vmgs::GetVmgsDisk>,
+    pub vmgs_disk_metadata: disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
     pub _vmgs_handle: Task<()>,
 
     // dependencies of the vtl2 settings service
@@ -176,7 +176,7 @@ pub(crate) struct LoadedVm {
 
     pub _periodic_telemetry_task: Task<()>,
 
-    pub shared_vis_pool: Option<SharedPool>,
+    pub shared_vis_pool: Option<PagePool>,
 }
 
 pub struct LoadedVmState<T> {
@@ -629,8 +629,6 @@ impl LoadedVm {
             .await
             .context("vmgs save failed")?;
 
-        let vmgs_get_storage_meta = self.vmgs_disk.save_meta();
-
         Ok(ServicingState {
             init_state: servicing::ServicingInitState {
                 firmware_type: self.firmware_type.into(),
@@ -638,7 +636,7 @@ impl LoadedVm {
                 correlation_id: None,
                 emuplat,
                 flush_logs_result: None,
-                vmgs: (vmgs, vmgs_get_storage_meta),
+                vmgs: (vmgs, self.vmgs_disk_metadata.clone()),
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
             },
             units,

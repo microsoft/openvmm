@@ -40,6 +40,7 @@
   - [update-rootfs.py]()
   - [igvmfilegen]()
   - [guest_test_uefi](./dev_guide/dev_tools/guest_test_uefi.md)
+  - [hypestv](./dev_guide/dev_tools/hypestv.md)
 - [Contributing](./dev_guide/contrib.md)
   - [Coding Conventions](./dev_guide/contrib/code.md)
   - [Submitting Changes](./dev_guide/contrib/pr.md)

@@ -16,7 +16,7 @@ pub mod test_utilities;
 
 use async_trait::async_trait;
 use core::mem::size_of;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use futures::FutureExt;
 use futures::StreamExt;
 use get_protocol::dps_json::HclSecureBootTemplateId;
@@ -47,7 +47,6 @@ use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
 use std::io::IoSlice;
-use std::sync::Arc;
 use task_control::StopTask;
 use thiserror::Error;
 use video_core::FramebufferControl;
@@ -183,12 +182,13 @@ pub struct GuestEmulationDevice {
 
     #[inspect(with = "Option::is_some")]
     save_restore_buf: Option<Vec<u8>>,
+    last_save_restore_buf_len: usize,
 }
 
 #[derive(Inspect)]
 struct VmgsState {
     /// The underlying VMGS disk.
-    disk: Arc<dyn SimpleDisk>,
+    disk: Disk,
     /// Memory for the disk to DMA to/from.
     mem: GuestMemory,
     /// Memory to buffer data for sending to the guest.
@@ -204,7 +204,7 @@ impl GuestEmulationDevice {
         firmware_event_send: Option<mesh::MpscSender<FirmwareEvent>>,
         guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         framebuffer_control: Option<Box<dyn FramebufferControl>>,
-        vmgs_disk: Option<Arc<dyn SimpleDisk>>,
+        vmgs_disk: Option<Disk>,
     ) -> Self {
         Self {
             config,
@@ -219,6 +219,7 @@ impl GuestEmulationDevice {
             }),
             save_restore_buf: None,
             waiting_for_vtl0_start: Vec::new(),
+            last_save_restore_buf_len: 0,
         }
     }
 
@@ -391,6 +392,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     let saved_state_size = buffer.len();
                     if *written >= saved_state_size {
                         self.state = GedState::Ready;
+                        state.last_save_restore_buf_len = saved_state_size;
                         state.save_restore_buf = None;
                         continue;
                     }
