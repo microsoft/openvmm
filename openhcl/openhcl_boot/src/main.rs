@@ -520,6 +520,17 @@ const fn zeroed<T: FromZeroes>() -> T {
     unsafe { core::mem::MaybeUninit::<T>::zeroed().assume_init() }
 }
 
+fn get_ref_time(isolation: IsolationType) -> Option<u64> {
+    let reftime = match isolation {
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Tdx => get_tdx_tsc_reftime(),
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Snp => None,
+        _ => Some(minimal_rt::reftime::reference_time()),
+    };
+    reftime
+}
+
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
 
@@ -555,13 +566,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     let can_trust_host =
         p.isolation_type == IsolationType::None || static_options.confidential_debug;
 
-    let boot_reftime = match p.isolation_type {
-        #[cfg(target_arch = "x86_64")]
-        IsolationType::Tdx => get_tdx_tsc_reftime(),
-        #[cfg(target_arch = "x86_64")]
-        IsolationType::Snp => None,
-        _ => Some(minimal_rt::reftime::reference_time()),
-    };
+    let boot_reftime = get_ref_time(p.isolation_type);
 
     let mut dt_storage = off_stack!(PartitionInfo, PartitionInfo::new());
     let partition_info = match PartitionInfo::read_from_dt(&p, &mut dt_storage, can_trust_host) {
@@ -682,13 +687,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Compute the ending boot time. This has to be before writing to device
     // tree, so this is as late as we can do it.
 
-    let boot_endtime = match p.isolation_type {
-        #[cfg(target_arch = "x86_64")]
-        IsolationType::Tdx => get_tdx_tsc_reftime().unwrap_or(0),
-        #[cfg(target_arch = "x86_64")]
-        IsolationType::Snp => 0,
-        _ => minimal_rt::reftime::reference_time(),
-    };
+    let boot_endtime = get_ref_time(p.isolation_type).unwrap_or(0);
 
     let boot_times = boot_reftime.map(|start| BootTimes {
         start,
