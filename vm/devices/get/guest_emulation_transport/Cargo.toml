@@ -7,7 +7,7 @@ edition = "2021"
 rust-version.workspace = true
 
 [features]
-test_utilities = [ "guest_emulation_device" ]
+test_utilities = [ "guest_emulation_device/test_utilities" ]
 
 [target.'cfg(unix)'.dependencies]
 get_protocol.workspace = true

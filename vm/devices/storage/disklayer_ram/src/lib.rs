@@ -12,8 +12,8 @@ use anyhow::Context;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::UnmapBehavior;
-use disk_layered::AttachLayer;
 use disk_layered::DiskLayer;
+use disk_layered::LayerAttach;
 use disk_layered::LayerConfiguration;
 use disk_layered::LayerIo;
 use disk_layered::LayeredDisk;
@@ -212,13 +212,13 @@ impl RamDiskLayer<PostAttach> {
     }
 }
 
-impl AttachLayer for RamDiskLayer<PreAttach> {
+impl LayerAttach for RamDiskLayer<PreAttach> {
     type Error = std::convert::Infallible;
     type Layer = RamDiskLayer<PostAttach>;
 
     async fn attach(
         mut self,
-        lower_layer_metadata: Option<disk_layered::LowerLayerMetadata>,
+        lower_layer_metadata: Option<disk_layered::DiskLayerMetadata>,
     ) -> Result<Self::Layer, Self::Error> {
         if let Some(lower_layer_metadata) = lower_layer_metadata {
             let mut state = self.state.write();

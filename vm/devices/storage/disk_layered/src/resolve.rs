@@ -4,7 +4,7 @@
 //! Resolver-related definitions for disk layer resources.
 
 use super::DiskLayer;
-use crate::AttachLayer;
+use crate::LayerAttach;
 use vm_resource::kind::DiskLayerHandleKind;
 use vm_resource::CanResolveTo;
 
@@ -29,7 +29,7 @@ pub struct ResolvedDiskLayer(pub DiskLayer);
 
 impl ResolvedDiskLayer {
     /// Returns a resolved disk wrapping a backing object.
-    pub fn new<T: AttachLayer>(layer: T) -> Self {
+    pub fn new<T: LayerAttach>(layer: T) -> Self {
         Self(DiskLayer::new(layer))
     }
 }
