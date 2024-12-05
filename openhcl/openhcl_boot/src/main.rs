@@ -521,14 +521,13 @@ const fn zeroed<T: FromZeroes>() -> T {
 }
 
 fn get_ref_time(isolation: IsolationType) -> Option<u64> {
-    let reftime = match isolation {
+    match isolation {
         #[cfg(target_arch = "x86_64")]
         IsolationType::Tdx => get_tdx_tsc_reftime(),
         #[cfg(target_arch = "x86_64")]
         IsolationType::Snp => None,
         _ => Some(minimal_rt::reftime::reference_time()),
-    };
-    reftime
+    }
 }
 
 fn shim_main(shim_params_raw_offset: isize) -> ! {
@@ -687,11 +686,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Compute the ending boot time. This has to be before writing to device
     // tree, so this is as late as we can do it.
 
-    let boot_endtime = get_ref_time(p.isolation_type).unwrap_or(0);
-
     let boot_times = boot_reftime.map(|start| BootTimes {
         start,
-        end: boot_endtime,
+        end: get_ref_time(p.isolation_type).unwrap_or(0),
     });
 
     // Validate that no imported regions that are pending are not part of vtl2
