@@ -328,6 +328,7 @@ pub struct Pipeline {
     inject_all_jobs_with: Option<Box<dyn for<'a> Fn(PipelineJob<'a>) -> PipelineJob<'a>>>,
     // backend specific
     ado_name: Option<String>,
+    ado_artifact_name_overrides: BTreeMap<usize, String>,
     ado_schedule_triggers: Vec<AdoScheduleTriggers>,
     ado_ci_triggers: Option<AdoCiTriggers>,
     ado_pr_triggers: Option<AdoPrTriggers>,
@@ -552,6 +553,7 @@ impl Pipeline {
             cond_param_idx: None,
             ado_pool: None,
             ado_variables: BTreeMap::new(),
+            ado_artifact_name_overrides: BTreeMap::new(),
             gh_override_if: None,
             gh_global_env: BTreeMap::new(),
             gh_pool: None,
@@ -561,6 +563,7 @@ impl Pipeline {
         PipelineJob {
             pipeline: self,
             job_idx: idx,
+            override_name: None,
         }
     }
 
@@ -875,6 +878,7 @@ impl PipelineJobCtx<'_> {
 pub struct PipelineJob<'a> {
     pipeline: &'a mut Pipeline,
     job_idx: usize,
+    override_name: Option<String>,
 }
 
 impl PipelineJob<'_> {
@@ -1066,6 +1070,11 @@ impl PipelineJob<'_> {
         self
     }
 
+    pub fn override_artifact_name<S: Into<String> + std::fmt::Debug>(self, name: S) -> Self {
+        self.pipeline.ado_artifact_name_overrides.insert(self.job_idx, name.into());
+        self
+    }
+
     /// Finish describing the pipeline job.
     pub fn finish(self) -> PipelineJobHandle {
         PipelineJobHandle {
@@ -1141,6 +1150,7 @@ pub mod internal {
         // backend specific
         pub ado_pool: Option<AdoPool>,
         pub ado_variables: BTreeMap<String, String>,
+        pub ado_artifact_name_overrides: BTreeMap<usize, String>,
         pub gh_override_if: Option<String>,
         pub gh_pool: Option<GhRunner>,
         pub gh_global_env: BTreeMap<String, String>,
@@ -1184,6 +1194,7 @@ pub mod internal {
         pub ado_post_process_yaml_cb:
             Option<Box<dyn FnOnce(serde_yaml::Value) -> serde_yaml::Value>>,
         pub ado_variables: BTreeMap<String, String>,
+        pub ado_artifact_name_overrides: BTreeMap<usize, String>,
         pub gh_name: Option<String>,
         pub gh_schedule_triggers: Vec<GhScheduleTriggers>,
         pub gh_ci_triggers: Option<GhCiTriggers>,
@@ -1197,6 +1208,7 @@ pub mod internal {
                 for job_idx in 0..pipeline.jobs.len() {
                     let _ = cb(PipelineJob {
                         pipeline: &mut pipeline,
+                        override_name: None,
                         job_idx,
                     });
                 }
@@ -1215,6 +1227,7 @@ pub mod internal {
                 ado_resources_repository,
                 ado_post_process_yaml_cb,
                 ado_variables,
+                ado_artifact_name_overrides,
                 gh_name,
                 gh_schedule_triggers,
                 gh_ci_triggers,
@@ -1246,6 +1259,7 @@ pub mod internal {
                 ado_resources_repository,
                 ado_post_process_yaml_cb,
                 ado_variables,
+                ado_artifact_name_overrides,
                 gh_name,
                 gh_schedule_triggers,
                 gh_ci_triggers,
