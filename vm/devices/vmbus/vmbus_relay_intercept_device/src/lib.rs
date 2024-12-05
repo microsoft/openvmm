@@ -599,9 +599,6 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
                 InterceptChannelRequest::Client(ClientNotification::Revoke(_)) => {
                     self.handle_revoke(state).await;
                 }
-                InterceptChannelRequest::Client(ClientNotification::HvsockConnectResult(_)) => {
-                    tracing::error!("Unexpected hvsock notification");
-                }
                 InterceptChannelRequest::Start => {
                     self.handle_start(state).await;
                 }

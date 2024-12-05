@@ -7825,6 +7825,7 @@ dependencies = [
  "parking_lot",
  "tracelimit",
  "tracing",
+ "unicycle",
  "vmbus_channel",
  "vmbus_client",
  "vmbus_core",

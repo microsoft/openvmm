@@ -3,7 +3,6 @@
 
 #![forbid(unsafe_code)]
 
-mod hvsock;
 mod saved_state;
 
 use anyhow::Context;
@@ -17,7 +16,6 @@ use futures::FutureExt;
 use futures::Stream;
 use futures::StreamExt;
 use guid::Guid;
-use hvsock::HvsockRequestTracker;
 use inspect::Inspect;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -32,12 +30,14 @@ use parking_lot::Mutex;
 use saved_state::SavedState;
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::task::Poll;
+use unicycle::FuturesUnordered;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::GpadlRequest;
@@ -50,6 +50,7 @@ use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::GpadlId;
 use vmbus_core::HvsockConnectRequest;
+use vmbus_core::HvsockConnectResult;
 use vmbus_core::VersionInfo;
 use vmbus_server::HvsockRelayChannelHalf;
 use vmbus_server::ModifyConnectionResponse;
@@ -657,7 +658,15 @@ struct RelayTask {
     use_interrupt_relay: Arc<AtomicBool>,
     server_response_send: mesh::Sender<ModifyConnectionResponse>,
     hvsock_relay: HvsockRelayChannelHalf,
-    hvsock_tracker: HvsockRequestTracker,
+    hvsock_requests: FuturesUnordered<
+        Pin<
+            Box<
+                dyn Future<Output = (HvsockConnectRequest, Option<client::OfferInfo>)>
+                    + Sync
+                    + Send,
+            >,
+        >,
+    >,
     running: bool,
 }
 
@@ -681,8 +690,8 @@ impl RelayTask {
             use_interrupt_relay: Arc::new(AtomicBool::new(false)),
             server_response_send,
             hvsock_relay,
-            hvsock_tracker: HvsockRequestTracker::new(),
             running: false,
+            hvsock_requests: FuturesUnordered::new(),
         }
     }
 
@@ -777,12 +786,6 @@ impl RelayTask {
             }
 
             return Ok(());
-        }
-
-        // Check if this channel is for an hvsock request, and if so send a success message to the
-        // server. This is needed because the host will not send a result on success.
-        if let Some(result) = self.hvsock_tracker.check_offer(&offer.offer) {
-            self.hvsock_relay.response_send.send(result);
         }
 
         // Check if this channel is being intercepted. A previously relayed
@@ -1047,11 +1050,13 @@ impl RelayTask {
             Update::Unchanged => protocol::ConnectionState::SUCCESSFUL,
             Update::Reset => {
                 self.vmbus_client
+                    .access()
                     .modify(ModifyConnectionRequest { monitor_page: None })
                     .await
             }
             Update::Set(value) => {
                 self.vmbus_client
+                    .access()
                     .modify(ModifyConnectionRequest {
                         monitor_page: Some(value),
                     })
@@ -1070,8 +1075,33 @@ impl RelayTask {
 
     fn handle_hvsock_request(&mut self, request: HvsockConnectRequest) {
         tracing::debug!(request = ?request, "received hvsock connect request");
-        self.hvsock_tracker.add_request(request);
-        self.vmbus_client.connect_hvsock(request);
+        let fut = self.vmbus_client.access().connect_hvsock(request);
+        self.hvsock_requests
+            .push(Box::pin(fut.map(move |offer| (request, offer))));
+    }
+
+    async fn handle_hvsock_response(
+        &mut self,
+        request: HvsockConnectRequest,
+        offer: Option<client::OfferInfo>,
+    ) {
+        let success = if let Some(offer) = offer {
+            match self.handle_offer(offer, None).await {
+                Ok(()) => true,
+                Err(err) => {
+                    tracing::error!(
+                        error = err.as_ref() as &dyn std::error::Error,
+                        "failed add hvsock offer"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        self.hvsock_relay
+            .response_send
+            .send(HvsockConnectResult::from_request(&request, success));
     }
 
     async fn handle_offer_request(&mut self, request: ClientNotification) -> Result<()> {
@@ -1086,11 +1116,6 @@ impl RelayTask {
             }
             ClientNotification::Revoke(channel_id) => {
                 self.handle_revoke(channel_id).await;
-            }
-            ClientNotification::HvsockConnectResult(result) => {
-                tracing::debug!(result = ?result, "received hvsock connect result");
-                self.hvsock_tracker.check_result(&result);
-                self.hvsock_relay.response_send.send(result);
             }
         }
 
@@ -1112,6 +1137,9 @@ impl RelayTask {
                 }
                 r = self.hvsock_relay.request_receive.select_next_some() => {
                     self.handle_hvsock_request(r);
+                }
+                r = self.hvsock_requests.select_next_some() => {
+                    self.handle_hvsock_response(r.0, r.1).await;
                 }
                 r = notify_recv.select_next_some() => {
                     self.handle_offer_request(r).await?;

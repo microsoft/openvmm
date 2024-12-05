@@ -26,6 +26,7 @@ futures.workspace = true
 once_cell.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
+unicycle.workspace = true
 zerocopy.workspace = true
 
 [lints]
