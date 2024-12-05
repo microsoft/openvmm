@@ -5,6 +5,7 @@
 
 use super::Error;
 use super::RamDiskLayer;
+use crate::LazyRamDiskLayer;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use disk_layered::resolve::ResolveDiskLayerParameters;
 use disk_layered::resolve::ResolvedDiskLayer;
@@ -37,8 +38,11 @@ impl ResolveResource<DiskLayerHandleKind, RamDiskLayerHandle> for RamDiskLayerRe
         rsrc: RamDiskLayerHandle,
         _input: ResolveDiskLayerParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        Ok(ResolvedDiskLayer::new(
-            RamDiskLayer::new(rsrc.len).map_err(ResolveRamDiskError::Ram)?,
-        ))
+        Ok(match rsrc.len {
+            Some(len) => {
+                ResolvedDiskLayer::new(RamDiskLayer::new(len).map_err(ResolveRamDiskError::Ram)?)
+            }
+            None => ResolvedDiskLayer::new(LazyRamDiskLayer::new()),
+        })
     }
 }
