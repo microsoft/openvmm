@@ -15,6 +15,7 @@ vmsocket.workspace = true
 serial_core.workspace = true
 vmbus_serial_guest.workspace = true
 
+disk_crypt = { workspace = true, optional = true }
 disk_striped.workspace = true
 
 scsidisk.workspace = true

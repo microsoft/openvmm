@@ -140,6 +140,7 @@ pub(crate) struct LoadedVm {
     pub nvme_manager: Option<NvmeManager>,
     pub emuplat_servicing: EmuplatServicing,
     pub device_interfaces: Option<DeviceInterfaces>,
+    pub disk_table: Option<vmgs_format::DiskTable>,
     /// Memory map with IGVM types for each range.
     pub vtl0_memory_map: Vec<(MemoryRangeWithNode, MemoryMapEntryType)>,
 
@@ -215,6 +216,7 @@ impl LoadedVm {
                 device_config_send,
                 self.get_client.clone(),
                 self.device_interfaces.take().unwrap(),
+                self.disk_table.take(),
             );
 
             threadpool.spawn("VTL2 settings services", {

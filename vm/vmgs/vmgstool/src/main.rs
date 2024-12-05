@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#[cfg(with_encryption)]
+mod disk_table;
 mod storage_backend;
 mod uefi_nvram;
 mod vmgs_json;
@@ -57,7 +59,7 @@ enum Error {
     InvalidVmgsFileSize(u64, String),
     #[error("VMGS file is encrypted, but no encryption key was provided")]
     AlreadyEncrypted,
-    #[error("Key file IO")]
+    #[error("Failed to read key file")]
     KeyFile(#[source] std::io::Error),
     #[error("Key must be {0} bytes long, is {1} bytes instead")]
     InvalidKeySize(u64, u64),
@@ -81,6 +83,24 @@ enum Error {
     Json(String),
     #[error("File ID {0:?} already exists. Use `--allow-overwrite` to ignore.")]
     FileIdExists(FileId),
+    #[cfg(with_encryption)]
+    #[error("The specified disk entry already exists. Use `--allow-overwrite` to overwrite.")]
+    DiskEntryExists,
+    #[cfg(with_encryption)]
+    #[error("The specified disk entry was not found.")]
+    DiskEntryNotFound,
+    #[cfg(with_encryption)]
+    #[error("The disk table is corrupt")]
+    DiskTableCorrupt(#[source] prost::DecodeError),
+    #[cfg(with_encryption)]
+    #[error("Failed to read disk key file")]
+    DiskKeyFile(#[source] std::io::Error),
+    #[cfg(with_encryption)]
+    #[error("Cannot specify a disk key with with no cipher")]
+    UnexpectedDiskKeyFile,
+    #[cfg(with_encryption)]
+    #[error("Cannot specify a cipher with no disk key")]
+    MissingDiskKeyFile,
 }
 
 /// Automation requires certain exit codes to be guaranteed
@@ -239,6 +259,16 @@ enum Options {
         #[clap(subcommand)]
         operation: UefiNvramOperation,
     },
+    /// Disk table operations
+    #[cfg(with_encryption)]
+    DiskTable {
+        #[command(flatten)]
+        file_path: FilePathArg,
+        #[command(flatten)]
+        key_path: KeyPathArg,
+        #[clap(subcommand)]
+        operation: disk_table::DiskTableOperation,
+    },
 }
 
 fn parse_file_id(file_id: &str) -> Result<FileId, std::num::ParseIntError> {
@@ -257,6 +287,7 @@ fn parse_file_id(file_id: &str) -> Result<FileId, std::num::ParseIntError> {
         "HW_KEY_PROTECTOR" => FileId::HW_KEY_PROTECTOR,
         "GUEST_SECRET_KEY" => FileId::GUEST_SECRET_KEY,
         "EXTENDED_FILE_TABLE" => FileId::EXTENDED_FILE_TABLE,
+        "DISK_TABLE" => FileId::DISK_TABLE,
         v => FileId(v.parse::<u32>()?),
     })
 }
@@ -430,6 +461,12 @@ async fn do_main() -> Result<(), Error> {
             vmgs_file_query_encryption(file_path.file_path).await
         }
         Options::UefiNvram { operation } => uefi_nvram::do_command(operation).await,
+        #[cfg(with_encryption)]
+        Options::DiskTable {
+            file_path,
+            key_path,
+            operation,
+        } => disk_table::do_command(file_path, key_path, operation).await,
     }
 }
 

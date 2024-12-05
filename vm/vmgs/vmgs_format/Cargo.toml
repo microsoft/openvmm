@@ -6,13 +6,22 @@ name = "vmgs_format"
 edition = "2021"
 rust-version.workspace = true
 
+[features]
+# Protobuf definitions for the disk table and possibly other things in the
+# future.
+proto = ["dep:prost", "dep:prost-build"]
+
 [dependencies]
 open_enum.workspace = true
 inspect = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
 
 bitfield-struct.workspace = true
 static_assertions.workspace = true
 zerocopy.workspace = true
+
+[build-dependencies]
+prost-build = { workspace = true, optional = true }
 
 [lints]
 workspace = true

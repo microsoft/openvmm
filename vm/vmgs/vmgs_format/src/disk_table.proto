@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package vmgs;
+
+message DiskTable {
+    repeated Disk disks = 1;
+}
+
+enum DiskCipher {
+    DISK_CIPHER_UNSPECIFIED = 0;
+    DISK_CIPHER_NONE = 1;
+    DISK_CIPHER_XTS_AES_256 = 2;
+}
+
+message Disk {
+    string disk_id = 1;
+    DiskCipher cipher = 2;
+    bytes key = 3;
+}

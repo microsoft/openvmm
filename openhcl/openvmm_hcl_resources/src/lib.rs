@@ -35,6 +35,8 @@ vm_resource::register_static_resolvers! {
     // `BlockDevice` and `NvmeDisk` are registered dynamically since they have
     // runtime dependencies.
     disk_striped::StripedDiskResolver,
+    #[cfg(feature = "disk_crypt")]
+    disk_crypt::resolver::DiskCryptResolver,
 
     // SCSI
     scsidisk::resolver::SimpleScsiResolver,

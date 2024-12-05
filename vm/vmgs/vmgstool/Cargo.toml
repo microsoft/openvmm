@@ -24,13 +24,14 @@ pal_async.workspace = true
 uefi_nvram_specvars.workspace = true
 uefi_specs.workspace = true
 vmgs.workspace = true
-vmgs_format.workspace = true
+vmgs_format = { workspace = true, features = ["proto"] }
 
 anyhow.workspace = true
 async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
 hex.workspace = true
 fs-err.workspace = true
+prost.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
