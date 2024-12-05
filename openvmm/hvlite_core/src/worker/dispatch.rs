@@ -59,7 +59,6 @@ use memory_range::MemoryRange;
 use mesh::error::RemoteError;
 use mesh::payload::message::ProtobufMessage;
 use mesh::payload::Protobuf;
-use mesh::rpc::Rpc;
 use mesh::MeshPayload;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
@@ -2474,7 +2473,7 @@ impl LoadedVm {
     pub async fn run(
         mut self,
         driver: &impl Spawn,
-        mut rpc: mesh::Receiver<VmRpc>,
+        mut rpc_recv: mesh::Receiver<VmRpc>,
         mut worker_rpc: mesh::Receiver<WorkerRpc<RestartState>>,
     ) {
         enum Event {
@@ -2505,7 +2504,7 @@ impl LoadedVm {
 
         loop {
             let event: Event = {
-                let a = rpc.recv().map(Event::VmRpc);
+                let a = rpc_recv.recv().map(Event::VmRpc);
                 let b = worker_rpc.recv().map(Event::WorkerRpc);
                 (a, b).race().await
             };
@@ -2514,7 +2513,7 @@ impl LoadedVm {
                 Event::WorkerRpc(Err(_)) => break,
                 Event::WorkerRpc(Ok(message)) => match message {
                     WorkerRpc::Stop => break,
-                    WorkerRpc::Restart(response) => {
+                    WorkerRpc::Restart(rpc) => {
                         let mut stopped = false;
                         // First run the non-destructive operations.
                         let r = async {
@@ -2529,8 +2528,8 @@ impl LoadedVm {
                         .await;
                         match r {
                             Ok((shared_memory, saved_state)) => {
-                                response.send(Ok(self
-                                    .serialize(rpc, shared_memory, saved_state)
+                                rpc.complete(Ok(self
+                                    .serialize(rpc_recv, shared_memory, saved_state)
                                     .await));
 
                                 return;
@@ -2539,7 +2538,7 @@ impl LoadedVm {
                                 if stopped {
                                     self.state_units.start().await;
                                 }
-                                response.send(Err(RemoteError::new(err)));
+                                rpc.complete(Err(RemoteError::new(err)));
                             }
                         }
                     }
@@ -2615,16 +2614,17 @@ impl LoadedVm {
                         })
                         .await
                     }
-                    VmRpc::ConnectHvsock(Rpc((mut ctx, service_id, vtl), response)) => {
+                    VmRpc::ConnectHvsock(rpc) => {
+                        let ((mut ctx, service_id, vtl), response) = rpc.split();
                         if let Some(relay) = self.hvsock_relay(vtl) {
                             let fut = relay.connect(&mut ctx, service_id);
                             driver
                                 .spawn("vmrpc-hvsock-connect", async move {
-                                    response.send(fut.await.map_err(RemoteError::new))
+                                    response.complete(fut.await.map_err(RemoteError::new))
                                 })
                                 .detach();
                         } else {
-                            response.send(Err(RemoteError::new(anyhow::anyhow!(
+                            response.complete(Err(RemoteError::new(anyhow::anyhow!(
                                 "hvsock is not available"
                             ))));
                         }

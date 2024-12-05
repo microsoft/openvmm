@@ -177,7 +177,7 @@ pub struct GuestEmulationDevice {
     #[inspect(skip)]
     guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
     #[inspect(skip)]
-    waiting_for_vtl0_start: Vec<mesh::OneshotSender<Result<(), Vtl0StartError>>>,
+    waiting_for_vtl0_start: Vec<Rpc<(), Result<(), Vtl0StartError>>>,
 
     vmgs: Option<VmgsState>,
 
@@ -298,11 +298,11 @@ pub struct GedChannel<T: RingMem = GpadlRingMem> {
     #[inspect(with = "Option::is_some")]
     vtl0_start_report: Option<Result<(), Vtl0StartError>>,
     #[inspect(with = "Option::is_some")]
-    modify: Option<mesh::OneshotSender<Result<(), ModifyVtl2SettingsError>>>,
+    modify: Option<Rpc<(), Result<(), ModifyVtl2SettingsError>>>,
 }
 
 struct InProgressSave {
-    response: mesh::OneshotSender<Result<(), SaveRestoreError>>,
+    rpc: Rpc<(), Result<(), SaveRestoreError>>,
     buffer: Vec<u8>,
 }
 
@@ -472,22 +472,23 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     ) -> Result<(), Error> {
         match guest_request {
             GuestEmulationRequest::WaitForConnect(rpc) => rpc.handle_sync(|()| ()),
-            GuestEmulationRequest::WaitForVtl0Start(Rpc((), response)) => {
+            GuestEmulationRequest::WaitForVtl0Start(rpc) => {
                 if let Some(result) = self.vtl0_start_report.clone() {
-                    response.send(result);
+                    rpc.complete(result);
                 } else {
-                    state.waiting_for_vtl0_start.push(response);
+                    state.waiting_for_vtl0_start.push(rpc);
                 }
             }
-            GuestEmulationRequest::ModifyVtl2Settings(Rpc(data, response)) => {
+            GuestEmulationRequest::ModifyVtl2Settings(rpc) => {
+                let (data, response) = rpc.split();
                 if self.modify.is_some() {
-                    response.send(Err(ModifyVtl2SettingsError::OperationInProgress));
+                    response.complete(Err(ModifyVtl2SettingsError::OperationInProgress));
                     return Ok(());
                 }
 
                 // TODO: support larger payloads.
                 if data.len() > MAX_PAYLOAD_SIZE {
-                    response.send(Err(ModifyVtl2SettingsError::LargeSettingsNotSupported));
+                    response.complete(Err(ModifyVtl2SettingsError::LargeSettingsNotSupported));
                     return Ok(());
                 }
 
@@ -505,7 +506,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
                 self.modify = Some(response);
             }
-            GuestEmulationRequest::SaveGuestVtl2State(Rpc((), response)) => {
+            GuestEmulationRequest::SaveGuestVtl2State(rpc) => {
                 let r = (|| {
                     if self.save.is_some() {
                         return Err(SaveRestoreError::OperationInProgress);
@@ -532,11 +533,11 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 match r {
                     Ok(()) => {
                         self.save = Some(InProgressSave {
-                            response,
+                            rpc,
                             buffer: Vec::new(),
                         })
                     }
-                    Err(err) => response.send(Err(err)),
+                    Err(err) => rpc.complete(Err(err)),
                 }
             }
         };
@@ -838,7 +839,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             if r.is_ok() {
                 state.save_restore_buf = Some(save.buffer);
             }
-            save.response.send(r);
+            save.rpc.complete(r);
         }
         Ok(())
     }
@@ -1056,7 +1057,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             _ => return Err(Error::InvalidFieldValue),
         };
         for response in state.waiting_for_vtl0_start.drain(..) {
-            response.send(result.clone());
+            response.complete(result.clone());
         }
         self.vtl0_start_report = Some(result);
         Ok(())
@@ -1112,7 +1113,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             }
             _ => return Err(Error::InvalidFieldValue),
         };
-        modify.send(r);
+        modify.complete(r);
         Ok(())
     }
 

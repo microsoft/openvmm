@@ -427,9 +427,6 @@ pub enum ChannelRestoreError {
     /// Failed to enable subchannels.
     #[error("failed to enable subchannels")]
     EnablingSubchannels(#[source] anyhow::Error),
-    /// Failed to send restore request.
-    #[error("failed to send restore request")]
-    SendingRequest(#[source] RecvError),
     /// Failed to restore vmbus channel.
     #[error("failed to restore vmbus channel")]
     RestoreError(#[source] anyhow::Error),
@@ -570,8 +567,8 @@ impl Device {
                 self.handle_gpadl(gpadl.id, gpadl.count, gpadl.buf, channel_idx);
                 true
             }),
-            ChannelRequest::TeardownGpadl(Rpc(id, response_send)) => {
-                self.handle_teardown_gpadl(id, response_send, channel_idx);
+            ChannelRequest::TeardownGpadl(rpc) => {
+                self.handle_teardown_gpadl(rpc, channel_idx);
             }
             ChannelRequest::Modify(rpc) => {
                 rpc.handle(|req| async {
@@ -644,16 +641,12 @@ impl Device {
         }
     }
 
-    fn handle_teardown_gpadl(
-        &mut self,
-        id: GpadlId,
-        response_send: mesh::OneshotSender<()>,
-        channel_idx: usize,
-    ) {
+    fn handle_teardown_gpadl(&mut self, rpc: Rpc<GpadlId, ()>, channel_idx: usize) {
+        let id = *rpc.input();
         if let Some(f) = self.gpadl_map.remove(
             id,
             Box::new(move || {
-                response_send.send(());
+                rpc.complete(());
             }),
         ) {
             f()
@@ -787,9 +780,8 @@ impl Device {
         let mut results = Vec::with_capacity(states.len());
         for (channel_idx, open) in states.iter().copied().enumerate() {
             let result = self.server_requests[channel_idx]
-                .call(ChannelServerRequest::Restore, open)
+                .call_failable(ChannelServerRequest::Restore, open)
                 .await
-                .map_err(ChannelRestoreError::SendingRequest)?
                 .map_err(|err| ChannelRestoreError::RestoreError(err.into()))?;
 
             assert!(open == result.open_request.is_some());
