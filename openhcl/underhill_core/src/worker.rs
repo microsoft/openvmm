@@ -430,7 +430,7 @@ impl Worker for UnderhillVmWorker {
             };
 
             tracing::info!("sending worker restart state");
-            state.restart_response.send(Ok(RestartState {
+            state.restart_rpc.complete(Ok(RestartState {
                 params,
                 servicing_state: state.servicing_state,
             }))

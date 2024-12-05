@@ -33,7 +33,6 @@ use hyperv_ic_resources::shutdown::ShutdownType;
 use igvm_defs::MemoryMapEntryType;
 use inspect::Inspect;
 use mesh::error::RemoteError;
-use mesh::error::RemoteResult;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -183,7 +182,7 @@ pub(crate) struct LoadedVm {
 }
 
 pub struct LoadedVmState<T> {
-    pub restart_response: mesh::OneshotSender<RemoteResult<T>>,
+    pub restart_rpc: FailableRpc<(), T>,
     pub servicing_state: ServicingState,
     pub vm_rpc: mesh::Receiver<UhVmRpc>,
     pub control_send: mesh::Sender<ControlRequest>,
@@ -262,16 +261,16 @@ impl LoadedVm {
                 Event::WorkerRpcGone => break None,
                 Event::WorkerRpc(message) => match message {
                     WorkerRpc::Stop => break None,
-                    WorkerRpc::Restart(response) => {
+                    WorkerRpc::Restart(rpc) => {
                         let state = async {
                             let running = self.stop().await;
                             match self.save(None, false).await {
-                                Ok(servicing_state) => Some((response, servicing_state)),
+                                Ok(servicing_state) => Some((rpc, servicing_state)),
                                 Err(err) => {
                                     if running {
                                         self.start(None).await;
                                     }
-                                    response.send(Err(RemoteError::new(err)));
+                                    rpc.complete(Err(RemoteError::new(err)));
                                     None
                                 }
                             }
@@ -279,9 +278,9 @@ impl LoadedVm {
                         .instrument(tracing::info_span!("restart"))
                         .await;
 
-                        if let Some((response, servicing_state)) = state {
+                        if let Some((rpc, servicing_state)) = state {
                             break Some(LoadedVmState {
-                                restart_response: response,
+                                restart_rpc: rpc,
                                 servicing_state,
                                 vm_rpc,
                                 control_send: self.control_send.lock().take().unwrap(),

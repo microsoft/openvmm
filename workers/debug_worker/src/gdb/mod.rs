@@ -4,7 +4,6 @@
 use anyhow::Context;
 use futures::executor::block_on;
 use gdbstub::common::Tid;
-use mesh::error::RemoteResultExt;
 use mesh::rpc::RpcSend;
 use std::num::NonZeroUsize;
 use vmm_core_defs::debug_rpc::DebugRequest;
@@ -66,11 +65,10 @@ impl VmProxy {
 
     #[allow(dead_code)] // TODO: add monitor command to inspect physical memory?
     fn read_guest_physical_memory(&mut self, gpa: u64, data: &mut [u8]) -> anyhow::Result<()> {
-        let buf = block_on(self.req_chan.call(
+        let buf = block_on(self.req_chan.call_failable(
             DebugRequest::ReadMemory,
             (GuestAddress::Gpa(gpa), data.len()),
         ))
-        .flatten()
         .context("failed to read memory")?;
         data.copy_from_slice(
             buf.get(..data.len())
@@ -86,11 +84,10 @@ impl VmProxy {
         gva: u64,
         data: &mut [u8],
     ) -> anyhow::Result<()> {
-        let buf = block_on(self.req_chan.call(
+        let buf = block_on(self.req_chan.call_failable(
             DebugRequest::ReadMemory,
             (GuestAddress::Gva { vp: vp_index, gva }, data.len()),
         ))
-        .flatten()
         .context("failed to read memory")?;
         data.copy_from_slice(
             buf.get(..data.len())
@@ -106,11 +103,10 @@ impl VmProxy {
         gva: u64,
         data: &[u8],
     ) -> anyhow::Result<()> {
-        block_on(self.req_chan.call(
+        block_on(self.req_chan.call_failable(
             DebugRequest::WriteMemory,
             (GuestAddress::Gva { vp: vp_index, gva }, data.to_vec()),
         ))
-        .flatten()
         .context("failed to write memory")?;
         Ok(())
     }

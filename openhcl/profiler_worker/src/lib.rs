@@ -97,8 +97,8 @@ impl Worker for ProfilerWorker {
                         WorkerRpc::Stop => {
                             break;
                         }
-                        WorkerRpc::Restart(response) => {
-                            response.send(Err(RemoteError::new(anyhow::anyhow!("not supported"))));
+                        WorkerRpc::Restart(rpc) => {
+                            rpc.complete(Err(RemoteError::new(anyhow::anyhow!("not supported"))));
                         }
                         WorkerRpc::Inspect(_deferred) => {}
                     },

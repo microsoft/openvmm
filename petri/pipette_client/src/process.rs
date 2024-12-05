@@ -9,7 +9,6 @@ use futures::executor::block_on;
 use futures::io::AllowStdIo;
 use futures::AsyncReadExt;
 use futures_concurrency::future::Join;
-use mesh::error::RemoteResultExt;
 use mesh::pipe::ReadPipe;
 use mesh::pipe::WritePipe;
 use pipette_protocol::EnvPair;
@@ -167,9 +166,8 @@ impl<'a> Command<'a> {
         let response = self
             .client
             .send
-            .call(PipetteRequest::Execute, request)
+            .call_failable(PipetteRequest::Execute, request)
             .await
-            .flatten()
             .with_context(|| format!("failed to execute {}", self.program))?;
 
         Ok(Child {
