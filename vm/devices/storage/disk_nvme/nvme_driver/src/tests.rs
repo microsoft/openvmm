@@ -178,7 +178,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     // Add a namespace so Identify Namespace command will succeed later.
     nvme_ctrl
         .client()
-        .add_namespace(1, disk_ramdisk::ram_disk(2 << 20, false).unwrap())
+        .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
         .await
         .unwrap();
 
