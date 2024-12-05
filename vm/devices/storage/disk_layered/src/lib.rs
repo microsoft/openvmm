@@ -67,7 +67,7 @@ pub struct DiskLayer(Box<dyn DynAttachLayer>);
 impl DiskLayer {
     /// Creates a new layer from a backing store.
     pub fn new<T: AttachLayer>(backing: T) -> Self {
-        Self(Box::new(ErasedAttachLayer(backing)))
+        Self(Box::new(backing))
     }
 
     /// Creates a layer from a disk. The resulting layer is always fully
@@ -157,16 +157,10 @@ impl LayeredDisk {
         }
 
         let mut attached_layers: Vec<LayerConfiguration<AttachedDiskLayer>> = Vec::new();
-        // Collect the common properties of the layers.
-        let mut last_write_through = true;
-        let mut is_fua_respected = true;
-        let mut optimal_unmap_sectors = 1;
-        let mut unmap_must_zero = false;
-        let mut disk_id = None;
-        let mut unmap_behavior = UnmapBehavior::Zeroes;
 
+        // attach the layers to one another
         let mut lower_layer_metadata = None;
-        for (i, config) in layers.into_iter().enumerate() {
+        for (i, config) in layers.into_iter().enumerate().rev() {
             let layer_error = |e| InvalidLayeredDisk::Layer(i, e);
 
             let config = {
@@ -186,6 +180,19 @@ impl LayeredDisk {
             lower_layer_metadata = Some(LowerLayerMetadata {
                 sector_count: config.layer.backing.sector_count(),
             });
+        }
+
+        attached_layers.reverse();
+
+        // validate the layer-stack, and collect the common properties of the layers
+        let mut last_write_through = true;
+        let mut is_fua_respected = true;
+        let mut optimal_unmap_sectors = 1;
+        let mut unmap_must_zero = false;
+        let mut disk_id = None;
+        let mut unmap_behavior = UnmapBehavior::Zeroes;
+        for (i, config) in attached_layers.iter().enumerate() {
+            let layer_error = |e| InvalidLayeredDisk::Layer(i, e);
 
             if config.read_cache && !config.layer.can_read_cache {
                 return Err(layer_error(InvalidLayer::ReadCacheNotSupported));
@@ -380,18 +387,14 @@ trait DynAttachLayer: Send + Sync + Inspect {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<AttachedDiskLayer>> + Send>>;
 }
 
-#[derive(Inspect)]
-#[inspect(transparent)]
-struct ErasedAttachLayer<T: AttachLayer>(T);
-
-impl<T: AttachLayer> DynAttachLayer for ErasedAttachLayer<T> {
+impl<T: AttachLayer> DynAttachLayer for T {
     fn attach(
         self: Box<Self>,
         lower_layer_metadata: Option<LowerLayerMetadata>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<AttachedDiskLayer>> + Send>> {
         Box::pin(async move {
             Ok({
-                let backing = self.0.attach(lower_layer_metadata).await?;
+                let backing = (*self).attach(lower_layer_metadata).await?;
                 let can_read_cache = backing.write_no_overwrite().is_some();
                 AttachedDiskLayer {
                     disk_id: backing.disk_id(),
