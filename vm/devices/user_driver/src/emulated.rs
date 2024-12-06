@@ -278,9 +278,8 @@ impl crate::vfio::VfioDmaBuffer for EmulatedDmaAllocator {
         ))
     }
 
-    fn restore_dma_buffer(&self, len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
-        // For emulated allocator (unit tests) call regular restore.
-        self.create_dma_buffer(len)
+    fn restore_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        anyhow::bail!("restore is not supported for emulated DMA")
     }
 }
 
