@@ -353,15 +353,9 @@ impl VmService {
     async fn handle_inspect(&mut self, ctx: mesh::CancelContext, request: InspectService) {
         match request {
             InspectService::Inspect(request, response) => {
-                // Use a locally-defined type for the response in order to avoid
-                // reshuffling inspection results to protobuf types.
-                let response = response.upcast::<Result<InspectResponse2, Status>>();
                 self.start_rpc(response, Ok(self.inspect(ctx, request)))
             }
             InspectService::Update(request, response) => {
-                // Use a locally-defined type for the response in order to avoid
-                // reshuffling inspection results to protobuf types.
-                let response = response.upcast::<Result<UpdateResponse2, Status>>();
                 self.start_rpc(response, Ok(self.update(ctx, request)))
             }
         }

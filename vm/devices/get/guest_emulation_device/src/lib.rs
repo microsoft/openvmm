@@ -11,7 +11,8 @@
 #![forbid(unsafe_code)]
 
 pub mod resolver;
-#[doc(hidden)]
+
+#[cfg(feature = "test_utilities")]
 pub mod test_utilities;
 
 use async_trait::async_trait;

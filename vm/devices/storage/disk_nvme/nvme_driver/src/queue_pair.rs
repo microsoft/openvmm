@@ -4,6 +4,11 @@
 //! Implementation of an admin or IO queue pair.
 
 use super::spec;
+use crate::driver::save_restore::Error;
+use crate::driver::save_restore::PendingCommandSavedState;
+use crate::driver::save_restore::PendingCommandsSavedState;
+use crate::driver::save_restore::QueueHandlerSavedState;
+use crate::driver::save_restore::QueuePairSavedState;
 use crate::page_allocator::PageAllocator;
 use crate::page_allocator::ScopedPages;
 use crate::queues::CompletionQueue;
@@ -45,6 +50,9 @@ pub(crate) struct QueuePair {
     cancel: Cancel,
     issuer: Arc<Issuer>,
     mem: MemoryBlock,
+    qid: u16,
+    sq_entries: u16,
+    cq_entries: u16,
 }
 
 impl Inspect for QueuePair {
@@ -54,6 +62,9 @@ impl Inspect for QueuePair {
             cancel: _,
             issuer,
             mem: _,
+            qid: _,
+            sq_entries: _,
+            cq_entries: _,
         } = self;
         issuer.send.send(Req::Inspect(req.defer()));
     }
@@ -110,40 +121,118 @@ impl PendingCommands {
         );
         command.respond
     }
+
+    /// Save pending commands into a buffer.
+    pub fn save(&self) -> PendingCommandsSavedState {
+        let commands: Vec<PendingCommandSavedState> = self
+            .commands
+            .iter()
+            .map(|(_index, cmd)| PendingCommandSavedState {
+                command: cmd.command,
+            })
+            .collect();
+        PendingCommandsSavedState {
+            commands,
+            next_cid_high_bits: self.next_cid_high_bits.0,
+            // TODO: Not used today, added for future compatibility.
+            cid_key_bits: Self::CID_KEY_BITS,
+        }
+    }
+
+    /// Restore pending commands from the saved state.
+    pub fn restore(saved_state: &PendingCommandsSavedState) -> anyhow::Result<Self> {
+        let PendingCommandsSavedState {
+            commands,
+            next_cid_high_bits,
+            cid_key_bits: _, // TODO: For future use.
+        } = saved_state;
+
+        Ok(Self {
+            // Re-create identical Slab where CIDs are correctly mapped.
+            commands: commands
+                .iter()
+                .map(|state| {
+                    let (send, mut _recv) = mesh::oneshot::<nvme_spec::Completion>();
+                    // To correctly restore Slab we need both the command index,
+                    // inherited from command's CID, and the command itself.
+                    (
+                        // Remove high CID bits to be used as a key.
+                        (state.command.cdw0.cid() & Self::CID_KEY_MASK) as usize,
+                        PendingCommand {
+                            command: state.command,
+                            respond: send,
+                        },
+                    )
+                })
+                .collect::<Slab<PendingCommand>>(),
+            next_cid_high_bits: Wrapping(*next_cid_high_bits),
+        })
+    }
 }
 
 impl QueuePair {
-    pub const MAX_SQSIZE: u16 = (PAGE_SIZE / 64) as u16; // Maximum SQ size in entries.
-    pub const MAX_CQSIZE: u16 = (PAGE_SIZE / 16) as u16; // Maximum CQ size in entries.
+    pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16; // Maximum SQ size in entries.
+    pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16; // Maximum CQ size in entries.
+    const SQ_SIZE: usize = PAGE_SIZE; // Submission Queue size in bytes.
+    const CQ_SIZE: usize = PAGE_SIZE; // Completion Queue size in bytes.
+    const PER_QUEUE_PAGES: usize = 128;
 
     pub fn new(
         spawner: impl SpawnDriver,
         device: &impl DeviceBacking,
         qid: u16,
-        sq_size: u16,
-        cq_size: u16,
-        mut interrupt: DeviceInterrupt,
+        sq_entries: u16, // Requested SQ size in entries.
+        cq_entries: u16, // Requested CQ size in entries.
+        interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
     ) -> anyhow::Result<Self> {
+        let total_size =
+            QueuePair::SQ_SIZE + QueuePair::CQ_SIZE + QueuePair::PER_QUEUE_PAGES * PAGE_SIZE;
         let mem = device
             .host_allocator()
-            .allocate_dma_buffer(PAGE_SIZE * 2)
+            .allocate_dma_buffer(total_size)
             .context("failed to allocate memory for queues")?;
 
-        assert!(sq_size <= Self::MAX_SQSIZE);
-        assert!(cq_size <= Self::MAX_CQSIZE);
+        assert!(sq_entries <= Self::MAX_SQ_ENTRIES);
+        assert!(cq_entries <= Self::MAX_CQ_ENTRIES);
 
-        let sq = SubmissionQueue::new(qid, sq_size, mem.subblock(0, PAGE_SIZE));
-        let cq = CompletionQueue::new(qid, cq_size, mem.subblock(PAGE_SIZE, PAGE_SIZE));
+        QueuePair::new_or_restore(
+            spawner, qid, sq_entries, cq_entries, interrupt, registers, mem, None,
+        )
+    }
+
+    /// Create new object or restore from saved state.
+    fn new_or_restore(
+        spawner: impl SpawnDriver,
+        qid: u16,
+        sq_entries: u16, // Submission queue entries.
+        cq_entries: u16, // Completion queue entries.
+        mut interrupt: DeviceInterrupt,
+        registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        mem: MemoryBlock,
+        saved_state: Option<&QueueHandlerSavedState>,
+    ) -> anyhow::Result<Self> {
+        // MemoryBlock is either allocated or restored prior calling here.
+        let sq_mem_block = mem.subblock(0, QueuePair::SQ_SIZE);
+        let cq_mem_block = mem.subblock(QueuePair::SQ_SIZE, QueuePair::CQ_SIZE);
+        let data_offset = QueuePair::SQ_SIZE + QueuePair::CQ_SIZE;
+
+        let mut queue_handler = match saved_state {
+            Some(s) => QueueHandler::restore(sq_mem_block, cq_mem_block, s)?,
+            None => {
+                // Create a new one.
+                QueueHandler {
+                    sq: SubmissionQueue::new(qid, sq_entries, sq_mem_block),
+                    cq: CompletionQueue::new(qid, cq_entries, cq_mem_block),
+                    commands: PendingCommands::new(),
+                    stats: Default::default(),
+                    drain_after_restore: false,
+                }
+            }
+        };
 
         let (send, recv) = mesh::channel();
         let (mut ctx, cancel) = CancelContext::new().with_cancel();
-        let mut queue_handler = QueueHandler {
-            sq,
-            cq,
-            commands: PendingCommands::new(),
-            stats: Default::default(),
-        };
         let task = spawner.spawn("nvme-queue", {
             async move {
                 ctx.until_cancelled(async {
@@ -155,24 +244,23 @@ impl QueuePair {
             }
         });
 
-        const PER_QUEUE_PAGES: usize = 128;
+        // Page allocator uses remaining part of the buffer for dynamic allocation.
         #[allow(clippy::assertions_on_constants)]
         const _: () = assert!(
-            PER_QUEUE_PAGES * PAGE_SIZE >= 128 * 1024 + PAGE_SIZE,
+            QueuePair::PER_QUEUE_PAGES * PAGE_SIZE >= 128 * 1024 + PAGE_SIZE,
             "not enough room for an ATAPI IO plus a PRP list"
         );
-        let alloc = PageAllocator::new(
-            device
-                .host_allocator()
-                .allocate_dma_buffer(PER_QUEUE_PAGES * PAGE_SIZE)
-                .context("failed to allocate pages for queue requests")?,
-        );
+        let alloc: PageAllocator =
+            PageAllocator::new(mem.subblock(data_offset, QueuePair::PER_QUEUE_PAGES * PAGE_SIZE));
 
         Ok(Self {
             task,
             cancel,
             issuer: Arc::new(Issuer { send, alloc }),
             mem,
+            qid,
+            sq_entries,
+            cq_entries,
         })
     }
 
@@ -191,6 +279,55 @@ impl QueuePair {
     pub async fn shutdown(mut self) -> impl Send {
         self.cancel.cancel();
         self.task.await
+    }
+
+    /// Save queue pair state for servicing.
+    pub async fn save(&self) -> anyhow::Result<QueuePairSavedState> {
+        // Return error if the queue does not have any memory allocated.
+        if self.mem.pfns().is_empty() {
+            return Err(Error::InvalidState.into());
+        }
+        // Send an RPC request to QueueHandler thread to save its data.
+        // QueueHandler stops any other processing after completing Save request.
+        let handler_data = self.issuer.send.call(Req::Save, ()).await??;
+
+        Ok(QueuePairSavedState {
+            mem_len: self.mem.len(),
+            base_pfn: self.mem.pfns()[0],
+            qid: self.qid,
+            sq_entries: self.sq_entries,
+            cq_entries: self.cq_entries,
+            handler_data,
+        })
+    }
+
+    /// Restore queue pair state after servicing.
+    pub fn restore(
+        spawner: impl SpawnDriver,
+        interrupt: DeviceInterrupt,
+        registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        mem: MemoryBlock,
+        saved_state: &QueuePairSavedState,
+    ) -> anyhow::Result<Self> {
+        let QueuePairSavedState {
+            mem_len: _,  // Used to restore DMA buffer before calling this.
+            base_pfn: _, // Used to restore DMA buffer before calling this.
+            qid,
+            sq_entries,
+            cq_entries,
+            handler_data,
+        } = saved_state;
+
+        QueuePair::new_or_restore(
+            spawner,
+            *qid,
+            *sq_entries,
+            *cq_entries,
+            interrupt,
+            registers,
+            mem,
+            Some(handler_data),
+        )
     }
 }
 
@@ -448,6 +585,7 @@ struct PendingCommand {
 enum Req {
     Command(Rpc<spec::Command, spec::Completion>),
     Inspect(inspect::Deferred),
+    Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
 }
 
 #[derive(Inspect)]
@@ -456,6 +594,7 @@ struct QueueHandler {
     cq: CompletionQueue,
     commands: PendingCommands,
     stats: QueueStats,
+    drain_after_restore: bool,
 }
 
 #[derive(Inspect, Default)]
@@ -478,26 +617,45 @@ impl QueueHandler {
                 Completion(spec::Completion),
             }
 
-            let event = poll_fn(|cx| {
-                if !self.sq.is_full() && !self.commands.is_full() {
-                    if let Poll::Ready(Some(req)) = recv.poll_next_unpin(cx) {
-                        return Event::Request(req).into();
+            let event = if !self.drain_after_restore {
+                // Normal processing of the requests and completions.
+                poll_fn(|cx| {
+                    if !self.sq.is_full() && !self.commands.is_full() {
+                        if let Poll::Ready(Some(req)) = recv.poll_next_unpin(cx) {
+                            return Event::Request(req).into();
+                        }
                     }
-                }
-                while !self.commands.is_empty() {
-                    if let Some(completion) = self.cq.read() {
-                        return Event::Completion(completion).into();
+                    while !self.commands.is_empty() {
+                        if let Some(completion) = self.cq.read() {
+                            return Event::Completion(completion).into();
+                        }
+                        if interrupt.poll(cx).is_pending() {
+                            break;
+                        }
+                        self.stats.interrupts.increment();
                     }
-                    if interrupt.poll(cx).is_pending() {
-                        break;
+                    self.sq.commit(registers);
+                    self.cq.commit(registers);
+                    Poll::Pending
+                })
+                .await
+            } else {
+                // Only process in-flight completions.
+                poll_fn(|cx| {
+                    while !self.commands.is_empty() {
+                        if let Some(completion) = self.cq.read() {
+                            return Event::Completion(completion).into();
+                        }
+                        if interrupt.poll(cx).is_pending() {
+                            break;
+                        }
+                        self.stats.interrupts.increment();
                     }
-                    self.stats.interrupts.increment();
-                }
-                self.sq.commit(registers);
-                self.cq.commit(registers);
-                Poll::Pending
-            })
-            .await;
+                    self.cq.commit(registers);
+                    Poll::Pending
+                })
+                .await
+            };
 
             match event {
                 Event::Request(req) => match req {
@@ -507,16 +665,58 @@ impl QueueHandler {
                         self.stats.issued.increment();
                     }
                     Req::Inspect(deferred) => deferred.inspect(&self),
+                    Req::Save(queue_state) => {
+                        queue_state.complete(self.save().await);
+                        // Do not allow any more processing after save completed.
+                        break;
+                    }
                 },
                 Event::Completion(completion) => {
                     assert_eq!(completion.sqid, self.sq.id());
                     let respond = self.commands.remove(completion.cid);
+                    if self.drain_after_restore && self.commands.is_empty() {
+                        // Switch to normal processing mode once all in-flight commands completed.
+                        self.drain_after_restore = false;
+                    }
                     self.sq.update_head(completion.sqhd);
                     respond.send(completion);
                     self.stats.completed.increment();
                 }
             }
         }
+    }
+
+    /// Save queue data for servicing.
+    pub async fn save(&self) -> anyhow::Result<QueueHandlerSavedState> {
+        // The data is collected from both QueuePair and QueueHandler.
+        Ok(QueueHandlerSavedState {
+            sq_state: self.sq.save(),
+            cq_state: self.cq.save(),
+            pending_cmds: self.commands.save(),
+        })
+    }
+
+    /// Restore queue data after servicing.
+    pub fn restore(
+        sq_mem_block: MemoryBlock,
+        cq_mem_block: MemoryBlock,
+        saved_state: &QueueHandlerSavedState,
+    ) -> anyhow::Result<Self> {
+        let QueueHandlerSavedState {
+            sq_state,
+            cq_state,
+            pending_cmds,
+        } = saved_state;
+
+        Ok(Self {
+            sq: SubmissionQueue::restore(sq_mem_block, sq_state)?,
+            cq: CompletionQueue::restore(cq_mem_block, cq_state)?,
+            commands: PendingCommands::restore(pending_cmds)?,
+            stats: Default::default(),
+            // Only drain pending commands for I/O queues.
+            // Admin queue is expected to have pending Async Event requests.
+            drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
+        })
     }
 }
 

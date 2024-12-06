@@ -12,6 +12,7 @@ use crate::emuplat::EmuplatServicing;
 use crate::nvme_manager::NvmeManager;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
+use crate::servicing::NvmeSavedState;
 use crate::servicing::ServicingState;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
 use crate::worker::FirmwareType;
@@ -19,6 +20,7 @@ use crate::worker::NetworkSettingsError;
 use crate::ControlRequest;
 use anyhow::Context;
 use async_trait::async_trait;
+use fixed_pool_alloc::FixedPool;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::future::Join;
@@ -177,6 +179,7 @@ pub(crate) struct LoadedVm {
     pub _periodic_telemetry_task: Task<()>,
 
     pub shared_vis_pool: Option<PagePool>,
+    pub fixed_mem_pool: Option<FixedPool>,
 }
 
 pub struct LoadedVmState<T> {
@@ -262,7 +265,7 @@ impl LoadedVm {
                     WorkerRpc::Restart(response) => {
                         let state = async {
                             let running = self.stop().await;
-                            match self.save(None).await {
+                            match self.save(None, false).await {
                                 Ok(servicing_state) => Some((response, servicing_state)),
                                 Err(err) => {
                                     if running {
@@ -324,7 +327,7 @@ impl LoadedVm {
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(|()| async {
                             let running = self.stop().await;
-                            let r = self.save(None).await;
+                            let r = self.save(None, false).await;
                             if running {
                                 self.start(None).await;
                             }
@@ -471,7 +474,11 @@ impl LoadedVm {
         if self.isolation.is_isolated() {
             anyhow::bail!("Servicing is not yet supported for isolated VMs");
         }
+
+        // capabilities_flags used to explicitly disable the feature
+        // which is enabled by default.
         let nvme_keepalive = !capabilities_flags.disable_nvme_keepalive();
+
         // Do everything before the log flush under a span.
         let mut state = async {
             if !self.stop().await {
@@ -485,7 +492,7 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
-            let mut state = self.save(Some(deadline)).await?;
+            let mut state = self.save(Some(deadline), nvme_keepalive).await?;
             state.init_state.correlation_id = Some(correlation_id);
 
             // Unload any network devices.
@@ -503,7 +510,7 @@ impl LoadedVm {
                 if let Some(nvme_manager) = self.nvme_manager.take() {
                     nvme_manager
                         .shutdown(nvme_keepalive)
-                        .instrument(tracing::info_span!("shutdown_nvme_vfio", %correlation_id))
+                        .instrument(tracing::info_span!("shutdown_nvme_vfio", %correlation_id, %nvme_keepalive))
                         .await;
                 }
             };
@@ -614,6 +621,7 @@ impl LoadedVm {
     async fn save(
         &mut self,
         _deadline: Option<std::time::Instant>,
+        vf_keepalive_flag: bool,
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
@@ -622,6 +630,28 @@ impl LoadedVm {
         }
 
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
+
+        // Only save NVMe state when there are NVMe controllers and nvme_keepalive
+        // wasn't explicitly disabled through capabilities_flags, otherwise save None.
+        let nvme_state = if let Some(n) = &self.nvme_manager {
+            n.save(vf_keepalive_flag)
+                .instrument(tracing::info_span!("nvme_manager_save"))
+                .await
+                .map(|s| NvmeSavedState { nvme_state: s })
+        } else {
+            None
+        };
+
+        // TODO: FixedPool saved state is being replaced with PagePool in subsequent commits.
+        let _mem_pool_state = if vf_keepalive_flag {
+            self.fixed_mem_pool
+                .as_ref()
+                .map(|f| f.save().ok())
+                .and_then(|s| s)
+        } else {
+            None
+        };
+
         let units = self.save_units().await.context("state unit save failed")?;
         let vmgs = self
             .vmgs_thin_client
@@ -638,6 +668,7 @@ impl LoadedVm {
                 flush_logs_result: None,
                 vmgs: (vmgs, self.vmgs_disk_metadata.clone()),
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
+                nvme_state,
             },
             units,
         })

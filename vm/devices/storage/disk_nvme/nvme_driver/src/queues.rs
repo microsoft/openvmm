@@ -4,6 +4,8 @@
 //! Implementation of submission and completion queues.
 
 use super::spec;
+use crate::driver::save_restore::CompletionQueueSavedState;
+use crate::driver::save_restore::SubmissionQueueSavedState;
 use crate::registers::DeviceRegisters;
 use inspect::Inspect;
 use user_driver::memory::MemoryBlock;
@@ -67,6 +69,39 @@ impl SubmissionQueue {
             self.committed_tail = self.tail;
         }
     }
+
+    /// Saves queue data for servicing.
+    pub fn save(&self) -> SubmissionQueueSavedState {
+        SubmissionQueueSavedState {
+            sqid: self.sqid,
+            head: self.head,
+            tail: self.tail,
+            committed_tail: self.committed_tail,
+            len: self.len,
+        }
+    }
+
+    /// Restores queue data after servicing.
+    pub fn restore(
+        mem: MemoryBlock,
+        saved_state: &SubmissionQueueSavedState,
+    ) -> anyhow::Result<Self> {
+        let SubmissionQueueSavedState {
+            sqid,
+            head,
+            tail,
+            committed_tail,
+            len,
+        } = saved_state;
+        Ok(Self {
+            sqid: *sqid,
+            head: *head,
+            tail: *tail,
+            committed_tail: *committed_tail,
+            len: *len,
+            mem,
+        })
+    }
 }
 
 #[derive(Inspect)]
@@ -74,6 +109,7 @@ pub(crate) struct CompletionQueue {
     cqid: u16,
     head: u32,
     committed_head: u32,
+    /// Queue size in entries.
     len: u32,
     phase: bool,
     #[inspect(skip)]
@@ -117,6 +153,40 @@ impl CompletionQueue {
             registers.doorbell(self.cqid, true, self.head);
             self.committed_head = self.head;
         }
+    }
+
+    /// Saves queue data for servicing.
+    pub fn save(&self) -> CompletionQueueSavedState {
+        CompletionQueueSavedState {
+            cqid: self.cqid,
+            head: self.head,
+            committed_head: self.committed_head,
+            len: self.len,
+            phase: self.phase,
+        }
+    }
+
+    /// Restores queue data after servicing.
+    pub fn restore(
+        mem: MemoryBlock,
+        saved_state: &CompletionQueueSavedState,
+    ) -> anyhow::Result<Self> {
+        let CompletionQueueSavedState {
+            cqid,
+            head,
+            committed_head,
+            len,
+            phase,
+        } = saved_state;
+
+        Ok(Self {
+            cqid: *cqid,
+            head: *head,
+            committed_head: *committed_head,
+            len: *len,
+            phase: *phase,
+            mem,
+        })
     }
 }
 

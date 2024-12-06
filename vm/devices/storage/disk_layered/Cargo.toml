@@ -15,6 +15,7 @@ guestmem.workspace = true
 vm_resource.workspace = true
 inspect = { workspace = true, features = ["std"] }
 
+anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 thiserror.workspace = true

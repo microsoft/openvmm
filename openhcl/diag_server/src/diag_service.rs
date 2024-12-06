@@ -40,7 +40,6 @@ use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
 use mesh::CancelContext;
 use mesh_rpc::server::RpcReceiver;
-use mesh_rpc::service::Status;
 use net_packet_capture::OperationData;
 use net_packet_capture::PacketCaptureOperation;
 use net_packet_capture::PacketCaptureParams;
@@ -174,16 +173,10 @@ impl DiagServiceHandler {
     async fn handle_inspect_request(&self, req: InspectService, mut ctx: CancelContext) {
         match req {
             InspectService::Inspect(request, response) => {
-                // Use a locally-defined type for the response in order to avoid
-                // reshuffling inspection results to protobuf types.
-                let response = response.upcast::<Result<InspectResponse2, Status>>();
                 let inspect_response = self.handle_inspect(&request, ctx).await;
                 response.send(grpc_result(Ok(Ok(inspect_response))));
             }
             InspectService::Update(request, response) => {
-                // Use a locally-defined type for the response in order to avoid
-                // reshuffling inspection results to protobuf types.
-                let response = response.upcast::<Result<UpdateResponse2, Status>>();
                 response.send(grpc_result(
                     ctx.until_cancelled(self.handle_update(&request)).await,
                 ));

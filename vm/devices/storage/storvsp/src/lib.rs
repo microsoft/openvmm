@@ -3,7 +3,9 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "ioperf")]
 pub mod ioperf;
+
 mod protocol;
 pub mod resolver;
 mod save_restore;

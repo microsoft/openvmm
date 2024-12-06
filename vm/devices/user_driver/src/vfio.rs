@@ -11,6 +11,7 @@ use crate::interrupt::DeviceInterruptSource;
 use crate::memory::MemoryBlock;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
+use crate::HostDmaAllocator;
 use anyhow::Context;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -38,6 +39,9 @@ use zerocopy::FromBytes;
 pub trait VfioDmaBuffer: 'static + Send + Sync {
     /// Create a new DMA buffer of the given `len` bytes. Guaranteed to be zero-initialized.
     fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
+
+    /// Restore a dma buffer in the predefined location with the given `len` in bytes.
+    fn restore_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }
 
 /// A device backend accessed via VFIO.
@@ -76,6 +80,17 @@ impl VfioDevice {
         pci_id: &str,
         dma_buffer: Arc<dyn VfioDmaBuffer>,
     ) -> anyhow::Result<Self> {
+        Self::restore(driver_source, pci_id, dma_buffer, false).await
+    }
+
+    /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
+    /// or creates a device from the saved state if provided.
+    pub async fn restore(
+        driver_source: &VmTaskDriverSource,
+        pci_id: &str,
+        dma_buffer: Arc<dyn VfioDmaBuffer>,
+        keepalive: bool,
+    ) -> anyhow::Result<Self> {
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
         // The vfio device attaches asynchronously after the PCI device is added,
@@ -100,7 +115,11 @@ impl VfioDevice {
         }
 
         container.set_iommu(IommuType::NoIommu)?;
-        let device = group.open_device(path.file_name().unwrap().to_str().unwrap())?;
+        if keepalive {
+            // Prevent physical hardware interaction when restoring.
+            group.set_keep_alive(pci_id)?;
+        }
+        let device = group.open_device(pci_id)?;
         let msix_info = device.irq_info(vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX)?;
         if msix_info.flags.noresize() {
             anyhow::bail!("unsupported: kernel does not support dynamic msix allocation");
@@ -118,6 +137,7 @@ impl VfioDevice {
         })
     }
 
+    /// Maps PCI BAR[n] to VA space.
     fn map_bar(&self, n: u8) -> anyhow::Result<MappedRegionWithFallback> {
         if n >= 6 {
             anyhow::bail!("invalid bar");
@@ -446,8 +466,12 @@ pub struct LockedMemoryAllocator {
     dma_buffer: Arc<dyn VfioDmaBuffer>,
 }
 
-impl crate::HostDmaAllocator for LockedMemoryAllocator {
+impl HostDmaAllocator for LockedMemoryAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
         self.dma_buffer.create_dma_buffer(len)
+    }
+
+    fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        self.dma_buffer.restore_dma_buffer(len, base_pfn)
     }
 }

@@ -1220,6 +1220,7 @@ dependencies = [
 name = "disk_layered"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "disk_backend",
  "disk_backend_resources",
@@ -1329,6 +1330,7 @@ dependencies = [
  "disk_backend_resources",
  "disk_layered",
  "event-listener",
+ "futures",
  "guestmem",
  "inspect",
  "pal_async",
@@ -1610,6 +1612,22 @@ dependencies = [
  "mesh_protobuf",
  "thiserror 2.0.0",
  "uefi_specs",
+]
+
+[[package]]
+name = "fixed_pool_alloc"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "hcl",
+ "hvdef",
+ "inspect",
+ "memory_range",
+ "mesh",
+ "parking_lot",
+ "sparse_mmap",
+ "thiserror 2.0.0",
+ "user_driver",
 ]
 
 [[package]]
@@ -6783,6 +6801,7 @@ dependencies = [
  "firmware_pcat",
  "firmware_uefi",
  "firmware_uefi_custom_vars",
+ "fixed_pool_alloc",
  "framebuffer",
  "fs-err",
  "futures",
@@ -6873,6 +6892,7 @@ dependencies = [
  "vm_topology",
  "vmbus_async",
  "vmbus_channel",
+ "vmbus_client_hcl",
  "vmbus_core",
  "vmbus_relay",
  "vmbus_relay_intercept_device",
@@ -7731,12 +7751,29 @@ dependencies = [
  "inspect",
  "mesh",
  "pal_async",
+ "pal_event",
  "parking_lot",
  "thiserror 2.0.0",
  "tracing",
  "vmbus_async",
  "vmbus_channel",
  "vmbus_core",
+ "zerocopy",
+]
+
+[[package]]
+name = "vmbus_client_hcl"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "hcl",
+ "hvdef",
+ "pal_async",
+ "pal_event",
+ "tracing",
+ "vmbus_async",
+ "vmbus_client",
  "zerocopy",
 ]
 
@@ -7779,8 +7816,6 @@ dependencies = [
  "anyhow",
  "futures",
  "guid",
- "hcl",
- "hvdef",
  "inspect",
  "mesh",
  "mesh_protobuf",
@@ -7790,7 +7825,6 @@ dependencies = [
  "parking_lot",
  "tracelimit",
  "tracing",
- "vmbus_async",
  "vmbus_channel",
  "vmbus_client",
  "vmbus_core",
@@ -7806,7 +7840,6 @@ dependencies = [
  "anyhow",
  "futures",
  "guid",
- "hcl",
  "hvdef",
  "inspect",
  "mesh",

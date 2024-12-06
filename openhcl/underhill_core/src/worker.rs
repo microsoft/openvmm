@@ -59,6 +59,7 @@ use disk_backend::Disk;
 use disk_blockdevice::BlockDeviceResolver;
 use disk_blockdevice::OpenBlockDeviceConfig;
 use firmware_uefi::UefiCommandSet;
+use fixed_pool_alloc::FixedPool;
 use futures::executor::block_on;
 use futures::future::join_all;
 use futures_concurrency::future::Race;
@@ -1800,11 +1801,25 @@ async fn new_underhill_vm(
         crate::inspect_proc::periodic_telemetry_task(driver_source.simple()),
     );
 
+    // Allocate fixed pool for DMA-capable devices if size hint was provided by host,
+    // otherwise use default heap allocator.
+    // Contents of fixed pool will be preserved during servicing.
+    // TODO: FixedPool will be replaced with PagePool in subsequent change.
+    let fixed_mem_pool = if !runtime_params.dma_preserve_memory_map().is_empty() {
+        let pools = runtime_params.dma_preserve_memory_map();
+        Some(FixedPool::new(pools)?)
+    } else {
+        None
+    };
+
     let nvme_manager = if env_cfg.nvme_vfio {
         let shared_vis_pool_spawner = shared_vis_pages_pool
             .as_ref()
             .map(|p| p.allocator_spawner());
 
+        let fixed_mem_allocator = fixed_mem_pool.as_ref().map(|f| f.allocator_spawner());
+
+        let save_restore_supported = fixed_mem_pool.is_some();
         let vfio_dma_buffer_spawner = Box::new(
             move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
                 shared_vis_pool_spawner
@@ -1814,7 +1829,12 @@ async fn new_underhill_vm(
                             .allocator(device_id)
                             .map(|alloc| Arc::new(alloc) as _)
                     })
-                    .unwrap_or_else(|| Ok(Arc::new(LockedMemorySpawner) as _))
+                    .unwrap_or_else(|| {
+                        fixed_mem_allocator
+                            .as_ref()
+                            .map(|f| f.allocator().map(|a| Arc::new(a) as _))
+                            .unwrap_or(Ok(Arc::new(LockedMemorySpawner) as _))
+                    })
             },
         );
 
@@ -1822,6 +1842,8 @@ async fn new_underhill_vm(
             &driver_source,
             processor_topology.vp_count(),
             vfio_dma_buffer_spawner,
+            save_restore_supported,
+            servicing_state.nvme_state.unwrap_or(None),
         );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
@@ -1832,6 +1854,21 @@ async fn new_underhill_vm(
     } else {
         None
     };
+
+    // NVMe manager is the only client for fixed DMA pool as of now,
+    // run integrity check after restore. Find a better place if more
+    // clients added in future.
+    if fixed_mem_pool.is_some() && nvme_manager.is_some() {
+        match fixed_mem_pool.as_ref().unwrap().validate() {
+            Ok(_) => {
+                tracing::trace!("fixed mem pool integrity OK");
+            }
+            Err(_) => {
+                // Can be converted to panic after comprehensive testing.
+                tracing::trace!("fixed mem pool integrity ERROR");
+            }
+        }
+    }
 
     let initial_generation_id = match dps.general.generation_id.map(u128::from_ne_bytes) {
         Some(0) | None => {
@@ -2565,6 +2602,7 @@ async fn new_underhill_vm(
 
     let mut vmbus_server = None;
     let mut host_vmbus_relay = None;
+    let mut vmbus_synic_client = None;
 
     // VMBus
     if with_vmbus {
@@ -2627,15 +2665,24 @@ async fn new_underhill_vm(
 
         let vmbus = VmbusServerHandle::new(&tp, state_units.add("vmbus"), vmbus)?;
         if let Some((relay_channel, hvsock_relay)) = relay_channels {
+            let relay_driver = tp.driver(0);
+            let (synic, msg_source) =
+                vmbus_client_hcl::new_synic_client_and_messsage_source(relay_driver)
+                    .context("failed to create synic client and message source")?;
+
+            let synic = Arc::new(synic);
+
             let vmbus_relay = vmbus_relay::HostVmbusTransport::new(
-                tp.driver(0).clone(),
+                relay_driver.clone(),
                 Arc::clone(vmbus.control()),
                 relay_channel,
                 hvsock_relay,
+                synic.clone(),
+                msg_source,
             )
-            .await
-            .expect("failed to create host vmbus transport");
+            .context("failed to create host vmbus transport")?;
 
+            vmbus_synic_client = Some(synic);
             host_vmbus_relay = Some(VmbusRelayHandle::new(
                 &tp,
                 state_units
@@ -2811,6 +2858,7 @@ async fn new_underhill_vm(
         let shutdown_guest = SimpleVmbusClientDeviceWrapper::new(
             driver_source.simple(),
             partition.clone(),
+            vmbus_synic_client.clone().unwrap(),
             shutdown_guest,
         )?;
         vmbus_intercept_devices
@@ -2947,6 +2995,7 @@ async fn new_underhill_vm(
 
         _periodic_telemetry_task: periodic_telemetry_task,
         shared_vis_pool: shared_vis_pages_pool,
+        fixed_mem_pool,
     };
 
     Ok(loaded_vm)

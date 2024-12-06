@@ -19,7 +19,6 @@ use super::protobuf::PackedWriter;
 use super::CopyExtend;
 use super::DecodeError;
 use super::DefaultEncoding;
-use super::Downcast;
 use super::FieldDecode;
 use super::FieldEncode;
 use super::InplaceOption;
@@ -1607,8 +1606,6 @@ macro_rules! default_encodings {
             impl $crate::DefaultEncoding for $ty {
                 type Encoding = $mp;
             }
-
-            impl $crate::Downcast<$ty> for $ty {}
         )*
     };
 }
@@ -1668,13 +1665,9 @@ impl<T: DefaultEncoding> DefaultEncoding for Option<T> {
     type Encoding = OptionField<T::Encoding>;
 }
 
-impl<T, U> Downcast<Option<U>> for Option<T> where T: Downcast<U> {}
-
 impl<T: DefaultEncoding> DefaultEncoding for Vec<T> {
     type Encoding = VecField<T::Encoding>;
 }
-
-impl<T, U> Downcast<Vec<U>> for Vec<T> where T: Downcast<U> {}
 
 #[cfg(feature = "std")]
 impl<K: DefaultEncoding, V: DefaultEncoding> DefaultEncoding for std::collections::HashMap<K, V> {
@@ -1693,19 +1686,13 @@ impl<T: DefaultEncoding, const N: usize> DefaultEncoding for [T; N] {
     type Encoding = ArrayField<T::Encoding>;
 }
 
-impl<T, U, const N: usize> Downcast<[U; N]> for Option<[T; N]> where T: Downcast<U> {}
-
 impl<T: DefaultEncoding> DefaultEncoding for Box<T> {
     type Encoding = BoxEncoding<T::Encoding>;
 }
 
-impl<T, U> Downcast<Box<U>> for Box<T> where T: Downcast<U> {}
-
 impl<T: DefaultEncoding + Clone> DefaultEncoding for Arc<T> {
     type Encoding = ArcEncoding<T::Encoding>;
 }
-
-impl<T, U> Downcast<Arc<U>> for Arc<T> where T: Downcast<U> {}
 
 // Derive an encoding for `Result`.
 #[derive(mesh_derive::Protobuf)]

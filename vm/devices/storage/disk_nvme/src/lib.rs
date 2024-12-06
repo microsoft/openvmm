@@ -19,6 +19,7 @@ use std::io;
 
 #[derive(Debug, Inspect)]
 pub struct NvmeDisk {
+    /// NVMe namespace mapped to the disk representation.
     #[inspect(flatten)]
     namespace: nvme_driver::Namespace,
     #[inspect(skip)]

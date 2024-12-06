@@ -385,16 +385,6 @@ where
     Ok(value.take().expect("should be constructed"))
 }
 
-/// Marker trait indicating that an encoded value of `T` can be decoded as a
-/// `Self`.
-pub trait Downcast<T> {}
-
-/// Marker trait indicating that an encoded value of `Self` can be decoded as a
-/// `T`.
-pub trait Upcast<T> {}
-
-impl<T, U: Downcast<T>> Upcast<U> for T {}
-
 /// An empty resources type, used when an encoding does not require any external
 /// resources (such as files or mesh channels).
 pub enum NoResources {}

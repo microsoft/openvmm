@@ -18,8 +18,9 @@ inspect.workspace = true
 pal_async.workspace = true
 
 anyhow.workspace = true
-parking_lot.workspace = true
 event-listener.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true

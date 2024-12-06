@@ -13,6 +13,7 @@ use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::UnmapBehavior;
 use disk_layered::DiskLayer;
+use disk_layered::LayerAttach;
 use disk_layered::LayerConfiguration;
 use disk_layered::LayerIo;
 use disk_layered::LayeredDisk;
@@ -30,6 +31,19 @@ use std::fmt::Debug;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use thiserror::Error;
+
+/// A disk layer backed entirely by RAM, which infers its topology from the
+/// layer it is being stacked onto.
+#[derive(Inspect)]
+#[non_exhaustive]
+pub struct LazyRamDiskLayer {}
+
+impl LazyRamDiskLayer {
+    /// Create a new lazy RAM-backed disk layer
+    pub fn new() -> Self {
+        Self {}
+    }
+}
 
 /// A disk layer backed entirely by RAM.
 #[derive(Inspect)]
@@ -96,11 +110,8 @@ const SECTOR_SIZE: u32 = 512;
 
 impl RamDiskLayer {
     /// Makes a new RAM disk of `size` bytes.
-    ///
-    /// If `None` is specified, then the disk will inherit its size from the
-    /// lower layer when it is attached to a [`LayeredDisk`].
-    pub fn new(size: Option<u64>) -> Result<Self, Error> {
-        let sector_count = if let Some(size) = size {
+    pub fn new(size: u64) -> Result<Self, Error> {
+        let sector_count = {
             if size == 0 {
                 return Err(Error::EmptyDisk);
             }
@@ -111,8 +122,6 @@ impl RamDiskLayer {
                 });
             }
             size / SECTOR_SIZE as u64
-        } else {
-            0
         };
         Ok(Self {
             state: RwLock::new(RamState {
@@ -174,6 +183,22 @@ impl RamDiskLayer {
             }
         }
         Ok(())
+    }
+}
+
+impl LayerAttach for LazyRamDiskLayer {
+    type Error = Error;
+    type Layer = RamDiskLayer;
+
+    async fn attach(
+        self,
+        lower_layer_metadata: Option<disk_layered::DiskLayerMetadata>,
+    ) -> Result<Self::Layer, Self::Error> {
+        RamDiskLayer::new(
+            lower_layer_metadata
+                .map(|x| x.sector_count * x.sector_size as u64)
+                .ok_or(Error::EmptyDisk)?,
+        )
     }
 }
 
@@ -325,17 +350,6 @@ impl LayerIo for RamDiskLayer {
     fn optimal_unmap_sectors(&self) -> u32 {
         1
     }
-
-    fn on_attach(&mut self, lower_sector_count: Option<u64>) {
-        if let Some(lower_sector_count) = lower_sector_count {
-            let mut state = self.state.write();
-            if state.sector_count == 0 {
-                state.sector_count = lower_sector_count;
-                state.zero_after = lower_sector_count;
-                *self.sector_count.get_mut() = lower_sector_count;
-            }
-        }
-    }
 }
 
 impl WriteNoOverwrite for RamDiskLayer {
@@ -354,14 +368,21 @@ impl WriteNoOverwrite for RamDiskLayer {
 /// layer. It is useful since non-layered RAM disks are used all over the place,
 /// especially in tests.
 pub fn ram_disk(size: u64, read_only: bool) -> anyhow::Result<Disk> {
-    let disk = Disk::new(LayeredDisk::new(
-        read_only,
-        vec![LayerConfiguration {
-            layer: DiskLayer::new(RamDiskLayer::new(Some(size))?),
-            write_through: false,
-            read_cache: false,
-        }],
-    )?)?;
+    use futures::future::FutureExt;
+
+    let disk = Disk::new(
+        LayeredDisk::new(
+            read_only,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(RamDiskLayer::new(size)?),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .now_or_never()
+        .expect("RamDiskLayer won't block")?,
+    )?;
+
     Ok(disk)
 }
 
@@ -450,9 +471,9 @@ mod tests {
 
     async fn prep_disk(size: usize) -> (GuestMemory, LayeredDisk) {
         let guest_mem = GuestMemory::allocate(size);
-        let mut lower = RamDiskLayer::new(Some(size as u64)).unwrap();
+        let mut lower = RamDiskLayer::new(size as u64).unwrap();
         write_layer(&guest_mem, &mut lower, 0, size / SECTOR_USIZE, 0).await;
-        let upper = RamDiskLayer::new(Some(size as u64)).unwrap();
+        let upper = RamDiskLayer::new(size as u64).unwrap();
         let upper = LayeredDisk::new(
             false,
             Vec::from_iter([upper, lower].map(|layer| LayerConfiguration {
@@ -461,6 +482,7 @@ mod tests {
                 read_cache: false,
             })),
         )
+        .await
         .unwrap();
         (guest_mem, upper)
     }

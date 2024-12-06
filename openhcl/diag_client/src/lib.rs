@@ -18,8 +18,6 @@ use futures::AsyncWrite;
 use futures::AsyncWriteExt;
 use inspect::Node;
 use inspect::ValueKind;
-use inspect_proto::InspectResponse2;
-use inspect_proto::UpdateResponse2;
 use kmsg_stream::KmsgStream;
 use mesh_rpc::service::Status;
 use pal_async::driver::Driver;
@@ -498,11 +496,7 @@ impl DiagClient {
             },
         );
 
-        let response = response
-            .into_inner()
-            .upcast::<Result<InspectResponse2, Status>>();
-        let response = response.await?.map_err(grpc_status)?;
-
+        let response = response.await.map_err(grpc_status)?;
         Ok(response.result)
     }
 
@@ -520,10 +514,7 @@ impl DiagClient {
             },
         );
 
-        let response = response
-            .into_inner()
-            .upcast::<Result<UpdateResponse2, Status>>();
-        let response = response.await?.map_err(grpc_status)?;
+        let response = response.await.map_err(grpc_status)?;
 
         Ok(response.new_value)
     }

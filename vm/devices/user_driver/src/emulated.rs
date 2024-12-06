@@ -263,6 +263,24 @@ impl HostDmaAllocator for EmulatedDmaAllocator {
         memory.as_slice().atomic_fill(0);
         Ok(memory)
     }
+
+    fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        anyhow::bail!("restore is not supported for emulated DMA")
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[cfg(feature = "vfio")]
+impl crate::vfio::VfioDmaBuffer for EmulatedDmaAllocator {
+    fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
+        Ok(MemoryBlock::new(
+            self.shared_mem.alloc(len).context("out of memory")?,
+        ))
+    }
+
+    fn restore_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        anyhow::bail!("restore is not supported for emulated DMA")
+    }
 }
 
 impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedDevice<T> {

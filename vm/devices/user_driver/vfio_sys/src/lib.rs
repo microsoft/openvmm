@@ -37,6 +37,8 @@ mod ioctl {
     use vfio_bindings::bindings::vfio::VFIO_BASE;
     use vfio_bindings::bindings::vfio::VFIO_TYPE;
 
+    const VFIO_PRIVATE_BASE: u32 = 200;
+
     nix::ioctl_write_int_bad!(vfio_set_iommu, request_code_none!(VFIO_TYPE, VFIO_BASE + 2));
     nix::ioctl_read_bad!(
         vfio_group_get_status,
@@ -72,6 +74,11 @@ mod ioctl {
         vfio_device_set_irqs,
         request_code_none!(VFIO_TYPE, VFIO_BASE + 10),
         vfio_irq_set
+    );
+    nix::ioctl_write_ptr_bad!(
+        vfio_group_set_keep_alive,
+        request_code_none!(VFIO_TYPE, VFIO_PRIVATE_BASE),
+        c_char
     );
 }
 
@@ -185,6 +192,19 @@ impl Group {
                 .context("failed to get group status")?;
         };
         Ok(GroupStatus::from(status.flags))
+    }
+
+    /// Skip VFIO device reset when kernel is reloaded during servicing.
+    /// This feature is non-upstream version of our kernel and will be
+    /// eventually replaced with iommufd.
+    pub fn set_keep_alive(&self, device_id: &str) -> anyhow::Result<()> {
+        // SAFETY: The file descriptor is valid and a correctly constructed struct is being passed.
+        unsafe {
+            let id = CString::new(device_id.to_owned())?;
+            ioctl::vfio_group_set_keep_alive(self.file.as_raw_fd(), id.as_ptr())
+                .context("failed to set keep-alive")?;
+        }
+        Ok(())
     }
 }
 

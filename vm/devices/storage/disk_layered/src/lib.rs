@@ -21,6 +21,9 @@
 //! require potentially complicated cache management policies and are probably
 //! best implemented in a separate disk implementation.
 
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
 mod bitmap;
 pub mod resolve;
 pub mod resolver;
@@ -35,6 +38,7 @@ use disk_backend::UnmapBehavior;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
+use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use thiserror::Error;
@@ -55,28 +59,55 @@ pub struct LayeredDisk {
 
 #[derive(Inspect)]
 struct Layer {
-    backing: Box<dyn DynLayer>,
+    backing: Box<dyn DynLayerIo>,
     visible_sector_count: u64,
     read_cache: bool,
     write_through: bool,
 }
 
-/// A disk layer, for use in [`LayeredDisk`].
-pub struct DiskLayer {
-    backing: Box<dyn DynLayer>,
-    disk_id: Option<[u8; 16]>,
-    is_fua_respected: bool,
-    read_only: bool,
-    sector_size: u32,
-    physical_sector_size: u32,
-    unmap_behavior: UnmapBehavior,
-    optimal_unmap_sectors: u32,
-    can_read_cache: bool,
+/// A single layer which can be attached to a [`LayeredDisk`].
+pub struct DiskLayer(Box<dyn DynLayerAttach>);
+
+impl DiskLayer {
+    /// Creates a new layer from a backing store.
+    pub fn new<T: LayerAttach>(backing: T) -> Self {
+        Self(Box::new(backing))
+    }
+
+    /// Creates a layer from a disk. The resulting layer is always fully
+    /// present.
+    pub fn from_disk(disk: Disk) -> Self {
+        Self::new(DiskAsLayer(disk))
+    }
+}
+
+/// Metadata of a particular layer, collected from various [`LayerIo`] APIs.
+#[derive(Clone)]
+#[allow(missing_docs)] // self-explanatory names
+pub struct DiskLayerMetadata {
+    pub disk_id: Option<[u8; 16]>,
+    pub sector_size: u32,
+    pub sector_count: u64,
+    pub physical_sector_size: u32,
+    pub unmap_behavior: UnmapBehavior,
+    pub optimal_unmap_sectors: u32,
+    pub read_only: bool,
+    pub can_read_cache: bool,
+    pub is_fua_respected: bool,
+}
+
+// DEVNOTE: this is a transient object, used solely in LayeredDisk::new.
+struct AttachedDiskLayer {
+    backing: Box<dyn DynLayerIo>,
+    meta: DiskLayerMetadata,
 }
 
 /// An error returned when creating a [`DiskLayer`].
 #[derive(Debug, Error)]
 pub enum InvalidLayer {
+    /// Failed to attach the layer
+    #[error("failed to attach layer")]
+    AttachFailed(#[source] anyhow::Error),
     /// Read caching was requested but is not supported.
     #[error("read caching was requested but is not supported")]
     ReadCacheNotSupported,
@@ -103,30 +134,6 @@ pub enum InvalidLayer {
     ReadOnly,
 }
 
-impl DiskLayer {
-    /// Creates a new layer from a backing store.
-    pub fn new<T: LayerIo>(backing: T) -> Self {
-        let can_read_cache = backing.write_no_overwrite().is_some();
-        Self {
-            disk_id: backing.disk_id(),
-            is_fua_respected: backing.is_fua_respected(),
-            sector_size: backing.sector_size(),
-            physical_sector_size: backing.physical_sector_size(),
-            unmap_behavior: backing.unmap_behavior(),
-            optimal_unmap_sectors: backing.optimal_unmap_sectors(),
-            read_only: backing.is_read_only(),
-            can_read_cache,
-            backing: Box::new(backing),
-        }
-    }
-
-    /// Creates a layer from a disk. The resulting layer is always fully
-    /// present.
-    pub fn from_disk(disk: Disk) -> Self {
-        Self::new(DiskAsLayer(disk))
-    }
-}
-
 /// An error returned when creating a [`LayeredDisk`].
 #[derive(Debug, Error)]
 pub enum InvalidLayeredDisk {
@@ -139,9 +146,9 @@ pub enum InvalidLayeredDisk {
 }
 
 /// A configuration for a layer in a [`LayeredDisk`].
-pub struct LayerConfiguration {
+pub struct LayerConfiguration<L = DiskLayer> {
     /// The backing store for the layer.
-    pub layer: DiskLayer,
+    pub layer: L,
     /// Writes are written both to this layer and the next one.
     pub write_through: bool,
     /// Reads that miss this layer are written back to this layer.
@@ -153,47 +160,96 @@ impl LayeredDisk {
     ///
     /// The layers must be ordered from top to bottom, with the top layer being
     /// the first in the list.
-    pub fn new(
+    pub async fn new(
         read_only: bool,
-        mut layers: Vec<LayerConfiguration>,
+        layers: Vec<LayerConfiguration>,
     ) -> Result<Self, InvalidLayeredDisk> {
         if layers.is_empty() {
             return Err(InvalidLayeredDisk::NoLayers);
         }
 
-        // Collect the common properties of the layers.
+        let mut attached_layers: Vec<LayerConfiguration<AttachedDiskLayer>> = {
+            let mut attached_layers = Vec::new();
+
+            // layers are attached to one another from the bottom-up, hence the need
+            // to iterate in reverse.
+            let mut lower_layer_metadata = None;
+            for (
+                i,
+                LayerConfiguration {
+                    layer,
+                    write_through,
+                    read_cache,
+                },
+            ) in layers.into_iter().enumerate().rev()
+            {
+                let layer_error = |e| InvalidLayeredDisk::Layer(i, e);
+
+                let layer = layer
+                    .0
+                    .attach(lower_layer_metadata.take())
+                    .await
+                    .map_err(|e| layer_error(InvalidLayer::AttachFailed(e)))?;
+
+                let layer_meta = layer.meta.clone();
+
+                attached_layers.push(LayerConfiguration {
+                    layer,
+                    write_through,
+                    read_cache,
+                });
+
+                // perform some layer validation prior to attaching subsequent layers
+                if read_cache && !layer_meta.can_read_cache {
+                    return Err(layer_error(InvalidLayer::ReadCacheNotSupported));
+                }
+                if (read_cache || write_through) && layer_meta.read_only {
+                    return Err(layer_error(InvalidLayer::ReadOnlyCache));
+                }
+                if !layer_meta.sector_size.is_power_of_two() {
+                    return Err(layer_error(InvalidLayer::InvalidSectorSize(
+                        layer_meta.sector_size,
+                    )));
+                }
+                if layer_meta.sector_size != attached_layers[0].layer.meta.sector_size {
+                    // FUTURE: consider supporting different sector sizes, within reason.
+                    return Err(layer_error(InvalidLayer::MismatchedSectorSize {
+                        expected: attached_layers[0].layer.meta.sector_size,
+                        found: layer_meta.sector_size,
+                    }));
+                }
+
+                lower_layer_metadata = Some(layer_meta);
+            }
+
+            attached_layers.reverse();
+            attached_layers
+        };
+
+        // perform top-down validation of the layer-stack, collecting various
+        // common properties of the stack along the way.
         let mut last_write_through = true;
         let mut is_fua_respected = true;
         let mut optimal_unmap_sectors = 1;
         let mut unmap_must_zero = false;
         let mut disk_id = None;
         let mut unmap_behavior = UnmapBehavior::Zeroes;
-        for (i, config) in layers.iter().enumerate() {
+        for (
+            i,
+            &LayerConfiguration {
+                ref layer,
+                write_through,
+                read_cache: _,
+            },
+        ) in attached_layers.iter().enumerate()
+        {
             let layer_error = |e| InvalidLayeredDisk::Layer(i, e);
-            if config.read_cache && !config.layer.can_read_cache {
-                return Err(layer_error(InvalidLayer::ReadCacheNotSupported));
-            }
-            if (config.read_cache || config.write_through) && config.layer.read_only {
-                return Err(layer_error(InvalidLayer::ReadOnlyCache));
-            }
-            if !config.layer.sector_size.is_power_of_two() {
-                return Err(layer_error(InvalidLayer::InvalidSectorSize(
-                    config.layer.sector_size,
-                )));
-            }
-            if config.layer.sector_size != layers[0].layer.sector_size {
-                // FUTURE: consider supporting different sector sizes, within reason.
-                return Err(layer_error(InvalidLayer::MismatchedSectorSize {
-                    expected: layers[0].layer.sector_size,
-                    found: config.layer.sector_size,
-                }));
-            }
 
             if last_write_through {
-                if config.layer.read_only && !read_only {
+                if layer.meta.read_only && !read_only {
                     return Err(layer_error(InvalidLayer::ReadOnly));
                 }
-                is_fua_respected &= config.layer.is_fua_respected;
+                is_fua_respected &= layer.meta.is_fua_respected;
                 // Merge the unmap behavior. If any affected layer ignores
                 // unmap, then force the whole disk to. If all affected layers
                 // zero the sectors, then report that the disk zeroes sectors.
@@ -203,56 +259,58 @@ impl LayeredDisk {
                 // all the layers that are being written to. Otherwise, the
                 // guest could see inconsistent disk contents when the write
                 // through layer is removed.
-                unmap_must_zero |= config.write_through;
-                unmap_behavior = match (unmap_behavior, config.layer.unmap_behavior) {
+                unmap_must_zero |= write_through;
+                unmap_behavior = match (unmap_behavior, layer.meta.unmap_behavior) {
                     (UnmapBehavior::Zeroes, UnmapBehavior::Zeroes) => UnmapBehavior::Zeroes,
                     _ if unmap_must_zero => UnmapBehavior::Ignored,
                     (UnmapBehavior::Ignored, _) => UnmapBehavior::Ignored,
                     (_, UnmapBehavior::Ignored) => UnmapBehavior::Ignored,
                     _ => UnmapBehavior::Unspecified,
                 };
-                optimal_unmap_sectors =
-                    optimal_unmap_sectors.max(config.layer.optimal_unmap_sectors);
-            } else if config.write_through {
+                optimal_unmap_sectors = optimal_unmap_sectors.max(layer.meta.optimal_unmap_sectors);
+            } else if write_through {
                 // The write-through layers must all come first.
                 return Err(layer_error(InvalidLayer::UselessWriteThrough));
             }
-            last_write_through = config.write_through;
+            last_write_through = write_through;
             if disk_id.is_none() {
-                disk_id = config.layer.disk_id;
+                disk_id = layer.meta.disk_id;
             }
         }
+
         if last_write_through {
             return Err(InvalidLayeredDisk::Layer(
-                layers.len() - 1,
+                attached_layers.len() - 1,
                 InvalidLayer::UselessWriteThrough,
             ));
         }
 
-        let sector_size = layers[0].layer.sector_size;
-        let physical_sector_size = layers[0].layer.physical_sector_size;
+        let sector_size = attached_layers[0].layer.meta.sector_size;
+        let physical_sector_size = attached_layers[0].layer.meta.physical_sector_size;
 
         let mut last_sector_count = None;
-        let sector_counts_rev = layers
+        let sector_counts_rev = attached_layers
             .iter_mut()
             .rev()
-            .map(|config| {
-                config.layer.backing.attach(last_sector_count);
-                *last_sector_count.insert(config.layer.backing.sector_count())
-            })
+            .map(|config| *last_sector_count.insert(config.layer.backing.sector_count()))
             .collect::<Vec<_>>();
 
         let mut visible_sector_count = !0;
-        let layers = layers
+        let layers = attached_layers
             .into_iter()
             .zip(sector_counts_rev.into_iter().rev())
             .map(|(config, sector_count)| {
+                let LayerConfiguration {
+                    layer,
+                    write_through,
+                    read_cache,
+                } = config;
                 visible_sector_count = sector_count.min(visible_sector_count);
                 Layer {
-                    backing: config.layer.backing,
+                    backing: layer.backing,
                     visible_sector_count,
-                    read_cache: config.read_cache,
-                    write_through: config.write_through,
+                    read_cache,
+                    write_through,
                 }
             })
             .collect::<Vec<_>>();
@@ -270,9 +328,7 @@ impl LayeredDisk {
     }
 }
 
-trait DynLayer: Send + Sync + Inspect {
-    fn attach(&mut self, lower_sector_count: Option<u64>);
-
+trait DynLayerIo: Send + Sync + Inspect {
     fn sector_count(&self) -> u64;
 
     fn read<'a>(
@@ -303,11 +359,7 @@ trait DynLayer: Send + Sync + Inspect {
     fn wait_resize(&self, sector_count: u64) -> Pin<Box<dyn '_ + Future<Output = u64> + Send>>;
 }
 
-impl<T: LayerIo> DynLayer for T {
-    fn attach(&mut self, lower_sector_count: Option<u64>) {
-        self.on_attach(lower_sector_count);
-    }
-
+impl<T: LayerIo> DynLayerIo for T {
     fn sector_count(&self) -> u64 {
         self.sector_count()
     }
@@ -356,6 +408,76 @@ impl<T: LayerIo> DynLayer for T {
 
     fn wait_resize(&self, sector_count: u64) -> Pin<Box<dyn '_ + Future<Output = u64> + Send>> {
         Box::pin(self.wait_resize(sector_count))
+    }
+}
+
+trait DynLayerAttach: Send + Sync + Inspect {
+    fn attach(
+        self: Box<Self>,
+        lower_layer_metadata: Option<DiskLayerMetadata>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<AttachedDiskLayer>> + Send>>;
+}
+
+impl<T: LayerAttach> DynLayerAttach for T {
+    fn attach(
+        self: Box<Self>,
+        lower_layer_metadata: Option<DiskLayerMetadata>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<AttachedDiskLayer>> + Send>> {
+        Box::pin(async move {
+            Ok({
+                let backing = (*self).attach(lower_layer_metadata).await?;
+                let can_read_cache = backing.write_no_overwrite().is_some();
+                AttachedDiskLayer {
+                    meta: DiskLayerMetadata {
+                        sector_count: LayerIo::sector_count(&backing),
+                        disk_id: backing.disk_id(),
+                        is_fua_respected: backing.is_fua_respected(),
+                        sector_size: backing.sector_size(),
+                        physical_sector_size: backing.physical_sector_size(),
+                        unmap_behavior: backing.unmap_behavior(),
+                        optimal_unmap_sectors: backing.optimal_unmap_sectors(),
+                        read_only: backing.is_read_only(),
+                        can_read_cache,
+                    },
+                    backing: Box::new(backing),
+                }
+            })
+        })
+    }
+}
+
+/// Transition a layer from an unattached type-state, into an attached
+/// type-state, capable of performing [`LayerIo`].
+///
+/// Layers which do not require a type-state transition on-attach (e.g: those
+/// which are pre-initialized with a fixed set of metadata) can simply implement
+/// `LayerIo` directly, and leverage the blanket-impl of `impl<T: LayerIo>
+/// LayerAttach for T` which simply returns `Self` during the state transition.
+pub trait LayerAttach: 'static + Send + Sync + Inspect {
+    /// Error returned if on attach failure.
+    type Error: std::error::Error + Send + Sync + 'static;
+    /// Object implementating [`LayerIo`] after being attached.
+    type Layer: LayerIo;
+
+    /// Invoked when the layer is being attached to a layer stack.
+    ///
+    /// If the layer is being attached on-top of an existing layer,
+    /// `lower_layer_metadata` can be used to initialize and/or reconfigure the
+    /// layer using the properties of the layer is is being stacked on-top of.
+    fn attach(
+        self,
+        lower_layer_metadata: Option<DiskLayerMetadata>,
+    ) -> impl Future<Output = Result<Self::Layer, Self::Error>> + Send;
+}
+
+impl<T: LayerIo> LayerAttach for T {
+    type Error = Infallible;
+    type Layer = Self;
+    async fn attach(
+        self,
+        _lower_layer_metadata: Option<DiskLayerMetadata>,
+    ) -> Result<Self, Infallible> {
+        Ok(self)
     }
 }
 
@@ -450,13 +572,6 @@ pub trait LayerIo: 'static + Send + Sync + Inspect {
     fn wait_resize(&self, sector_count: u64) -> impl Future<Output = u64> + Send {
         let _ = sector_count;
         std::future::pending()
-    }
-
-    /// Called when the layer is attached to a disk. The sector count of the
-    /// next lower layer is provided for the layer to optionally size/resize
-    /// itself.
-    fn on_attach(&mut self, lower_sector_count: Option<u64>) {
-        let _ = lower_sector_count;
     }
 }
 

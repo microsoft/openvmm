@@ -7,16 +7,13 @@ edition = "2021"
 rust-version.workspace = true
 
 [dependencies]
-vmbus_async.workspace = true
 vmbus_channel.workspace = true
 vmbus_client.workspace = true
 vmbus_core.workspace = true
 vmbus_server.workspace = true
 
 guid.workspace = true
-hvdef.workspace = true
 vmcore.workspace = true
-hcl.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 mesh_protobuf.workspace = true

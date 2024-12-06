@@ -6,8 +6,11 @@ name = "storvsp"
 edition = "2021"
 rust-version.workspace = true
 
+[features]
+ioperf = ["dep:disklayer_ram"]
+
 [dependencies]
-disklayer_ram.workspace = true # For `ioperf` modules
+disklayer_ram = { workspace = true, optional = true } # For `ioperf` modules
 scsi_buffers.workspace = true
 scsi_core.workspace = true
 scsi_defs.workspace = true
@@ -54,6 +57,7 @@ test_with_tracing.workspace = true
 [[bench]]
 name = "ioperf"
 harness = false
+required-features = ["ioperf"]
 
 [lints]
 workspace = true

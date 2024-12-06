@@ -5,10 +5,10 @@
 
 use super::resolve::ResolveDiskLayerParameters;
 use super::resolve::ResolvedDiskLayer;
-use super::DiskLayer;
 use super::InvalidLayeredDisk;
 use super::LayerConfiguration;
 use super::LayeredDisk;
+use crate::DiskLayer;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
@@ -91,6 +91,7 @@ impl AsyncResolveResource<DiskHandleKind, LayeredDiskHandle> for LayeredDiskReso
             .await?;
 
         let disk = LayeredDisk::new(input.read_only, layers)
+            .await
             .map_err(ResolveLayeredDiskError::CreateDisk)?;
 
         ResolvedDisk::new(disk).map_err(ResolveLayeredDiskError::InvalidDisk)

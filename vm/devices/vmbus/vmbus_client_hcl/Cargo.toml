@@ -2,30 +2,22 @@
 # Licensed under the MIT License.
 
 [package]
-name = "vmbus_client"
+name = "vmbus_client_hcl"
 edition = "2021"
 rust-version.workspace = true
 
-[dependencies]
-vmbus_async.workspace = true
-vmbus_channel.workspace = true
-vmbus_core.workspace = true
-
-guid.workspace = true
-mesh.workspace = true
+[target.'cfg(target_os = "linux")'.dependencies]
+hcl.workspace = true
+hvdef.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true
-inspect.workspace = true
+vmbus_async.workspace = true
+vmbus_client.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
-[dev-dependencies]
-parking_lot.workspace = true
-pal_async.workspace = true
 
 [lints]
 workspace = true

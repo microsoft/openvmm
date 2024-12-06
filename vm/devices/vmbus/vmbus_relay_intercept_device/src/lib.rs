@@ -18,7 +18,6 @@ use anyhow::Context;
 use anyhow::Result;
 use futures::StreamExt;
 use guid::Guid;
-use hcl::vmbus::HclVmbus;
 use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::rpc::RpcSend;
@@ -152,15 +151,15 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceWrapper<T> {
     pub fn new(
         driver: impl SpawnDriver + Clone,
         vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
+        synic: Arc<dyn vmbus_client::SynicClient>,
         device: T,
     ) -> Result<Self> {
-        let hcl_vmbus = Arc::new(HclVmbus::new().context("failed to open hcl_vmbus")?);
         let spawner = Arc::new(driver.clone());
         Ok(Self {
             instance_id: device.instance_id(),
             vmbus_listener: TaskControl::new(SimpleVmbusClientDeviceTask::new(
                 device,
-                hcl_vmbus,
+                synic,
                 spawner.clone(),
                 vtl_protect,
             )),
@@ -231,7 +230,7 @@ struct SimpleVmbusClientDeviceTaskState {
 
 struct SimpleVmbusClientDeviceTask<T: SimpleVmbusClientDeviceAsync> {
     device: TaskControl<RelayDeviceTask<T>, T::Runner>,
-    hcl_vmbus: Arc<HclVmbus>,
+    synic: Arc<dyn vmbus_client::SynicClient>,
     saved_state: Option<T::SavedState>,
     spawner: Arc<dyn SpawnDriver>,
     vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
@@ -266,13 +265,13 @@ impl<T: SimpleVmbusClientDeviceAsync> InspectTaskMut<SimpleVmbusClientDeviceTask
 impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
     pub fn new(
         device: T,
-        hcl_vmbus: Arc<HclVmbus>,
+        synic: Arc<dyn vmbus_client::SynicClient>,
         spawner: Arc<dyn SpawnDriver>,
         vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
     ) -> Self {
         Self {
             device: TaskControl::new(RelayDeviceTask(device)),
-            hcl_vmbus,
+            synic,
             saved_state: None,
             spawner,
             vtl_protect,
@@ -314,7 +313,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         }
 
         let connection_id = Self::get_redirected_connection_id(offer.offer.connection_id);
-        let interrupt_event = RegisteredEvent::new(self.spawner.as_ref(), self.hcl_vmbus.clone())
+        let interrupt_event = RegisteredEvent::new(self.spawner.as_ref(), self.synic.clone())
             .context("create event")?;
 
         let (memory, ring_gpadl_id) = self
@@ -520,9 +519,9 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             OutgoingRing::new(out_ring_mem.into()).unwrap(),
         );
 
-        let hcl_vmbus = self.hcl_vmbus.clone();
+        let synic = self.synic.clone();
         let guest_to_host_interrupt = Interrupt::from_fn(move || {
-            if let Err(err) = hcl_vmbus.signal_event(connection_id.0, 0) {
+            if let Err(err) = synic.signal_event(connection_id.0, 0) {
                 tracelimit::error_ratelimited!(
                     err = &err as &dyn std::error::Error,
                     "Failed to signal vmbus host device"

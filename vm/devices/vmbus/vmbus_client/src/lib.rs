@@ -19,6 +19,7 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::sync::Arc;
 use thiserror::Error;
 use vmbus_async::async_dgram::AsyncRecv;
 use vmbus_async::async_dgram::AsyncRecvExt;
@@ -49,6 +50,12 @@ const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::all();
 /// The client interface to the synic.
 pub trait SynicClient: Send + Sync {
     fn post_message(&self, connection_id: u32, typ: u32, msg: &[u8]);
+    /// Maps an incoming event signal on SINT7 to `event`.
+    fn map_event(&self, event_flag: u16, event: &pal_event::Event) -> std::io::Result<()>;
+    /// Unmaps an event previously mapped with `map_event`.
+    fn unmap_event(&self, event_flag: u16);
+    /// Signals an event on the synic.
+    fn signal_event(&self, connection_id: u32, event_flag: u16) -> std::io::Result<()>;
 }
 
 /// A stream of vmbus messages that can be paused and resumed.
@@ -80,7 +87,7 @@ pub enum ConnectError {
 impl VmbusClient {
     /// Creates a new instance with a receiver for incoming synic messages.
     pub fn new(
-        synic: impl 'static + SynicClient,
+        synic: Arc<dyn SynicClient>,
         notify_send: mesh::Sender<ClientNotification>,
         msg_source: impl VmbusMessageSource + 'static,
         spawner: &impl Spawn,
@@ -89,7 +96,7 @@ impl VmbusClient {
         let (client_request_send, client_request_recv) = mesh::channel();
 
         let inner = ClientTaskInner {
-            synic: Box::new(synic),
+            synic,
             channels: HashMap::new(),
             gpadls: HashMap::new(),
             teardown_gpadls: HashMap::new(),
@@ -1312,7 +1319,7 @@ enum GpadlState {
 }
 
 struct ClientTaskInner {
-    synic: Box<dyn SynicClient>,
+    synic: Arc<dyn SynicClient>,
     channels: HashMap<ChannelId, Channel>,
     gpadls: HashMap<(ChannelId, GpadlId), GpadlState>,
     teardown_gpadls: HashMap<GpadlId, Option<ChannelId>>,
@@ -1471,6 +1478,18 @@ mod tests {
                 .lock()
                 .push(OutgoingMessage::from_message(msg));
         }
+
+        fn map_event(&self, _event_flag: u16, _event: &pal_event::Event) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::Unsupported.into())
+        }
+
+        fn unmap_event(&self, _event_flag: u16) {
+            unreachable!()
+        }
+
+        fn signal_event(&self, _connection_id: u32, _event_flag: u16) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::Unsupported.into())
+        }
     }
 
     struct TestMessageSource {
@@ -1515,7 +1534,7 @@ mod tests {
         let (notify_send, notify_recv) = mesh::channel();
 
         let mut client = VmbusClient::new(
-            server.clone(),
+            Arc::new(server.clone()),
             notify_send,
             TestMessageSource { msg_recv },
             &driver,

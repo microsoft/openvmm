@@ -148,6 +148,7 @@ build_info = { path = "openhcl/build_info" }
 diag_client = { path = "openhcl/diag_client" }
 diag_proto = { path = "openhcl/diag_proto" }
 diag_server = { path = "openhcl/diag_server" }
+fixed_pool_alloc = { path = "openhcl/fixed_pool_alloc" }
 hcl = { path = "openhcl/hcl" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }
 kmsg_defs = { path = "openhcl/kmsg_defs" }
@@ -298,6 +299,7 @@ vmbfs_resources = { path = "vm/devices/vmbus/vmbfs_resources" }
 vmbus_async = { path = "vm/devices/vmbus/vmbus_async" }
 vmbus_channel = { path = "vm/devices/vmbus/vmbus_channel" }
 vmbus_client = { path = "vm/devices/vmbus/vmbus_client" }
+vmbus_client_hcl = { path = "vm/devices/vmbus/vmbus_client_hcl" }
 vmbus_core = { path = "vm/devices/vmbus/vmbus_core" }
 vmbus_proxy = { path = "vm/devices/vmbus/vmbus_proxy" }
 vmbus_relay = { path = "vm/devices/vmbus/vmbus_relay" }
