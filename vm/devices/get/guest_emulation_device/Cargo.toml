@@ -11,7 +11,7 @@ get_protocol.workspace = true
 get_resources.workspace = true
 
 disk_backend.workspace = true
-disk_ramdisk.workspace = true
+disklayer_ram.workspace = true
 guestmem.workspace = true
 power_resources.workspace = true
 scsi_buffers.workspace = true

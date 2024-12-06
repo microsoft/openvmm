@@ -24,7 +24,7 @@ tracing.workspace = true
 vm_resource.workspace = true
 
 [dev-dependencies]
-disk_ramdisk.workspace = true
+disklayer_ram.workspace = true
 
 [lints]
 workspace = true

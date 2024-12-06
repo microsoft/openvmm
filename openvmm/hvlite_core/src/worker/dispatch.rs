@@ -1633,7 +1633,11 @@ impl InitializedVm {
                 let vmbus_driver = driver_source.simple();
                 let vtl2_vmbus = VmbusServer::builder(&vmbus_driver, synic.clone(), gm.clone())
                     .vtl(Vtl::Vtl2)
-                    .max_version(vtl2_vmbus_cfg.vmbus_max_version)
+                    .max_version(
+                        vtl2_vmbus_cfg
+                            .vmbus_max_version
+                            .map(vmbus_core::MaxVersionInfo::new),
+                    )
                     .hvsock_notify(Some(vtl2_hvsock_channel.server_half))
                     .external_requests(Some(server_request_recv))
                     .enable_mnf(true)
@@ -1668,7 +1672,11 @@ impl InitializedVm {
                 .hvsock_notify(Some(hvsock_channel.server_half))
                 .external_server(vtl2_request_send)
                 .use_message_redirect(vmbus_cfg.vtl2_redirect)
-                .max_version(vmbus_cfg.vmbus_max_version)
+                .max_version(
+                    vmbus_cfg
+                        .vmbus_max_version
+                        .map(vmbus_core::MaxVersionInfo::new),
+                )
                 .delay_max_version(matches!(cfg.load_mode, LoadMode::Uefi { .. }))
                 .enable_mnf(true)
                 .build()

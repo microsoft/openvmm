@@ -46,7 +46,7 @@ features = [
 
 [dev-dependencies]
 pal_async.workspace = true
-disk_ramdisk.workspace = true
+disklayer_ram.workspace = true
 
 [lints]
 workspace = true

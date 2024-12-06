@@ -4,7 +4,7 @@
 //! Resource resolver for RAM disks.
 
 use super::Error;
-use super::RamLayer;
+use super::RamDiskLayer;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use disk_layered::resolve::ResolveDiskLayerParameters;
 use disk_layered::resolve::ResolvedDiskLayer;
@@ -13,19 +13,22 @@ use vm_resource::kind::DiskLayerHandleKind;
 use vm_resource::ResolveResource;
 
 /// Resolver for a [`RamDiskLayerHandle`].
-pub struct RamDiskResolver;
+pub struct RamDiskLayerResolver;
 
-declare_static_resolver!(RamDiskResolver, (DiskLayerHandleKind, RamDiskLayerHandle));
+declare_static_resolver!(
+    RamDiskLayerResolver,
+    (DiskLayerHandleKind, RamDiskLayerHandle)
+);
 
-/// Error type for [`RamDiskResolver`].
+/// Error type for [`RamDiskLayerResolver`].
 #[derive(Debug, Error)]
 pub enum ResolveRamDiskError {
-    /// Failed to create the RAM disk.
-    #[error("failed to create ram disk")]
+    /// Failed to create the RAM disk layer.
+    #[error("failed to create ram disk layer")]
     Ram(#[source] Error),
 }
 
-impl ResolveResource<DiskLayerHandleKind, RamDiskLayerHandle> for RamDiskResolver {
+impl ResolveResource<DiskLayerHandleKind, RamDiskLayerHandle> for RamDiskLayerResolver {
     type Output = ResolvedDiskLayer;
     type Error = ResolveRamDiskError;
 
@@ -35,7 +38,7 @@ impl ResolveResource<DiskLayerHandleKind, RamDiskLayerHandle> for RamDiskResolve
         _input: ResolveDiskLayerParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
         Ok(ResolvedDiskLayer::new(
-            RamLayer::new(rsrc.len).map_err(ResolveRamDiskError::Ram)?,
+            RamDiskLayer::new(rsrc.len).map_err(ResolveRamDiskError::Ram)?,
         ))
     }
 }

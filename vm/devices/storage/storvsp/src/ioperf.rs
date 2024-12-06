@@ -10,7 +10,7 @@ use crate::test_helpers::TestWorker;
 use crate::ScsiController;
 use crate::ScsiControllerDisk;
 use crate::ScsiPath;
-use disk_ramdisk::ram_disk;
+use disklayer_ram::ram_disk;
 use guestmem::GuestMemory;
 use pal_async::driver::SpawnDriver;
 use scsi_defs::srb::SrbStatus;

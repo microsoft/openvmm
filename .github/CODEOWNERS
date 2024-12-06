@@ -7,9 +7,14 @@
 /ci/ @microsoft/openvmm-ci-reviewers
 /.github/ @microsoft/openvmm-ci-reviewers
 
+# Areas with specific maintainers. In some cases, general maintainers can also approve.
+
 # VTL2 settings is an API consumed by various partner teams. VTL2 Settings
 # approvers evaluate for consistency and to help ensure no breaking changes
 /vm/devices/get/underhill_config/* @microsoft/openvmm-vtl2-settings-approvers
+
+# Vmbus
+/vm/devices/vmbus/ @microsoft/openvmm-maintain @microsoft/openvmm-vmbus
 
 # Cargo dependencies
 /Cargo.lock @microsoft/openvmm-dependency-reviewers

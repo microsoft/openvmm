@@ -246,7 +246,7 @@ disk_file = { path = "vm/devices/storage/disk_file" }
 disk_get_vmgs = { path = "vm/devices/storage/disk_get_vmgs" }
 disk_layered = { path = "vm/devices/storage/disk_layered" }
 disk_nvme = { path = "vm/devices/storage/disk_nvme" }
-disk_ramdisk = { path = "vm/devices/storage/disk_ramdisk" }
+disklayer_ram = { path = "vm/devices/storage/disklayer_ram" }
 disk_striped = { path = "vm/devices/storage/disk_striped" }
 disk_vhd1 = { path = "vm/devices/storage/disk_vhd1" }
 disk_vhdmp = { path = "vm/devices/storage/disk_vhdmp" }
