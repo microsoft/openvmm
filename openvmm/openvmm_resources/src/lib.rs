@@ -58,9 +58,6 @@ vm_resource::register_static_resolvers! {
     #[cfg(feature = "disklayer_sqlite")]
     disklayer_sqlite::resolver::SqliteDiskResolver,
 
-    // Disk Layers
-    disklayer_ram::resolver::RamDiskLayerResolver,
-
     // PCI devices
     gdma::resolver::GdmaDeviceResolver,
     nvme::resolver::NvmeControllerResolver,
