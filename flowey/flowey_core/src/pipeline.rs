@@ -952,7 +952,9 @@ impl PipelineJob<'_> {
     /// Overrides the name of the job. The main use case for this is to get an
     /// artifact in ADO with a specific name.
     pub fn ado_override_job_name<S: Into<String>>(self, name: S) -> Self {
-        self.pipeline.ado_job_name_overrides.insert(self.job_idx, name.into());
+        self.pipeline
+            .ado_job_name_overrides
+            .insert(self.job_idx, name.into());
         self
     }
 
