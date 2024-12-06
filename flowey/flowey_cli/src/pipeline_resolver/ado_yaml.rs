@@ -60,6 +60,7 @@ pub fn ado_yaml(
         ado_resources_repository,
         ado_post_process_yaml_cb,
         ado_variables,
+        ref ado_job_name_overrides,
         gh_name: _,
         gh_schedule_triggers: _,
         gh_ci_triggers: _,
@@ -511,7 +512,7 @@ EOF
         };
 
         ado_jobs.push(schema_ado_yaml::Job {
-            job: format!("job{}", job_idx.index()),
+            job: ado_job_name_overrides.get(&job_idx.index()).cloned().unwrap_or_else(|| format!("job{}", job_idx.index())),
             display_name: label.clone(),
             pool,
             depends_on: {
@@ -519,7 +520,7 @@ EOF
                     .edges_directed(job_idx, petgraph::Direction::Incoming)
                     .map(|e| {
                         use petgraph::prelude::*;
-                        format!("job{}", e.source().index())
+                        ado_job_name_overrides.get(&e.source().index()).cloned().unwrap_or_else(|| format!("job{}", e.source().index()))
                     })
                     .collect()
             },
