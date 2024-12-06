@@ -96,8 +96,10 @@ open_enum! {
         /// and usermode. Today, this is only used for SNP: VMSA, CPUID pages,
         /// and secrets pages.
         VTL2_RESERVED = 7,
-        /// Memory preserved during servicing.
-        VTL2_PRESERVED = 8,
+        /// This memory is used by VTL2 usermode as a persisted GPA page pool.
+        /// This memory is part of VTL2's address space, not VTL0's. It is
+        /// marked as reserved to the kernel.
+        VTL2_GPA_POOL = 8,
     }
 }
 
@@ -112,7 +114,7 @@ impl MemoryVtlType {
                 | MemoryVtlType::VTL2_SIDECAR_IMAGE
                 | MemoryVtlType::VTL2_SIDECAR_NODE
                 | MemoryVtlType::VTL2_RESERVED
-                | MemoryVtlType::VTL2_PRESERVED
+                | MemoryVtlType::VTL2_GPA_POOL
         )
     }
 }

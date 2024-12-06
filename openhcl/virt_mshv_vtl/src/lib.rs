@@ -1148,8 +1148,6 @@ pub struct UhPartitionNewParams<'a> {
     pub use_mmio_hypercalls: bool,
     /// Intercept guest debug exceptions to support gdbstub.
     pub intercept_debug_exceptions: bool,
-    /// Allocator for DMA pages to be preserved during servicing.
-    pub dma_pages_pool: Option<fixed_pool_alloc::FixedPoolAllocator>,
 }
 
 /// Parameters to [`UhProtoPartition::build`].

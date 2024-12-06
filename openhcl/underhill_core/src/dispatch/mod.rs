@@ -642,7 +642,8 @@ impl LoadedVm {
             None
         };
 
-        let mem_pool_state = if vf_keepalive_flag {
+        // TODO: FixedPool saved state is being replaced with PagePool in subsequent commits.
+        let _mem_pool_state = if vf_keepalive_flag {
             self.fixed_mem_pool
                 .as_ref()
                 .map(|f| f.save().ok())
@@ -668,7 +669,6 @@ impl LoadedVm {
                 vmgs: (vmgs, self.vmgs_disk_metadata.clone()),
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
                 nvme_state,
-                mem_pool_state,
             },
             units,
         })

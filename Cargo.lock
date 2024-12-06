@@ -7334,7 +7334,6 @@ dependencies = [
  "bitvec",
  "build_rs_guest_arch",
  "cfg-if",
- "fixed_pool_alloc",
  "fs-err",
  "guestmem",
  "hcl",

@@ -382,7 +382,7 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
     let dma_preserve_ranges = memory
         .iter()
         .filter_map(|entry| {
-            if entry.vtl_usage() == MemoryVtlType::VTL2_PRESERVED {
+            if entry.vtl_usage() == MemoryVtlType::VTL2_GPA_POOL {
                 Some(*entry.range())
             } else {
                 None

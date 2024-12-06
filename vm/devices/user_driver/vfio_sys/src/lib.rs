@@ -194,6 +194,9 @@ impl Group {
         Ok(GroupStatus::from(status.flags))
     }
 
+    /// Skip VFIO device reset when kernel is reloaded during servicing.
+    /// This feature is non-upstream version of our kernel and will be
+    /// eventually replaced with iommufd.
     pub fn set_keep_alive(&self, device_id: &str) -> anyhow::Result<()> {
         // SAFETY: The file descriptor is valid and a correctly constructed struct is being passed.
         unsafe {

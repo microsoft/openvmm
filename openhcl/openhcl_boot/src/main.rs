@@ -300,8 +300,8 @@ enum ReservedMemoryType {
     SidecarImage,
     /// A reserved range per sidecar node.
     SidecarNode,
-    /// Preserved DMA buffers and hardware queues.
-    DmaBuffers,
+    /// Persistent GPA pool preserved during servicing.
+    PersistentGpaPool,
 }
 
 /// Construct a slice representing the reserved memory ranges to be reported to
@@ -344,7 +344,7 @@ fn reserved_memory_regions(
                 start: last_mem_entry.range.end_4k_gpn() - dma_4k_pages,
                 end: last_mem_entry.range.end_4k_gpn(),
             });
-            reserved.push((reserved_dma, ReservedMemoryType::DmaBuffers));
+            reserved.push((reserved_dma, ReservedMemoryType::PersistentGpaPool));
         }
     }
 
