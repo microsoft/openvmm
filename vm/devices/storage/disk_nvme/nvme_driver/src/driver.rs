@@ -465,24 +465,16 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     }
 
     /// Gets the namespace with namespace ID `nsid`.
-    pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
-        // Even if namespace might have been previously restored,
-        // query Identify again to prevent possible mismatch.
-        // TODO: Check if we will process Namespace Change AEN instead.
-        let ns_new = Arc::new(
-            Namespace::new(
-                &self.driver,
-                self.admin.as_ref().unwrap().clone(),
-                self.rescan_event.clone(),
-                self.identify.clone().unwrap(),
-                &self.io_issuers,
-                nsid,
-            )
-            .await?,
-        );
-
-        self.namespaces.push(ns_new.clone());
-        Ok(ns_new)
+    pub async fn namespace(&self, nsid: u32) -> Result<Namespace, NamespaceError> {
+        Namespace::new(
+            &self.driver,
+            self.admin.as_ref().unwrap().clone(),
+            self.rescan_event.clone(),
+            self.identify.clone().unwrap(),
+            &self.io_issuers,
+            nsid,
+        )
+        .await
     }
 
     /// Returns the number of CPUs that are in fallback mode (that are using a

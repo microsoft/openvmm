@@ -264,9 +264,8 @@ impl HostDmaAllocator for EmulatedDmaAllocator {
         Ok(memory)
     }
 
-    fn attach_dma_buffer(&self, len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
-        // For emulated allocator (unit tests only) reuse the regular alloc.
-        self.allocate_dma_buffer(len)
+    fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        anyhow::bail!("restore is not supported for emulated DMA")
     }
 }
 
