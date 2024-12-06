@@ -327,6 +327,7 @@ fn parse_host_vtl2_ram(
 type ParsedDt =
     ParsedDeviceTree<MAX_PARTITION_RAM_RANGES, MAX_CPU_COUNT, COMMAND_LINE_SIZE, MAX_ENTROPY_SIZE>;
 
+#[derive(Debug, PartialEq, Eq)]
 struct PartitionTopology {
     vtl2_ram: &'static [MemoryEntry],
     vtl2_persisted_state: MemoryRange,
@@ -477,8 +478,42 @@ fn topology_from_host_dt(
     })
 }
 
-fn topology_from_persisted_state() -> Result<PartitionTopology, DtError> {
+fn topology_from_persisted_state(
+    params: &ShimParams,
+    parsed: &ParsedDt,
+) -> Result<PartitionTopology, DtError> {
     todo!()
+}
+
+fn read_persisted_region_header(params: &ShimParams) -> Result<Option<MemoryRange>, DtError> {
+    // TODO CVM: On an isolated guest, these pages may not be accepted. We need
+    // to rethink how this will work in order to handle this correctly, as on a
+    // first boot we'd need to accept them early, but subsequent boots should
+    // not accept any pages.
+    if params.isolation_type != IsolationType::None {
+        return Ok(None);
+    }
+
+    // See if a persisted region exists. Start by mapping just 4K at the top
+    // of the end of file memory, where the header should be.
+    let mut local_map = params.local_map.borrow_mut();
+    let mapping = local_map.map_pages(
+        MemoryRange::new(
+            params.memory_start_address + params.memory_size - HV_PAGE_SIZE
+                ..params.memory_start_address + params.memory_size,
+        ),
+        false,
+    );
+
+    // Parse the fixed header.
+    let (header, remaining) = PersistedStateHeader::read_from_prefix_split(mapping.data)
+        .expect("BUGBUG must be big enough");
+
+    if header.magic != PersistedStateHeader::MAGIC {
+        return Ok(None);
+    }
+
+    todo!("figure out how big region is")
 }
 
 impl PartitionInfo {
@@ -551,12 +586,9 @@ impl PartitionInfo {
         // test protobuf
         protobuf_test(params, vtl2_persisted_state);
 
-        // See if a persisted region exists. Start by mapping just 4K at the top
-        // of the end of file memory, where the header should be.
+        let has_persisted_state = read_persisted_region_header(params)?;
 
-        let has_persisted_state = false;
-
-        let topology = if has_persisted_state {
+        let topology = if let Some(persisted_region) = has_persisted_state {
             topology_from_persisted_state()?
         } else {
             topology_from_host_dt(params, parsed, storage.cmdline.as_str())?
