@@ -1330,6 +1330,7 @@ dependencies = [
  "disk_backend_resources",
  "disk_layered",
  "event-listener",
+ "futures",
  "guestmem",
  "inspect",
  "pal_async",

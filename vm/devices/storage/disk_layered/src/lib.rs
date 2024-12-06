@@ -170,28 +170,64 @@ impl LayeredDisk {
 
         let mut attached_layers: Vec<LayerConfiguration<AttachedDiskLayer>> = {
             let mut attached_layers = Vec::new();
+
             // layers are attached to one another from the bottom-up, hence the need
             // to iterate in reverse.
             let mut lower_layer_metadata = None;
-            for (i, config) in layers.into_iter().enumerate().rev() {
-                let layer = config
-                    .layer
+            for (
+                i,
+                LayerConfiguration {
+                    layer,
+                    write_through,
+                    read_cache,
+                },
+            ) in layers.into_iter().enumerate().rev()
+            {
+                let layer_error = |e| InvalidLayeredDisk::Layer(i, e);
+
+                let layer = layer
                     .0
                     .attach(lower_layer_metadata.take())
                     .await
-                    .map_err(|e| InvalidLayeredDisk::Layer(i, InvalidLayer::AttachFailed(e)))?;
-                lower_layer_metadata = Some(layer.meta.clone());
+                    .map_err(|e| layer_error(InvalidLayer::AttachFailed(e)))?;
+
+                let layer_meta = layer.meta.clone();
+
                 attached_layers.push(LayerConfiguration {
                     layer,
-                    write_through: config.write_through,
-                    read_cache: config.read_cache,
+                    write_through,
+                    read_cache,
                 });
+
+                // perform some layer validation prior to attaching subsequent layers
+                if read_cache && !layer_meta.can_read_cache {
+                    return Err(layer_error(InvalidLayer::ReadCacheNotSupported));
+                }
+                if (read_cache || write_through) && layer_meta.read_only {
+                    return Err(layer_error(InvalidLayer::ReadOnlyCache));
+                }
+                if !layer_meta.sector_size.is_power_of_two() {
+                    return Err(layer_error(InvalidLayer::InvalidSectorSize(
+                        layer_meta.sector_size,
+                    )));
+                }
+                if layer_meta.sector_size != attached_layers[0].layer.meta.sector_size {
+                    // FUTURE: consider supporting different sector sizes, within reason.
+                    return Err(layer_error(InvalidLayer::MismatchedSectorSize {
+                        expected: attached_layers[0].layer.meta.sector_size,
+                        found: layer_meta.sector_size,
+                    }));
+                }
+
+                lower_layer_metadata = Some(layer_meta);
             }
+
             attached_layers.reverse();
             attached_layers
         };
 
-        // validate the layer-stack, and collect the common properties of the layers
+        // perform top-down validation of the layer-stack, collecting various
+        // common properties of the stack along the way.
         let mut last_write_through = true;
         let mut is_fua_respected = true;
         let mut optimal_unmap_sectors = 1;
@@ -203,30 +239,11 @@ impl LayeredDisk {
             &LayerConfiguration {
                 ref layer,
                 write_through,
-                read_cache,
+                read_cache: _,
             },
         ) in attached_layers.iter().enumerate()
         {
             let layer_error = |e| InvalidLayeredDisk::Layer(i, e);
-
-            if read_cache && !layer.meta.can_read_cache {
-                return Err(layer_error(InvalidLayer::ReadCacheNotSupported));
-            }
-            if (read_cache || write_through) && layer.meta.read_only {
-                return Err(layer_error(InvalidLayer::ReadOnlyCache));
-            }
-            if !layer.meta.sector_size.is_power_of_two() {
-                return Err(layer_error(InvalidLayer::InvalidSectorSize(
-                    layer.meta.sector_size,
-                )));
-            }
-            if layer.meta.sector_size != attached_layers[0].layer.meta.sector_size {
-                // FUTURE: consider supporting different sector sizes, within reason.
-                return Err(layer_error(InvalidLayer::MismatchedSectorSize {
-                    expected: attached_layers[0].layer.meta.sector_size,
-                    found: layer.meta.sector_size,
-                }));
-            }
 
             if last_write_through {
                 if layer.meta.read_only && !read_only {

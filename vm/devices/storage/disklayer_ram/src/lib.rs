@@ -61,7 +61,7 @@ pub struct RamDiskLayer {
 struct RamState {
     #[inspect(skip)]
     data: BTreeMap<u64, Sector>,
-    #[inspect(skip)] // handled in root inspect
+    #[inspect(skip)] // handled in inspect_extra()
     sector_count: u64,
     zero_after: u64,
 }
@@ -368,17 +368,21 @@ impl WriteNoOverwrite for RamDiskLayer {
 /// layer. It is useful since non-layered RAM disks are used all over the place,
 /// especially in tests.
 pub fn ram_disk(size: u64, read_only: bool) -> anyhow::Result<Disk> {
-    let layer = RamDiskLayer::new(size)?;
-    let disk = Disk::new(pal_async::local::block_with_io(|_| {
+    use futures::future::FutureExt;
+
+    let disk = Disk::new(
         LayeredDisk::new(
             read_only,
             vec![LayerConfiguration {
-                layer: DiskLayer::new(layer),
+                layer: DiskLayer::new(RamDiskLayer::new(size)?),
                 write_through: false,
                 read_cache: false,
             }],
         )
-    })?)?;
+        .now_or_never()
+        .expect("RamDiskLayer won't block")?,
+    )?;
+
     Ok(disk)
 }
 
