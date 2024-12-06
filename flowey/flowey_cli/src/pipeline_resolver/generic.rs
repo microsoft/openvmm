@@ -170,7 +170,6 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
             cond_param_idx,
             ado_pool,
             ado_variables,
-            ado_job_name_overrides: _,
             gh_override_if,
             gh_global_env,
             gh_pool,

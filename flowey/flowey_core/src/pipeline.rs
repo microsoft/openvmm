@@ -553,7 +553,6 @@ impl Pipeline {
             cond_param_idx: None,
             ado_pool: None,
             ado_variables: BTreeMap::new(),
-            ado_job_name_overrides: BTreeMap::new(),
             gh_override_if: None,
             gh_global_env: BTreeMap::new(),
             gh_pool: None,
@@ -949,12 +948,17 @@ impl PipelineJob<'_> {
         self
     }
 
-    /// Overrides the name of the job. The main use case for this is to get an
-    /// artifact in ADO with a specific name.
-    pub fn ado_override_job_name<S: Into<String>>(self, name: S) -> Self {
+    /// Overrides the id of the job.
+    ///
+    /// Flowey typically generates a reasonable job ID but some use cases that depend
+    /// on the ID may find it useful to override it to something custom.
+    pub fn ado_override_job_id<S>(self, name: S) -> Self
+    where
+        S: AsRef<str>,
+    {
         self.pipeline
             .ado_job_name_overrides
-            .insert(self.job_idx, name.into());
+            .insert(self.job_idx, name.as_ref().into());
         self
     }
 
@@ -1152,7 +1156,6 @@ pub mod internal {
         // backend specific
         pub ado_pool: Option<AdoPool>,
         pub ado_variables: BTreeMap<String, String>,
-        pub ado_job_name_overrides: BTreeMap<usize, String>,
         pub gh_override_if: Option<String>,
         pub gh_pool: Option<GhRunner>,
         pub gh_global_env: BTreeMap<String, String>,
