@@ -47,4 +47,3 @@ pub use mesh_node::message;
 pub use mesh_node::message::MeshPayload;
 pub use mesh_node::message::Message;
 pub use mesh_node::resource;
-pub use mesh_node::upcast;

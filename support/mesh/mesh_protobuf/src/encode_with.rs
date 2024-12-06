@@ -15,7 +15,6 @@ use super::MessageDecode;
 use super::MessageEncode;
 use super::Result;
 use crate::inplace;
-use crate::Downcast;
 use core::ops::Deref;
 use core::ops::DerefMut;
 
@@ -155,5 +154,3 @@ impl<'a, T, U: From<T> + Into<T>, R, E: MessageDecode<'a, U, R>>
 impl<T, U: From<T> + Into<T> + DefaultEncoding> DefaultEncoding for EncodeAs<T, U> {
     type Encoding = MessageEncoding<EncodedMessage<U::Encoding>>;
 }
-
-impl<T, U> Downcast<EncodeAs<T, U>> for EncodeAs<T, U> where U: From<T> + Into<T> {}

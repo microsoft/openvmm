@@ -993,6 +993,7 @@ dependencies = [
  "guid",
  "inspect",
  "inspect_proto",
+ "mesh",
  "mesh_rpc",
  "pal_async",
  "socket2",

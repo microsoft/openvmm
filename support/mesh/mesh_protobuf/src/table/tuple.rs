@@ -14,7 +14,6 @@ use crate::protofile::DescribeMessage;
 use crate::protofile::FieldType;
 use crate::protofile::MessageDescription;
 use crate::DefaultEncoding;
-use crate::Downcast;
 use crate::FieldDecode;
 use crate::FieldEncode;
 
@@ -66,8 +65,6 @@ macro_rules! tuplegen {
         {
             const FIELD_TYPE: FieldType<'static> = FieldType::tuple(&[$(<$t::Encoding as DescribeField<$t>>::FIELD_TYPE,)*]);
         }
-
-        impl<$($t, $u, )*> Downcast<($($u,)*)> for ($($t,)*) where $($t: Downcast<$u>,)* {}
         )*
     };
 }

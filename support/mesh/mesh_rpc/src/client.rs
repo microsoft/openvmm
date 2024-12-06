@@ -145,7 +145,8 @@ impl ClientBuilder {
         };
         let task = driver.spawn("ttrpc client", worker.run());
         Client {
-            send: send.force_downcast(),
+            // Erase the type of the sender.
+            send: mesh::local_node::Port::from(send).into(),
             task,
         }
     }
@@ -254,13 +255,6 @@ impl CallBuilder<'_> {
         }));
 
         Call(recv)
-    }
-}
-
-impl<T> Call<T> {
-    /// Returns the inner mesh receiver.
-    pub fn into_inner(self) -> mesh::OneshotReceiver<Result<T, Status>> {
-        self.0
     }
 }
 

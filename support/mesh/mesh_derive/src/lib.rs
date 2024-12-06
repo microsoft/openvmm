@@ -10,7 +10,6 @@ use quote::format_ident;
 use quote::quote;
 use quote::quote_spanned;
 use quote::ToTokens;
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use syn::ext::IdentExt;
 use syn::parse::Parse;
@@ -112,7 +111,6 @@ struct Modifiers {
     impl_for_type: Option<Path>,
     bound: Option<Punctuated<WherePredicate, Token![,]>>,
     prost: bool,
-    no_downcast: bool,
     transparent: Option<Span>,
     resource_type: Option<Path>,
     protobuf_mod: Path,
@@ -148,7 +146,6 @@ enum Attr {
     Mod(Path),
     Resource(Path),
     Prost,
-    NoUpcast,
     Transparent,
     Package(LitStr),
     Rename(LitStr),
@@ -165,8 +162,6 @@ impl Parse for Attr {
             Ok(Self::ImplFor(val.parse_with(Path::parse_mod_style)?))
         } else if ident == "prost" {
             Ok(Self::Prost)
-        } else if ident == "no_upcast" {
-            Ok(Self::NoUpcast)
         } else if ident == "mod" {
             let val = parse_string_attr(input)?;
             Ok(Self::Mod(val.parse_with(Path::parse_mod_style)?))
@@ -199,7 +194,6 @@ fn parse_attributes(
     let mut impl_for_type = None;
     let mut bound = None;
     let mut prost = false;
-    let mut no_downcast = false;
     let mut protobuf_mod = None;
     let mut resource_type = None;
     let mut transparent = None;
@@ -212,7 +206,6 @@ fn parse_attributes(
                 Attr::ImplFor(path) => impl_for_type = Some(path),
                 Attr::Mod(path) => protobuf_mod = Some(path),
                 Attr::Prost => prost = true,
-                Attr::NoUpcast => no_downcast = true,
                 Attr::Resource(path) => resource_type = Some(path),
                 Attr::Transparent => transparent = Some(span),
                 Attr::Package(val) => package = Some(val),
@@ -224,7 +217,6 @@ fn parse_attributes(
         impl_for_type,
         bound,
         prost,
-        no_downcast,
         transparent,
         resource_type: resource_type
             .or_else(|| default_resource_type.map(|t| syn::parse_str(t).unwrap())),
@@ -441,208 +433,6 @@ fn add_encoding_params(
     generics
 }
 
-fn map_pair<T, P, U>(
-    p: syn::punctuated::Pair<T, P>,
-    mut f: impl FnMut(T) -> U,
-) -> syn::punctuated::Pair<U, P> {
-    match p {
-        syn::punctuated::Pair::Punctuated(t, p) => syn::punctuated::Pair::Punctuated(f(t), p),
-        syn::punctuated::Pair::End(t) => syn::punctuated::Pair::End(f(t)),
-    }
-}
-
-fn map_generics(ty: syn::Type, f: &mut impl FnMut(Ident) -> Ident) -> syn::Type {
-    let mut recurse = |t: syn::Type| map_generics(t, f);
-    match ty {
-        syn::Type::Array(a) => syn::Type::Array(syn::TypeArray {
-            elem: Box::new(recurse(*a.elem)),
-            ..a
-        }),
-        syn::Type::Group(g) => syn::Type::Group(syn::TypeGroup {
-            elem: Box::new(recurse(*g.elem)),
-            ..g
-        }),
-        syn::Type::Path(p) => syn::Type::Path(match p {
-            TypePath { qself: None, path } if path.get_ident().is_some() => TypePath {
-                qself: None,
-                path: f(path.get_ident().unwrap().clone()).into(),
-            },
-            p => TypePath {
-                qself: p.qself.map(|s| syn::QSelf {
-                    ty: Box::new(recurse(*s.ty)),
-                    ..s
-                }),
-                path: Path {
-                    segments: p
-                        .path
-                        .segments
-                        .into_pairs()
-                        .map(|p| {
-                            map_pair(p, |s: syn::PathSegment| syn::PathSegment {
-                                arguments: match s.arguments {
-                                    syn::PathArguments::None => syn::PathArguments::None,
-                                    syn::PathArguments::AngleBracketed(a) => {
-                                        syn::PathArguments::AngleBracketed(
-                                            syn::AngleBracketedGenericArguments {
-                                                args: a
-                                                    .args
-                                                    .into_pairs()
-                                                    .map(|p| {
-                                                        map_pair(p, |a: syn::GenericArgument| {
-                                                            match a {
-                                                                syn::GenericArgument::Type(t) => {
-                                                                    syn::GenericArgument::Type(
-                                                                        recurse(t),
-                                                                    )
-                                                                }
-                                                                _ => a,
-                                                            }
-                                                        })
-                                                    })
-                                                    .collect(),
-                                                ..a
-                                            },
-                                        )
-                                    }
-                                    syn::PathArguments::Parenthesized(p) => {
-                                        syn::PathArguments::Parenthesized(
-                                            syn::ParenthesizedGenericArguments {
-                                                inputs: p
-                                                    .inputs
-                                                    .into_pairs()
-                                                    .map(|p| map_pair(p, &mut recurse))
-                                                    .collect(),
-                                                output: match p.output {
-                                                    syn::ReturnType::Default => {
-                                                        syn::ReturnType::Default
-                                                    }
-                                                    syn::ReturnType::Type(a, t) => {
-                                                        syn::ReturnType::Type(
-                                                            a,
-                                                            Box::new(recurse(*t)),
-                                                        )
-                                                    }
-                                                },
-                                                ..p
-                                            },
-                                        )
-                                    }
-                                },
-                                ..s
-                            })
-                        })
-                        .collect(),
-                    ..p.path
-                },
-            },
-        }),
-        syn::Type::Ptr(p) => syn::Type::Ptr(syn::TypePtr {
-            elem: Box::new(recurse(*p.elem)),
-            ..p
-        }),
-        syn::Type::Reference(r) => syn::Type::Reference(syn::TypeReference {
-            elem: Box::new(recurse(*r.elem)),
-            ..r
-        }),
-        syn::Type::Slice(s) => syn::Type::Slice(syn::TypeSlice {
-            elem: Box::new(recurse(*s.elem)),
-            ..s
-        }),
-        syn::Type::Tuple(t) => syn::Type::Tuple(syn::TypeTuple {
-            elems: t
-                .elems
-                .into_pairs()
-                .map(|p| map_pair(p, &mut recurse))
-                .collect(),
-            ..t
-        }),
-        v @ syn::Type::BareFn(_)
-        | v @ syn::Type::ImplTrait(_)
-        | v @ syn::Type::Infer(_)
-        | v @ syn::Type::Macro(_)
-        | v @ syn::Type::Never(_)
-        | v @ syn::Type::Paren(_)
-        | v @ syn::Type::TraitObject(_)
-        | v => v,
-    }
-}
-
-fn impl_upcast(
-    protobuf_mod: &Path,
-    type_ident: &Path,
-    data: &syn::Data,
-    generics: &Generics,
-    allow_generic: bool,
-) -> TokenStream {
-    if allow_generic && generics.type_params().next().is_some() {
-        let mut generics = generics.clone();
-        let mapped: BTreeMap<Ident, Ident> = generics
-            .type_params()
-            .map(|tp| {
-                (
-                    tp.ident.clone(),
-                    Ident::new(&(tp.ident.to_string() + "_mapped"), Span::call_site()),
-                )
-            })
-            .collect();
-
-        let where_clause = generics.make_where_clause();
-        let mut update_where_for_field = |field: &syn::Field| {
-            let ty = map_generics(field.ty.clone(), &mut |i| {
-                mapped.get(&i).cloned().unwrap_or(i)
-            });
-            if ty != field.ty {
-                let field_ty = &field.ty;
-                where_clause
-                    .predicates
-                    .push(parse_quote! {#field_ty: #protobuf_mod::Downcast<#ty>});
-            }
-        };
-
-        match data {
-            syn::Data::Struct(data) => {
-                for field in &data.fields {
-                    update_where_for_field(field);
-                }
-            }
-            syn::Data::Enum(data) => {
-                for variant in &data.variants {
-                    for field in &variant.fields {
-                        update_where_for_field(field);
-                    }
-                }
-            }
-            syn::Data::Union(_) => unimplemented!(),
-        }
-        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-        let mut impl_generics: Generics = syn::parse2(impl_generics.to_token_stream()).unwrap();
-        let mut extra_impl_generics = Vec::new();
-        for p in &impl_generics.params {
-            if let GenericParam::Type(t) = p {
-                extra_impl_generics.push(GenericParam::Type(syn::TypeParam {
-                    ident: mapped.get(&t.ident).unwrap().clone(),
-                    ..t.clone()
-                }));
-            }
-        }
-        impl_generics.params.extend(extra_impl_generics);
-        let mut alt_ty_generics: Generics = syn::parse2(ty_generics.to_token_stream()).unwrap();
-        for p in alt_ty_generics.params.iter_mut() {
-            if let GenericParam::Type(t) = p {
-                t.ident = mapped.get(&t.ident).unwrap().clone();
-            }
-        }
-        quote! {
-            impl #impl_generics #protobuf_mod::Downcast<#type_ident #alt_ty_generics> for #type_ident #ty_generics #where_clause {}
-        }
-    } else {
-        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-        quote! {
-            impl #impl_generics #protobuf_mod::Downcast<#type_ident #ty_generics> for #type_ident #ty_generics #where_clause {}
-        }
-    }
-}
-
 fn derive_transparent_struct(
     input: &DeriveInput,
     modifiers: Modifiers,
@@ -652,7 +442,6 @@ fn derive_transparent_struct(
         impl_for_type,
         bound,
         prost,
-        no_downcast,
         transparent,
         resource_type,
         protobuf_mod,
@@ -663,7 +452,6 @@ fn derive_transparent_struct(
     if impl_for_type.is_some()
         || bound.is_some()
         || *prost
-        || *no_downcast
         || resource_type.is_some()
         || package.is_some()
         || name.is_some()
@@ -778,49 +566,8 @@ fn derive_struct(
             impl #message_impl_generics #protobuf_mod::DefaultEncoding for #type_ident #message_ty_generics #message_where_clause {
                 type Encoding = #protobuf_mod::encoding::MessageEncoding<#protobuf_mod::prost::ProstMessage>;
             }
-
-            impl #message_impl_generics #protobuf_mod::Downcast<#type_ident #message_ty_generics> for #type_ident #message_ty_generics #message_where_clause {}
         });
     }
-
-    let upcast = if modifiers.no_downcast {
-        TokenStream::new()
-    } else if let Some((field_number, field)) = data
-        .fields
-        .iter()
-        .enumerate()
-        .find(|(_, f)| !matches!(f.vis, syn::Visibility::Public(_)))
-    {
-        // Do not implement the generic Downcast traits for structs with non-public
-        // fields, since:
-        // 1. we cannot generate the where clauses for them since their types might
-        //    be private.
-        // 2. those typically imply special handling is required in some way.
-        //
-        // Embed a string in the output so this is somewhat debuggable.
-        let comment = format!(
-            "skipping Downcast implementation for {} due to private field {}",
-            type_ident.to_token_stream(),
-            field
-                .ident
-                .as_ref()
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| field_number.to_string())
-        );
-        let body = impl_upcast(
-            protobuf_mod,
-            &type_ident,
-            &input.data,
-            &none_generics,
-            false,
-        );
-        quote! {
-            const _: &str = #comment;
-            #body
-        }
-    } else {
-        impl_upcast(protobuf_mod, &type_ident, &input.data, &none_generics, true)
-    };
 
     let field_data = field_data(protobuf_mod, &data.fields)?;
 
@@ -875,8 +622,6 @@ fn derive_struct(
         impl #message_impl_generics #protobuf_mod::DefaultEncoding for #this #message_where_clause {
             type Encoding = #protobuf_mod::table::TableEncoder;
         }
-
-        #upcast
 
         #describe
     })
@@ -1258,12 +1003,6 @@ fn derive_enum(
         }
     }
 
-    let upcast = if modifiers.no_downcast {
-        quote! {}
-    } else {
-        impl_upcast(protobuf_mod, &type_ident, &input.data, &none_generics, true)
-    };
-
     let describe = if modifiers.package.is_some() {
         let oneof_descriptor = quote!(#protobuf_mod::protofile::OneofDescriptor::new("variant", &[#(#variant_descriptors,)*]));
         describe_message(
@@ -1307,7 +1046,6 @@ fn derive_enum(
             type Encoding = #protobuf_mod::oneof::OneofEncoder;
         }
 
-        #upcast
         #describe
     })
 }

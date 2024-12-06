@@ -7,11 +7,48 @@
 
 use heck::ToUpperCamelCase;
 use proc_macro2::Span;
-use proc_macro2::TokenStream;
 use syn::Ident;
 
 /// A service generator for mesh services.
-pub struct MeshServiceGenerator;
+pub struct MeshServiceGenerator {
+    replacements: Vec<(syn::TypePath, syn::Type)>,
+}
+
+impl MeshServiceGenerator {
+    /// Creates a new service generator.
+    pub fn new() -> Self {
+        Self {
+            replacements: Vec::new(),
+        }
+    }
+
+    /// Configures the generator to replace any instance of Rust `ty` with
+    /// `replacement`.
+    ///
+    /// This can be useful when some input or output messages already have mesh
+    /// types defined, and you want to use them instead of the generated prost
+    /// types.
+    pub fn replace_type(mut self, ty: &str, replacement: &str) -> Self {
+        let ty = syn::parse_str(ty).unwrap();
+        let replacement = syn::parse_str(replacement).unwrap();
+        self.replacements.push((ty, replacement));
+        self
+    }
+
+    fn lookup_type(&self, ty: &str) -> syn::Type {
+        let ty: syn::Type = syn::parse_str(ty).unwrap_or_else(|err| {
+            panic!("failed to parse type {}: {}", ty, err);
+        });
+        if let syn::Type::Path(ty) = &ty {
+            for (from, to) in &self.replacements {
+                if from == ty {
+                    return to.clone();
+                }
+            }
+        }
+        ty
+    }
+}
 
 impl prost_build::ServiceGenerator for MeshServiceGenerator {
     fn generate(&mut self, service: prost_build::Service, buf: &mut String) {
@@ -23,15 +60,15 @@ impl prost_build::ServiceGenerator for MeshServiceGenerator {
             .iter()
             .map(|m| Ident::new(&m.name.to_upper_camel_case(), Span::call_site()))
             .collect();
-        let request_types: Vec<TokenStream> = service
+        let request_types: Vec<_> = service
             .methods
             .iter()
-            .map(|m| m.input_type.parse().unwrap())
+            .map(|m| self.lookup_type(&m.input_type))
             .collect();
-        let response_types: Vec<TokenStream> = service
+        let response_types: Vec<_> = service
             .methods
             .iter()
-            .map(|m| m.output_type.parse().unwrap())
+            .map(|m| self.lookup_type(&m.output_type))
             .collect();
 
         *buf += &quote::quote! {

@@ -13,9 +13,7 @@ pub mod rpc;
 use bidir::Channel;
 use mesh_node::local_node::Port;
 use mesh_node::message::MeshField;
-use mesh_protobuf::Downcast;
 use mesh_protobuf::Protobuf;
-use mesh_protobuf::Upcast;
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
@@ -89,11 +87,7 @@ pub enum RecvError {
 
 /// The sending half of a channel returned by [`channel`].
 #[derive(Protobuf)]
-#[mesh(
-    no_upcast,
-    bound = "T: MeshField",
-    resource = "mesh_node::resource::Resource"
-)]
+#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 pub struct Sender<T>(Channel<(T,), ()>);
 
 impl<T> Debug for Sender<T> {
@@ -104,11 +98,7 @@ impl<T> Debug for Sender<T> {
 
 /// The receiving half of a channel returned by [`channel`].
 #[derive(Protobuf)]
-#[mesh(
-    no_upcast,
-    bound = "T: MeshField",
-    resource = "mesh_node::resource::Resource"
-)]
+#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 pub struct Receiver<T>(Channel<(), (T,)>);
 
 impl<T> Debug for Receiver<T> {
@@ -126,48 +116,6 @@ impl<T: MeshField> From<Port> for Sender<T> {
 impl<T: MeshField> From<Sender<T>> for Port {
     fn from(v: Sender<T>) -> Self {
         v.0.into()
-    }
-}
-
-// Contravariance for senders, in analogy to functions being contravariant in
-// their arguments.
-//
-// Wrap T and U in tuples for this bound since field types are implicitly
-// wrapped in messages when serialized.
-impl<T: MeshField, U: MeshField> Downcast<Sender<U>> for Sender<T> where (U,): Downcast<(T,)> {}
-
-impl<T: MeshField> Sender<T> {
-    /// Upcasts this sender to one that can send values whose encoding is a
-    /// subset of `T`'s.
-    ///
-    /// ```
-    /// # extern crate mesh_node;
-    /// # use mesh_channel::*;
-    /// # use futures::executor::block_on;
-    /// let (send, mut recv) = channel::<Option<mesh_node::message::Message>>();
-    /// let send = send.upcast::<Option<(u32, u16)>>();
-    /// send.send(None);
-    /// send.send(Some((5, 4)));
-    /// assert!(block_on(recv.recv()).unwrap().is_none());
-    /// assert!(block_on(recv.recv()).unwrap().is_some());
-    /// ```
-    pub fn upcast<U: MeshField>(self) -> Sender<U>
-    where
-        Self: Upcast<Sender<U>>,
-    {
-        Sender(self.0.change_types())
-    }
-
-    /// Downcasts this sender to one that can send values whose encoding is a
-    /// superset of `T`'s.
-    ///
-    /// Although this is memory safe, it can cause the receiver to see message
-    /// decoding errors.
-    pub fn force_downcast<U: MeshField>(self) -> Sender<U>
-    where
-        Sender<U>: Upcast<Self>,
-    {
-        Sender(self.0.change_types())
     }
 }
 
@@ -234,48 +182,6 @@ impl<T: MeshField> From<Port> for Receiver<T> {
 impl<T: MeshField> From<Receiver<T>> for Port {
     fn from(v: Receiver<T>) -> Self {
         v.0.into()
-    }
-}
-
-// Covariance for receivers, in analogy to functions being covariant in their
-// return values.
-//
-// Wrap T and U in tuples for this bound since field types are implicitly
-// wrapped in messages when serialized.
-impl<T: MeshField, U: MeshField> Downcast<Receiver<U>> for Receiver<T> where (T,): Downcast<(U,)> {}
-
-impl<T: MeshField> Receiver<T> {
-    /// Upcasts this receiver to one that can receive values whose encoding is a
-    /// superset of `T`'s.
-    ///
-    /// ```
-    /// # extern crate mesh_node;
-    /// # use mesh_channel::*;
-    /// # use futures::executor::block_on;
-    /// let (send, recv) = channel::<Option<(u32, u16)>>();
-    /// let mut recv = recv.upcast::<Option<mesh_node::message::Message>>();
-    /// send.send(None);
-    /// send.send(Some((5, 4)));
-    /// assert!(block_on(recv.recv()).unwrap().is_none());
-    /// assert!(block_on(recv.recv()).unwrap().is_some());
-    /// ```
-    pub fn upcast<U: MeshField>(self) -> Receiver<U>
-    where
-        Self: Upcast<Receiver<U>>,
-    {
-        Receiver(self.0.change_types())
-    }
-
-    /// Downcasts this receiver to one that can receive values whose encoding is
-    /// a subset of `T`'s.
-    ///
-    /// Although this is memory safe, it can cause decoding failures if the
-    /// associated sender sends values that don't decode to `U`.
-    pub fn force_downcast<U: MeshField>(self) -> Receiver<U>
-    where
-        Receiver<U>: Upcast<Self>,
-    {
-        Receiver(self.0.change_types())
     }
 }
 
@@ -384,11 +290,7 @@ pub fn channel<T: 'static + Send>() -> (Sender<T>, Receiver<T>) {
 
 /// The sending half of a channel returned by [`oneshot`].
 #[derive(Protobuf)]
-#[mesh(
-    no_upcast,
-    bound = "T: MeshField",
-    resource = "mesh_node::resource::Resource"
-)]
+#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 pub struct OneshotSender<T>(Channel<(T,), ()>);
 
 impl<T> Debug for OneshotSender<T> {
@@ -409,34 +311,6 @@ impl<T: MeshField> From<OneshotSender<T>> for Port {
     }
 }
 
-impl<T: MeshField, U: MeshField> Downcast<OneshotSender<U>> for OneshotSender<T> where
-    Sender<T>: Downcast<Sender<U>>
-{
-}
-
-impl<T: MeshField> OneshotSender<T> {
-    /// Upcasts this sender to one that can send values whose encoding is a
-    /// subset of `T`'s.
-    pub fn upcast<U: MeshField>(self) -> OneshotSender<U>
-    where
-        Self: Upcast<OneshotSender<U>>,
-    {
-        OneshotSender(self.0.change_types())
-    }
-
-    /// Downcasts this sender to one that can send values whose encoding is a
-    /// superset of `T`'s.
-    ///
-    /// Although this is memory safe, it can cause the receiver to see message
-    /// decoding errors.
-    pub fn force_downcast<U: MeshField>(self) -> OneshotSender<U>
-    where
-        OneshotSender<U>: Upcast<Self>,
-    {
-        OneshotSender(self.0.change_types())
-    }
-}
-
 impl<T: 'static + Send> OneshotSender<T> {
     /// Sends `value` to the receiving endpoint of the channel.
     pub fn send(self, value: T) {
@@ -448,11 +322,7 @@ impl<T: 'static + Send> OneshotSender<T> {
 ///
 /// A value is received by `poll`ing or `await`ing the channel.
 #[derive(Protobuf)]
-#[mesh(
-    no_upcast,
-    bound = "T: MeshField",
-    resource = "mesh_node::resource::Resource"
-)]
+#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 pub struct OneshotReceiver<T>(Channel<(), (T,)>);
 
 impl<T> Debug for OneshotReceiver<T> {
@@ -479,34 +349,6 @@ impl<T: MeshField> From<Port> for OneshotReceiver<T> {
 impl<T: MeshField> From<OneshotReceiver<T>> for Port {
     fn from(v: OneshotReceiver<T>) -> Self {
         v.0.into()
-    }
-}
-
-impl<T: MeshField, U: MeshField> Downcast<OneshotReceiver<U>> for OneshotReceiver<T> where
-    Receiver<T>: Downcast<Receiver<U>>
-{
-}
-
-impl<T: MeshField> OneshotReceiver<T> {
-    /// Upcasts this receiver to one that can receive values whose encoding is a
-    /// superset of `T`'s.
-    pub fn upcast<U: MeshField>(self) -> OneshotReceiver<U>
-    where
-        Self: Upcast<OneshotReceiver<U>>,
-    {
-        OneshotReceiver(self.0.change_types())
-    }
-
-    /// Downcasts this receiver to one that can receive values whose encoding is
-    /// a subset of `T`'s.
-    ///
-    /// Although this is memory safe, it can cause decoding failures if the
-    /// associated sender sends values that don't decode to `U`.
-    pub fn force_downcast<U: MeshField>(self) -> OneshotReceiver<U>
-    where
-        OneshotReceiver<U>: Upcast<Self>,
-    {
-        OneshotReceiver(self.0.change_types())
     }
 }
 
@@ -568,11 +410,7 @@ pub fn mpsc_channel<T: 'static + Send>() -> (MpscSender<T>, MpscReceiver<T>) {
 }
 
 #[derive(Debug, Protobuf)]
-#[mesh(
-    no_upcast,
-    bound = "T: MeshField",
-    resource = "mesh_node::resource::Resource"
-)]
+#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 enum MpscMessage<T> {
     Data(T),
     Clone(Channel<(), MpscMessage<T>>),
@@ -580,11 +418,7 @@ enum MpscMessage<T> {
 
 /// Receiver type for [`mpsc_channel()`].
 #[derive(Protobuf)]
-#[mesh(
-    no_upcast,
-    bound = "T: MeshField",
-    resource = "mesh_node::resource::Resource"
-)]
+#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 pub struct MpscReceiver<T> {
     receivers: Vec<Channel<(), MpscMessage<T>>>,
 }
@@ -594,43 +428,6 @@ impl<T> Debug for MpscReceiver<T> {
         f.debug_struct("MpscReceiver")
             .field("receivers", &self.receivers)
             .finish()
-    }
-}
-
-impl<T, U> Downcast<MpscReceiver<U>> for MpscReceiver<T> where T: Downcast<U> {}
-
-impl<T: MeshField> MpscReceiver<T> {
-    /// Upcasts this receiver to one that can receive values whose encoding is a
-    /// superset of `T`'s.
-    pub fn upcast<U: MeshField>(self) -> MpscReceiver<U>
-    where
-        Self: Upcast<MpscReceiver<U>>,
-    {
-        MpscReceiver {
-            receivers: self
-                .receivers
-                .into_iter()
-                .map(|r| r.change_types())
-                .collect(),
-        }
-    }
-
-    /// Downcasts this receiver to one that can receive values whose encoding is
-    /// a subset of `T`'s.
-    ///
-    /// Although this is memory safe, it can cause decoding failures if the
-    /// associated sender sends values that don't decode to `U`.
-    pub fn force_downcast<U: MeshField>(self) -> MpscReceiver<U>
-    where
-        MpscReceiver<U>: Upcast<Self>,
-    {
-        MpscReceiver {
-            receivers: self
-                .receivers
-                .into_iter()
-                .map(|r| r.change_types())
-                .collect(),
-        }
     }
 }
 
@@ -728,11 +525,7 @@ impl<T: 'static + Send> futures_core::stream::Stream for MpscReceiver<T> {
 // process are cheap. When this is encoded for sending to a remote process, only
 // then will the receiver be notified of a new mesh port.
 #[derive(Protobuf)]
-#[mesh(
-    no_upcast,
-    bound = "T: MeshField",
-    resource = "mesh_node::resource::Resource"
-)]
+#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 pub struct MpscSender<T>(Arc<MpscSenderInner<T>>);
 
 impl<T> Debug for MpscSender<T> {
@@ -748,8 +541,6 @@ impl<T> Clone for MpscSender<T> {
     }
 }
 
-impl<T: MeshField, U: MeshField> Downcast<MpscSender<U>> for MpscSender<T> where U: Downcast<T> {}
-
 /// Wrapper that implements Clone.
 #[derive(Protobuf)]
 #[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
@@ -761,33 +552,6 @@ impl<T: 'static + Send> Clone for MpscSenderInner<T> {
         let (send, recv) = Channel::new_pair();
         self.0.send(MpscMessage::Clone(recv));
         Self(send)
-    }
-}
-
-impl<T: MeshField> MpscSender<T> {
-    /// Upcasts this sender to one that can send values whose encoding is a
-    /// subset of `T`'s.
-    pub fn upcast<U: MeshField>(self) -> MpscSender<U>
-    where
-        Self: Upcast<MpscSender<U>>,
-    {
-        let inner = Arc::try_unwrap(self.0).unwrap_or_else(|x| (*x).clone());
-        let inner = Arc::new(MpscSenderInner(inner.0.change_types()));
-        MpscSender(inner)
-    }
-
-    /// Downcasts this sender to one that can send values whose encoding is a
-    /// superset of `T`'s.
-    ///
-    /// Although this is memory safe, it can cause the receiver to see message
-    /// decoding errors.
-    pub fn force_downcast<U: MeshField>(self) -> MpscSender<U>
-    where
-        MpscSender<U>: Upcast<Self>,
-    {
-        let inner = Arc::try_unwrap(self.0).unwrap_or_else(|x| (*x).clone());
-        let inner = Arc::new(MpscSenderInner(inner.0.change_types()));
-        MpscSender(inner)
     }
 }
 
