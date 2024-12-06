@@ -27,6 +27,7 @@ fn do_fuzz(u: &mut Unstructured<'_>) {
             let next_action = fuzzing_driver.get_arbitrary_action(u).unwrap();
 
             println!("{:x?}", next_action);
+
             fuzzing_driver.execute_action(next_action);
         }
 

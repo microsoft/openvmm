@@ -12,17 +12,17 @@ use nvme_driver::NvmeDriver;
 use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use std::sync::Arc;
+use user_driver::emulated::EmulatedDevice;
 use user_driver::emulated::DeviceSharedMemory;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
-use crate::fuzz_emulated_device::FuzzEmulatedDevice;
 
 pub struct FuzzDriver {
-    driver: Option<NvmeDriver<FuzzEmulatedDevice<NvmeController>>>,
+    driver: Option<NvmeDriver<EmulatedDevice<NvmeController>>>,
 }
 
 impl FuzzDriver {
-    pub async fn new(driver: DefaultDriver) -> (Namespace, FuzzEmulatedDevice<NvmeController>, Self) {
+    pub async fn new(driver: DefaultDriver) -> (Namespace, Self) {
         // Physical storage to back the disk
         let ram_disk = RamDisk::new(1 << 20, false).unwrap();
 
@@ -31,7 +31,7 @@ impl FuzzDriver {
         let mem = DeviceSharedMemory::new(base_len, payload_len);
 
         // ---- NVME DEVICE & DRIVER SETUP ----
-        let driver_source = 
+        let driver_source =
             VmTaskDriverSource::new(SingleDriverBackend::new(driver));
         let mut msi_set = MsiInterruptSet::new();
         let nvme = NvmeController::new(
@@ -45,20 +45,19 @@ impl FuzzDriver {
                 subsystem_id: Guid::new_random(),
             },
         );
-        
+
         // Create nvme namespace
         nvme.client()
             .add_namespace(1, Arc::new(ram_disk))
             .await
             .unwrap();
 
-        let device = FuzzEmulatedDevice::new(nvme, msi_set, mem);
+        let device = EmulatedDevice::new(nvme, msi_set, mem);
         let nvme_driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();
 
         let namespace = nvme_driver.namespace(1).await.unwrap();
 
         (namespace,
-         device,
          Self {
             driver: Some(nvme_driver),
          })
@@ -70,7 +69,7 @@ impl FuzzDriver {
             DriverAction::UpdateServicingFlags { nvme_keepalive } => {
                 self.driver.as_mut().unwrap().update_servicing_flags(nvme_keepalive)
             }
-        } 
+        }
     }
 }
 
