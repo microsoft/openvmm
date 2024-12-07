@@ -141,29 +141,3 @@ impl From<Resource<DiskLayerHandleKind>> for DiskLayerDescription {
         }
     }
 }
-
-/// Sqlite-backed disk handle.
-#[derive(MeshPayload)]
-pub struct SqliteDiskHandle {
-    /// Size of the disk, in bytes.
-    pub len: u64,
-    /// Path to `.dbhd` file
-    pub dbhd_path: String,
-}
-
-impl ResourceId<DiskHandleKind> for SqliteDiskHandle {
-    const ID: &'static str = "sqlite";
-}
-
-/// Sqlite-backed diff disk handle.
-#[derive(MeshPayload)]
-pub struct SqliteDiffDiskHandle {
-    /// The lower disk resource.
-    pub lower: Resource<DiskHandleKind>,
-    /// Path to `.dbhd` file
-    pub dbhd_path: String,
-}
-
-impl ResourceId<DiskHandleKind> for SqliteDiffDiskHandle {
-    const ID: &'static str = "sqlitediff";
-}

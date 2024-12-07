@@ -31,3 +31,28 @@ pub struct DiskLayerHandle(pub Resource<DiskHandleKind>);
 impl ResourceId<DiskLayerHandleKind> for DiskLayerHandle {
     const ID: &'static str = "disk";
 }
+
+/// Parameters used when performing first-time init of `dbhd` files.
+#[derive(MeshPayload)]
+pub struct SqliteDiskLayerFormatParams {
+    /// Should the layer be considered logically read only (i.e: a cache layer)
+    pub logically_read_only: bool,
+    /// Desired layer size. If `None`, lazily selects a size only once after
+    /// being attached to an existing layer.
+    pub len: Option<u64>,
+}
+
+/// Sqlite disk layer handle.
+#[derive(MeshPayload)]
+pub struct SqliteDiskLayerHandle {
+    /// Path to `.dbhd` file
+    pub dbhd_path: String,
+
+    /// If this is provided, the dbhd will be (re)formatted with the provided
+    /// params.
+    pub format_dbhd: Option<SqliteDiskLayerFormatParams>,
+}
+
+impl ResourceId<DiskLayerHandleKind> for SqliteDiskLayerHandle {
+    const ID: &'static str = "sqlite";
+}
