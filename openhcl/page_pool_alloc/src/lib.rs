@@ -180,6 +180,11 @@ pub struct PagePoolOutOfMemory {
     tag: String,
 }
 
+/// Error returned when unrestored allocations are found.
+#[derive(Debug, Error)]
+#[error("unrestored allocations found")]
+pub struct UnrestoredAllocations;
+
 #[derive(Debug, PartialEq, Eq)]
 struct Slot {
     base_pfn: u64,
@@ -450,7 +455,7 @@ impl PagePool {
     /// unmatched.
     ///
     /// Unmatched allocations are always logged via a `tracing::warn!` log.
-    pub fn validate_restore(&self, leak_unrestored: bool) -> anyhow::Result<()> {
+    pub fn validate_restore(&self, leak_unrestored: bool) -> Result<(), UnrestoredAllocations> {
         let mut inner = self.inner.lock();
         let mut unrestored_allocation = false;
 
@@ -481,7 +486,7 @@ impl PagePool {
         }
 
         if unrestored_allocation && !leak_unrestored {
-            Err(anyhow::anyhow!("unrestored allocations found for pool"))
+            Err(UnrestoredAllocations)
         } else {
             Ok(())
         }
