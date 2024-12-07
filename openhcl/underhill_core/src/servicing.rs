@@ -76,6 +76,9 @@ mod state {
         /// NVMe saved state.
         #[mesh(10000)]
         pub nvme_state: Option<NvmeSavedState>,
+        /// Shared pool information.
+        #[mesh(8)]
+        pub shared_pool_state: Option<page_pool_alloc::save_restore::PagePoolState>,
     }
 
     #[derive(Protobuf)]
@@ -139,6 +142,7 @@ pub mod transposed {
         )>,
         pub overlay_shutdown_device: Option<bool>,
         pub nvme_state: Option<Option<NvmeSavedState>>,
+        pub shared_pool_state: Option<Option<page_pool_alloc::save_restore::PagePoolState>>,
     }
 
     /// A transposed `Option<EmuplatSavedState>`, where each field of
@@ -167,6 +171,7 @@ pub mod transposed {
                     vmgs,
                     overlay_shutdown_device,
                     nvme_state,
+                    shared_pool_state,
                 } = state;
 
                 OptionServicingInitState {
@@ -181,6 +186,7 @@ pub mod transposed {
                     vmgs: Some(vmgs),
                     overlay_shutdown_device: Some(overlay_shutdown_device),
                     nvme_state: Some(nvme_state),
+                    shared_pool_state: Some(shared_pool_state),
                 }
             } else {
                 OptionServicingInitState::default()

@@ -13,19 +13,19 @@ vfio = ["user_driver/vfio"]
 hcl.workspace = true
 
 user_driver.workspace = true
-vm_topology.workspace = true
 hvdef.workspace = true
 sparse_mmap.workspace = true
+vmcore.workspace = true
+memory_range = { workspace = true, features = [ "inspect", "mesh" ] }
+vm_topology = { workspace = true, features = [ "inspect", "mesh" ] }
 
 inspect.workspace = true
+mesh.workspace = true
 
 parking_lot.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-
-[dev-dependencies]
-memory_range.workspace = true
 
 [lints]
 workspace = true

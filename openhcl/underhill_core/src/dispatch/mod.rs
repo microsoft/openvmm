@@ -625,10 +625,6 @@ impl LoadedVm {
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
-        if self.shared_vis_pool.is_some() {
-            anyhow::bail!("save not supported for shared pages yet")
-        }
-
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
 
         // Only save NVMe state when there are NVMe controllers and nvme_keepalive
@@ -658,6 +654,12 @@ impl LoadedVm {
             .save()
             .await
             .context("vmgs save failed")?;
+        let shared_vis_pool = self
+            .shared_vis_pool
+            .as_mut()
+            .map(vmcore::save_restore::SaveRestore::save)
+            .transpose()
+            .context("shared_vis_pool save failed")?;
 
         Ok(ServicingState {
             init_state: servicing::ServicingInitState {
@@ -669,6 +671,7 @@ impl LoadedVm {
                 vmgs: (vmgs, self.vmgs_disk_metadata.clone()),
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
                 nvme_state,
+                shared_pool_state: shared_vis_pool,
             },
             units,
         })
