@@ -658,17 +658,12 @@ struct RelayTask {
     use_interrupt_relay: Arc<AtomicBool>,
     server_response_send: mesh::Sender<ModifyConnectionResponse>,
     hvsock_relay: HvsockRelayChannelHalf,
-    hvsock_requests: FuturesUnordered<
-        Pin<
-            Box<
-                dyn Future<Output = (HvsockConnectRequest, Option<client::OfferInfo>)>
-                    + Sync
-                    + Send,
-            >,
-        >,
-    >,
+    hvsock_requests: FuturesUnordered<HvsockRequestFuture>,
     running: bool,
 }
+
+type HvsockRequestFuture =
+    Pin<Box<dyn Future<Output = (HvsockConnectRequest, Option<client::OfferInfo>)> + Sync + Send>>;
 
 impl RelayTask {
     fn new(
