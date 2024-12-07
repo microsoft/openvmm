@@ -20,7 +20,6 @@ use crate::worker::NetworkSettingsError;
 use crate::ControlRequest;
 use anyhow::Context;
 use async_trait::async_trait;
-use fixed_pool_alloc::FixedPool;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::future::Join;
@@ -179,7 +178,7 @@ pub(crate) struct LoadedVm {
     pub _periodic_telemetry_task: Task<()>,
 
     pub shared_vis_pool: Option<PagePool>,
-    pub fixed_mem_pool: Option<FixedPool>,
+    pub private_pool: Option<PagePool>,
 }
 
 pub struct LoadedVmState<T> {
@@ -638,16 +637,6 @@ impl LoadedVm {
             None
         };
 
-        // TODO: FixedPool saved state is being replaced with PagePool in subsequent commits.
-        let _mem_pool_state = if vf_keepalive_flag {
-            self.fixed_mem_pool
-                .as_ref()
-                .map(|f| f.save().ok())
-                .and_then(|s| s)
-        } else {
-            None
-        };
-
         let units = self.save_units().await.context("state unit save failed")?;
         let vmgs = self
             .vmgs_thin_client
@@ -660,6 +649,12 @@ impl LoadedVm {
             .map(vmcore::save_restore::SaveRestore::save)
             .transpose()
             .context("shared_vis_pool save failed")?;
+        let private_pool = self
+            .private_pool
+            .as_mut()
+            .map(vmcore::save_restore::SaveRestore::save)
+            .transpose()
+            .context("private_pool save failed")?;
 
         Ok(ServicingState {
             init_state: servicing::ServicingInitState {
@@ -672,6 +667,7 @@ impl LoadedVm {
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
                 nvme_state,
                 shared_pool_state: shared_vis_pool,
+                private_pool_state: private_pool,
             },
             units,
         })
