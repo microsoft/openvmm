@@ -218,7 +218,6 @@ impl VmbusClientAccess {
             .expect("Failed to send modify request")
     }
 
-    #[must_use]
     pub fn connect_hvsock(
         &self,
         request: HvsockConnectRequest,
@@ -584,7 +583,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
         // The client only supports protocol versions which use the newer message format.
         // The host will not send a TlConnectRequestResult message on success, so a response to this
         // message is not guaranteed.
-        let request = rpc.0.clone();
+        let request = rpc.0;
         self.hvsock_tracker.add_request(rpc);
         let message = protocol::TlConnectRequest2::from(request);
         self.inner.send(&message);
