@@ -9,6 +9,9 @@
 *.img
 *.iso
 *.vmgs
+*.dbhd
+*.dbhd-shm
+*.dbhd-wal
 
 # macOS files
 .DS_Store

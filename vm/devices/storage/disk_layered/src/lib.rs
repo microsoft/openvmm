@@ -425,7 +425,10 @@ impl<T: LayerAttach> DynLayerAttach for T {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<AttachedDiskLayer>> + Send>> {
         Box::pin(async move {
             Ok({
-                let backing = (*self).attach(lower_layer_metadata).await?;
+                let backing = (*self)
+                    .attach(lower_layer_metadata)
+                    .await
+                    .map_err(Into::into)?;
                 let can_read_cache = backing.write_no_overwrite().is_some();
                 AttachedDiskLayer {
                     meta: DiskLayerMetadata {
@@ -455,7 +458,7 @@ impl<T: LayerAttach> DynLayerAttach for T {
 /// LayerAttach for T` which simply returns `Self` during the state transition.
 pub trait LayerAttach: 'static + Send + Sync + Inspect {
     /// Error returned if on attach failure.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: Into<anyhow::Error>;
     /// Object implementating [`LayerIo`] after being attached.
     type Layer: LayerIo;
 

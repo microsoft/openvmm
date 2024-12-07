@@ -32,8 +32,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use thiserror::Error;
 
-/// A disk layer backed entirely by RAM, which infers its topology from the
-/// layer it is being stacked onto.
+/// A disk layer backed by RAM, which lazily infers its topology from the layer
+/// it is being stacked on-top of
 #[derive(Inspect)]
 #[non_exhaustive]
 pub struct LazyRamDiskLayer {}
@@ -109,7 +109,7 @@ struct Sector([u8; 512]);
 const SECTOR_SIZE: u32 = 512;
 
 impl RamDiskLayer {
-    /// Makes a new RAM disk of `size` bytes.
+    /// Makes a new RAM disk layer of `size` bytes.
     pub fn new(size: u64) -> Result<Self, Error> {
         let sector_count = {
             if size == 0 {
