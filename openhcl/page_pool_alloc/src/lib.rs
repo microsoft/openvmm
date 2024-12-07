@@ -26,7 +26,6 @@ use vm_topology::memory::MemoryRangeWithNode;
 
 /// Save restore suport for [`PagePool`].
 pub mod save_restore {
-    use super::DeviceId;
     use super::PagePool;
     use super::Slot;
     use super::SlotState;
@@ -67,40 +66,6 @@ pub mod save_restore {
         state: InnerSlotState,
     }
 
-    #[derive(Protobuf)]
-    #[mesh(package = "openhcl.pagepool")]
-    enum DeviceIdState {
-        #[mesh(1)]
-        Used(String),
-        #[mesh(2)]
-        Unassigned(String),
-        #[mesh(3)]
-        Leaked(String),
-    }
-
-    impl From<DeviceId> for DeviceIdState {
-        fn from(state: DeviceId) -> Self {
-            match state {
-                DeviceId::PendingRestore(name) => {
-                    panic!("should not save PendingRestore, device name: {name}")
-                }
-                DeviceId::Leaked(name) => DeviceIdState::Leaked(name),
-                DeviceId::Unassigned(name) => DeviceIdState::Unassigned(name),
-                DeviceId::Used(name) => DeviceIdState::Used(name),
-            }
-        }
-    }
-
-    impl From<DeviceIdState> for DeviceId {
-        fn from(state: DeviceIdState) -> Self {
-            match state {
-                DeviceIdState::Used(name) => DeviceId::PendingRestore(name),
-                DeviceIdState::Unassigned(name) => DeviceId::Unassigned(name),
-                DeviceIdState::Leaked(name) => DeviceId::Leaked(name),
-            }
-        }
-    }
-
     /// The saved state for [`PagePool`].
     #[derive(Protobuf, SavedStateRoot)]
     #[mesh(package = "openhcl.pagepool")]
@@ -108,10 +73,8 @@ pub mod save_restore {
         #[mesh(1)]
         state: Vec<SlotSavedState>,
         #[mesh(2)]
-        device_ids: Vec<DeviceIdState>,
-        #[mesh(3)]
         ranges: Vec<MemoryRange>,
-        #[mesh(4)]
+        #[mesh(3)]
         pfn_bias: u64,
     }
 
@@ -132,7 +95,7 @@ pub mod save_restore {
                                 tag: tag.clone(),
                             },
                             SlotState::Leaked { device_id, tag } => InnerSlotState::Leaked {
-                                device_id: state.device_ids[*device_id].name().to_string(),
+                                device_id: device_id.clone(),
                                 tag: tag.clone(),
                             },
                             SlotState::AllocatedPendingRestore { .. } => {
@@ -146,11 +109,6 @@ pub mod save_restore {
                             state: inner_state,
                         }
                     })
-                    .collect(),
-                device_ids: state
-                    .device_ids
-                    .iter()
-                    .map(|id| id.clone().into())
                     .collect(),
                 ranges: self.ranges.clone(),
                 pfn_bias: state.pfn_bias,
@@ -187,7 +145,6 @@ pub mod save_restore {
                 ));
             }
 
-            inner.device_ids = state.device_ids.into_iter().map(|id| id.into()).collect();
             inner.slots = state
                 .state
                 .into_iter()
@@ -195,23 +152,11 @@ pub mod save_restore {
                     let inner = match slot.state {
                         InnerSlotState::Free => SlotState::Free,
                         InnerSlotState::Allocated { device_id, tag } => {
-                            SlotState::AllocatedPendingRestore {
-                                device_id: inner
-                                    .device_ids
-                                    .iter()
-                                    .position(|id| id.name() == device_id)
-                                    .expect("device id not found"),
-                                tag,
-                            }
+                            SlotState::AllocatedPendingRestore { device_id, tag }
                         }
-                        InnerSlotState::Leaked { device_id, tag } => SlotState::Leaked {
-                            device_id: inner
-                                .device_ids
-                                .iter()
-                                .position(|id| id.name() == device_id)
-                                .expect("device id not found"),
-                            tag,
-                        },
+                        InnerSlotState::Leaked { device_id, tag } => {
+                            SlotState::Leaked { device_id, tag }
+                        }
                     };
 
                     Slot {
@@ -251,23 +196,21 @@ enum SlotState {
         device_id: usize,
         tag: String,
     },
+    /// This allocation was restored, and is waiting for a
+    /// [`PagePoolAllocator::restore_alloc`] to restore it.
     AllocatedPendingRestore {
-        /// This is an index into the outer [`PagePoolInner`]'s device_ids
-        /// vector.
-        device_id: usize,
+        device_id: String,
         tag: String,
     },
     /// This allocation was leaked, and is no longer able to be allocated from.
     Leaked {
-        /// This is an index into the outer [`PagePoolInner`]'s device_ids
-        /// vector.
-        device_id: usize,
+        device_id: String,
         tag: String,
     },
 }
 
 impl SlotState {
-    fn restore_allocated(&mut self) {
+    fn restore_allocated(&mut self, device_id: usize) {
         if !matches!(self, SlotState::AllocatedPendingRestore { .. }) {
             panic!("invalid state");
         }
@@ -276,7 +219,7 @@ impl SlotState {
         // restored state without allocating.
         let prev = std::mem::replace(self, SlotState::Free);
         *self = match prev {
-            SlotState::AllocatedPendingRestore { device_id, tag } => {
+            SlotState::AllocatedPendingRestore { device_id: _, tag } => {
                 SlotState::Allocated { device_id, tag }
             }
             _ => unreachable!(),
@@ -311,12 +254,6 @@ enum DeviceId {
     /// A device id that was dropped and can be reused if an allocator with the
     /// same name is created.
     Unassigned(#[inspect(rename = "name")] String),
-    /// A previously used device ID that was saved, that is waiting for the
-    /// corresponding device allocator to be constructed.
-    PendingRestore(#[inspect(rename = "id")] String),
-    /// A device ID that was in saved state, but was never restored. It is
-    /// not legal for this to be reused for a new allocator.
-    Leaked(#[inspect(rename = "id")] String),
 }
 
 impl DeviceId {
@@ -324,8 +261,6 @@ impl DeviceId {
         match self {
             DeviceId::Used(name) => name,
             DeviceId::Unassigned(name) => name,
-            DeviceId::PendingRestore(name) => name,
-            DeviceId::Leaked(name) => name,
         }
     }
 }
@@ -358,11 +293,13 @@ impl Inspect for PagePoolInner {
 
                         match &slot.state {
                             SlotState::Free => {}
-                            SlotState::Allocated { device_id, tag }
-                            | SlotState::AllocatedPendingRestore { device_id, tag }
-                            | SlotState::Leaked { device_id, tag } => {
+                            SlotState::Allocated { device_id, tag } => {
                                 resp.field("device_id", self.device_ids[*device_id].clone())
                                     .field("tag", tag);
+                            }
+                            SlotState::AllocatedPendingRestore { device_id, tag }
+                            | SlotState::Leaked { device_id, tag } => {
+                                resp.field("device_id", device_id.clone()).field("tag", tag);
                             }
                         }
                     });
@@ -533,21 +470,13 @@ impl PagePool {
 
                     if leak_unrestored {
                         slot.state = SlotState::Leaked {
-                            device_id: *device_id,
+                            device_id: device_id.clone(),
                             tag: tag.clone(),
                         };
                     }
 
                     unrestored_allocation = true;
                 }
-            }
-        }
-
-        // Mark unrestored device ids as leaked.
-        for device_id in inner.device_ids.iter_mut() {
-            if let DeviceId::PendingRestore(name) = device_id {
-                tracing::warn!(device_id = name.as_str(), "unrestored device id");
-                *device_id = DeviceId::Leaked(name.clone());
             }
         }
 
@@ -618,15 +547,12 @@ impl PagePoolAllocator {
                     let entry = &mut inner.device_ids[index];
 
                     match entry {
-                        DeviceId::Unassigned(_) | DeviceId::PendingRestore(_) => {
+                        DeviceId::Unassigned(_) => {
                             *entry = DeviceId::Used(device_name);
                             device_id = index;
                         }
                         DeviceId::Used(_) => {
                             anyhow::bail!("device name {device_name} already in use");
-                        }
-                        DeviceId::Leaked(_) => {
-                            anyhow::bail!("device name {device_name} was leaked");
                         }
                     }
                 }
@@ -716,7 +642,7 @@ impl PagePoolAllocator {
             .iter()
             .position(|slot| {
                 if let SlotState::AllocatedPendingRestore { device_id, tag: _ } = &slot.state {
-                    *device_id == self.device_id
+                    device_id == inner.device_ids[self.device_id].name()
                         && slot.base_pfn == base_pfn
                         && slot.size_pages == size_pages.get()
                 } else {
@@ -725,7 +651,7 @@ impl PagePoolAllocator {
             })
             .ok_or(anyhow::anyhow!("matching allocation not found"))?;
 
-        inner.slots[index].state.restore_allocated();
+        inner.slots[index].state.restore_allocated(self.device_id);
 
         Ok(PagePoolHandle {
             inner: self.inner.clone(),
@@ -977,5 +903,38 @@ mod test {
         pool.restore(state).unwrap();
 
         assert!(pool.validate_restore(false).is_err());
+    }
+
+    #[test]
+    fn test_restore_other_allocator() {
+        let mut pool = PagePool::new_shared_visibility_pool(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::from_4k_gpn_range(10..30),
+                vnode: 0,
+            }],
+            0,
+        )
+        .unwrap();
+
+        let alloc = pool.allocator("test".into()).unwrap();
+        let a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
+
+        let state = pool.save().unwrap();
+
+        let mut pool = PagePool::new_shared_visibility_pool(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::from_4k_gpn_range(10..30),
+                vnode: 0,
+            }],
+            0,
+        )
+        .unwrap();
+
+        pool.restore(state).unwrap();
+
+        let alloc = pool.allocator("test2".into()).unwrap();
+        assert!(alloc
+            .restore_alloc(a1.base_pfn, a1.size_pages.try_into().unwrap())
+            .is_err());
     }
 }
