@@ -361,6 +361,7 @@ mod ioctls {
     const MSHV_VTL_RMPQUERY: u16 = 0x35;
     const MSHV_INVLPGB: u16 = 0x36;
     const MSHV_TLBSYNC: u16 = 0x37;
+    const MSHV_REMAP_GUEST_INTERRUPT: u16 = 0x38;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -575,7 +576,16 @@ mod ioctls {
         MSHV_IOCTL,
         MSHV_TLBSYNC
     );
+
+    ioctl_readwrite!(
+        /// Remap VTL0 device interrupt in VTL2.
+        hcl_remap_guest_interrupt,
+        MSHV_IOCTL,
+        MSHV_REMAP_GUEST_INTERRUPT,
+        u8
+    );
 }
+
 
 /// The `/dev/mshv_vtl_low` device for accessing VTL0 memory.
 pub struct MshvVtlLow {
@@ -1471,6 +1481,8 @@ pub struct Hcl {
     isolation: IsolationType,
     snp_register_bitmap: [u8; 64],
     sidecar: Option<SidecarClient>,
+    device_irr_remapped_to_target_vector: [u8; 256],
+    device_irr_target_to_remapped_vector: [u8; 256],
 }
 
 /// The isolation type for a partition.
@@ -1854,6 +1866,36 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
                     *r = irr.swap(0, Ordering::Relaxed);
                 }
             }
+
+            // Scan for remapped device interrupts
+            let scan_device_irr =
+                &*(addr_of!((*self.run.as_ptr()).scan_device_irr).cast::<AtomicU8>());                
+            if scan_device_irr.load(Ordering::Relaxed) == 0 {
+                return Some(r);
+            }
+
+            let device_irr = &*(addr_of!((*self.run.as_ptr()).device_irr).cast::<[AtomicU32; 8]>());
+            scan_device_irr.store(0, Ordering::Relaxed);
+            let mut d = [0; 8];
+            for (irr, d) in device_irr.iter().zip(d.iter_mut()) {
+                // In theory we don't need atomic operations, we just need the
+                // swap to happen in a single instruction. This would require
+                // inline assembly.
+                if irr.load(Ordering::Relaxed) != 0 {
+                    *d = irr.swap(0, Ordering::Relaxed);
+                }
+            }
+
+            // Translate to vtl0 selected target vector and write into to r
+            for (i, &value) in d.iter().enumerate() {
+                for bit in 0..32 {
+                    if (value & (1 << bit)) != 0 {
+                        let remapped_vector = i * 32 + bit;
+                        let target_vector = self.hcl.device_irr_remapped_to_target_vector[remapped_vector];
+                        r[(target_vector / 32) as usize] |= 1 << target_vector % 32;
+                    }
+                }
+            }            
             Some(r)
         }
     }
@@ -2178,6 +2220,8 @@ impl Hcl {
         let supports_register_page = supports_register_page && !isolation.is_hardware_isolated();
         let dr6_shared = dr6_shared && !isolation.is_hardware_isolated();
         let snp_register_bitmap = [0u8; 64];
+        let device_irr_remapped_to_target_vector = [0u8; 256];
+        let device_irr_target_to_remapped_vector = [0u8; 256];
 
         Ok(Hcl {
             mshv_hvcall,
@@ -2189,6 +2233,8 @@ impl Hcl {
             isolation,
             snp_register_bitmap,
             sidecar,
+            device_irr_remapped_to_target_vector,
+            device_irr_target_to_remapped_vector,
         })
     }
 
@@ -3210,5 +3256,34 @@ impl Hcl {
         unsafe {
             hcl_tlbsync(self.mshv_vtl.file.as_raw_fd()).expect("should always succeed");
         }
+    }
+
+    /// Get vtl0 target vector for remapped device interrupt
+    pub fn get_device_irr_map(&self, target_vector: u8) -> Option<u8> {
+        let remaped_vector = self.device_irr_target_to_remapped_vector[target_vector as usize];
+        if remaped_vector == 0 {
+            return None;
+        }
+        Some(remaped_vector)
+    }
+
+    /// Register a remapped proxy vector for vtl0 device interrupt and update mapping tables
+    pub fn register_new_device_irr(&self, target_vector: u8) -> u8 {
+        let mut remapped_vector = target_vector; // Input VTL0 guest vector, output VTL2 vector
+
+        unsafe {
+            hcl_remap_guest_interrupt(self.mshv_vtl.file.as_raw_fd(), &mut remapped_vector)
+                .expect("should always succeed");
+        }
+
+        // update target(vtl0) to remaped(vtl2) vector mapping
+        let device_irr_remapped_vector = unsafe { &*(addr_of!(self.device_irr_target_to_remapped_vector[target_vector as usize]).cast::<AtomicU8>()) };
+        device_irr_remapped_vector.store(remapped_vector, Ordering::SeqCst);
+
+        // update remapped(vtl2) to target(vtl0) vector mapping
+        let device_irr_target_vector = unsafe { &*(addr_of!(self.device_irr_remapped_to_target_vector[remapped_vector as usize]).cast::<AtomicU8>()) };
+        device_irr_target_vector.store(target_vector, Ordering::SeqCst);
+
+        remapped_vector
     }
 }
