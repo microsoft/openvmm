@@ -442,6 +442,14 @@ impl<T: 'static + Send> OneshotSender<T> {
     pub fn send(self, value: T) {
         self.0.send_and_close((value,));
     }
+
+    /// Returns whether the receiving side of the channel is known to be closed
+    /// (or failed).
+    ///
+    /// This is useful to determine if a long-lived sender needs to be retained.
+    pub fn is_closed(&self) -> bool {
+        self.0.is_peer_closed()
+    }
 }
 
 /// The receiving half of a channel returned by [`oneshot`].

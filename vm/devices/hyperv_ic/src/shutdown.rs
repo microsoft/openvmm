@@ -179,6 +179,9 @@ impl ShutdownChannel {
                         shutdown_notification,
                         ..
                     } => {
+                        // Discard any closed connections.
+                        clients.retain(|send| !send.is_closed());
+                        // Add a new client.
                         let send_shutdown_notification = &shutdown_notification.0;
                         let (send, recv) = mesh::oneshot();
                         clients.push(send);
@@ -201,7 +204,7 @@ impl ShutdownChannel {
             >,
         >,
     ) -> Result<Option<Rpc<ShutdownParams, ShutdownResult>>, Error> {
-        match &mut self.state {
+        match self.state {
             ChannelState::SendVersion => {
                 let message_versions = SHUTDOWN_VERSIONS;
 
@@ -252,10 +255,14 @@ impl ShutdownChannel {
                 let send_shutdown_notification = &shutdown_notification.0;
                 let clients = wait_ready
                     .drain(..)
-                    .map(|rpc| {
+                    .filter_map(|rpc| {
                         let (send, recv) = mesh::oneshot();
                         rpc.complete((send_shutdown_notification.clone(), recv));
-                        send
+                        if !send.is_closed() {
+                            Some(send)
+                        } else {
+                            None
+                        }
                     })
                     .collect();
                 self.state = ChannelState::Ready {
@@ -270,7 +277,7 @@ impl ShutdownChannel {
                 ref mut state,
                 framework_version,
                 message_version,
-                shutdown_notification,
+                ref mut shutdown_notification,
                 ..
             } => {
                 let shutdown_in_progress = !matches!(state, ReadyState::Ready);
@@ -294,10 +301,10 @@ impl ShutdownChannel {
                                 message: [0; 2048],
                             });
                             let header = hyperv_ic_protocol::Header {
-                                framework_version: *framework_version,
+                                framework_version,
                                 message_type: hyperv_ic_protocol::MessageType::SHUTDOWN,
                                 message_size: size_of_val(message.as_ref()) as u16,
-                                message_version: *message_version,
+                                message_version,
                                 status: 0,
                                 transaction_id: 0,
                                 flags: hyperv_ic_protocol::HeaderFlags::new()
