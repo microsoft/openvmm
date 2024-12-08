@@ -7831,7 +7831,6 @@ dependencies = [
  "vmbus_core",
  "vmbus_server",
  "vmcore",
- "zerocopy",
 ]
 
 [[package]]
