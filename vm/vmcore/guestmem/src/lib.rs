@@ -1955,9 +1955,7 @@ impl MemoryWrite for &mut [u8] {
             return Err(AccessError::OutOfRange(self.len(), len));
         }
         let (dest, rest) = std::mem::take(self).split_at_mut(len);
-        for b in dest.iter_mut() {
-            *b = val
-        }
+        dest.fill(val);
         *self = rest;
         Ok(())
     }

@@ -308,16 +308,6 @@ impl<'a> MemoryWrite for PagedRangeWriter<'a> {
         Ok(())
     }
 
-    fn zero(&mut self, len: usize) -> Result<(), AccessError> {
-        let range = self
-            .range
-            .try_subrange(0, len)
-            .ok_or_else(|| AccessError::OutOfRange(self.len(), len))?;
-        self.mem.zero_range(&range).map_err(AccessError::Memory)?;
-        self.range.skip(len);
-        Ok(())
-    }
-
     fn len(&self) -> usize {
         self.range.len()
     }
@@ -522,19 +512,6 @@ impl<'a, T: Iterator<Item = PagedRange<'a>>> MemoryWrite for PagedRangesWriter<'
             self.mem
                 .fill_range(&range, val)
                 .map_err(AccessError::Memory)?;
-            self.views.advance(range.len());
-            len -= range.len();
-        }
-        Ok(())
-    }
-
-    fn zero(&mut self, mut len: usize) -> Result<(), AccessError> {
-        if self.len() < len {
-            return Err(AccessError::OutOfRange(self.len(), len));
-        }
-        while len > 0 {
-            let range = self.views.current(len);
-            self.mem.zero_range(&range).map_err(AccessError::Memory)?;
             self.views.advance(range.len());
             len -= range.len();
         }

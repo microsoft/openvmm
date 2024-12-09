@@ -319,10 +319,6 @@ impl<'a, T: RingMem> MemoryWrite for RingRangeWriter<'a, T> {
         unimplemented!()
     }
 
-    fn zero(&mut self, _len: usize) -> Result<(), AccessError> {
-        unimplemented!()
-    }
-
     fn len(&self) -> usize {
         (self.end - self.start) as usize
     }
