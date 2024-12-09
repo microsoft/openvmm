@@ -428,7 +428,7 @@ impl<T: LayerAttach> DynLayerAttach for T {
                 let backing = (*self)
                     .attach(lower_layer_metadata)
                     .await
-                    .map_err(Into::into)?;
+                    .map_err(|e| anyhow::anyhow!(e.into()))?;
                 let can_read_cache = backing.write_no_overwrite().is_some();
                 AttachedDiskLayer {
                     meta: DiskLayerMetadata {
@@ -458,7 +458,7 @@ impl<T: LayerAttach> DynLayerAttach for T {
 /// LayerAttach for T` which simply returns `Self` during the state transition.
 pub trait LayerAttach: 'static + Send + Sync + Inspect {
     /// Error returned if on attach failure.
-    type Error: Into<anyhow::Error>;
+    type Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>;
     /// Object implementating [`LayerIo`] after being attached.
     type Layer: LayerIo;
 
