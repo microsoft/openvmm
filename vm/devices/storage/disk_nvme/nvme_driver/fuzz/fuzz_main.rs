@@ -3,6 +3,10 @@
 
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
 
+mod fuzz_emulated_device;
+
+use crate::fuzz_emulated_device::FuzzEmulatedDevice;
+
 use arbitrary::{Arbitrary, Unstructured};
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_ramdisk::RamDisk;
@@ -93,7 +97,7 @@ impl FuzzNvmeDriver {
             .await
             .unwrap();
 
-        let device = EmulatedDevice::new(nvme, msi_set, mem);
+        let device = FuzzEmulatedDevice::new(nvme, msi_set, mem, u);
         let nvme_driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();
 
         let namespace = nvme_driver.namespace(1).await.unwrap();
@@ -107,6 +111,7 @@ impl FuzzNvmeDriver {
             .guest_memory()
             .subrange(base_len as u64, INPUT_LEN as u64, false)
             .unwrap();
+
 
         Self {
             driver: Some(nvme_driver),
