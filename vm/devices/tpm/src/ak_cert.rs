@@ -34,15 +34,12 @@ impl<T: 'static + GetAttestationReport> From<T> for ResolvedGetAttestationReport
     }
 }
 
-// Use the value defined by `tee_call::REPORT_DATA_SIZE`
-const REPORT_DATA_SIZE: usize = 64;
-
 /// A trait for getting an attestation report.
 pub trait GetAttestationReport: Send + Sync {
     /// Helper function to get an attestation report
     fn get_report(
         &self,
-        report_data: &[u8; REPORT_DATA_SIZE],
+        report_data: &[u8],
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
 }
 

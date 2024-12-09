@@ -1862,11 +1862,9 @@ async fn request_igvm_attest(
     }
 
     let mut buffer = vec![0u8; allocated_shared_memory_size];
-    if response_length != 0 {
-        shared_guest_memory
-            .read_at(request.shared_gpa[0], &mut buffer)
-            .map_err(FatalError::ReadSharedMemory)?;
-    }
+    shared_guest_memory
+        .read_at(request.shared_gpa[0], &mut buffer)
+        .map_err(FatalError::ReadSharedMemory)?;
 
     buffer.truncate(response_length);
 

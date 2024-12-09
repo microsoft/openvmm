@@ -12,6 +12,11 @@ use underhill_attestation::AttestationType;
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum TpmAttestationError {
+    #[error("unexpected report data size {input_size}, expected {expected_size}")]
+    UnexpectedReportDataSize {
+        input_size: usize,
+        expected_size: usize,
+    },
     #[error("failed to get a hardware attestation report")]
     GetAttestationReport(#[source] tee_call::Error),
     #[error("failed to create the IgvmAttest AK_CERT request")]
@@ -32,11 +37,23 @@ impl TpmGetAttestationReportHelper {
 impl GetAttestationReport for TpmGetAttestationReportHelper {
     fn get_report(
         &self,
-        report_data: &[u8; tee_call::REPORT_DATA_SIZE],
+        report_data: &[u8],
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        // The size of `report_data` is expected to be `tee_call::REPORT_DATA_SIZE`
+        if report_data.len() != tee_call::REPORT_DATA_SIZE {
+            return Err(TpmAttestationError::UnexpectedReportDataSize {
+                input_size: report_data.len(),
+                expected_size: tee_call::REPORT_DATA_SIZE,
+            }
+            .into());
+        }
+
+        let mut data = [0u8; tee_call::REPORT_DATA_SIZE];
+        data.copy_from_slice(&report_data[..tee_call::REPORT_DATA_SIZE]);
+
         let result = self
             .tee_call
-            .get_attestation_report(report_data)
+            .get_attestation_report(&data)
             .map_err(TpmAttestationError::GetAttestationReport)?;
 
         Ok(result.report)

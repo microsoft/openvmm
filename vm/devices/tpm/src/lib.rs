@@ -778,20 +778,20 @@ impl Tpm {
             )
             .map_err(TpmErrorKind::GetAttestationReport)?;
 
-        // Store the ak cert request that includes the attestation report if `ak_cert_type` is `HwAttested`.
-        if matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_, _)) {
-            let auth_value = self.auth_value.expect("auth value is uninitialized");
-            self.attestation_report_renew_time = Some(std::time::SystemTime::now());
-            self.tpm_engine_helper
-                .write_to_nv_index(
-                    auth_value,
-                    TPM_NV_INDEX_ATTESTATION_REPORT,
-                    &ak_cert_request,
-                )
-                .map_err(TpmErrorKind::WriteToNvIndex)?;
-        }
-
         Ok(ak_cert_request)
+    }
+
+    /// Renew the nv index `TPM_NV_INDEX_ATTESTATION_REPORT` with the input data.
+    ///
+    /// This function is expected to only be called when `ak_cert_type` is `HwAttested`.
+    fn renew_attestation_report(&mut self, data: &[u8]) -> Result<(), TpmError> {
+        let auth_value = self.auth_value.expect("auth value is uninitialized");
+        self.attestation_report_renew_time = Some(std::time::SystemTime::now());
+        self.tpm_engine_helper
+            .write_to_nv_index(auth_value, TPM_NV_INDEX_ATTESTATION_REPORT, data)
+            .map_err(TpmErrorKind::WriteToNvIndex)?;
+
+        Ok(())
     }
 
     /// This routine calls (via GET) external server to issue AK cert.
@@ -805,6 +805,10 @@ impl Tpm {
         tracing::trace!("Request AK cert renewal");
 
         let ak_cert_request = self.create_ak_cert_request()?;
+        // Store the ak cert request that includes the attestation report if `ak_cert_type` is `HwAttested`.
+        if matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_, _)) {
+            self.renew_attestation_report(&ak_cert_request)?;
+        }
 
         let request_ak_cert_helper =
             if let TpmAkCertType::HwAttested(_, helper) = &self.ak_cert_type {
@@ -938,11 +942,21 @@ impl Tpm {
                 || self.attestation_report_renew_time.is_none()
             {
                 // Renew tha attestation report as part of the request creation call.
-                if let Err(e) = self.create_ak_cert_request() {
-                    tracelimit::error_ratelimited!(
-                        error = &e as &dyn std::error::Error,
-                        "Error while renewing the attestation report on NvRead"
-                    );
+                match self.create_ak_cert_request() {
+                    Ok(ak_cert_request) => {
+                        if let Err(e) = self.renew_attestation_report(&ak_cert_request) {
+                            tracelimit::error_ratelimited!(
+                                error = &e as &dyn std::error::Error,
+                                "Error while renewing the attestation report on NvRead"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracelimit::error_ratelimited!(
+                            error = &e as &dyn std::error::Error,
+                            "Error while creating ak cert request for renewing the attestation report"
+                        );
+                    }
                 }
             } else {
                 tracing::warn!("Hardware attestation report generation was rate limited");

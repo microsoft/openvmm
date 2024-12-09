@@ -14,9 +14,13 @@ const ATTESTATION_VERSION: u32 = 2;
 const ATTESTATION_SIGNATURE: u32 = 0x414c4348; // 'HCLA'
 /// The value is based on the maximum report size of the supported isolated VM
 /// Currently it's the size of a SNP report.
-// NOTE: we do not use the `SNP_REPORT_SIZE` from `sev_guest_device` to avoid
-// taking linux-specific dependency, making this crate platform-agnostic.
-const ATTESTATION_REPORT_SIZE_MAX: usize = 1184;
+const ATTESTATION_REPORT_SIZE_MAX: usize = SNP_VM_REPORT_SIZE;
+
+pub const VBS_VM_REPORT_SIZE: usize = 0x230;
+pub const SNP_VM_REPORT_SIZE: usize = sev_guest_device::protocol::SNP_REPORT_SIZE;
+pub const TDX_VM_REPORT_SIZE: usize = tdx_guest_device::protocol::TDX_REPORT_SIZE;
+/// No TEE attestation report for TVM
+pub const TVM_REPORT_SIZE: usize = 0;
 
 const PAGE_SIZE: usize = 4096;
 

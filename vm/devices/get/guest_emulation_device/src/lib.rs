@@ -195,6 +195,8 @@ pub struct GuestEmulationDevice {
     #[inspect(with = "Option::is_some")]
     save_restore_buf: Option<Vec<u8>>,
     last_save_restore_buf_len: usize,
+
+    guest_memory: Option<GuestMemory>,
 }
 
 #[derive(Inspect)]
@@ -232,6 +234,7 @@ impl GuestEmulationDevice {
             save_restore_buf: None,
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
+            guest_memory: None,
         }
     }
 
@@ -802,6 +805,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         Ok(())
     }
 
+    /// Stub implementation that simulates the behavior of GED and the host agent.
+    /// Used only for test scenarios such as VMM tests.
     fn handle_igvm_attest(
         &mut self,
         message_buf: &[u8],
