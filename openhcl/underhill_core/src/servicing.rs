@@ -80,7 +80,7 @@ mod state {
         #[mesh(10001)]
         pub shared_pool_state: Option<page_pool_alloc::save_restore::PagePoolState>,
         /// Private pool information.
-        #[mesh(9)]
+        #[mesh(10002)]
         pub private_pool_state: Option<page_pool_alloc::save_restore::PagePoolState>,
     }
 
