@@ -1900,7 +1900,9 @@ pub trait MemoryRead {
 
 pub trait MemoryWrite {
     fn write(&mut self, data: &[u8]) -> Result<(), AccessError>;
-    fn zero(&mut self, len: usize) -> Result<(), AccessError>;
+    fn zero(&mut self, len: usize) -> Result<(), AccessError> {
+        self.fill(0, len)
+    }
     fn fill(&mut self, val: u8, len: usize) -> Result<(), AccessError>;
     fn len(&self) -> usize;
 
@@ -1960,10 +1962,6 @@ impl MemoryWrite for &mut [u8] {
         Ok(())
     }
 
-    fn zero(&mut self, len: usize) -> Result<(), AccessError> {
-        MemoryWrite::fill(self, 0, len)
-    }
-
     fn len(&self) -> usize {
         <[u8]>::len(self)
     }
@@ -2018,10 +2016,6 @@ impl<T: MemoryWrite> MemoryWrite for Limit<T> {
         self.inner.fill(val, len)?;
         self.len -= len;
         Ok(())
-    }
-
-    fn zero(&mut self, len: usize) -> Result<(), AccessError> {
-        MemoryWrite::fill(self, 0, len)
     }
 
     fn len(&self) -> usize {

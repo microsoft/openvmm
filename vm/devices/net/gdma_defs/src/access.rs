@@ -132,10 +132,6 @@ impl MemoryWrite for WqeAccess<'_> {
         unimplemented!()
     }
 
-    fn zero(&mut self, _len: usize) -> Result<(), AccessError> {
-        unimplemented!()
-    }
-
     fn len(&self) -> usize {
         self.remaining_len
     }
