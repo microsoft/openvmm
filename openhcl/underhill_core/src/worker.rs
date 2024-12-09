@@ -59,7 +59,6 @@ use disk_backend::Disk;
 use disk_blockdevice::BlockDeviceResolver;
 use disk_blockdevice::OpenBlockDeviceConfig;
 use firmware_uefi::UefiCommandSet;
-use fixed_pool_alloc::FixedPool;
 use futures::executor::block_on;
 use futures::future::join_all;
 use futures_concurrency::future::Race;
@@ -1515,6 +1514,26 @@ async fn new_underhill_vm(
         None
     };
 
+    // Enable the private pool which supports persisting ranges across servicing
+    // for DMA devices that support save restore. Today, this is only used for
+    // NVMe.
+    let mut private_pool = if !runtime_params.private_pool_ranges().is_empty() {
+        use vmcore::save_restore::SaveRestore;
+
+        let ranges = runtime_params.private_pool_ranges();
+        let mut pool =
+            PagePool::new_private_pool(ranges).context("failed to create private pool")?;
+
+        if let Some(pool_state) = servicing_state.private_pool_state.flatten() {
+            pool.restore(pool_state)
+                .context("failed to restore private pool")?;
+        }
+
+        Some(pool)
+    } else {
+        None
+    };
+
     // Test with the highest VTL for which we have a GuestMemory object
     let highest_vtl_gm = gm.vtl1().unwrap_or(gm.vtl0());
 
@@ -1808,38 +1827,31 @@ async fn new_underhill_vm(
         crate::inspect_proc::periodic_telemetry_task(driver_source.simple()),
     );
 
-    // Allocate fixed pool for DMA-capable devices if size hint was provided by host,
-    // otherwise use default heap allocator.
-    // Contents of fixed pool will be preserved during servicing.
-    // TODO: FixedPool will be replaced with PagePool in subsequent change.
-    let fixed_mem_pool = if !runtime_params.dma_preserve_memory_map().is_empty() {
-        let pools = runtime_params.dma_preserve_memory_map();
-        Some(FixedPool::new(pools)?)
-    } else {
-        None
-    };
-
     let nvme_manager = if env_cfg.nvme_vfio {
         let shared_vis_pool_spawner = shared_vis_pages_pool
             .as_ref()
             .map(|p| p.allocator_spawner());
 
-        let fixed_mem_allocator = fixed_mem_pool.as_ref().map(|f| f.allocator_spawner());
+        let private_pool_spanwer = private_pool.as_ref().map(|p| p.allocator_spawner());
 
-        let save_restore_supported = fixed_mem_pool.is_some();
+        let save_restore_supported = shared_vis_pool_spawner.is_some() || private_pool.is_some();
         let vfio_dma_buffer_spawner = Box::new(
             move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
                 shared_vis_pool_spawner
                     .as_ref()
                     .map(|spawner| {
                         spawner
-                            .allocator(device_id)
+                            .allocator(device_id.clone())
                             .map(|alloc| Arc::new(alloc) as _)
                     })
                     .unwrap_or_else(|| {
-                        fixed_mem_allocator
+                        private_pool_spanwer
                             .as_ref()
-                            .map(|f| f.allocator().map(|a| Arc::new(a) as _))
+                            .map(|spawner| {
+                                spawner
+                                    .allocator(device_id.clone())
+                                    .map(|alloc| Arc::new(alloc) as _)
+                            })
                             .unwrap_or(Ok(Arc::new(LockedMemorySpawner) as _))
                     })
             },
@@ -1861,21 +1873,6 @@ async fn new_underhill_vm(
     } else {
         None
     };
-
-    // NVMe manager is the only client for fixed DMA pool as of now,
-    // run integrity check after restore. Find a better place if more
-    // clients added in future.
-    if fixed_mem_pool.is_some() && nvme_manager.is_some() {
-        match fixed_mem_pool.as_ref().unwrap().validate() {
-            Ok(_) => {
-                tracing::trace!("fixed mem pool integrity OK");
-            }
-            Err(_) => {
-                // Can be converted to panic after comprehensive testing.
-                tracing::trace!("fixed mem pool integrity ERROR");
-            }
-        }
-    }
 
     let initial_generation_id = match dps.general.generation_id.map(u128::from_ne_bytes) {
         Some(0) | None => {
@@ -2939,6 +2936,15 @@ async fn new_underhill_vm(
         .transpose()
         .context("failed to validate restore for shared visibility pool")?;
 
+    // Finalize the private pool. This should be only used by devices that
+    // support restoring their allocations, so there should be no unmatched
+    // allocations.
+    private_pool
+        .as_mut()
+        .map(|pool| pool.validate_restore(false))
+        .transpose()
+        .context("failed to validate restore for private pool")?;
+
     // Start the VP tasks on the thread pool.
     crate::vp::spawn_vps(tp, vps, vp_runners, &chipset, isolation)
         .await
@@ -3010,7 +3016,7 @@ async fn new_underhill_vm(
 
         _periodic_telemetry_task: periodic_telemetry_task,
         shared_vis_pool: shared_vis_pages_pool,
-        fixed_mem_pool,
+        private_pool,
     };
 
     Ok(loaded_vm)

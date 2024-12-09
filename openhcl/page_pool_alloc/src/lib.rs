@@ -296,7 +296,7 @@ impl Inspect for PagePoolInner {
                         match &slot.state {
                             SlotState::Free => {}
                             SlotState::Allocated { device_id, tag } => {
-                                resp.field("device_id", self.device_ids[*device_id].clone())
+                                resp.field("device_id", self.device_ids[*device_id].name())
                                     .field("tag", tag);
                             }
                             SlotState::AllocatedPendingRestore { device_id, tag }
@@ -334,6 +334,51 @@ impl PagePoolHandle {
     /// The number of 4K pages for this allocation.
     pub fn size_pages(&self) -> u64 {
         self.size_pages
+    }
+
+    /// Create a memory block from this allocation.
+    #[cfg(all(feature = "vfio", target_os = "linux"))]
+    fn into_memory_block(
+        self,
+        pool_type: PoolType,
+        zero_block: bool,
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+        let gpa_fd = MshvVtlLow::new().context("failed to open gpa fd")?;
+        let len = (self.size_pages * HV_PAGE_SIZE) as usize;
+        let mapping = sparse_mmap::SparseMapping::new(len).context("failed to create mapping")?;
+        let gpa = self.base_pfn() * HV_PAGE_SIZE;
+
+        // When the pool references shared memory, on hardware isolated
+        // platforms the file_offset must have the shared bit set as these are
+        // decrypted pages. Setting this bit is okay on non-hardware isolated
+        // platforms, as it does nothing.
+        let file_offset = match pool_type {
+            PoolType::Private => gpa,
+            PoolType::Shared => {
+                tracing::trace!("setting MshvVtlLow::SHARED_MEMORY_FLAG");
+                gpa | MshvVtlLow::SHARED_MEMORY_FLAG
+            }
+        };
+
+        tracing::trace!(gpa, file_offset, len, "mapping dma buffer");
+        mapping
+            .map_file(0, len, gpa_fd.get(), file_offset, true)
+            .context("unable to map allocation")?;
+
+        // Zero memory block if requested.
+        if zero_block {
+            mapping
+                .fill_at(0, 0, len)
+                .context("failed to zero allocated memory")?;
+        }
+
+        let pfns: Vec<_> = (self.base_pfn()..self.base_pfn() + self.size_pages).collect();
+
+        Ok(user_driver::memory::MemoryBlock::new(PagePoolDmaBuffer {
+            mapping,
+            _alloc: self,
+            pfns,
+        }))
     }
 }
 
@@ -690,49 +735,32 @@ impl user_driver::vfio::VfioDmaBuffer for PagePoolAllocator {
             .alloc(size_pages, "vfio dma".into())
             .context("failed to allocate shared mem")?;
 
-        let gpa_fd = MshvVtlLow::new().context("failed to open gpa fd")?;
-        let mapping = sparse_mmap::SparseMapping::new(len).context("failed to create mapping")?;
-
-        let gpa = alloc.base_pfn() * HV_PAGE_SIZE;
-
-        // When the pool references shared memory, on hardware isolated
-        // platforms the file_offset must have the shared bit set as these are
-        // decrypted pages. Setting this bit is okay on non-hardware isolated
-        // platforms, as it does nothing.
-        let file_offset = match self.typ {
-            PoolType::Private => gpa,
-            PoolType::Shared => {
-                tracing::trace!("setting MshvVtlLow::SHARED_MEMORY_FLAG");
-                gpa | MshvVtlLow::SHARED_MEMORY_FLAG
-            }
-        };
-
-        tracing::trace!(gpa, file_offset, len, "mapping dma buffer");
-        mapping
-            .map_file(0, len, gpa_fd.get(), file_offset, true)
-            .context("unable to map allocation")?;
-
-        // The VfioDmaBuffer trait requires that allocated buffers are zeroed.
-        mapping
-            .fill_at(0, 0, len)
-            .context("failed to zero allocated memory")?;
-
-        let pfns: Vec<_> = (alloc.base_pfn()..alloc.base_pfn() + alloc.size_pages).collect();
-
-        Ok(user_driver::memory::MemoryBlock::new(PagePoolDmaBuffer {
-            mapping,
-            _alloc: alloc,
-            pfns,
-        }))
+        // The VfioDmaBuffer trait requires that newly allocated buffers are
+        // zeroed.
+        alloc.into_memory_block(self.typ, true)
     }
 
-    /// Restore a dma buffer in the predefined location with the given `len` in bytes.
+    /// Restore a dma buffer in the predefined location with the given `len` in
+    /// bytes.
     fn restore_dma_buffer(
         &self,
-        _len: usize,
-        _base_pfn: u64,
+        len: usize,
+        base_pfn: u64,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        anyhow::bail!("restore not supported yet");
+        if len as u64 % HV_PAGE_SIZE != 0 {
+            anyhow::bail!("not a page-size multiple");
+        }
+
+        let size_pages = NonZeroU64::new(len as u64 / HV_PAGE_SIZE)
+            .context("allocation of size 0 not supported")?;
+
+        let alloc = self
+            .restore_alloc(base_pfn, size_pages)
+            .context("failed to restore allocation")?;
+
+        // Preserve the existing contents of memory and do not zero the restored
+        // allocation.
+        alloc.into_memory_block(self.typ, false)
     }
 }
 
