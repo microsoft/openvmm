@@ -36,6 +36,14 @@ mod state {
         pub netvsp_state: Vec<crate::emuplat::netvsp::SavedState>,
     }
 
+    #[derive(Protobuf)]
+    #[mesh(package = "underhill")]
+    pub struct NvmeSavedState {
+        /// NVMe manager (worker) saved state.
+        #[mesh(1)]
+        pub nvme_state: crate::nvme_manager::save_restore::NvmeManagerSavedState,
+    }
+
     /// Servicing state needed to create the LoadedVm object.
     #[derive(Protobuf)]
     #[mesh(package = "underhill")]
@@ -65,6 +73,12 @@ mod state {
         /// Intercept the host-provided shutdown IC device.
         #[mesh(7)]
         pub overlay_shutdown_device: bool,
+        /// NVMe saved state.
+        #[mesh(10000)]
+        pub nvme_state: Option<NvmeSavedState>,
+        /// Shared pool information.
+        #[mesh(10001)]
+        pub shared_pool_state: Option<page_pool_alloc::save_restore::PagePoolState>,
     }
 
     #[derive(Protobuf)]
@@ -127,6 +141,8 @@ pub mod transposed {
             disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
         )>,
         pub overlay_shutdown_device: Option<bool>,
+        pub nvme_state: Option<Option<NvmeSavedState>>,
+        pub shared_pool_state: Option<Option<page_pool_alloc::save_restore::PagePoolState>>,
     }
 
     /// A transposed `Option<EmuplatSavedState>`, where each field of
@@ -154,6 +170,8 @@ pub mod transposed {
                     flush_logs_result,
                     vmgs,
                     overlay_shutdown_device,
+                    nvme_state,
+                    shared_pool_state,
                 } = state;
 
                 OptionServicingInitState {
@@ -167,6 +185,8 @@ pub mod transposed {
                     flush_logs_result: Some(flush_logs_result),
                     vmgs: Some(vmgs),
                     overlay_shutdown_device: Some(overlay_shutdown_device),
+                    nvme_state: Some(nvme_state),
+                    shared_pool_state: Some(shared_pool_state),
                 }
             } else {
                 OptionServicingInitState::default()

@@ -391,7 +391,7 @@ pub struct TdxBacked {
     direct_overlays_pfns: [u64; UhDirectOverlay::Count as usize],
     #[inspect(skip)]
     #[allow(dead_code)] // Allocation handle for direct overlays held until drop
-    direct_overlay_pfns_handle: shared_pool_alloc::SharedPoolHandle,
+    direct_overlay_pfns_handle: page_pool_alloc::PagePoolHandle,
 
     untrusted_synic: Option<ProcessorSynic>,
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
@@ -410,7 +410,7 @@ pub struct TdxBacked {
     flush_state: VtlArray<TdxFlushState, 2>,
     /// A mapped page used for issuing INVGLA hypercalls.
     #[inspect(skip)]
-    flush_page: shared_pool_alloc::SharedPoolHandle,
+    flush_page: page_pool_alloc::PagePoolHandle,
 
     enter_stats: EnterStats,
     exit_stats: ExitStats,

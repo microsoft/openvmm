@@ -7,4 +7,3 @@ pub mod common;
 pub mod local_node;
 pub mod message;
 pub mod resource;
-pub mod upcast;

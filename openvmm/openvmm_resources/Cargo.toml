@@ -34,8 +34,9 @@ serial_socket.workspace = true
 disk_blob = { workspace = true, optional = true }
 disk_crypt = { workspace = true, optional = true }
 disk_file.workspace = true
+disk_layered.workspace = true
 disk_prwrap.workspace = true
-disk_ramdisk.workspace = true
+disklayer_ram.workspace = true
 disk_vhd1.workspace = true
 
 # Chipset devices
@@ -61,6 +62,7 @@ net_backend.workspace = true
 net_consomme = { workspace = true, optional = true }
 
 # Virtio devices
+virtio.workspace = true
 virtiofs.workspace = true
 virtio_net.workspace = true
 virtio_p9.workspace = true

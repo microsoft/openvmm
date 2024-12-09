@@ -1,0 +1,24 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "disk_layered"
+edition = "2021"
+rust-version.workspace = true
+
+[dependencies]
+disk_backend.workspace = true
+disk_backend_resources.workspace = true
+scsi_buffers.workspace = true
+
+guestmem.workspace = true
+vm_resource.workspace = true
+inspect = { workspace = true, features = ["std"] }
+
+anyhow.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

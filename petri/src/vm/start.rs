@@ -329,13 +329,7 @@ impl PetriVmConfig {
                 );
 
                 let diag_client =
-                    match DiagClient::from_hybrid_vsock(driver2, &vtl2_vsock_path).await {
-                        Err(e) => {
-                            tracing::error!(?e, "Failed to connect to VTL2 diag server");
-                            return;
-                        }
-                        Ok(diag_client) => diag_client,
-                    };
+                     DiagClient::from_hybrid_vsock(driver2, &vtl2_vsock_path);
 
                 let output = match diag_client.inspect("", None, None).await {
                     Err(e) => {

@@ -993,7 +993,6 @@ dependencies = [
  "guid",
  "inspect",
  "inspect_proto",
- "mesh",
  "mesh_rpc",
  "pal_async",
  "socket2",
@@ -1122,7 +1121,6 @@ dependencies = [
  "inspect",
  "once_cell",
  "scsi_buffers",
- "stackfuture",
  "thiserror 2.0.0",
  "tokio",
  "vhd1_defs",
@@ -1157,7 +1155,6 @@ dependencies = [
  "pal_async",
  "pal_uring",
  "scsi_buffers",
- "stackfuture",
  "tempfile",
  "thiserror 2.0.0",
  "tracing",
@@ -1177,7 +1174,6 @@ dependencies = [
  "guestmem",
  "inspect",
  "scsi_buffers",
- "stackfuture",
  "thiserror 2.0.0",
  "vm_resource",
 ]
@@ -1200,7 +1196,7 @@ dependencies = [
  "guestmem",
  "inspect",
  "scsi_buffers",
- "stackfuture",
+ "thiserror 2.0.0",
  "vm_resource",
 ]
 
@@ -1215,10 +1211,25 @@ dependencies = [
  "mesh",
  "pal_async",
  "scsi_buffers",
- "stackfuture",
  "thiserror 2.0.0",
  "vmgs",
  "vmgs_broker",
+]
+
+[[package]]
+name = "disk_layered"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "disk_backend",
+ "disk_backend_resources",
+ "futures",
+ "guestmem",
+ "inspect",
+ "scsi_buffers",
+ "thiserror 2.0.0",
+ "vm_resource",
 ]
 
 [[package]]
@@ -1233,7 +1244,6 @@ dependencies = [
  "nvme_spec",
  "pal",
  "scsi_buffers",
- "stackfuture",
 ]
 
 [[package]]
@@ -1246,30 +1256,9 @@ dependencies = [
  "inspect",
  "parking_lot",
  "scsi_buffers",
- "stackfuture",
- "tracing",
- "vm_resource",
-]
-
-[[package]]
-name = "disk_ramdisk"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "disk_backend",
- "disk_backend_resources",
- "event-listener",
- "guestmem",
- "inspect",
- "pal_async",
- "parking_lot",
- "scsi_buffers",
- "stackfuture",
  "thiserror 2.0.0",
  "tracing",
  "vm_resource",
- "zerocopy",
 ]
 
 [[package]]
@@ -1280,14 +1269,13 @@ dependencies = [
  "async-trait",
  "disk_backend",
  "disk_backend_resources",
- "disk_ramdisk",
+ "disklayer_ram",
  "futures",
  "guestmem",
  "hvdef",
  "inspect",
  "pal_async",
  "scsi_buffers",
- "stackfuture",
  "thiserror 2.0.0",
  "tracelimit",
  "tracing",
@@ -1306,7 +1294,6 @@ dependencies = [
  "inspect",
  "pal_async",
  "scsi_buffers",
- "stackfuture",
  "tempfile",
  "thiserror 2.0.0",
  "vhd1_defs",
@@ -1322,15 +1309,38 @@ dependencies = [
  "disk_file",
  "disk_vhd1",
  "futures",
+ "guestmem",
  "guid",
  "inspect",
  "mesh",
+ "pal_async",
  "scsi_buffers",
- "stackfuture",
  "tempfile",
  "thiserror 2.0.0",
  "vm_resource",
  "winapi",
+]
+
+[[package]]
+name = "disklayer_ram"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "disk_backend",
+ "disk_backend_resources",
+ "disk_layered",
+ "event-listener",
+ "futures",
+ "guestmem",
+ "inspect",
+ "pal_async",
+ "parking_lot",
+ "scsi_buffers",
+ "test_with_tracing",
+ "thiserror 2.0.0",
+ "tracing",
+ "vm_resource",
+ "zerocopy",
 ]
 
 [[package]]
@@ -1602,6 +1612,22 @@ dependencies = [
  "mesh_protobuf",
  "thiserror 2.0.0",
  "uefi_specs",
+]
+
+[[package]]
+name = "fixed_pool_alloc"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "hcl",
+ "hvdef",
+ "inspect",
+ "memory_range",
+ "mesh",
+ "parking_lot",
+ "sparse_mmap",
+ "thiserror 2.0.0",
+ "user_driver",
 ]
 
 [[package]]
@@ -2002,7 +2028,7 @@ dependencies = [
  "chipset_arc_mutex_device",
  "chipset_device",
  "chipset_device_fuzz",
- "disk_ramdisk",
+ "disklayer_ram",
  "guestmem",
  "ide",
  "libfuzzer-sys",
@@ -2321,7 +2347,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "disk_backend",
- "disk_ramdisk",
+ "disklayer_ram",
  "futures",
  "get_protocol",
  "get_resources",
@@ -2388,11 +2414,11 @@ dependencies = [
  "inspect",
  "inspect_counters",
  "mesh",
+ "page_pool_alloc",
  "pal_async",
  "parking_lot",
  "power_resources",
  "serde_json",
- "shared_pool_alloc",
  "test_with_tracing",
  "thiserror 2.0.0",
  "tracing",
@@ -2736,6 +2762,7 @@ dependencies = [
  "vm_resource",
  "vm_topology",
  "vmbus_channel",
+ "vmbus_core",
  "vmbus_server",
  "vmcore",
  "vmgs",
@@ -2976,6 +3003,7 @@ dependencies = [
  "futures-concurrency",
  "guid",
  "inspect",
+ "kmsg",
  "mesh",
  "pal_async",
  "parking_lot",
@@ -4206,7 +4234,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
- "disk_ramdisk",
+ "disklayer_ram",
  "event-listener",
  "futures",
  "guestmem",
@@ -4270,7 +4298,6 @@ dependencies = [
  "clap_dyn_complete",
  "ctrlc",
  "diag_client",
- "env_logger",
  "fs-err",
  "futures",
  "futures-concurrency",
@@ -4282,6 +4309,7 @@ dependencies = [
  "socket2",
  "term",
  "thiserror 2.0.0",
+ "tracing-subscriber",
  "unicycle",
 ]
 
@@ -4575,10 +4603,11 @@ dependencies = [
  "disk_blob",
  "disk_crypt",
  "disk_file",
+ "disk_layered",
  "disk_prwrap",
- "disk_ramdisk",
  "disk_vhd1",
  "disk_vhdmp",
+ "disklayer_ram",
  "gdma",
  "guest_crash_device",
  "guest_emulation_device",
@@ -4602,6 +4631,7 @@ dependencies = [
  "storvsp",
  "tpm",
  "uidevices",
+ "virtio",
  "virtio_net",
  "virtio_p9",
  "virtio_pmem",
@@ -4628,6 +4658,25 @@ checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
 [[package]]
 name = "oversized_box"
 version = "0.0.0"
+
+[[package]]
+name = "page_pool_alloc"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "hcl",
+ "hvdef",
+ "inspect",
+ "memory_range",
+ "mesh",
+ "parking_lot",
+ "sparse_mmap",
+ "thiserror 2.0.0",
+ "tracing",
+ "user_driver",
+ "vm_topology",
+ "vmcore",
+]
 
 [[package]]
 name = "page_table"
@@ -5807,22 +5856,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shared_pool_alloc"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "hcl",
- "hvdef",
- "inspect",
- "parking_lot",
- "sparse_mmap",
- "thiserror 2.0.0",
- "tracing",
- "user_driver",
- "vm_topology",
-]
-
-[[package]]
 name = "shell-words"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6008,8 +6041,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "criterion",
- "disk_backend",
- "disk_ramdisk",
+ "disklayer_ram",
  "event-listener",
  "fast_select",
  "futures",
@@ -6790,6 +6822,7 @@ dependencies = [
  "firmware_pcat",
  "firmware_uefi",
  "firmware_uefi_custom_vars",
+ "fixed_pool_alloc",
  "framebuffer",
  "fs-err",
  "futures",
@@ -6833,6 +6866,7 @@ dependencies = [
  "nvme_driver",
  "nvme_resources",
  "openhcl_attestation_protocol",
+ "page_pool_alloc",
  "pal",
  "pal_async",
  "pal_uring",
@@ -6847,7 +6881,6 @@ dependencies = [
  "serde_helpers",
  "serde_json",
  "serial_16550_resources",
- "shared_pool_alloc",
  "socket2",
  "sparse_mmap",
  "state_unit",
@@ -6881,6 +6914,7 @@ dependencies = [
  "vm_topology",
  "vmbus_async",
  "vmbus_channel",
+ "vmbus_client_hcl",
  "vmbus_core",
  "vmbus_relay",
  "vmbus_relay_intercept_device",
@@ -7336,13 +7370,13 @@ dependencies = [
  "libc",
  "memory_range",
  "mesh",
+ "page_pool_alloc",
  "pal",
  "pal_async",
  "pal_uring",
  "parking_lot",
  "pci_core",
  "safe_intrinsics",
- "shared_pool_alloc",
  "sidecar_client",
  "thiserror 2.0.0",
  "tracelimit",
@@ -7481,11 +7515,13 @@ dependencies = [
  "pal_event",
  "parking_lot",
  "pci_core",
+ "pci_resources",
  "task_control",
  "test_with_tracing",
  "thiserror 2.0.0",
  "tracelimit",
  "tracing",
+ "virtio_resources",
  "vm_resource",
  "vmcore",
  "zerocopy",
@@ -7737,12 +7773,29 @@ dependencies = [
  "inspect",
  "mesh",
  "pal_async",
+ "pal_event",
  "parking_lot",
  "thiserror 2.0.0",
  "tracing",
  "vmbus_async",
  "vmbus_channel",
  "vmbus_core",
+ "zerocopy",
+]
+
+[[package]]
+name = "vmbus_client_hcl"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "hcl",
+ "hvdef",
+ "pal_async",
+ "pal_event",
+ "tracing",
+ "vmbus_async",
+ "vmbus_client",
  "zerocopy",
 ]
 
@@ -7785,8 +7838,6 @@ dependencies = [
  "anyhow",
  "futures",
  "guid",
- "hcl",
- "hvdef",
  "inspect",
  "mesh",
  "mesh_protobuf",
@@ -7796,7 +7847,6 @@ dependencies = [
  "parking_lot",
  "tracelimit",
  "tracing",
- "vmbus_async",
  "vmbus_channel",
  "vmbus_client",
  "vmbus_core",
@@ -7812,7 +7862,6 @@ dependencies = [
  "anyhow",
  "futures",
  "guid",
- "hcl",
  "hvdef",
  "inspect",
  "mesh",
@@ -8005,7 +8054,7 @@ dependencies = [
  "cfg-if",
  "crc32fast",
  "disk_backend",
- "disk_ramdisk",
+ "disklayer_ram",
  "getrandom",
  "guestmem",
  "inspect",
@@ -8053,6 +8102,7 @@ dependencies = [
 name = "vmgs_lib"
 version = "0.0.0"
 dependencies = [
+ "disk_backend",
  "disk_vhd1",
  "futures",
  "vmgs",

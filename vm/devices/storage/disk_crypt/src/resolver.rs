@@ -6,9 +6,8 @@
 use crate::CryptDisk;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedSimpleDisk;
+use disk_backend::resolve::ResolvedDisk;
 use disk_crypt_resources::DiskCryptHandle;
-use std::sync::Arc;
 use thiserror::Error;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::DiskHandleKind;
@@ -33,11 +32,14 @@ pub enum DiskResolveError {
     /// Failed to create the disk.
     #[error("failed to create disk")]
     NewDisk(#[source] crate::NewDiskError),
+    /// The disk is invalid.
+    #[error("invalid disk")]
+    InvalidDisk(#[source] disk_backend::InvalidDisk),
 }
 
 #[async_trait]
 impl AsyncResolveResource<DiskHandleKind, DiskCryptHandle> for DiskCryptResolver {
-    type Output = ResolvedSimpleDisk;
+    type Output = ResolvedDisk;
     type Error = DiskResolveError;
 
     async fn resolve(
@@ -59,6 +61,6 @@ impl AsyncResolveResource<DiskHandleKind, DiskCryptHandle> for DiskCryptResolver
 
         let disk = CryptDisk::new(resource.cipher, &resource.key, inner.0)
             .map_err(DiskResolveError::NewDisk)?;
-        Ok(ResolvedSimpleDisk(Arc::new(disk)))
+        ResolvedDisk::new(disk).map_err(DiskResolveError::InvalidDisk)
     }
 }

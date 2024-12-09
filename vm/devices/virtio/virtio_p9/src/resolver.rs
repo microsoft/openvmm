@@ -5,9 +5,9 @@
 
 use crate::VirtioPlan9Device;
 use plan9::Plan9FileSystem;
+use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio::LegacyWrapper;
-use virtio::VirtioDevice;
 use virtio_resources::p9::VirtioPlan9Handle;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::VirtioDeviceHandle;
@@ -22,7 +22,7 @@ declare_static_resolver! {
 }
 
 impl ResolveResource<VirtioDeviceHandle, VirtioPlan9Handle> for VirtioPlan9Resolver {
-    type Output = Box<dyn VirtioDevice>;
+    type Output = ResolvedVirtioDevice;
     type Error = anyhow::Error;
 
     fn resolve(
@@ -39,6 +39,6 @@ impl ResolveResource<VirtioDeviceHandle, VirtioPlan9Handle> for VirtioPlan9Resol
             ),
             input.guest_memory,
         );
-        Ok(Box::new(device))
+        Ok(device.into())
     }
 }

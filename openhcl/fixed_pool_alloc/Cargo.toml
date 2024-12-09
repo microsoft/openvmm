@@ -1,0 +1,25 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "fixed_pool_alloc"
+edition = "2021"
+rust-version.workspace = true
+
+[features]
+vfio = ["user_driver/vfio"]
+
+[dependencies]
+anyhow.workspace = true
+hcl.workspace = true
+hvdef.workspace = true
+inspect.workspace = true
+memory_range.workspace = true
+mesh.workspace = true
+parking_lot.workspace = true
+sparse_mmap.workspace = true
+thiserror.workspace = true
+user_driver.workspace = true
+
+[lints]
+workspace = true

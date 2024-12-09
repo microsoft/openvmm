@@ -229,6 +229,8 @@ pub struct ParsedDeviceTree<
     /// Entropy from the host to be used by the OpenHCL kernel
     #[cfg_attr(feature = "inspect", inspect(with = "Option::is_some"))]
     pub entropy: Option<ArrayVec<u8, MAX_ENTROPY_SIZE>>,
+    /// Preserved DMA memory size in pages.
+    pub preserve_dma_4k_pages: Option<u64>,
 }
 
 /// The memory allocation mode provided by the host. This determines how OpenHCL
@@ -307,6 +309,7 @@ impl<
             gic: None,
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
+            preserve_dma_4k_pages: None,
         }
     }
 
@@ -506,6 +509,14 @@ impl<
 
                                 storage.entropy = Some(entropy);
                             }
+                            // These parameters may not be present so it is not an error if they are missing.
+                            "servicing" => {
+                                storage.preserve_dma_4k_pages = openhcl_child
+                                    .find_property("dma-preserve-pages")
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|p| p.read_u64(0).ok());
+                            }
                             _ => {
                                 #[cfg(feature = "tracing")]
                                 tracing::warn!(?openhcl_child.name, "Unrecognized OpenHCL child node");
@@ -698,6 +709,7 @@ impl<
             gic: _,
             memory_allocation_mode: _,
             entropy: _,
+            preserve_dma_4k_pages: _,
         } = storage;
 
         *device_tree_size = parser.total_size;

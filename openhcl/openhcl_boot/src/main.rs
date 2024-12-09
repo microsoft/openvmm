@@ -21,6 +21,8 @@ mod single_threaded;
 
 use crate::arch::setup_vtl2_memory;
 use crate::arch::setup_vtl2_vp;
+#[cfg(target_arch = "x86_64")]
+use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::log;
@@ -30,6 +32,7 @@ use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use boot_logger::LoggerType;
 use core::fmt::Write;
+use core::ops::Range;
 use dt::write_dt;
 use dt::BootTimes;
 use host_params::shim_params::IsolationType;
@@ -287,18 +290,20 @@ fn shim_parameters(shim_params_raw_offset: isize) -> ShimParams {
 }
 
 /// The maximum number of reserved memory ranges that we might use.
-///
-/// 1. VTL2 parameter regions (could be up to 2).
-/// 2. Sidecar image.
-/// 3. One reserved range per sidecar node.
-pub const MAX_RESERVED_MEM_RANGES: usize = 3 + sidecar_defs::MAX_NODES;
+/// See ReservedMemoryType definition for details.
+pub const MAX_RESERVED_MEM_RANGES: usize = 5 + sidecar_defs::MAX_NODES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReservedMemoryType {
+    /// VTL2 parameter regions (could be up to 2).
     Vtl2Config,
     Vtl2Reserved,
+    /// Sidecar image.
     SidecarImage,
+    /// A reserved range per sidecar node.
     SidecarNode,
+    /// Persistent GPA pool preserved during servicing.
+    PersistentGpaPool,
 }
 
 /// Construct a slice representing the reserved memory ranges to be reported to
@@ -330,6 +335,19 @@ fn reserved_memory_regions(
             partition_info.vtl2_reserved_region,
             ReservedMemoryType::Vtl2Reserved,
         ));
+    }
+    let dma_4k_pages = partition_info.preserve_dma_4k_pages.unwrap_or(0);
+    // If DMA reserved hint was provided by Host, allocate top of VTL2 memory range
+    // for that purpose.
+    if !partition_info.vtl2_ram.is_empty() && (dma_4k_pages > 0) {
+        let last_mem_entry = &partition_info.vtl2_ram[partition_info.vtl2_ram.len() - 1];
+        if last_mem_entry.range.page_count_4k() > dma_4k_pages {
+            let reserved_dma = MemoryRange::from_4k_gpn_range(Range {
+                start: last_mem_entry.range.end_4k_gpn() - dma_4k_pages,
+                end: last_mem_entry.range.end_4k_gpn(),
+            });
+            reserved.push((reserved_dma, ReservedMemoryType::PersistentGpaPool));
+        }
     }
 
     reserved
@@ -518,6 +536,16 @@ const fn zeroed<T: FromZeroes>() -> T {
     unsafe { core::mem::MaybeUninit::<T>::zeroed().assume_init() }
 }
 
+fn get_ref_time(isolation: IsolationType) -> Option<u64> {
+    match isolation {
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Tdx => get_tdx_tsc_reftime(),
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Snp => None,
+        _ => Some(minimal_rt::reftime::reference_time()),
+    }
+}
+
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
 
@@ -549,14 +577,11 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         boot_logger_init(p.isolation_type, typ);
         log!("openhcl_boot: early debugging enabled");
     }
+
     let can_trust_host =
         p.isolation_type == IsolationType::None || static_options.confidential_debug;
 
-    let boot_reftime = if p.isolation_type.is_hardware_isolated() {
-        None
-    } else {
-        Some(minimal_rt::reftime::reference_time())
-    };
+    let boot_reftime = get_ref_time(p.isolation_type);
 
     let mut dt_storage = off_stack!(PartitionInfo, PartitionInfo::new());
     let partition_info = match PartitionInfo::read_from_dt(&p, &mut dt_storage, can_trust_host) {
@@ -676,9 +701,10 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     // Compute the ending boot time. This has to be before writing to device
     // tree, so this is as late as we can do it.
+
     let boot_times = boot_reftime.map(|start| BootTimes {
         start,
-        end: minimal_rt::reftime::reference_time(),
+        end: get_ref_time(p.isolation_type).unwrap_or(0),
     });
 
     // Validate that no imported regions that are pending are not part of vtl2
@@ -884,6 +910,7 @@ mod test {
             memory_allocation_mode: host_fdt_parser::MemoryAllocationMode::Host,
             entropy: None,
             vtl0_alias_map: None,
+            preserve_dma_4k_pages: None,
         }
     }
 

@@ -15,13 +15,15 @@ vm_resource.workspace = true
 guid = { workspace = true, features = ["inspect"] }
 inspect.workspace = true
 mesh.workspace = true
+
 futures.workspace = true
 thiserror.workspace = true
-stackfuture.workspace = true
 winapi = { workspace = true, features = [ "handleapi", "winbase", "winnt" ] }
 
 [target.'cfg(windows)'.dev-dependencies]
 disk_vhd1.workspace = true
+guestmem.workspace = true
+pal_async.workspace = true
 tempfile.workspace = true
 
 [lints]

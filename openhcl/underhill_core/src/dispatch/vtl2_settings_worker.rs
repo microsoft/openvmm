@@ -8,7 +8,7 @@ use crate::nvme_manager::NvmeDiskConfig;
 use crate::worker::NicConfig;
 use anyhow::Context;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use disk_backend_resources::AutoFormattedDiskHandle;
 use disk_blockdevice::OpenBlockDeviceConfig;
 use futures::StreamExt;
@@ -31,7 +31,6 @@ use std::error::Error as _;
 use std::fmt::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 use storage_string::InvalidAsciiString;
 use storvsp_resources::ScsiControllerHandle;
@@ -545,7 +544,7 @@ pub async fn disk_from_disk_type<'a>(
     disk_type: Resource<DiskHandleKind>,
     read_only: bool,
     resolver: &ResourceResolver,
-) -> Result<Arc<dyn SimpleDisk>, Vtl2SettingsErrorInfo> {
+) -> Result<Disk, Vtl2SettingsErrorInfo> {
     let disk = resolver
         .resolve(
             disk_type,
@@ -1146,6 +1145,7 @@ fn make_disk_config_inner(
         scsi_disk_size_in_bytes: disk_params.scsi_disk_size_in_bytes,
         odx: disk_params.odx,
         unmap: disk_params.unmap,
+        get_lba_status: true,
         max_transfer_length: disk_params.max_transfer_length,
         optimal_unmap_sectors: None, // TODO
     })

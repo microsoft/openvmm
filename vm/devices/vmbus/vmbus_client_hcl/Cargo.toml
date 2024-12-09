@@ -2,27 +2,22 @@
 # Licensed under the MIT License.
 
 [package]
-name = "shared_pool_alloc"
+name = "vmbus_client_hcl"
 edition = "2021"
 rust-version.workspace = true
 
-[features]
-vfio = ["user_driver/vfio"]
-
-[dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 hcl.workspace = true
-
-user_driver.workspace = true
-vm_topology.workspace = true
 hvdef.workspace = true
-sparse_mmap.workspace = true
+pal_async.workspace = true
+pal_event.workspace = true
+vmbus_async.workspace = true
+vmbus_client.workspace = true
 
-inspect.workspace = true
-
-parking_lot.workspace = true
-thiserror.workspace = true
 anyhow.workspace = true
+futures.workspace = true
 tracing.workspace = true
+zerocopy.workspace = true
 
 [lints]
 workspace = true

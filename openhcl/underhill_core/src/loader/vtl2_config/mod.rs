@@ -71,6 +71,11 @@ impl RuntimeParameters {
     pub fn snp_secrets(&self) -> Option<&[u8]> {
         self.snp_secrets.as_deref()
     }
+
+    /// A sorted slice of the parts of VTL2 memory set aside during servicing.
+    pub fn dma_preserve_memory_map(&self) -> &[MemoryRange] {
+        &self.parsed_openhcl_boot.dma_preserve_ranges
+    }
 }
 
 /// Structure that holds the read IGVM parameters from the guest address space.

@@ -224,7 +224,7 @@ impl SparseMapping {
             libc::PROT_READ
         };
 
-        // SAFETY: The flags passed in are guaranteed to be valid
+        // SAFETY: The flags passed in are guaranteed to be valid. MAP_SHARED is required.
         unsafe {
             self.mmap(
                 offset,

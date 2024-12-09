@@ -12,7 +12,7 @@ use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
 use debug_ptr::DebugPtr;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use firmware_uefi::UefiCommandSet;
 use floppy_resources::FloppyDiskConfig;
 use futures::executor::block_on;
@@ -245,7 +245,7 @@ async fn open_simple_disk(
     resolver: &ResourceResolver,
     disk_type: Resource<DiskHandleKind>,
     read_only: bool,
-) -> anyhow::Result<Arc<dyn SimpleDisk>> {
+) -> anyhow::Result<Disk> {
     let disk = resolver
         .resolve(
             disk_type,
@@ -1351,12 +1351,10 @@ impl InitializedVm {
                     .context("failed to open floppy disk")?;
                 tracing::trace!("floppy opened based on config into DriveRibbon");
 
-                let floppy = floppy::FloppyMedia::new(disk);
-
                 if index == 0 {
-                    pri_drives.push(floppy);
+                    pri_drives.push(disk);
                 } else if index == 1 {
-                    sec_drives.push(floppy)
+                    sec_drives.push(disk)
                 } else {
                     tracing::error!("more than 2 floppy controllers are not supported");
                     break;
@@ -1635,7 +1633,11 @@ impl InitializedVm {
                 let vmbus_driver = driver_source.simple();
                 let vtl2_vmbus = VmbusServer::builder(&vmbus_driver, synic.clone(), gm.clone())
                     .vtl(Vtl::Vtl2)
-                    .max_version(vtl2_vmbus_cfg.vmbus_max_version)
+                    .max_version(
+                        vtl2_vmbus_cfg
+                            .vmbus_max_version
+                            .map(vmbus_core::MaxVersionInfo::new),
+                    )
                     .hvsock_notify(Some(vtl2_hvsock_channel.server_half))
                     .external_requests(Some(server_request_recv))
                     .enable_mnf(true)
@@ -1670,7 +1672,11 @@ impl InitializedVm {
                 .hvsock_notify(Some(hvsock_channel.server_half))
                 .external_server(vtl2_request_send)
                 .use_message_redirect(vmbus_cfg.vtl2_redirect)
-                .max_version(vmbus_cfg.vmbus_max_version)
+                .max_version(
+                    vmbus_cfg
+                        .vmbus_max_version
+                        .map(vmbus_core::MaxVersionInfo::new),
+                )
                 .delay_max_version(matches!(cfg.load_mode, LoadMode::Uefi { .. }))
                 .enable_mnf(true)
                 .build()
@@ -1843,6 +1849,12 @@ impl InitializedVm {
                             .context("VTL2 vmbus not enabled")?,
                     };
 
+                    let vtl = match dev_cfg.vtl {
+                        DeviceVtl::Vtl0 => Vtl::Vtl0,
+                        DeviceVtl::Vtl1 => Vtl::Vtl1,
+                        DeviceVtl::Vtl2 => Vtl::Vtl2,
+                    };
+
                     vmm_core::device_builder::build_vpci_device(
                         &driver_source,
                         &resolver,
@@ -1851,6 +1863,8 @@ impl InitializedVm {
                         dev_cfg.instance_id,
                         dev_cfg.resource,
                         &mut chipset_builder,
+                        partition.clone().into_doorbell_registration(vtl),
+                        Some(&mapper),
                         |device_id| {
                             let hv_device = partition.new_virtual_device(
                                 match dev_cfg.vtl {
@@ -1978,15 +1992,6 @@ impl InitializedVm {
                     },
                 )
                 .await?;
-            let bus = if bus == VirtioBus::Auto {
-                if partition.supports_virtual_devices() {
-                    VirtioBus::Vpci
-                } else {
-                    VirtioBus::Mmio
-                }
-            } else {
-                bus
-            };
             match bus {
                 VirtioBus::Mmio => {
                     let mmio_start = virtio_mmio_start - 0x1000;
@@ -1994,7 +1999,7 @@ impl InitializedVm {
                     let id = format!("{id}-{mmio_start}");
                     chipset_builder.arc_mutex_device(id).add(|services| {
                         VirtioMmioDevice::new(
-                            device,
+                            device.0,
                             services.new_line(IRQ_LINE_SET, "interrupt", virtio_mmio_irq),
                             partition.clone().into_doorbell_registration(Vtl::Vtl0),
                             mmio_start,
@@ -2022,7 +2027,7 @@ impl InitializedVm {
                         .on_pci_bus(bus)
                         .try_add(|services| {
                             VirtioPciDevice::new(
-                                device,
+                                device.0,
                                 PciInterruptModel::IntX(
                                     PciInterruptPin::IntA,
                                     services.new_line(IRQ_LINE_SET, "interrupt", pci_inta_line),
@@ -2033,19 +2038,6 @@ impl InitializedVm {
                             )
                         })?;
                 }
-                VirtioBus::Vpci => {
-                    add_virtio_vpci(
-                        &driver_source,
-                        &partition,
-                        &vmbus_server,
-                        &mapper,
-                        &id,
-                        &mut chipset_builder,
-                        device,
-                    )
-                    .await?;
-                }
-                VirtioBus::Auto => unreachable!(),
             }
         }
 
