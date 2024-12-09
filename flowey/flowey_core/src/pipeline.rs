@@ -328,7 +328,7 @@ pub struct Pipeline {
     inject_all_jobs_with: Option<Box<dyn for<'a> Fn(PipelineJob<'a>) -> PipelineJob<'a>>>,
     // backend specific
     ado_name: Option<String>,
-    ado_job_name_overrides: BTreeMap<usize, String>,
+    ado_job_id_overrides: BTreeMap<usize, String>,
     ado_schedule_triggers: Vec<AdoScheduleTriggers>,
     ado_ci_triggers: Option<AdoCiTriggers>,
     ado_pr_triggers: Option<AdoPrTriggers>,
@@ -952,12 +952,9 @@ impl PipelineJob<'_> {
     ///
     /// Flowey typically generates a reasonable job ID but some use cases that depend
     /// on the ID may find it useful to override it to something custom.
-    pub fn ado_override_job_id<S>(self, name: S) -> Self
-    where
-        S: AsRef<str>,
-    {
+    pub fn ado_override_job_id(self, name: impl AsRef<str>) -> Self {
         self.pipeline
-            .ado_job_name_overrides
+            .ado_job_id_overrides
             .insert(self.job_idx, name.as_ref().into());
         self
     }
@@ -1199,7 +1196,7 @@ pub mod internal {
         pub ado_post_process_yaml_cb:
             Option<Box<dyn FnOnce(serde_yaml::Value) -> serde_yaml::Value>>,
         pub ado_variables: BTreeMap<String, String>,
-        pub ado_job_name_overrides: BTreeMap<usize, String>,
+        pub ado_job_id_overrides: BTreeMap<usize, String>,
         pub gh_name: Option<String>,
         pub gh_schedule_triggers: Vec<GhScheduleTriggers>,
         pub gh_ci_triggers: Option<GhCiTriggers>,
@@ -1231,7 +1228,7 @@ pub mod internal {
                 ado_resources_repository,
                 ado_post_process_yaml_cb,
                 ado_variables,
-                ado_job_name_overrides,
+                ado_job_id_overrides,
                 gh_name,
                 gh_schedule_triggers,
                 gh_ci_triggers,
@@ -1263,7 +1260,7 @@ pub mod internal {
                 ado_resources_repository,
                 ado_post_process_yaml_cb,
                 ado_variables,
-                ado_job_name_overrides,
+                ado_job_id_overrides,
                 gh_name,
                 gh_schedule_triggers,
                 gh_ci_triggers,

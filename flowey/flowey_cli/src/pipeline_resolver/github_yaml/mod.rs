@@ -64,7 +64,7 @@ pub fn github_yaml(
         ado_resources_repository: _,
         ado_post_process_yaml_cb: _,
         ado_variables: _,
-        ado_job_name_overrides: _,
+        ado_job_id_overrides: _,
     } = pipeline;
 
     let mut job_flowey_source: BTreeMap<petgraph::prelude::NodeIndex, FloweySource> =
