@@ -4,6 +4,7 @@
 //! Integration tests for x86_64 guests.
 
 mod openhcl_linux_direct;
+mod openhcl_servicing;
 mod openhcl_uefi;
 
 use anyhow::Context;
