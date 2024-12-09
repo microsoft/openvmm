@@ -77,7 +77,7 @@ mod state {
         #[mesh(10000)]
         pub nvme_state: Option<NvmeSavedState>,
         /// Shared pool information.
-        #[mesh(8)]
+        #[mesh(10001)]
         pub shared_pool_state: Option<page_pool_alloc::save_restore::PagePoolState>,
     }
 

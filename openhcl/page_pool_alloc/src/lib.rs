@@ -74,8 +74,6 @@ pub mod save_restore {
         state: Vec<SlotSavedState>,
         #[mesh(2)]
         ranges: Vec<MemoryRange>,
-        #[mesh(3)]
-        pfn_bias: u64,
     }
 
     impl SaveRestore for PagePool {
@@ -111,7 +109,6 @@ pub mod save_restore {
                     })
                     .collect(),
                 ranges: self.ranges.clone(),
-                pfn_bias: state.pfn_bias,
             })
         }
 
