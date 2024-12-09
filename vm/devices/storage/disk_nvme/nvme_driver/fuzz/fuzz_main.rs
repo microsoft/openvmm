@@ -3,11 +3,6 @@
 
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
 
-mod fuzz_lib; 
-mod fuzz_namespace;
-mod fuzz_driver;
-mod fuzz_emulated_device;
-
 use arbitrary::{Arbitrary, Unstructured};
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_ramdisk::RamDisk;
@@ -34,7 +29,7 @@ fn do_fuzz(u: &mut Unstructured<'_>) {
     // DefaultPool provides us the standard DefaultDriver and takes care of async fn calls
     DefaultPool::run_with(|driver| async move {
         // ---- SETUP ----
-        let mut fuzzing_driver = fuzz_lib::FuzzNvmeDriver::new(driver).await;
+        let mut fuzzing_driver = FuzzNvmeDriver::new(driver).await;
 
         // ---- FUZZING ----
         while !u.is_empty() {
@@ -102,7 +97,6 @@ impl FuzzNvmeDriver {
         let nvme_driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();
 
         let namespace = nvme_driver.namespace(1).await.unwrap();
-        let fuzz_namespace = FuzzNamespace::new(namespace);
 
         let base_len = 64 << 20;  // 64MB
         let payload_len = 1 << 20;  // 1MB
@@ -115,9 +109,9 @@ impl FuzzNvmeDriver {
             .unwrap();
 
         Self {
-            driver: fuzz_driver,
-            namespace: fuzz_namespace,
-            payload_mem: payload_mem,
+            driver: Some(nvme_driver),
+            namespace,
+            payload_mem,
         }
     }
 
@@ -152,9 +146,6 @@ impl FuzzNvmeDriver {
     /// Executes an action
     pub async fn execute_action(&mut self, action: NvmeDriverAction) {
         match action {
-            NvmeDriverAction::DriverAction { action } => {
-                self.driver.execute_action(action).await
-            }
             NvmeDriverAction::Read { lba, block_count, target_cpu} => {
                 let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
                 self.namespace
