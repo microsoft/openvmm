@@ -3,6 +3,9 @@
 
 //! Trait for asynchronous callouts from the emulator to the VM.
 
+use crate::{Cr0, Efer, Gp, Rip, Xmm};
+use iced_x86::Register;
+use x86defs::{RFlags, SegmentRegister};
 use std::future::Future;
 
 /// Trait for asynchronous callouts from the emulator to the VM.
@@ -56,10 +59,18 @@ pub trait Cpu {
         bytes: &[u8],
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
-    /// Gets the value of an XMM* register.
-    fn get_xmm(&mut self, reg: usize) -> Result<u128, Self::Error>;
-    /// Sets the value of an XMM* register.
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error>;
+    fn gp(&mut self, reg: Register) -> Gp;
+    fn gp_sign_extend(&mut self, reg: Register) -> i64;
+    fn set_gp(&mut self, reg: Register, v: Gp);
+    fn xmm(&mut self, index: usize) -> Xmm;
+    fn set_xmm(&mut self, index: usize, v: Xmm) -> Result<(), Self::Error>;
+    fn rip(&mut self) -> Rip;
+    fn set_rip(&mut self, v: Rip);
+    fn segment(&mut self, index: usize) -> SegmentRegister;
+    fn efer(&mut self) -> Efer;
+    fn cr0(&mut self) -> Cr0;
+    fn rflags(&mut self) -> RFlags;
+    fn set_rflags(&mut self, v: RFlags);
 }
 
 impl<T: Cpu + ?Sized> Cpu for &mut T {
@@ -109,11 +120,51 @@ impl<T: Cpu + ?Sized> Cpu for &mut T {
         (*self).write_io(io_port, bytes)
     }
 
-    fn get_xmm(&mut self, reg: usize) -> Result<u128, Self::Error> {
-        (*self).get_xmm(reg)
+    fn gp(&mut self, reg: Register) -> Gp {
+        (*self).gp(reg)
     }
 
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
-        (*self).set_xmm(reg, value)
+    fn gp_sign_extend(&mut self, reg: Register) -> i64 {
+        (*self).gp_sign_extend(reg)
+    }
+
+    fn set_gp(&mut self, reg: Register, v: Gp) {
+        (*self).set_gp(reg, v)
+    }
+
+    fn xmm(&mut self, index: usize) -> Xmm {
+        (*self).xmm(index)
+    }
+
+    fn set_xmm(&mut self, index: usize, v: Xmm) -> Result<(), Self::Error> {
+        (*self).set_xmm(index, v)
+    }
+
+    fn rip(&mut self) -> Rip {
+        (*self).rip()
+    }
+
+    fn set_rip(&mut self, v: Rip) {
+        (*self).set_rip(v);
+    }
+
+    fn segment(&mut self, index: usize) -> SegmentRegister {
+        (*self).segment(index)
+    }
+
+    fn efer(&mut self) -> Efer {
+        (*self).efer()
+    }
+
+    fn cr0(&mut self) -> Cr0 {
+        (*self).cr0()
+    }
+
+    fn rflags(&mut self) -> RFlags {
+        (*self).rflags()
+    }
+
+    fn set_rflags(&mut self, v: RFlags) {
+        (*self).set_rflags(v);
     }
 }
