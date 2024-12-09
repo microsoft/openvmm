@@ -70,22 +70,6 @@ mod tests {
     use vmbus_server::Guid;
     use zerocopy::FromZeroes;
 
-    struct FakeRpcSender<T>(Option<T>);
-
-    impl<T> RpcSend for &mut FakeRpcSender<T> {
-        type Message = T;
-
-        fn send_rpc(self, message: Self::Message) {
-            self.0 = Some(message);
-        }
-    }
-
-    fn dummy_rpc<T: 'static + Send, U: 'static + Send>(t: T) -> Rpc<T, U> {
-        let mut sender = FakeRpcSender(None);
-        let _ = sender.call(|x| x, t);
-        sender.0.unwrap()
-    }
-
     #[test]
     fn test_check_result() {
         let mut tracker = HvsockRequestTracker::new();
