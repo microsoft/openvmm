@@ -170,9 +170,9 @@ pub struct ParsedBootDtInfo {
     pub memory_allocation_mode: MemoryAllocationMode,
     /// The isolation type of the partition.
     pub isolation: IsolationType,
-    /// Parts of VTL2 memory to preserve during servicing.
+    /// VTL2 range for private pool memory.
     #[inspect(iter_by_index)]
-    pub dma_preserve_ranges: Vec<MemoryRange>,
+    pub private_pool_ranges: Vec<MemoryRangeWithNode>,
 }
 
 fn err_to_owned(e: fdt::parser::Error<'_>) -> anyhow::Error {
@@ -210,7 +210,7 @@ struct OpenhclInfo {
     vtl0_alias_map: Option<u64>,
     memory_allocation_mode: MemoryAllocationMode,
     isolation: IsolationType,
-    dma_preserve_ranges: Vec<MemoryRange>,
+    private_pool_ranges: Vec<MemoryRangeWithNode>,
 }
 
 fn parse_memory_openhcl(node: &Node<'_>) -> anyhow::Result<AddressRange> {
@@ -378,15 +378,18 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         reserved_range
     };
 
-    // Report DMA preserve ranges in a separate vec, for convenience.
-    let dma_preserve_ranges = memory
+    // Report private pool ranges in a separate vec, for convenience.
+    let private_pool_ranges = memory
         .iter()
-        .filter_map(|entry| {
-            if entry.vtl_usage() == MemoryVtlType::VTL2_GPA_POOL {
-                Some(*entry.range())
-            } else {
-                None
+        .filter_map(|entry| match entry {
+            AddressRange::Memory(memory) => {
+                if memory.vtl_usage == MemoryVtlType::VTL2_GPA_POOL {
+                    Some(memory.range.clone())
+                } else {
+                    None
+                }
             }
+            AddressRange::Mmio(_) => None,
         })
         .collect();
 
@@ -416,7 +419,7 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         vtl0_alias_map,
         memory_allocation_mode,
         isolation,
-        dma_preserve_ranges,
+        private_pool_ranges,
     })
 }
 
@@ -510,7 +513,7 @@ impl ParsedBootDtInfo {
         let mut memory_allocation_mode = MemoryAllocationMode::Host;
         let mut isolation = IsolationType::None;
         let mut vtl2_reserved_range = MemoryRange::EMPTY;
-        let mut dma_preserve_ranges = Vec::new();
+        let mut private_pool_ranges = Vec::new();
 
         let parser = Parser::new(raw)
             .map_err(err_to_owned)
@@ -544,7 +547,7 @@ impl ParsedBootDtInfo {
                         vtl0_alias_map: n_vtl0_alias_map,
                         memory_allocation_mode: n_memory_allocation_mode,
                         isolation: n_isolation,
-                        dma_preserve_ranges: n_dma_preserve_ranges,
+                        private_pool_ranges: n_private_pool_ranges,
                     } = parse_openhcl(&child)?;
                     vtl0_mmio = n_vtl0_mmio;
                     config_ranges = n_config_ranges;
@@ -554,7 +557,7 @@ impl ParsedBootDtInfo {
                     memory_allocation_mode = n_memory_allocation_mode;
                     isolation = n_isolation;
                     vtl2_reserved_range = n_vtl2_reserved_range;
-                    dma_preserve_ranges = n_dma_preserve_ranges;
+                    private_pool_ranges = n_private_pool_ranges;
                 }
 
                 _ if child.name.starts_with("memory@") => {
@@ -587,7 +590,7 @@ impl ParsedBootDtInfo {
             memory_allocation_mode,
             isolation,
             vtl2_reserved_range,
-            dma_preserve_ranges,
+            private_pool_ranges,
         })
     }
 }
@@ -912,6 +915,14 @@ mod tests {
                 }),
                 AddressRange::Memory(Memory {
                     range: MemoryRangeWithNode {
+                        range: MemoryRange::new(0x60000..0x70000),
+                        vnode: 0,
+                    },
+                    vtl_usage: MemoryVtlType::VTL2_GPA_POOL,
+                    igvm_type: MemoryMapEntryType::VTL2_PROTECTABLE,
+                }),
+                AddressRange::Memory(Memory {
+                    range: MemoryRangeWithNode {
                         range: MemoryRange::new(0x1000000..0x2000000),
                         vnode: 0,
                     },
@@ -947,7 +958,10 @@ mod tests {
             },
             isolation: IsolationType::Vbs,
             vtl2_reserved_range: MemoryRange::new(0x40000..0x50000),
-            dma_preserve_ranges: vec![],
+            private_pool_ranges: vec![MemoryRangeWithNode {
+                range: MemoryRange::new(0x60000..0x70000),
+                vnode: 0,
+            }],
         };
 
         let dt = build_dt(&orig_info).unwrap();
