@@ -743,9 +743,7 @@ impl Tpm {
         Ok(response_code)
     }
 
-    /// Create a new request needed by AK cert request callout. When the `ak_cert_type` is `HwAttested`,
-    /// the request includes the TEE attestation report that backs the request and will be persisted
-    /// in the nv index `TPM_NV_INDEX_ATTESTATION_REPORT`.
+    /// Create a new request needed by AK cert request callout.
     ///
     /// This function can only be called when `ak_cert_type` is `Trusted` or `HwAttested`.
     fn create_ak_cert_request(&mut self) -> Result<Vec<u8>, TpmError> {
