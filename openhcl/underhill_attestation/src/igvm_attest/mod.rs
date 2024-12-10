@@ -36,6 +36,8 @@ pub enum Error {
 /// Rust-style enum for `IgvmAttestReportType`
 pub enum ReportType {
     /// VBS report
+    // TODO VBS
+    #[allow(dead_code)]
     Vbs,
     /// SNP report
     Snp,
@@ -212,14 +214,12 @@ fn create_request(
 
 /// Get the expected size of the given report type.
 fn get_report_size(report_type: &ReportType) -> usize {
-    let size = match report_type {
+    match report_type {
         ReportType::Vbs => openhcl_attestation_protocol::igvm_attest::get::VBS_VM_REPORT_SIZE,
         ReportType::Snp => openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE,
         ReportType::Tdx => openhcl_attestation_protocol::igvm_attest::get::TDX_VM_REPORT_SIZE,
         ReportType::Tvm => openhcl_attestation_protocol::igvm_attest::get::TVM_REPORT_SIZE,
-    };
-
-    size
+    }
 }
 
 /// Helper function that returns the given config with the `current_time` set.
