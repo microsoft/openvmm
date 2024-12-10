@@ -375,11 +375,14 @@ impl LayerIo for SqliteDiskLayer {
         tracing::trace!("sync_cache");
 
         unblock({
-            let conn = self.conn.clone().lock_owned().await;
+            let mut conn = self.conn.clone().lock_owned().await;
             move || -> rusqlite::Result<()> {
                 // https://sqlite-users.sqlite.narkive.com/LX75NOma/forcing-a-manual-fsync-in-wal-normal-mode
                 conn.pragma_update(None, "synchronous", "FULL")?;
-                conn.pragma_update(None, "user_version", "0")?;
+                {
+                    let tx = conn.transaction()?;
+                    tx.pragma_update(None, "user_version", "0")?;
+                }
                 conn.pragma_update(None, "synchronous", "NORMAL")?;
                 Ok(())
             }
@@ -440,7 +443,7 @@ fn read_sectors(
     sector_size: u32,
     start_sector: u64,
     end_sector: u64,
-) -> Result<Vec<(u64, SectorKind)>, rusqlite::Error> {
+) -> anyhow::Result<Vec<(u64, SectorKind)>> {
     let mut select_stmt = conn.prepare_cached(
         "SELECT sector, data
         FROM sectors
@@ -455,7 +458,12 @@ fn read_sectors(
         let data: Option<&[u8]> = row.get_ref(1)?.as_blob_or_null()?;
         let data = if let Some(data) = data {
             if data.len() != sector_size as usize {
-                return Err(rusqlite::Error::BlobSizeError);
+                anyhow::bail!(
+                    "db contained sector with unexpected size (expected={}, found={}, sector={:#x})",
+                    sector_size,
+                    data.len(),
+                    sector
+                )
             }
             SectorKind::Data(data.into())
         } else {

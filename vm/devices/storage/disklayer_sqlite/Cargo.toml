@@ -25,7 +25,7 @@ futures.workspace = true
 #
 # That said - top-level binaries which use this crate may wish to enable the
 # "bundled" feature in order to ensure consistent behaviors across platforms.
-rusqlite = { workspace = true, features = ["blob"] }
+rusqlite.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tracing.workspace = true
