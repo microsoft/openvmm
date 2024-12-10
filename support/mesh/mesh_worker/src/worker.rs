@@ -11,8 +11,8 @@ use futures::StreamExt;
 use futures_concurrency::stream::Merge;
 use inspect::Inspect;
 use mesh::error::RemoteError;
-use mesh::error::RemoteResult;
-use mesh::error::RemoteResultExt;
+use mesh::rpc::FailableRpc;
+use mesh::rpc::RpcSend;
 use mesh::MeshPayload;
 use std::fmt;
 use std::marker::PhantomData;
@@ -85,7 +85,7 @@ pub enum WorkerRpc<T> {
     Stop,
     /// Tear down and send the state necessary to restart on the provided
     /// channel.
-    Restart(mesh::OneshotSender<RemoteResult<T>>),
+    Restart(FailableRpc<(), T>),
     /// Inspect the worker.
     Inspect(inspect::Deferred),
 }
@@ -446,9 +446,8 @@ impl WorkerLaunchRequest {
                 }
             }
             LaunchType::Restart { send, events } => {
-                let (state_send, state_recv) = mesh::oneshot();
-                send.send(WorkerRpc::Restart(state_send));
-                let state = match block_on(state_recv).flatten() {
+                let state_recv = send.call_failable(WorkerRpc::Restart, ());
+                let state = match block_on(state_recv) {
                     Ok(state) => state,
                     Err(err) => {
                         self.events
@@ -763,8 +762,8 @@ mod tests {
                 while let Ok(req) = recv.recv().await {
                     match req {
                         WorkerRpc::Stop => break,
-                        WorkerRpc::Restart(state_send) => {
-                            state_send.send(Ok(TestWorkerState { value: self.value }));
+                        WorkerRpc::Restart(rpc) => {
+                            rpc.complete(Ok(TestWorkerState { value: self.value }));
                             break;
                         }
                         WorkerRpc::Inspect(_deferred) => (),
@@ -795,8 +794,8 @@ mod tests {
                 while let Ok(req) = recv.recv().await {
                     match req {
                         WorkerRpc::Stop => break,
-                        WorkerRpc::Restart(state_send) => {
-                            state_send.send(Ok(()));
+                        WorkerRpc::Restart(rpc) => {
+                            rpc.complete(Ok(()));
                             break;
                         }
                         WorkerRpc::Inspect(_deferred) => (),

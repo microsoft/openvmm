@@ -14,7 +14,6 @@ use gdbstub::target::ext::base::multithread::MultiThreadSingleStep;
 use gdbstub::target::ext::base::multithread::MultiThreadSingleStepOps;
 use gdbstub::target::ext::base::single_register_access::SingleRegisterAccess;
 use gdbstub::target::TargetResult;
-use mesh::error::RemoteResultExt;
 use mesh::rpc::RpcSend;
 use vmm_core_defs::debug_rpc::DebugRequest;
 use vmm_core_defs::debug_rpc::DebugState;
@@ -23,9 +22,12 @@ impl<T: TargetArch> MultiThreadBase for VmTarget<'_, T> {
     fn read_registers(&mut self, regs: &mut T::Registers, tid: Tid) -> TargetResult<(), Self> {
         let vp_index = self.0.tid_to_vp(tid).fatal()?;
 
-        let state = block_on(self.0.req_chan.call(DebugRequest::GetVpState, vp_index))
-            .flatten()
-            .nonfatal()?;
+        let state = block_on(
+            self.0
+                .req_chan
+                .call_failable(DebugRequest::GetVpState, vp_index),
+        )
+        .nonfatal()?;
 
         T::registers(&state, regs)?;
         Ok(())
@@ -34,18 +36,20 @@ impl<T: TargetArch> MultiThreadBase for VmTarget<'_, T> {
     fn write_registers(&mut self, regs: &T::Registers, tid: Tid) -> TargetResult<(), Self> {
         let vp_index = self.0.tid_to_vp(tid).fatal()?;
 
-        let mut state = block_on(self.0.req_chan.call(DebugRequest::GetVpState, vp_index))
-            .flatten()
-            .nonfatal()?;
+        let mut state = block_on(
+            self.0
+                .req_chan
+                .call_failable(DebugRequest::GetVpState, vp_index),
+        )
+        .nonfatal()?;
 
         T::update_registers(&mut state, regs)?;
 
         block_on(
             self.0
                 .req_chan
-                .call(DebugRequest::SetVpState, (vp_index, state)),
+                .call_failable(DebugRequest::SetVpState, (vp_index, state)),
         )
-        .flatten()
         .nonfatal()?;
 
         Ok(())
@@ -109,9 +113,12 @@ impl<T: TargetArch> SingleRegisterAccess<Tid> for VmTarget<'_, T> {
     ) -> TargetResult<usize, Self> {
         let vp_index = self.0.tid_to_vp(tid).fatal()?;
 
-        let state = block_on(self.0.req_chan.call(DebugRequest::GetVpState, vp_index))
-            .flatten()
-            .nonfatal()?;
+        let state = block_on(
+            self.0
+                .req_chan
+                .call_failable(DebugRequest::GetVpState, vp_index),
+        )
+        .nonfatal()?;
 
         Ok(T::register(&state, reg_id, buf)?)
     }
@@ -119,18 +126,20 @@ impl<T: TargetArch> SingleRegisterAccess<Tid> for VmTarget<'_, T> {
     fn write_register(&mut self, tid: Tid, reg_id: T::RegId, val: &[u8]) -> TargetResult<(), Self> {
         let vp_index = self.0.tid_to_vp(tid).fatal()?;
 
-        let mut state = block_on(self.0.req_chan.call(DebugRequest::GetVpState, vp_index))
-            .flatten()
-            .nonfatal()?;
+        let mut state = block_on(
+            self.0
+                .req_chan
+                .call_failable(DebugRequest::GetVpState, vp_index),
+        )
+        .nonfatal()?;
 
         T::update_register(&mut state, reg_id, val)?;
 
         block_on(
             self.0
                 .req_chan
-                .call(DebugRequest::SetVpState, (vp_index, state)),
+                .call_failable(DebugRequest::SetVpState, (vp_index, state)),
         )
-        .flatten()
         .nonfatal()?;
 
         Ok(())

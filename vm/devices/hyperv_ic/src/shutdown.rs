@@ -53,7 +53,7 @@ pub struct ShutdownChannel {
     pipe: MessagePipe<GpadlRingMem>,
     state: ChannelState,
     #[inspect(with = "Option::is_some")]
-    pending_shutdown: Option<mesh::OneshotSender<ShutdownResult>>,
+    pending_shutdown: Option<Rpc<(), ShutdownResult>>,
 }
 
 #[derive(Inspect)]
@@ -153,8 +153,9 @@ impl ShutdownChannel {
                         }
                         ChannelState::Ready { ref mut state, .. } => match state {
                             ReadyState::Ready => {
-                                self.pending_shutdown = Some(rpc.1);
-                                *state = ReadyState::SendShutdown(rpc.0);
+                                let (input, rpc) = rpc.split();
+                                self.pending_shutdown = Some(rpc);
+                                *state = ReadyState::SendShutdown(input);
                             }
                             ReadyState::SendShutdown { .. } | ReadyState::WaitShutdown => {
                                 rpc.complete(ShutdownResult::AlreadyInProgress)
@@ -278,7 +279,7 @@ impl ShutdownChannel {
                         ShutdownResult::Failed(status)
                     };
                     if let Some(send) = self.pending_shutdown.take() {
-                        send.send(result);
+                        send.complete(result);
                     }
                     *state = ReadyState::Ready;
                 }

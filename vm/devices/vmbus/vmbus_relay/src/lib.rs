@@ -352,7 +352,7 @@ struct RelayChannel {
     /// State used to relay host-to-guest interrupts.
     interrupt_relay: Option<InterruptRelay>,
     /// RPCs for gpadls that are waiting for a torndown message.
-    gpadls_tearing_down: HashMap<GpadlId, Rpc<GpadlId, ()>>,
+    gpadls_tearing_down: HashMap<GpadlId, Rpc<(), ()>>,
 }
 
 struct RelayChannelTask {
@@ -434,7 +434,7 @@ impl RelayChannelTask {
     }
 
     fn handle_gpadl_teardown(&mut self, rpc: Rpc<GpadlId, ()>) {
-        let gpadl_id = rpc.0;
+        let (gpadl_id, rpc) = rpc.split();
         tracing::trace!(gpadl_id = gpadl_id.0, "Tearing down GPADL");
 
         let _ = &self
