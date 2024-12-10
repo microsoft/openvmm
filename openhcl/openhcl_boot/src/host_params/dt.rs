@@ -12,6 +12,7 @@ use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
+use crate::host_params::MAX_VTL2_USED_RANGES;
 use crate::single_threaded::off_stack;
 use crate::single_threaded::OffStackRef;
 use arrayvec::ArrayVec;
@@ -20,8 +21,10 @@ use core::fmt::Write;
 use host_fdt_parser::MemoryAllocationMode;
 use host_fdt_parser::MemoryEntry;
 use host_fdt_parser::ParsedDeviceTree;
+use hvdef::HV_PAGE_SIZE;
 use igvm_defs::MemoryMapEntryType;
 use loader_defs::paravisor::CommandLinePolicy;
+use memory_range::flatten_ranges;
 use memory_range::subtract_ranges;
 use memory_range::walk_ranges;
 use memory_range::MemoryRange;
@@ -380,6 +383,26 @@ impl PartitionInfo {
         storage.vmbus_vtl2 = parsed.vmbus_vtl2.clone().ok_or(DtError::Vtl2Vmbus)?;
         storage.vmbus_vtl0 = parsed.vmbus_vtl0.clone().ok_or(DtError::Vtl0Vmbus)?;
 
+        // Decide if we will reserve memory for a VTL2 private pool. Parse this
+        // from the final command line.
+        //
+        // BUGBUG use dt hint from host as well.
+        let enable_vtl2_gpa_pool =
+            crate::cmdline::parse_boot_command_line(storage.cmdline.as_str()).enable_vtl2_gpa_pool;
+        if let Some(pool_size) = enable_vtl2_gpa_pool {
+            // Reserve the specified number of pages for the pool.
+            let pool = MemoryRange::new(
+                params.memory_start_address + params.memory_size - (pool_size * HV_PAGE_SIZE)
+                    ..params.memory_start_address + params.memory_size,
+            );
+            assert!(
+                !params.used.overlaps(&pool),
+                "specified pool memory {pool} overlaps used shim memory {}",
+                params.used
+            );
+            storage.vtl2_pool_memory = pool;
+        }
+
         // The host is responsible for allocating MMIO ranges for non-isolated
         // guests when it also provides the ram VTL2 should use.
         //
@@ -439,12 +462,27 @@ impl PartitionInfo {
             storage.partition_ram.push(*entry);
         }
 
+        // Add all the ranges are not free for further allocation.
+        let mut used_ranges =
+            off_stack!(ArrayVec<MemoryRange, MAX_VTL2_USED_RANGES>, ArrayVec::new_const());
+        used_ranges.push(params.used);
+        if storage.vtl2_pool_memory != MemoryRange::EMPTY {
+            used_ranges.push(storage.vtl2_pool_memory);
+        }
+        used_ranges.sort_unstable_by_key(|r| r.start());
+        storage.vtl2_used_ranges.clear();
+        storage
+            .vtl2_used_ranges
+            .extend(flatten_ranges(used_ranges.iter().copied()));
+
         // Set remaining struct fields before returning.
         let Self {
             vtl2_ram: _,
             vtl2_full_config_region: vtl2_config_region,
             vtl2_config_region_reclaim: vtl2_config_region_reclaim_struct,
             vtl2_reserved_region,
+            vtl2_pool_memory: _,
+            vtl2_used_ranges,
             partition_ram: _,
             isolation,
             bsp_reg,
@@ -459,6 +497,8 @@ impl PartitionInfo {
             vtl0_alias_map: _,
             preserve_dma_4k_pages,
         } = storage;
+
+        assert!(!vtl2_used_ranges.is_empty());
 
         *isolation = params.isolation_type;
 
