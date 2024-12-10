@@ -60,16 +60,16 @@ impl ReportType {
 /// Helper struct to create `IgvmAttestRequest` in raw bytes.
 pub struct IgvmAttestRequestHelper {
     /// The request type.
-    pub request_type: IgvmAttestRequestType,
+    request_type: IgvmAttestRequestType,
     /// The report type.
-    pub report_type: ReportType,
+    report_type: ReportType,
     /// Raw bytes of `RuntimeClaims`.
-    pub runtime_claims: Vec<u8>,
+    runtime_claims: Vec<u8>,
     /// The hash of the `runtime_claims` to be included in the
     /// `report_data` field of the attestation report.
-    pub runtime_claims_hash: [u8; tee_call::REPORT_DATA_SIZE],
+    runtime_claims_hash: [u8; tee_call::REPORT_DATA_SIZE],
     /// THe hash type of the `runtime_claims_hash`.
-    pub hash_type: IgvmAttestHashType,
+    hash_type: IgvmAttestHashType,
 }
 
 impl IgvmAttestRequestHelper {
@@ -146,6 +146,16 @@ impl IgvmAttestRequestHelper {
             runtime_claims_hash,
             hash_type,
         }
+    }
+
+    /// Return the `runtime_claims_hash`.
+    pub fn get_runtime_claims_hash(&self) -> &[u8; tee_call::REPORT_DATA_SIZE] {
+        &self.runtime_claims_hash
+    }
+
+    /// Set the `request_type`.
+    pub fn set_request_type(&mut self, request_type: IgvmAttestRequestType) {
+        self.request_type = request_type
     }
 
     /// Create the request in raw bytes.

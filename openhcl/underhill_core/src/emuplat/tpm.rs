@@ -75,7 +75,7 @@ impl RequestAkCert for TpmRequestAkCertHelper {
 
         let attestation_report = if let Some(tee_call) = &self.tee_call {
             tee_call
-                .get_attestation_report(&ak_cert_request_helper.runtime_claims_hash)
+                .get_attestation_report(ak_cert_request_helper.get_runtime_claims_hash())
                 .map_err(TpmAttestationError::GetAttestationReport)?
                 .report
         } else {

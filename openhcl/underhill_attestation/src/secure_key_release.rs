@@ -126,7 +126,7 @@ pub async fn request_vmgs_encryption_keys(
 
         // Get attestation report on each iteration. Failures here are fatal.
         let result = tee_call
-            .get_attestation_report(&igvm_attest_request_helper.runtime_claims_hash)
+            .get_attestation_report(igvm_attest_request_helper.get_runtime_claims_hash())
             .map_err(RequestVmgsEncryptionKeysError::GetAttestationReport)?;
 
         tcb_version = result.tcb_version;
@@ -228,8 +228,9 @@ async fn make_igvm_attest_requests(
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
 ) -> Result<WrappedKeyVmgsEncryptionKeys, RequestVmgsEncryptionKeysError> {
     // Attempt to get wrapped DiskEncryptionSettings key
-    igvm_attest_request_helper.request_type =
-        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType::WRAPPED_KEY_REQUEST;
+    igvm_attest_request_helper.set_request_type(
+        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
+    );
     let request = igvm_attest_request_helper
         .create_request(attestation_report)
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestWrappedKeyRequest)?;
@@ -275,8 +276,9 @@ async fn make_igvm_attest_requests(
         Err(e) => Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(e))?,
     };
 
-    igvm_attest_request_helper.request_type =
-        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType::KEY_RELEASE_REQUEST;
+    igvm_attest_request_helper.set_request_type(
+        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+    );
     let request = igvm_attest_request_helper
         .create_request(attestation_report)
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestKeyReleaseRequest)?;
