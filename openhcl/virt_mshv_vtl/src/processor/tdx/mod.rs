@@ -860,7 +860,11 @@ impl UhProcessor<'_, TdxBacked> {
         let kernel_irr = self.runner.tdx_vp_ipi_offload_extract_irr();
 
         let mut pull_irr = |irr: [u32; 8], force_no_offload: bool| {
-            if self.backing.cvm.lapics[GuestVtl::Vtl0].can_offload_irr() && !force_no_offload {
+            if self.backing.cvm.lapics[GuestVtl::Vtl0]
+                .lapic
+                .can_offload_irr()
+                && !force_no_offload
+            {
                 // Put the IRR directly on the APIC page to avoid going
                 // through the local APIC.
 
