@@ -21,6 +21,8 @@ mod single_threaded;
 
 use crate::arch::setup_vtl2_memory;
 use crate::arch::setup_vtl2_vp;
+#[cfg(target_arch = "x86_64")]
+use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::log;
@@ -518,6 +520,16 @@ const fn zeroed<T: FromZeroes>() -> T {
     unsafe { core::mem::MaybeUninit::<T>::zeroed().assume_init() }
 }
 
+fn get_ref_time(isolation: IsolationType) -> Option<u64> {
+    match isolation {
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Tdx => get_tdx_tsc_reftime(),
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Snp => None,
+        _ => Some(minimal_rt::reftime::reference_time()),
+    }
+}
+
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
 
@@ -552,11 +564,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     let can_trust_host =
         p.isolation_type == IsolationType::None || static_options.confidential_debug;
 
-    let boot_reftime = if p.isolation_type.is_hardware_isolated() {
-        None
-    } else {
-        Some(minimal_rt::reftime::reference_time())
-    };
+    let boot_reftime = get_ref_time(p.isolation_type);
 
     let mut dt_storage = off_stack!(PartitionInfo, PartitionInfo::new());
     let partition_info = match PartitionInfo::read_from_dt(&p, &mut dt_storage, can_trust_host) {
@@ -678,7 +686,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // tree, so this is as late as we can do it.
     let boot_times = boot_reftime.map(|start| BootTimes {
         start,
-        end: minimal_rt::reftime::reference_time(),
+        end: get_ref_time(p.isolation_type).unwrap_or(0),
     });
 
     // Validate that no imported regions that are pending are not part of vtl2
