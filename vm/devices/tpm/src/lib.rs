@@ -1456,10 +1456,31 @@ mod save_restore {
         TpmRuntimeLib(#[source] ms_tpm_20_ref::Error),
     }
 
+    #[derive(Error, Debug)]
+    pub enum TpmSaveError {
+        #[error("save is blocked when there is an outstanding AK Cert request")]
+        OutstandingAkCertRequest,
+    }
+
     impl SaveRestore for Tpm {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            // Block save requests when there is an outstanding ak cert request.
+            //
+            // DEVNOTE:
+            // - The device itself does not save/restore the async request, and
+            // we need to think more about what it means to save the outstanding request
+            // and what the API should be.
+            // - The existing implementation with the GET has a host issue where leaving
+            // this request in-flight during a servicing operation can lead to bad host
+            // behavior on older hosts.
+            if self.async_ak_cert_request.is_some() {
+                return Err(SaveError::Other(
+                    TpmSaveError::OutstandingAkCertRequest.into(),
+                ));
+            }
+
             let control_area = {
                 let ControlArea {
                     request,
