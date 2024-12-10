@@ -23,8 +23,6 @@ pub struct OpenhclInitrdExtraParams {
     /// Path to custom kernel modules. If not provided, uses modules under the
     /// kernel package path.
     pub custom_kernel_modules: Option<PathBuf>,
-    /// Include the `perf` and `trace` tools
-    pub with_perf_tools: bool,
 }
 
 flowey_request! {
@@ -86,7 +84,6 @@ impl FlowNode for Node {
                 extra_initrd_layers,
                 extra_initrd_directories,
                 custom_kernel_modules,
-                with_perf_tools,
             } = extra_params.unwrap_or_default();
 
             let openvmm_deps_arch = match arch {
@@ -119,17 +116,13 @@ impl FlowNode for Node {
                 let initrd = initrd.claim(ctx);
                 move |rt| {
                     let interactive_dep = rt.read(interactive_dep);
-                    let openvmm_repo_path = rt.read(openvmm_repo_path);
-                    let perf_fs_iter = with_perf_tools
-                        .then_some(openvmm_repo_path.join("openhcl/perftoolsfs.config"))
-                        .into_iter();
                     let rootfs_config = rootfs_config
                         .into_iter()
                         .map(|x| rt.read(x))
-                        .chain(perf_fs_iter)
                         .collect::<Vec<_>>();
                     let extra_env = extra_env.map(|x| rt.read(x));
                     let bin_openhcl = rt.read(bin_openhcl);
+                    let openvmm_repo_path = rt.read(openvmm_repo_path);
                     let kernel_package_root = rt.read(kernel_package_root);
 
                     let sh = xshell::Shell::new()?;
