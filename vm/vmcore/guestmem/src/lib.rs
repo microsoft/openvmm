@@ -1656,6 +1656,12 @@ impl GuestMemory {
         })
     }
 
+    pub fn fill_range(&self, range: &PagedRange<'_>, val: u8) -> Result<(), GuestMemoryError> {
+        self.op_range(GuestMemoryOperation::Fill, range, move |addr, r| {
+            self.fill_at_inner(addr, val, r.len())
+        })
+    }
+
     pub fn zero_range(&self, range: &PagedRange<'_>) -> Result<(), GuestMemoryError> {
         self.op_range(GuestMemoryOperation::Fill, range, move |addr, r| {
             self.fill_at_inner(addr, 0, r.len())
@@ -1894,7 +1900,10 @@ pub trait MemoryRead {
 
 pub trait MemoryWrite {
     fn write(&mut self, data: &[u8]) -> Result<(), AccessError>;
-    fn zero(&mut self, len: usize) -> Result<(), AccessError>;
+    fn zero(&mut self, len: usize) -> Result<(), AccessError> {
+        self.fill(0, len)
+    }
+    fn fill(&mut self, val: u8, len: usize) -> Result<(), AccessError>;
     fn len(&self) -> usize;
 
     fn limit(self, len: usize) -> Limit<Self>
@@ -1941,14 +1950,12 @@ impl MemoryWrite for &mut [u8] {
         Ok(())
     }
 
-    fn zero(&mut self, len: usize) -> Result<(), AccessError> {
+    fn fill(&mut self, val: u8, len: usize) -> Result<(), AccessError> {
         if self.len() < len {
             return Err(AccessError::OutOfRange(self.len(), len));
         }
         let (dest, rest) = std::mem::take(self).split_at_mut(len);
-        for b in dest.iter_mut() {
-            *b = 0
-        }
+        dest.fill(val);
         *self = rest;
         Ok(())
     }
@@ -2000,11 +2007,11 @@ impl<T: MemoryWrite> MemoryWrite for Limit<T> {
         Ok(())
     }
 
-    fn zero(&mut self, len: usize) -> Result<(), AccessError> {
+    fn fill(&mut self, val: u8, len: usize) -> Result<(), AccessError> {
         if len > self.len {
             return Err(AccessError::OutOfRange(self.len, len));
         }
-        self.inner.zero(len)?;
+        self.inner.fill(val, len)?;
         self.len -= len;
         Ok(())
     }
