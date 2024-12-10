@@ -19,6 +19,20 @@ pub enum TpmAkCertType {
     HwAttested(Box<dyn RequestAkCert>),
 }
 
+impl TpmAkCertType {
+    /// Get the `RequestAkCert` from the enum
+    ///
+    /// The function must only be called if the enum is [`TpmAkCertType::HwAttested`]
+    /// or [`TpmAkCertType::Trusted`].
+    pub fn get_ak_cert_helper(&mut self) -> &mut Box<dyn RequestAkCert> {
+        match self {
+            TpmAkCertType::HwAttested(helper) => helper,
+            TpmAkCertType::Trusted(helper) => helper,
+            TpmAkCertType::None => panic!("ak_cert_type should not be None"),
+        }
+    }
+}
+
 impl CanResolveTo<ResolvedRequestAkCert> for RequestAkCertKind {
     // Workaround for async_trait not supporting GATs with missing lifetimes.
     type Input<'a> = &'a ();

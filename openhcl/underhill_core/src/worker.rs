@@ -1585,8 +1585,15 @@ async fn new_underhill_vm(
     let attestation_type = match isolation {
         virt::IsolationType::Snp => AttestationType::Snp,
         virt::IsolationType::Tdx => AttestationType::Tdx,
-        virt::IsolationType::Vbs => AttestationType::VbsUnsupported, // TODO VBS
         virt::IsolationType::None => AttestationType::Host,
+        virt::IsolationType::Vbs => {
+            // VBS not supported yet, fall back to host typea
+            // Raise an error message instead of aborting so that
+            // we do not block VBS bringup.
+            tracing::error!("VBS attestation not supported yet");
+            // TODO VBS: Support VBS attestation
+            AttestationType::Host
+        }
     };
 
     // Decrypt VMGS state before the VMGS file is used for anything.
@@ -2454,24 +2461,23 @@ async fn new_underhill_vm(
 
         // AK cert request depends on the availability of the shared memory
         // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
-        let ak_cert_type = if !matches!(attestation_type, AttestationType::VbsUnsupported)
-            && shared_vis_pages_pool.is_some()
-        {
-            let request_ak_cert = GetTpmRequestAkCertHelperHandle::new(
-                attestation_type,
-                attestation_vm_config,
-                platform_attestation_data.agent_data,
-            )
-            .into_resource();
+        let ak_cert_type =
+            if !matches!(isolation, virt::IsolationType::Vbs) && shared_vis_pages_pool.is_some() {
+                let request_ak_cert = GetTpmRequestAkCertHelperHandle::new(
+                    attestation_type,
+                    attestation_vm_config,
+                    platform_attestation_data.agent_data,
+                )
+                .into_resource();
 
-            if !matches!(attestation_type, AttestationType::Host) {
-                TpmAkCertTypeResource::HwAttested(request_ak_cert)
+                if !matches!(attestation_type, AttestationType::Host) {
+                    TpmAkCertTypeResource::HwAttested(request_ak_cert)
+                } else {
+                    TpmAkCertTypeResource::Trusted(request_ak_cert)
+                }
             } else {
-                TpmAkCertTypeResource::Trusted(request_ak_cert)
-            }
-        } else {
-            TpmAkCertTypeResource::None
-        };
+                TpmAkCertTypeResource::None
+            };
 
         let register_layout = if cfg!(guest_arch = "x86_64") {
             TpmRegisterLayout::IoPort

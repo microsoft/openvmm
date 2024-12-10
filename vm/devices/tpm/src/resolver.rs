@@ -7,7 +7,6 @@ use crate::TpmError;
 use async_trait::async_trait;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
-use mesh::resource;
 use thiserror::Error;
 use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;

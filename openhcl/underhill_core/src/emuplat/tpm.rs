@@ -60,7 +60,6 @@ impl RequestAkCert for TpmRequestAkCertHelper {
             AttestationType::Snp => Some(tee_call::TeeType::Snp),
             AttestationType::Tdx => Some(tee_call::TeeType::Tdx),
             AttestationType::Host => None,
-            AttestationType::VbsUnsupported => panic!("VBS not supported yet"), // TODO VBS
         };
         let ak_cert_request_helper =
             underhill_attestation::IgvmAttestRequestHelper::prepare_ak_cert_request(
@@ -180,7 +179,6 @@ pub mod resources {
                 AttestationType::Snp => Some(Arc::new(tee_call::SnpCall)),
                 AttestationType::Tdx => Some(Arc::new(tee_call::TdxCall)),
                 AttestationType::Host => None,
-                AttestationType::VbsUnsupported => panic!("VBS not supported yet"), // TODO VBS,
             };
 
             Ok(TpmRequestAkCertHelper::new(
