@@ -28,15 +28,12 @@ impl ResolveResource<DiskLayerHandleKind, SqliteDiskLayerHandle> for SqliteDiskL
     fn resolve(
         &self,
         rsrc: SqliteDiskLayerHandle,
-        _input: ResolveDiskLayerParameters<'_>,
+        input: ResolveDiskLayerParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let SqliteDiskLayerHandle {
             dbhd_path,
             format_dbhd,
         } = rsrc;
-
-        // TODO: not totally sure what the right input.read_only plumbing is, so
-        // I'm just ignoring it for now.
 
         let layer = if let Some(SqliteDiskLayerFormatParams {
             logically_read_only,
@@ -45,13 +42,14 @@ impl ResolveResource<DiskLayerHandleKind, SqliteDiskLayerHandle> for SqliteDiskL
         {
             ResolvedDiskLayer::new(FormatOnAttachSqliteDiskLayer::new(
                 dbhd_path,
+                input.read_only,
                 crate::IncompleteFormatParams {
                     logically_read_only,
                     len,
                 },
             )?)
         } else {
-            ResolvedDiskLayer::new(SqliteDiskLayer::new(dbhd_path, None)?)
+            ResolvedDiskLayer::new(SqliteDiskLayer::new(dbhd_path, input.read_only, None)?)
         };
 
         Ok(layer)

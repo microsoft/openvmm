@@ -694,7 +694,7 @@ impl FromStr for DiskCliKind {
                 },
                 "sqldiff" => {
                     let (path_and_opts, kind) =
-                        arg.split_once(':').context("expected path,kind")?;
+                        arg.split_once(':').context("expected path[;opts]:kind")?;
                     let disk = Box::new(kind.parse()?);
 
                     match path_and_opts.split_once(';') {
