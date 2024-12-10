@@ -1368,7 +1368,6 @@ dependencies = [
  "futures",
  "guestmem",
  "inspect",
- "parking_lot",
  "rusqlite",
  "scsi_buffers",
  "serde",

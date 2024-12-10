@@ -19,7 +19,6 @@ inspect = { workspace = true, features = ["filepath"] }
 anyhow.workspace = true
 blocking.workspace = true
 futures.workspace = true
-parking_lot.workspace = true
 # NOTE: this crate does not rely on any particularly "modern" sqlite features at
 # the moment, and does not require the use of the "bundled" feature to build +
 # link against the most up-to-date sqlite version.
