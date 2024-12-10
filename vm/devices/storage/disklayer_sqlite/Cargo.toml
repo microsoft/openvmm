@@ -15,10 +15,8 @@ scsi_buffers.workspace = true
 vm_resource.workspace = true
 
 inspect = { workspace = true, features = ["filepath"] }
-stackfuture.workspace = true
 
 anyhow.workspace = true
-async-trait.workspace = true
 blocking.workspace = true
 parking_lot.workspace = true
 rusqlite = { workspace = true, features = ["blob"] }

@@ -1361,7 +1361,6 @@ name = "disklayer_sqlite"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "blocking",
  "disk_backend",
  "disk_backend_resources",
@@ -1373,7 +1372,6 @@ dependencies = [
  "scsi_buffers",
  "serde",
  "serde_json",
- "stackfuture",
  "tracing",
  "vm_resource",
 ]
