@@ -349,7 +349,6 @@ impl LayerIo for SqliteDiskLayer {
             let mut writer = subrange.writer();
             match data {
                 SectorKind::AllZero => writer.zero(self.meta.sector_size as usize)?,
-                SectorKind::AllOne => writer.fill(0xff, self.meta.sector_size as usize)?,
                 SectorKind::Data(data) => writer.write(&data)?,
             };
 
@@ -430,15 +429,12 @@ impl WriteNoOverwrite for SqliteDiskLayer {
     }
 }
 
-#[allow(clippy::large_enum_variant)]
 enum SectorKind {
     AllZero,
-    AllOne,
     Data(Vec<u8>),
 }
 
-// FUTURE: pass RequestBuffers into this function directly, and avoid the alloc
-// overhead.
+// FUTURE: read from sqlite directly into `RequestBuffers`.
 fn read_sectors(
     conn: OwnedMutexGuard<Connection>,
     sector_size: u32,
@@ -453,53 +449,25 @@ fn read_sectors(
     )?;
     let mut rows = select_stmt.query(rusqlite::params![start_sector, end_sector])?;
 
-    // reuse the same blob handle across all reads.
-    //
-    // this handle isn't easy to persist across multiple calls to
-    // `read_sectors`, due to the lifetime restrictions imposed by using a
-    // `Arc<Mutex<Connection>>`.
-    let Some(first_row) = rows.next()? else {
-        return Ok(Vec::new());
-    };
-    let mut sector: u64 = first_row.get(0)?;
-    let mut blob = conn.blob_open(
-        rusqlite::DatabaseName::Main,
-        "sectors",
-        "data",
-        sector as i64,
-        true,
-    )?;
-
-    let mut buf = vec![0; sector_size as usize];
     let mut res = Vec::new();
-    loop {
-        let data = match blob.len() {
-            0 => SectorKind::AllZero,
-            1 => SectorKind::AllOne,
-            len => {
-                if len != sector_size as usize {
-                    return Err(rusqlite::Error::BlobSizeError);
-                }
-                blob.read_at(&mut buf, 0)?;
-                SectorKind::Data(buf.clone())
+    while let Some(row) = rows.next()? {
+        let sector: u64 = row.get(0)?;
+        let data: Option<&[u8]> = row.get_ref(1)?.as_blob_or_null()?;
+        let data = if let Some(data) = data {
+            if data.len() != sector_size as usize {
+                return Err(rusqlite::Error::BlobSizeError);
             }
+            SectorKind::Data(data.into())
+        } else {
+            SectorKind::AllZero
         };
-
         res.push((sector, data));
-
-        let Some(next_row) = rows.next()? else {
-            break;
-        };
-
-        sector = next_row.get(0)?;
-        blob.reopen(sector as i64)?;
     }
 
     Ok(res)
 }
 
-// FUTURE: pass RequestBuffers into this function directly, and avoid the alloc
-// overhead.
+// FUTURE: write into sqlite directly from `RequestBuffers`.
 fn write_sectors(
     mut conn: OwnedMutexGuard<Connection>,
     sector_size: u32,
@@ -518,15 +486,12 @@ fn write_sectors(
         let chunks = buf.chunks_exact(sector_size as usize);
         assert!(chunks.remainder().is_empty());
         for chunk in chunks {
-            let chunk = if chunk.iter().all(|x| *x == 0) {
-                &[]
-            } else if chunk.iter().all(|x| *x == 0xff) {
-                &[0]
+            if chunk.iter().all(|x| *x == 0) {
+                stmt.execute(rusqlite::params![sector, rusqlite::types::Null])?;
             } else {
-                chunk
+                stmt.execute(rusqlite::params![sector, chunk])?;
             };
 
-            stmt.execute(rusqlite::params![sector, chunk])?;
             sector += 1;
         }
     }
@@ -555,8 +520,7 @@ fn unmap_sectors(
                 tx.prepare_cached("INSERT OR REPLACE INTO sectors (sector, data) VALUES (?, ?)")?;
 
             for sector in sector_offset..(sector_offset + sector_count) {
-                let zero_blob = &[];
-                stmt.execute(rusqlite::params![sector, zero_blob])?;
+                stmt.execute(rusqlite::params![sector, rusqlite::types::Null])?;
             }
         }
         tx.commit()?;
@@ -579,16 +543,10 @@ mod schema {
     // implementation (e.g: having a third "kind" column).
     pub const DEFINE_TABLE_SECTORS: &str = r#"
 CREATE TABLE sectors (
-    -- schema includes a minimal "fast path" for skipping all-zero
-    -- and all-one sectors.
-    --
-    -- if len == 0: represents all 0x00 sector
-    -- if len == 1: represents all 0xff sector
-    --
-    -- otherwise, data has len == SECTOR_SIZE, and contains the raw
-    -- sector data.
+    -- if data is NULL, that indicates an all-zero sector.
+    -- otherwise, data has len == SECTOR_SIZE, containing the sector data.
     sector INTEGER NOT NULL,
-    data   BLOB NOT NULL,
+    data   BLOB,
     PRIMARY KEY (sector)
 )
 "#; // TODO?: enforce sqlite >3.37.0 so we can use STRICT
