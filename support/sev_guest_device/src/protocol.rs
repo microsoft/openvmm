@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The crate includes the abstraction layer of Linux SEV-SNP Guest APIs and
-//! definitions of data structures according to SEV-SNP specification.
+//! The module includes the definitions of data structures according to SEV-SNP specification.
 
 use bitfield_struct::bitfield;
 use zerocopy::AsBytes;

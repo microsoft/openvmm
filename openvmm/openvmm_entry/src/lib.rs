@@ -951,7 +951,7 @@ fn vm_config_from_command_line(
                 ppi_store,
                 nvram_store,
                 refresh_tpm_seeds: false,
-                get_attestation_report: None,
+                support_attestation_report: false,
                 request_ak_cert: None,
                 register_layout,
                 guest_secret_key: None,

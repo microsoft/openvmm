@@ -15,17 +15,17 @@ use zerocopy::AsBytes;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("failed to open /dev/sev-guest")]
-    OpenDevSevGuest(#[source] sev_guest_device::Error),
+    OpenDevSevGuest(#[source] sev_guest_device::ioctl::Error),
     #[error("failed to get an SNP report via /dev/sev-guest")]
-    GetSnpReport(#[source] sev_guest_device::Error),
+    GetSnpReport(#[source] sev_guest_device::ioctl::Error),
     #[error("failed to get an SNP derived key via /dev/sev-guest")]
-    GetSnpDerivedKey(#[source] sev_guest_device::Error),
+    GetSnpDerivedKey(#[source] sev_guest_device::ioctl::Error),
     #[error("got all-zeros key")]
     AllZeroKey,
     #[error("failed to open /dev/tdx_guest")]
-    OpenDevTdxGuest(#[source] tdx_guest_device::Error),
+    OpenDevTdxGuest(#[source] tdx_guest_device::ioctl::Error),
     #[error("failed to get a TDX report via /dev/tdx_guest")]
-    GetTdxReport(#[source] tdx_guest_device::Error),
+    GetTdxReport(#[source] tdx_guest_device::ioctl::Error),
 }
 
 /// Use the SNP-defined derived key size for now.
@@ -69,6 +69,8 @@ pub trait TeeCall: Send + Sync {
     fn supports_get_derived_key(&self) -> Option<&dyn TeeCallGetDerivedKey>;
     /// Get the [`TeeType`].
     fn tee_type(&self) -> TeeType;
+    /// Support clone for [`Box<dyn TeeCall>`]
+    fn clone_box(&self) -> Box<dyn TeeCall>;
 }
 
 /// Optional sub-trait that defines get derived key interface for TEE.
@@ -78,7 +80,15 @@ pub trait TeeCallGetDerivedKey: TeeCall {
     fn get_derived_key(&self, tcb_version: u64) -> Result<[u8; HW_DERIVED_KEY_LENGTH], Error>;
 }
 
+impl Clone for Box<dyn TeeCall> {
+    /// Support clone for [`Box<dyn TeeCall>`]
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
 /// Implementation of [`TeeCall`] for SNP
+#[derive(Clone)]
 pub struct SnpCall;
 
 impl TeeCall for SnpCall {
@@ -87,7 +97,8 @@ impl TeeCall for SnpCall {
         &self,
         report_data: &[u8; REPORT_DATA_SIZE],
     ) -> Result<GetAttestationReportResult, Error> {
-        let dev = sev_guest_device::SevGuestDevice::open().map_err(Error::OpenDevSevGuest)?;
+        let dev =
+            sev_guest_device::ioctl::SevGuestDevice::open().map_err(Error::OpenDevSevGuest)?;
         let report = dev
             .get_report(*report_data, 0)
             .map_err(Error::GetSnpReport)?;
@@ -107,12 +118,18 @@ impl TeeCall for SnpCall {
     fn tee_type(&self) -> TeeType {
         TeeType::Snp
     }
+
+    /// Return the clone of the object on heap
+    fn clone_box(&self) -> Box<dyn TeeCall> {
+        Box::new(self.clone())
+    }
 }
 
 impl TeeCallGetDerivedKey for SnpCall {
     /// Get the derived key from /dev/sev-guest.
     fn get_derived_key(&self, tcb_version: u64) -> Result<[u8; HW_DERIVED_KEY_LENGTH], Error> {
-        let dev = sev_guest_device::SevGuestDevice::open().map_err(Error::OpenDevSevGuest)?;
+        let dev =
+            sev_guest_device::ioctl::SevGuestDevice::open().map_err(Error::OpenDevSevGuest)?;
 
         // Derive a key mixing in following data:
         // - GuestPolicy (do not allow different polices to derive same secret)
@@ -150,7 +167,8 @@ impl TeeCall for TdxCall {
         &self,
         report_data: &[u8; REPORT_DATA_SIZE],
     ) -> Result<GetAttestationReportResult, Error> {
-        let dev = tdx_guest_device::TdxGuestDevice::open().map_err(Error::OpenDevTdxGuest)?;
+        let dev =
+            tdx_guest_device::ioctl::TdxGuestDevice::open().map_err(Error::OpenDevTdxGuest)?;
         let report = dev
             .get_report(*report_data, 0)
             .map_err(Error::GetTdxReport)?;
@@ -170,5 +188,10 @@ impl TeeCall for TdxCall {
     /// Return TeeType::Tdx.
     fn tee_type(&self) -> TeeType {
         TeeType::Tdx
+    }
+
+    /// Return the clone of the object on heap
+    fn clone_box(&self) -> Box<dyn TeeCall> {
+        Box::new(self.clone())
     }
 }

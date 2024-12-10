@@ -6,12 +6,14 @@ name = "sev_guest_device"
 edition = "2021"
 rust-version.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[dependencies]
 bitfield-struct.workspace = true
-nix = { workspace = true, features = ["ioctl"] }
 static_assertions.workspace = true
-thiserror.workspace = true
 zerocopy.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true, features = ["ioctl"] }
+thiserror.workspace = true
 
 [lints]
 workspace = true

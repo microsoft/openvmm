@@ -23,8 +23,8 @@ pub struct TpmDeviceHandle {
     pub nvram_store: Resource<NonVolatileStoreKind>,
     /// Whether to refresh TPM seeds on init
     pub refresh_tpm_seeds: bool,
-    /// Optional callback for getting an attestation report
-    pub get_attestation_report: Option<Resource<GetAttestationReportKind>>,
+    /// Whether the environment supports attestation
+    pub support_attestation_report: bool,
     /// Optional callback for requesting AK cert
     pub request_ak_cert: Option<Resource<RequestAkCertKind>>,
     /// vTPM register layout (IO port or MMIO)
