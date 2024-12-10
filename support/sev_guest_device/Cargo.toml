@@ -7,11 +7,11 @@ edition = "2021"
 rust-version.workspace = true
 
 [dependencies]
+bitfield-struct.workspace = true
 static_assertions.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-bitfield-struct.workspace = true
 nix = { workspace = true, features = ["ioctl"] }
 thiserror.workspace = true
 
