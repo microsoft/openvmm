@@ -87,8 +87,11 @@ debug_worker = { workspace = true, optional = true }
 hvlite_core.workspace = true
 vnc_worker.workspace = true
 
-# enable the "bundled" feature at the top level, since it's an application
-# level decision
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+# DEVNOTE: don't enable bundled sqlite on macos, to work around missing macos
+# runners in CI (and therefore, the need to cross-compile sqlite to macos from
+# linux runners). Once this gap is resolved, switch over to use bundled sqlite
+# on all platforms, to ensure consist sqlite behavior.
 rusqlite = { workspace = true, features = ["bundled"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

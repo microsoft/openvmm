@@ -18,7 +18,14 @@ inspect = { workspace = true, features = ["filepath"] }
 
 anyhow.workspace = true
 blocking.workspace = true
+futures.workspace = true
 parking_lot.workspace = true
+# NOTE: this crate does not rely on any particularly "modern" sqlite features at
+# the moment, and does not require the use of the "bundled" feature to build +
+# link against the most up-to-date sqlite version.
+#
+# That said - top-level binaries which use this crate may wish to enable the
+# "bundled" feature in order to ensure consistent behaviors across platforms.
 rusqlite = { workspace = true, features = ["blob"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

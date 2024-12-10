@@ -1365,6 +1365,7 @@ dependencies = [
  "disk_backend",
  "disk_backend_resources",
  "disk_layered",
+ "futures",
  "guestmem",
  "inspect",
  "parking_lot",

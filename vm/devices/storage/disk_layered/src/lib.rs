@@ -538,6 +538,10 @@ pub trait LayerIo: 'static + Send + Sync + Inspect {
     ) -> impl Future<Output = Result<(), DiskError>> + Send;
 
     /// Writes sectors to the layer.
+    ///
+    /// # Panics
+    ///
+    /// The caller must pass a buffer with an integer number of sectors.
     fn write(
         &self,
         buffers: &RequestBuffers<'_>,

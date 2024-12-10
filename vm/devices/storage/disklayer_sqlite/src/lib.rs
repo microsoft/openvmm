@@ -72,10 +72,11 @@ use disk_layered::LayerAttach;
 use disk_layered::LayerIo;
 use disk_layered::SectorMarker;
 use disk_layered::WriteNoOverwrite;
+use futures::lock::Mutex;
+use futures::lock::OwnedMutexGuard;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
-use parking_lot::Mutex;
 use rusqlite::Connection;
 use scsi_buffers::RequestBuffers;
 use std::sync::Arc;
@@ -133,7 +134,7 @@ impl FormatOnAttachSqliteDiskLayer {
 #[derive(Inspect)]
 pub struct SqliteDiskLayer {
     #[inspect(skip)]
-    conn: Arc<Mutex<Connection>>,
+    conn: Arc<Mutex<Connection>>, // FUTURE: switch to connection-pool instead
     meta: schema::DiskMeta,
     read_only: bool,
 }
@@ -158,7 +159,7 @@ impl SqliteDiskLayer {
         let conn = Connection::open_with_flags(dbhd_path, {
             use rusqlite::OpenFlags;
 
-            let mut flags = OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI;
+            let mut flags = OpenFlags::SQLITE_OPEN_NO_MUTEX;
 
             if read_only {
                 flags |= OpenFlags::SQLITE_OPEN_READ_ONLY;
@@ -248,7 +249,7 @@ impl SqliteDiskLayer {
 
         let buf = buffers.reader().read_all()?;
         unblock({
-            let conn = self.conn.clone();
+            let conn = self.conn.clone().lock_owned().await;
             let sector_size = self.meta.sector_size;
             move || write_sectors(conn, sector_size, sector, buf, overwrite)
         })
@@ -317,7 +318,7 @@ impl LayerIo for SqliteDiskLayer {
     }
 
     fn is_fua_respected(&self) -> bool {
-        true
+        false
     }
 
     async fn read(
@@ -334,8 +335,8 @@ impl LayerIo for SqliteDiskLayer {
         }
 
         let valid_sectors = unblock({
-            let conn = self.conn.clone();
-            let end_sector = sector + (buffers.len() as u64 / self.meta.sector_size as u64);
+            let conn = self.conn.clone().lock_owned().await;
+            let end_sector = sector + sector_count;
             let sector_size = self.meta.sector_size;
             move || read_sectors(conn, sector_size, sector, end_sector)
         })
@@ -374,11 +375,18 @@ impl LayerIo for SqliteDiskLayer {
     async fn sync_cache(&self) -> Result<(), DiskError> {
         tracing::trace!("sync_cache");
 
-        (self.conn.lock())
-            .pragma_update(None, "wal_checkpoint", "FULL")
-            .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-
-        Ok(())
+        unblock({
+            let conn = self.conn.clone().lock_owned().await;
+            move || -> rusqlite::Result<()> {
+                // https://sqlite-users.sqlite.narkive.com/LX75NOma/forcing-a-manual-fsync-in-wal-normal-mode
+                conn.pragma_update(None, "synchronous", "FULL")?;
+                conn.pragma_update(None, "user_version", "0")?;
+                conn.pragma_update(None, "synchronous", "NORMAL")?;
+                Ok(())
+            }
+        })
+        .await
+        .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
     }
 
     async fn unmap(
@@ -394,7 +402,7 @@ impl LayerIo for SqliteDiskLayer {
         }
 
         unblock({
-            let conn = self.conn.clone();
+            let conn = self.conn.clone().lock_owned().await;
             move || unmap_sectors(conn, sector_offset, sector_count, next_is_zero)
         })
         .await
@@ -404,9 +412,7 @@ impl LayerIo for SqliteDiskLayer {
     }
 
     fn unmap_behavior(&self) -> UnmapBehavior {
-        // This layer zeroes if the lower layer is zero, but otherwise does
-        // nothing, so we must report unspecified.
-        UnmapBehavior::Unspecified
+        UnmapBehavior::Zeroes
     }
 
     fn optimal_unmap_sectors(&self) -> u32 {
@@ -434,13 +440,11 @@ enum SectorKind {
 // FUTURE: pass RequestBuffers into this function directly, and avoid the alloc
 // overhead.
 fn read_sectors(
-    conn: Arc<Mutex<Connection>>,
+    conn: OwnedMutexGuard<Connection>,
     sector_size: u32,
     start_sector: u64,
     end_sector: u64,
 ) -> Result<Vec<(u64, SectorKind)>, rusqlite::Error> {
-    let conn = conn.lock();
-
     let mut select_stmt = conn.prepare_cached(
         "SELECT sector, data
         FROM sectors
@@ -497,14 +501,12 @@ fn read_sectors(
 // FUTURE: pass RequestBuffers into this function directly, and avoid the alloc
 // overhead.
 fn write_sectors(
-    conn: Arc<Mutex<Connection>>,
+    mut conn: OwnedMutexGuard<Connection>,
     sector_size: u32,
     mut sector: u64,
     buf: Vec<u8>,
     overwrite: bool,
 ) -> Result<(), rusqlite::Error> {
-    let mut conn = conn.lock();
-
     let tx = conn.transaction()?;
     {
         let mut stmt = if overwrite {
@@ -514,9 +516,7 @@ fn write_sectors(
         };
 
         let chunks = buf.chunks_exact(sector_size as usize);
-        if !chunks.remainder().is_empty() {
-            return Err(rusqlite::Error::BlobSizeError);
-        }
+        assert!(chunks.remainder().is_empty());
         for chunk in chunks {
             let chunk = if chunk.iter().all(|x| *x == 0) {
                 &[]
@@ -536,13 +536,11 @@ fn write_sectors(
 }
 
 fn unmap_sectors(
-    conn: Arc<Mutex<Connection>>,
+    mut conn: OwnedMutexGuard<Connection>,
     sector_offset: u64,
     sector_count: u64,
     next_is_zero: bool,
 ) -> Result<(), rusqlite::Error> {
-    let mut conn = conn.lock();
-
     if next_is_zero {
         let mut clear_stmt =
             conn.prepare_cached("DELETE FROM sectors WHERE sector BETWEEN ? AND ?")?;
