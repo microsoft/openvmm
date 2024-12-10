@@ -384,27 +384,6 @@ impl PartitionInfo {
         storage.vmbus_vtl2 = parsed.vmbus_vtl2.clone().ok_or(DtError::Vtl2Vmbus)?;
         storage.vmbus_vtl0 = parsed.vmbus_vtl0.clone().ok_or(DtError::Vtl0Vmbus)?;
 
-        // Decide if we will reserve memory for a VTL2 private pool. Parse this
-        // from the final command line, or the host provided device tree value.
-        let enable_vtl2_gpa_pool =
-            crate::cmdline::parse_boot_command_line(storage.cmdline.as_str())
-                .enable_vtl2_gpa_pool
-                .map(|page_count| max(page_count, parsed.device_dma_page_count.unwrap_or(0)));
-        if let Some(pool_size) = enable_vtl2_gpa_pool {
-            // Reserve the specified number of pages for the pool.
-            // BUGBUG allocate downwards from biggest entry in vtl2_ram that is unused.
-            let pool = MemoryRange::new(
-                params.memory_start_address + params.memory_size - (pool_size * HV_PAGE_SIZE)
-                    ..params.memory_start_address + params.memory_size,
-            );
-            assert!(
-                !params.used.overlaps(&pool),
-                "specified pool memory {pool} overlaps used shim memory {}",
-                params.used
-            );
-            storage.vtl2_pool_memory = pool;
-        }
-
         // The host is responsible for allocating MMIO ranges for non-isolated
         // guests when it also provides the ram VTL2 should use.
         //
@@ -468,14 +447,52 @@ impl PartitionInfo {
         let mut used_ranges =
             off_stack!(ArrayVec<MemoryRange, MAX_VTL2_USED_RANGES>, ArrayVec::new_const());
         used_ranges.push(params.used);
-        if storage.vtl2_pool_memory != MemoryRange::EMPTY {
-            used_ranges.push(storage.vtl2_pool_memory);
-        }
         used_ranges.sort_unstable_by_key(|r| r.start());
         storage.vtl2_used_ranges.clear();
         storage
             .vtl2_used_ranges
             .extend(flatten_ranges(used_ranges.iter().copied()));
+
+        // Decide if we will reserve memory for a VTL2 private pool. Parse this
+        // from the final command line, or the host provided device tree value.
+        let enable_vtl2_gpa_pool =
+            crate::cmdline::parse_boot_command_line(storage.cmdline.as_str())
+                .enable_vtl2_gpa_pool
+                .map(|page_count| max(page_count, parsed.device_dma_page_count.unwrap_or(0)));
+        if let Some(pool_size) = enable_vtl2_gpa_pool {
+            // Reserve the specified number of pages for the pool. Use the used
+            // ranges to figure out which VTL2 memory is free to allocate from.
+            let pool_size_bytes = pool_size * HV_PAGE_SIZE;
+            let free_memory = subtract_ranges(
+                storage.vtl2_ram.iter().map(|e| e.range),
+                storage.vtl2_used_ranges.iter().copied(),
+            );
+
+            let mut pool = MemoryRange::EMPTY;
+
+            for range in free_memory {
+                if range.len() >= pool_size_bytes {
+                    pool = MemoryRange::new(range.start()..(range.start() + pool_size_bytes));
+                    break;
+                }
+            }
+
+            if pool.is_empty() {
+                panic!("failed to find {pool_size} bytes of free VTL2 memory for VTL2 GPA pool");
+            }
+
+            // Update the used ranges to mark the pool range as used.
+            used_ranges.clear();
+            used_ranges.extend(storage.vtl2_used_ranges.iter().copied());
+            used_ranges.push(pool);
+            used_ranges.sort_unstable_by_key(|r| r.start());
+            storage.vtl2_used_ranges.clear();
+            storage
+                .vtl2_used_ranges
+                .extend(flatten_ranges(used_ranges.iter().copied()));
+
+            storage.vtl2_pool_memory = pool;
+        }
 
         // Set remaining struct fields before returning.
         let Self {
