@@ -1587,7 +1587,7 @@ async fn new_underhill_vm(
         virt::IsolationType::Tdx => AttestationType::Tdx,
         virt::IsolationType::None => AttestationType::Host,
         virt::IsolationType::Vbs => {
-            // VBS not supported yet, fall back to host typea
+            // VBS not supported yet, fall back to the host type.
             // Raise an error message instead of aborting so that
             // we do not block VBS bringup.
             tracing::error!("VBS attestation not supported yet");
