@@ -23,10 +23,8 @@ pub struct TpmDeviceHandle {
     pub nvram_store: Resource<NonVolatileStoreKind>,
     /// Whether to refresh TPM seeds on init
     pub refresh_tpm_seeds: bool,
-    /// Whether the environment supports attestation
-    pub support_attestation_report: bool,
-    /// Optional callback for requesting AK cert
-    pub request_ak_cert: Option<Resource<RequestAkCertKind>>,
+    /// Type of AK cert
+    pub ak_cert_type: TpmAkCertTypeResource,
     /// vTPM register layout (IO port or MMIO)
     pub register_layout: TpmRegisterLayout,
     /// Optional guest secret TPM key to be imported
@@ -38,17 +36,24 @@ impl ResourceId<ChipsetDeviceHandleKind> for TpmDeviceHandle {
 }
 
 /// A resource kind for AK cert renewal helpers.
-pub enum GetAttestationReportKind {}
-
-impl ResourceKind for GetAttestationReportKind {
-    const NAME: &'static str = "tpm_get_attestation_report";
-}
-
-/// A resource kind for AK cert renewal helpers.
 pub enum RequestAkCertKind {}
 
 impl ResourceKind for RequestAkCertKind {
     const NAME: &'static str = "tpm_request_ak_cert";
+}
+
+/// `TpmAkCertType`-equivalent enum for resource
+#[derive(MeshPayload)]
+pub enum TpmAkCertTypeResource {
+    /// No Ak cert.
+    None,
+    /// Authorized AK cert that is not hardware-attested.
+    /// Used by TVM
+    Trusted(Resource<RequestAkCertKind>),
+    /// Authorized and hardware-attested AK cert (backed by
+    /// a TEE attestation report).
+    /// Used by CVM
+    HwAttested(Resource<RequestAkCertKind>),
 }
 
 /// The vTPM control area register layout

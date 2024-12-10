@@ -109,6 +109,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use storvsp::ScsiControllerDisk;
 use thiserror::Error;
+use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
 use tracing::instrument;
@@ -2451,26 +2452,26 @@ async fn new_underhill_vm(
             )
         };
 
+        // AK cert request depends on the availability of the shared memory
         // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
-        let (support_attestation_report, request_ak_cert) =
-            if !matches!(attestation_type, AttestationType::VbsUnsupported) {
-                // Ak cert request for isolated VMs depends on the ability to get a hardware attestation report
-                let support_attestation_report = !matches!(attestation_type, AttestationType::Host);
+        let ak_cert_type = if !matches!(attestation_type, AttestationType::VbsUnsupported)
+            && shared_vis_pages_pool.is_some()
+        {
+            let request_ak_cert = GetTpmRequestAkCertHelperHandle::new(
+                attestation_type,
+                attestation_vm_config,
+                platform_attestation_data.agent_data,
+            )
+            .into_resource();
 
-                // AK cert request depends on the availability of the shared memory
-                let request_ak_cert = shared_vis_pages_pool.as_ref().map(|_| {
-                    GetTpmRequestAkCertHelperHandle::new(
-                        attestation_type,
-                        attestation_vm_config,
-                        platform_attestation_data.agent_data,
-                    )
-                    .into_resource()
-                });
-
-                (support_attestation_report, request_ak_cert)
+            if !matches!(attestation_type, AttestationType::Host) {
+                TpmAkCertTypeResource::HwAttested(request_ak_cert)
             } else {
-                (false, None)
-            };
+                TpmAkCertTypeResource::Trusted(request_ak_cert)
+            }
+        } else {
+            TpmAkCertTypeResource::None
+        };
 
         let register_layout = if cfg!(guest_arch = "x86_64") {
             TpmRegisterLayout::IoPort
@@ -2486,8 +2487,7 @@ async fn new_underhill_vm(
                 refresh_tpm_seeds: platform_attestation_data
                     .host_attestation_settings
                     .refresh_tpm_seeds,
-                support_attestation_report,
-                request_ak_cert,
+                ak_cert_type,
                 register_layout,
                 guest_secret_key: platform_attestation_data.guest_secret_key,
             }

@@ -7,7 +7,9 @@ use crate::TpmError;
 use async_trait::async_trait;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
+use mesh::resource;
 use thiserror::Error;
+use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::ChipsetDeviceHandleKind;
@@ -61,23 +63,22 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
             .await
             .map_err(ResolveTpmError::ResolveNvramStore)?;
 
-        let request_ak_cert = if let Some(request_ak_cert) = resource.request_ak_cert {
-            Some(
+        let ak_cert_type = match resource.ak_cert_type {
+            TpmAkCertTypeResource::HwAttested(request_ak_cert) => TpmAkCertType::HwAttested(
                 resolver
                     .resolve(request_ak_cert, &())
                     .await
                     .map_err(ResolveTpmError::ResolveRequestAkCert)?
                     .0,
-            )
-        } else {
-            None
-        };
-
-        let ak_cert_type = match (resource.support_attestation_report, request_ak_cert) {
-            (true, Some(request_ak_cert)) => TpmAkCertType::HwAttested(request_ak_cert),
-            (false, Some(request_ak_cert)) => TpmAkCertType::Trusted(request_ak_cert),
-            (true, None) => Err(ResolveTpmError::InvalidAkCertType)?,
-            (false, None) => TpmAkCertType::None,
+            ),
+            TpmAkCertTypeResource::Trusted(request_ak_cert) => TpmAkCertType::Trusted(
+                resolver
+                    .resolve(request_ak_cert, &())
+                    .await
+                    .map_err(ResolveTpmError::ResolveRequestAkCert)?
+                    .0,
+            ),
+            TpmAkCertTypeResource::None => TpmAkCertType::None,
         };
 
         // The TPM device doesn't need access to the entire API of `vmtime`, so
