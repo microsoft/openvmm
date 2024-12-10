@@ -756,7 +756,10 @@ impl Tpm {
             .map_err(TpmErrorKind::ReadFromNvIndex)?;
 
         let keys = self.keys.as_ref().expect("Tpm keys uninitialized");
-        let request_ak_cert_helper = self.ak_cert_type.get_ak_cert_helper();
+        let request_ak_cert_helper = self
+            .ak_cert_type
+            .get_ak_cert_helper()
+            .expect("`ak_cert_type` should not be `None`");
         let ak_cert_request = request_ak_cert_helper
             .create_ak_cert_request(
                 &keys.ak_pub.modulus,
@@ -799,7 +802,10 @@ impl Tpm {
             self.renew_attestation_report(&ak_cert_request)?;
         }
 
-        let request_ak_cert_helper = self.ak_cert_type.get_ak_cert_helper();
+        let request_ak_cert_helper = self
+            .ak_cert_type
+            .get_ak_cert_helper()
+            .expect("`ak_cert_type` should not be `None`");
         let fut = {
             let request_ak_cert_helper = request_ak_cert_helper.clone_box();
             async move {
