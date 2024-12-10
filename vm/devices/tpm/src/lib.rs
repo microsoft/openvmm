@@ -807,7 +807,7 @@ impl Tpm {
             .get_ak_cert_helper()
             .expect("`ak_cert_type` should not be `None`");
         let fut = {
-            let request_ak_cert_helper = request_ak_cert_helper.clone_box();
+            let request_ak_cert_helper = request_ak_cert_helper.clone();
             async move {
                 request_ak_cert_helper
                     .request_ak_cert(ak_cert_request)

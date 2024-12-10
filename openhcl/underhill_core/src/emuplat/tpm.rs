@@ -19,7 +19,6 @@ pub enum TpmAttestationError {
 }
 
 /// An implementation of [`RequestAkCert`].
-#[derive(Clone)]
 pub struct TpmRequestAkCertHelper {
     get_client: GuestEmulationTransportClient,
     tee_call: Option<Arc<dyn tee_call::TeeCall>>,
@@ -101,10 +100,6 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         let payload = underhill_attestation::parse_ak_cert_response(&result.response)?;
 
         Ok(payload)
-    }
-
-    fn clone_box(&self) -> Box<dyn RequestAkCert> {
-        Box::new(self.clone())
     }
 }
 

@@ -3,6 +3,7 @@
 
 //! Helper traits for TPM Attestation Key Certificate (AK cert).
 
+use std::sync::Arc;
 use tpm_resources::RequestAkCertKind;
 use vm_resource::CanResolveTo;
 
@@ -12,16 +13,16 @@ pub enum TpmAkCertType {
     None,
     /// Authorized AK cert that is not hardware-attested.
     /// Used by TVM
-    Trusted(Box<dyn RequestAkCert>),
+    Trusted(Arc<dyn RequestAkCert>),
     /// Authorized and hardware-attested AK cert (backed by
     /// a TEE attestation report).
     /// Used by CVM
-    HwAttested(Box<dyn RequestAkCert>),
+    HwAttested(Arc<dyn RequestAkCert>),
 }
 
 impl TpmAkCertType {
     /// Get the `RequestAkCert` from the enum
-    pub fn get_ak_cert_helper(&mut self) -> Option<&mut Box<dyn RequestAkCert>> {
+    pub fn get_ak_cert_helper(&self) -> Option<&Arc<dyn RequestAkCert>> {
         match self {
             TpmAkCertType::HwAttested(helper) => Some(helper),
             TpmAkCertType::Trusted(helper) => Some(helper),
@@ -62,7 +63,4 @@ pub trait RequestAkCert: Send + Sync {
         &self,
         request: Vec<u8>,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>>;
-
-    /// Get a clone of the trait object.
-    fn clone_box(&self) -> Box<dyn RequestAkCert>;
 }
