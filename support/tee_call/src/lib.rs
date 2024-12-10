@@ -69,7 +69,7 @@ pub trait TeeCall: Send + Sync {
     fn supports_get_derived_key(&self) -> Option<&dyn TeeCallGetDerivedKey>;
     /// Get the [`TeeType`].
     fn tee_type(&self) -> TeeType;
-    /// Support clone for Box<dyn TeeCall>
+    /// Support clone for [`Box<dyn TeeCall>`]
     fn clone_box(&self) -> Box<dyn TeeCall>;
 }
 
@@ -80,8 +80,8 @@ pub trait TeeCallGetDerivedKey: TeeCall {
     fn get_derived_key(&self, tcb_version: u64) -> Result<[u8; HW_DERIVED_KEY_LENGTH], Error>;
 }
 
-/// Implement Clone for Box<dyn TeeCall>
 impl Clone for Box<dyn TeeCall> {
+    /// Support clone for [`Box<dyn TeeCall>`]
     fn clone(&self) -> Self {
         self.clone_box()
     }
