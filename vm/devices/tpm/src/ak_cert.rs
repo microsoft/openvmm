@@ -37,11 +37,11 @@ impl CanResolveTo<ResolvedRequestAkCert> for RequestAkCertKind {
 }
 
 /// A resolved get attestation report helper resource.
-pub struct ResolvedRequestAkCert(pub Box<dyn RequestAkCert>);
+pub struct ResolvedRequestAkCert(pub Arc<dyn RequestAkCert>);
 
 impl<T: 'static + RequestAkCert> From<T> for ResolvedRequestAkCert {
     fn from(value: T) -> Self {
-        Self(Box::new(value))
+        Self(Arc::new(value))
     }
 }
 

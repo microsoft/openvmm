@@ -68,16 +68,14 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
                     .resolve(request_ak_cert, &())
                     .await
                     .map_err(ResolveTpmError::ResolveRequestAkCert)?
-                    .0
-                    .into(),
+                    .0,
             ),
             TpmAkCertTypeResource::Trusted(request_ak_cert) => TpmAkCertType::Trusted(
                 resolver
                     .resolve(request_ak_cert, &())
                     .await
                     .map_err(ResolveTpmError::ResolveRequestAkCert)?
-                    .0
-                    .into(),
+                    .0,
             ),
             TpmAkCertTypeResource::None => TpmAkCertType::None,
         };
