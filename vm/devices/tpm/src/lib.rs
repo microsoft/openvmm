@@ -1458,7 +1458,7 @@ mod save_restore {
 
     #[derive(Error, Debug)]
     pub enum TpmSaveError {
-        #[error("servicing is blocked when there is an outstanding AK Cert request")]
+        #[error("save is blocked when there is an outstanding AK Cert request")]
         OutstandingAkCertRequest,
     }
 
@@ -1466,11 +1466,15 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            // Block servicing requests when there is an outstanding ak cert request.
+            // Block save requests when there is an outstanding ak cert request.
             //
-            // DEVNOTE: Current host implementation does not handle GET request dropping
-            // properly when there is an in-flight request and servicing occurs. Blocking
-            // the servicing requests until we fix the issue on the host.
+            // DEVNOTE:
+            // - The device itself does not save/restore the async request, and
+            // we need to think more about what it means to save the outstanding request
+            // and what the API should be.
+            // - The existing implementation with the GET has a host issue where leaving
+            // this request in-flight during a servicing operation can lead to bad host
+            // behavior on older hosts.
             if self.async_ak_cert_request.is_some() {
                 return Err(SaveError::Other(
                     TpmSaveError::OutstandingAkCertRequest.into(),
