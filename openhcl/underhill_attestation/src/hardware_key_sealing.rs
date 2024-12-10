@@ -185,7 +185,6 @@ mod tests {
     use super::*;
     use zerocopy::FromBytes;
 
-    #[derive(Clone)]
     struct MockTeeCall;
 
     impl tee_call::TeeCall for MockTeeCall {
@@ -205,10 +204,6 @@ mod tests {
 
         fn tee_type(&self) -> tee_call::TeeType {
             tee_call::TeeType::Snp
-        }
-
-        fn clone_box(&self) -> Box<dyn tee_call::TeeCall> {
-            Box::new(self.clone())
         }
     }
 

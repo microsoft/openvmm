@@ -4,6 +4,7 @@
 use guest_emulation_transport::GuestEmulationTransportClient;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_BUFFER_SIZE;
+use std::sync::Arc;
 use thiserror::Error;
 use tpm::ak_cert::RequestAkCert;
 use underhill_attestation::AttestationType;
@@ -21,7 +22,7 @@ pub enum TpmAttestationError {
 #[derive(Clone)]
 pub struct TpmRequestAkCertHelper {
     get_client: GuestEmulationTransportClient,
-    tee_call: Option<Box<dyn tee_call::TeeCall>>,
+    tee_call: Option<Arc<dyn tee_call::TeeCall>>,
     attestation_type: AttestationType,
     attestation_vm_config: AttestationVmConfig,
     attestation_agent_data: Option<Vec<u8>>,
@@ -30,7 +31,7 @@ pub struct TpmRequestAkCertHelper {
 impl TpmRequestAkCertHelper {
     pub fn new(
         get_client: GuestEmulationTransportClient,
-        tee_call: Option<Box<dyn tee_call::TeeCall>>,
+        tee_call: Option<Arc<dyn tee_call::TeeCall>>,
         attestation_type: AttestationType,
         attestation_vm_config: AttestationVmConfig,
         attestation_agent_data: Option<Vec<u8>>,
@@ -114,6 +115,7 @@ pub mod resources {
     use guest_emulation_transport::resolver::GetClientKind;
     use mesh::MeshPayload;
     use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+    use std::sync::Arc;
     use tpm::ak_cert::ResolvedRequestAkCert;
     use tpm_resources::RequestAkCertKind;
     use underhill_attestation::AttestationType;
@@ -174,9 +176,9 @@ pub mod resources {
                 .resolve::<GetClientKind, _>(PlatformResource.into_resource(), ())
                 .await?;
 
-            let tee_call: Option<Box<dyn tee_call::TeeCall>> = match handle.attestation_type {
-                AttestationType::Snp => Some(Box::new(tee_call::SnpCall)),
-                AttestationType::Tdx => Some(Box::new(tee_call::TdxCall)),
+            let tee_call: Option<Arc<dyn tee_call::TeeCall>> = match handle.attestation_type {
+                AttestationType::Snp => Some(Arc::new(tee_call::SnpCall)),
+                AttestationType::Tdx => Some(Arc::new(tee_call::TdxCall)),
                 AttestationType::Host => None,
                 AttestationType::VbsUnsupported => panic!("VBS not supported yet"), // TODO VBS,
             };

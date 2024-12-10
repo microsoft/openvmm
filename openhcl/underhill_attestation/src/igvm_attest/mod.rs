@@ -174,7 +174,7 @@ fn create_request(
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestData;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestHeader;
 
-    let expected_report_size = get_report_size(report_type)?;
+    let expected_report_size = get_report_size(report_type);
     if attestation_report.len() != expected_report_size {
         Err(Error::InvalidAttestationReportSize {
             report_size: attestation_report.len(),
@@ -201,7 +201,7 @@ fn create_request(
 }
 
 /// Get the expected size of the given report type.
-fn get_report_size(report_type: &ReportType) -> Result<usize, Error> {
+fn get_report_size(report_type: &ReportType) -> usize {
     let size = match report_type {
         ReportType::Vbs => openhcl_attestation_protocol::igvm_attest::get::VBS_VM_REPORT_SIZE,
         ReportType::Snp => openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE,
@@ -209,7 +209,7 @@ fn get_report_size(report_type: &ReportType) -> Result<usize, Error> {
         ReportType::Tvm => openhcl_attestation_protocol::igvm_attest::get::TVM_REPORT_SIZE,
     };
 
-    Ok(size)
+    size
 }
 
 /// Helper function that returns the given config with the `current_time` set.

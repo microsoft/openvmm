@@ -58,7 +58,7 @@ pub struct GetAttestationReportResult {
 }
 
 /// Trait that defines the get attestation report interface for TEE.
-// TODO CVM: trait will need to be updated for VBS
+// TODO VBS: Implement the trait for VBS
 pub trait TeeCall: Send + Sync {
     /// Get the hardware-backed attestation report.
     fn get_attestation_report(
@@ -69,8 +69,6 @@ pub trait TeeCall: Send + Sync {
     fn supports_get_derived_key(&self) -> Option<&dyn TeeCallGetDerivedKey>;
     /// Get the [`TeeType`].
     fn tee_type(&self) -> TeeType;
-    /// Support clone for [`Box<dyn TeeCall>`]
-    fn clone_box(&self) -> Box<dyn TeeCall>;
 }
 
 /// Optional sub-trait that defines get derived key interface for TEE.
@@ -80,15 +78,7 @@ pub trait TeeCallGetDerivedKey: TeeCall {
     fn get_derived_key(&self, tcb_version: u64) -> Result<[u8; HW_DERIVED_KEY_LENGTH], Error>;
 }
 
-impl Clone for Box<dyn TeeCall> {
-    /// Support clone for [`Box<dyn TeeCall>`]
-    fn clone(&self) -> Self {
-        self.clone_box()
-    }
-}
-
 /// Implementation of [`TeeCall`] for SNP
-#[derive(Clone)]
 pub struct SnpCall;
 
 impl TeeCall for SnpCall {
@@ -117,11 +107,6 @@ impl TeeCall for SnpCall {
     /// Return TeeType::Snp.
     fn tee_type(&self) -> TeeType {
         TeeType::Snp
-    }
-
-    /// Return the clone of the object on heap
-    fn clone_box(&self) -> Box<dyn TeeCall> {
-        Box::new(self.clone())
     }
 }
 
@@ -159,7 +144,6 @@ impl TeeCallGetDerivedKey for SnpCall {
 }
 
 /// Implementation of [`TeeCall`] for TDX
-#[derive(Clone)]
 pub struct TdxCall;
 
 impl TeeCall for TdxCall {
@@ -188,10 +172,5 @@ impl TeeCall for TdxCall {
     /// Return TeeType::Tdx.
     fn tee_type(&self) -> TeeType {
         TeeType::Tdx
-    }
-
-    /// Return the clone of the object on heap
-    fn clone_box(&self) -> Box<dyn TeeCall> {
-        Box::new(self.clone())
     }
 }
