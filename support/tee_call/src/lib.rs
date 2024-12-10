@@ -69,6 +69,8 @@ pub trait TeeCall: Send + Sync {
     fn supports_get_derived_key(&self) -> Option<&dyn TeeCallGetDerivedKey>;
     /// Get the [`TeeType`].
     fn tee_type(&self) -> TeeType;
+    /// Support clone for Box<dyn TeeCall>
+    fn clone_box(&self) -> Box<dyn TeeCall>;
 }
 
 /// Optional sub-trait that defines get derived key interface for TEE.
@@ -78,7 +80,15 @@ pub trait TeeCallGetDerivedKey: TeeCall {
     fn get_derived_key(&self, tcb_version: u64) -> Result<[u8; HW_DERIVED_KEY_LENGTH], Error>;
 }
 
+/// Implement Clone for Box<dyn TeeCall>
+impl Clone for Box<dyn TeeCall> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
 /// Implementation of [`TeeCall`] for SNP
+#[derive(Clone)]
 pub struct SnpCall;
 
 impl TeeCall for SnpCall {
@@ -107,6 +117,11 @@ impl TeeCall for SnpCall {
     /// Return TeeType::Snp.
     fn tee_type(&self) -> TeeType {
         TeeType::Snp
+    }
+
+    /// Return the clone of the object on heap
+    fn clone_box(&self) -> Box<dyn TeeCall> {
+        Box::new(self.clone())
     }
 }
 
@@ -173,5 +188,10 @@ impl TeeCall for TdxCall {
     /// Return TeeType::Tdx.
     fn tee_type(&self) -> TeeType {
         TeeType::Tdx
+    }
+
+    /// Return the clone of the object on heap
+    fn clone_box(&self) -> Box<dyn TeeCall> {
+        Box::new(self.clone())
     }
 }

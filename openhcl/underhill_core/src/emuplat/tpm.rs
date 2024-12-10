@@ -5,65 +5,23 @@ use guest_emulation_transport::GuestEmulationTransportClient;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_BUFFER_SIZE;
 use thiserror::Error;
-use tpm::ak_cert::GetAttestationReport;
 use tpm::ak_cert::RequestAkCert;
 use underhill_attestation::AttestationType;
 
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum TpmAttestationError {
-    #[error("unexpected report data size {input_size}, expected {expected_size}")]
-    UnexpectedReportDataSize {
-        input_size: usize,
-        expected_size: usize,
-    },
     #[error("failed to get a hardware attestation report")]
     GetAttestationReport(#[source] tee_call::Error),
     #[error("failed to create the IgvmAttest AK_CERT request")]
     CreateAkCertRequest(#[source] underhill_attestation::IgvmAttestError),
 }
 
-/// An implementation of [`GetAttestationReport`].
-pub struct TpmGetAttestationReportHelper {
-    tee_call: Box<dyn tee_call::TeeCall>,
-}
-
-impl TpmGetAttestationReportHelper {
-    pub fn new(tee_call: Box<dyn tee_call::TeeCall>) -> Self {
-        Self { tee_call }
-    }
-}
-
-impl GetAttestationReport for TpmGetAttestationReportHelper {
-    fn get_report(
-        &self,
-        report_data: &[u8],
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        // The size of `report_data` is expected to be `tee_call::REPORT_DATA_SIZE`
-        if report_data.len() != tee_call::REPORT_DATA_SIZE {
-            return Err(TpmAttestationError::UnexpectedReportDataSize {
-                input_size: report_data.len(),
-                expected_size: tee_call::REPORT_DATA_SIZE,
-            }
-            .into());
-        }
-
-        let mut data = [0u8; tee_call::REPORT_DATA_SIZE];
-        data.copy_from_slice(&report_data[..tee_call::REPORT_DATA_SIZE]);
-
-        let result = self
-            .tee_call
-            .get_attestation_report(&data)
-            .map_err(TpmAttestationError::GetAttestationReport)?;
-
-        Ok(result.report)
-    }
-}
-
 /// An implementation of [`RequestAkCert`].
 #[derive(Clone)]
 pub struct TpmRequestAkCertHelper {
     get_client: GuestEmulationTransportClient,
+    tee_call: Option<Box<dyn tee_call::TeeCall>>,
     attestation_type: AttestationType,
     attestation_vm_config: AttestationVmConfig,
     attestation_agent_data: Option<Vec<u8>>,
@@ -72,12 +30,14 @@ pub struct TpmRequestAkCertHelper {
 impl TpmRequestAkCertHelper {
     pub fn new(
         get_client: GuestEmulationTransportClient,
+        tee_call: Option<Box<dyn tee_call::TeeCall>>,
         attestation_type: AttestationType,
         attestation_vm_config: AttestationVmConfig,
         attestation_agent_data: Option<Vec<u8>>,
     ) -> Self {
         Self {
             get_client,
+            tee_call,
             attestation_type,
             attestation_vm_config,
             attestation_agent_data,
@@ -89,7 +49,6 @@ impl TpmRequestAkCertHelper {
 impl RequestAkCert for TpmRequestAkCertHelper {
     fn create_ak_cert_request(
         &self,
-        get_attestation_report: Option<&dyn GetAttestationReport>,
         ak_pub_modulus: &[u8],
         ak_pub_exponent: &[u8],
         ek_pub_modulus: &[u8],
@@ -113,9 +72,11 @@ impl RequestAkCert for TpmRequestAkCertHelper {
                 guest_input,
             );
 
-        let attestation_report = if let Some(get_attestation_report_helper) = get_attestation_report
-        {
-            get_attestation_report_helper.get_report(&ak_cert_request_helper.runtime_claims_hash)?
+        let attestation_report = if let Some(tee_call) = &self.tee_call {
+            tee_call
+                .get_attestation_report(&ak_cert_request_helper.runtime_claims_hash)
+                .map_err(TpmAttestationError::GetAttestationReport)?
+                .report
         } else {
             vec![]
         };
@@ -148,15 +109,12 @@ impl RequestAkCert for TpmRequestAkCertHelper {
 }
 
 pub mod resources {
-    use super::TpmGetAttestationReportHelper;
     use super::TpmRequestAkCertHelper;
     use async_trait::async_trait;
     use guest_emulation_transport::resolver::GetClientKind;
     use mesh::MeshPayload;
     use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
-    use tpm::ak_cert::ResolvedGetAttestationReport;
     use tpm::ak_cert::ResolvedRequestAkCert;
-    use tpm_resources::GetAttestationReportKind;
     use tpm_resources::RequestAkCertKind;
     use underhill_attestation::AttestationType;
     use vm_resource::declare_static_async_resolver;
@@ -166,57 +124,6 @@ pub mod resources {
     use vm_resource::ResolveError;
     use vm_resource::ResourceId;
     use vm_resource::ResourceResolver;
-
-    #[derive(MeshPayload)]
-    pub struct GetTpmGetAttestationReportHelperHandle {
-        attestation_type: AttestationType,
-    }
-
-    impl GetTpmGetAttestationReportHelperHandle {
-        pub fn new(attestation_type: AttestationType) -> Self {
-            Self { attestation_type }
-        }
-    }
-
-    impl ResourceId<GetAttestationReportKind> for GetTpmGetAttestationReportHelperHandle {
-        const ID: &'static str = "get_attestation_report";
-    }
-
-    pub struct GetTpmGetAttestationReportHelperResolver;
-
-    declare_static_async_resolver! {
-        GetTpmGetAttestationReportHelperResolver,
-        (GetAttestationReportKind, GetTpmGetAttestationReportHelperHandle)
-    }
-
-    /// Error while resolving a [`GetAttestationReportKind`].
-    #[derive(Debug, thiserror::Error)]
-    #[error("attestation type `Host` does not support `GetAttestationReportKind`")]
-    pub struct UnsupportedAttestationTypeHost();
-
-    #[async_trait]
-    impl AsyncResolveResource<GetAttestationReportKind, GetTpmGetAttestationReportHelperHandle>
-        for GetTpmGetAttestationReportHelperResolver
-    {
-        type Output = ResolvedGetAttestationReport;
-        type Error = UnsupportedAttestationTypeHost;
-
-        async fn resolve(
-            &self,
-            _resolver: &ResourceResolver,
-            handle: GetTpmGetAttestationReportHelperHandle,
-            _: &(),
-        ) -> Result<Self::Output, Self::Error> {
-            let tee_call: Box<dyn tee_call::TeeCall> = match handle.attestation_type {
-                AttestationType::Snp => Box::new(tee_call::SnpCall),
-                AttestationType::Tdx => Box::new(tee_call::TdxCall),
-                AttestationType::Host => Err(UnsupportedAttestationTypeHost())?,
-                AttestationType::VbsUnsupported => panic!("VBS not supported yet"), // TODO VBS,
-            };
-
-            Ok(TpmGetAttestationReportHelper::new(tee_call).into())
-        }
-    }
 
     #[derive(MeshPayload)]
     pub struct GetTpmRequestAkCertHelperHandle {
@@ -267,8 +174,16 @@ pub mod resources {
                 .resolve::<GetClientKind, _>(PlatformResource.into_resource(), ())
                 .await?;
 
+            let tee_call: Option<Box<dyn tee_call::TeeCall>> = match handle.attestation_type {
+                AttestationType::Snp => Some(Box::new(tee_call::SnpCall)),
+                AttestationType::Tdx => Some(Box::new(tee_call::TdxCall)),
+                AttestationType::Host => None,
+                AttestationType::VbsUnsupported => panic!("VBS not supported yet"), // TODO VBS,
+            };
+
             Ok(TpmRequestAkCertHelper::new(
                 get,
+                tee_call,
                 handle.attestation_type,
                 handle.attestation_vm_config,
                 handle.attestation_agent_data,

@@ -3,7 +3,6 @@
 
 //! Helper traits for TPM Attestation Key Certificate (AK cert).
 
-use tpm_resources::GetAttestationReportKind;
 use tpm_resources::RequestAkCertKind;
 use vm_resource::CanResolveTo;
 
@@ -17,30 +16,7 @@ pub enum TpmAkCertType {
     /// Authorized and hardware-attested AK cert (backed by
     /// a TEE attestation report).
     /// Used by CVM
-    HwAttested(Box<dyn GetAttestationReport>, Box<dyn RequestAkCert>),
-}
-
-impl CanResolveTo<ResolvedGetAttestationReport> for GetAttestationReportKind {
-    // Workaround for async_trait not supporting GATs with missing lifetimes.
-    type Input<'a> = &'a ();
-}
-
-/// A resolved get attestation report helper resource.
-pub struct ResolvedGetAttestationReport(pub Box<dyn GetAttestationReport>);
-
-impl<T: 'static + GetAttestationReport> From<T> for ResolvedGetAttestationReport {
-    fn from(value: T) -> Self {
-        Self(Box::new(value))
-    }
-}
-
-/// A trait for getting an attestation report.
-pub trait GetAttestationReport: Send + Sync {
-    /// Helper function to get an attestation report
-    fn get_report(
-        &self,
-        report_data: &[u8],
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
+    HwAttested(Box<dyn RequestAkCert>),
 }
 
 impl CanResolveTo<ResolvedRequestAkCert> for RequestAkCertKind {
@@ -63,7 +39,6 @@ pub trait RequestAkCert: Send + Sync {
     /// Helper function to create the request needed by `request_ak_cert`.
     fn create_ak_cert_request(
         &self,
-        get_attestation_report: Option<&dyn GetAttestationReport>,
         ak_pub_modulus: &[u8],
         ak_pub_exponent: &[u8],
         ek_pub_modulus: &[u8],

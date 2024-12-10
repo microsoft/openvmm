@@ -61,19 +61,6 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
             .await
             .map_err(ResolveTpmError::ResolveNvramStore)?;
 
-        let get_attestation_report =
-            if let Some(get_attestation_report) = resource.get_attestation_report {
-                Some(
-                    resolver
-                        .resolve(get_attestation_report, &())
-                        .await
-                        .map_err(ResolveTpmError::ResolveGetAttestationReport)?
-                        .0,
-                )
-            } else {
-                None
-            };
-
         let request_ak_cert = if let Some(request_ak_cert) = resource.request_ak_cert {
             Some(
                 resolver
@@ -86,13 +73,11 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
             None
         };
 
-        let ak_cert_type = match (get_attestation_report, request_ak_cert) {
-            (Some(get_attestation_report), Some(request_ak_cert)) => {
-                TpmAkCertType::HwAttested(get_attestation_report, request_ak_cert)
-            }
-            (None, Some(request_ak_cert)) => TpmAkCertType::Trusted(request_ak_cert),
-            (Some(_), None) => Err(ResolveTpmError::InvalidAkCertType)?,
-            (None, None) => TpmAkCertType::None,
+        let ak_cert_type = match (resource.support_attestation_report, request_ak_cert) {
+            (true, Some(request_ak_cert)) => TpmAkCertType::HwAttested(request_ak_cert),
+            (false, Some(request_ak_cert)) => TpmAkCertType::Trusted(request_ak_cert),
+            (true, None) => Err(ResolveTpmError::InvalidAkCertType)?,
+            (false, None) => TpmAkCertType::None,
         };
 
         // The TPM device doesn't need access to the entire API of `vmtime`, so

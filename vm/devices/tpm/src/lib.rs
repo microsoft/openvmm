@@ -482,7 +482,7 @@ impl Tpm {
 
         if matches!(
             self.ak_cert_type,
-            TpmAkCertType::Trusted(_) | TpmAkCertType::HwAttested(_, _)
+            TpmAkCertType::Trusted(_) | TpmAkCertType::HwAttested(_)
         ) {
             // Create auth value for NV index password authorization.
             // The value needs to be preserved across live servicing.
@@ -512,7 +512,7 @@ impl Tpm {
                 .allocate_guest_attestation_nv_indices(
                     auth_value,
                     self.refresh_tpm_seeds,
-                    matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_, _)),
+                    matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_)),
                 )
                 .map_err(TpmErrorKind::AllocateGuestAttestationNvIndices)?;
 
@@ -759,17 +759,14 @@ impl Tpm {
 
         let keys = self.keys.as_ref().expect("Tpm keys uninitialized");
 
-        let (get_attestation_report_helper, request_ak_cer_helper) = match &mut self.ak_cert_type {
-            TpmAkCertType::HwAttested(get_attestation_report_helper, request_ak_cer_helper) => {
-                (Some(get_attestation_report_helper), request_ak_cer_helper)
-            }
-            TpmAkCertType::Trusted(request_ak_cer_helper) => (None, request_ak_cer_helper),
+        let request_ak_cer_helper = match &mut self.ak_cert_type {
+            TpmAkCertType::HwAttested(request_ak_cer_helper) => request_ak_cer_helper,
+            TpmAkCertType::Trusted(request_ak_cer_helper) => request_ak_cer_helper,
             TpmAkCertType::None => panic!("ak_cert_type should not be None"),
         };
 
         let ak_cert_request = request_ak_cer_helper
             .create_ak_cert_request(
-                get_attestation_report_helper.map(|helper| &**helper),
                 &keys.ak_pub.modulus,
                 &keys.ak_pub.exponent,
                 &keys.ek_pub.modulus,
@@ -806,18 +803,17 @@ impl Tpm {
 
         let ak_cert_request = self.create_ak_cert_request()?;
         // Store the ak cert request that includes the attestation report if `ak_cert_type` is `HwAttested`.
-        if matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_, _)) {
+        if matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_)) {
             self.renew_attestation_report(&ak_cert_request)?;
         }
 
-        let request_ak_cert_helper =
-            if let TpmAkCertType::HwAttested(_, helper) = &self.ak_cert_type {
-                helper
-            } else if let TpmAkCertType::Trusted(helper) = &self.ak_cert_type {
-                helper
-            } else {
-                panic!("ak_cert_type is None")
-            };
+        let request_ak_cert_helper = if let TpmAkCertType::HwAttested(helper) = &self.ak_cert_type {
+            helper
+        } else if let TpmAkCertType::Trusted(helper) = &self.ak_cert_type {
+            helper
+        } else {
+            panic!("ak_cert_type is None")
+        };
 
         let fut = {
             let request_ak_cert_helper = request_ak_cert_helper.clone_box();
@@ -936,7 +932,7 @@ impl Tpm {
         // On start of read of attestation report index, refresh report when
         // attestation report is supported.
         if u32::from(nv_read.nv_index) == TPM_NV_INDEX_ATTESTATION_REPORT
-            && matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_, _))
+            && matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_))
         {
             if attestation_report_renew_elapsed > REPORT_TIMER_PERIOD
                 || self.attestation_report_renew_time.is_none()
@@ -1182,7 +1178,7 @@ impl MmioIntercept for Tpm {
 
                     if matches!(
                         self.ak_cert_type,
-                        TpmAkCertType::Trusted(_) | TpmAkCertType::HwAttested(_, _)
+                        TpmAkCertType::Trusted(_) | TpmAkCertType::HwAttested(_)
                     ) {
                         if let Some(CommandCodeEnum::NV_Read) = cmd_header {
                             self.refresh_device_attestation_data_on_nv_read()

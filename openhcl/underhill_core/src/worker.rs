@@ -32,7 +32,6 @@ use crate::emuplat::netvsp::HclNetworkVFManagerEndpointInfo;
 use crate::emuplat::netvsp::HclNetworkVFManagerShutdownInProgress;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::non_volatile_store::VmbsBrokerNonVolatileStore;
-use crate::emuplat::tpm::resources::GetTpmGetAttestationReportHelperHandle;
 use crate::emuplat::tpm::resources::GetTpmRequestAkCertHelperHandle;
 use crate::emuplat::vga_proxy::UhRegisterHostIoFastPath;
 use crate::emuplat::EmuplatServicing;
@@ -2453,17 +2452,10 @@ async fn new_underhill_vm(
         };
 
         // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
-        let (get_attestation_report, request_ak_cert) =
+        let (support_attestation_report, request_ak_cert) =
             if !matches!(attestation_type, AttestationType::VbsUnsupported) {
-                // Ak cert request for isolated VMs depends on the ability to get an attestation report
-                let get_attestation_report = if !matches!(attestation_type, AttestationType::Host) {
-                    Some(
-                        GetTpmGetAttestationReportHelperHandle::new(attestation_type)
-                            .into_resource(),
-                    )
-                } else {
-                    None
-                };
+                // Ak cert request for isolated VMs depends on the ability to get a hardware attestation report
+                let support_attestation_report = !matches!(attestation_type, AttestationType::Host);
 
                 // AK cert request depends on the availability of the shared memory
                 let request_ak_cert = shared_vis_pages_pool.as_ref().map(|_| {
@@ -2475,9 +2467,9 @@ async fn new_underhill_vm(
                     .into_resource()
                 });
 
-                (get_attestation_report, request_ak_cert)
+                (support_attestation_report, request_ak_cert)
             } else {
-                (None, None)
+                (false, None)
             };
 
         let register_layout = if cfg!(guest_arch = "x86_64") {
@@ -2494,7 +2486,7 @@ async fn new_underhill_vm(
                 refresh_tpm_seeds: platform_attestation_data
                     .host_attestation_settings
                     .refresh_tpm_seeds,
-                get_attestation_report,
+                support_attestation_report,
                 request_ak_cert,
                 register_layout,
                 guest_secret_key: platform_attestation_data.guest_secret_key,
