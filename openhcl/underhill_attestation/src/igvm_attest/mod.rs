@@ -24,8 +24,6 @@ base64_serde_type!(Base64Url, base64::engine::general_purpose::URL_SAFE_NO_PAD);
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("the type of the attestation report {0} is invalid")]
-    InvalidAttestationReportType(u32),
     #[error(
         "the size of the attestation report {report_size} is invalid, expected {expected_size}"
     )]
@@ -35,12 +33,36 @@ pub enum Error {
     },
 }
 
+/// Rust-style enum for `IgvmAttestReportType`
+pub enum ReportType {
+    /// VBS report
+    Vbs,
+    /// SNP report
+    Snp,
+    /// TDX report
+    Tdx,
+    /// Trusted VM report
+    Tvm,
+}
+
+impl ReportType {
+    /// Map the value to `IgvmAttestReportType`
+    fn to_external_type(&self) -> IgvmAttestReportType {
+        match self {
+            Self::Vbs => IgvmAttestReportType::VBS_VM_REPORT,
+            Self::Snp => IgvmAttestReportType::SNP_VM_REPORT,
+            Self::Tdx => IgvmAttestReportType::TDX_VM_REPORT,
+            Self::Tvm => IgvmAttestReportType::TVM_REPORT,
+        }
+    }
+}
+
 /// Helper struct to create `IgvmAttestRequest` in raw bytes.
 pub struct IgvmAttestRequestHelper {
     /// The request type.
     pub request_type: IgvmAttestRequestType,
     /// The report type.
-    pub report_type: IgvmAttestReportType,
+    pub report_type: ReportType,
     /// Raw bytes of `RuntimeClaims`.
     pub runtime_claims: Vec<u8>,
     /// The hash of the `runtime_claims` to be included in the
@@ -60,8 +82,8 @@ impl IgvmAttestRequestHelper {
         attestation_vm_config: &AttestationVmConfig,
     ) -> Self {
         let report_type = match tee_type {
-            TeeType::Snp => IgvmAttestReportType::SNP_VM_REPORT,
-            TeeType::Tdx => IgvmAttestReportType::TDX_VM_REPORT,
+            TeeType::Snp => ReportType::Snp,
+            TeeType::Tdx => ReportType::Tdx,
         };
 
         let attestation_vm_config =
@@ -95,9 +117,9 @@ impl IgvmAttestRequestHelper {
         guest_input: &[u8],
     ) -> Self {
         let report_type = match tee_type {
-            Some(TeeType::Snp) => IgvmAttestReportType::SNP_VM_REPORT,
-            Some(TeeType::Tdx) => IgvmAttestReportType::TDX_VM_REPORT,
-            None => IgvmAttestReportType::TVM_REPORT,
+            Some(TeeType::Snp) => ReportType::Snp,
+            Some(TeeType::Tdx) => ReportType::Tdx,
+            None => ReportType::Tvm,
         };
 
         let runtime_claims =
@@ -132,7 +154,7 @@ impl IgvmAttestRequestHelper {
             self.request_type,
             &self.runtime_claims,
             attestation_report,
-            self.report_type,
+            &self.report_type,
             self.hash_type,
         )
     }
@@ -145,7 +167,7 @@ fn create_request(
     request_type: IgvmAttestRequestType,
     runtime_claims: &[u8],
     attestation_report: &[u8],
-    report_type: IgvmAttestReportType,
+    report_type: &ReportType,
     hash_type: IgvmAttestHashType,
 ) -> Result<Vec<u8>, Error> {
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequest;
@@ -170,7 +192,7 @@ fn create_request(
 
     request.request_data = IgvmAttestRequestData::new(
         user_data_size as u32,
-        report_type,
+        report_type.to_external_type(),
         hash_type,
         runtime_claims.len() as u32,
     );
@@ -179,21 +201,12 @@ fn create_request(
 }
 
 /// Get the expected size of the given report type.
-fn get_report_size(report_type: IgvmAttestReportType) -> Result<usize, Error> {
+fn get_report_size(report_type: &ReportType) -> Result<usize, Error> {
     let size = match report_type {
-        IgvmAttestReportType::VBS_VM_REPORT => {
-            openhcl_attestation_protocol::igvm_attest::get::VBS_VM_REPORT_SIZE
-        }
-        IgvmAttestReportType::SNP_VM_REPORT => {
-            openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE
-        }
-        IgvmAttestReportType::TDX_VM_REPORT => {
-            openhcl_attestation_protocol::igvm_attest::get::TDX_VM_REPORT_SIZE
-        }
-        IgvmAttestReportType::TVM_REPORT => {
-            openhcl_attestation_protocol::igvm_attest::get::TVM_REPORT_SIZE
-        }
-        ty => Err(Error::InvalidAttestationReportType(ty.0))?,
+        ReportType::Vbs => openhcl_attestation_protocol::igvm_attest::get::VBS_VM_REPORT_SIZE,
+        ReportType::Snp => openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE,
+        ReportType::Tdx => openhcl_attestation_protocol::igvm_attest::get::TDX_VM_REPORT_SIZE,
+        ReportType::Tvm => openhcl_attestation_protocol::igvm_attest::get::TVM_REPORT_SIZE,
     };
 
     Ok(size)
@@ -227,7 +240,7 @@ mod tests {
             IgvmAttestRequestType::AK_CERT_REQUEST,
             &[],
             &[0u8; openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE],
-            IgvmAttestReportType::SNP_VM_REPORT,
+            &ReportType::Snp,
             IgvmAttestHashType::SHA_256,
         );
         assert!(result.is_ok());
@@ -236,7 +249,7 @@ mod tests {
             IgvmAttestRequestType::AK_CERT_REQUEST,
             &[],
             &[0u8; openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE + 1],
-            IgvmAttestReportType::SNP_VM_REPORT,
+            &ReportType::Snp,
             IgvmAttestHashType::SHA_256,
         );
         assert!(result.is_err());
