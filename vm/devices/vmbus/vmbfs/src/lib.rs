@@ -75,6 +75,7 @@ impl SimpleVmbusDevice for VmbfsDevice {
     fn open(
         &mut self,
         channel: vmbus_channel::RawAsyncChannel<GpadlRingMem>,
+        _guest_memory: guestmem::GuestMemory,
     ) -> Result<Self::Runner, vmbus_channel::channel::ChannelOpenError> {
         Ok(VmbfsChannel {
             state: State::VersionRequest,
