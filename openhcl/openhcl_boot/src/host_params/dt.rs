@@ -16,6 +16,7 @@ use crate::host_params::MAX_VTL2_USED_RANGES;
 use crate::single_threaded::off_stack;
 use crate::single_threaded::OffStackRef;
 use arrayvec::ArrayVec;
+use core::cmp::max;
 use core::fmt::Display;
 use core::fmt::Write;
 use host_fdt_parser::MemoryAllocationMode;
@@ -91,7 +92,7 @@ fn allocate_vtl2_ram(
                 ram_size, params.memory_size
             );
         }
-        core::cmp::max(ram_size, params.memory_size)
+        max(ram_size, params.memory_size)
     } else {
         params.memory_size
     };
@@ -282,7 +283,7 @@ fn parse_host_vtl2_ram(
             params.memory_size
         );
 
-        let vtl2_size = core::cmp::max(vtl2_size, params.memory_size);
+        let vtl2_size = max(vtl2_size, params.memory_size);
         vtl2_ram.push(MemoryEntry {
             range: MemoryRange::new(
                 params.memory_start_address..(params.memory_start_address + vtl2_size),
@@ -384,13 +385,14 @@ impl PartitionInfo {
         storage.vmbus_vtl0 = parsed.vmbus_vtl0.clone().ok_or(DtError::Vtl0Vmbus)?;
 
         // Decide if we will reserve memory for a VTL2 private pool. Parse this
-        // from the final command line.
-        //
-        // BUGBUG use dt hint from host as well.
+        // from the final command line, or the host provided device tree value.
         let enable_vtl2_gpa_pool =
-            crate::cmdline::parse_boot_command_line(storage.cmdline.as_str()).enable_vtl2_gpa_pool;
+            crate::cmdline::parse_boot_command_line(storage.cmdline.as_str())
+                .enable_vtl2_gpa_pool
+                .map(|page_count| max(page_count, parsed.device_dma_page_count.unwrap_or(0)));
         if let Some(pool_size) = enable_vtl2_gpa_pool {
             // Reserve the specified number of pages for the pool.
+            // BUGBUG allocate downwards from biggest entry in vtl2_ram that is unused.
             let pool = MemoryRange::new(
                 params.memory_start_address + params.memory_size - (pool_size * HV_PAGE_SIZE)
                     ..params.memory_start_address + params.memory_size,
@@ -417,7 +419,7 @@ impl PartitionInfo {
             // Decide the amount of mmio VTL2 should allocate. Enforce a minimum
             // of 128 MB mmio for VTL2.
             const MINIMUM_MMIO_SIZE: u64 = 128 * (1 << 20);
-            let mmio_size = core::cmp::max(
+            let mmio_size = max(
                 match parsed.memory_allocation_mode {
                     MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
                     _ => 0,
@@ -495,7 +497,6 @@ impl PartitionInfo {
             memory_allocation_mode: _,
             entropy,
             vtl0_alias_map: _,
-            preserve_dma_4k_pages,
         } = storage;
 
         assert!(!vtl2_used_ranges.is_empty());
@@ -517,7 +518,6 @@ impl PartitionInfo {
         *com3_serial = parsed.com3_serial;
         *gic = parsed.gic.clone();
         *entropy = parsed.entropy.clone();
-        *preserve_dma_4k_pages = parsed.preserve_dma_4k_pages;
 
         Ok(Some(storage))
     }

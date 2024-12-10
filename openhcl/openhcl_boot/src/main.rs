@@ -910,7 +910,6 @@ mod test {
             memory_allocation_mode: host_fdt_parser::MemoryAllocationMode::Host,
             entropy: None,
             vtl0_alias_map: None,
-            preserve_dma_4k_pages: None,
         }
     }
 
