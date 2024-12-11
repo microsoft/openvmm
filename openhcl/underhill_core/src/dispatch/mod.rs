@@ -650,12 +650,19 @@ impl LoadedVm {
             .map(vmcore::save_restore::SaveRestore::save)
             .transpose()
             .context("shared_vis_pool save failed")?;
-        let private_pool = self
-            .private_pool
-            .as_mut()
-            .map(vmcore::save_restore::SaveRestore::save)
-            .transpose()
-            .context("private_pool save failed")?;
+
+        // Only save private pool state if we are expected to keep VF devices
+        // alive across save. Otherwise, don't persist the state at all, as
+        // there should be no live DMA across save.
+        let private_pool = if vf_keepalive_flag {
+            self.private_pool
+                .as_mut()
+                .map(vmcore::save_restore::SaveRestore::save)
+                .transpose()
+                .context("private_pool save failed")?
+        } else {
+            None
+        };
 
         Ok(ServicingState {
             init_state: servicing::ServicingInitState {
