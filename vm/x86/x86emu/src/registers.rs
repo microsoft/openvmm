@@ -91,9 +91,8 @@ pub fn bitness(cr0: u64, efer: u64, cs: SegmentRegister) -> Bitness {
         }
     } else {
         Bitness::Bit16
-     }
- }
-
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Bitness {

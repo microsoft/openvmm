@@ -11,20 +11,17 @@ use super::vp_state;
 use super::vp_state::UhVpStateAccess;
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
+use super::UhCpuState;
 use super::UhEmulationState;
 use super::UhHypercallHandler;
 use super::UhRunVpError;
 use crate::BackingShared;
-use super::UhCpuState;
-use iced_x86::Register;
-use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
 use crate::GuestVtl;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
 use crate::UhPartitionInner;
 use crate::UhProcessor;
 use crate::WakeReason;
-use x86emu::CpuState;
 use hcl::ioctl::tdx::Tdx;
 use hcl::ioctl::ProcessorRunner;
 use hcl::protocol::tdx_tdg_vp_enter_exit_info;
@@ -40,6 +37,7 @@ use hvdef::HvX64PendingExceptionEvent;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
+use iced_x86::Register;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -66,6 +64,7 @@ use virt_support_apic::ApicWork;
 use virt_support_apic::OffloadNotSupported;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
+use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
 use virt_support_x86emu::emulate::EmulatorSupport;
 use virt_support_x86emu::emulate::TranslateMode;
 use virt_support_x86emu::translate::TranslationRegisters;
@@ -114,6 +113,7 @@ use x86defs::X64_EFER_LME;
 use x86defs::X64_EFER_NXE;
 use x86defs::X64_EFER_SVME;
 use x86defs::X86X_MSR_EFER;
+use x86emu::CpuState;
 
 #[derive(Debug)]
 struct TdxExit<'a>(&'a tdx_tdg_vp_enter_exit_info);
@@ -439,7 +439,6 @@ pub struct TdxCpuState {
     pub efer: u64,
 }
 
-
 #[derive(Inspect, Default)]
 pub struct EnterStats {
     pub success: Counter,
@@ -738,7 +737,8 @@ impl BackingPrivate for TdxBacked {
         })
     }
 
-    type StateAccess<'p, 'a> = UhVpStateAccess<'a, 'p, Self>
+    type StateAccess<'p, 'a>
+        = UhVpStateAccess<'a, 'p, Self>
     where
         Self: 'a + 'p,
         'p: 'a;
@@ -2140,7 +2140,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, Tdx
     fn gp(&mut self, reg: Register) -> u64 {
         let index = reg.number();
         self.state.gps[index]
-     }
+    }
 
     fn set_gp(&mut self, reg: Register, v: u64) {
         let index = reg.number();
@@ -2155,12 +2155,12 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, Tdx
 
     fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error> {
         self.vp.runner.fx_state_mut().xmm[index] = v.to_ne_bytes();
-         Ok(())
-     }
+        Ok(())
+    }
 
     fn rip(&mut self) -> u64 {
         self.state.rip
-     }
+    }
 
     fn set_rip(&mut self, v: u64) {
         self.state.rip = v;
