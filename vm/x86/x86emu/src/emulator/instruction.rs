@@ -30,7 +30,7 @@ pub fn memory_op_offset<T: Cpu>(cpu: &mut T, instr: &Instruction, operand: u32) 
     instr
         .virtual_address(operand, 0, |reg, _element_index, _element_size| {
             if reg.is_gpr() {
-                Some(cpu.gp(reg).unwrap())
+                Some(cpu.gp(reg))
             } else if reg.is_segment_register() {
                 // The segment base is ignored since it's applied in compute_and_validate_gva.
                 Some(0)
