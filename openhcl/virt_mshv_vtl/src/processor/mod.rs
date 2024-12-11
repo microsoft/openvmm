@@ -1043,7 +1043,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             interruption_pending,
             devices,
             state: uh_register_state,
-            vtl
+            vtl,
         };
         virt_support_x86emu::emulate::emulate_mnf_write_fast_path(
             &mut emulation_state,

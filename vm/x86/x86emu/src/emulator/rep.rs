@@ -140,10 +140,8 @@ impl<T: Cpu> Emulator<'_, T> {
 
     fn rep_again(&mut self, rep_state: &mut RepState) -> bool {
         if rep_state.rep.is_some() {
-            self.cpu.set_gp(
-                rep_state.count_reg,
-                rep_state.requested - rep_state.done,
-            );
+            self.cpu
+                .set_gp(rep_state.count_reg, rep_state.requested - rep_state.done);
         }
         if rep_state.is_done() || rep_state.done == MAX_REP_LOOPS {
             return false;

@@ -12,8 +12,6 @@ use super::BackingPrivate;
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
 use super::UhCpuState;
-use iced_x86::Register;
-use x86defs::{RFlags, SegmentRegister};
 use super::UhEmulationState;
 use super::UhRunVpError;
 use crate::devmsr;
@@ -40,6 +38,7 @@ use hvdef::HvX64PendingExceptionEvent;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
+use iced_x86::Register;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -72,6 +71,7 @@ use x86defs::snp::SevSelector;
 use x86defs::snp::SevStatusMsr;
 use x86defs::snp::SevVmsa;
 use x86defs::snp::Vmpl;
+use x86defs::{RFlags, SegmentRegister};
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
@@ -1474,7 +1474,6 @@ impl<'a, 'b> UhCpuState<'a, 'b, SnpBacked> for x86emu::CpuState {
 }
 
 impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked, x86emu::CpuState> {
-
     type Error = UhRunVpError;
 
     fn vp_index(&self) -> VpIndex {
@@ -1498,7 +1497,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked, x86
         let index = reg.number();
         self.state.gps[index] = v;
 
-         let mut vmsa = self.vp.runner.vmsa_mut(self.vtl);
+        let mut vmsa = self.vp.runner.vmsa_mut(self.vtl);
         match index {
             x86emu::CpuState::RAX => vmsa.set_rax(v),
             x86emu::CpuState::RCX => vmsa.set_rcx(v),
@@ -1518,22 +1517,18 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked, x86
             x86emu::CpuState::R15 => vmsa.set_r15(v),
             _ => panic!("invalid gp index"),
         }
-     }
+    }
     fn xmm(&mut self, index: usize) -> u128 {
-        self
-            .vp
-            .runner
-            .vmsa_mut(self.vtl)
-            .xmm_registers(index)
-     }
+        self.vp.runner.vmsa_mut(self.vtl).xmm_registers(index)
+    }
 
     fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error> {
-         self.vp
-             .runner
-             .vmsa_mut(self.vtl)
+        self.vp
+            .runner
+            .vmsa_mut(self.vtl)
             .set_xmm_registers(index, v.into());
-         Ok(())
-     }
+        Ok(())
+    }
 
     fn rip(&mut self) -> u64 {
         self.state.rip
@@ -1566,7 +1561,6 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked, x86
         self.state.rflags = v;
         vmsa.set_rflags(v.into());
     }
-
 
     fn instruction_bytes(&self) -> &[u8] {
         &[]

@@ -3,6 +3,8 @@
 
 //! Implements an x86 instruction emulator.
 
+use crate::bitness;
+use crate::Bitness;
 use crate::Cpu;
 use iced_x86::Code;
 use iced_x86::Decoder;
@@ -13,8 +15,6 @@ use iced_x86::OpKind;
 use iced_x86::Register;
 use thiserror::Error;
 use x86defs::Exception;
-use crate::bitness;
-use crate::Bitness;
 
 mod arith;
 mod bt;

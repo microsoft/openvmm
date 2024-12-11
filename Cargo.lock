@@ -9076,7 +9076,6 @@ dependencies = [
  "arbitrary",
  "futures",
  "iced-x86",
- "inspect",
  "thiserror 2.0.0",
  "tracing",
  "x86defs",

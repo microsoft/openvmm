@@ -4,8 +4,8 @@
 //! Trait for asynchronous callouts from the emulator to the VM.
 
 use iced_x86::Register;
-use x86defs::{RFlags, SegmentRegister};
 use std::future::Future;
+use x86defs::{RFlags, SegmentRegister};
 
 /// Trait for asynchronous callouts from the emulator to the VM.
 pub trait Cpu {
