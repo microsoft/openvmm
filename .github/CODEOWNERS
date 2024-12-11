@@ -16,5 +16,8 @@
 # Vmbus
 /vm/devices/vmbus/ @microsoft/openvmm-maintain @microsoft/openvmm-vmbus
 
+# Storage
+/vm/devices/storage @microsoft/openvmm-maintain @microsoft/openvmm-storage
+
 # Cargo dependencies
 /Cargo.lock @microsoft/openvmm-dependency-reviewers
