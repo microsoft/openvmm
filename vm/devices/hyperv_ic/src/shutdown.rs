@@ -328,6 +328,7 @@ impl SimpleVmbusDevice for ShutdownIc {
     fn open(
         &mut self,
         channel: RawAsyncChannel<GpadlRingMem>,
+        _guest_memory: guestmem::GuestMemory,
     ) -> Result<Self::Runner, ChannelOpenError> {
         self.open_channel(channel, None)
     }
