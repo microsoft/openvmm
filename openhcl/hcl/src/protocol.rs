@@ -119,12 +119,14 @@ pub struct hcl_run {
     pub vtl_ret_action_size: u32,
     pub flags: u32,
     pub scan_proxy_irr: u8,
+    pub scan_device_irr: u8,
     pub pad: [u8; 2],
     pub mode: EnterModes,
     pub exit_message: [u8; HV_MESSAGE_SIZE],
     pub context: [u8; 1024],
     pub vtl_ret_actions: [u8; VTL_RETURN_ACTION_SIZE],
     pub proxy_irr: [u32; 8],
+    pub device_irr: [u32; 8],
     pub target_vtl: HvInputVtl,
 }
 
