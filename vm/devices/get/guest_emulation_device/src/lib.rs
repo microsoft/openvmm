@@ -195,8 +195,6 @@ pub struct GuestEmulationDevice {
     #[inspect(with = "Option::is_some")]
     save_restore_buf: Option<Vec<u8>>,
     last_save_restore_buf_len: usize,
-
-    guest_memory: Option<GuestMemory>,
 }
 
 #[derive(Inspect)]
@@ -234,7 +232,6 @@ impl GuestEmulationDevice {
             save_restore_buf: None,
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
-            guest_memory: None,
         }
     }
 
@@ -583,7 +580,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostRequests::GUEST_STATE_PROTECTION_BY_ID => {
                 self.handle_guest_state_protection_by_id()?;
             }
-            HostRequests::IGVM_ATTEST => self.handle_igvm_attest(message_buf, state)?,
+            HostRequests::IGVM_ATTEST => self.handle_igvm_attest(message_buf)?,
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2 => {
                 self.handle_device_platform_settings_v2(state)?
             }
@@ -814,11 +811,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
     /// Stub implementation that simulates the behavior of GED and the host agent.
     /// Used only for test scenarios such as VMM tests.
-    fn handle_igvm_attest(
-        &mut self,
-        message_buf: &[u8],
-        state: &mut GuestEmulationDevice,
-    ) -> Result<(), Error> {
+    fn handle_igvm_attest(&mut self, message_buf: &[u8]) -> Result<(), Error> {
         let request =
             IgvmAttestRequest::read_from_prefix(message_buf).ok_or(Error::MessageTooSmall)?;
 
@@ -842,11 +835,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 };
                 let payload = [header.as_bytes(), &data].concat();
 
-                if let Some(guest_memory) = &state.guest_memory {
-                    guest_memory
-                        .write_at(request.shared_gpa[0], &payload)
-                        .map_err(Error::SharedMemoryWriteFailed)?;
-                }
+                self.gm
+                    .write_at(request.shared_gpa[0], &payload)
+                    .map_err(Error::SharedMemoryWriteFailed)?;
 
                 get_protocol::IgvmAttestResponse {
                     message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
