@@ -22,6 +22,7 @@ grep-searcher.workspace = true
 ignore.workspace = true
 log.workspace = true
 mbrman.workspace = true
+object.workspace = true
 rayon.workspace = true
 serde_json.workspace = true
 serde.workspace = true

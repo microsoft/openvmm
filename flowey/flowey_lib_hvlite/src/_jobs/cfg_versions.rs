@@ -43,7 +43,6 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_lxutil::Node>();
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
-        ctx.import::<crate::download_openhcl_kernel_package::Node>();
         ctx.import::<crate::download_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();

@@ -8,6 +8,7 @@ mod fmt;
 mod fuzz;
 mod git_hooks;
 mod guest_test;
+mod verify_size;
 
 pub use git_hooks::update_hooks;
 
