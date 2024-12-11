@@ -16,7 +16,7 @@ use user_driver::interrupt::DeviceInterrupt;
 /// An emulated device fuzzer
 pub struct FuzzEmulatedDevice<'a, T> {
     device: EmulatedDevice<T>,
-    unstructured: &'a mut Unstructured<'a>,
+    unstructured: Unstructured<'a>,
 }
 
 impl<T: InspectMut> Inspect for FuzzEmulatedDevice<'_, T> {
@@ -25,9 +25,9 @@ impl<T: InspectMut> Inspect for FuzzEmulatedDevice<'_, T> {
     }
 }
 
-impl<T: PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<'_, T> {
+impl<'a, T: PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<'a, T> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(mut device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory, u: &mut Unstructured<'_>) -> Self {
+    pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory, u: Unstructured<'a>) -> Self {
         Self {
             device: EmulatedDevice::new(device, msi_set, shared_mem),
             unstructured: u,
@@ -35,7 +35,7 @@ impl<T: PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<'_, T> {
     }
 }
 
-impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<'_, T> {
+impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<'static, T> {
     type Registers = Mapping<T>;
     type DmaAllocator = EmulatedDmaAllocator;
     fn id(&self) -> &str {

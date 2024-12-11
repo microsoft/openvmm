@@ -33,7 +33,7 @@ fn do_fuzz(u: &mut Unstructured<'_>) {
     // DefaultPool provides us the standard DefaultDriver and takes care of async fn calls
     DefaultPool::run_with(|driver| async move {
         // ---- SETUP ----
-        let mut fuzzing_driver = FuzzNvmeDriver::new(driver).await;
+        let mut fuzzing_driver = FuzzNvmeDriver::new(driver, u).await;
 
         // ---- FUZZING ----
         while !u.is_empty() {
@@ -59,7 +59,12 @@ fuzz_target!(|input: &[u8]| {
 
 
 /// Struct that stores variables to fuzz the nvme driver
-pub struct FuzzNvmeDriver{
+// pub struct FuzzNvmeDriver<'a> {
+//     driver: Option<NvmeDriver<FuzzEmulatedDevice<'a, NvmeController>>>,
+//     namespace: Namespace,  // TODO: This can be implemented as a queue to test 'create' for
+//     payload_mem: GuestMemory,
+// }
+pub struct FuzzNvmeDriver {
     driver: Option<NvmeDriver<EmulatedDevice<NvmeController>>>,
     namespace: Namespace,  // TODO: This can be implemented as a queue to test 'create' for
     payload_mem: GuestMemory,
@@ -67,7 +72,7 @@ pub struct FuzzNvmeDriver{
 
 impl FuzzNvmeDriver {
     /// Setup a new fuzz driver that will
-    pub async fn new(driver: DefaultDriver) -> Self {
+    pub async fn new(driver: DefaultDriver, u: &mut Unstructured<'_>) -> Self {
         // Physical storage to back the disk
         let ram_disk = RamDisk::new(1 << 20, false).unwrap();
 
@@ -97,7 +102,8 @@ impl FuzzNvmeDriver {
             .await
             .unwrap();
 
-        let device = FuzzEmulatedDevice::new(nvme, msi_set, mem, u);
+        // let device = FuzzEmulatedDevice::new(nvme, msi_set, mem, u);
+        let device = EmulatedDevice::new(nvme, msi_set, mem);
         let nvme_driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();
 
         let namespace = nvme_driver.namespace(1).await.unwrap();
@@ -187,14 +193,14 @@ impl FuzzNvmeDriver {
     }
 }
 
-impl Drop for FuzzNvmeDriver {
-    // Takes ownership of the driver and gracefully shuts down upon drop
-    fn drop(&mut self) {
-        // TODO: Maybe call the shutdown() method during this phase as well
-        self.driver.take().unwrap().shutdown();
-    }
-
-}
+// impl Drop for FuzzNvmeDriver {
+//     // Takes ownership of the driver and gracefully shuts down upon drop
+//     fn drop(&mut self) {
+//         // TODO: Maybe call the shutdown() method during this phase as well
+//         self.driver.take().unwrap().shutdown();
+//     }
+// 
+// }
 
 #[derive(Debug, Arbitrary)]
 pub enum NvmeDriverAction {
