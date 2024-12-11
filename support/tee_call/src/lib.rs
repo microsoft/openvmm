@@ -15,17 +15,17 @@ use zerocopy::AsBytes;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("failed to open /dev/sev-guest")]
-    OpenDevSevGuest(#[source] sev_guest_device::Error),
+    OpenDevSevGuest(#[source] sev_guest_device::ioctl::Error),
     #[error("failed to get an SNP report via /dev/sev-guest")]
-    GetSnpReport(#[source] sev_guest_device::Error),
+    GetSnpReport(#[source] sev_guest_device::ioctl::Error),
     #[error("failed to get an SNP derived key via /dev/sev-guest")]
-    GetSnpDerivedKey(#[source] sev_guest_device::Error),
+    GetSnpDerivedKey(#[source] sev_guest_device::ioctl::Error),
     #[error("got all-zeros key")]
     AllZeroKey,
     #[error("failed to open /dev/tdx_guest")]
-    OpenDevTdxGuest(#[source] tdx_guest_device::Error),
+    OpenDevTdxGuest(#[source] tdx_guest_device::ioctl::Error),
     #[error("failed to get a TDX report via /dev/tdx_guest")]
-    GetTdxReport(#[source] tdx_guest_device::Error),
+    GetTdxReport(#[source] tdx_guest_device::ioctl::Error),
 }
 
 /// Use the SNP-defined derived key size for now.
@@ -58,7 +58,7 @@ pub struct GetAttestationReportResult {
 }
 
 /// Trait that defines the get attestation report interface for TEE.
-// TODO CVM: trait will need to be updated for VBS
+// TODO VBS: Implement the trait for VBS
 pub trait TeeCall: Send + Sync {
     /// Get the hardware-backed attestation report.
     fn get_attestation_report(
@@ -87,7 +87,8 @@ impl TeeCall for SnpCall {
         &self,
         report_data: &[u8; REPORT_DATA_SIZE],
     ) -> Result<GetAttestationReportResult, Error> {
-        let dev = sev_guest_device::SevGuestDevice::open().map_err(Error::OpenDevSevGuest)?;
+        let dev =
+            sev_guest_device::ioctl::SevGuestDevice::open().map_err(Error::OpenDevSevGuest)?;
         let report = dev
             .get_report(*report_data, 0)
             .map_err(Error::GetSnpReport)?;
@@ -112,7 +113,8 @@ impl TeeCall for SnpCall {
 impl TeeCallGetDerivedKey for SnpCall {
     /// Get the derived key from /dev/sev-guest.
     fn get_derived_key(&self, tcb_version: u64) -> Result<[u8; HW_DERIVED_KEY_LENGTH], Error> {
-        let dev = sev_guest_device::SevGuestDevice::open().map_err(Error::OpenDevSevGuest)?;
+        let dev =
+            sev_guest_device::ioctl::SevGuestDevice::open().map_err(Error::OpenDevSevGuest)?;
 
         // Derive a key mixing in following data:
         // - GuestPolicy (do not allow different polices to derive same secret)
@@ -142,7 +144,6 @@ impl TeeCallGetDerivedKey for SnpCall {
 }
 
 /// Implementation of [`TeeCall`] for TDX
-#[derive(Clone)]
 pub struct TdxCall;
 
 impl TeeCall for TdxCall {
@@ -150,7 +151,8 @@ impl TeeCall for TdxCall {
         &self,
         report_data: &[u8; REPORT_DATA_SIZE],
     ) -> Result<GetAttestationReportResult, Error> {
-        let dev = tdx_guest_device::TdxGuestDevice::open().map_err(Error::OpenDevTdxGuest)?;
+        let dev =
+            tdx_guest_device::ioctl::TdxGuestDevice::open().map_err(Error::OpenDevTdxGuest)?;
         let report = dev
             .get_report(*report_data, 0)
             .map_err(Error::GetTdxReport)?;
