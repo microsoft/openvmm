@@ -61,16 +61,16 @@ const UNDERHILL_MUSL_RELEASE_TOLERANCE: u64 = 100; //KiB
 #[rustfmt::skip]
 const UNDERHILL_MUSL_RELEASE_SIZES: [ExpectedSection<'_>; 10] = [
     // Only sections greater than 1 KiB are included.
-    ExpectedSection::new(".rela.dyn",           1967),
-    ExpectedSection::new(".text",               12298),
-    ExpectedSection::new(".rodata",             1166),
-    ExpectedSection::new(".eh_frame_hdr",       18),
-    ExpectedSection::new(".gcc_except_table",   3),
-    ExpectedSection::new(".eh_frame",           84),
-    ExpectedSection::new(".data.rel.ro",        1267),
-    ExpectedSection::new(".got",                0),
-    ExpectedSection::new(".data",               95),
-    ExpectedSection::new(".bss",                238),
+    ExpectedSection::new(".rela.dyn",           1739),
+    ExpectedSection::new(".text",               11067),
+    ExpectedSection::new(".rodata",             1068),
+    ExpectedSection::new(".eh_frame_hdr",       137),
+    ExpectedSection::new(".gcc_except_table",   8),
+    ExpectedSection::new(".eh_frame",           715),
+    ExpectedSection::new(".data.rel.ro",        1121),
+    ExpectedSection::new(".got",                2),
+    ExpectedSection::new(".data",               71),
+    ExpectedSection::new(".bss",                237),
 ];
 
 /// Xtask to track changes to binary sizes we care about.
