@@ -248,16 +248,17 @@ disk_file = { path = "vm/devices/storage/disk_file" }
 disk_get_vmgs = { path = "vm/devices/storage/disk_get_vmgs" }
 disk_layered = { path = "vm/devices/storage/disk_layered" }
 disk_nvme = { path = "vm/devices/storage/disk_nvme" }
-disklayer_ram = { path = "vm/devices/storage/disklayer_ram" }
+disk_prwrap = { path = "vm/devices/storage/disk_prwrap" }
 disk_striped = { path = "vm/devices/storage/disk_striped" }
 disk_vhd1 = { path = "vm/devices/storage/disk_vhd1" }
 disk_vhdmp = { path = "vm/devices/storage/disk_vhdmp" }
-disk_prwrap = { path = "vm/devices/storage/disk_prwrap" }
+disklayer_ram = { path = "vm/devices/storage/disklayer_ram" }
+disklayer_sqlite = { path = "vm/devices/storage/disklayer_sqlite" }
+floppy = { path = "vm/devices/storage/floppy" }
+floppy_pcat_stub = { path = "vm/devices/storage/floppy_pcat_stub" }
+floppy_resources = { path = "vm/devices/storage/floppy_resources" }
 ide = { path = "vm/devices/storage/ide" }
 ide_resources = { path = "vm/devices/storage/ide_resources" }
-floppy = { path = "vm/devices/storage/floppy" }
-floppy_resources = { path = "vm/devices/storage/floppy_resources" }
-floppy_pcat_stub = { path = "vm/devices/storage/floppy_pcat_stub" }
 scsi_buffers = { path = "vm/devices/storage/scsi_buffers" }
 scsi_core = { path = "vm/devices/storage/scsi_core" }
 scsi_defs = { path = "vm/devices/storage/scsi_defs" }
@@ -473,8 +474,9 @@ range_map_vec = "0.2.0"
 rayon = "1.5"
 resolv-conf = "0.7"
 rlimit = "0.10.1"
-rustyline = "13"
+rusqlite = "0.32"
 rustc-hash = "1.1"
+rustyline = "13"
 seccompiler = "0.4"
 serde = "1.0.185"
 serde_json = "1.0"

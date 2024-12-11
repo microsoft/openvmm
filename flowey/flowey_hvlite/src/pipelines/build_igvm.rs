@@ -246,9 +246,17 @@ impl IntoPipeline for BuildIgvmCli {
                     custom_directory,
                     with_sidecar,
                     custom_sidecar,
-                    custom_extra_rootfs,
+                    mut custom_extra_rootfs,
                 },
         } = self;
+
+        if with_perf_tools {
+            custom_extra_rootfs.push(
+                crate::repo_root()
+                    .join("openhcl/perftoolsfs.config")
+                    .clone(),
+            );
+        }
 
         let mut pipeline = Pipeline::new();
 

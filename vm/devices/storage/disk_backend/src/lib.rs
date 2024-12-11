@@ -324,6 +324,7 @@ impl Disk {
     /// Issues an asynchronous read-scatter operation to the disk.
     ///
     /// # Arguments
+    ///
     /// * `buffers` - An object representing the data buffers into which the disk data will be transferred.
     /// * `sector` - The logical sector at which the read operation starts.
     pub fn read_vectored<'a>(
@@ -335,10 +336,16 @@ impl Disk {
     }
 
     /// Issues an asynchronous write-gather operation to the disk.
+    ///
     /// # Arguments
+    ///
     /// * `buffers` - An object representing the data buffers containing the data to transfer to the disk.
     /// * `sector` - The logical sector at which the write operation starts.
     /// * `fua` - A flag indicates if FUA (force unit access) is requested.
+    ///
+    /// # Panics
+    ///
+    /// The caller must pass a buffer with an integer number of sectors.
     pub fn write_vectored<'a>(
         &'a self,
         buffers: &'a RequestBuffers<'_>,

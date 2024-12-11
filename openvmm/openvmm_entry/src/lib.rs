@@ -30,6 +30,7 @@ use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
+use disk_backend_resources::layer::SqliteDiskLayerHandle;
 use floppy_resources::FloppyDiskConfig;
 use framebuffer::FramebufferAccess;
 use framebuffer::FRAMEBUFFER_SIZE;
@@ -1484,6 +1485,74 @@ fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource
             },
             key: fs_err::read(key_file).context("failed to read key file")?,
         }),
+        DiskCliKind::Sqlite {
+            path,
+            create_with_len,
+        } => {
+            // FUTURE: this code should be responsible for opening
+            // file-handle(s) itself, and passing them into sqlite via a custom
+            // vfs. For now though - simply check if the file exists or not, and
+            // perform early validation of filesystem-level create options.
+            match (create_with_len.is_some(), path.exists()) {
+                (true, true) => anyhow::bail!(
+                    "cannot create new sqlite disk at {} - file already exists",
+                    path.display()
+                ),
+                (false, false) => anyhow::bail!(
+                    "cannot open sqlite disk at {} - file not found",
+                    path.display()
+                ),
+                _ => {}
+            }
+
+            Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
+                SqliteDiskLayerHandle {
+                    dbhd_path: path.display().to_string(),
+                    format_dbhd: create_with_len.map(|len| {
+                        disk_backend_resources::layer::SqliteDiskLayerFormatParams {
+                            logically_read_only: false,
+                            len: Some(len),
+                        }
+                    }),
+                },
+            ))
+        }
+        DiskCliKind::SqliteDiff { path, create, disk } => {
+            // FUTURE: this code should be responsible for opening
+            // file-handle(s) itself, and passing them into sqlite via a custom
+            // vfs. For now though - simply check if the file exists or not, and
+            // perform early validation of filesystem-level create options.
+            match (create, path.exists()) {
+                (true, true) => anyhow::bail!(
+                    "cannot create new sqlite disk at {} - file already exists",
+                    path.display()
+                ),
+                (false, false) => anyhow::bail!(
+                    "cannot open sqlite disk at {} - file not found",
+                    path.display()
+                ),
+                _ => {}
+            }
+
+            Resource::new(disk_backend_resources::LayeredDiskHandle {
+                layers: vec![
+                    SqliteDiskLayerHandle {
+                        dbhd_path: path.display().to_string(),
+                        format_dbhd: create.then_some(
+                            disk_backend_resources::layer::SqliteDiskLayerFormatParams {
+                                logically_read_only: false,
+                                len: None,
+                            },
+                        ),
+                    }
+                    .into_resource()
+                    .into(),
+                    DiskLayerHandle(disk_open(disk, true)?)
+                        .into_resource()
+                        .into(),
+                ],
+            })
+        }
     };
 
     Ok(disk_type)

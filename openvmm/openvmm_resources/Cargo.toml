@@ -31,13 +31,16 @@ vm_resource.workspace = true
 # Serial
 serial_core.workspace = true
 serial_socket.workspace = true
+
+# Disks
 disk_blob = { workspace = true, optional = true }
 disk_crypt = { workspace = true, optional = true }
 disk_file.workspace = true
 disk_layered.workspace = true
 disk_prwrap.workspace = true
-disklayer_ram.workspace = true
 disk_vhd1.workspace = true
+disklayer_ram.workspace = true
+disklayer_sqlite = { workspace = true, optional = true }
 
 # Chipset devices
 chipset.workspace = true
@@ -84,6 +87,13 @@ debug_worker = { workspace = true, optional = true }
 hvlite_core.workspace = true
 vnc_worker.workspace = true
 
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+# DEVNOTE: don't enable bundled sqlite on macos, to work around missing macos
+# runners in CI (and therefore, the need to cross-compile sqlite to macos from
+# linux runners). Once this gap is resolved, switch over to use bundled sqlite
+# on all platforms, to ensure consist sqlite behavior.
+rusqlite = { workspace = true, features = ["bundled"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 net_tap = { workspace = true, optional = true }
 
@@ -97,3 +107,7 @@ build_rs_guest_arch.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.xtask.unused-deps]
+# see corresponding comment on the dep itself
+ignored = ["rusqlite"]
