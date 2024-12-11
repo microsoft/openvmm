@@ -1511,6 +1511,13 @@ async fn new_underhill_vm(
 
         Some(pool)
     } else {
+        // There should be no saved state for the private pool. If there is, the
+        // memory layout & shared pool size did not match the previous openhcl
+        // instance.
+        if servicing_state.shared_pool_state.flatten().is_some() {
+            anyhow::bail!("shared pool state when shared pool was not configured");
+        }
+
         None
     };
 
