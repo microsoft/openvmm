@@ -27,33 +27,19 @@ use lazy_static::lazy_static;
 
 const INPUT_LEN:usize=4196;
 
-lazy_static::lazy_static! {
-    pub static ref STATIC_UNSTRUCTURED: Mutex<Unstructured<'static>> = Mutex::new(Unstructured::new(&[10]));
-    pub static ref STATIC_ARR: [u8; 4096] = [0; 4096];
-}
-
-pub fn reset_unstructured_data(input: &[u8; 4096]) {
-    // let mut arr = STATIC_ARR.unwrap();
-    STATIC_ARR.copy_from_slice(input);
-    *STATIC_ARR = input.clone();
-
-    let mut vec = STATIC_UNSTRUCTURED.lock().unwrap();
-    *vec = Unstructured::new(&input.clone());
-}
-
 /// Writes the given arbitrary bytes to disk and reads arbitrary number of blocks from an arbitrary
 /// address in the disk. The number of blocks being read can be larger than the provided memory.
 ///
 /// TODO
-fn do_fuzz(u: &mut Unstructured<'_>) {
+fn do_fuzz(u: Arc<Mutex<Unstructured<'static>>>) {
     // DefaultPool provides us the standard DefaultDriver and takes care of async fn calls
     DefaultPool::run_with(|driver| async move {
         // ---- SETUP ----
-        let mut fuzzing_driver = FuzzNvmeDriver::new(driver, u).await;
+        let mut fuzzing_driver = FuzzNvmeDriver::new(driver, Arc::clone(&u)).await;
 
         // ---- FUZZING ----
-        while !u.is_empty() {
-            let next_action = fuzzing_driver.get_arbitrary_action(u).unwrap();
+        while !u.lock().unwrap().is_empty() {
+            let next_action = fuzzing_driver.get_arbitrary_action(Arc::clone(&u)).unwrap();
 
             println!("{:x?}", next_action);
 
@@ -68,28 +54,28 @@ fn do_fuzz(u: &mut Unstructured<'_>) {
 // Closure that allows the fuzzer to call the do_fuzz function.
 // TODO: Do I need to implement something with the corpus here? Seems like the corpus here would
 // only indicate length of the input that is passed in which doesn't really make too much sense
-fuzz_target!(|input: &[u8]| {
+fuzz_target!(|input: Arc<Mutex<Unstructured<'_>>>| {
     xtask_fuzz::init_tracing_if_repro();
-    reset_unstructured_data(&[0; 4096]);
-    // do_fuzz(&mut Unstructured::new(input))
+    do_fuzz(Arc::clone(&input))
+    // do_fuzz(Arc::new(Mutex::new(Unstructured::new(input.leak()))))
 });
 
 
 /// Struct that stores variables to fuzz the nvme driver
-// pub struct FuzzNvmeDriver<'a> {
-//     driver: Option<NvmeDriver<FuzzEmulatedDevice<'a, NvmeController>>>,
-//     namespace: Namespace,  // TODO: This can be implemented as a queue to test 'create' for
-//     payload_mem: GuestMemory,
-// }
 pub struct FuzzNvmeDriver {
-    driver: Option<NvmeDriver<EmulatedDevice<NvmeController>>>,
+    driver: Option<NvmeDriver<FuzzEmulatedDevice<NvmeController>>>,
     namespace: Namespace,  // TODO: This can be implemented as a queue to test 'create' for
     payload_mem: GuestMemory,
 }
+// pub struct FuzzNvmeDriver {
+//     driver: Option<NvmeDriver<EmulatedDevice<NvmeController>>>,
+//     namespace: Namespace,  // TODO: This can be implemented as a queue to test 'create' for
+//     payload_mem: GuestMemory,
+// }
 
 impl FuzzNvmeDriver {
     /// Setup a new fuzz driver that will
-    pub async fn new(driver: DefaultDriver, u: &mut Unstructured<'_>) -> Self {
+    pub async fn new(driver: DefaultDriver, u: Arc<Mutex<Unstructured<'static>>>) -> Self {
         // Physical storage to back the disk
         let ram_disk = RamDisk::new(1 << 20, false).unwrap();
 
@@ -119,8 +105,8 @@ impl FuzzNvmeDriver {
             .await
             .unwrap();
 
-        // let device = FuzzEmulatedDevice::new(nvme, msi_set, mem, u);
-        let device = EmulatedDevice::new(nvme, msi_set, mem);
+        let device = FuzzEmulatedDevice::new(nvme, msi_set, mem, Arc::clone(&u));
+        // let device = EmulatedDevice::new(nvme, msi_set, mem);
         let nvme_driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();
 
         let namespace = nvme_driver.namespace(1).await.unwrap();
@@ -166,8 +152,8 @@ impl FuzzNvmeDriver {
     }
 
     /// Returns an arbitrary action to be taken. Along with arbitrary values
-    pub fn get_arbitrary_action(&self, u: &mut Unstructured<'_>) -> arbitrary::Result<NvmeDriverAction>{
-       let action: NvmeDriverAction = u.arbitrary()?; 
+    pub fn get_arbitrary_action(&self, u: Arc<Mutex<Unstructured<'_>>>) -> arbitrary::Result<NvmeDriverAction>{
+       let action: NvmeDriverAction = u.lock().unwrap().arbitrary()?; 
        Ok(action)
     }
 

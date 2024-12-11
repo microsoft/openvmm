@@ -12,22 +12,24 @@ use pci_core::msi::MsiInterruptSet;
 use user_driver::DeviceBacking;
 use user_driver::emulated::{EmulatedDevice, Mapping, EmulatedDmaAllocator, DeviceSharedMemory};
 use user_driver::interrupt::DeviceInterrupt;
+use std::sync::Mutex;
+use std::sync::Arc;
 
 /// An emulated device fuzzer
-pub struct FuzzEmulatedDevice<'a, T> {
+pub struct FuzzEmulatedDevice<T> {
     device: EmulatedDevice<T>,
-    unstructured: Unstructured<'a>,
+    unstructured: Arc<Mutex<Unstructured<'static>>>,
 }
 
-impl<T: InspectMut> Inspect for FuzzEmulatedDevice<'_, T> {
+impl<T: InspectMut> Inspect for FuzzEmulatedDevice<T> {
     fn inspect(&self, req: inspect::Request<'_>) {
         self.device.inspect(req);
     }
 }
 
-impl<'a, T: PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<'a, T> {
+impl<T: PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<T> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory, u: Unstructured<'a>) -> Self {
+    pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory, u: Arc<Mutex<Unstructured<'static>>>) -> Self {
         Self {
             device: EmulatedDevice::new(device, msi_set, shared_mem),
             unstructured: u,
@@ -35,7 +37,7 @@ impl<'a, T: PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<'a, T> {
     }
 }
 
-impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<'static, T> {
+impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<T> {
     type Registers = Mapping<T>;
     type DmaAllocator = EmulatedDmaAllocator;
     fn id(&self) -> &str {
