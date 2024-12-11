@@ -7,6 +7,7 @@ edition = "2021"
 rust-version.workspace = true
 
 [dependencies]
+guestmem.workspace = true
 serial_core.workspace = true
 vmbus_async.workspace = true
 vmbus_channel.workspace = true

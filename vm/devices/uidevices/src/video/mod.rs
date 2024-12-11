@@ -320,6 +320,7 @@ impl SimpleVmbusDevice for Video {
     fn open(
         &mut self,
         channel: RawAsyncChannel<GpadlRingMem>,
+        _guest_memory: guestmem::GuestMemory,
     ) -> Result<Self::Runner, ChannelOpenError> {
         let pipe = MessagePipe::new(channel)?;
         Ok(VideoChannel::new(pipe, ChannelState::default()))

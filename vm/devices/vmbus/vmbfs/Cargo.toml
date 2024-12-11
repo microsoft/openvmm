@@ -10,6 +10,7 @@ rust-version.workspace = true
 vmbfs_resources.workspace = true
 vm_resource.workspace = true
 
+guestmem.workspace = true
 vmbus_async.workspace = true
 vmbus_channel.workspace = true
 vmcore.workspace = true

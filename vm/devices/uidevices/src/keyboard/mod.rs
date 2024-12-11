@@ -123,6 +123,7 @@ impl SimpleVmbusDevice for Keyboard {
     fn open(
         &mut self,
         channel: RawAsyncChannel<GpadlRingMem>,
+        _guest_memory: guestmem::GuestMemory,
     ) -> Result<Self::Runner, ChannelOpenError> {
         let pipe = MessagePipe::new_raw(channel)?;
         Ok(KeyboardChannel::new(pipe, ChannelState::default()))

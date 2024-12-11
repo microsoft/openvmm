@@ -222,6 +222,7 @@ impl SimpleVmbusDevice for Mouse {
     fn open(
         &mut self,
         channel: RawAsyncChannel<GpadlRingMem>,
+        _guest_memory: guestmem::GuestMemory,
     ) -> Result<Self::Runner, ChannelOpenError> {
         let pipe = MessagePipe::new(channel)?;
         Ok(MouseChannel::new(pipe, ChannelState::default()))

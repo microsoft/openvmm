@@ -25,6 +25,7 @@ use crate::gpadl_ring::gpadl_channel;
 use crate::gpadl_ring::GpadlRingMem;
 use crate::RawAsyncChannel;
 use async_trait::async_trait;
+use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::payload::Protobuf;
@@ -61,6 +62,7 @@ pub trait SimpleVmbusDevice: 'static + Send {
     fn open(
         &mut self,
         channel: RawAsyncChannel<GpadlRingMem>,
+        guest_memory: GuestMemory,
     ) -> Result<Self::Runner, ChannelOpenError>;
 
     /// Runs an open channel until `stop` is signaled.
@@ -224,7 +226,13 @@ impl<T: SimpleVmbusDevice> VmbusDevice for SimpleDeviceWrapper<T> {
     ) -> Result<(), anyhow::Error> {
         assert!(self.running);
         let channel = self.build_channel(open_request)?;
-        let runner = self.device.task_mut().0.open(channel)?;
+        let gm = self
+            .resources
+            .offer_resources
+            .guest_memory(open_request)
+            .clone();
+        let runner = self.device.task_mut().0.open(channel, gm)?;
+
         self.insert_runner(runner);
         self.device.start();
         Ok(())
