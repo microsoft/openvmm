@@ -11,6 +11,7 @@ arbitrary = ["dep:arbitrary", "x86defs/arbitrary"]
 
 [dependencies]
 x86defs.workspace = true
+inspect.workspace = true
 
 arbitrary = { workspace = true, optional = true, features = ["derive"] }
 iced-x86 = { workspace = true, features = ["std", "decoder", "instr_info"] }
