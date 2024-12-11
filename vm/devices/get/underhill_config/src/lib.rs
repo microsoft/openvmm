@@ -114,6 +114,13 @@ impl StorageDisk {
             StorageDisk::Scsi(scsi_disk) => scsi_disk.ntfs_guid,
         }
     }
+
+    pub fn disk_params(&self) -> &DiskParameters {
+        match self {
+            StorageDisk::Ide(ide_disk) => &ide_disk.disk_params,
+            StorageDisk::Scsi(scsi_disk) => &scsi_disk.disk_params,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, MeshPayload, Inspect)]
@@ -348,6 +355,10 @@ pub enum Vtl2SettingsErrorCode {
     StorageChangeMediaFailed => (Storage, Underhill),
     /// Invalid NTFS format guid
     StorageInvalidNtfsFormatGuid => (Storage, Configuration),
+    /// Missing disk table entry
+    StorageMissingDiskTableEntry => (Storage, Configuration),
+    /// Invalid disk cipher
+    StorageInvalidDiskCipher => (Storage, Configuration),
 
     /// Failed to modify NIC
     NetworkingModifyNicFailed => (Network, Configuration),

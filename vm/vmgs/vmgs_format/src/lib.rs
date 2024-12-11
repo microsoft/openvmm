@@ -5,6 +5,9 @@
 
 #![no_std]
 
+#[cfg(feature = "proto")]
+pub use proto::*;
+
 use bitfield_struct::bitfield;
 use core::ops::Index;
 use core::ops::IndexMut;
@@ -15,6 +18,14 @@ use static_assertions::const_assert;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
+
+#[cfg(feature = "proto")]
+mod proto {
+    // Crates used by generated code. Reference them explicitly to ensure that
+    // automated tools do not remove them.
+    use prost as _;
+    include!(concat!(env!("OUT_DIR"), "/vmgs.rs"));
+}
 
 /// The suggested default capacity of a VMGS disk in bytes, 4MB.
 ///
@@ -43,6 +54,7 @@ open_enum! {
         GUEST_WATCHDOG = 10,
         HW_KEY_PROTECTOR = 11,
         GUEST_SECRET_KEY = 13,
+        DISK_TABLE     = 14,
 
         EXTENDED_FILE_TABLE = 63,
     }
