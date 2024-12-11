@@ -12,6 +12,7 @@ use futures::FutureExt;
 use futures_concurrency::future::Race;
 use hvlite_defs::rpc::PulseSaveRestoreError;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh::CancelContext;
 use mesh::Receiver;
@@ -423,14 +424,15 @@ impl PetriVmInner {
 
     async fn verify_save_restore(&self) -> anyhow::Result<()> {
         for i in 0..2 {
-            let result = self.worker.pulse_save_restore().await?;
+            let result = self.worker.pulse_save_restore().await;
             match result {
                 Ok(()) => {}
-                Err(PulseSaveRestoreError::ResetNotSupported) => {
+                Err(RpcError::Channel(err)) => return Err(err.into()),
+                Err(RpcError::Call(PulseSaveRestoreError::ResetNotSupported)) => {
                     tracing::warn!("Reset not supported, could not test save + restore.");
                     break;
                 }
-                Err(PulseSaveRestoreError::Other(err)) => {
+                Err(RpcError::Call(PulseSaveRestoreError::Other(err))) => {
                     return Err(anyhow::Error::from(err))
                         .context(format!("Save + restore {i} failed."));
                 }

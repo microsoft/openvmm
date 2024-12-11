@@ -6,6 +6,7 @@
 
 use crate::broker::VmgsBrokerRpc;
 use inspect::Inspect;
+use mesh_channel::rpc::RpcError;
 use mesh_channel::rpc::RpcSend;
 use thiserror::Error;
 use tracing::instrument;
@@ -18,10 +19,19 @@ use vmgs_format::FileId;
 pub enum VmgsClientError {
     /// VMGS broker is offline
     #[error("broker is offline")]
-    BrokerOffline(#[from] mesh_channel::RecvError),
+    BrokerOffline(#[from] RpcError),
     /// VMGS error
     #[error("vmgs error")]
     Vmgs(#[from] vmgs::Error),
+}
+
+impl From<RpcError<vmgs::Error>> for VmgsClientError {
+    fn from(value: RpcError<vmgs::Error>) -> Self {
+        match value {
+            RpcError::Call(e) => VmgsClientError::Vmgs(e),
+            RpcError::Channel(e) => VmgsClientError::BrokerOffline(RpcError::Channel(e)),
+        }
+    }
 }
 
 /// Client to interact with a backend-agnostic VMGS instance.
@@ -42,8 +52,8 @@ impl VmgsClient {
     pub async fn get_file_info(&self, file_id: FileId) -> Result<VmgsFileInfo, VmgsClientError> {
         let res = self
             .control
-            .call(VmgsBrokerRpc::GetFileInfo, file_id)
-            .await??;
+            .call_failable(VmgsBrokerRpc::GetFileInfo, file_id)
+            .await?;
 
         Ok(res)
     }
@@ -53,8 +63,8 @@ impl VmgsClient {
     pub async fn read_file(&self, file_id: FileId) -> Result<Vec<u8>, VmgsClientError> {
         let res = self
             .control
-            .call(VmgsBrokerRpc::ReadFile, file_id)
-            .await??;
+            .call_failable(VmgsBrokerRpc::ReadFile, file_id)
+            .await?;
 
         Ok(res)
     }
@@ -66,8 +76,8 @@ impl VmgsClient {
     #[instrument(skip_all, fields(file_id))]
     pub async fn write_file(&self, file_id: FileId, buf: Vec<u8>) -> Result<(), VmgsClientError> {
         self.control
-            .call(VmgsBrokerRpc::WriteFile, (file_id, buf))
-            .await??;
+            .call_failable(VmgsBrokerRpc::WriteFile, (file_id, buf))
+            .await?;
 
         Ok(())
     }
@@ -83,8 +93,8 @@ impl VmgsClient {
         buf: Vec<u8>,
     ) -> Result<(), VmgsClientError> {
         self.control
-            .call(VmgsBrokerRpc::WriteFileEncrypted, (file_id, buf))
-            .await??;
+            .call_failable(VmgsBrokerRpc::WriteFileEncrypted, (file_id, buf))
+            .await?;
 
         Ok(())
     }

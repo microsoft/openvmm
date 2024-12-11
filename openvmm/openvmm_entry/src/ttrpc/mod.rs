@@ -33,7 +33,6 @@ use inspect_proto::InspectResponse2;
 use inspect_proto::InspectService;
 use inspect_proto::UpdateResponse2;
 use mesh::error::RemoteError;
-use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh::CancelReason;
 use mesh::MeshPayload;
@@ -197,7 +196,7 @@ impl VmService {
                 },
                 request = recv.recv().fuse() => {
                     match request {
-                        Ok(WorkerRpc::Restart(response)) => response.send(Err(RemoteError::new(anyhow::anyhow!("not supported")))),
+                        Ok(WorkerRpc::Restart(rpc)) => rpc.complete(Err(RemoteError::new(anyhow::anyhow!("not supported")))),
                         Ok(WorkerRpc::Inspect(_)) => (),
                         Ok(WorkerRpc::Stop) => {
                             tracing::info!("ttrpc worker stopping");
@@ -605,14 +604,12 @@ impl VmService {
     }
 
     fn pause_vm(&mut self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> {
-        let (send, recv) = mesh::oneshot();
-        vm.worker_rpc.send(VmRpc::Pause(Rpc((), send)));
+        let recv = vm.worker_rpc.call(VmRpc::Pause, ());
         async move { recv.await.map(drop).context("pause failed") }
     }
 
     fn resume_vm(&mut self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> {
-        let (send, recv) = mesh::oneshot();
-        vm.worker_rpc.send(VmRpc::Resume(Rpc((), send)));
+        let recv = vm.worker_rpc.call(VmRpc::Resume, ());
         async move { recv.await.map(drop).context("resume failed") }
     }
 

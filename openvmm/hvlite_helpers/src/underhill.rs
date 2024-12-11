@@ -6,7 +6,6 @@
 use anyhow::Context;
 use get_resources::ged::GuestEmulationRequest;
 use hvlite_defs::rpc::VmRpc;
-use mesh::error::RemoteResultExt;
 use mesh::rpc::RpcSend;
 
 /// Replace the running version of Underhill.
@@ -28,9 +27,8 @@ pub async fn service_underhill(
     // blocked while waiting for the guest.
     tracing::debug!("waiting for guest to send saved state");
     let r = send
-        .call(GuestEmulationRequest::SaveGuestVtl2State, ())
+        .call_failable(GuestEmulationRequest::SaveGuestVtl2State, ())
         .await
-        .flatten()
         .context("failed to save VTL2 state");
 
     if r.is_err() {
@@ -51,9 +49,8 @@ pub async fn service_underhill(
     //
     // TODO: event driven, cancellable.
     tracing::debug!("waiting for VTL0 to start");
-    send.call(GuestEmulationRequest::WaitForVtl0Start, ())
+    send.call_failable(GuestEmulationRequest::WaitForVtl0Start, ())
         .await
-        .flatten()
         .context("vtl0 start failed")?;
 
     Ok(())
