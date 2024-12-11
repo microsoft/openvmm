@@ -854,15 +854,18 @@ impl UhProcessor<'_, TdxBacked> {
     /// Returns `Ok(false)` if the APIC offload needs to be disabled and the
     /// poll retried.
     fn try_poll_apic(&mut self, scan_irr: bool) -> Result<bool, UhRunVpError> {
-        // Check for interrupt requests from the host.
+        // Check for interrupt requests from the host and kernel IPI offload.
         let mut update_rvi = false;
-        if let Some(irr) = self.runner.proxy_irr() {
-            // TODO TDX: filter proxy IRRs.
+        let proxy_irr = self.runner.proxy_irr();
+        let kernel_irr = self.runner.tdx_vp_ipi_offload_extract_irr();
+
+        let mut pull_irr = |irr: [u32; 8], force_no_offload: bool| {
             if self.backing.cvm.lapics[GuestVtl::Vtl0]
                 .lapic
                 .can_offload_irr()
+                && !force_no_offload
             {
-                // Put the proxied IRR directly on the APIC page to avoid going
+                // Put the IRR directly on the APIC page to avoid going
                 // through the local APIC.
 
                 // OR in and update RVI.
@@ -876,6 +879,17 @@ impl UhProcessor<'_, TdxBacked> {
                     .lapic
                     .request_fixed_interrupts(irr);
             }
+        };
+
+        // TODO TDX: filter proxy IRRs.
+        if let Some(irr) = proxy_irr {
+            pull_irr(irr, false);
+        }
+
+        // Pull state from kernel IPI offload irr
+        if let Some(irr) = kernel_irr {
+            // We need to go through the local APIC to properly update the tmr
+            pull_irr(irr, true);
         }
 
         let ApicWork {
@@ -966,15 +980,23 @@ impl UhProcessor<'_, TdxBacked> {
                     VmcsField::VMX_VMCS_EOI_EXIT_2,
                     VmcsField::VMX_VMCS_EOI_EXIT_3,
                 ];
-                for ((&field, eoi_exit), tmr) in fields
+                for ((&field, eoi_exit), (i, tmr)) in fields
                     .iter()
                     .zip(&mut self.backing.eoi_exit_bitmap)
-                    .zip(tmr.chunks_exact(2))
+                    .zip(tmr.chunks_exact(2).enumerate())
                 {
                     let tmr = tmr[0] as u64 | ((tmr[1] as u64) << 32);
                     if *eoi_exit != tmr {
                         self.runner.write_vmcs64(GuestVtl::Vtl0, field, !0, tmr);
                         *eoi_exit = tmr;
+                        // The kernel driver supports some common APIC functionality (ICR writes,
+                        // interrupt injection). When the kernel driver handles an interrupt, it
+                        // must know if that interrupt was previously level-triggered. Otherwise,
+                        // the EOI will be incorrectly treated as level-triggered. We keep a copy
+                        // of the tmr in the kernel so it knows when this scenario occurs.
+                        self.runner.tdx_vp_ipi_offload_set_tmr(i * 2, tmr as u32);
+                        self.runner
+                            .tdx_vp_ipi_offload_set_tmr(i * 2 + 1, (tmr >> 32) as u32);
                     }
                 }
             });
