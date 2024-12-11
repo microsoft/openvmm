@@ -1,4 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use crate::Xtask;
 use anyhow::Context;
@@ -7,6 +8,7 @@ use object::read::ObjectSection;
 use object::read::ObjectSymbol;
 use object::read::ObjectSymbolTable;
 use std::collections::HashMap;
+
 struct ExpectedSymbol<'a> {
     name: &'a str,
     start_symbol: &'a str,

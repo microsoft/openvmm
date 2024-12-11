@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 //! Verify that OpenHCL hasn't unexpectedly grown / shrank too much in size.
 
 use crate::build_openvmm_hcl::OpenvmmHclFeature;
