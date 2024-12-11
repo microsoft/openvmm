@@ -37,7 +37,7 @@ pub enum Error {
 pub enum ReportType {
     /// VBS report
     // TODO VBS
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     Vbs,
     /// SNP report
     Snp,
