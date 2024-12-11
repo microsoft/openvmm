@@ -22,8 +22,24 @@ use std::sync::Arc;
 use user_driver::emulated::{DeviceSharedMemory, EmulatedDevice};
 use vmcore::vm_task::{SingleDriverBackend, VmTaskDriverSource};
 use xtask_fuzz::fuzz_target;
+use std::sync::Mutex;
+use lazy_static::lazy_static;
 
 const INPUT_LEN:usize=4196;
+
+lazy_static::lazy_static! {
+    pub static ref STATIC_UNSTRUCTURED: Mutex<Unstructured<'static>> = Mutex::new(Unstructured::new(&[10]));
+    pub static ref STATIC_ARR: [u8; 4096] = [0; 4096];
+}
+
+pub fn reset_unstructured_data(input: &[u8; 4096]) {
+    // let mut arr = STATIC_ARR.unwrap();
+    STATIC_ARR.copy_from_slice(input);
+    *STATIC_ARR = input.clone();
+
+    let mut vec = STATIC_UNSTRUCTURED.lock().unwrap();
+    *vec = Unstructured::new(&input.clone());
+}
 
 /// Writes the given arbitrary bytes to disk and reads arbitrary number of blocks from an arbitrary
 /// address in the disk. The number of blocks being read can be larger than the provided memory.
@@ -54,7 +70,8 @@ fn do_fuzz(u: &mut Unstructured<'_>) {
 // only indicate length of the input that is passed in which doesn't really make too much sense
 fuzz_target!(|input: &[u8]| {
     xtask_fuzz::init_tracing_if_repro();
-    do_fuzz(&mut Unstructured::new(input))
+    reset_unstructured_data(&[0; 4096]);
+    // do_fuzz(&mut Unstructured::new(input))
 });
 
 
