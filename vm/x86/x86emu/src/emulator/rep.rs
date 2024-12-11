@@ -4,7 +4,6 @@
 use super::arith::ArithOp;
 use super::AlignmentMode;
 use super::Emulator;
-use crate::Gp;
 use super::InternalError;
 use crate::Cpu;
 use iced_x86::Instruction;
@@ -118,7 +117,7 @@ impl<T: Cpu> Emulator<'_, T> {
 
         let count_reg = sized_rcx(op_kind);
         let requested = if rep.is_some() {
-            self.cpu.gp(count_reg).unwrap()
+            self.cpu.gp(count_reg)
         } else {
             1
         };
@@ -143,7 +142,7 @@ impl<T: Cpu> Emulator<'_, T> {
         if rep_state.rep.is_some() {
             self.cpu.set_gp(
                 rep_state.count_reg,
-                Gp(rep_state.requested - rep_state.done),
+                rep_state.requested - rep_state.done,
             );
         }
         if rep_state.is_done() || rep_state.done == MAX_REP_LOOPS {
@@ -165,7 +164,7 @@ impl<T: Cpu> Emulator<'_, T> {
         while self.rep_again(&mut rep) {
             let data = &mut [0; 4][..rep.size];
             let offset = self.memory_op_offset(instr, 1);
-            let io_register = self.cpu.gp(instr.op0_register()).unwrap() as u16;
+            let io_register = self.cpu.gp(instr.op0_register()) as u16;
 
             self.read_memory(
                 instr.memory_segment(),
@@ -176,7 +175,7 @@ impl<T: Cpu> Emulator<'_, T> {
             .await?;
             self.write_io(io_register, data).await?;
 
-            self.cpu.set_gp(rsi, Gp(offset.wrapping_add(rep.delta)));
+            self.cpu.set_gp(rsi, offset.wrapping_add(rep.delta));
         }
         rep.check_done()?;
         Ok(())
@@ -190,14 +189,14 @@ impl<T: Cpu> Emulator<'_, T> {
         let rdi = sized_rdi(instr.op0_kind());
         while self.rep_again(&mut rep) {
             let offset = self.memory_op_offset(instr, 0);
-            let io_register = self.cpu.gp(instr.op1_register()).unwrap() as u16;
+            let io_register = self.cpu.gp(instr.op1_register()) as u16;
 
             let data = &mut [0; 4][..rep.size];
             self.read_io(io_register, data).await?;
             self.write_memory(Register::ES, offset, AlignmentMode::Standard, data)
                 .await?;
 
-            self.cpu.set_gp(rdi, Gp(offset.wrapping_add(rep.delta)));
+            self.cpu.set_gp(rdi, offset.wrapping_add(rep.delta));
         }
         rep.check_done()?;
         Ok(())
@@ -224,8 +223,8 @@ impl<T: Cpu> Emulator<'_, T> {
             .await?;
 
             self.cpu
-                .set_gp(instr.op0_register(), Gp(u64::from_le_bytes(data)));
-            self.cpu.set_gp(rsi, Gp(offset.wrapping_add(rep.delta)));
+                .set_gp(instr.op0_register(), u64::from_le_bytes(data));
+            self.cpu.set_gp(rsi, offset.wrapping_add(rep.delta));
         }
         rep.check_done()?;
         Ok(())
@@ -242,7 +241,7 @@ impl<T: Cpu> Emulator<'_, T> {
         let rdi = sized_rdi(instr.op0_kind());
         while self.rep_again(&mut rep) {
             let offset = self.memory_op_offset(instr, 0);
-            let data = self.cpu.gp(instr.op1_register()).unwrap().to_le_bytes();
+            let data = self.cpu.gp(instr.op1_register()).to_le_bytes();
             self.write_memory(
                 Register::ES,
                 offset,
@@ -251,7 +250,7 @@ impl<T: Cpu> Emulator<'_, T> {
             )
             .await?;
 
-            self.cpu.set_gp(rdi, Gp(offset.wrapping_add(rep.delta)));
+            self.cpu.set_gp(rdi, offset.wrapping_add(rep.delta));
         }
         rep.check_done()?;
         Ok(())
@@ -283,8 +282,8 @@ impl<T: Cpu> Emulator<'_, T> {
             self.write_memory(Register::ES, di_offset, AlignmentMode::Standard, data)
                 .await?;
 
-            self.cpu.set_gp(rsi, Gp(si_offset.wrapping_add(rep.delta)));
-            self.cpu.set_gp(rdi, Gp(di_offset.wrapping_add(rep.delta)));
+            self.cpu.set_gp(rsi, si_offset.wrapping_add(rep.delta));
+            self.cpu.set_gp(rdi, di_offset.wrapping_add(rep.delta));
         }
         rep.check_done()?;
         Ok(())
@@ -328,8 +327,8 @@ impl<T: Cpu> Emulator<'_, T> {
             right = u64::from_le_bytes(data_right);
             rep.update_zero(left == right);
 
-            self.cpu.set_gp(rsi, Gp(si_offset.wrapping_add(rep.delta)));
-            self.cpu.set_gp(rdi, Gp(di_offset.wrapping_add(rep.delta)));
+            self.cpu.set_gp(rsi, si_offset.wrapping_add(rep.delta));
+            self.cpu.set_gp(rdi, di_offset.wrapping_add(rep.delta));
         }
 
         rep.check_done()?;
@@ -350,7 +349,7 @@ impl<T: Cpu> Emulator<'_, T> {
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
         let mut rep = self.rep_op(instr, instr.op1_kind(), true)?;
-        let rax = self.cpu.gp(instr.op0_register()).unwrap();
+        let rax = self.cpu.gp(instr.op0_register());
         let rdi = sized_rdi(instr.op1_kind());
         let mut memval = 0;
         while self.rep_again(&mut rep) {
@@ -368,7 +367,7 @@ impl<T: Cpu> Emulator<'_, T> {
             memval = u64::from_le_bytes(data);
             rep.update_zero(memval == rax);
 
-            self.cpu.set_gp(rdi, Gp(di_offset.wrapping_add(rep.delta)));
+            self.cpu.set_gp(rdi, di_offset.wrapping_add(rep.delta));
         }
 
         rep.check_done()?;

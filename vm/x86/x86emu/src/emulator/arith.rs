@@ -8,7 +8,6 @@ use crate::Cpu;
 use iced_x86::Instruction;
 use iced_x86::Register;
 use x86defs::RFlags;
-use crate::Gp;
 
 impl<T: Cpu> Emulator<'_, T> {
     // <op> rm instructions
@@ -51,12 +50,12 @@ impl<T: Cpu> Emulator<'_, T> {
     ) -> Result<(), InternalError<T::Error>> {
         let left = self.op_value(instr, 0).await?;
         let right_reg = instr.op1_register();
-        let right = self.cpu.gp(right_reg).unwrap();
+        let right = self.cpu.gp(right_reg);
         let result = left.wrapping_add(right);
 
         self.compare_if_locked_and_write_op_0(instr, left, result)
             .await?;
-        self.cpu.set_gp(right_reg, Gp(left));
+        self.cpu.set_gp(right_reg, left);
         let mut rflags = self.cpu.rflags();
         update_flags_arith(
             &mut rflags,
@@ -77,7 +76,7 @@ impl<T: Cpu> Emulator<'_, T> {
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
         let left = self.op_value(instr, 0).await?;
-        let right = self.cpu.gp(instr.op1_register()).unwrap();
+        let right = self.cpu.gp(instr.op1_register());
 
         let op_size = instr.memory_size().size();
         let cmp_reg = match op_size {
@@ -87,7 +86,7 @@ impl<T: Cpu> Emulator<'_, T> {
             8 => Register::RAX,
             _ => unreachable!(),
         };
-        let cmp_val = self.cpu.gp(cmp_reg).unwrap();
+        let cmp_val = self.cpu.gp(cmp_reg);
 
         let result = CmpOp::op(cmp_val, left, self.cpu.rflags());
 
@@ -95,7 +94,7 @@ impl<T: Cpu> Emulator<'_, T> {
             self.compare_if_locked_and_write_op_0(instr, left, right)
                 .await?;
         } else {
-            self.cpu.set_gp(cmp_reg, Gp(left));
+            self.cpu.set_gp(cmp_reg, left);
         }
 
         let mut rflags = self.cpu.rflags();
@@ -111,11 +110,11 @@ impl<T: Cpu> Emulator<'_, T> {
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
         let left = self.op_value(instr, 0).await?;
-        let right = self.cpu.gp(instr.op1_register()).unwrap();
+        let right = self.cpu.gp(instr.op1_register());
 
         self.compare_if_locked_and_write_op_0(instr, left, right)
             .await?;
-        self.cpu.set_gp(instr.op1_register(), Gp(left));
+        self.cpu.set_gp(instr.op1_register(), left);
         Ok(())
     }
 }

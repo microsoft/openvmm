@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::Xmm;
 use super::AlignmentMode;
 use super::Emulator;
 use super::Error;
@@ -37,7 +36,7 @@ impl<T: Cpu> Emulator<'_, T> {
             OpKind::Register => {
                 let reg = instr.op1_register();
                 assert!(reg.is_xmm());
-                self.cpu.xmm(reg.number()).unwrap()
+                self.cpu.xmm(reg.number())
             }
             _ => Err(self.unsupported_instruction(instr))?,
         };
@@ -48,7 +47,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 let reg = instr.op0_register();
                 assert!(reg.is_xmm());
                 let xmm_index = reg.number();
-                self.cpu.set_xmm(xmm_index, Xmm(value)).map_err(|err| {
+                self.cpu.set_xmm(xmm_index, value).map_err(|err| {
                     Error::XmmRegister(xmm_index, super::OperationKind::Write, err)
                 })?
             }
@@ -64,7 +63,7 @@ impl<T: Cpu> Emulator<'_, T> {
     ) -> Result<(), InternalError<T::Error>> {
         let mut buffer = [0; 64];
         let src = self.memory_op_offset(instr, 1);
-        let dst = self.cpu.gp(instr.op0_register()).unwrap();
+        let dst = self.cpu.gp(instr.op0_register());
 
         self.read_memory(
             instr.memory_segment(),

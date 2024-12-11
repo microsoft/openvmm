@@ -9,10 +9,7 @@ use crate::emulator::arith::OrOp;
 use iced_x86::OpKind;
 use crate::Bitness;
 use crate::Cpu;
-use crate::Gp;
-use crate::Rip;
 use iced_x86::Register;
-use x86defs::RFlags;
 use crate::bitness;
 
 const PAGE_SIZE: u32 = 4096;
@@ -40,7 +37,7 @@ pub fn emulate_fast_path_set_bit<T: Cpu>(instruction_bytes: &[u8], cpu: &mut T) 
 
     let bitness = bitness(cpu.cr0(), cpu.efer(), cpu.segment(Register::CS.number()));
     let mut decoder = iced_x86::Decoder::new(bitness.into(), instruction_bytes, 0);
-    decoder.set_ip(cpu.rip().unwrap());
+    decoder.set_ip(cpu.rip());
 
     let instr = decoder.decode();
     let mut rflags = cpu.rflags();
@@ -79,7 +76,7 @@ pub fn emulate_fast_path_set_bit<T: Cpu>(instruction_bytes: &[u8], cpu: &mut T) 
             if instr.op0_kind() == OpKind::Memory =>
         {
             let address = instruction::memory_op_offset(cpu, &instr, 0);
-            let mask = cpu.gp(instr.op1_register()).unwrap();
+            let mask = cpu.gp(instr.op1_register());
             if !mask.is_power_of_two() {
                 tracing::debug!(mask, "fast path set bit: or without exactly one bit");
                 return None;
@@ -116,7 +113,7 @@ pub fn emulate_fast_path_set_bit<T: Cpu>(instruction_bytes: &[u8], cpu: &mut T) 
     let bit_in_page = offset * 8 + bit;
     tracing::trace!(bit_in_page, "fast path set bit");
 
-    cpu.set_rip(Rip(instr.next_ip()));
+    cpu.set_rip(instr.next_ip());
     cpu.set_rflags(rflags);
     Some(bit_in_page)
 }

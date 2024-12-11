@@ -17,7 +17,6 @@ use super::UhRunVpError;
 use crate::BackingShared;
 use super::UhCpuState;
 use iced_x86::Register;
-use x86emu::{CpuState, Cr0, Efer, Gp, Rip, Xmm};
 use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
 use crate::GuestVtl;
 use crate::UhCvmPartitionState;
@@ -25,6 +24,7 @@ use crate::UhCvmVpState;
 use crate::UhPartitionInner;
 use crate::UhProcessor;
 use crate::WakeReason;
+use x86emu::CpuState;
 use hcl::ioctl::tdx::Tdx;
 use hcl::ioctl::ProcessorRunner;
 use hcl::protocol::hcl_intr_offload_flags;
@@ -440,23 +440,21 @@ struct TdxVtl {
     exit_stats: ExitStats,
 }
 
-//TODO(babayet2) do we need to derive Inspect?
-//if so, impl for Option<SegmentRegister>
 #[derive(Default, Clone, Copy)]
 pub struct TdxCpuState {
     /// GP registers, in the canonical order (as defined by `RAX`, etc.).
-    pub gps: [Gp; 16],
+    pub gps: [u64; 16],
     /// Segment registers, in the canonical order (as defined by `ES`, etc.).
     pub segs: [Option<SegmentRegister>; 6],
     /// RIP.
-    pub rip: Rip,
+    pub rip: u64,
     /// RFLAGS.
     pub rflags: RFlags,
 
     /// CR0. Immutable.
-    pub cr0: Cr0,
+    pub cr0: u64,
     /// EFER. Immutable.
-    pub efer: Efer,
+    pub efer: u64,
 }
 
 
@@ -2245,17 +2243,13 @@ impl<'a, 'b> UhCpuState<'a, 'b, TdxBacked> for TdxCpuState {
     fn new(vp: &'a mut UhProcessor<'b, TdxBacked>, _vtl: GuestVtl) -> Self {
         let cs = TdxExit(vp.runner.tdx_vp_enter_exit_info()).cs();
         let enter_state = vp.runner.tdx_enter_guest_state();
-        let mut gps = [Gp(0); 16];
-        for (i, &val) in enter_state.gps.iter().enumerate() {
-            gps[i] = Gp(val);
-        }
         TdxCpuState {
-            gps,
+            gps: enter_state.gps,
             segs: [None, cs.into(), None, None, None, None],
-            rip: Rip(enter_state.rip),
+            rip: enter_state.rip,
             rflags: enter_state.rflags.into(),
-            cr0: Cr0(vp.backing.cr0.read(&vp.runner)),
-            efer: Efer(vp.backing.efer),
+            cr0: vp.backing.cr0.read(&vp.runner),
+            efer: vp.backing.efer,
         }
     }
 }
@@ -2272,38 +2266,38 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, Tdx
     }
 
     fn gp_sign_extend(&mut self, reg: Register) -> i64 {
-        self.gp(reg).unwrap() as i64
+        self.gp(reg) as i64
     }
 
-    fn gp(&mut self, reg: Register) -> Gp {
+    fn gp(&mut self, reg: Register) -> u64 {
         let index = reg.number();
         self.state.gps[index]
      }
 
-    fn set_gp(&mut self, reg: Register, v: Gp) {
+    fn set_gp(&mut self, reg: Register, v: u64) {
         let index = reg.number();
         self.state.gps[index] = v;
         let state = self.vp.runner.tdx_enter_guest_state_mut();
-        state.gps[index] = v.unwrap();
+        state.gps[index] = v;
     }
 
-    fn xmm(&mut self, index: usize) -> Xmm {
-        Xmm(u128::from_ne_bytes(self.vp.runner.fx_state().xmm[index]))
+    fn xmm(&mut self, index: usize) -> u128 {
+        u128::from_ne_bytes(self.vp.runner.fx_state().xmm[index])
     }
 
-    fn set_xmm(&mut self, index: usize, v: Xmm) -> Result<(), Self::Error> {
-        self.vp.runner.fx_state_mut().xmm[index] = v.unwrap().to_ne_bytes();
+    fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error> {
+        self.vp.runner.fx_state_mut().xmm[index] = v.to_ne_bytes();
          Ok(())
      }
 
-    fn rip(&mut self) -> Rip {
+    fn rip(&mut self) -> u64 {
         self.state.rip
      }
 
-    fn set_rip(&mut self, v: Rip) {
+    fn set_rip(&mut self, v: u64) {
         self.state.rip = v;
         let backing_state = self.vp.runner.tdx_enter_guest_state_mut();
-        backing_state.rip = v.unwrap();
+        backing_state.rip = v;
     }
 
     fn segment(&mut self, index: usize) -> x86defs::SegmentRegister {
@@ -2321,11 +2315,11 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, Tdx
         (*reg).into()
     }
 
-    fn efer(&mut self) -> Efer {
+    fn efer(&mut self) -> u64 {
         self.state.efer
     }
 
-    fn cr0(&mut self) -> Cr0 {
+    fn cr0(&mut self) -> u64 {
         self.state.cr0
     }
 

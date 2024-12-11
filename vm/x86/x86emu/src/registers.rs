@@ -6,47 +6,24 @@
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
 
-macro_rules! register_type {
-    ($reg:ident, $type:ty) => {
-        #[derive(Debug, Clone, PartialEq, Default, Copy)]
-        #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-        pub struct $reg(pub $type);
-
-        impl $reg {
-            pub fn unwrap(self) -> $type {
-                self.0
-            }
-        }
-    };
-}
-
-//TODO(babayet2) should include register in GP?
-//pub struct Gp(pub u64, pub Register);
-
-register_type!(Rip, u64);
-register_type!(Cr0, u64);
-register_type!(Gp, u64);
-register_type!(Efer, u64);
-register_type!(Xmm, u128);
-
 /// The current CPU register state. Some of the fields are updated by the emulator.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CpuState {
     /// GP registers, in the canonical order (as defined by `RAX`, etc.).
-    pub gps: [Gp; 16],
+    pub gps: [u64; 16],
     /// Segment registers, in the canonical order (as defined by `ES`, etc.).
     /// Immutable for now.
     pub segs: [SegmentRegister; 6],
     /// RIP.
-    pub rip: Rip,
+    pub rip: u64,
     /// RFLAGS.
     pub rflags: RFlags,
 
     /// CR0. Immutable.
-    pub cr0: Cr0,
+    pub cr0: u64,
     /// EFER. Immutable.
-    pub efer: Efer,
+    pub efer: u64,
 }
 
 impl CpuState {
@@ -97,9 +74,9 @@ impl CpuState {
     pub const GS: usize = 5;
 }
 
-pub fn bitness(cr0: Cr0, efer: Efer, cs: SegmentRegister) -> Bitness {
-    if cr0.unwrap() & x86defs::X64_CR0_PE != 0 {
-        if efer.unwrap() & x86defs::X64_EFER_LMA != 0 {
+pub fn bitness(cr0: u64, efer: u64, cs: SegmentRegister) -> Bitness {
+    if cr0 & x86defs::X64_CR0_PE != 0 {
+        if efer & x86defs::X64_EFER_LMA != 0 {
             if cs.attributes.long() {
                 Bitness::Bit64
             } else {

@@ -18,7 +18,6 @@ use virt::VpHaltReason;
 use vm_topology::processor::VpIndex;
 use x86defs::Exception;
 use x86defs::{RFlags, SegmentRegister};
-use x86emu::{Cr0, Efer, Gp, Rip, Xmm};
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 
@@ -33,24 +32,24 @@ pub trait EmulatorSupport {
     /// The processor vendor.
     fn vendor(&self) -> x86defs::cpuid::Vendor;
 
-    fn gp(&mut self, reg: Register) -> Gp;
+    fn gp(&mut self, reg: Register) -> u64;
     //TODO(babayet2) should this return GP?
     //check how typecasting preserves value
     fn gp_sign_extend(&mut self, reg: Register) -> i64;
-    fn set_gp(&mut self, reg: Register, v: Gp);
-    fn rip(&mut self) -> Rip;
-    fn set_rip(&mut self, v: Rip);
+    fn set_gp(&mut self, reg: Register, v: u64);
+    fn rip(&mut self) -> u64;
+    fn set_rip(&mut self, v: u64);
     fn segment(&mut self, index: usize) -> SegmentRegister;
-    fn efer(&mut self) -> Efer;
-    fn cr0(&mut self) -> Cr0;
+    fn efer(&mut self) -> u64;
+    fn cr0(&mut self) -> u64;
     fn rflags(&mut self) -> RFlags;
     fn set_rflags(&mut self, v: RFlags);
 
     /// Gets the value of an XMM* register.
-    fn xmm(&mut self, reg: usize) -> Xmm;
+    fn xmm(&mut self, reg: usize) -> u128;
 
     /// Sets the value of an XMM* register.
-    fn set_xmm(&mut self, reg: usize, value: Xmm) -> Result<(), Self::Error>;
+    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error>;
 
     /// The instruction bytes, if available.
     fn instruction_bytes(&self) -> &[u8];
@@ -783,8 +782,8 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         Ok(())
     }
 
-    fn gp(&mut self, reg: Register) -> Gp {
-        let full_register = self.support.gp(reg.full_register()).unwrap();
+    fn gp(&mut self, reg: Register) -> u64 {
+        let full_register = self.support.gp(reg.full_register());
         let size = reg.size();
 
         let out: u64 = match size {
@@ -801,11 +800,11 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
             _ => panic!("invalid gp register size"),
         };
 
-        Gp(out as u64)
+        out as u64
     }
 
     fn gp_sign_extend(&mut self, reg: Register) -> i64 {
-        let full_register = self.support.gp(reg.full_register()).unwrap();
+        let full_register = self.support.gp(reg.full_register());
         let size = reg.size();
         match size {
             1 => {
@@ -822,41 +821,38 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         }
     }
 
-    fn set_gp(&mut self, reg: Register, v: Gp) {
-        //TODO(babayet2) is this truly the appropriate place
-        //to resize registers?
-
-        let register_value = self.gp(reg.full_register()).unwrap();
+    fn set_gp(&mut self, reg: Register, v: u64) {
+        let register_value = self.gp(reg.full_register());
         let size = reg.size();
 
         let out: u64 = match size {
             1 => {
                 if reg >= Register::SPL || reg < Register::AH {
                     let masked = register_value & !0xff;
-                    masked | (v.unwrap() as u8) as u64
+                    masked | (v as u8) as u64
                 } else {
                     let masked = register_value & !0xff00;
-                    masked | ((v.unwrap() as u8) as u64) << 8
+                    masked | ((v as u8) as u64) << 8
                 }
             }
             2 => {
                 let masked = register_value & !0xffff;
-                masked | (v.unwrap() as u16) as u64
+                masked | (v as u16) as u64
             }
             // N.B. setting a 32-bit register zero extends the result to the 64-bit
             //      register. This is different from 16-bit and 8-bit registers.
-            4 => (v.unwrap() as u32) as u64,
-            8 => v.unwrap(),
+            4 => (v as u32) as u64,
+            8 => v,
             _ => panic!("invalid gp register size"),
         };
-        self.support.set_gp(reg.full_register(), Gp(out));
+        self.support.set_gp(reg.full_register(), out);
     }
 
-    fn rip(&mut self) -> Rip {
+    fn rip(&mut self) -> u64 {
         self.support.rip()
     }
 
-    fn set_rip(&mut self, v: Rip) {
+    fn set_rip(&mut self, v: u64) {
         self.support.set_rip(v);
     }
 
@@ -864,11 +860,11 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         self.support.segment(index)
     }
 
-    fn efer(&mut self) -> Efer {
+    fn efer(&mut self) -> u64 {
         self.support.efer()
     }
 
-    fn cr0(&mut self) -> Cr0 {
+    fn cr0(&mut self) -> u64 {
         self.support.cr0()
     }
 
@@ -881,12 +877,12 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
     }
 
     /// Gets the value of an XMM* register.
-    fn xmm(&mut self, reg: usize) -> Xmm {
+    fn xmm(&mut self, reg: usize) -> u128 {
         self.support.xmm(reg)
     }
 
     /// Sets the value of an XMM* register.
-    fn set_xmm(&mut self, reg: usize, value: Xmm) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
         self.support.set_xmm(reg, value).map_err(Error::Hypervisor)
     }
 }

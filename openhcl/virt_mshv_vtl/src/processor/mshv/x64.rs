@@ -24,7 +24,6 @@ use crate::validate_vtl_gpa_flags;
 use super::super::UhCpuState;
 use iced_x86::Register;
 use x86defs::{RFlags, SegmentRegister};
-use x86emu::{Cr0, Efer, Gp, Rip, Xmm};
 use crate::BackingShared;
 use crate::Error;
 use crate::GuestVsmState;
@@ -948,11 +947,8 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
 
         let [rsp, es, ds, fs, gs, ss, cr0, efer] = values;
 
-        let mut gps = [Gp(0); 16];
-        for (i, &val) in self.vp.runner.cpu_context().gps.iter().enumerate() {
-            gps[i] = Gp(val);
-        }
-        gps[x86emu::CpuState::RSP] = Gp(rsp.as_u64());
+        let mut gps = self.vp.runner.cpu_context().gps;
+        gps[x86emu::CpuState::RSP] = rsp.as_u64();
 
         let message = self.vp.runner.exit_message();
         let header = HvX64InterceptMessageHeader::ref_from_prefix(message.payload()).unwrap();
@@ -967,10 +963,10 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                 from_seg(fs.into()),
                 from_seg(gs.into()),
             ],
-            rip: Rip(header.rip),
+            rip: header.rip,
             rflags: header.rflags.into(),
-            cr0: Cr0(cr0.as_u64()),
-            efer: Efer(efer.as_u64()),
+            cr0: cr0.as_u64(),
+            efer: efer.as_u64(),
         }
     }
 }
@@ -994,13 +990,8 @@ impl<'a, 'b> UhCpuState<'a, 'b, HypervisorBackedX86> for x86emu::CpuState {
 
          let [rsp, es, ds, fs, gs, ss, cr0, efer] = values;
 
-        let mut _gps = vp.runner.cpu_context().gps;
-        _gps[x86emu::CpuState::RSP] = rsp.as_u64();
-
-        let mut gps = [Gp(0); 16];
-        for (i, &val) in _gps.iter().enumerate() {
-            gps[i] = Gp(val);
-        }
+        let mut gps = vp.runner.cpu_context().gps;
+        gps[x86emu::CpuState::RSP] = rsp.as_u64();
 
         let message = vp.runner.exit_message();
          let header = HvX64InterceptMessageHeader::ref_from_prefix(message.payload()).unwrap();
@@ -1015,10 +1006,10 @@ impl<'a, 'b> UhCpuState<'a, 'b, HypervisorBackedX86> for x86emu::CpuState {
                  from_seg(fs.into()),
                  from_seg(gs.into()),
              ],
-            rip: Rip(header.rip),
+            rip: header.rip,
              rflags: header.rflags.into(),
-            cr0: Cr0(cr0.as_u64()),
-            efer: Efer(efer.as_u64()),
+            cr0: cr0.as_u64(),
+            efer: efer.as_u64(),
          }
     }
 }
@@ -1343,48 +1334,48 @@ impl<T: CpuIo> EmulatorSupport
     }
 
     fn gp_sign_extend(&mut self, reg: Register) -> i64 {
-        self.gp(reg).unwrap() as i64
+        self.gp(reg) as i64
     }
 
-    fn gp(&mut self, reg: Register) -> Gp {
+    fn gp(&mut self, reg: Register) -> u64 {
         let index = reg.number();
         self.state.gps[index]
      }
 
-   fn set_gp(&mut self, reg: Register, v: Gp) {
+   fn set_gp(&mut self, reg: Register, v: u64) {
         let index = reg.number();
         self.state.gps[index] = v;
 
         if index == x86emu::CpuState::RSP {
             self.vp
                 .runner
-                .set_vp_registers(self.vtl, [(HvX64RegisterName::Rsp, v.unwrap())])
+                .set_vp_registers(self.vtl, [(HvX64RegisterName::Rsp, v)])
                 .unwrap();
         } else {
-            self.vp.runner.cpu_context_mut().gps[index] = v.unwrap();
+            self.vp.runner.cpu_context_mut().gps[index] = v;
         }
     }
 
-    fn xmm(&mut self, index: usize) -> Xmm {
-        Xmm(u128::from_le_bytes(
+    fn xmm(&mut self, index: usize) -> u128 {
+        u128::from_le_bytes(
             self.vp.runner.cpu_context().fx_state.xmm[index],
-        ))
+        )
     }
 
-    fn set_xmm(&mut self, index: usize, v: Xmm) -> Result<(), Self::Error> {
-        self.vp.runner.cpu_context_mut().fx_state.xmm[index] = v.unwrap().to_le_bytes();
+    fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error> {
+        self.vp.runner.cpu_context_mut().fx_state.xmm[index] = v.to_le_bytes();
          Ok(())
      }
 
-    fn rip(&mut self) -> Rip {
+    fn rip(&mut self) -> u64 {
         self.state.rip
     }
 
-    fn set_rip(&mut self, v: Rip) {
+    fn set_rip(&mut self, v: u64) {
         self.state.rip = v;
         self.vp
             .runner
-            .set_vp_registers(self.vtl, [(HvX64RegisterName::Rip, v.unwrap())])
+            .set_vp_registers(self.vtl, [(HvX64RegisterName::Rip, v)])
             .unwrap();
     }
 
@@ -1392,11 +1383,11 @@ impl<T: CpuIo> EmulatorSupport
         self.state.segs[index]
     }
 
-    fn efer(&mut self) -> Efer {
+    fn efer(&mut self) -> u64 {
         self.state.efer
     }
 
-    fn cr0(&mut self) -> Cr0 {
+    fn cr0(&mut self) -> u64 {
         self.state.cr0
     }
 

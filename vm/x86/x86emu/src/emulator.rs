@@ -13,7 +13,6 @@ use iced_x86::OpKind;
 use iced_x86::Register;
 use thiserror::Error;
 use x86defs::Exception;
-use crate::{Gp, Rip};
 use crate::bitness;
 use crate::Bitness;
 
@@ -153,7 +152,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     ///
     /// Returns None if IP/EIP does not fit into the code segment.
     pub fn linear_ip(&mut self, offset: u64) -> Option<u64> {
-        let rip = self.cpu.rip().unwrap().wrapping_add(offset);
+        let rip = self.cpu.rip().wrapping_add(offset);
         let cr0 = self.cpu.cr0();
         let efer = self.cpu.efer();
         let cs = self.cpu.segment(Register::CS.number());
@@ -362,7 +361,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             AlignmentMode::Standard => {
                 if self.is_user_mode()
                     && self.cpu.rflags().alignment_check()
-                    && self.cpu.cr0().unwrap() & x86defs::X64_CR0_AM != 0
+                    && self.cpu.cr0() & x86defs::X64_CR0_AM != 0
                 {
                     if gva % len as u64 != 0 {
                         Err(Error::InstructionException(
@@ -581,7 +580,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                 self.read_memory_op(instr, operand, AlignmentMode::Standard)
                     .await?
             }
-            OpKind::Register => self.cpu.gp(instr.op_register(operand)).unwrap(),
+            OpKind::Register => self.cpu.gp(instr.op_register(operand)),
             OpKind::Immediate8
             | OpKind::Immediate16
             | OpKind::Immediate32
@@ -619,7 +618,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                     .await?
             }
             OpKind::Register => {
-                self.cpu.set_gp(instr.op0_register(), Gp(value));
+                self.cpu.set_gp(instr.op0_register(), value);
             }
             _ => Err(self.unsupported_instruction(instr))?,
         };
@@ -651,7 +650,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                 .await?
             }
             OpKind::Register => {
-                self.cpu.set_gp(instr.op0_register(), Gp(new));
+                self.cpu.set_gp(instr.op0_register(), new);
             }
             _ => Err(self.unsupported_instruction(instr))?,
         };
@@ -668,7 +667,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         let cs = self.cpu.segment(Register::CS.number());
         let bitness = bitness(cr0, efer, cs);
         let mut decoder = Decoder::new(bitness.into(), self.bytes, self.decoder_options);
-        decoder.set_ip(self.cpu.rip().unwrap());
+        decoder.set_ip(self.cpu.rip());
         let instr = decoder.decode();
         if instr.code() == Code::INVALID {
             match decoder.last_error() {
@@ -687,7 +686,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         tracing::trace!(
             code = ?instr.code(),
             cs = ?self.cpu.segment(Register::CS.number()),
-            rip = self.cpu.rip().unwrap(),
+            rip = self.cpu.rip(),
             ?bitness,
             "Emulating instruction",
         );
@@ -1298,7 +1297,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         }?;
 
         // The instruction is complete. Update the RIP and check for traps.
-        self.cpu.set_rip(Rip(instr.next_ip()));
+        self.cpu.set_rip(instr.next_ip());
         let mut rflags = self.cpu.rflags();
         if rflags.trap() {
             rflags.set_trap(false);
