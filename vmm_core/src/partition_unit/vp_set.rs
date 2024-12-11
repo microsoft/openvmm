@@ -19,6 +19,7 @@ use futures_concurrency::stream::Merge;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
 use inspect::Inspect;
+use mesh::rpc::RpcError;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::local::block_with_io;
@@ -877,7 +878,7 @@ pub struct RegisterSetError(&'static str, #[source] anyhow::Error);
 
 #[derive(Debug, Error)]
 #[error("the vp runner was dropped")]
-struct RunnerGoneError(#[source] mesh::RecvError);
+struct RunnerGoneError(#[source] RpcError);
 
 #[cfg(feature = "gdb")]
 impl VpSet {
