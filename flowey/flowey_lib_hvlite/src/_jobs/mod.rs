@@ -26,6 +26,7 @@ pub mod cfg_gh_azure_login;
 pub mod cfg_hvlite_reposource;
 pub mod cfg_versions;
 pub mod check_clippy;
+pub mod check_openvmm_hcl_size;
 pub mod check_xtask_fmt;
 pub mod consolidate_and_publish_gh_pages;
 pub mod consume_and_test_nextest_unit_tests_archive;
