@@ -176,7 +176,6 @@ pub(crate) struct LoadedVm {
     pub _periodic_telemetry_task: Task<()>,
 
     pub shared_vis_pool: Option<PagePool>,
-    #[expect(dead_code, reason = "backport to be used in a follow up change")]
     pub private_pool: Option<PagePool>,
 }
 
@@ -303,6 +302,7 @@ impl LoadedVm {
                             inspect_helpers::vtl0_memory_map(&self.vtl0_memory_map),
                         );
                         resp.field("shared_vis_pool", &self.shared_vis_pool);
+                        resp.field("private_pool", &self.private_pool);
                         resp.field("memory", &self.memory);
                     }),
                 },

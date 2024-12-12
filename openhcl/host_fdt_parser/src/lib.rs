@@ -1339,7 +1339,7 @@ mod tests {
             .end_node()
             .unwrap();
 
-        // openhcl node - contains memory allocation mode.
+        // openhcl node - contains openhcl specific information.
         let p_memory_allocation_mode = root.add_string("memory-allocation-mode").unwrap();
         let p_memory_allocation_size = root.add_string("memory-size").unwrap();
         let p_mmio_allocation_size = root.add_string("mmio-size").unwrap();
@@ -1364,11 +1364,11 @@ mod tests {
             }
         };
 
-        root = openhcl
+        openhcl = openhcl
             .add_str(p_memory_allocation_mode, memory_alloc_str)
-            .unwrap()
-            .end_node()
             .unwrap();
+
+        root = openhcl.end_node().unwrap();
 
         let bytes_used = root
             .end_node()

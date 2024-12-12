@@ -1179,6 +1179,7 @@ impl UpdateGenerationId {
 
 /// Bitfield describing SaveGuestVtl2StateNotification::capabilities_flags
 #[bitfield(u64)]
+#[derive(AsBytes, FromBytes, FromZeroes)]
 pub struct SaveGuestVtl2StateFlags {
     /// Disable nvme_keepalive feature when servicing.
     #[bits(1)]
@@ -1194,7 +1195,7 @@ pub struct SaveGuestVtl2StateFlags {
 pub struct SaveGuestVtl2StateNotification {
     pub message_header: HeaderGuestNotification,
     pub correlation_id: Guid,
-    pub capabilities_flags: u64,
+    pub capabilities_flags: SaveGuestVtl2StateFlags,
     pub timeout_hint_secs: u16,
 }
 

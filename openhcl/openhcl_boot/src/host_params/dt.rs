@@ -12,16 +12,20 @@ use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
+use crate::host_params::MAX_VTL2_USED_RANGES;
 use crate::single_threaded::off_stack;
 use crate::single_threaded::OffStackRef;
 use arrayvec::ArrayVec;
+use core::cmp::max;
 use core::fmt::Display;
 use core::fmt::Write;
 use host_fdt_parser::MemoryAllocationMode;
 use host_fdt_parser::MemoryEntry;
 use host_fdt_parser::ParsedDeviceTree;
+use hvdef::HV_PAGE_SIZE;
 use igvm_defs::MemoryMapEntryType;
 use loader_defs::paravisor::CommandLinePolicy;
+use memory_range::flatten_ranges;
 use memory_range::subtract_ranges;
 use memory_range::walk_ranges;
 use memory_range::MemoryRange;
@@ -88,7 +92,7 @@ fn allocate_vtl2_ram(
                 ram_size, params.memory_size
             );
         }
-        core::cmp::max(ram_size, params.memory_size)
+        max(ram_size, params.memory_size)
     } else {
         params.memory_size
     };
@@ -279,7 +283,7 @@ fn parse_host_vtl2_ram(
             params.memory_size
         );
 
-        let vtl2_size = core::cmp::max(vtl2_size, params.memory_size);
+        let vtl2_size = max(vtl2_size, params.memory_size);
         vtl2_ram.push(MemoryEntry {
             range: MemoryRange::new(
                 params.memory_start_address..(params.memory_start_address + vtl2_size),
@@ -394,7 +398,7 @@ impl PartitionInfo {
             // Decide the amount of mmio VTL2 should allocate. Enforce a minimum
             // of 128 MB mmio for VTL2.
             const MINIMUM_MMIO_SIZE: u64 = 128 * (1 << 20);
-            let mmio_size = core::cmp::max(
+            let mmio_size = max(
                 match parsed.memory_allocation_mode {
                     MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
                     _ => 0,
@@ -439,12 +443,70 @@ impl PartitionInfo {
             storage.partition_ram.push(*entry);
         }
 
+        // Add all the ranges are not free for further allocation.
+        let mut used_ranges =
+            off_stack!(ArrayVec<MemoryRange, MAX_VTL2_USED_RANGES>, ArrayVec::new_const());
+        used_ranges.push(params.used);
+        used_ranges.sort_unstable_by_key(|r| r.start());
+        storage.vtl2_used_ranges.clear();
+        storage
+            .vtl2_used_ranges
+            .extend(flatten_ranges(used_ranges.iter().copied()));
+
+        // Decide if we will reserve memory for a VTL2 private pool. Parse this
+        // from the final command line.
+        let vtl2_gpa_pool_size = {
+            let cmdline_page_count =
+                crate::cmdline::parse_boot_command_line(storage.cmdline.as_str())
+                    .enable_vtl2_gpa_pool;
+
+            cmdline_page_count.unwrap_or(0)
+        };
+        if vtl2_gpa_pool_size != 0 {
+            // Reserve the specified number of pages for the pool. Use the used
+            // ranges to figure out which VTL2 memory is free to allocate from.
+            let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
+            let free_memory = subtract_ranges(
+                storage.vtl2_ram.iter().map(|e| e.range),
+                storage.vtl2_used_ranges.iter().copied(),
+            );
+
+            let mut pool = MemoryRange::EMPTY;
+
+            for range in free_memory {
+                if range.len() >= pool_size_bytes {
+                    pool = MemoryRange::new(range.start()..(range.start() + pool_size_bytes));
+                    break;
+                }
+            }
+
+            if pool.is_empty() {
+                panic!(
+                    "failed to find {pool_size_bytes} bytes of free VTL2 memory for VTL2 GPA pool"
+                );
+            }
+
+            // Update the used ranges to mark the pool range as used.
+            used_ranges.clear();
+            used_ranges.extend(storage.vtl2_used_ranges.iter().copied());
+            used_ranges.push(pool);
+            used_ranges.sort_unstable_by_key(|r| r.start());
+            storage.vtl2_used_ranges.clear();
+            storage
+                .vtl2_used_ranges
+                .extend(flatten_ranges(used_ranges.iter().copied()));
+
+            storage.vtl2_pool_memory = pool;
+        }
+
         // Set remaining struct fields before returning.
         let Self {
             vtl2_ram: _,
             vtl2_full_config_region: vtl2_config_region,
             vtl2_config_region_reclaim: vtl2_config_region_reclaim_struct,
             vtl2_reserved_region,
+            vtl2_pool_memory: _,
+            vtl2_used_ranges,
             partition_ram: _,
             isolation,
             bsp_reg,
@@ -458,6 +520,8 @@ impl PartitionInfo {
             entropy,
             vtl0_alias_map: _,
         } = storage;
+
+        assert!(!vtl2_used_ranges.is_empty());
 
         *isolation = params.isolation_type;
 

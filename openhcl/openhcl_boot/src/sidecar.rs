@@ -93,7 +93,11 @@ pub fn start_sidecar<'a>(
     free_memory.extend((0..max_vnode + 1).map(|_| MemoryRange::EMPTY));
     for (range, r) in memory_range::walk_ranges(
         partition_info.vtl2_ram.iter().map(|e| (e.range, e.vnode)),
-        [(p.used, ())],
+        partition_info
+            .vtl2_used_ranges
+            .iter()
+            .cloned()
+            .map(|range| (range, ())),
     ) {
         if let memory_range::RangeWalkResult::Left(vnode) = r {
             let free = &mut free_memory[vnode as usize];
