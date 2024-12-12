@@ -1577,18 +1577,17 @@ async fn new_underhill_vm(
         }
     }
 
-    // Set the shared memory allocator to GET that is required by attestation call-out.
+    // Set the gpa allocator to GET that is required by the attestation message.
+    //
+    // Note that the share visibility pool takes precedence, as when isolated
+    // shared memory must be used.
     if let Some(allocator) = shared_vis_pages_pool
         .as_ref()
         .map(|p| p.allocator("get".into()))
     {
-        get_client.set_shared_memory_allocator(
-            allocator.context("get shared memory allocator")?,
-            gm.shared_memory()
-                .or_else(|| env_cfg.enable_shared_visibility_pool.then(|| gm.vtl0()))
-                .context("missing shared memory for shared pool allocator")?
-                .clone(),
-        );
+        get_client.set_gpa_allocator(allocator.context("get shared memory allocator")?);
+    } else if let Some(allocator) = private_pool.as_ref().map(|p| p.allocator("get".into())) {
+        get_client.set_gpa_allocator(allocator.context("get private memory allocator")?);
     }
 
     // Create the `AttestationVmConfig` from `dps`, which will be used in

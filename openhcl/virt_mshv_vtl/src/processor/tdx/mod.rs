@@ -679,7 +679,7 @@ impl BackingPrivate for TdxBacked {
             )
             .into();
 
-        // TODO: This needs to come from a private pool
+        // TODO TDX: This needs to come from a private pool
         let flush_page = params
             .partition
             .shared_vis_pages_pool

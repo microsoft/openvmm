@@ -19,6 +19,7 @@ use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
+use sparse_mmap::SparseMapping;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use thiserror::Error;
@@ -169,12 +170,23 @@ pub mod save_restore {
     }
 }
 
-/// Error returned when unable to allocate memory.
+/// Errors returned on allocation methods.
 #[derive(Debug, Error)]
-#[error("unable to allocate page pool size {size} with tag {tag}")]
-pub struct PagePoolOutOfMemory {
-    size: u64,
-    tag: String,
+pub enum Error {
+    /// Unable to allocate memory due to not enough free pages.
+    #[error("unable to allocate page pool size {size} with tag {tag}")]
+    PagePoolOutOfMemory {
+        /// The size in pages of the allocation.
+        size: u64,
+        /// The tag of the allocation.
+        tag: String,
+    },
+    /// Unable to create mapping requested for the allocation.
+    #[error("failed to create mapping for allocation")]
+    Mapping(#[source] anyhow::Error),
+    /// No matching allocation found for restore.
+    #[error("no matching allocation found for restore")]
+    NoMatchingAllocation,
 }
 
 /// Error returned when unrestored allocations are found.
@@ -318,6 +330,7 @@ pub struct PagePoolHandle {
     base_pfn: u64,
     pfn_bias: u64,
     size_pages: u64,
+    mapping: Option<SparseMapping>,
 }
 
 impl PagePoolHandle {
@@ -336,37 +349,28 @@ impl PagePoolHandle {
         self.size_pages
     }
 
+    /// The associated mapping with this allocation. This is only available if
+    /// this was allocated with [`PagePoolAllocator::alloc_with_mapping`].
+    pub fn mapping(&self) -> Option<&SparseMapping> {
+        self.mapping.as_ref()
+    }
+
     /// Create a memory block from this allocation.
     #[cfg(all(feature = "vfio", target_os = "linux"))]
     fn into_memory_block(
-        self,
-        pool_type: PoolType,
+        mut self,
         zero_block: bool,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        let gpa_fd = MshvVtlLow::new().context("failed to open gpa fd")?;
-        let len = (self.size_pages * HV_PAGE_SIZE) as usize;
-        let mapping = sparse_mmap::SparseMapping::new(len).context("failed to create mapping")?;
-        let gpa = self.base_pfn() * HV_PAGE_SIZE;
-
-        // When the pool references shared memory, on hardware isolated
-        // platforms the file_offset must have the shared bit set as these are
-        // decrypted pages. Setting this bit is okay on non-hardware isolated
-        // platforms, as it does nothing.
-        let file_offset = match pool_type {
-            PoolType::Private => gpa,
-            PoolType::Shared => {
-                tracing::trace!("setting MshvVtlLow::SHARED_MEMORY_FLAG");
-                gpa | MshvVtlLow::SHARED_MEMORY_FLAG
-            }
-        };
-
-        tracing::trace!(gpa, file_offset, len, "mapping dma buffer");
-        mapping
-            .map_file(0, len, gpa_fd.get(), file_offset, true)
-            .context("unable to map allocation")?;
+        // Take ownership of the mapping, as the outer memory block type will
+        // guarantee the mapping is dropped when the allocation is also dropped.
+        let mapping = self
+            .mapping
+            .take()
+            .context("allocation did not have associated mapping")?;
 
         // Zero memory block if requested.
         if zero_block {
+            let len = (self.size_pages * HV_PAGE_SIZE) as usize;
             mapping
                 .fill_at(0, 0, len)
                 .context("failed to zero allocated memory")?;
@@ -617,14 +621,43 @@ impl PagePoolAllocator {
         })
     }
 
-    /// Allocate contiguous pages from the page pool with the given tag. If a
-    /// contiguous region of free pages is not available, then an error is
-    /// returned.
-    pub fn alloc(
+    fn create_mapping(
+        base_pfn: u64,
+        page_count: u64,
+        pool_type: PoolType,
+    ) -> Result<SparseMapping, anyhow::Error> {
+        let len = (page_count * HV_PAGE_SIZE) as usize;
+        let gpa_fd = MshvVtlLow::new().context("failed to open gpa fd")?;
+        let mapping = SparseMapping::new(len).context("failed to create mapping")?;
+        let gpa = base_pfn * HV_PAGE_SIZE;
+
+        // When the pool references shared memory, on hardware isolated
+        // platforms the file_offset must have the shared bit set as these
+        // are decrypted pages. Setting this bit is okay on non-hardware
+        // isolated platforms, as it does nothing.
+        let file_offset = match pool_type {
+            PoolType::Private => gpa,
+            PoolType::Shared => {
+                tracing::trace!("setting MshvVtlLow::SHARED_MEMORY_FLAG");
+                gpa | MshvVtlLow::SHARED_MEMORY_FLAG
+            }
+        };
+
+        tracing::trace!(gpa, file_offset, len, "mapping allocation");
+
+        mapping
+            .map_file(0, len, gpa_fd.get(), file_offset, true)
+            .context("unable to map allocation")?;
+
+        Ok(mapping)
+    }
+
+    fn alloc_inner(
         &self,
         size_pages: NonZeroU64,
         tag: String,
-    ) -> Result<PagePoolHandle, PagePoolOutOfMemory> {
+        with_mapping: bool,
+    ) -> Result<PagePoolHandle, Error> {
         let mut inner = self.inner.lock();
         let size_pages = size_pages.get();
 
@@ -637,52 +670,105 @@ impl PagePoolAllocator {
                 | SlotState::AllocatedPendingRestore { .. }
                 | SlotState::Leaked { .. } => false,
             })
-            .ok_or(PagePoolOutOfMemory {
+            .ok_or(Error::PagePoolOutOfMemory {
                 size: size_pages,
                 tag: tag.clone(),
             })?;
 
         let pfn_bias = inner.pfn_bias;
 
-        let base_pfn = {
+        // Track which slots we should append if the mapping creation succeeds.
+        // If the mapping creation fails, we instead commit the original free
+        // slot back to the pool.
+        let (original_slot, allocation_slot, free_slot) = {
             let slot = inner.slots.swap_remove(index);
             assert!(matches!(slot.state, SlotState::Free));
 
-            inner.slots.push(Slot {
+            let allocation_slot = Slot {
                 base_pfn: slot.base_pfn,
                 size_pages,
                 state: SlotState::Allocated {
                     device_id: self.device_id,
                     tag: tag.clone(),
                 },
-            });
+            };
 
-            if slot.size_pages > size_pages {
-                inner.slots.push(Slot {
+            let free_slot = if slot.size_pages > size_pages {
+                Some(Slot {
                     base_pfn: slot.base_pfn + size_pages,
                     size_pages: slot.size_pages - size_pages,
                     state: SlotState::Free,
-                });
-            }
+                })
+            } else {
+                None
+            };
 
-            slot.base_pfn
+            (slot, allocation_slot, free_slot)
         };
+
+        let base_pfn = allocation_slot.base_pfn;
+
+        let mapping = if with_mapping {
+            let mapping = match Self::create_mapping(base_pfn, size_pages, self.typ) {
+                Ok(mapping) => mapping,
+                Err(e) => {
+                    // Commit the original slot back to the pool.
+                    inner.slots.push(original_slot);
+
+                    return Err(Error::Mapping(e));
+                }
+            };
+
+            Some(mapping)
+        } else {
+            None
+        };
+
+        // Commit state to the pool.
+        inner.slots.push(allocation_slot);
+        if let Some(free_slot) = free_slot {
+            inner.slots.push(free_slot);
+        }
 
         Ok(PagePoolHandle {
             inner: self.inner.clone(),
             base_pfn,
             pfn_bias,
             size_pages,
+            mapping,
         })
+    }
+
+    /// Allocate contiguous pages from the page pool with the given tag. If a
+    /// contiguous region of free pages is not available, then an error is
+    /// returned.
+    pub fn alloc(&self, size_pages: NonZeroU64, tag: String) -> Result<PagePoolHandle, Error> {
+        self.alloc_inner(size_pages, tag, false)
+    }
+
+    /// The same as [`Self::alloc`], but also creates an associated mapping for
+    /// the allocation so the user can use the mapping via
+    /// [`PagePoolHandle::mapping`].
+    pub fn alloc_with_mapping(
+        &self,
+        size_pages: NonZeroU64,
+        tag: String,
+    ) -> Result<PagePoolHandle, Error> {
+        self.alloc_inner(size_pages, tag, true)
     }
 
     /// Restore an allocation that was previously allocated in the pool. The
     /// base_pfn, size_pages, and device must match.
+    ///
+    /// `with_mapping` specifies if a mapping should be created that can be used
+    /// via [`PagePoolHandle::mapping`].
     pub fn restore_alloc(
         &self,
         base_pfn: u64,
         size_pages: NonZeroU64,
-    ) -> anyhow::Result<PagePoolHandle> {
+        with_mapping: bool,
+    ) -> Result<PagePoolHandle, Error> {
+        let size_pages = size_pages.get();
         let mut inner = self.inner.lock();
         let index = inner
             .slots
@@ -691,12 +777,20 @@ impl PagePoolAllocator {
                 if let SlotState::AllocatedPendingRestore { device_id, tag: _ } = &slot.state {
                     device_id == inner.device_ids[self.device_id].name()
                         && slot.base_pfn == base_pfn
-                        && slot.size_pages == size_pages.get()
+                        && slot.size_pages == size_pages
                 } else {
                     false
                 }
             })
-            .ok_or(anyhow::anyhow!("matching allocation not found"))?;
+            .ok_or(Error::NoMatchingAllocation)?;
+
+        let mapping = if with_mapping {
+            let mapping =
+                Self::create_mapping(base_pfn, size_pages, self.typ).map_err(Error::Mapping)?;
+            Some(mapping)
+        } else {
+            None
+        };
 
         inner.slots[index].state.restore_allocated(self.device_id);
 
@@ -704,7 +798,8 @@ impl PagePoolAllocator {
             inner: self.inner.clone(),
             base_pfn,
             pfn_bias: inner.pfn_bias,
-            size_pages: size_pages.get(),
+            size_pages,
+            mapping,
         })
     }
 }
@@ -732,12 +827,12 @@ impl user_driver::vfio::VfioDmaBuffer for PagePoolAllocator {
             .context("allocation of size 0 not supported")?;
 
         let alloc = self
-            .alloc(size_pages, "vfio dma".into())
+            .alloc_with_mapping(size_pages, "vfio dma".into())
             .context("failed to allocate shared mem")?;
 
         // The VfioDmaBuffer trait requires that newly allocated buffers are
         // zeroed.
-        alloc.into_memory_block(self.typ, true)
+        alloc.into_memory_block(true)
     }
 
     /// Restore a dma buffer in the predefined location with the given `len` in
@@ -755,12 +850,12 @@ impl user_driver::vfio::VfioDmaBuffer for PagePoolAllocator {
             .context("allocation of size 0 not supported")?;
 
         let alloc = self
-            .restore_alloc(base_pfn, size_pages)
+            .restore_alloc(base_pfn, size_pages, true)
             .context("failed to restore allocation")?;
 
         // Preserve the existing contents of memory and do not zero the restored
         // allocation.
-        alloc.into_memory_block(self.typ, false)
+        alloc.into_memory_block(false)
     }
 }
 
@@ -888,10 +983,10 @@ mod test {
         let alloc = pool.allocator("test".into()).unwrap();
 
         let restored_a1 = alloc
-            .restore_alloc(a1_pfn, a1_size.try_into().unwrap())
+            .restore_alloc(a1_pfn, a1_size.try_into().unwrap(), false)
             .unwrap();
         let restored_a2 = alloc
-            .restore_alloc(a2_pfn, a2_size.try_into().unwrap())
+            .restore_alloc(a2_pfn, a2_size.try_into().unwrap(), false)
             .unwrap();
 
         assert_eq!(restored_a1.base_pfn(), a1_pfn);
@@ -964,7 +1059,7 @@ mod test {
 
         let alloc = pool.allocator("test2".into()).unwrap();
         assert!(alloc
-            .restore_alloc(a1.base_pfn, a1.size_pages.try_into().unwrap())
+            .restore_alloc(a1.base_pfn, a1.size_pages.try_into().unwrap(), false)
             .is_err());
     }
 }
