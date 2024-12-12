@@ -36,6 +36,7 @@ use get_resources::ged::GuestEmulationRequest;
 use get_resources::ged::ModifyVtl2SettingsError;
 use get_resources::ged::SaveRestoreError;
 use get_resources::ged::Vtl0StartError;
+use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;

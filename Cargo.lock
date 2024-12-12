@@ -2249,6 +2249,7 @@ dependencies = [
  "futures",
  "get_protocol",
  "get_resources",
+ "guestmem",
  "guid",
  "inspect",
  "mesh",
