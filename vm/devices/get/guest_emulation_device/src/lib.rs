@@ -529,8 +529,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                         correlation_id: Guid::ZERO,
                         // TODO: disable nvme keep alive as it doesn't work with
                         // openvmm yet.
-                        capabilities_flags: SaveGuestVtl2StateFlags::new()
-                            .with_disable_nvme_keepalive(true),
+                        capabilities_flags: SaveGuestVtl2StateFlags::new(),
                         timeout_hint_secs: 60,
                     };
 

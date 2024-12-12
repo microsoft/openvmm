@@ -475,9 +475,8 @@ impl LoadedVm {
             anyhow::bail!("Servicing is not yet supported for isolated VMs");
         }
 
-        // capabilities_flags used to explicitly disable the feature
-        // which is enabled by default.
-        let nvme_keepalive = !capabilities_flags.disable_nvme_keepalive();
+        // capabilities_flags says if we should do nvme keep alive or not.
+        let nvme_keepalive = capabilities_flags.enable_nvme_keepalive();
 
         // Do everything before the log flush under a span.
         let mut state = async {
