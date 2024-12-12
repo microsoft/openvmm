@@ -128,7 +128,11 @@ impl BackingPrivate for HypervisorBackedArm64 {
 
     fn init(_this: &mut UhProcessor<'_, Self>) {}
 
-    type StateAccess<'p, 'a> = UhVpStateAccess<'a, 'p, Self> where Self: 'a + 'p, 'p: 'a;
+    type StateAccess<'p, 'a>
+        = UhVpStateAccess<'a, 'p, Self>
+    where
+        Self: 'a + 'p,
+        'p: 'a;
 
     fn access_vp_state<'a, 'p>(
         this: &'a mut UhProcessor<'p, Self>,
@@ -707,7 +711,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked>
     }
 }
 
-impl<'a, 'b, T: CpuIo> AccessCpuState for UhEmulationState<'a, 'b, T, HypervisorBacked> {
+impl<T: CpuIo> AccessCpuState for UhEmulationState<'_, '_, T, HypervisorBacked> {
     fn commit(&mut self) {
         self.vp.commit()
     }

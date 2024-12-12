@@ -678,7 +678,7 @@ impl<'a> AnsiStringRef<'a> {
     }
 }
 
-impl<'a> AsRef<ANSI_STRING> for AnsiStringRef<'a> {
+impl AsRef<ANSI_STRING> for AnsiStringRef<'_> {
     fn as_ref(&self) -> &ANSI_STRING {
         &self.0
     }

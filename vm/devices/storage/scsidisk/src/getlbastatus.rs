@@ -66,7 +66,7 @@ fn file_offset_to_device_block_index_and_length(
     // LogicalBlockCount and can have an issue for larger than 2TB disks.
     let lba_per_block = std::cmp::min(sector_count, u32::MAX.into());
     let block_size_large = lba_per_block * sector_size;
-    let block_count = ((disk_size + block_size_large - 1) / block_size_large) as u32;
+    let block_count = disk_size.div_ceil(block_size_large) as u32;
     DeviceBlockIndexInfo {
         first_partial_block_size: 0,
         first_full_block_index: 0,

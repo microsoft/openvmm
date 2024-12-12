@@ -80,7 +80,7 @@ impl PageAllocator {
     }
 
     pub async fn alloc_bytes(&self, n: usize) -> Option<ScopedPages<'_>> {
-        self.alloc_pages((n + PAGE_SIZE - 1) / PAGE_SIZE).await
+        self.alloc_pages(n.div_ceil(PAGE_SIZE)).await
     }
 }
 
@@ -119,7 +119,7 @@ struct ScopedPage {
     physical_address: u64,
 }
 
-impl<'a> ScopedPages<'a> {
+impl ScopedPages<'_> {
     pub fn page_count(&self) -> usize {
         self.pages.len()
     }

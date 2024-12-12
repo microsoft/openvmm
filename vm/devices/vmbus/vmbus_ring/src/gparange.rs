@@ -202,7 +202,7 @@ impl<'a> Iterator for MultiPagedRangeIter<'a> {
             return None;
         }
         let hdr = GpaRange::read_from_prefix(self.buf[0].as_bytes()).unwrap();
-        let page_count = ((hdr.offset + hdr.len) as usize + (PAGE_SIZE - 1)) / PAGE_SIZE; // N.B. already validated
+        let page_count = ((hdr.offset + hdr.len) as usize).div_ceil(PAGE_SIZE); // N.B. already validated
         let (this, rest) = self.buf.split_at(page_count + 1);
         let range = PagedRange::new(hdr.offset as usize, hdr.len as usize, &this[1..]).unwrap();
         self.count -= 1;

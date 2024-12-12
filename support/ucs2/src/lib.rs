@@ -99,7 +99,7 @@ impl<'a> From<&'a Ucs2LeSlice> for std::borrow::Cow<'a, Ucs2LeSlice> {
     }
 }
 
-impl<'a> From<Ucs2LeVec> for std::borrow::Cow<'a, Ucs2LeSlice> {
+impl From<Ucs2LeVec> for std::borrow::Cow<'_, Ucs2LeSlice> {
     fn from(val: Ucs2LeVec) -> Self {
         std::borrow::Cow::Owned(val)
     }

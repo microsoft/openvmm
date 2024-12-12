@@ -540,7 +540,7 @@ impl UhProcessorBox {
         &'a mut self,
         driver: &impl Driver,
         control: Option<&'a mut IdleControl>,
-    ) -> Result<UhProcessor<'_, T>, Error> {
+    ) -> Result<UhProcessor<'a, T>, Error> {
         if let Some(control) = &control {
             let vp_index = self.vp_info.base.vp_index;
 

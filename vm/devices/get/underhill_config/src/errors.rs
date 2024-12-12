@@ -50,7 +50,7 @@ impl ParseErrorsBase {
     }
 }
 
-impl<'a> ParseErrors<'a> {
+impl ParseErrors<'_> {
     /// Calls `f` with a new error list accessor with the given context.
     ///
     /// The context is used to provide more detailed error messages. It is

@@ -17,7 +17,7 @@ struct FieldFormatterVisitor<'a> {
     result: fmt::Result,
 }
 
-impl<'a> FieldFormatterVisitor<'a> {
+impl FieldFormatterVisitor<'_> {
     fn maybe_pad(&mut self) {
         if self.is_empty {
             self.is_empty = false;
@@ -42,7 +42,7 @@ impl<'a> FieldFormatterVisitor<'a> {
     }
 }
 
-impl<'a> Visit for FieldFormatterVisitor<'a> {
+impl Visit for FieldFormatterVisitor<'_> {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
         self.record_display(field, &value)
     }
@@ -92,7 +92,7 @@ impl<'a> Visit for FieldFormatterVisitor<'a> {
 ///    for values that we tend to log in HvLite.
 pub struct FieldFormatter;
 
-impl<'a> FormatFields<'a> for FieldFormatter {
+impl FormatFields<'_> for FieldFormatter {
     fn format_fields<R: RecordFields>(&self, writer: Writer<'_>, fields: R) -> fmt::Result {
         let mut visitor = FieldFormatterVisitor {
             writer,

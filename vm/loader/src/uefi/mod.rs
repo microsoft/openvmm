@@ -498,7 +498,7 @@ pub mod x86_64 {
             ConfigType::ConfigBlob(config) => {
                 let data = config.complete();
                 assert!(!data.is_empty());
-                let config_blob_page_count = (data.len() as u64 + HV_PAGE_SIZE - 1) / HV_PAGE_SIZE;
+                let config_blob_page_count = (data.len() as u64).div_ceil(HV_PAGE_SIZE);
                 importer
                     .import_pages(
                         CONFIG_BLOB_GPA_BASE / HV_PAGE_SIZE,

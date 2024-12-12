@@ -183,7 +183,7 @@ struct Unmounter<'a> {
     mount_point: &'a Path,
 }
 
-impl<'a> Drop for Unmounter<'a> {
+impl Drop for Unmounter<'_> {
     fn drop(&mut self) {
         if let Err(e) = Connection::unmount(self.mount_point, libc::MNT_DETACH) {
             tracing::error!("Unmount failed: {}", e);

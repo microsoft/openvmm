@@ -60,13 +60,13 @@ pub struct GicInfo {
 #[derive(Debug)]
 pub struct Error<'a>(ErrorKind<'a>);
 
-impl<'a> Display for Error<'a> {
+impl Display for Error<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("Parsing failed due to: {}", self.0))
     }
 }
 
-impl<'a> core::error::Error for Error<'a> {}
+impl core::error::Error for Error<'_> {}
 
 #[derive(Debug)]
 enum ErrorKind<'a> {
@@ -138,7 +138,7 @@ enum ErrorKind<'a> {
     },
 }
 
-impl<'a> Display for ErrorKind<'a> {
+impl Display for ErrorKind<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             ErrorKind::Dt(e) => f.write_fmt(format_args!("invalid device tree: {}", e)),

@@ -141,7 +141,7 @@ pub fn generate_vbs_measurement(
                     .with_data_unmeasured(true);
                 digest.record_gpa_page(
                     *gpa / PAGE_SIZE_4K,
-                    (*size_bytes as u64 + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K,
+                    (*size_bytes as u64).div_ceil(PAGE_SIZE_4K),
                     page_metadata,
                     &[],
                 )?;

@@ -208,7 +208,7 @@ impl AlignedHeapMemory {
         #[allow(clippy::declare_interior_mutable_const)]
         const ZERO_PAGE: AlignedPage = AlignedPage([ZERO; PAGE_SIZE]);
         let mut pages = Vec::new();
-        pages.resize_with((size + PAGE_SIZE - 1) / PAGE_SIZE, || ZERO_PAGE);
+        pages.resize_with(size.div_ceil(PAGE_SIZE), || ZERO_PAGE);
         Self {
             pages: pages.into(),
         }
