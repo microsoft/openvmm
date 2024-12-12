@@ -365,10 +365,12 @@ echo "{RUNNER_TEMP}/work" | {var_db_insert_working_dir}
 
             let var_db_inject_cmd = bootstrap_bash_var_db_inject(flowey_var, is_string);
 
+            let name = parameters[*pipeline_param_idx].name();
+
             let cmd = format!(
                 r#"
 cat <<'EOF' | {var_db_inject_cmd}
-${{{{ inputs.param{pipeline_param_idx} != '' && inputs.param{pipeline_param_idx} || '{default}' }}}}
+${{{{ inputs.{name} != '' && inputs.{name} || '{default}' }}}}
 EOF
 "#
             )
@@ -588,11 +590,12 @@ EOF
                 inputs: parameters
                     .into_iter()
                     .enumerate()
-                    .map(|(idx, param)| {
+                    .map(|(_idx, param)| {
                         (
-                            format!("param{idx}"),
+                            param.name().to_string(),
                             match param {
                                 flowey_core::pipeline::internal::Parameter::Bool {
+                                    name: _,
                                     description,
                                     default,
                                 } => github_yaml_defs::Input {
@@ -602,6 +605,7 @@ EOF
                                     ty: github_yaml_defs::InputType::Boolean,
                                 },
                                 flowey_core::pipeline::internal::Parameter::String {
+                                    name: _,
                                     description,
                                     default,
                                     possible_values: _,
@@ -614,6 +618,7 @@ EOF
                                     ty: github_yaml_defs::InputType::String,
                                 },
                                 flowey_core::pipeline::internal::Parameter::Num {
+                                    name: _,
                                     description,
                                     default,
                                     possible_values: _,

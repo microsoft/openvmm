@@ -669,6 +669,9 @@ impl Pipeline {
     /// To obtain a [`ReadVar<bool>`] that can be used within a node, use the
     /// [`PipelineJobCtx::use_parameter`] method.
     ///
+    /// `name` is the name of the parameter, which can be used by other
+    /// pipelines at queue time.
+    ///
     /// `description` is an arbitrary string, which will be be shown to users.
     ///
     /// `default` is the default value for the parameter. If none is provided,
@@ -678,12 +681,14 @@ impl Pipeline {
     /// parameter accepts.
     pub fn new_parameter_bool(
         &mut self,
+        name: impl AsRef<str>,
         description: impl AsRef<str>,
         default: Option<bool>,
     ) -> UseParameter<bool> {
         let idx = self.parameters.len();
         self.parameters.push(ParameterMeta {
             parameter: Parameter::Bool {
+                name: name.as_ref().into(),
                 description: description.as_ref().into(),
                 default,
             },
@@ -701,6 +706,9 @@ impl Pipeline {
     /// To obtain a [`ReadVar<i64>`] that can be used within a node, use the
     /// [`PipelineJobCtx::use_parameter`] method.
     ///
+    /// `name` is the name of the parameter, which can be used by other
+    /// pipelines at queue time.
+    ///
     /// `description` is an arbitrary string, which will be be shown to users.
     ///
     /// `default` is the default value for the parameter. If none is provided,
@@ -710,6 +718,7 @@ impl Pipeline {
     /// parameter accepts.
     pub fn new_parameter_num(
         &mut self,
+        name: impl AsRef<str>,
         description: impl AsRef<str>,
         default: Option<i64>,
         possible_values: Option<Vec<i64>>,
@@ -717,6 +726,7 @@ impl Pipeline {
         let idx = self.parameters.len();
         self.parameters.push(ParameterMeta {
             parameter: Parameter::Num {
+                name: name.as_ref().into(),
                 description: description.as_ref().into(),
                 default,
                 possible_values,
@@ -735,6 +745,9 @@ impl Pipeline {
     /// To obtain a [`ReadVar<String>`] that can be used within a node, use the
     /// [`PipelineJobCtx::use_parameter`] method.
     ///
+    /// `name` is the name of the parameter, which can be used by other
+    /// pipelines at queue time.
+    ///
     /// `description` is an arbitrary string, which will be be shown to users.
     ///
     /// `default` is the default value for the parameter. If none is provided,
@@ -746,6 +759,7 @@ impl Pipeline {
     /// then any string is allowed.
     pub fn new_parameter_string(
         &mut self,
+        name: impl AsRef<str>,
         description: impl AsRef<str>,
         default: Option<impl AsRef<str>>,
         possible_values: Option<Vec<String>>,
@@ -753,6 +767,7 @@ impl Pipeline {
         let idx = self.parameters.len();
         self.parameters.push(ParameterMeta {
             parameter: Parameter::String {
+                name: name.as_ref().into(),
                 description: description.as_ref().into(),
                 default: default.map(|x| x.as_ref().into()),
                 possible_values,
@@ -823,7 +838,13 @@ impl PipelineJobCtx<'_> {
             .used_by_jobs
             .insert(self.job_idx);
 
-        crate::node::thin_air_read_runtime_var(format!("param{}", param.idx), false)
+        crate::node::thin_air_read_runtime_var(
+            self.pipeline.parameters[param.idx]
+                .parameter
+                .name()
+                .to_string(),
+            false,
+        )
     }
 
     /// Shortcut which allows defining a bool pipeline parameter within a Job.
@@ -832,10 +853,11 @@ impl PipelineJobCtx<'_> {
     /// - use [`Pipeline::new_parameter_bool`] + [`Self::use_parameter`] instead.
     pub fn new_parameter_bool(
         &mut self,
+        name: impl AsRef<str>,
         description: impl AsRef<str>,
         default: Option<bool>,
     ) -> ReadVar<bool> {
-        let param = self.pipeline.new_parameter_bool(description, default);
+        let param = self.pipeline.new_parameter_bool(name, description, default);
         self.use_parameter(param)
     }
 
@@ -845,13 +867,14 @@ impl PipelineJobCtx<'_> {
     /// - use [`Pipeline::new_parameter_num`] + [`Self::use_parameter`] instead.
     pub fn new_parameter_num(
         &mut self,
+        name: impl AsRef<str>,
         description: impl AsRef<str>,
         default: Option<i64>,
         possible_values: Option<Vec<i64>>,
     ) -> ReadVar<i64> {
         let param = self
             .pipeline
-            .new_parameter_num(description, default, possible_values);
+            .new_parameter_num(name, description, default, possible_values);
         self.use_parameter(param)
     }
 
@@ -861,13 +884,14 @@ impl PipelineJobCtx<'_> {
     /// - use [`Pipeline::new_parameter_string`] + [`Self::use_parameter`] instead.
     pub fn new_parameter_string(
         &mut self,
+        name: impl AsRef<str>,
         description: impl AsRef<str>,
         default: Option<String>,
         possible_values: Option<Vec<String>>,
     ) -> ReadVar<String> {
         let param = self
             .pipeline
-            .new_parameter_string(description, default, possible_values);
+            .new_parameter_string(name, description, default, possible_values);
         self.use_parameter(param)
     }
 }
@@ -1125,10 +1149,6 @@ pub mod internal {
         )
     }
 
-    pub fn consistent_param_runtime_var_name(idx: usize) -> String {
-        format!("param{idx}")
-    }
-
     #[derive(Debug)]
     pub struct InternalAdoResourcesRepository {
         /// flowey-generated unique repo identifier
@@ -1273,18 +1293,31 @@ pub mod internal {
     #[derive(Debug, Clone)]
     pub enum Parameter {
         Bool {
+            name: String,
             description: String,
             default: Option<bool>,
         },
         String {
+            name: String,
             description: String,
             default: Option<String>,
             possible_values: Option<Vec<String>>,
         },
         Num {
+            name: String,
             description: String,
             default: Option<i64>,
             possible_values: Option<Vec<i64>>,
         },
+    }
+
+    impl Parameter {
+        pub fn name(&self) -> &str {
+            match self {
+                Parameter::Bool { name, .. } => name,
+                Parameter::String { name, .. } => name,
+                Parameter::Num { name, .. } => name,
+            }
+        }
     }
 }

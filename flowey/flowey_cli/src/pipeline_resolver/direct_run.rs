@@ -221,6 +221,7 @@ fn direct_run_do_work(
         {
             let (desc, value) = match &parameters[*pipeline_param_idx] {
                 Parameter::Bool {
+                    name: _,
                     description,
                     default,
                 } => (
@@ -228,6 +229,7 @@ fn direct_run_do_work(
                     default.as_ref().map(|v| serde_json::to_vec(v).unwrap()),
                 ),
                 Parameter::String {
+                    name: _,
                     description,
                     default,
                     possible_values: _,
@@ -236,6 +238,7 @@ fn direct_run_do_work(
                     default.as_ref().map(|v| serde_json::to_vec(v).unwrap()),
                 ),
                 Parameter::Num {
+                    name: _,
                     description,
                     default,
                     possible_values: _,
@@ -302,6 +305,7 @@ fn direct_run_do_work(
 
         if let Some(cond_param_idx) = cond_param_idx {
             let Parameter::Bool {
+                name: _,
                 description: _,
                 default,
             } = &parameters[cond_param_idx]

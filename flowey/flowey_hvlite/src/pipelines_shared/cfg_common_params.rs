@@ -72,7 +72,8 @@ fn get_params_local(
 fn get_params_cloud(
     pipeline: &mut Pipeline,
 ) -> anyhow::Result<FulfillCommonRequestsParamsResolver> {
-    let param_verbose = pipeline.new_parameter_bool("Run with verbose output", Some(false));
+    let param_verbose =
+        pipeline.new_parameter_bool("verbose", "Run with verbose output", Some(false));
 
     Ok(Box::new(move |ctx: &mut PipelineJobCtx<'_>| {
         flowey_lib_hvlite::_jobs::cfg_common::Params {
