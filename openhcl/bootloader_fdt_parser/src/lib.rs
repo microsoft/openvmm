@@ -170,6 +170,9 @@ pub struct ParsedBootDtInfo {
     pub memory_allocation_mode: MemoryAllocationMode,
     /// The isolation type of the partition.
     pub isolation: IsolationType,
+    /// VTL2 range for private pool memory.
+    #[inspect(iter_by_index)]
+    pub private_pool_ranges: Vec<MemoryRangeWithNode>,
 }
 
 fn err_to_owned(e: fdt::parser::Error<'_>) -> anyhow::Error {
@@ -207,6 +210,7 @@ struct OpenhclInfo {
     vtl0_alias_map: Option<u64>,
     memory_allocation_mode: MemoryAllocationMode,
     isolation: IsolationType,
+    private_pool_ranges: Vec<MemoryRangeWithNode>,
 }
 
 fn parse_memory_openhcl(node: &Node<'_>) -> anyhow::Result<AddressRange> {
@@ -374,6 +378,21 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         reserved_range
     };
 
+    // Report private pool ranges in a separate vec, for convenience.
+    let private_pool_ranges = memory
+        .iter()
+        .filter_map(|entry| match entry {
+            AddressRange::Memory(memory) => {
+                if memory.vtl_usage == MemoryVtlType::VTL2_GPA_POOL {
+                    Some(memory.range.clone())
+                } else {
+                    None
+                }
+            }
+            AddressRange::Mmio(_) => None,
+        })
+        .collect();
+
     let vtl0_alias_map = try_find_property(node, "vtl0-alias-map")
         .map(|prop| prop.read_u64(0).map_err(err_to_owned))
         .transpose()
@@ -400,6 +419,7 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         vtl0_alias_map,
         memory_allocation_mode,
         isolation,
+        private_pool_ranges,
     })
 }
 
@@ -493,6 +513,7 @@ impl ParsedBootDtInfo {
         let mut memory_allocation_mode = MemoryAllocationMode::Host;
         let mut isolation = IsolationType::None;
         let mut vtl2_reserved_range = MemoryRange::EMPTY;
+        let mut private_pool_ranges = Vec::new();
 
         let parser = Parser::new(raw)
             .map_err(err_to_owned)
@@ -526,6 +547,7 @@ impl ParsedBootDtInfo {
                         vtl0_alias_map: n_vtl0_alias_map,
                         memory_allocation_mode: n_memory_allocation_mode,
                         isolation: n_isolation,
+                        private_pool_ranges: n_private_pool_ranges,
                     } = parse_openhcl(&child)?;
                     vtl0_mmio = n_vtl0_mmio;
                     config_ranges = n_config_ranges;
@@ -535,6 +557,7 @@ impl ParsedBootDtInfo {
                     memory_allocation_mode = n_memory_allocation_mode;
                     isolation = n_isolation;
                     vtl2_reserved_range = n_vtl2_reserved_range;
+                    private_pool_ranges = n_private_pool_ranges;
                 }
 
                 _ if child.name.starts_with("memory@") => {
@@ -567,6 +590,7 @@ impl ParsedBootDtInfo {
             memory_allocation_mode,
             isolation,
             vtl2_reserved_range,
+            private_pool_ranges,
         })
     }
 }
@@ -891,6 +915,14 @@ mod tests {
                 }),
                 AddressRange::Memory(Memory {
                     range: MemoryRangeWithNode {
+                        range: MemoryRange::new(0x60000..0x70000),
+                        vnode: 0,
+                    },
+                    vtl_usage: MemoryVtlType::VTL2_GPA_POOL,
+                    igvm_type: MemoryMapEntryType::VTL2_PROTECTABLE,
+                }),
+                AddressRange::Memory(Memory {
+                    range: MemoryRangeWithNode {
                         range: MemoryRange::new(0x1000000..0x2000000),
                         vnode: 0,
                     },
@@ -926,6 +958,10 @@ mod tests {
             },
             isolation: IsolationType::Vbs,
             vtl2_reserved_range: MemoryRange::new(0x40000..0x50000),
+            private_pool_ranges: vec![MemoryRangeWithNode {
+                range: MemoryRange::new(0x60000..0x70000),
+                vnode: 0,
+            }],
         };
 
         let dt = build_dt(&orig_info).unwrap();

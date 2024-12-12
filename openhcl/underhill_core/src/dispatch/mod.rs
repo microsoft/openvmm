@@ -176,6 +176,8 @@ pub(crate) struct LoadedVm {
     pub _periodic_telemetry_task: Task<()>,
 
     pub shared_vis_pool: Option<PagePool>,
+    #[expect(dead_code, reason = "backport to be used in a follow up change")]
+    pub private_pool: Option<PagePool>,
 }
 
 pub struct LoadedVmState<T> {

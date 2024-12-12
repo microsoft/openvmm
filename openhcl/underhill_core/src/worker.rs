@@ -1468,6 +1468,18 @@ async fn new_underhill_vm(
         None
     };
 
+    // Enable the private pool which supports persisting ranges across servicing
+    // for DMA devices that support save restore. Today, this is only used for
+    // NVMe.
+    let private_pool = if !runtime_params.private_pool_ranges().is_empty() {
+        let ranges = runtime_params.private_pool_ranges();
+        let pool = PagePool::new_private_pool(ranges).context("failed to create private pool")?;
+
+        Some(pool)
+    } else {
+        None
+    };
+
     // Test with the highest VTL for which we have a GuestMemory object
     let highest_vtl_gm = gm.vtl1().unwrap_or(gm.vtl0());
 
@@ -1765,7 +1777,7 @@ async fn new_underhill_vm(
                     .as_ref()
                     .map(|spawner| {
                         spawner
-                            .allocator(device_id)
+                            .allocator(device_id.clone())
                             .map(|alloc| Arc::new(alloc) as _)
                     })
                     .unwrap_or_else(|| Ok(Arc::new(LockedMemorySpawner) as _))
@@ -2880,6 +2892,7 @@ async fn new_underhill_vm(
 
         _periodic_telemetry_task: periodic_telemetry_task,
         shared_vis_pool: shared_vis_pages_pool,
+        private_pool,
     };
 
     Ok(loaded_vm)
