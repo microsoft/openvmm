@@ -4517,12 +4517,14 @@ dependencies = [
  "hvdef",
  "inspect",
  "memory_range",
+ "mesh",
  "parking_lot",
  "sparse_mmap",
  "thiserror 2.0.0",
  "tracing",
  "user_driver",
  "vm_topology",
+ "vmcore",
 ]
 
 [[package]]
