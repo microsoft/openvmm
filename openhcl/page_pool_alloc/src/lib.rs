@@ -621,6 +621,9 @@ impl PagePoolAllocator {
         })
     }
 
+    // TODO: Feature gate this in the future to remove the always dependency on
+    // MshvVtlLow.
+    #[cfg(target_os = "linux")]
     fn create_mapping(
         base_pfn: u64,
         page_count: u64,
@@ -650,6 +653,15 @@ impl PagePoolAllocator {
             .context("unable to map allocation")?;
 
         Ok(mapping)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn create_mapping(
+        _base_pfn: u64,
+        _page_count: u64,
+        _pool_type: PoolType,
+    ) -> Result<SparseMapping, anyhow::Error> {
+        anyhow::bail!("not supported on this platform")
     }
 
     fn alloc_inner(
@@ -749,6 +761,7 @@ impl PagePoolAllocator {
     /// The same as [`Self::alloc`], but also creates an associated mapping for
     /// the allocation so the user can use the mapping via
     /// [`PagePoolHandle::mapping`].
+    #[cfg(target_os = "linux")]
     pub fn alloc_with_mapping(
         &self,
         size_pages: NonZeroU64,
