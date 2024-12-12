@@ -1577,18 +1577,17 @@ async fn new_underhill_vm(
         }
     }
 
-    // Set the shared memory allocator to GET that is required by attestation call-out.
+    // Set the gpa allocator to GET that is required by the attestation message.
+    //
+    // Note that the share visibility pool takes precedence, as when isolated
+    // shared memory must be used.
     if let Some(allocator) = shared_vis_pages_pool
         .as_ref()
         .map(|p| p.allocator("get".into()))
     {
-        get_client.set_shared_memory_allocator(
-            allocator.context("get shared memory allocator")?,
-            gm.shared_memory()
-                .or_else(|| env_cfg.enable_shared_visibility_pool.then(|| gm.vtl0()))
-                .context("missing shared memory for shared pool allocator")?
-                .clone(),
-        );
+        get_client.set_gpa_allocator(allocator.context("get shared memory allocator")?);
+    } else if let Some(allocator) = private_pool.as_ref().map(|p| p.allocator("get".into())) {
+        get_client.set_gpa_allocator(allocator.context("get private memory allocator")?);
     }
 
     // Create the `AttestationVmConfig` from `dps`, which will be used in
@@ -2464,9 +2463,14 @@ async fn new_underhill_vm(
         };
 
         // AK cert request depends on the availability of the shared memory
+        //
         // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
+        //
+        // TODO: Remove the has_page_pool_available when private_pool is always
+        // available on non isolated.
+        let has_page_pool_available = shared_vis_pages_pool.is_some() || private_pool.is_some();
         let ak_cert_type =
-            if !matches!(isolation, virt::IsolationType::Vbs) && shared_vis_pages_pool.is_some() {
+            if !matches!(isolation, virt::IsolationType::Vbs) && has_page_pool_available {
                 let request_ak_cert = GetTpmRequestAkCertHelperHandle::new(
                     attestation_type,
                     attestation_vm_config,
