@@ -197,7 +197,7 @@ fn init(
         // no invariant requirements.
         let hypercall_page = unsafe { mapper.map::<[u8; 4096]>(hypercall_page) };
         // SAFETY: no concurrent accessors to the page.
-        unsafe { HYPERCALL_PAGE.copy_from_slice(&*hypercall_page) };
+        unsafe { (&raw mut HYPERCALL_PAGE).copy_from_nonoverlapping(&*hypercall_page, 1) };
     }
 
     // Initialize the IDT.
