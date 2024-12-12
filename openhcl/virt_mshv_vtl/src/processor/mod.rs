@@ -19,7 +19,9 @@ cfg_if::cfg_if! {
         use hvdef::HvX64SegmentRegister;
         use virt::state::StateElement;
         use virt::vp::AccessVpState;
+        use virt::vp::MpState;
         use virt::x86::MsrError;
+        use virt_support_apic::LocalApic;
         use virt_support_x86emu::translate::TranslationRegisters;
     } else if #[cfg(guest_arch = "aarch64")] {
         use hv1_hypercall::Arm64RegisterState;
@@ -66,7 +68,6 @@ use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
-use virt_support_apic::LocalApic;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::vmtime::VmTimeAccess;
 use vtl_array::VtlArray;
@@ -147,12 +148,11 @@ impl VtlsTlbLocked {
     }
 }
 
+#[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
 pub struct LapicState {
     lapic: LocalApic,
-    halted: bool,
-    idle: bool,
-    startup_suspend: bool,
+    activity: MpState,
     nmi_pending: bool,
 }
 
@@ -801,17 +801,20 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             lapics
                 .each_mut()
                 .map(|lapic| lapic.set_apic_base(apic_base).unwrap());
-            // Only the VTL 0 non-BSP LAPICs should be in the startup suspend state.
-            let mut first = true;
+            // Only the VTL 0 non-BSP LAPICs should be in the WaitForSipi state.
+            let mut first_vtl = true;
             lapics.map(|lapic| {
+                let activity = if first_vtl && !vp_info.base.is_bsp() {
+                    MpState::WaitForSipi
+                } else {
+                    MpState::Running
+                };
                 let state = LapicState {
                     lapic,
-                    halted: false,
-                    idle: false,
+                    activity,
                     nmi_pending: false,
-                    startup_suspend: first && !vp_info.base.is_bsp(),
                 };
-                first = false;
+                first_vtl = false;
                 state
             })
         });

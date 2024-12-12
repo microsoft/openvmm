@@ -62,6 +62,7 @@ use virt::state::HvRegisterState;
 use virt::state::StateElement;
 use virt::vp;
 use virt::vp::AccessVpState;
+use virt::vp::MpState;
 use virt::x86::MsrError;
 use virt::x86::MsrErrorExt;
 use virt::Processor;
@@ -326,27 +327,13 @@ impl BackingPrivate for HypervisorBackedX86 {
             return Ok(());
         };
 
-        let lapic = &mut lapics[vtl];
         let ApicWork {
             init,
             extint,
             sipi,
             nmi,
             interrupt,
-        } = lapic.lapic.scan(&mut this.vmtime, scan_irr);
-
-        if nmi || lapic.nmi_pending {
-            lapic.nmi_pending = true;
-            this.handle_nmi(vtl)?;
-        }
-
-        if let Some(vector) = interrupt {
-            this.handle_interrupt(vtl, vector)?;
-        }
-
-        if extint {
-            todo!();
-        }
+        } = lapics[vtl].lapic.scan(&mut this.vmtime, scan_irr);
 
         // TODO WHP GUEST VSM: An INIT/SIPI targeted at a VP with more than one guest VTL enabled is ignored.
         if init {
@@ -357,19 +344,35 @@ impl BackingPrivate for HypervisorBackedX86 {
             this.handle_sipi(vtl, vector)?;
         }
 
+        let Some(lapics) = this.backing.lapics.as_mut() else {
+            unreachable!()
+        };
+
+        // Interrupts are ignored while waiting for SIPI.
+        if lapics[vtl].activity != MpState::WaitForSipi {
+            if nmi || lapics[vtl].nmi_pending {
+                lapics[vtl].nmi_pending = true;
+                this.handle_nmi(vtl)?;
+            }
+
+            if let Some(vector) = interrupt {
+                this.handle_interrupt(vtl, vector)?;
+            }
+
+            if extint {
+                todo!();
+            }
+        }
+
         Ok(())
     }
 
     fn halt_in_usermode(this: &mut UhProcessor<'_, Self>, target_vtl: GuestVtl) -> bool {
         if let Some(lapics) = this.backing.lapics.as_ref() {
-            if lapics[target_vtl].halted
-                || lapics[target_vtl].idle
-                || lapics[target_vtl].startup_suspend
-            {
-                return true;
-            }
+            lapics[target_vtl].activity != MpState::Running
+        } else {
+            false
         }
-        false
     }
 
     fn handle_cross_vtl_interrupts(
@@ -918,7 +921,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
     }
 
     fn handle_halt(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
-        self.vp.backing.lapics.as_mut().unwrap()[self.intercepted_vtl].halted = true;
+        self.vp.backing.lapics.as_mut().unwrap()[self.intercepted_vtl].activity = MpState::Halted;
         Ok(())
     }
 
@@ -965,7 +968,9 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         let lapic_state = &mut self.backing.lapics.as_mut().unwrap()[vtl];
 
         // Exit idle when an interrupt is pending
-        lapic_state.idle = false;
+        if lapic_state.activity == MpState::Idle {
+            lapic_state.activity = MpState::Running;
+        }
 
         if pending_interruption.interruption_pending()
             || interrupt_state.interrupt_shadow()
@@ -1012,7 +1017,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             )
             .map_err(UhRunVpError::EmulationState)?;
 
-        lapic_state.halted = false;
+        lapic_state.activity = MpState::Running;
         tracing::trace!(vector, "interrupted");
         lapic_state.lapic.acknowledge_interrupt(vector);
 
@@ -1038,7 +1043,9 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         let lapic = &mut self.backing.lapics.as_mut().unwrap()[vtl];
 
         // Exit idle when an interrupt is pending
-        lapic.idle = false;
+        if lapic.activity == MpState::Idle {
+            lapic.activity = MpState::Running;
+        }
 
         if pending_interruption.interruption_pending()
             || interrupt_state.nmi_masked()
@@ -1071,7 +1078,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             )
             .map_err(UhRunVpError::EmulationState)?;
 
-        lapic.halted = false;
+        lapic.activity = MpState::Running;
         lapic.nmi_pending = false;
 
         tracing::trace!("nmi");
@@ -1087,7 +1094,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
     fn handle_sipi(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
         let lapic = &mut self.backing.lapics.as_mut().unwrap()[vtl];
-        if lapic.startup_suspend {
+        if lapic.activity == MpState::WaitForSipi {
             let address = (vector as u64) << 12;
             let cs: hvdef::HvX64SegmentRegister = hvdef::HvX64SegmentRegister {
                 base: address,
@@ -1104,9 +1111,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
                     ],
                 )
                 .map_err(UhRunVpError::EmulationState)?;
-            lapic.startup_suspend = false;
-            lapic.halted = false;
-            lapic.idle = false;
+            lapic.activity = MpState::Running;
         }
         Ok(())
     }
