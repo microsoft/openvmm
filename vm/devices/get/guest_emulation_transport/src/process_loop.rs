@@ -1303,7 +1303,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 correlation_id: notification_header.correlation_id,
                 deadline: std::time::Instant::now()
                     + std::time::Duration::from_secs(notification_header.timeout_hint_secs as u64),
-                capabilities_flags: notification_header.capabilities_flags.into(),
+                capabilities_flags: notification_header.capabilities_flags,
             })
             .map_err(|_| {
                 FatalError::TooManyGuestNotifications(

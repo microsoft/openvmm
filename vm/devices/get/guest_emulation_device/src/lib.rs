@@ -28,6 +28,7 @@ use get_protocol::HeaderGeneric;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
 use get_protocol::RegisterState;
+use get_protocol::SaveGuestVtl2StateFlags;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::StartVtl0Status;
 use get_protocol::UefiConsoleMode;
@@ -526,7 +527,10 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                             get_protocol::GuestNotifications::SAVE_GUEST_VTL2_STATE,
                         ),
                         correlation_id: Guid::ZERO,
-                        capabilities_flags: 0,
+                        // TODO: disable nvme keep alive as it doesn't work with
+                        // openvmm yet.
+                        capabilities_flags: SaveGuestVtl2StateFlags::new()
+                            .with_disable_nvme_keepalive(true),
                         timeout_hint_secs: 60,
                     };
 
