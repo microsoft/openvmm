@@ -761,7 +761,6 @@ impl PagePoolAllocator {
     /// The same as [`Self::alloc`], but also creates an associated mapping for
     /// the allocation so the user can use the mapping via
     /// [`PagePoolHandle::mapping`].
-    #[cfg(target_os = "linux")]
     pub fn alloc_with_mapping(
         &self,
         size_pages: NonZeroU64,
