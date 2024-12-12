@@ -40,7 +40,7 @@ async fn boot_alias_map(config: PetriVmConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Basic boot test with TPM enabled.
+/// Basic boot tests with TPM enabled.
 #[vmm_test(
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
@@ -54,7 +54,12 @@ async fn boot_with_tpm(config: PetriVmConfig) -> anyhow::Result<()> {
         .with_tpm();
 
     let (vm, agent) = match os_flavor {
-        OsFlavor::Windows => config.run().await?,
+        OsFlavor::Windows => {
+            // TODO: Add in-guest TPM tests for Windows as we currently
+            // do have an easy way to interact with TPM without a private
+            // or custom tool.
+            config.run().await?
+        }
         OsFlavor::Linux => {
             let mut vm = config.run_with_lazy_pipette().await?;
             // Workaround to https://github.com/microsoft/openvmm/issues/379
@@ -117,10 +122,18 @@ async fn vbs_boot_single_proc(config: PetriVmConfig) -> anyhow::Result<()> {
 // TODO: Reenable the linux test after the reboot failure is resolved.
 #[vmm_test(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    // openhcl_uefi_vbs_x64(vhd(ubuntu_2204_server_x64))
+    openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
 )]
 async fn vbs_boot_with_tpm(config: PetriVmConfig) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
     let mut vm = config.with_tpm().run_without_agent().await?;
+
+    if matches!(os_flavor, OsFlavor::Linux) {
+        // Workaround to https://github.com/microsoft/openvmm/issues/379
+        assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+        vm.reset().await?;
+    }
+
     vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
@@ -186,20 +199,6 @@ async fn vtl2_pipette(config: PetriVmConfig) -> anyhow::Result<()> {
     assert!(output.contains("openvmm_hcl vm"));
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-    Ok(())
-}
-
-/// Boot through the UEFI firmware with a TPM, it will shut itself down after booting.
-// We don't build the TPM on Windows, since building OpenSSL on Windows is hard.
-// TODO: Add checks that the TPM is visible to the guest once we have a way to do that.
-// For now this will just test that the TPM is wired up correctly, which could result
-// in errors with resolving internal resources.
-#[cfg_attr(windows, vmm_test(openhcl_uefi_x64(none)))]
-#[cfg_attr(not(windows), vmm_test(uefi_x64(none), openhcl_uefi_x64(none)))]
-async fn frontpage_tpm(config: PetriVmConfig) -> anyhow::Result<()> {
-    let mut vm = config.with_tpm().run_without_agent().await?;
-    vm.wait_for_successful_boot_event().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
 }

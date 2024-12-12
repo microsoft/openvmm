@@ -1816,8 +1816,7 @@ async fn request_igvm_attest(
         Err(FatalError::SharedMemoryUnavailable)?
     };
 
-    let requested_pages =
-        (request.response_buffer_len + hvdef::HV_PAGE_SIZE_USIZE - 1) / hvdef::HV_PAGE_SIZE_USIZE;
+    let requested_pages = (request.response_buffer_len).div_ceil(hvdef::HV_PAGE_SIZE_USIZE);
     let size_pages = std::num::NonZeroU64::new(requested_pages as u64).expect("is nonzero");
     let handle = shared_pool_allocator
         .alloc(size_pages, "igvm_attest".to_string())
