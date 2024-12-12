@@ -872,9 +872,6 @@ impl user_driver::vfio::VfioDmaBuffer for PagePoolAllocator {
     }
 }
 
-// TODO: Provide function to convert alloc handle to vfio dma buffer memory
-// block for restoring drivers.
-
 #[cfg(test)]
 mod test {
     use super::*;
