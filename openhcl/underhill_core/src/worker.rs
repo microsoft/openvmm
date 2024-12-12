@@ -2463,9 +2463,14 @@ async fn new_underhill_vm(
         };
 
         // AK cert request depends on the availability of the shared memory
+        //
         // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
+        //
+        // TODO: Remove the has_page_pool_available when private_pool is always
+        // available on non isolated.
+        let has_page_pool_available = shared_vis_pages_pool.is_some() || private_pool.is_some();
         let ak_cert_type =
-            if !matches!(isolation, virt::IsolationType::Vbs) && shared_vis_pages_pool.is_some() {
+            if !matches!(isolation, virt::IsolationType::Vbs) && has_page_pool_available {
                 let request_ak_cert = GetTpmRequestAkCertHelperHandle::new(
                     attestation_type,
                     attestation_vm_config,
