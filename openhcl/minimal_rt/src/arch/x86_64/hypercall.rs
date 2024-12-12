@@ -8,7 +8,7 @@
 unsafe extern "C" {
     /// The hypercall page. The actual hypercall page must be mapped on top of
     /// this page before it is used.
-    pub unsafe static mut HYPERCALL_PAGE: [u8; 4096];
+    pub static mut HYPERCALL_PAGE: [u8; 4096];
 }
 
 core::arch::global_asm! {
