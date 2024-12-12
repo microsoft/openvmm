@@ -944,8 +944,10 @@ impl PciConfigSpace for IdeDevice {
             let offset = HeaderType00(offset);
             tracing::trace!(?offset, value, "ide pci config space write");
 
-            const BUS_MASTER_IO_ENABLE_MASK: u32 =
-                (Command::PIO_ENABLED.bits() | Command::BUS_MASTER.bits()) as u32;
+            const BUS_MASTER_IO_ENABLE_MASK: u32 = Command::new()
+                .with_pio_enabled(true)
+                .with_bus_master(true)
+                .into_bits() as u32;
 
             match offset {
                 HeaderType00::STATUS_COMMAND => {

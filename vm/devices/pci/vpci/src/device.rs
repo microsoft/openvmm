@@ -830,7 +830,7 @@ impl VpciChannel {
                 return Err(InvalidBars::ResourceHigh64 { index: i });
             }
             let mut mask = self.bar_masks[i] as u64;
-            if mask as u32 & cfg_space::BarEncodingBits::TYPE_64_BIT.bits() != 0 {
+            if mask as u32 & cfg_space::BarEncodingBits::TYPE_64_BIT.into_bits() != 0 {
                 high64 = true;
                 mask |= (self.bar_masks[i + 1] as u64) << 32;
             }
@@ -884,9 +884,9 @@ impl VpciChannel {
                 .unwrap_or(0)
         };
         if on {
-            command |= cfg_space::Command::MMIO_ENABLED.bits() as u32;
+            command |= cfg_space::Command::MMIO_ENABLED.into_bits() as u32;
         } else {
-            command &= !(cfg_space::Command::MMIO_ENABLED.bits() as u32);
+            command &= !(cfg_space::Command::MMIO_ENABLED.into_bits() as u32);
         }
         {
             device
@@ -1624,7 +1624,7 @@ mod tests {
 
         pci.pci_cfg_write(
             0x4,
-            pci_core::spec::cfg_space::Command::MMIO_ENABLED.bits() as u32,
+            pci_core::spec::cfg_space::Command::MMIO_ENABLED.into_bits() as u32,
         )
         .unwrap();
 
@@ -1790,7 +1790,7 @@ mod tests {
         pci.lock()
             .pci_cfg_write(
                 0x4,
-                pci_core::spec::cfg_space::Command::MMIO_ENABLED.bits() as u32,
+                pci_core::spec::cfg_space::Command::MMIO_ENABLED.into_bits() as u32,
             )
             .unwrap();
 

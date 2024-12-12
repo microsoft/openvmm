@@ -4912,7 +4912,7 @@ dependencies = [
 name = "pci_core"
 version = "0.0.0"
 dependencies = [
- "bitflags 1.3.2",
+ "bitfield-struct",
  "chipset_device",
  "guestmem",
  "inspect",

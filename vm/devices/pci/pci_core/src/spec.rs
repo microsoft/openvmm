@@ -186,6 +186,7 @@ pub mod hwid {
 /// Sources: PCI 2.3 Spec - Chapter 6
 #[allow(missing_docs)] // primarily enums/structs with self-explanatory variants
 pub mod cfg_space {
+    use bitfield_struct::bitfield;
     use inspect::Inspect;
     use zerocopy::AsBytes;
     use zerocopy::FromBytes;
@@ -236,63 +237,104 @@ pub mod cfg_space {
 
     pub const HEADER_TYPE_00_SIZE: u16 = 0x40;
 
-    bitflags::bitflags! {
-        /// BAR in-band encoding bits.
-        ///
-        /// The low bits of the BAR are not actually part of the address.
-        /// Instead, they are used to in-band encode various bits of
-        /// metadata about the BAR, and are masked off when determining the
-        /// actual address.
-        pub struct BarEncodingBits: u32 {
-            const USE_PIO = 1 << 0;
-            // only used in MMIO
-            const TYPE_32_BIT = 0b00 << 1;
-            const TYPE_64_BIT = 0b10 << 1;
-            const PREFETCHABLE = 1 << 3;
-        }
+    /// BAR in-band encoding bits.
+    ///
+    /// The low bits of the BAR are not actually part of the address.
+    /// Instead, they are used to in-band encode various bits of
+    /// metadata about the BAR, and are masked off when determining the
+    /// actual address.
+    #[bitfield(u32)]
+    pub struct BarEncodingBits {
+        pub use_pio: bool,
+
+        _reserved: bool,
+
+        /// False indicates 32 bit.
+        /// Only used in MMIO
+        pub type_64_bit: bool,
+        pub prefetchable: bool,
+
+        #[bits(28)]
+        _reserved2: u32,
     }
 
-    bitflags::bitflags! {
-        /// Command Register
-        #[derive(AsBytes, FromBytes, FromZeroes, Inspect)]
-        #[repr(transparent)]
-        #[inspect(debug)]
-        pub struct Command: u16 {
-            const PIO_ENABLED                    = 1 << 0;
-            const MMIO_ENABLED                   = 1 << 1;
-            const BUS_MASTER                     = 1 << 2;
-            const SPECIAL_CYCLES                 = 1 << 3;
-            const ENABLE_MEMORY_WRITE_INVALIDATE = 1 << 4;
-            const VGA_PALETTE_SNOOP              = 1 << 5;
-            const PARITY_ERROR_RESPONSE          = 1 << 6;
-            // const RESERVED                    = 1 << 7; // must be 0
-            const ENABLE_SERR                    = 1 << 8;
-            const ENABLE_FAST_B2B                = 1 << 9;
-            const INTX_DISABLE                   = 1 << 10;
-            // rest of bits are reserved
-        }
+    impl BarEncodingBits {
+        pub const TYPE_64_BIT: BarEncodingBits = BarEncodingBits::new().with_type_64_bit(true);
     }
 
-    bitflags::bitflags! {
-        /// Status Register
-        #[derive(AsBytes, FromBytes, FromZeroes)]
-        #[repr(transparent)]
-        pub struct Status: u16 {
-            // const RESERVED           = 0b000 << 0;
-            const INTERRUPT_STATUS      = 1 << 3;
-            const CAPABILITIES_LIST     = 1 << 4;
-            const CAPABLE_MHZ_66        = 1 << 5;
-            // const RESERVED           = 1 << 6;
-            const CAPABLE_FAST_B2B      = 1 << 7;
-            const ERR_MASTER_PARITY     = 1 << 8;
-            const DEVSEL_FAST           = 0b00 << 10;
-            const DEVSEL_MED            = 0b01 << 10;
-            const DEVSEL_SLOW           = 0b10 << 10;
-            const ABORT_TARGET_SIGNALED = 1 << 11;
-            const ABORT_TARGET_RECEIVED = 1 << 12;
-            const ABORT_MASTER_RECEIVED = 1 << 13;
-            const ERR_SIGNALED          = 1 << 14;
-            const ERR_DETECTED_PARITY   = 1 << 15;
+    /// Command Register
+    #[derive(Inspect)]
+    #[bitfield(u16)]
+    #[derive(AsBytes, FromBytes, FromZeroes)]
+    pub struct Command {
+        pub pio_enabled: bool,
+        pub mmio_enabled: bool,
+        pub bus_master: bool,
+        pub special_cycles: bool,
+        pub enable_memory_write_invalidate: bool,
+        pub vga_palette_snoop: bool,
+        pub parity_error_response: bool,
+        /// must be 0
+        #[bits(1)]
+        pub reserved: u16,
+        pub enable_serr: bool,
+        pub enable_fast_b2b: bool,
+        pub intx_disable: bool,
+        #[bits(5)]
+        pub reserved2: u16,
+    }
+
+    impl Command {
+        pub const MMIO_ENABLED: Command = Command::new().with_mmio_enabled(true);
+    }
+
+    /// Status Register
+    #[bitfield(u16)]
+    #[derive(AsBytes, FromBytes, FromZeroes)]
+    pub struct Status {
+        #[bits(3)]
+        _reserved: u16,
+        pub interrupt_status: bool,
+        pub capabilities_list: bool,
+        pub capable_mhz_66: bool,
+        _reserved2: bool,
+        pub capable_fast_b2b: bool,
+        pub err_master_parity: bool,
+
+        #[bits(2)]
+        pub devsel: DevSel,
+
+        pub abort_target_signaled: bool,
+        pub abort_target_received: bool,
+        pub abort_master_received: bool,
+        pub err_signaled: bool,
+        pub err_detected_parity: bool,
+    }
+
+    impl Status {
+        pub const CAPABILITIES_LIST: Status = Status::new().with_capabilities_list(true);
+    }
+
+    #[derive(Debug)]
+    #[repr(u16)]
+    pub enum DevSel {
+        Fast = 0b00,
+        Medium = 0b01,
+        Slow = 0b10,
+    }
+
+    impl DevSel {
+        pub const fn from_bits(bits: u16) -> Self {
+            match bits {
+                0b00 => DevSel::Fast,
+                0b01 => DevSel::Medium,
+                0b10 => DevSel::Slow,
+                _ => unreachable!(),
+            }
+        }
+
+        pub const fn into_bits(self) -> u16 {
+            self as u16
         }
     }
 }
