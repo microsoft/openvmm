@@ -6,7 +6,7 @@ use mesh::rpc::Rpc;
 use vmbus_core::protocol;
 use vmbus_core::HvsockConnectRequest;
 
-/// Tracks guest-to-host hvsocket requests that the host has not responded toyet.
+/// Tracks guest-to-host hvsocket requests that the host has not responded to yet.
 pub(crate) struct HvsockRequestTracker {
     pending_requests: Vec<Request>,
 }
