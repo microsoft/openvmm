@@ -247,8 +247,9 @@ impl ConfigSpaceType0Emulator {
             const MIN_BAR_SIZE: u64 = 4096;
             let len = std::cmp::max(len.next_power_of_two(), MIN_BAR_SIZE);
             let mask64 = !(len - 1);
-            bar_masks[bar_index] =
-                mask64 as u32 | cfg_space::BarEncodingBits::TYPE_64_BIT.into_bits();
+            bar_masks[bar_index] = cfg_space::BarEncodingBits::from_bits(mask64 as u32)
+                .with_type_64_bit(true)
+                .into_bits();
             bar_masks[bar_index + 1] = (mask64 >> 32) as u32;
             mapped_memory[bar_index] = Some(mapped);
         }
@@ -510,7 +511,9 @@ impl ConfigSpaceType0Emulator {
                     let bar_index = (offset - HeaderType00::BAR0.0) as usize / 4;
                     let mut bar_value = val & self.bar_masks[bar_index];
                     if bar_index & 1 == 0 && self.bar_masks[bar_index] != 0 {
-                        bar_value |= cfg_space::BarEncodingBits::TYPE_64_BIT.into_bits();
+                        bar_value = cfg_space::BarEncodingBits::from_bits(bar_value)
+                            .with_type_64_bit(true)
+                            .into_bits();
                     }
                     self.state.base_addresses[bar_index] = bar_value;
                 }

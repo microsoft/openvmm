@@ -258,10 +258,6 @@ pub mod cfg_space {
         _reserved2: u32,
     }
 
-    impl BarEncodingBits {
-        pub const TYPE_64_BIT: BarEncodingBits = BarEncodingBits::new().with_type_64_bit(true);
-    }
-
     /// Command Register
     #[derive(Inspect)]
     #[bitfield(u16)]
@@ -282,10 +278,6 @@ pub mod cfg_space {
         pub intx_disable: bool,
         #[bits(5)]
         pub reserved2: u16,
-    }
-
-    impl Command {
-        pub const MMIO_ENABLED: Command = Command::new().with_mmio_enabled(true);
     }
 
     /// Status Register
@@ -311,10 +303,6 @@ pub mod cfg_space {
         pub err_detected_parity: bool,
     }
 
-    impl Status {
-        pub const CAPABILITIES_LIST: Status = Status::new().with_capabilities_list(true);
-    }
-
     #[derive(Debug)]
     #[repr(u16)]
     pub enum DevSel {
@@ -324,7 +312,7 @@ pub mod cfg_space {
     }
 
     impl DevSel {
-        pub const fn from_bits(bits: u16) -> Self {
+        const fn from_bits(bits: u16) -> Self {
             match bits {
                 0b00 => DevSel::Fast,
                 0b01 => DevSel::Medium,
@@ -333,7 +321,7 @@ pub mod cfg_space {
             }
         }
 
-        pub const fn into_bits(self) -> u16 {
+        const fn into_bits(self) -> u16 {
             self as u16
         }
     }

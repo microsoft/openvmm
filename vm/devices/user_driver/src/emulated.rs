@@ -82,7 +82,9 @@ impl<T: PciConfigSpace + MmioIntercept> EmulatedDevice<T> {
         device
             .pci_cfg_write(
                 0x4,
-                pci_core::spec::cfg_space::Command::MMIO_ENABLED.into_bits() as u32,
+                pci_core::spec::cfg_space::Command::new()
+                    .with_mmio_enabled(true)
+                    .into_bits() as u32,
             )
             .unwrap();
 

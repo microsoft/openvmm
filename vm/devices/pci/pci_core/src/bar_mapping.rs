@@ -42,7 +42,7 @@ impl BarMappings {
             let bar_address;
             let mut bar_mask;
             let len;
-            if bar_masks[i] & cfg_space::BarEncodingBits::TYPE_64_BIT.into_bits() != 0 {
+            if cfg_space::BarEncodingBits::from_bits(bar_masks[i]).type_64_bit() {
                 bar_mask = (bar_masks[i + 1] as u64) << 32 | bar_masks[i] as u64;
                 bar_address = (base_addresses[i + 1] as u64) << 32 | base_addresses[i] as u64;
                 len = 2;

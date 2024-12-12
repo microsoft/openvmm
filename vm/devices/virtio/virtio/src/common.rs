@@ -987,7 +987,12 @@ mod tests {
                 .unwrap();
 
             dev.pci_device
-                .pci_cfg_write(0x4, cfg_space::Command::MMIO_ENABLED.into_bits() as u32)
+                .pci_cfg_write(
+                    0x4,
+                    cfg_space::Command::new()
+                        .with_mmio_enabled(true)
+                        .into_bits() as u32,
+                )
                 .unwrap();
 
             let mut device_status = VIRTIO_ACKNOWLEDGE as u8;
@@ -1616,7 +1621,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             capabilities,
-            (cfg_space::Status::CAPABILITIES_LIST.into_bits() as u32) << 16
+            (cfg_space::Status::new()
+                .with_capabilities_list(true)
+                .into_bits() as u32)
+                << 16
         );
         let mut next_cap_offset = 0;
         pci_test_device
@@ -1772,7 +1780,12 @@ mod tests {
 
         pci_test_device
             .pci_device
-            .pci_cfg_write(0x4, cfg_space::Command::MMIO_ENABLED.into_bits() as u32)
+            .pci_cfg_write(
+                0x4,
+                cfg_space::Command::new()
+                    .with_mmio_enabled(true)
+                    .into_bits() as u32,
+            )
             .unwrap();
 
         // device feature bank index
