@@ -1660,22 +1660,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fixed_pool_alloc"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "hcl",
- "hvdef",
- "inspect",
- "memory_range",
- "mesh",
- "parking_lot",
- "sparse_mmap",
- "thiserror 2.0.0",
- "user_driver",
-]
-
-[[package]]
 name = "fixedbitset"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6909,7 +6893,6 @@ dependencies = [
  "firmware_pcat",
  "firmware_uefi",
  "firmware_uefi_custom_vars",
- "fixed_pool_alloc",
  "framebuffer",
  "fs-err",
  "futures",

@@ -72,9 +72,9 @@ impl RuntimeParameters {
         self.snp_secrets.as_deref()
     }
 
-    /// A sorted slice of the parts of VTL2 memory set aside during servicing.
-    pub fn dma_preserve_memory_map(&self) -> &[MemoryRange] {
-        &self.parsed_openhcl_boot.dma_preserve_ranges
+    /// The memory ranges to use for the private pool
+    pub fn private_pool_ranges(&self) -> &[MemoryRangeWithNode] {
+        &self.parsed_openhcl_boot.private_pool_ranges
     }
 }
 
