@@ -16,28 +16,28 @@ use std::sync::Mutex;
 use std::sync::Arc;
 
 /// An emulated device fuzzer
-pub struct FuzzEmulatedDevice<T> {
+pub struct FuzzEmulatedDevice<'a, T> {
     device: EmulatedDevice<T>,
-    unstructured: Arc<Mutex<Unstructured<'static>>>,
+    u: &Unstructured<'a>,
 }
 
-impl<T: InspectMut> Inspect for FuzzEmulatedDevice<T> {
+impl<T: 'a + InspectMut> Inspect for FuzzEmulatedDevice<'a, T> {
     fn inspect(&self, req: inspect::Request<'_>) {
         self.device.inspect(req);
     }
 }
 
-impl<T: PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<T> {
+impl<T: 'a + PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<'a, T> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory, u: Arc<Mutex<Unstructured<'static>>>) -> Self {
+    pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory, u: &Unstructured<'a>) -> Self {
         Self {
             device: EmulatedDevice::new(device, msi_set, shared_mem),
-            unstructured: u,
+            u,
         }
     }
 }
 
-impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<T> {
+impl<T: 'a + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<'a, T> {
     type Registers = Mapping<T>;
     type DmaAllocator = EmulatedDmaAllocator;
     fn id(&self) -> &str {
