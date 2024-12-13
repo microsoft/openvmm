@@ -124,6 +124,7 @@ struct ProcessorStatsX86 {
 impl BackingPrivate for HypervisorBackedX86 {
     type HclBacking = MshvX64;
     type Shared = ();
+    type EmulationCache = ();
 
     fn shared(_: &BackingShared) -> &Self::Shared {
         &()
@@ -176,7 +177,11 @@ impl BackingPrivate for HypervisorBackedX86 {
 
     fn init(_this: &mut UhProcessor<'_, Self>) {}
 
-    type StateAccess<'p, 'a> = UhVpStateAccess<'a, 'p, Self> where Self: 'a + 'p, 'p: 'a;
+    type StateAccess<'p, 'a>
+        = UhVpStateAccess<'a, 'p, Self>
+    where
+        Self: 'a + 'p,
+        'p: 'a;
 
     fn access_vp_state<'a, 'p>(
         this: &'a mut UhProcessor<'p, Self>,
