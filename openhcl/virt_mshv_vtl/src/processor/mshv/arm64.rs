@@ -902,7 +902,6 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedArm64> {
     }
 }
 
-// TODO GUEST VSM Audit save state
 mod save_restore {
     use super::HypervisorBackedArm64;
     use super::UhProcessor;
@@ -942,6 +941,7 @@ mod save_restore {
             let internal_activity = self
                 .runner
                 // Non-VTL0 VPs should never be in startup suspend, so we only need to check VTL0.
+                // The hypervisor handles halt and idle for us.
                 .get_vp_register(GuestVtl::Vtl0, HvArm64RegisterName::InternalActivityState)
                 .map_err(|err| {
                     SaveError::Other(anyhow!("unable to query startup suspend: {}", err))
@@ -965,6 +965,7 @@ mod save_restore {
                 self.runner
                     .set_vp_registers(
                         // Non-VTL0 VPs should never be in startup suspend, so we only need to handle VTL0.
+                        // The hypervisor handles halt and idle for us.
                         GuestVtl::Vtl0,
                         [(HvArm64RegisterName::InternalActivityState, reg)],
                     )
