@@ -7,6 +7,7 @@ mod fuzz_emulated_device;
 
 use crate::fuzz_emulated_device::FuzzEmulatedDevice;
 
+use std::mem;
 use arbitrary::{Arbitrary, Unstructured};
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_ramdisk::RamDisk;
@@ -22,41 +23,91 @@ use std::sync::Arc;
 use user_driver::emulated::{DeviceSharedMemory, EmulatedDevice};
 use vmcore::vm_task::{SingleDriverBackend, VmTaskDriverSource};
 use xtask_fuzz::fuzz_target;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use lazy_static::lazy_static;
 
+lazy_static! {
+    pub static ref VEC_FRONTEND: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+    pub static ref VEC_BACKEND: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+}
+
 const INPUT_LEN:usize=4196;
+
+#[derive(Debug)]
+pub struct LargeVec {
+    pub vec: Vec<u8>
+}
+
+impl<'a> Arbitrary<'a> for LargeVec {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        let mut vec = Vec::new();
+        while vec.len() < 4000 {
+            vec.push(u.arbitrary()?);
+        }
+        Ok(LargeVec {
+            vec,
+        })
+    }   
+}
 
 /// Writes the given arbitrary bytes to disk and reads arbitrary number of blocks from an arbitrary
 /// address in the disk. The number of blocks being read can be larger than the provided memory.
 ///
 /// TODO
-fn do_fuzz(u: Arc<Mutex<Unstructured<'_>>>) {
+fn do_fuzz() {
     // DefaultPool provides us the standard DefaultDriver and takes care of async fn calls
     DefaultPool::run_with(|driver| async move {
         // ---- SETUP ----
         let mut fuzzing_driver = FuzzNvmeDriver::new(driver).await;
 
+        {
+            println!("Do Fuzz Called with {} bytes", VEC_FRONTEND.lock().unwrap().len());
+        }
+
         // ---- FUZZING ----
-        while !u.lock().unwrap().is_empty() {
-            let next_action = fuzzing_driver.get_arbitrary_action(Arc::clone(&u)).unwrap();
+        loop {
+            {
+                if VEC_FRONTEND.lock().unwrap().is_empty() {
+                    break;
+                }
+            }
 
-            println!("{:x?}", next_action);
+            let next_action = fuzzing_driver.get_arbitrary_action();
 
-            fuzzing_driver.execute_action(next_action);
+            match next_action {
+                Ok(action) => {
+                    // println!("{:x?}", action);
+                    // fuzzing_driver.execute_action(action).await;
+                },
+                Err(_e) => {
+                    break;
+                }
+            }
         }
 
         // ---- CLEANUP ----
-        fuzzing_driver.shutdown().await;
+        // fuzzing_driver.shutdown().await;
     });
 }
 
 // Closure that allows the fuzzer to call the do_fuzz function.
 // TODO: Do I need to implement something with the corpus here? Seems like the corpus here would
 // only indicate length of the input that is passed in which doesn't really make too much sense
-fuzz_target!(|input: &[u8]| {
+fuzz_target!(|input: LargeVec| {
     xtask_fuzz::init_tracing_if_repro();
-    do_fuzz(Arc::new(Mutex::new(Unstructured::new(&input))))
+    let (input_frontend, input_backend) = input.vec.split_at(input.vec.len() / 2);
+
+    {
+    let mut vec_frontend = VEC_FRONTEND.lock().unwrap();
+    *vec_frontend = input_frontend.to_vec();
+    }
+
+    {
+    let mut vec_backend = VEC_BACKEND.lock().unwrap();
+    *vec_backend = input_backend.to_vec();
+    }
+
+    do_fuzz();
 });
 
 
@@ -100,6 +151,7 @@ impl FuzzNvmeDriver {
             .unwrap();
 
         let device = FuzzEmulatedDevice::new(nvme, msi_set, mem);
+
         let nvme_driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();
 
         let namespace = nvme_driver.namespace(1).await.unwrap();
@@ -145,9 +197,25 @@ impl FuzzNvmeDriver {
     }
 
     /// Returns an arbitrary action to be taken. Along with arbitrary values
-    pub fn get_arbitrary_action(&self, u: Arc<Mutex<Unstructured<'_>>>) -> arbitrary::Result<NvmeDriverAction>{
-       let action: NvmeDriverAction = u.lock().unwrap().arbitrary()?; 
-       Ok(action)
+    pub fn get_arbitrary_action(&self) -> arbitrary::Result<NvmeDriverAction>{
+        // Number of bytes we need to remove from the vector:
+        let num_bytes = size_of::<NvmeDriverAction>();
+        let action;
+
+        let mut vec_frontend = VEC_FRONTEND.lock().unwrap();
+
+        if vec_frontend.len() < num_bytes {
+            println!("Not enough data");
+            return Err(arbitrary::Error::NotEnoughData);
+        } else {
+            println!("Consuming {} bytes", num_bytes);
+        }
+
+        let drained: Vec<u8> = vec_frontend.drain(0..num_bytes).collect();
+        let mut u = Unstructured::new(&drained);
+
+        action = u.arbitrary()?;
+        return Ok(action);
     }
 
     /// Executes an action
