@@ -1018,6 +1018,22 @@ impl<'a, 'b> UhCpuState<'a, 'b, HypervisorBackedX86> for x86emu::CpuState {
             efer: efer.as_u64(),
         }
     }
+
+    fn flush(&self, vp: &'a mut UhProcessor<'b, HypervisorBackedX86>, vtl: GuestVtl) {
+        vp
+            .runner
+            .set_vp_registers(
+                vtl,
+                [
+                    (HvX64RegisterName::Rip, self.rip),
+                    (HvX64RegisterName::Rflags, self.rflags.into()),
+                    (HvX64RegisterName::Rsp, self.gps[x86emu::CpuState::RSP]),
+                ],
+            )
+            .unwrap();
+
+        vp.runner.cpu_context_mut().gps = self.gps;
+    }
 }
 
 impl UhProcessor<'_, HypervisorBackedX86> {
@@ -1351,15 +1367,6 @@ impl<T: CpuIo> EmulatorSupport
     fn set_gp(&mut self, reg: Register, v: u64) {
         let index = reg.number();
         self.state.gps[index] = v;
-
-        if index == x86emu::CpuState::RSP {
-            self.vp
-                .runner
-                .set_vp_registers(self.vtl, [(HvX64RegisterName::Rsp, v)])
-                .unwrap();
-        } else {
-            self.vp.runner.cpu_context_mut().gps[index] = v;
-        }
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
@@ -1377,10 +1384,6 @@ impl<T: CpuIo> EmulatorSupport
 
     fn set_rip(&mut self, v: u64) {
         self.state.rip = v;
-        self.vp
-            .runner
-            .set_vp_registers(self.vtl, [(HvX64RegisterName::Rip, v)])
-            .unwrap();
     }
 
     fn segment(&mut self, index: usize) -> SegmentRegister {
@@ -1400,13 +1403,6 @@ impl<T: CpuIo> EmulatorSupport
     }
 
     fn set_rflags(&mut self, v: RFlags) {
-        self.vp
-            .runner
-            .set_vp_registers::<[(HvX64RegisterName, u64); 1]>(
-                self.vtl,
-                [(HvX64RegisterName::Rflags, v.into())],
-            )
-            .unwrap();
         self.state.rflags = v;
     }
 

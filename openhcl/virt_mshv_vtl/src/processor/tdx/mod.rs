@@ -2251,6 +2251,13 @@ impl<'a, 'b> UhCpuState<'a, 'b, TdxBacked> for TdxCpuState {
             efer: vp.backing.efer,
         }
     }
+
+    fn flush(&self, vp: &'a mut UhProcessor<'b, TdxBacked>, _vtl: GuestVtl) {
+        let enter_state = vp.runner.tdx_enter_guest_state_mut();
+        enter_state.gps = self.gps;
+        enter_state.rip = self.rip;
+        enter_state.rflags = self.rflags.into();
+    }
 }
 
 impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, TdxCpuState> {
@@ -2276,8 +2283,6 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, Tdx
     fn set_gp(&mut self, reg: Register, v: u64) {
         let index = reg.number();
         self.state.gps[index] = v;
-        let state = self.vp.runner.tdx_enter_guest_state_mut();
-        state.gps[index] = v;
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
@@ -2295,8 +2300,6 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, Tdx
 
     fn set_rip(&mut self, v: u64) {
         self.state.rip = v;
-        let backing_state = self.vp.runner.tdx_enter_guest_state_mut();
-        backing_state.rip = v;
     }
 
     fn segment(&mut self, index: usize) -> x86defs::SegmentRegister {
@@ -2328,8 +2331,6 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, Tdx
 
     fn set_rflags(&mut self, v: RFlags) {
         self.state.rflags = v;
-        let backing_state = self.vp.runner.tdx_enter_guest_state_mut();
-        backing_state.rflags = v.into();
     }
 
     fn instruction_bytes(&self) -> &[u8] {

@@ -1045,13 +1045,15 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             state: uh_register_state,
             vtl,
         };
-        virt_support_x86emu::emulate::emulate_mnf_write_fast_path(
+        let res = virt_support_x86emu::emulate::emulate_mnf_write_fast_path(
             &mut emulation_state,
             guest_memory,
             devices,
             interruption_pending,
             tlb_lock_held,
-        )
+        );
+        emulation_state.state.flush(&mut *self, vtl);
+        res
     }
 
     /// Emulates an instruction due to a memory access exit.
@@ -1203,11 +1205,20 @@ struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing, S: UhCpuState<'a, 'b, U>> 
     interruption_pending: bool,
     devices: &'a T,
     vtl: GuestVtl,
+<<<<<<< HEAD
     #[cfg_attr(
         guest_arch = "x86_64",
         expect(dead_code, reason = "not used yet in x86_64")
     )]
     cache: U::EmulationCache,
+=======
+    state: S,
+}
+
+pub trait UhCpuState<'a, 'b, U: Backing> {
+    fn new(vp: &'a mut UhProcessor<'b, U>, vtl: GuestVtl) -> Self;
+    fn flush(&self, vp: &'a mut UhProcessor<'b, U>, vtl: GuestVtl);
+>>>>>>> 18d4c43 (use state object for all backends)
 }
 
 struct UhHypercallHandler<'a, 'b, T, B: Backing> {
