@@ -482,12 +482,13 @@ impl LoadedVm {
         &mut self,
         correlation_id: Guid,
         deadline: std::time::Instant,
-        capabilities_flags: SaveGuestVtl2StateFlags,
+        _capabilities_flags: SaveGuestVtl2StateFlags,
     ) -> anyhow::Result<ServicingState> {
         if self.isolation.is_isolated() {
             anyhow::bail!("Servicing is not yet supported for isolated VMs");
         }
-        let nvme_keepalive = !capabilities_flags.disable_nvme_keepalive();
+        let nvme_keepalive = false;
+
         // Do everything before the log flush under a span.
         let mut state = async {
             if !self.stop().await {
