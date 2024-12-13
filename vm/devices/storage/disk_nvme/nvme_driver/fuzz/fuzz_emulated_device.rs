@@ -16,28 +16,26 @@ use std::sync::Mutex;
 use std::sync::Arc;
 
 /// An emulated device fuzzer
-pub struct FuzzEmulatedDevice<'a, T> {
+pub struct FuzzEmulatedDevice<T> {
     device: EmulatedDevice<T>,
-    u: &Unstructured<'a>,
 }
 
-impl<T: 'a + InspectMut> Inspect for FuzzEmulatedDevice<'a, T> {
+impl<T: InspectMut> Inspect for FuzzEmulatedDevice<T> {
     fn inspect(&self, req: inspect::Request<'_>) {
         self.device.inspect(req);
     }
 }
 
-impl<T: 'a + PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<'a, T> {
+impl<T: PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<T> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory, u: &Unstructured<'a>) -> Self {
+    pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory) -> Self {
         Self {
             device: EmulatedDevice::new(device, msi_set, shared_mem),
-            u,
         }
     }
 }
 
-impl<T: 'a + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<'a, T> {
+impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<T> {
     type Registers = Mapping<T>;
     type DmaAllocator = EmulatedDmaAllocator;
     fn id(&self) -> &str {
