@@ -346,9 +346,9 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
 
 #[derive(Default)]
 pub struct UhCpuStateCache {
-    pc: Option<u64>,
-    sp: Option<u64>,
-    x18: Option<u64>,
+    pc: Option<(u64, bool)>,
+    sp: Option<(u64, bool)>,
+    x18: Option<(u64, bool)>,
 
     cpsr: Option<Cpsr64>,
 }
@@ -356,13 +356,13 @@ pub struct UhCpuStateCache {
 impl<T: CpuIo> AccessCpuState for UhEmulationState<'_, '_, T, HypervisorBackedArm64> {
     fn commit(&mut self) {
         let mut expensive_regs = Vec::with_capacity(3);
-        if let Some(x18) = self.cache.x18 {
+        if let Some((x18, true)) = self.cache.x18 {
             expensive_regs.push((HvArm64RegisterName::X18, x18));
         }
-        if let Some(pc) = self.cache.pc {
+        if let Some((pc, true)) = self.cache.pc {
             expensive_regs.push((HvArm64RegisterName::XPc, pc));
         }
-        if let Some(sp) = self.cache.sp {
+        if let Some((sp, true)) = self.cache.sp {
             expensive_regs.push((HvArm64RegisterName::XSp, sp));
         }
         self.vp
@@ -374,18 +374,19 @@ impl<T: CpuIo> AccessCpuState for UhEmulationState<'_, '_, T, HypervisorBackedAr
     fn x(&mut self, index: u8) -> u64 {
         assert!(index < 31);
         if index == 18 {
-            if let Some(x18) = self.cache.x18 {
-                x18
-            } else {
-                let reg_val = self
-                    .vp
-                    .runner
-                    .get_vp_register(self.vtl, HvArm64RegisterName::X18)
-                    .expect("register query should not fail")
-                    .as_u64();
-                self.cache.x18 = Some(reg_val);
-                reg_val
-            }
+            self.cache
+                .x18
+                .get_or_insert_with(|| {
+                    (
+                        self.vp
+                            .runner
+                            .get_vp_register(self.vtl, HvArm64RegisterName::X18)
+                            .expect("register query should not fail")
+                            .as_u64(),
+                        false,
+                    )
+                })
+                .0
         } else {
             self.vp.runner.cpu_context().x[index as usize]
         }
@@ -395,7 +396,7 @@ impl<T: CpuIo> AccessCpuState for UhEmulationState<'_, '_, T, HypervisorBackedAr
         assert!(index < 31);
         self.vp.runner.cpu_context_mut().x[index as usize] = data;
         if index == 18 {
-            self.cache.x18 = Some(data);
+            self.cache.x18 = Some((data, true));
         }
     }
 
@@ -442,22 +443,23 @@ impl<T: CpuIo> AccessCpuState for UhEmulationState<'_, '_, T, HypervisorBackedAr
     }
 
     fn sp(&mut self) -> u64 {
-        if let Some(sp) = self.cache.sp {
-            sp
-        } else {
-            let reg_val = self
-                .vp
-                .runner
-                .get_vp_register(self.vtl, HvArm64RegisterName::XSp)
-                .expect("register query should not fail")
-                .as_u64();
-            self.cache.sp = Some(reg_val);
-            reg_val
-        }
+        self.cache
+            .sp
+            .get_or_insert_with(|| {
+                (
+                    self.vp
+                        .runner
+                        .get_vp_register(self.vtl, HvArm64RegisterName::XSp)
+                        .expect("register query should not fail")
+                        .as_u64(),
+                    false,
+                )
+            })
+            .0
     }
 
     fn update_sp(&mut self, data: u64) {
-        self.cache.sp = Some(data);
+        self.cache.sp = Some((data, true));
     }
 
     fn fp(&mut self) -> u64 {
@@ -477,38 +479,34 @@ impl<T: CpuIo> AccessCpuState for UhEmulationState<'_, '_, T, HypervisorBackedAr
     }
 
     fn pc(&mut self) -> u64 {
-        if let Some(pc) = self.cache.pc {
-            pc
-        } else {
-            let reg_val = self
-                .vp
-                .runner
-                .get_vp_register(self.vtl, HvArm64RegisterName::XPc)
-                .expect("register query should not fail")
-                .as_u64();
-            self.cache.pc = Some(reg_val);
-            reg_val
-        }
+        self.cache
+            .pc
+            .get_or_insert_with(|| {
+                (
+                    self.vp
+                        .runner
+                        .get_vp_register(self.vtl, HvArm64RegisterName::XPc)
+                        .expect("register query should not fail")
+                        .as_u64(),
+                    false,
+                )
+            })
+            .0
     }
 
     fn update_pc(&mut self, data: u64) {
-        self.cache.pc = Some(data);
+        self.cache.pc = Some((data, true));
     }
 
     fn cpsr(&mut self) -> Cpsr64 {
-        if let Some(cpsr) = self.cache.cpsr {
-            cpsr
-        } else {
-            let reg_val = self
-                .vp
+        *self.cache.cpsr.get_or_insert_with(|| {
+            self.vp
                 .runner
                 .get_vp_register(self.vtl, HvArm64RegisterName::Cpsr)
                 .expect("register query should not fail")
-                .as_u64();
-            let reg_val = Cpsr64::from(reg_val);
-            self.cache.cpsr = Some(reg_val);
-            reg_val
-        }
+                .as_u64()
+                .into()
+        })
     }
 }
 
