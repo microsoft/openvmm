@@ -941,7 +941,7 @@ mod save_restore {
 
             let internal_activity = self
                 .runner
-                // TODO GUEST VSM
+                // Non-VTL0 VPs should never be in startup suspend, so we only need to check VTL0.
                 .get_vp_register(GuestVtl::Vtl0, HvArm64RegisterName::InternalActivityState)
                 .map_err(|err| {
                     SaveError::Other(anyhow!("unable to query startup suspend: {}", err))
@@ -964,7 +964,7 @@ mod save_restore {
                 let reg = u64::from(HvInternalActivityRegister::new().with_startup_suspend(true));
                 self.runner
                     .set_vp_registers(
-                        // TODO GUEST VSM
+                        // Non-VTL0 VPs should never be in startup suspend, so we only need to handle VTL0.
                         GuestVtl::Vtl0,
                         [(HvArm64RegisterName::InternalActivityState, reg)],
                     )
