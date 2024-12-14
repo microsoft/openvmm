@@ -11,7 +11,7 @@ use super::vp_state;
 use super::vp_state::UhVpStateAccess;
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
-use super::UhCpuState;
+use super::UhX86EmulatorRegisters;
 use super::UhEmulationState;
 use super::UhHypercallHandler;
 use super::UhRunVpError;
@@ -67,7 +67,6 @@ use virt_support_apic::OffloadNotSupported;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
-use virt_support_x86emu::emulate::EmulatorSupport;
 use virt_support_x86emu::emulate::TranslateMode;
 use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::vmtime::VmTimeAccess;
@@ -2238,7 +2237,7 @@ impl UhProcessor<'_, TdxBacked> {
     }
 }
 
-impl<'a, 'b> UhCpuState<'a, 'b, TdxBacked> for TdxCpuState {
+impl<'a, 'b> UhX86EmulatorRegisters<'a, 'b, TdxBacked> for TdxCpuState {
     fn new(vp: &'a mut UhProcessor<'b, TdxBacked>, _vtl: GuestVtl) -> Self {
         let cs = TdxExit(vp.runner.tdx_vp_enter_exit_info()).cs();
         let enter_state = vp.runner.tdx_enter_guest_state();
@@ -2277,12 +2276,12 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, Tdx
 
     fn gp(&mut self, reg: Register) -> u64 {
         let index = reg.number();
-        self.state.gps[index]
+        self.registers.gps[index]
     }
 
     fn set_gp(&mut self, reg: Register, v: u64) {
         let index = reg.number();
-        self.state.gps[index] = v;
+        self.registers.gps[index] = v;
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
@@ -2295,11 +2294,11 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, Tdx
     }
 
     fn rip(&mut self) -> u64 {
-        self.state.rip
+        self.registers.rip
     }
 
     fn set_rip(&mut self, v: u64) {
-        self.state.rip = v;
+        self.registers.rip = v;
     }
 
     fn segment(&mut self, index: usize) -> x86defs::SegmentRegister {
@@ -2312,25 +2311,25 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, Tdx
             CpuState::GS => TdxSegmentReg::Gs,
             _ => panic!("invalid segment register"),
         };
-        let reg = self.state.segs[index]
+        let reg = self.registers.segs[index]
             .get_or_insert_with(|| self.vp.read_segment(GuestVtl::Vtl0, tdx_segment_index));
         (*reg).into()
     }
 
     fn efer(&mut self) -> u64 {
-        self.state.efer
+        self.registers.efer
     }
 
     fn cr0(&mut self) -> u64 {
-        self.state.cr0
+        self.registers.cr0
     }
 
     fn rflags(&mut self) -> RFlags {
-        self.state.rflags
+        self.registers.rflags
     }
 
     fn set_rflags(&mut self, v: RFlags) {
-        self.state.rflags = v;
+        self.registers.rflags = v;
     }
 
     fn instruction_bytes(&self) -> &[u8] {

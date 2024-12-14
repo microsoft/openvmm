@@ -5,7 +5,7 @@
 
 mod tlb_lock;
 
-use super::UhCpuState;
+use super::UhX86EmulatorRegisters;
 use super::UhEmulationState;
 use super::UhProcessor;
 use super::UhRunVpError;
@@ -1312,7 +1312,7 @@ pub(crate) fn validate_xsetbv_exit(input: XsetbvExitInput) -> Option<u64> {
     Some(xfem)
 }
 
-impl<'a, 'b, T: CpuIo, B: HardwareIsolatedBacking, S: UhCpuState<'a, 'b, B>> TranslateGvaSupport
+impl<'a, 'b, T: CpuIo, B: HardwareIsolatedBacking, S: UhX86EmulatorRegisters<'a, 'b, B>> TranslateGvaSupport
     for UhEmulationState<'a, 'b, T, B, S>
 {
     type Error = UhRunVpError;

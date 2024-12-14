@@ -1034,15 +1034,15 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     where
         for<'b> UhEmulationState<'b, 'a, D, T, S>:
             virt_support_x86emu::emulate::EmulatorSupport<Error = UhRunVpError>,
-        for<'b> S: UhCpuState<'b, 'a, T>,
+        for<'b> S: UhX86EmulatorRegisters<'b, 'a, T>,
     {
         let guest_memory = &self.partition.gm[vtl];
-        let uh_register_state = S::new(&mut *self, vtl);
+        let registers = S::new(&mut *self, vtl);
         let mut emulation_state = UhEmulationState {
             vp: &mut *self,
             interruption_pending,
             devices,
-            state: uh_register_state,
+            registers,
             vtl,
         };
         let res = virt_support_x86emu::emulate::emulate_mnf_write_fast_path(
@@ -1052,7 +1052,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             interruption_pending,
             tlb_lock_held,
         );
-        emulation_state.state.flush(&mut *self, vtl);
+        emulation_state.registers.flush(&mut *self, vtl);
         res
     }
 
@@ -1067,7 +1067,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     where
         for<'b> UhEmulationState<'b, 'a, D, T, S>:
             virt_support_x86emu::emulate::EmulatorSupport<Error = UhRunVpError>,
-        for<'b> S: UhCpuState<'b, 'a, T>,
+        for<'b> S: UhX86EmulatorRegisters<'b, 'a, T>,
     {
         let guest_memory = &self.partition.gm[vtl];
         virt_support_x86emu::emulate::emulate(
@@ -1200,25 +1200,16 @@ fn from_seg(reg: HvX64SegmentRegister) -> x86defs::SegmentRegister {
     }
 }
 
-struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing, S: UhCpuState<'a, 'b, U>> {
+struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing, S: UhX86EmulatorRegisters<'a, 'b, U>> {
     vp: &'a mut UhProcessor<'b, U>,
     interruption_pending: bool,
     devices: &'a T,
     vtl: GuestVtl,
-<<<<<<< HEAD
     #[cfg_attr(
         guest_arch = "x86_64",
         expect(dead_code, reason = "not used yet in x86_64")
     )]
     cache: U::EmulationCache,
-=======
-    state: S,
-}
-
-pub trait UhCpuState<'a, 'b, U: Backing> {
-    fn new(vp: &'a mut UhProcessor<'b, U>, vtl: GuestVtl) -> Self;
-    fn flush(&self, vp: &'a mut UhProcessor<'b, U>, vtl: GuestVtl);
->>>>>>> 18d4c43 (use state object for all backends)
 }
 
 struct UhHypercallHandler<'a, 'b, T, B: Backing> {

@@ -11,7 +11,7 @@ use super::vp_state::UhVpStateAccess;
 use super::BackingPrivate;
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
-use super::UhCpuState;
+use super::UhX86EmulatorRegisters;
 use super::UhEmulationState;
 use super::UhRunVpError;
 use crate::devmsr;
@@ -1434,7 +1434,7 @@ impl UhProcessor<'_, SnpBacked> {
     }
 }
 
-impl<'a, 'b> UhCpuState<'a, 'b, SnpBacked> for x86emu::CpuState {
+impl<'a, 'b> UhX86EmulatorRegisters<'a, 'b, SnpBacked> for x86emu::CpuState {
     fn new(vp: &'a mut UhProcessor<'b, SnpBacked>, vtl: GuestVtl) -> Self {
         let vmsa = vp.runner.vmsa(vtl);
         let gps = [
@@ -1512,12 +1512,12 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked, x86
 
     fn gp(&mut self, reg: Register) -> u64 {
         let index = reg.number();
-        self.state.gps[index]
+        self.registers.gps[index]
     }
 
     fn set_gp(&mut self, reg: Register, v: u64) {
         let index = reg.number();
-        self.state.gps[index] = v;
+        self.registers.gps[index] = v;
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
@@ -1533,31 +1533,31 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked, x86
     }
 
     fn rip(&mut self) -> u64 {
-        self.state.rip
+        self.registers.rip
     }
 
     fn set_rip(&mut self, v: u64) {
-        self.state.rip = v;
+        self.registers.rip = v;
     }
 
     fn segment(&mut self, index: usize) -> SegmentRegister {
-        self.state.segs[index]
+        self.registers.segs[index]
     }
 
     fn efer(&mut self) -> u64 {
-        self.state.efer
+        self.registers.efer
     }
 
     fn cr0(&mut self) -> u64 {
-        self.state.cr0
+        self.registers.cr0
     }
 
     fn rflags(&mut self) -> RFlags {
-        self.state.rflags
+        self.registers.rflags
     }
 
     fn set_rflags(&mut self, v: RFlags) {
-        self.state.rflags = v;
+        self.registers.rflags = v;
     }
 
     fn instruction_bytes(&self) -> &[u8] {
