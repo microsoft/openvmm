@@ -269,6 +269,7 @@ fuse = { path = "vm/devices/support/fs/fuse" }
 lx = { path = "vm/devices/support/fs/lx" }
 lxutil = { path = "vm/devices/support/fs/lxutil" }
 plan9 = { path = "vm/devices/support/fs/plan9" }
+lower_vtl_permissions_guard = { path = "vm/devices/support/lower_vtl_permissions_guard" }
 power_resources = { path = "vm/power_resources" }
 serial_16550 = { path = "vm/devices/serial/serial_16550" }
 serial_16550_resources = { path = "vm/devices/serial/serial_16550_resources" }

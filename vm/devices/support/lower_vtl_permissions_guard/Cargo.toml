@@ -1,0 +1,16 @@
+[package]
+name = "lower_vtl_permissions_guard"
+edition = "2021"
+rust-version.workspace = true
+
+[dependencies]
+hvdef.workspace = true
+inspect.workspace = true
+user_driver.workspace = true
+virt.workspace = true
+
+anyhow.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true
