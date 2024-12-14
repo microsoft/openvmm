@@ -32,17 +32,34 @@ pub trait EmulatorSupport {
     /// The processor vendor.
     fn vendor(&self) -> x86defs::cpuid::Vendor;
 
+    /// Read a GP
     fn gp(&mut self, reg: Register) -> u64;
-    //TODO(babayet2) should this return GP?
-    //check how typecasting preserves value
+
+    /// Read a GP as signed
     fn gp_sign_extend(&mut self, reg: Register) -> i64;
+
+    /// Set a GP as signed
     fn set_gp(&mut self, reg: Register, v: u64);
+
+    /// Read the instruction pointer
     fn rip(&mut self) -> u64;
+
+    /// Set the instruction pointer
     fn set_rip(&mut self, v: u64);
+
+    /// Read a segment register
     fn segment(&mut self, index: usize) -> SegmentRegister;
+
+    /// Read the efer
     fn efer(&mut self) -> u64;
+
+    /// Read cr0
     fn cr0(&mut self) -> u64;
+
+    /// Read rflags
     fn rflags(&mut self) -> RFlags;
+
+    /// Set rflags
     fn set_rflags(&mut self, v: RFlags);
 
     /// Gets the value of an XMM* register.
