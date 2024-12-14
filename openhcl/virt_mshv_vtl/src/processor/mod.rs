@@ -1080,7 +1080,9 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             registers,
             vtl,
         };
-        let res = virt_support_x86emu::emulate::emulate(&mut emulation_state, guest_memory, devices).await;
+        let res =
+            virt_support_x86emu::emulate::emulate(&mut emulation_state, guest_memory, devices)
+                .await;
         emulation_state.registers.flush(&mut *self, vtl);
         res
     }
