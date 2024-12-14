@@ -12,9 +12,9 @@ use super::super::signal_mnf;
 use super::super::vp_state;
 use super::super::vp_state::UhVpStateAccess;
 use super::super::BackingPrivate;
-use super::super::UhX86EmulatorRegisters;
 use super::super::UhEmulationState;
 use super::super::UhRunVpError;
+use super::super::UhX86EmulatorRegisters;
 use crate::processor::from_seg;
 use crate::processor::LapicState;
 use crate::processor::SidecarExitReason;
@@ -978,8 +978,7 @@ impl<'a, 'b> UhX86EmulatorRegisters<'a, 'b, HypervisorBackedX86> for x86emu::Cpu
     }
 
     fn flush(&self, vp: &'a mut UhProcessor<'b, HypervisorBackedX86>, vtl: GuestVtl) {
-        vp
-            .runner
+        vp.runner
             .set_vp_registers(
                 vtl,
                 [
