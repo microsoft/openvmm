@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A shim layer for an EmulatedDevice to inject aribtrary responses for fuzzing the nvme driver.
+//! A shim layer for an EmulatedDevice to allow responding to the caller with aribtrary responses .
 use crate::get_raw_data;
+use crate::arbitrary_bool;
 
+use arbitrary::Unstructured;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use inspect::Inspect;
@@ -13,7 +15,7 @@ use user_driver::DeviceBacking;
 use user_driver::emulated::{EmulatedDevice, Mapping, EmulatedDmaAllocator, DeviceSharedMemory};
 use user_driver::interrupt::DeviceInterrupt;
 
-/// An emulated device fuzzer
+/// An emulated device fuzzer. This is 
 pub struct FuzzEmulatedDevice<T> {
     device: EmulatedDevice<T>,
 }
@@ -33,29 +35,48 @@ impl<T: PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<T> {
     }
 }
 
+/// Passthrough implementation for DeviceBacking trait.
 impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<T> {
     type Registers = Mapping<T>;
     type DmaAllocator = EmulatedDmaAllocator;
+
     fn id(&self) -> &str {
         self.device.id()
     }
+
     fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers> {
         self.device.map_bar(n)
     }
+
     /// Returns an object that can allocate host memory to be shared with the device.
     fn host_allocator(&self) -> Self::DmaAllocator {
         self.device.host_allocator()
     }
+
+    /// Passthrough to backend or return arbitrary u32.
     fn max_interrupt_count(&self) -> u32 {
-        println!("Max interrupt count invoked");
-        match get_arbitrary_interrupt_count() {
-            Ok(count) => {
-                println!("returning interrupt count of {}", count);
-                return count;
-            },
-            Err(_e) => return self.device.max_interrupt_count(),
+        // Case: Fuzz response
+        if arbitrary_bool() {
+            match get_raw_data(size_of::<u32>()) {
+                Ok(data) => {
+                    // Lazy create unstructured data
+                    let mut u = Unstructured::new(&data);
+
+                    // Generate an arbitrary return value
+                    match u.arbitrary() {
+                        Ok(arb) => { return arb; }
+                        Err(_e) => {}  // Ignore errors
+                    }
+                }
+                Err(_e) => {}  // Ignore errors
+            }
         }
+
+        // Case: Passthrough
+        return self.device.max_interrupt_count();
+            
     }
+
     fn map_interrupt(&mut self, msix: u32, _cpu: u32) -> anyhow::Result<DeviceInterrupt> {
         self.device.map_interrupt(msix, _cpu)
     }

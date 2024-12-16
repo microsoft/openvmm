@@ -7,14 +7,15 @@ mod fuzz_emulated_device;
 mod fuzz_nvme_driver;
 
 use crate::fuzz_nvme_driver::FuzzNvmeDriver;
-use arbitrary::{Arbitrary, Unstructured};
+
+use arbitrary::Unstructured;
 use lazy_static::lazy_static;
 use pal_async::DefaultPool;
 use std::sync::Mutex;
 use xtask_fuzz::fuzz_target;
 
 // Input bytes we want to use
-const INPUT_LEN:usize=4196;
+const MIN_INPUT:usize=200;
 
 // Use lazy_static to allow swapping out underlying vector
 lazy_static! {
@@ -36,7 +37,6 @@ pub fn get_raw_data(num_bytes: usize) -> arbitrary::Result<Vec<u8>>{
 
     // Case: Not enough bytes, return Error
     if raw_data.len() < num_bytes {
-        println!("Not enough data in the backend anymore");
         return Err(arbitrary::Error::NotEnoughData);
     }
 
@@ -45,38 +45,43 @@ pub fn get_raw_data(num_bytes: usize) -> arbitrary::Result<Vec<u8>>{
     return Ok(drained);
 }
 
-/// Guarantee a large arbitrary vector upon startup.
-#[derive(Debug)]
-pub struct LargeVec {
-    pub vec: Vec<u8>
-}
 
-impl<'a> Arbitrary<'a> for LargeVec {
-    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        let mut vec = Vec::new();
-        while vec.len() < INPUT_LEN {
-            vec.push(u.arbitrary()?);
+/// Returns an arbitrary boolean value. If there isn't enough data, returns false
+pub fn arbitrary_bool() -> bool {
+    // Get required number of arbitrary bytes
+    let arbitrary_data = get_raw_data(size_of::<bool>());
+
+    // Generate an arbitrary boolean value
+    match arbitrary_data {
+        Ok(data) => {
+            let mut u = Unstructured::new(&data);
+
+            // Generate arbitrary action
+            let result = u.arbitrary();
+
+            match result {
+                Ok(arbitrary_bool) => { return arbitrary_bool; }
+                Err(_e) => {}
+            } 
         }
-        Ok(LargeVec {
-            vec,
-        })
-    }   
+        Err(_e) => {}
+    }
+
+    // In case of errors, default to false
+    return false;
 }
 
 /// Fuzzer loop. Loops while there is still raw data available to use.
 fn do_fuzz() {
     // DefaultPool provides us the standard DefaultDriver and takes care of async fn calls
     DefaultPool::run_with(|driver| async move {
-        // ---- SETUP ----
         let mut fuzzing_driver = FuzzNvmeDriver::new(driver).await;
 
-        // ---- FUZZING ----
         loop {
             let next_action = fuzzing_driver.get_arbitrary_action();
 
             match next_action {
                 Ok(action) => {  // Execute the Action
-                    println!("{:x?}", action);
                     fuzzing_driver.execute_action(action);
                 },
                 Err(_e) => {  // Not Enough data, stop fuzzing
@@ -85,20 +90,25 @@ fn do_fuzz() {
             }
         }
 
-        // ---- CLEANUP ----
-        // fuzzing_driver.shutdown().await;
+        fuzzing_driver.shutdown().await;
     });
 }
 
-// Closure that allows the fuzzer to invoke the do_fuzz function on each iteration
-fuzz_target!(|input: LargeVec| {
+// Closure that allows the fuzzer to invoke the nvme driver fuzzer.
+fuzz_target!(|input: Vec<u8>| -> libfuzzer_sys::Corpus {
     xtask_fuzz::init_tracing_if_repro();
 
-    // Swap out the underlying raw data in the RAW_DATA static variable.
+    // Not enought input data
+    if input.len() < MIN_INPUT {
+        return libfuzzer_sys::Corpus::Reject;
+    }
+
+    // Swap out the underlying raw data.
     {
         let mut raw_data = RAW_DATA.lock().unwrap();
-        *raw_data = input.vec;
+        *raw_data = input;
     }
 
     do_fuzz();
+    libfuzzer_sys::Corpus::Keep
 });

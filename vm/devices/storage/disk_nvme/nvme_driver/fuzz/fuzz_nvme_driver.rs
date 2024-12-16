@@ -4,6 +4,7 @@
 use crate::fuzz_emulated_device::FuzzEmulatedDevice;
 use crate::get_raw_data;
 
+use arbitrary::{Arbitrary, Unstructured};
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_ramdisk::RamDisk;
 use guestmem::GuestMemory;
@@ -11,21 +12,22 @@ use guid::Guid;
 use nvme::{NvmeController, NvmeControllerCaps};
 use nvme_driver::{Namespace, NvmeDriver};
 use nvme_spec::nvm::DsmRange;
+use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
 use user_driver::emulated::DeviceSharedMemory;
 use vmcore::vm_task::{SingleDriverBackend, VmTaskDriverSource};
 
-/// Struct that stores variables to fuzz the nvme driver
+/// Nvme driver fuzzer
 pub struct FuzzNvmeDriver {
     driver: Option<NvmeDriver<FuzzEmulatedDevice<NvmeController>>>,
-    namespace: Namespace,  // TODO: This can be implemented as a queue to test 'create' for
+    namespace: Namespace,
     payload_mem: GuestMemory,
 }
 
 impl FuzzNvmeDriver {
-    /// Setup a new fuzz driver that will
+    /// Setup a new nvme driver with a fuzz-enabled backend device.
     pub async fn new(driver: DefaultDriver) -> Self {
         // Physical storage to back the disk
         let ram_disk = RamDisk::new(1 << 20, false).unwrap();
@@ -34,7 +36,13 @@ impl FuzzNvmeDriver {
         let payload_len = 1 << 20;  // 1MB
         let mem = DeviceSharedMemory::new(base_len, payload_len);
 
-        // ---- NVME DEVICE & DRIVER SETUP ----
+        // Trasfer buffer
+        let payload_mem = mem
+            .guest_memory()
+            .subrange(base_len as u64, payload_len  as u64, false)
+            .unwrap();
+
+        // Nvme device and driver setup
         let driver_source =
             VmTaskDriverSource::new(SingleDriverBackend::new(driver));
         let mut msi_set = MsiInterruptSet::new();
@@ -57,21 +65,8 @@ impl FuzzNvmeDriver {
             .unwrap();
 
         let device = FuzzEmulatedDevice::new(nvme, msi_set, mem);
-
         let nvme_driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();
-
         let namespace = nvme_driver.namespace(1).await.unwrap();
-
-        let base_len = 64 << 20;  // 64MB
-        let payload_len = 1 << 20;  // 1MB
-        let mem = DeviceSharedMemory::new(base_len, payload_len);
-
-        // Trasfer buffer
-        let payload_mem = mem
-            .guest_memory()
-            .subrange(base_len as u64, INPUT_LEN as u64, false)
-            .unwrap();
-
 
         Self {
             driver: Some(nvme_driver),
@@ -80,8 +75,8 @@ impl FuzzNvmeDriver {
         }
     }
 
-    /// Cleans up fuzzing infrastructure properly
-    async fn shutdown(&self) {
+    /// Clean up fuzzing infrastructure.
+    pub async fn shutdown(&mut self) {
         self.namespace
             .deallocate(
                 0,
@@ -100,12 +95,15 @@ impl FuzzNvmeDriver {
             )
             .await
             .unwrap();
+
+        self.driver.take().unwrap().shutdown().await;
     }
 
-    /// Returns an arbitrary action to be taken. Along with arbitrary values
+    /// Generates and returns an aribtrary NvmeDriverAction
+    /// Returns a NotEnoughData error if an action was not generated, caller must handle this.
     pub fn get_arbitrary_action(&self) -> arbitrary::Result<NvmeDriverAction>{
         // Get required amount of arbitrary bytes
-        let arbitrary_data = get_raw_data(sizeof::<NvmeDriverAction>());
+        let arbitrary_data = get_raw_data(size_of::<NvmeDriverAction>());
 
         match arbitrary_data {
             Ok(data) => {
@@ -122,7 +120,7 @@ impl FuzzNvmeDriver {
         }
     }
 
-    /// Executes an action
+    /// Executes a NvmeDriverAction on the nvme driver.
     pub async fn execute_action(&mut self, action: NvmeDriverAction) {
         match action {
             NvmeDriverAction::Read { lba, block_count, target_cpu} => {
@@ -136,6 +134,7 @@ impl FuzzNvmeDriver {
                         buf_range.buffer(&self.payload_mem).range(),
                     ).await.unwrap();
             }
+
             NvmeDriverAction::Write { lba, block_count, target_cpu } => {
                 let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
                 self.namespace
@@ -148,12 +147,14 @@ impl FuzzNvmeDriver {
                         buf_range.buffer(&self.payload_mem).range(),
                     ).await.unwrap();
             }
+
             NvmeDriverAction::Flush { target_cpu } => {
                 self.namespace
                     .flush(
                         target_cpu
                     ).await.unwrap();        
             }
+
             NvmeDriverAction::UpdateServicingFlags { nvme_keepalive } => {
                 self.driver.as_mut().unwrap().update_servicing_flags(nvme_keepalive)
             }
@@ -164,8 +165,7 @@ impl FuzzNvmeDriver {
 // impl Drop for FuzzNvmeDriver {
 //     // Takes ownership of the driver and gracefully shuts down upon drop
 //     fn drop(&mut self) {
-//         // TODO: Maybe call the shutdown() method during this phase as well
-//         self.driver.take().unwrap().shutdown();
+//         .await;
 //     }
 // 
 // }
