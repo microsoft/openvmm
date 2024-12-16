@@ -17,7 +17,7 @@ use anyhow::Result;
 use inspect::Inspect;
 use std::sync::Arc;
 use user_driver::memory::MemoryBlock;
-#[cfg(feature = "vfio")]
+#[cfg(all(feature = "vfio", target_os = "linux"))]
 use user_driver::vfio::VfioDmaBuffer;
 use virt::VtlMemoryProtection;
 
@@ -76,13 +76,13 @@ impl Drop for PagesAccessibleToLowerVtl {
 
 /// A [`VfioDmaBuffer`] wrapper that will lower the VTL permissions of the page
 /// on the allocated memory block.
-#[cfg(feature = "vfio")]
+#[cfg(all(feature = "vfio", target_os = "linux"))]
 pub struct LowerVtlMemorySpawner<T: VfioDmaBuffer> {
     spawner: T,
     vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
 }
 
-#[cfg(feature = "vfio")]
+#[cfg(all(feature = "vfio", target_os = "linux"))]
 impl<T: VfioDmaBuffer> LowerVtlMemorySpawner<T> {
     /// Create a new wrapped [`VfioDmaBuffer`] spawner that will lower the VTL
     /// permissions of the returned [`MemoryBlock`].
@@ -94,7 +94,7 @@ impl<T: VfioDmaBuffer> LowerVtlMemorySpawner<T> {
     }
 }
 
-#[cfg(feature = "vfio")]
+#[cfg(all(feature = "vfio", target_os = "linux"))]
 impl<T: VfioDmaBuffer> VfioDmaBuffer for LowerVtlMemorySpawner<T> {
     fn create_dma_buffer(&self, len: usize) -> Result<MemoryBlock> {
         let mem = self.spawner.create_dma_buffer(len)?;
