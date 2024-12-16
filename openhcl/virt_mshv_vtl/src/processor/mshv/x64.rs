@@ -2073,7 +2073,9 @@ mod save_restore {
     use hcl::GuestVtl;
     use hvdef::HvInternalActivityRegister;
     use hvdef::HvX64RegisterName;
+    use hvdef::Vtl;
     use virt::irqcon::MsiRequest;
+    use virt::vp::AccessVpState;
     use virt::Processor;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
@@ -2137,6 +2139,16 @@ mod save_restore {
             /// behavior for those cases its not present in the saved state.
             #[mesh(23)]
             pub(super) startup_suspend: Option<bool>,
+            #[mesh(24)]
+            pub(super) crash_reg: [u64; hvdef::HV_X64_GUEST_CRASH_PARAMETER_MSRS],
+            #[mesh(25)]
+            pub(super) crash_control: u64,
+            #[mesh(26)]
+            pub(super) msr_mtrr_def_type: u64,
+            #[mesh(27)]
+            pub(super) fixed_mtrrs: [u64; 11],
+            #[mesh(28)]
+            pub(super) variable_mtrrs: [u64; 16],
         }
     }
 
@@ -2192,6 +2204,62 @@ mod save_restore {
             let [rax, rcx, rdx, rbx, cr2, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15] =
                 self.runner.cpu_context().gps;
 
+            // We are responsible for saving shared MSRs too, but other than
+            // the MTRRs all shared MSRs are read-only. So this is all we need.
+            let virt::vp::CacheControl {
+                msr_mtrr_def_type,
+                fixed: fixed_mtrrs,
+                variable: variable_mtrrs,
+                // PAT is a private MSR, so we don't need to save it
+                msr_cr_pat: _,
+            } = self
+                // MTRRs are shared, so it doesn't matter which VTL we ask for.
+                .access_state(Vtl::Vtl0)
+                .cache_control()
+                .context("failed to get MTRRs")
+                .map_err(SaveError::Other)?;
+
+            let UhProcessor {
+                _not_send,
+                inner:
+                    crate::UhVpInner {
+                        // Sidecar state is reset during servicing
+                        sidecar_exit_reason: _,
+                        // Will be cleared by flush_async_requests above
+                        wake_reasons: _,
+                        // Runtime glue
+                        waker: _,
+                        // TODO: This needs VMBUS work and will hopefully go away
+                        message_queues: _,
+                        // Topology information
+                        vp_info: _,
+                        cpu_index: _,
+                        // Only relevant for CVMs
+                        hcvm_vtl1_enabled: _,
+                        hv_start_enable_vtl_vp: _,
+                    },
+                // Saved
+                crash_reg,
+                crash_control,
+                // Runtime glue
+                partition: _,
+                idle_control: _,
+                vmtime: _,
+                timer: _,
+                // This field is only used in dev/test scenarios
+                force_exit_sidecar: _,
+                // Just caching the hypervisor value, let it handle saving
+                vtls_tlb_locked: _,
+                // Statistic that should reset to 0 on restore
+                kernel_returns: _,
+                // Shared state should be handled by the backing
+                shared: _,
+                // The runner doesn't hold anything needing saving
+                runner: _,
+                // TODO CVM Servicing: The hypervisor backing doesn't need to save anything, but CVMs will.
+                backing: _,
+            } = self;
+
             let state = state::ProcessorSavedState {
                 rax,
                 rcx,
@@ -2216,6 +2284,11 @@ mod save_restore {
                 dr3: values[3].as_u64(),
                 dr6: dr6_shared.then(|| values[4].as_u64()),
                 startup_suspend,
+                crash_reg: *crash_reg,
+                crash_control: crash_control.into_bits(),
+                msr_mtrr_def_type,
+                fixed_mtrrs,
+                variable_mtrrs,
             };
 
             Ok(state)
@@ -2246,6 +2319,11 @@ mod save_restore {
                 dr3,
                 dr6,
                 startup_suspend,
+                crash_reg,
+                crash_control,
+                msr_mtrr_def_type,
+                fixed_mtrrs,
+                variable_mtrrs,
             } = state;
 
             let dr6_shared = self.partition.hcl.dr6_shared();
@@ -2283,6 +2361,30 @@ mod save_restore {
                 .fx_state
                 .as_bytes_mut()
                 .copy_from_slice(&fx_state);
+
+            self.crash_reg = crash_reg;
+            self.crash_control = crash_control.into();
+
+            // Previous versions of Underhill did not save the MTRRs.
+            // If we get a restore state with them all then assume they weren't
+            // saved and don't overwrite whatever the system already has.
+            if !(msr_mtrr_def_type == 0
+                && fixed_mtrrs.iter().all(|x| *x == 0)
+                && variable_mtrrs.iter().all(|x| *x == 0))
+            {
+                let mut access = self.access_state(Vtl::Vtl0);
+                let mut cc = access
+                    .cache_control()
+                    .context("failed to get MTRRs")
+                    .map_err(RestoreError::Other)?;
+                cc.msr_mtrr_def_type = msr_mtrr_def_type;
+                cc.fixed = fixed_mtrrs;
+                cc.variable = variable_mtrrs;
+                access
+                    .set_cache_control(&cc)
+                    .context("failed to set MTRRs")
+                    .map_err(RestoreError::Other)?;
+            }
 
             let inject_startup_suspend = match startup_suspend {
                 Some(true) => {
