@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A shim layer for an EmulatedDevice to allow responding to the caller with aribtrary responses .
-use crate::get_raw_data;
+//! A shim layer to fuzz responses from an emulated device.
 use crate::arbitrary_bool;
+use crate::get_raw_data;
 
 use arbitrary::Unstructured;
 use chipset_device::mmio::MmioIntercept;
@@ -15,7 +15,7 @@ use user_driver::DeviceBacking;
 use user_driver::emulated::{EmulatedDevice, Mapping, EmulatedDmaAllocator, DeviceSharedMemory};
 use user_driver::interrupt::DeviceInterrupt;
 
-/// An emulated device fuzzer. This is 
+/// An EmulatedDevice fuzzer that requires a working EmulatedDevice backend.
 pub struct FuzzEmulatedDevice<T> {
     device: EmulatedDevice<T>,
 }
@@ -35,7 +35,8 @@ impl<T: PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<T> {
     }
 }
 
-/// Passthrough implementation for DeviceBacking trait.
+/// Implementation for DeviceBacking trait.
+/// Static is required here since the trait enforces static lifetime.
 impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<T> {
     type Registers = Mapping<T>;
     type DmaAllocator = EmulatedDmaAllocator;

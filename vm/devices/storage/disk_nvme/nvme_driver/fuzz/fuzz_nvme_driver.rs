@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! An interface to fuzz the nvme driver with arbitrary actions
 use crate::fuzz_emulated_device::FuzzEmulatedDevice;
 use crate::get_raw_data;
 

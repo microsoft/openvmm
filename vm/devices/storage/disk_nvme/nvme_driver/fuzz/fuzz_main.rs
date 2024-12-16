@@ -3,6 +3,8 @@
 
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
 
+//! A 2-way fuzzer developed to fuzz the nvme driver from the Guest side with arbitrary driver
+//! action and from the Host side with arbitrary responses from the backend.
 mod fuzz_emulated_device;
 mod fuzz_nvme_driver;
 
@@ -75,21 +77,24 @@ pub fn arbitrary_bool() -> bool {
 fn do_fuzz() {
     // DefaultPool provides us the standard DefaultDriver and takes care of async fn calls
     DefaultPool::run_with(|driver| async move {
+        // Setup
         let mut fuzzing_driver = FuzzNvmeDriver::new(driver).await;
 
+        // While arbitrary data is not empty, keep fuzzing.
         loop {
             let next_action = fuzzing_driver.get_arbitrary_action();
 
             match next_action {
-                Ok(action) => {  // Execute the Action
-                    fuzzing_driver.execute_action(action);
+                Ok(action) => {
+                    fuzzing_driver.execute_action(action).await;
                 },
-                Err(_e) => {  // Not Enough data, stop fuzzing
+                Err(_e) => {
                     break;
                 },
             }
         }
 
+        // Cleanup
         fuzzing_driver.shutdown().await;
     });
 }
