@@ -1,11 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-
 //! A shim layer for an EmulatedDevice to inject aribtrary responses for fuzzing the nvme driver.
-use crate::VEC_BACKEND;
-use anyhow::Result;
-use arbitrary::{Arbitrary, Unstructured};
+use crate::get_raw_data;
+
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use inspect::Inspect;
@@ -14,8 +12,6 @@ use pci_core::msi::MsiInterruptSet;
 use user_driver::DeviceBacking;
 use user_driver::emulated::{EmulatedDevice, Mapping, EmulatedDmaAllocator, DeviceSharedMemory};
 use user_driver::interrupt::DeviceInterrupt;
-use std::sync::Mutex;
-use std::sync::Arc;
 
 /// An emulated device fuzzer
 pub struct FuzzEmulatedDevice<T> {
@@ -63,26 +59,4 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmula
     fn map_interrupt(&mut self, msix: u32, _cpu: u32) -> anyhow::Result<DeviceInterrupt> {
         self.device.map_interrupt(msix, _cpu)
     }
-}
-
-/// PoC to consume back end data from static
-pub fn get_arbitrary_interrupt_count() -> arbitrary::Result<u32>{
-    // Number of bytes we need to remove from the vector:
-    let num_bytes = size_of::<u32>();
-    let action;
-
-    let mut vec_backend = VEC_BACKEND.lock().unwrap();
-
-    if vec_backend.len() < num_bytes {
-        println!("Not enough data in the backend anymore");
-        return Err(arbitrary::Error::NotEnoughData);
-    } else {
-        println!("backend is Consuming {} bytes", num_bytes);
-    }
-
-    let drained: Vec<u8> = vec_backend.drain(0..num_bytes).collect();
-    let mut u = Unstructured::new(&drained);
-
-    action = u.arbitrary()?;
-    return Ok(action);
 }
