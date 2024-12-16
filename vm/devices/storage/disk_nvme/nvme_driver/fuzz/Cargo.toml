@@ -24,7 +24,6 @@ user_driver.workspace = true
 vmcore.workspace = true
 xtask_fuzz.workspace = true
 lazy_static = "1.4.0"
-
 arbitrary = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
