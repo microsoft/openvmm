@@ -16,6 +16,7 @@ use anyhow::Context;
 use anyhow::Result;
 use inspect::Inspect;
 use std::sync::Arc;
+#[cfg(all(feature = "vfio", target_os = "linux"))]
 use user_driver::memory::MemoryBlock;
 #[cfg(all(feature = "vfio", target_os = "linux"))]
 use user_driver::vfio::VfioDmaBuffer;
