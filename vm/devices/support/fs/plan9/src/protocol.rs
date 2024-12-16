@@ -204,7 +204,7 @@ pub struct NameIterator<'a> {
     index: u16,
 }
 
-impl<'a> NameIterator<'a> {
+impl NameIterator<'_> {
     pub fn name_count(&self) -> u16 {
         self.count
     }
@@ -223,7 +223,7 @@ impl<'a> Iterator for NameIterator<'a> {
     }
 }
 
-impl<'a> fmt::Debug for NameIterator<'a> {
+impl fmt::Debug for NameIterator<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self.clone()).finish()
     }
@@ -236,7 +236,7 @@ pub struct QidIterator<'a> {
     index: u16,
 }
 
-impl<'a> Iterator for QidIterator<'a> {
+impl Iterator for QidIterator<'_> {
     type Item = lx::Result<Qid>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -249,7 +249,7 @@ impl<'a> Iterator for QidIterator<'a> {
     }
 }
 
-impl<'a> fmt::Debug for QidIterator<'a> {
+impl fmt::Debug for QidIterator<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self.clone()).finish()
     }

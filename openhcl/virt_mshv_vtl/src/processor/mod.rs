@@ -454,7 +454,7 @@ fn duration_from_100ns(n: u64) -> Duration {
     Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
 }
 
-impl<'a, T: Backing> UhProcessor<'a, T> {
+impl<T: Backing> UhProcessor<'_, T> {
     fn inspect_extra(&mut self, resp: &mut inspect::Response<'_>) {
         resp.child("stats", |req| {
             // Get all the VP stats and just grab this VP's.
@@ -560,7 +560,10 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
     type Error = ProcessorError;
     type RunVpError = UhRunVpError;
-    type StateAccess<'a> = T::StateAccess<'p, 'a> where Self: 'a;
+    type StateAccess<'a>
+        = T::StateAccess<'p, 'a>
+    where
+        Self: 'a;
 
     #[cfg(guest_arch = "aarch64")]
     fn set_debug_state(

@@ -1343,7 +1343,7 @@ pub struct OffloadNotSupported;
 
 impl LocalApic {
     /// Returns an object to access APIC registers.
-    pub fn access<'a, T: ApicClient>(&'a mut self, client: &'a mut T) -> LocalApicAccess<'_, T> {
+    pub fn access<'a, T: ApicClient>(&'a mut self, client: &'a mut T) -> LocalApicAccess<'a, T> {
         LocalApicAccess { apic: self, client }
     }
 

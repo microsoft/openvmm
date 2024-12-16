@@ -297,6 +297,8 @@ pub struct UnderhillEnvCfg {
     pub gdbstub: bool,
     /// Hide the isolation mode from the guest.
     pub hide_isolation: bool,
+    /// Enable nvme keep alive.
+    pub nvme_keep_alive: bool,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1849,7 +1851,7 @@ async fn new_underhill_vm(
 
         let private_pool_spanwer = private_pool.as_ref().map(|p| p.allocator_spawner());
 
-        let save_restore_supported = shared_vis_pool_spawner.is_some() || private_pool.is_some();
+        let save_restore_supported = env_cfg.nvme_keep_alive;
         let vfio_dma_buffer_spawner = Box::new(
             move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
                 shared_vis_pool_spawner
@@ -3031,6 +3033,7 @@ async fn new_underhill_vm(
         _periodic_telemetry_task: periodic_telemetry_task,
         shared_vis_pool: shared_vis_pages_pool,
         private_pool,
+        nvme_keep_alive: env_cfg.nvme_keep_alive,
     };
 
     Ok(loaded_vm)

@@ -128,7 +128,7 @@ impl<'a> PagedRange<'a> {
     /// Returns the range's list of page numbers.
     pub fn gpns(&self) -> &'a [u64] {
         let start_page = self.start / PAGE_SIZE;
-        let end_page = (self.end + PAGE_SIZE - 1) / PAGE_SIZE;
+        let end_page = self.end.div_ceil(PAGE_SIZE);
         &self.gpns[start_page..end_page]
     }
 
@@ -194,7 +194,7 @@ impl<'a> PagedRange<'a> {
             None
         } else {
             let start_page = self.start / PAGE_SIZE;
-            let end_page = (self.end + PAGE_SIZE - 1) / PAGE_SIZE;
+            let end_page = self.end.div_ceil(PAGE_SIZE);
             let mut page = start_page + 1;
             while page < end_page && self.gpns[page - 1] + 1 == self.gpns[page] {
                 page += 1;
@@ -237,7 +237,7 @@ impl<'a> PagedRange<'a> {
 #[derive(Debug, Clone)]
 pub struct PagedRangeRangeIter<'a>(PagedRange<'a>);
 
-impl<'a> Iterator for PagedRangeRangeIter<'a> {
+impl Iterator for PagedRangeRangeIter<'_> {
     type Item = Result<AddressRange, InvalidGpn>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -251,7 +251,7 @@ pub struct PagedRangeReader<'a> {
     mem: &'a GuestMemory,
 }
 
-impl<'a> MemoryRead for PagedRangeReader<'a> {
+impl MemoryRead for PagedRangeReader<'_> {
     fn read(&mut self, data: &mut [u8]) -> Result<&mut Self, AccessError> {
         let range = self
             .range
@@ -283,7 +283,7 @@ pub struct PagedRangeWriter<'a> {
     mem: &'a GuestMemory,
 }
 
-impl<'a> MemoryWrite for PagedRangeWriter<'a> {
+impl MemoryWrite for PagedRangeWriter<'_> {
     fn write(&mut self, data: &[u8]) -> Result<(), AccessError> {
         let range = self
             .range

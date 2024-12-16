@@ -96,7 +96,7 @@ mod tests {
             <StringField as FieldDecode<'de, &'de str, R>>::ENTRY.erase(),
         ];
     }
-    impl<'a> crate::DefaultEncoding for Foo<'a> {
+    impl crate::DefaultEncoding for Foo<'_> {
         type Encoding = TableEncoder;
     }
 

@@ -363,7 +363,7 @@ fn set_debug_register(name: HvX64RegisterName, value: u64) -> bool {
             HvX64RegisterName::Dr1 => core::arch::asm!("mov dr1, {}", in(reg) value),
             HvX64RegisterName::Dr2 => core::arch::asm!("mov dr2, {}", in(reg) value),
             HvX64RegisterName::Dr3 => core::arch::asm!("mov dr3, {}", in(reg) value),
-            HvX64RegisterName::Dr6 if VSM_CAPABILITIES.dr6_shared() => {
+            HvX64RegisterName::Dr6 if (&raw const VSM_CAPABILITIES).read().dr6_shared() => {
                 core::arch::asm!("mov dr6, {}", in(reg) value)
             }
             _ => return false,
@@ -382,7 +382,7 @@ fn get_debug_register(name: HvX64RegisterName) -> Option<u64> {
             HvX64RegisterName::Dr1 => core::arch::asm!("mov {}, dr1", lateout(reg) v),
             HvX64RegisterName::Dr2 => core::arch::asm!("mov {}, dr2", lateout(reg) v),
             HvX64RegisterName::Dr3 => core::arch::asm!("mov {}, dr3", lateout(reg) v),
-            HvX64RegisterName::Dr6 if VSM_CAPABILITIES.dr6_shared() => {
+            HvX64RegisterName::Dr6 if (&raw const VSM_CAPABILITIES).read().dr6_shared() => {
                 core::arch::asm!("mov {}, dr6", lateout(reg) v)
             }
             _ => return None,

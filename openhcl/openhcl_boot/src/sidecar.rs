@@ -22,9 +22,7 @@ const MAX_SIDECAR_NODE_SIZE: usize = 32;
 // Assert that there are enough sidecar nodes for the maximum number of CPUs, if
 // all NUMA nodes but one have one processor.
 const _: () = assert!(
-    sidecar_defs::MAX_NODES
-        >= (MAX_NUMA_NODES - 1)
-            + (MAX_CPU_COUNT + MAX_SIDECAR_NODE_SIZE - 1) / MAX_SIDECAR_NODE_SIZE
+    sidecar_defs::MAX_NODES >= (MAX_NUMA_NODES - 1) + MAX_CPU_COUNT.div_ceil(MAX_SIDECAR_NODE_SIZE)
 );
 
 pub struct SidecarConfig<'a> {
@@ -114,8 +112,8 @@ pub fn start_sidecar<'a>(
             .cpus
             .chunk_by(|a, b| a.vnode == b.vnode)
             .flat_map(|cpus| {
-                let chunks = (cpus.len() + MAX_SIDECAR_NODE_SIZE - 1) / MAX_SIDECAR_NODE_SIZE;
-                cpus.chunks((cpus.len() + chunks - 1) / chunks)
+                let chunks = cpus.len().div_ceil(MAX_SIDECAR_NODE_SIZE);
+                cpus.chunks(cpus.len().div_ceil(chunks))
             })
     };
     if cpus_by_node().all(|cpus_by_node| cpus_by_node.len() == 1) {

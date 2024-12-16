@@ -179,6 +179,7 @@ pub(crate) struct LoadedVm {
 
     pub shared_vis_pool: Option<PagePool>,
     pub private_pool: Option<PagePool>,
+    pub nvme_keep_alive: bool,
 }
 
 pub struct LoadedVmState<T> {
@@ -469,15 +470,15 @@ impl LoadedVm {
         &mut self,
         correlation_id: Guid,
         deadline: std::time::Instant,
-        capabilities_flags: SaveGuestVtl2StateFlags,
+        _capabilities_flags: SaveGuestVtl2StateFlags,
     ) -> anyhow::Result<ServicingState> {
         if self.isolation.is_isolated() {
             anyhow::bail!("Servicing is not yet supported for isolated VMs");
         }
 
-        // capabilities_flags used to explicitly disable the feature
-        // which is enabled by default.
-        let nvme_keepalive = !capabilities_flags.disable_nvme_keepalive();
+        // NOTE: This is set via the corresponding env arg, as this feature is
+        // experimental.
+        let nvme_keepalive = self.nvme_keep_alive;
 
         // Do everything before the log flush under a span.
         let mut state = async {
@@ -627,8 +628,8 @@ impl LoadedVm {
 
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
 
-        // Only save NVMe state when there are NVMe controllers and nvme_keepalive
-        // wasn't explicitly disabled through capabilities_flags, otherwise save None.
+        // Only save NVMe state when there are NVMe controllers and keep alive
+        // was enabled.
         let nvme_state = if let Some(n) = &self.nvme_manager {
             n.save(vf_keepalive_flag)
                 .instrument(tracing::info_span!("nvme_manager_save"))

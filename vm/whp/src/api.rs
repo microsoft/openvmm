@@ -15,7 +15,7 @@ use winapi::um::winnt::HANDLE;
 unsafe fn get_proc(name: &[u8]) -> usize {
     unsafe {
         GetProcAddress(
-            GetModuleHandleA(b"winhvplatform.dll\0".as_ptr().cast()),
+            GetModuleHandleA(c"winhvplatform.dll".as_ptr().cast()),
             name.as_ptr().cast(),
         ) as usize
     }

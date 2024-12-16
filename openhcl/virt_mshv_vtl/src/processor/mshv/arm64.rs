@@ -128,7 +128,11 @@ impl BackingPrivate for HypervisorBackedArm64 {
 
     fn init(_this: &mut UhProcessor<'_, Self>) {}
 
-    type StateAccess<'p, 'a> = UhVpStateAccess<'a, 'p, Self> where Self: 'a + 'p, 'p: 'a;
+    type StateAccess<'p, 'a>
+        = UhVpStateAccess<'a, 'p, Self>
+    where
+        Self: 'a + 'p,
+        'p: 'a;
 
     fn access_vp_state<'a, 'p>(
         this: &'a mut UhProcessor<'p, Self>,
@@ -707,7 +711,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked>
     }
 }
 
-impl<'a, 'b, T: CpuIo> AccessCpuState for UhEmulationState<'a, 'b, T, HypervisorBacked> {
+impl<T: CpuIo> AccessCpuState for UhEmulationState<'_, '_, T, HypervisorBacked> {
     fn commit(&mut self) {
         self.vp.commit()
     }
@@ -898,7 +902,6 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedArm64> {
     }
 }
 
-// TODO GUEST VSM Audit save state
 mod save_restore {
     use super::HypervisorBackedArm64;
     use super::UhProcessor;
@@ -937,7 +940,8 @@ mod save_restore {
 
             let internal_activity = self
                 .runner
-                // TODO GUEST VSM
+                // Non-VTL0 VPs should never be in startup suspend, so we only need to check VTL0.
+                // The hypervisor handles halt and idle for us.
                 .get_vp_register(GuestVtl::Vtl0, HvArm64RegisterName::InternalActivityState)
                 .map_err(|err| {
                     SaveError::Other(anyhow!("unable to query startup suspend: {}", err))
@@ -960,7 +964,8 @@ mod save_restore {
                 let reg = u64::from(HvInternalActivityRegister::new().with_startup_suspend(true));
                 self.runner
                     .set_vp_registers(
-                        // TODO GUEST VSM
+                        // Non-VTL0 VPs should never be in startup suspend, so we only need to handle VTL0.
+                        // The hypervisor handles halt and idle for us.
                         GuestVtl::Vtl0,
                         [(HvArm64RegisterName::InternalActivityState, reg)],
                     )

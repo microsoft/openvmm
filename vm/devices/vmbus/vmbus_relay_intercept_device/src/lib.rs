@@ -18,8 +18,8 @@ use anyhow::Context;
 use anyhow::Result;
 use futures::StreamExt;
 use guid::Guid;
-use inspect::Inspect;
 use inspect::InspectMut;
+use lower_vtl_permissions_guard::LowerVtlMemorySpawner;
 use mesh::rpc::RpcSend;
 use pal_async::driver::SpawnDriver;
 use std::future::Future;
@@ -225,7 +225,10 @@ struct SimpleVmbusClientDeviceTaskState {
     offer: Option<OfferInfo>,
     #[inspect(skip)]
     recv_relay: mesh::Receiver<InterceptChannelRequest>,
-    vtl_pages: Option<PagesAccessibleToLowerVtl>,
+    #[inspect(
+        with = "|x| x.as_ref().map(|x| inspect::iter_by_index(x.pfns()).map_value(inspect::AsHex))"
+    )]
+    vtl_pages: Option<MemoryBlock>,
 }
 
 struct SimpleVmbusClientDeviceTask<T: SimpleVmbusClientDeviceAsync> {
@@ -403,11 +406,15 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             return;
         }
 
-        // Close the channel on every stop.
-        // Overlay devices cannot be saved / restored because the physical
-        // pages used for the ring buffer, et al. would need to be reserved at
-        // boot, otherwise the host may end up scribbling on random memory as
-        // it continues updating a ring buffer it assumes it has ownership of.
+        // Close the channel on every stop. Overlay devices cannot be saved /
+        // restored because the physical pages used for the ring buffer, et al.
+        // would need to be reserved at boot, otherwise the host may end up
+        // scribbling on random memory as it continues updating a ring buffer it
+        // assumes it has ownership of.
+        //
+        // TODO: We could support save restore, if we had a pool of memory that
+        // supports that. This should be possible once the page_pool_alloc is
+        // available everywhere.
         {
             let offer = state.offer.as_ref().expect("device opened");
             offer.request_send.send(ChannelRequest::Close);
@@ -438,17 +445,13 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         // one for the control bytes and at least one for the ring.
         assert!(page_count >= 4);
 
-        let shared_mem_spawner = LockedMemorySpawner;
-        let vmbus_mem = shared_mem_spawner
+        let mem = LowerVtlMemorySpawner::new(LockedMemorySpawner, self.vtl_protect.clone())
             .create_dma_buffer(page_count * PAGE_SIZE)
-            .context("Allocating memory for vmbus rings")?;
-        state.vtl_pages = Some(PagesAccessibleToLowerVtl::new_from_memory_block(
-            self.vtl_protect.clone(),
-            &vmbus_mem,
-        )?);
-        let buf: Vec<_> = [vmbus_mem.len() as u64]
+            .context("allocating memory for vmbus rings")?;
+        state.vtl_pages = Some(mem.clone());
+        let buf: Vec<_> = [mem.len() as u64]
             .iter()
-            .chain(vmbus_mem.pfns())
+            .chain(mem.pfns())
             .copied()
             .collect();
 
@@ -467,7 +470,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         if !success {
             return Err(anyhow!("Failed reserving GPADL ID"));
         }
-        Ok((vmbus_mem, gpadl_id))
+        Ok((mem, gpadl_id))
     }
 
     /// Open the channel offered by the host.
@@ -634,54 +637,5 @@ impl SignalVmbusChannel for MemoryBlockChannelSignal {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), ChannelClosed>> {
         self.event.poll_wait(cx).map(Ok)
-    }
-}
-
-#[derive(Inspect)]
-struct PagesAccessibleToLowerVtl {
-    #[inspect(skip)]
-    vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
-    pages: Vec<u64>,
-}
-
-impl PagesAccessibleToLowerVtl {
-    pub fn new_from_memory_block(
-        vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
-        memory: &MemoryBlock,
-    ) -> Result<Self> {
-        let pages = Vec::with_capacity(memory.pfns().len());
-        let mut this = Self { vtl_protect, pages };
-        for pfn in memory.pfns() {
-            this.vtl_protect
-                .modify_vtl_page_setting(*pfn, hvdef::HV_MAP_GPA_PERMISSIONS_ALL)
-                .context("failed to update VTL protections on page")?;
-            this.pages.push(*pfn);
-        }
-        Ok(this)
-    }
-
-    pub fn pfns(&self) -> &[u64] {
-        &self.pages
-    }
-}
-
-impl Drop for PagesAccessibleToLowerVtl {
-    fn drop(&mut self) {
-        if let Err(err) = self
-            .pages
-            .iter()
-            .map(|pfn| {
-                self.vtl_protect
-                    .modify_vtl_page_setting(*pfn, hvdef::HV_MAP_GPA_PERMISSIONS_NONE)
-                    .context("failed to update VTL protections on page")
-            })
-            .collect::<Result<Vec<_>>>()
-        {
-            tracing::error!(
-                err = err.as_ref() as &dyn std::error::Error,
-                "Failed resetting page protections"
-            );
-        }
     }
 }

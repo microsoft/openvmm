@@ -210,8 +210,7 @@ impl StripedDisk {
         }
 
         let start_chunk_index = start_sector / self.sector_count_per_chunk as u64;
-        let end_chunk_index = (end_sector + self.sector_count_per_chunk as u64 - 1)
-            / self.sector_count_per_chunk as u64;
+        let end_chunk_index = end_sector.div_ceil(self.sector_count_per_chunk as u64);
 
         let chunk_iter = ChunkIter {
             disk_count: self.block_devices.len(),
@@ -645,7 +644,7 @@ mod tests {
         write_gpns: &[u64],
         read_gpns: &[u64],
     ) {
-        let page_count = (offset + length + HV_PAGE_SIZE as usize - 1) / HV_PAGE_SIZE as usize;
+        let page_count = (offset + length).div_ceil(HV_PAGE_SIZE as usize);
         // Create continuous guest memory pages and initialize them with random data.
         let guest_mem = create_guest_mem(page_count * 2 * HV_PAGE_SIZE as usize);
         assert_eq!(write_gpns.len(), page_count);
@@ -981,8 +980,7 @@ mod tests {
         // write 1 sector off shall be caught.
         let guest_mem = create_guest_mem(2 * HV_PAGE_SIZE as usize);
         let write_buffers = OwnedRequestBuffers::new(&[0]);
-        let buf_sector_count =
-            (write_buffers.len() + disk.sector_size as usize - 1) / disk.sector_size as usize;
+        let buf_sector_count = write_buffers.len().div_ceil(disk.sector_size as usize);
         match disk
             .write_vectored(
                 &write_buffers.buffer(&guest_mem),
@@ -1002,8 +1000,7 @@ mod tests {
         // read 1 sector off shall be caught.
         let guest_mem = create_guest_mem(2 * HV_PAGE_SIZE as usize);
         let read_buffers = OwnedRequestBuffers::new(&[1]);
-        let buf_sector_count =
-            (read_buffers.len() + disk.sector_size as usize - 1) / disk.sector_size as usize;
+        let buf_sector_count = read_buffers.len().div_ceil(disk.sector_size as usize);
         match disk
             .read_vectored(
                 &write_buffers.buffer(&guest_mem),
@@ -1038,8 +1035,7 @@ mod tests {
         // write 1 byte off shall be caught.
         let write_buffers =
             OwnedRequestBuffers::new_unaligned(&[0], 0, disk.sector_size as usize + 1);
-        let buf_sector_count =
-            (write_buffers.len() + disk.sector_size as usize - 1) / disk.sector_size as usize;
+        let buf_sector_count = write_buffers.len().div_ceil(disk.sector_size as usize);
         match disk
             .write_vectored(
                 &write_buffers.buffer(&guest_mem),
@@ -1059,8 +1055,7 @@ mod tests {
         // read 1 byte off shall be caught.
         let read_buffers =
             OwnedRequestBuffers::new_unaligned(&[1], 0, disk.sector_size as usize + 1);
-        let buf_sector_count =
-            (read_buffers.len() + disk.sector_size as usize - 1) / disk.sector_size as usize;
+        let buf_sector_count = read_buffers.len().div_ceil(disk.sector_size as usize);
         match disk
             .read_vectored(
                 &read_buffers.buffer(&guest_mem),

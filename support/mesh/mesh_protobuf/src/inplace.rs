@@ -141,7 +141,7 @@ impl<'a, T> InplaceOption<'a, T> {
     }
 }
 
-impl<'a, T> InplaceOption<'a, Box<T>> {
+impl<T> InplaceOption<'_, Box<T>> {
     /// Updates a boxed value in place.
     ///
     /// N.B. This will allocate space for a value if one is not already present,
@@ -175,7 +175,7 @@ impl<'a, T> InplaceOption<'a, Box<T>> {
     }
 }
 
-impl<'a, T: Clone> InplaceOption<'a, Arc<T>> {
+impl<T: Clone> InplaceOption<'_, Arc<T>> {
     /// Updates a reference counted value in place.
     ///
     /// N.B. This will allocate space for a value if one is not already present,
