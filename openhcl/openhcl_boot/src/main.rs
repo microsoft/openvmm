@@ -226,7 +226,7 @@ fn build_kernel_command_line(
     }
 
     // Only when explicitly supported by Host.
-    if partition_info.nvme_keepalive {
+    if partition_info.nvme_keepalive && !partition_info.vtl2_pool_memory.is_empty() {
         write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=1 ")?;
     }
 

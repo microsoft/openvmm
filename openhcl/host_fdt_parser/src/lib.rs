@@ -523,20 +523,31 @@ impl<
                                     .flatten()
                                     .and_then(|p| p.read_u64(0).ok());
                             }
+                            "keep-alive" => {
+                                storage.nvme_keepalive = openhcl_child
+                                    .find_property("device-types")
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|p| p.read_str().ok())
+                                    == Some("nvme");
+                            }
+                            "device-dma" => {
+                                // This one will eventually replace 'servicing/dma-preserve-pages'.
+                                // For now they both coexist as the former was already released.
+                                storage.device_dma_page_count = openhcl_child
+                                    .find_property("total-pages")
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|p| p.read_u64(0).ok());
+                            }
                             _ => {
                                 #[cfg(feature = "tracing")]
                                 tracing::warn!(?openhcl_child.name, "Unrecognized OpenHCL child node");
                             }
                         }
                     }
-
-                    storage.nvme_keepalive = child
-                        .find_property("vf-keepalive")
-                        .ok()
-                        .flatten()
-                        .and_then(|p| p.read_str().ok())
-                        == Some("nvme");
                 }
+
                 _ if child.name.starts_with("memory@") => {
                     let igvm_type = if let Some(igvm_type) = child
                         .find_property(igvm_defs::dt::IGVM_DT_IGVM_TYPE_PROPERTY)
