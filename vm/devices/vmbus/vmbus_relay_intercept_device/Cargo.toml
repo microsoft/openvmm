@@ -7,7 +7,6 @@ edition = "2021"
 rust-version.workspace = true
 
 [dependencies]
-lower_vtl_permissions_guard = { workspace = true, features = ["vfio"] }
 vmbus_channel.workspace = true
 vmbus_client.workspace = true
 vmbus_core.workspace = true
@@ -23,7 +22,6 @@ pal_async.workspace = true
 safeatomic.workspace = true
 task_control.workspace = true
 user_driver.workspace = true
-virt.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true

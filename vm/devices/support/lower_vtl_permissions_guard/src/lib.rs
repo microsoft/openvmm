@@ -109,15 +109,7 @@ impl<T: VfioDmaBuffer> VfioDmaBuffer for LowerVtlMemorySpawner<T> {
         }))
     }
 
-    fn restore_dma_buffer(&self, len: usize, base_pfn: u64) -> Result<MemoryBlock> {
-        let mem = self.spawner.restore_dma_buffer(len, base_pfn)?;
-        let vtl_guard =
-            PagesAccessibleToLowerVtl::new_from_pages(self.vtl_protect.clone(), mem.pfns())
-                .context("failed to lower VTL permissions on memory block")?;
-
-        Ok(MemoryBlock::new(LowerVtlDmaBuffer {
-            block: mem,
-            _vtl_guard: vtl_guard,
-        }))
+    fn restore_dma_buffer(&self, _len: usize, _base_pfn: u64) -> Result<MemoryBlock> {
+        anyhow::bail!("restore is not supported for LowerVtlMemorySpawner")
     }
 }

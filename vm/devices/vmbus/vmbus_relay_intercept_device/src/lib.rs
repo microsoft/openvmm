@@ -19,7 +19,6 @@ use anyhow::Result;
 use futures::StreamExt;
 use guid::Guid;
 use inspect::InspectMut;
-use lower_vtl_permissions_guard::LowerVtlMemorySpawner;
 use mesh::rpc::RpcSend;
 use pal_async::driver::SpawnDriver;
 use std::future::Future;
@@ -30,10 +29,8 @@ use task_control::InspectTaskMut;
 use task_control::StopTask;
 use task_control::TaskControl;
 use tracing::Instrument;
-use user_driver::lockmem::LockedMemorySpawner;
 use user_driver::memory::MemoryBlock;
 use user_driver::vfio::VfioDmaBuffer;
-use virt::VtlMemoryProtection;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::ChannelClosed;
@@ -150,7 +147,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceWrapper<T> {
     /// Create a new instance.
     pub fn new(
         driver: impl SpawnDriver + Clone,
-        vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
+        dma_alloc: Arc<dyn VfioDmaBuffer>,
         synic: Arc<dyn vmbus_client::SynicClient>,
         device: T,
     ) -> Result<Self> {
@@ -161,7 +158,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceWrapper<T> {
                 device,
                 synic,
                 spawner.clone(),
-                vtl_protect,
+                dma_alloc,
             )),
             spawner,
         })
@@ -236,7 +233,7 @@ struct SimpleVmbusClientDeviceTask<T: SimpleVmbusClientDeviceAsync> {
     synic: Arc<dyn vmbus_client::SynicClient>,
     saved_state: Option<T::SavedState>,
     spawner: Arc<dyn SpawnDriver>,
-    vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
+    dma_alloc: Arc<dyn VfioDmaBuffer>,
 }
 
 impl<T: SimpleVmbusClientDeviceAsync> AsyncRun<SimpleVmbusClientDeviceTaskState>
@@ -270,14 +267,14 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         device: T,
         synic: Arc<dyn vmbus_client::SynicClient>,
         spawner: Arc<dyn SpawnDriver>,
-        vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
+        dma_alloc: Arc<dyn VfioDmaBuffer>,
     ) -> Self {
         Self {
             device: TaskControl::new(RelayDeviceTask(device)),
             synic,
             saved_state: None,
             spawner,
-            vtl_protect,
+            dma_alloc,
         }
     }
 
@@ -445,7 +442,8 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         // one for the control bytes and at least one for the ring.
         assert!(page_count >= 4);
 
-        let mem = LowerVtlMemorySpawner::new(LockedMemorySpawner, self.vtl_protect.clone())
+        let mem = self
+            .dma_alloc
             .create_dma_buffer(page_count * PAGE_SIZE)
             .context("allocating memory for vmbus rings")?;
         state.vtl_pages = Some(mem.clone());

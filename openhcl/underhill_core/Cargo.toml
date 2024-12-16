@@ -65,6 +65,7 @@ ide.workspace = true
 ide_resources.workspace = true
 input_core.workspace = true
 kmsg_defs.workspace = true
+lower_vtl_permissions_guard = { workspace = true, features = ["vfio"] }
 mana_driver.workspace = true
 mcr_resources.workspace = true
 net_backend.workspace = true
