@@ -265,7 +265,7 @@ impl HostDmaAllocator for EmulatedDmaAllocator {
     }
 }
 
-impl<T: Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedDevice<T> {
+impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedDevice<T> {
     type Registers = Mapping<T>;
     type DmaAllocator = EmulatedDmaAllocator;
 
