@@ -31,6 +31,7 @@ members = [
   "vm/devices/storage/scsi_buffers/fuzz",
   "vm/vmcore/guestmem/fuzz",
   "vm/x86/x86emu/fuzz",
+  "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   # in-guest test bins
   "guest_test_uefi",
   "petri/pipette",
