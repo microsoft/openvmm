@@ -2150,7 +2150,7 @@ mod save_restore {
             #[mesh(28)]
             pub(super) variable_mtrrs: [u64; 16],
             #[mesh(29)]
-            pub(super) message_queues: [virt::vp::SynicMessageQueues; 2],
+            pub(super) message_queues: Vec<virt::vp::SynicMessageQueues>, // Per-vtl
         }
     }
 
@@ -2291,7 +2291,11 @@ mod save_restore {
                 msr_mtrr_def_type,
                 fixed_mtrrs,
                 variable_mtrrs,
-                message_queues: message_queues.each_ref().map(|q| q.save()).into_inner(),
+                message_queues: message_queues
+                    .each_ref()
+                    .map(|q| q.save())
+                    .into_inner()
+                    .into(),
             };
 
             Ok(state)
