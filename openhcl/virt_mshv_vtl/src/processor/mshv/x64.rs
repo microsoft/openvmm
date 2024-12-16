@@ -2140,7 +2140,7 @@ mod save_restore {
             #[mesh(23)]
             pub(super) startup_suspend: Option<bool>,
             #[mesh(24)]
-            pub(super) crash_reg: [u64; hvdef::HV_X64_GUEST_CRASH_PARAMETER_MSRS],
+            pub(super) crash_reg: [u64; 5],
             #[mesh(25)]
             pub(super) crash_control: u64,
             #[mesh(26)]
