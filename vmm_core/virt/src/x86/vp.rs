@@ -1242,10 +1242,46 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Xss {
 #[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
-pub struct CacheControl {
+pub struct Pat {
     #[mesh(1)]
     #[inspect(hex)]
-    pub msr_cr_pat: u64,
+    pub value: u64,
+}
+
+impl HvRegisterState<HvX64RegisterName, 1> for Pat {
+    fn names(&self) -> &'static [HvX64RegisterName; 1] {
+        &[HvX64RegisterName::Pat]
+    }
+
+    fn get_values<'a>(&self, it: impl Iterator<Item = &'a mut HvRegisterValue>) {
+        for (dest, src) in it.zip([self.value]) {
+            *dest = src.into();
+        }
+    }
+
+    fn set_values(&mut self, it: impl Iterator<Item = HvRegisterValue>) {
+        for (src, dest) in it.zip([&mut self.value]) {
+            *dest = src.as_u64();
+        }
+    }
+}
+
+impl StateElement<X86PartitionCapabilities, X86VpInfo> for Pat {
+    fn is_present(_caps: &X86PartitionCapabilities) -> bool {
+        true
+    }
+
+    fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
+        Self {
+            value: X86X_MSR_DEFAULT_PAT,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
+#[mesh(package = "virt.x86")]
+pub struct CacheControl {
     #[mesh(2)]
     #[inspect(hex)]
     pub msr_mtrr_def_type: u64,
@@ -1257,10 +1293,9 @@ pub struct CacheControl {
     pub variable: [u64; 16],
 }
 
-impl HvRegisterState<HvX64RegisterName, 29> for CacheControl {
-    fn names(&self) -> &'static [HvX64RegisterName; 29] {
+impl HvRegisterState<HvX64RegisterName, 28> for CacheControl {
+    fn names(&self) -> &'static [HvX64RegisterName; 28] {
         &[
-            HvX64RegisterName::Pat,
             HvX64RegisterName::MsrMtrrDefType,
             HvX64RegisterName::MsrMtrrFix64k00000,
             HvX64RegisterName::MsrMtrrFix16k80000,
@@ -1294,7 +1329,7 @@ impl HvRegisterState<HvX64RegisterName, 29> for CacheControl {
 
     fn get_values<'a>(&self, it: impl Iterator<Item = &'a mut HvRegisterValue>) {
         for (dest, src) in it.zip(
-            [self.msr_cr_pat, self.msr_mtrr_def_type]
+            [self.msr_mtrr_def_type]
                 .into_iter()
                 .chain(self.fixed)
                 .chain(self.variable),
@@ -1305,7 +1340,7 @@ impl HvRegisterState<HvX64RegisterName, 29> for CacheControl {
 
     fn set_values(&mut self, it: impl Iterator<Item = HvRegisterValue>) {
         for (src, dest) in it.zip(
-            [&mut self.msr_cr_pat, &mut self.msr_mtrr_def_type]
+            [&mut self.msr_mtrr_def_type]
                 .into_iter()
                 .chain(&mut self.fixed)
                 .chain(&mut self.variable),
@@ -1322,7 +1357,6 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for CacheControl {
 
     fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
         Self {
-            msr_cr_pat: X86X_MSR_DEFAULT_PAT,
             msr_mtrr_def_type: 0,
             fixed: [0; 11],
             variable: [0; 16],
@@ -1818,6 +1852,7 @@ state_trait! {
     (11, "cet", cet, set_cet, Cet),
     (12, "cet_ss", cet_ss, set_cet_ss, CetSs),
     (13, "tsc_aux", tsc_aux, set_tsc_aux, TscAux),
+    (14, "pat", pat, set_pat, Pat),
 
     // Synic state
     (100, "synic", synic_msrs, set_synic_msrs, SyntheticMsrs),

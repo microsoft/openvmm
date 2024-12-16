@@ -1806,6 +1806,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedX86> {
         self.set_register_state(cc)
     }
 
+    fn pat(&mut self) -> Result<vp::Pat, Self::Error> {
+        self.get_register_state()
+    }
+
+    fn set_pat(&mut self, value: &vp::Pat) -> Result<(), Self::Error> {
+        self.set_register_state(value)
+    }
+
     fn virtual_msrs(&mut self) -> Result<vp::VirtualMsrs, Self::Error> {
         self.get_register_state()
     }
@@ -2076,6 +2084,7 @@ mod save_restore {
     use hvdef::Vtl;
     use virt::irqcon::MsiRequest;
     use virt::vp::AccessVpState;
+    use virt::vp::CacheControl;
     use virt::Processor;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
@@ -2206,12 +2215,10 @@ mod save_restore {
 
             // We are responsible for saving shared MSRs too, but other than
             // the MTRRs all shared MSRs are read-only. So this is all we need.
-            let virt::vp::CacheControl {
+            let CacheControl {
                 msr_mtrr_def_type,
                 fixed: fixed_mtrrs,
                 variable: variable_mtrrs,
-                // PAT is a private MSR, so we don't need to save it
-                msr_cr_pat: _,
             } = self
                 // MTRRs are shared, so it doesn't matter which VTL we ask for.
                 .access_state(Vtl::Vtl0)
@@ -2373,15 +2380,12 @@ mod save_restore {
                 && variable_mtrrs.iter().all(|x| *x == 0))
             {
                 let mut access = self.access_state(Vtl::Vtl0);
-                let mut cc = access
-                    .cache_control()
-                    .context("failed to get MTRRs")
-                    .map_err(RestoreError::Other)?;
-                cc.msr_mtrr_def_type = msr_mtrr_def_type;
-                cc.fixed = fixed_mtrrs;
-                cc.variable = variable_mtrrs;
                 access
-                    .set_cache_control(&cc)
+                    .set_cache_control(&CacheControl {
+                        msr_mtrr_def_type,
+                        fixed: fixed_mtrrs,
+                        variable: variable_mtrrs,
+                    })
                     .context("failed to set MTRRs")
                     .map_err(RestoreError::Other)?;
             }

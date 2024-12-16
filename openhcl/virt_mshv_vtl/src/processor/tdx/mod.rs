@@ -716,7 +716,8 @@ impl BackingPrivate for TdxBacked {
         })
     }
 
-    type StateAccess<'p, 'a> = UhVpStateAccess<'a, 'p, Self>
+    type StateAccess<'p, 'a>
+        = UhVpStateAccess<'a, 'p, Self>
     where
         Self: 'a + 'p,
         'p: 'a;
@@ -2897,31 +2898,32 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
     }
 
     fn cache_control(&mut self) -> Result<vp::CacheControl, Self::Error> {
-        let msr_cr_pat = self
-            .vp
-            .runner
-            .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_PAT);
         Ok(vp::CacheControl {
-            msr_cr_pat,
             msr_mtrr_def_type: 0, // TODO TDX: MTRRs
             fixed: [0; 11],       // TODO TDX: MTRRs
             variable: [0; 16],    // TODO TDX: MTRRs
         })
     }
 
-    fn set_cache_control(&mut self, value: &vp::CacheControl) -> Result<(), Self::Error> {
-        // TODO TDX: SNP only sets PAT, ignores MTRRs?
-        let vp::CacheControl {
-            msr_cr_pat,
-            msr_mtrr_def_type: _,
-            fixed: _,
-            variable: _,
-        } = *value;
+    fn set_cache_control(&mut self, _value: &vp::CacheControl) -> Result<(), Self::Error> {
+        // TODO TDX: MTRRs
+        Ok(())
+    }
+
+    fn pat(&mut self) -> Result<vp::Pat, Self::Error> {
+        let msr_cr_pat = self
+            .vp
+            .runner
+            .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_PAT);
+        Ok(vp::Pat { value: msr_cr_pat })
+    }
+
+    fn set_pat(&mut self, value: &vp::Pat) -> Result<(), Self::Error> {
         self.vp.runner.write_vmcs64(
             GuestVtl::Vtl0,
             VmcsField::VMX_VMCS_GUEST_PAT,
             !0,
-            msr_cr_pat,
+            value.value,
         );
         Ok(())
     }

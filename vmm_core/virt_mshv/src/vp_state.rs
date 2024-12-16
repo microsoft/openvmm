@@ -151,6 +151,14 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         self.set_register_state(value)
     }
 
+    fn pat(&mut self) -> Result<vp::Pat, Self::Error> {
+        self.get_register_state()
+    }
+
+    fn set_pat(&mut self, value: &vp::Pat) -> Result<(), Self::Error> {
+        self.set_register_state(value)
+    }
+
     fn virtual_msrs(&mut self) -> Result<vp::VirtualMsrs, Self::Error> {
         self.get_register_state()
     }

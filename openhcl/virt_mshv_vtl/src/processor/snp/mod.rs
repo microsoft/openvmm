@@ -369,7 +369,8 @@ impl BackingPrivate for SnpBacked {
             .expect("set_vp_registers hypercall for direct overlays should succeed");
     }
 
-    type StateAccess<'p, 'a> = UhVpStateAccess<'a, 'p, Self>
+    type StateAccess<'p, 'a>
+        = UhVpStateAccess<'a, 'p, Self>
     where
         Self: 'a + 'p,
         'p: 'a;
@@ -1892,23 +1893,25 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
     }
 
     fn cache_control(&mut self) -> Result<vp::CacheControl, Self::Error> {
-        let vmsa = self.vp.runner.vmsa(self.vtl);
         Ok(vp::CacheControl {
-            msr_cr_pat: vmsa.pat(),
             msr_mtrr_def_type: 0,
             fixed: [0; 11],
             variable: [0; 16],
         })
     }
 
-    fn set_cache_control(&mut self, value: &vp::CacheControl) -> Result<(), Self::Error> {
-        let vp::CacheControl {
-            msr_cr_pat,
-            msr_mtrr_def_type: _,
-            fixed: _,
-            variable: _,
-        } = *value;
-        self.vp.runner.vmsa_mut(self.vtl).set_pat(msr_cr_pat);
+    fn set_cache_control(&mut self, _value: &vp::CacheControl) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn pat(&mut self) -> Result<vp::Pat, Self::Error> {
+        let vmsa = self.vp.runner.vmsa(self.vtl);
+        Ok(vp::Pat { value: vmsa.pat() })
+    }
+
+    fn set_pat(&mut self, value: &vp::Pat) -> Result<(), Self::Error> {
+        let vp::Pat { value } = *value;
+        self.vp.runner.vmsa_mut(self.vtl).set_pat(value);
         Ok(())
     }
 
