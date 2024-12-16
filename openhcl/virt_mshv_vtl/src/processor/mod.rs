@@ -804,7 +804,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 .map(|lapic| lapic.set_apic_base(apic_base).unwrap());
             // Only the VTL 0 non-BSP LAPICs should be in the startup suspend state.
             let mut first = true;
-            let lapic_states = lapics.map(|lapic| {
+            lapics.map(|lapic| {
                 let state = LapicState {
                     lapic,
                     halted: false,
@@ -814,8 +814,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 };
                 first = false;
                 state
-            });
-            lapic_states.into()
+            })
         });
 
         let hv = partition.hv.as_ref().map(|hv| {

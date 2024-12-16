@@ -2149,6 +2149,8 @@ mod save_restore {
             pub(super) fixed_mtrrs: [u64; 11],
             #[mesh(28)]
             pub(super) variable_mtrrs: [u64; 16],
+            #[mesh(29)]
+            pub(super) message_queues: [virt::vp::SynicMessageQueues; 2],
         }
     }
 
@@ -2223,14 +2225,14 @@ mod save_restore {
                 _not_send,
                 inner:
                     crate::UhVpInner {
+                        // Saved
+                        message_queues,
                         // Sidecar state is reset during servicing
                         sidecar_exit_reason: _,
                         // Will be cleared by flush_async_requests above
                         wake_reasons: _,
                         // Runtime glue
                         waker: _,
-                        // TODO: This needs VMBUS work and will hopefully go away
-                        message_queues: _,
                         // Topology information
                         vp_info: _,
                         cpu_index: _,
@@ -2289,6 +2291,7 @@ mod save_restore {
                 msr_mtrr_def_type,
                 fixed_mtrrs,
                 variable_mtrrs,
+                message_queues: message_queues.each_ref().map(|q| q.save()).into_inner(),
             };
 
             Ok(state)
@@ -2324,6 +2327,7 @@ mod save_restore {
                 msr_mtrr_def_type,
                 fixed_mtrrs,
                 variable_mtrrs,
+                message_queues,
             } = state;
 
             let dr6_shared = self.partition.hcl.dr6_shared();
@@ -2366,7 +2370,7 @@ mod save_restore {
             self.crash_control = crash_control.into();
 
             // Previous versions of Underhill did not save the MTRRs.
-            // If we get a restore state with them all then assume they weren't
+            // If we get a restore state with them all 0 then assume they weren't
             // saved and don't overwrite whatever the system already has.
             if !(msr_mtrr_def_type == 0
                 && fixed_mtrrs.iter().all(|x| *x == 0)
@@ -2385,6 +2389,19 @@ mod save_restore {
                     .context("failed to set MTRRs")
                     .map_err(RestoreError::Other)?;
             }
+
+            if self.inner.message_queues.len() != message_queues.len() {
+                return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                    "invalid message queue count"
+                )));
+            }
+            self.inner
+                .message_queues
+                .iter()
+                .zip(message_queues)
+                .for_each(|(q, saved)| {
+                    q.restore(&saved);
+                });
 
             let inject_startup_suspend = match startup_suspend {
                 Some(true) => {

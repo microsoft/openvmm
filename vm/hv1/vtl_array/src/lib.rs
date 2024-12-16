@@ -49,9 +49,24 @@ impl<T, const N: usize> VtlArray<T, N> {
     where
         F: FnMut(T) -> U,
     {
-        assert!(N > 0 && N <= 3);
         VtlArray {
             data: self.data.map(f),
+        }
+    }
+
+    /// Borrows each element and returns an array of references with the same
+    /// size as self.
+    pub fn each_ref(&self) -> VtlArray<&T, N> {
+        VtlArray {
+            data: self.data.each_ref(),
+        }
+    }
+
+    /// Borrows each element mutably and returns an array of mutable references
+    /// with the same size as self.
+    pub fn each_mut(&mut self) -> VtlArray<&mut T, N> {
+        VtlArray {
+            data: self.data.each_mut(),
         }
     }
 
