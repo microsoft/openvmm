@@ -377,11 +377,13 @@ impl PagePoolHandle {
         }
 
         let pfns: Vec<_> = (self.base_pfn()..self.base_pfn() + self.size_pages).collect();
+        let pfn_bias = self.pfn_bias;
 
         Ok(user_driver::memory::MemoryBlock::new(PagePoolDmaBuffer {
             mapping,
             _alloc: self,
             pfns,
+            pfn_bias,
         }))
     }
 }

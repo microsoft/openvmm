@@ -32,6 +32,7 @@ use thiserror::Error;
 use underhill_config::Vtl2SettingsErrorInfo;
 use underhill_config::Vtl2SettingsErrorInfoVec;
 use unicycle::FuturesUnordered;
+use user_driver::vfio::VfioDmaBuffer;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
@@ -84,10 +85,8 @@ pub(crate) enum FatalError {
     TooManyGuestNotifications(get_protocol::GuestNotifications),
     #[error("failed to create IgvmAttest request because the gpa allocator is unavailable")]
     GpaAllocatorUnavailable,
-    #[error("failed to allocate page pool memory")]
-    GpaMemoryAllocationError(#[source] page_pool_alloc::Error),
-    #[error("failed to read the `IGVM_ATTEST` response from page pool memory")]
-    ReadGpaMemory(#[source] sparse_mmap::SparseMappingError),
+    #[error("failed to allocate memory for attestation request")]
+    GpaMemoryAllocationError(#[source] anyhow::Error),
     #[error("failed to deserialize the asynchronous `IGVM_ATTEST` response")]
     DeserializeIgvmAttestResponse,
     #[error("malformed `IGVM_ATTEST` response - reported size {response_size} was larger than maximum size {maximum_size}")]
@@ -144,6 +143,8 @@ pub(crate) mod msg {
     use chipset_resources::battery::HostBatteryUpdate;
     use guid::Guid;
     use mesh::rpc::Rpc;
+    use std::sync::Arc;
+    use user_driver::vfio::VfioDmaBuffer;
     use vpci::bus_control::VpciBusEvent;
 
     #[derive(Debug)]
@@ -161,7 +162,6 @@ pub(crate) mod msg {
     }
 
     /// A list specifying control messages to send to the process loop.
-    #[derive(Debug)]
     pub(crate) enum Msg {
         // GET infrastructure - not part of the GET protocol itself.
         // No direct interaction with the host.
@@ -174,7 +174,7 @@ pub(crate) mod msg {
         /// Inspect the state of the process loop.
         Inspect(inspect::Deferred),
         /// Store the gpa allocator to be used for attestation.
-        SetGpaAllocator(page_pool_alloc::PagePoolAllocator),
+        SetGpaAllocator(Arc<dyn VfioDmaBuffer>),
 
         // Late bound receivers for Guest Notifications
         /// Take the late-bound GuestRequest receiver for Generation Id updates.
@@ -468,7 +468,7 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     igvm_attest_read_send: mesh::Sender<Vec<u8>>,
     #[inspect(skip)]
-    gpa_allocator: Option<Arc<page_pool_alloc::PagePoolAllocator>>,
+    gpa_allocator: Option<Arc<dyn VfioDmaBuffer>>,
     stats: Stats,
 
     guest_notification_listeners: GuestNotificationListeners,
@@ -982,7 +982,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 req.inspect(self);
             }
             Msg::SetGpaAllocator(gpa_allocator) => {
-                self.gpa_allocator = Some(Arc::new(gpa_allocator));
+                self.gpa_allocator = Some(gpa_allocator);
             }
 
             // Late bound receivers for Guest Notifications
@@ -1797,26 +1797,24 @@ async fn request_saved_state(
 async fn request_igvm_attest(
     mut access: HostRequestPipeAccess,
     request: msg::IgvmAttestRequestData,
-    gpa_allocator: Option<Arc<page_pool_alloc::PagePoolAllocator>>,
+    gpa_allocator: Option<Arc<dyn VfioDmaBuffer>>,
 ) -> Result<Result<Vec<u8>, IgvmAttestError>, FatalError> {
     let allocator = gpa_allocator.ok_or(FatalError::GpaAllocatorUnavailable)?;
-
-    let requested_pages = (request.response_buffer_len).div_ceil(hvdef::HV_PAGE_SIZE_USIZE);
-    let size_pages = std::num::NonZeroU64::new(requested_pages as u64).expect("is nonzero");
-    let handle = allocator
-        .alloc_with_mapping(size_pages, "igvm_attest".to_string())
+    let dma_size = request.response_buffer_len;
+    let mem = allocator
+        .create_dma_buffer(dma_size)
         .map_err(FatalError::GpaMemoryAllocationError)?;
 
     // Host expects the vTOM bit to be stripped
-    let base_pfn = handle.base_pfn_without_bias();
-    let pfns = base_pfn..base_pfn + handle.size_pages();
-    let allocated_gpa = pfns
-        .map(|pfn| pfn * hvdef::HV_PAGE_SIZE)
+    let pfn_bias = mem.pfn_bias();
+    let gpas = mem
+        .pfns()
+        .iter()
+        .map(|pfn| (pfn & !(pfn_bias)) * hvdef::HV_PAGE_SIZE)
         .collect::<Vec<_>>();
-    let allocated_shared_memory_size = size_pages.get() as usize * hvdef::HV_PAGE_SIZE_USIZE;
 
     let mut shared_gpa = [0u64; get_protocol::IGVM_ATTEST_MSG_MAX_SHARED_GPA];
-    shared_gpa[..allocated_gpa.len()].copy_from_slice(&allocated_gpa);
+    shared_gpa[..gpas.len()].copy_from_slice(&gpas);
 
     let request =
         match prepare_igvm_attest_request(shared_gpa, &request.agent_data, &request.report) {
@@ -1836,19 +1834,15 @@ async fn request_igvm_attest(
     let response_length = response.length as usize;
     if response_length == get_protocol::IGVM_ATTEST_VMWP_GENERIC_ERROR_CODE {
         return Ok(Err(IgvmAttestError::IgvmAgentGenericError));
-    } else if response_length > allocated_shared_memory_size {
+    } else if response_length > dma_size {
         Err(FatalError::InvalidIgvmAttestResponseSize {
             response_size: response_length,
-            maximum_size: allocated_shared_memory_size,
+            maximum_size: dma_size,
         })?
     }
 
-    let mut buffer = vec![0u8; allocated_shared_memory_size];
-    handle
-        .mapping()
-        .expect("allocated with mapping")
-        .read_at(0, &mut buffer)
-        .map_err(FatalError::ReadGpaMemory)?;
+    let mut buffer = vec![0u8; dma_size];
+    mem.read_at(0, &mut buffer);
 
     buffer.truncate(response_length);
 

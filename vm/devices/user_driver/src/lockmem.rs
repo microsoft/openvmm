@@ -116,6 +116,10 @@ unsafe impl MappedDmaTarget for LockedMemory {
     fn pfns(&self) -> &[u64] {
         &self.pfns
     }
+
+    fn pfn_bias(&self) -> u64 {
+        0
+    }
 }
 
 #[derive(Clone)]

@@ -30,6 +30,9 @@ pub unsafe trait MappedDmaTarget: Send + Sync {
     /// device.
     fn pfns(&self) -> &[u64];
 
+    /// The pfn_bias on confidential platforms (aka vTOM) applied to PFNs in [`Self::pfns()`],
+    fn pfn_bias(&self) -> u64;
+
     /// Returns a view of a subset of the buffer.
     ///
     /// Returns `None` if the default implementation should be used.
@@ -74,6 +77,10 @@ unsafe impl MappedDmaTarget for RestrictedView {
         let count = (self.base() as usize % PAGE_SIZE + self.len + 0xfff) / PAGE_SIZE;
         let pages = self.mem.pfns();
         &pages[start..][..count]
+    }
+
+    fn pfn_bias(&self) -> u64 {
+        self.mem.pfn_bias()
     }
 
     fn view(&self, offset: usize, len: usize) -> Option<MemoryBlock> {
@@ -129,6 +136,11 @@ impl MemoryBlock {
     /// Gets the PFNs of the underlying memory.
     pub fn pfns(&self) -> &[u64] {
         self.mem.pfns()
+    }
+
+    /// Gets the pfn_bias of the underlying memory.
+    pub fn pfn_bias(&self) -> u64 {
+        self.mem.pfn_bias()
     }
 
     /// Gets the buffer as an atomic slice.

@@ -13,6 +13,7 @@ use inspect::Inspect;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use std::sync::Arc;
+use user_driver::vfio::VfioDmaBuffer;
 use vpci::bus_control::VpciBusEvent;
 use zerocopy::AsBytes;
 
@@ -366,7 +367,11 @@ impl GuestEmulationTransportClient {
     }
 
     /// Set the gpa allocator, which is required by ['igvm_attest'].
-    pub fn set_gpa_allocator(&mut self, gpa_allocator: page_pool_alloc::PagePoolAllocator) {
+    ///
+    /// TODO: This isn't a VfioDevice, but the VfioDmaBuffer is a convienent
+    /// trait to use for wrapping the PFN allocations. Refactor this in the
+    /// future once a central DMA API is made.
+    pub fn set_gpa_allocator(&mut self, gpa_allocator: Arc<dyn VfioDmaBuffer>) {
         self.control
             .notify(msg::Msg::SetGpaAllocator(gpa_allocator));
     }

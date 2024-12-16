@@ -1,0 +1,20 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "get_lower_vtl"
+edition = "2021"
+rust-version.workspace = true
+
+[dependencies]
+hcl.workspace = true
+
+hvdef.workspace = true
+inspect.workspace = true
+memory_range.workspace = true
+virt.workspace = true
+
+anyhow.workspace = true
+
+[lints]
+workspace = true

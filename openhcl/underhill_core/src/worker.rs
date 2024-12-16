@@ -1587,9 +1587,21 @@ async fn new_underhill_vm(
         .as_ref()
         .map(|p| p.allocator("get".into()))
     {
-        get_client.set_gpa_allocator(allocator.context("get shared memory allocator")?);
+        get_client.set_gpa_allocator(Arc::new(allocator.context("get shared memory allocator")?));
     } else if let Some(allocator) = private_pool.as_ref().map(|p| p.allocator("get".into())) {
-        get_client.set_gpa_allocator(allocator.context("get private memory allocator")?);
+        // Private memory requires the pages have vtl protection removed before
+        // sending to the host. Unfortuantely, normally we would use the
+        // partition object that implements this trait but it's not available
+        // yet. Use a special crate just for the get that implements this trait.
+        //
+        // TODO: Remove this requirement in the future when we can fix the host
+        // to handle this packet differently.
+        let allocator = lower_vtl_permissions_guard::LowerVtlMemorySpawner::new(
+            allocator.context("get private memory allocator")?,
+            get_lower_vtl::GetLowerVtl::new().context("get lower vtl")?,
+        );
+
+        get_client.set_gpa_allocator(Arc::new(allocator));
     }
 
     // Create the `AttestationVmConfig` from `dps`, which will be used in

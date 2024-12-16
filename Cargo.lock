@@ -2242,6 +2242,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "get_lower_vtl"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "hcl",
+ "hvdef",
+ "inspect",
+ "memory_range",
+ "virt",
+]
+
+[[package]]
 name = "get_protocol"
 version = "0.0.0"
 dependencies = [
@@ -2433,6 +2445,7 @@ dependencies = [
 name = "guest_emulation_transport"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "chipset_resources",
  "futures",
  "futures-concurrency",
@@ -2456,6 +2469,7 @@ dependencies = [
  "tracing_helpers",
  "underhill_config",
  "unicycle",
+ "user_driver",
  "vm_resource",
  "vmbus_async",
  "vmbus_ring",
@@ -6910,6 +6924,7 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "get_helpers",
+ "get_lower_vtl",
  "get_protocol",
  "getrandom",
  "guest_emulation_transport",
@@ -6933,6 +6948,7 @@ dependencies = [
  "loader",
  "loader_defs",
  "local_clock",
+ "lower_vtl_permissions_guard",
  "mana_driver",
  "mcr_resources",
  "memory_range",
