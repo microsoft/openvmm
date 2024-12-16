@@ -46,7 +46,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
 
         let (high_register, low_register) = unary_register_pair(operand_bit_size);
 
-        let left = self.state.get_gp(low_register) as u128;
+        let left = self.cpu.gp(low_register) as u128;
 
         let (product, flag) = do_multiply(left, operand_bit_size);
 
@@ -54,11 +54,13 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         let product_high = ((product & high_mask) >> operand_bit_size) as u64;
         let product_low = (!high_mask & product) as u64;
 
-        self.state.set_gp(low_register, product_low);
-        self.state.set_gp(high_register, product_high);
+        self.cpu.set_gp(low_register, product_low);
+        self.cpu.set_gp(high_register, product_high);
 
-        self.state.rflags.set_carry(flag);
-        self.state.rflags.set_overflow(flag);
+        let mut rflags = self.cpu.rflags();
+        rflags.set_carry(flag);
+        rflags.set_overflow(flag);
+        self.cpu.set_rflags(rflags);
 
         Ok(())
     }
@@ -84,8 +86,10 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         let flag = overflow || smaller_overflow;
 
         self.write_op_0(instr, result as u64).await?;
-        self.state.rflags.set_carry(flag);
-        self.state.rflags.set_overflow(flag);
+        let mut rflags = self.cpu.rflags();
+        rflags.set_carry(flag);
+        rflags.set_overflow(flag);
+        self.cpu.set_rflags(rflags);
 
         Ok(())
     }
@@ -156,8 +160,8 @@ impl<'a, T: Cpu> Emulator<'a, T> {
 
         let (high_register, low_register) = unary_register_pair(operand_bit_size);
 
-        let left_high_bits = self.state.get_gp(high_register) as u128;
-        let left_low_bits = self.state.get_gp(low_register) as u128;
+        let left_high_bits = self.cpu.gp(high_register) as u128;
+        let left_low_bits = self.cpu.gp(low_register) as u128;
         let left = (left_high_bits << operand_bit_size) | left_low_bits;
 
         let (quotient, remainder) = do_division(left, right, operand_bit_size).map_err(|_| {
@@ -168,8 +172,8 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             )
         })?;
 
-        self.state.set_gp(low_register, quotient);
-        self.state.set_gp(high_register, remainder);
+        self.cpu.set_gp(low_register, quotient);
+        self.cpu.set_gp(high_register, remainder);
 
         // flags are undefined
         Ok(())

@@ -14,6 +14,7 @@ use super::HardwareIsolatedBacking;
 use super::UhEmulationState;
 use super::UhHypercallHandler;
 use super::UhRunVpError;
+use super::UhX86EmulatorRegisters;
 use crate::BackingShared;
 use crate::GuestVtl;
 use crate::UhCvmPartitionState;
@@ -36,6 +37,7 @@ use hvdef::HvX64PendingExceptionEvent;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
+use iced_x86::Register;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -62,7 +64,7 @@ use virt_support_apic::ApicWork;
 use virt_support_apic::OffloadNotSupported;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
-use virt_support_x86emu::emulate::EmulatorSupport;
+use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
 use virt_support_x86emu::emulate::TranslateMode;
 use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::vmtime::VmTimeAccess;
@@ -110,6 +112,7 @@ use x86defs::X64_EFER_LME;
 use x86defs::X64_EFER_NXE;
 use x86defs::X64_EFER_SVME;
 use x86defs::X86X_MSR_EFER;
+use x86emu::CpuState;
 
 #[derive(Debug)]
 struct TdxExit<'a>(&'a tdx_tdg_vp_enter_exit_info);
@@ -418,6 +421,23 @@ pub struct TdxBacked {
     cvm: UhCvmVpState,
 }
 
+#[derive(Default, Clone, Copy)]
+pub struct TdxCpuState {
+    /// GP registers, in the canonical order (as defined by `RAX`, etc.).
+    pub gps: [u64; 16],
+    /// Segment registers, in the canonical order (as defined by `ES`, etc.).
+    pub segs: [Option<SegmentRegister>; 6],
+    /// RIP.
+    pub rip: u64,
+    /// RFLAGS.
+    pub rflags: RFlags,
+
+    /// CR0. Immutable.
+    pub cr0: u64,
+    /// EFER. Immutable.
+    pub efer: u64,
+}
+
 #[derive(Inspect, Default)]
 pub struct EnterStats {
     pub success: Counter,
@@ -716,7 +736,8 @@ impl BackingPrivate for TdxBacked {
         })
     }
 
-    type StateAccess<'p, 'a> = UhVpStateAccess<'a, 'p, Self>
+    type StateAccess<'p, 'a>
+        = UhVpStateAccess<'a, 'p, Self>
     where
         Self: 'a + 'p,
         'p: 'a;
@@ -2085,7 +2106,29 @@ impl UhProcessor<'_, TdxBacked> {
     }
 }
 
-impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
+impl<'a, 'b> UhX86EmulatorRegisters<'a, 'b, TdxBacked> for TdxCpuState {
+    fn new(vp: &'a mut UhProcessor<'b, TdxBacked>, _vtl: GuestVtl) -> Self {
+        let cs = TdxExit(vp.runner.tdx_vp_enter_exit_info()).cs();
+        let enter_state = vp.runner.tdx_enter_guest_state();
+        TdxCpuState {
+            gps: enter_state.gps,
+            segs: [None, cs.into(), None, None, None, None],
+            rip: enter_state.rip,
+            rflags: enter_state.rflags.into(),
+            cr0: vp.backing.cr0.read(&vp.runner),
+            efer: vp.backing.efer,
+        }
+    }
+
+    fn flush(&self, vp: &'a mut UhProcessor<'b, TdxBacked>, _vtl: GuestVtl) {
+        let enter_state = vp.runner.tdx_enter_guest_state_mut();
+        enter_state.gps = self.gps;
+        enter_state.rip = self.rip;
+        enter_state.rflags = self.rflags.into();
+    }
+}
+
+impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, TdxCpuState> {
     type Error = UhRunVpError;
 
     fn vp_index(&self) -> VpIndex {
@@ -2096,65 +2139,66 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         self.vp.partition.caps.vendor
     }
 
-    fn state(&mut self) -> Result<x86emu::CpuState, Self::Error> {
-        let cr0 = self.vp.backing.cr0.read(&self.vp.runner);
-        let efer = self.vp.backing.efer;
-        let cs = TdxExit(self.vp.runner.tdx_vp_enter_exit_info()).cs();
-        let enter_state = self.vp.runner.tdx_enter_guest_state();
-
-        // TODO TDX: Only supports VTL0
-        Ok(x86emu::CpuState {
-            gps: enter_state.gps,
-            segs: [
-                self.vp
-                    .read_segment(GuestVtl::Vtl0, TdxSegmentReg::Es)
-                    .into(),
-                cs.into(),
-                self.vp
-                    .read_segment(GuestVtl::Vtl0, TdxSegmentReg::Ss)
-                    .into(),
-                self.vp
-                    .read_segment(GuestVtl::Vtl0, TdxSegmentReg::Ds)
-                    .into(),
-                self.vp
-                    .read_segment(GuestVtl::Vtl0, TdxSegmentReg::Fs)
-                    .into(),
-                self.vp
-                    .read_segment(GuestVtl::Vtl0, TdxSegmentReg::Gs)
-                    .into(),
-            ],
-            rip: enter_state.rip,
-            rflags: enter_state.rflags.into(),
-            cr0,
-            efer,
-        })
+    fn gp_sign_extend(&mut self, reg: Register) -> i64 {
+        self.gp(reg) as i64
     }
 
-    fn set_state(&mut self, state: x86emu::CpuState) -> Result<(), Self::Error> {
-        // TODO: immutable true? copied from snp
-        let x86emu::CpuState {
-            gps,
-            segs: _, // immutable
-            rip,
-            rflags,
-            cr0: _,  // immutable
-            efer: _, // immutable
-        } = state;
-        let enter_state = self.vp.runner.tdx_enter_guest_state_mut();
+    fn gp(&mut self, reg: Register) -> u64 {
+        let index = reg.number();
+        self.registers.gps[index]
+    }
 
-        enter_state.gps = gps;
-        enter_state.rip = rip;
-        enter_state.rflags = rflags.into(); // TODO: rflags means interrupt state changed??
+    fn set_gp(&mut self, reg: Register, v: u64) {
+        let index = reg.number();
+        self.registers.gps[index] = v;
+    }
+
+    fn xmm(&mut self, index: usize) -> u128 {
+        u128::from_ne_bytes(self.vp.runner.fx_state().xmm[index])
+    }
+
+    fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error> {
+        self.vp.runner.fx_state_mut().xmm[index] = v.to_ne_bytes();
         Ok(())
     }
 
-    fn get_xmm(&mut self, reg: usize) -> Result<u128, Self::Error> {
-        Ok(u128::from_ne_bytes(self.vp.runner.fx_state().xmm[reg]))
+    fn rip(&mut self) -> u64 {
+        self.registers.rip
     }
 
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
-        self.vp.runner.fx_state_mut().xmm[reg] = value.to_ne_bytes();
-        Ok(())
+    fn set_rip(&mut self, v: u64) {
+        self.registers.rip = v;
+    }
+
+    fn segment(&mut self, index: usize) -> x86defs::SegmentRegister {
+        let tdx_segment_index = match index {
+            CpuState::ES => TdxSegmentReg::Es,
+            CpuState::CS => TdxSegmentReg::Cs,
+            CpuState::SS => TdxSegmentReg::Ss,
+            CpuState::DS => TdxSegmentReg::Ds,
+            CpuState::FS => TdxSegmentReg::Fs,
+            CpuState::GS => TdxSegmentReg::Gs,
+            _ => panic!("invalid segment register"),
+        };
+        let reg = self.registers.segs[index]
+            .get_or_insert_with(|| self.vp.read_segment(GuestVtl::Vtl0, tdx_segment_index));
+        (*reg).into()
+    }
+
+    fn efer(&mut self) -> u64 {
+        self.registers.efer
+    }
+
+    fn cr0(&mut self) -> u64 {
+        self.registers.cr0
+    }
+
+    fn rflags(&mut self) -> RFlags {
+        self.registers.rflags
+    }
+
+    fn set_rflags(&mut self, v: RFlags) {
+        self.registers.rflags = v;
     }
 
     fn instruction_bytes(&self) -> &[u8] {

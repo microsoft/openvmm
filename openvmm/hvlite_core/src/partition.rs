@@ -301,7 +301,10 @@ impl<T: InspectMut> InspectMut for WrappedVp<'_, T> {
 impl<T: Processor> Processor for WrappedVp<'_, T> {
     type Error = T::Error;
     type RunVpError = T::RunVpError;
-    type StateAccess<'a> = T::StateAccess<'a> where Self: 'a;
+    type StateAccess<'a>
+        = T::StateAccess<'a>
+    where
+        Self: 'a;
 
     fn set_debug_state(
         &mut self,
