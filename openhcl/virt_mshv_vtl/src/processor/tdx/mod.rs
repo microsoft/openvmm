@@ -492,6 +492,7 @@ impl TdxBackedShared {
 
 impl BackingPrivate for TdxBacked {
     type HclBacking = Tdx;
+    type EmulationCache = ();
 
     fn new(params: super::private::BackingParams<'_, '_, Self>) -> Result<Self, crate::Error> {
         // TODO TDX: TDX shares the vp context page for xmm registers only. It
@@ -674,7 +675,8 @@ impl BackingPrivate for TdxBacked {
         })
     }
 
-    type StateAccess<'p, 'a> = UhVpStateAccess<'a, 'p, Self>
+    type StateAccess<'p, 'a>
+        = UhVpStateAccess<'a, 'p, Self>
     where
         Self: 'a + 'p,
         'p: 'a;

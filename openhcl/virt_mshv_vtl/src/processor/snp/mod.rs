@@ -191,6 +191,7 @@ impl SnpBackedShared {
 
 impl BackingPrivate for SnpBacked {
     type HclBacking = hcl::ioctl::snp::Snp;
+    type EmulationCache = ();
 
     fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error> {
         let crate::BackingShared::Snp(shared) = params.backing_shared else {
@@ -297,7 +298,8 @@ impl BackingPrivate for SnpBacked {
             .expect("set_vp_registers hypercall for direct overlays should succeed");
     }
 
-    type StateAccess<'p, 'a> = UhVpStateAccess<'a, 'p, Self>
+    type StateAccess<'p, 'a>
+        = UhVpStateAccess<'a, 'p, Self>
     where
         Self: 'a + 'p,
         'p: 'a;

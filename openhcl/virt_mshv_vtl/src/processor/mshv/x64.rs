@@ -122,6 +122,7 @@ struct ProcessorStatsX86 {
 
 impl BackingPrivate for HypervisorBackedX86 {
     type HclBacking = MshvX64;
+    type EmulationCache = ();
 
     fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error> {
         // Initialize shared register state to architectural state. The kernel

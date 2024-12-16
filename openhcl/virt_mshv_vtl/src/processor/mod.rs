@@ -185,6 +185,7 @@ mod private {
 
     pub trait BackingPrivate: 'static + Sized + InspectMut + Sized {
         type HclBacking: hcl::ioctl::Backing;
+        type EmulationCache: Default;
 
         fn new(params: BackingParams<'_, '_, Self>) -> Result<Self, Error>;
 
@@ -1010,6 +1011,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 interruption_pending,
                 devices,
                 vtl,
+                cache: T::EmulationCache::default(),
             },
             guest_memory,
             devices,
@@ -1036,6 +1038,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 interruption_pending: intercept_state.interruption_pending,
                 devices,
                 vtl,
+                cache: T::EmulationCache::default(),
             },
             intercept_state,
             guest_memory,
@@ -1138,6 +1141,11 @@ struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing> {
     interruption_pending: bool,
     devices: &'a T,
     vtl: GuestVtl,
+    #[cfg_attr(
+        guest_arch = "x86_64",
+        expect(dead_code, reason = "not used yet in x86_64")
+    )]
+    cache: U::EmulationCache,
 }
 
 struct UhHypercallHandler<'a, 'b, T, B: Backing> {
