@@ -234,6 +234,8 @@ pub struct ParsedDeviceTree<
     /// This is used to allocate a persistent VTL2 pool on non-isolated guests,
     /// to allow devices to stay alive during a servicing operation.
     pub device_dma_page_count: Option<u64>,
+    /// Indicates that Host does support NVMe keep-alive.
+    pub nvme_keepalive: bool,
 }
 
 /// The memory allocation mode provided by the host. This determines how OpenHCL
@@ -313,6 +315,7 @@ impl<
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
             device_dma_page_count: None,
+            nvme_keepalive: false,
         }
     }
 
@@ -526,6 +529,13 @@ impl<
                             }
                         }
                     }
+
+                    storage.nvme_keepalive = child
+                        .find_property("vf-keepalive")
+                        .ok()
+                        .flatten()
+                        .and_then(|p| p.read_str().ok())
+                        == Some("nvme");
                 }
                 _ if child.name.starts_with("memory@") => {
                     let igvm_type = if let Some(igvm_type) = child
@@ -713,6 +723,7 @@ impl<
             memory_allocation_mode: _,
             entropy: _,
             device_dma_page_count: _,
+            nvme_keepalive: _,
         } = storage;
 
         *device_tree_size = parser.total_size;

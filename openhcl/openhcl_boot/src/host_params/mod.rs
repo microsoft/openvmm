@@ -92,6 +92,8 @@ pub struct PartitionInfo {
     pub entropy: Option<ArrayVec<u8, MAX_ENTROPY_SIZE>>,
     /// The VTL0 alias map physical address.
     pub vtl0_alias_map: Option<u64>,
+    /// Host is compatible with DMA preservation / NVMe keep-alive.
+    pub nvme_keepalive: bool,
 }
 
 impl PartitionInfo {
@@ -122,6 +124,7 @@ impl PartitionInfo {
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
             vtl0_alias_map: None,
+            nvme_keepalive: false,
         }
     }
 
