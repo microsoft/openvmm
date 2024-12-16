@@ -164,7 +164,12 @@ pub async fn request_vmgs_encryption_keys(
             }) => {
                 tracing::warn!(CVM_ALLOWED, retry = i, "Failed to get VMGS key-encryption")
             }
-            Err(e) if i == (max_retry - 1) => Err(e)?,
+            Err(e) if i == (max_retry - 1) => {
+                tracing::error!(
+                    "VMGS key-encryption failed due to error after max number of attempts"
+                );
+                Err(e)?
+            }
             Err(e) => {
                 tracing::error!(
                     CVM_ALLOWED,
