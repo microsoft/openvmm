@@ -163,14 +163,6 @@ impl FuzzNvmeDriver {
     }
 }
 
-// impl Drop for FuzzNvmeDriver {
-//     // Takes ownership of the driver and gracefully shuts down upon drop
-//     fn drop(&mut self) {
-//         .await;
-//     }
-// 
-// }
-
 #[derive(Debug, Arbitrary)]
 pub enum NvmeDriverAction {
     Read {
