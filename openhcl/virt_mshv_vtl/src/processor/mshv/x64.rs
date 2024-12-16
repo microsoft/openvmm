@@ -1798,11 +1798,11 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedX86> {
         self.set_register_state(value)
     }
 
-    fn cache_control(&mut self) -> Result<vp::CacheControl, Self::Error> {
+    fn mtrrs(&mut self) -> Result<vp::Mtrrs, Self::Error> {
         self.get_register_state()
     }
 
-    fn set_cache_control(&mut self, cc: &vp::CacheControl) -> Result<(), Self::Error> {
+    fn set_mtrrs(&mut self, cc: &vp::Mtrrs) -> Result<(), Self::Error> {
         self.set_register_state(cc)
     }
 
@@ -2084,7 +2084,7 @@ mod save_restore {
     use hvdef::Vtl;
     use virt::irqcon::MsiRequest;
     use virt::vp::AccessVpState;
-    use virt::vp::CacheControl;
+    use virt::vp::Mtrrs;
     use virt::Processor;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
@@ -2215,14 +2215,14 @@ mod save_restore {
 
             // We are responsible for saving shared MSRs too, but other than
             // the MTRRs all shared MSRs are read-only. So this is all we need.
-            let CacheControl {
+            let Mtrrs {
                 msr_mtrr_def_type,
                 fixed: fixed_mtrrs,
                 variable: variable_mtrrs,
             } = self
                 // MTRRs are shared, so it doesn't matter which VTL we ask for.
                 .access_state(Vtl::Vtl0)
-                .cache_control()
+                .mtrrs()
                 .context("failed to get MTRRs")
                 .map_err(SaveError::Other)?;
 
@@ -2381,7 +2381,7 @@ mod save_restore {
             {
                 let mut access = self.access_state(Vtl::Vtl0);
                 access
-                    .set_cache_control(&CacheControl {
+                    .set_mtrrs(&Mtrrs {
                         msr_mtrr_def_type,
                         fixed: fixed_mtrrs,
                         variable: variable_mtrrs,

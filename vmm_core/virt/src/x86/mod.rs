@@ -26,7 +26,7 @@ pub struct X86InitialRegs {
     /// Register state to be set on the BSP.
     pub registers: vp::Registers,
     /// MTRR state to be set on all processors.
-    pub cc: vp::CacheControl,
+    pub mtrrs: vp::Mtrrs,
     /// PAT state to be set on all processors.
     pub pat: vp::Pat,
 }
@@ -35,7 +35,7 @@ impl X86InitialRegs {
     pub fn at_reset(caps: &X86PartitionCapabilities, bsp: &X86VpInfo) -> Self {
         Self {
             registers: vp::Registers::at_reset(caps, bsp),
-            cc: vp::CacheControl::at_reset(caps, bsp),
+            mtrrs: vp::Mtrrs::at_reset(caps, bsp),
             pat: vp::Pat::at_reset(caps, bsp),
         }
     }

@@ -215,7 +215,7 @@ where
         let InitialRegs {
             registers,
             #[cfg(guest_arch = "x86_64")]
-            cc,
+            mtrrs,
             #[cfg(guest_arch = "x86_64")]
             pat,
             #[cfg(guest_arch = "aarch64")]
@@ -237,7 +237,7 @@ where
         // Set MTRRs and PAT on all VPs.
         #[cfg(guest_arch = "x86_64")]
         access
-            .set_cache_control(cc)
+            .set_mtrrs(mtrrs)
             .map_err(|err| RegisterSetError("mtrrs", err.into()))?;
         #[cfg(guest_arch = "x86_64")]
         access

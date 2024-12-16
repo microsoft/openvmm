@@ -1281,19 +1281,19 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Pat {
 #[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
-pub struct CacheControl {
-    #[mesh(2)]
+pub struct Mtrrs {
+    #[mesh(1)]
     #[inspect(hex)]
     pub msr_mtrr_def_type: u64,
-    #[mesh(3)]
+    #[mesh(2)]
     #[inspect(with = "|x| inspect::iter_by_index(x.iter().map(inspect::AsHex))")]
     pub fixed: [u64; 11],
-    #[mesh(4)]
+    #[mesh(3)]
     #[inspect(with = "|x| inspect::iter_by_index(x.iter().map(inspect::AsHex))")]
     pub variable: [u64; 16],
 }
 
-impl HvRegisterState<HvX64RegisterName, 28> for CacheControl {
+impl HvRegisterState<HvX64RegisterName, 28> for Mtrrs {
     fn names(&self) -> &'static [HvX64RegisterName; 28] {
         &[
             HvX64RegisterName::MsrMtrrDefType,
@@ -1350,7 +1350,7 @@ impl HvRegisterState<HvX64RegisterName, 28> for CacheControl {
     }
 }
 
-impl StateElement<X86PartitionCapabilities, X86VpInfo> for CacheControl {
+impl StateElement<X86PartitionCapabilities, X86VpInfo> for Mtrrs {
     fn is_present(_caps: &X86PartitionCapabilities) -> bool {
         true
     }
@@ -1845,14 +1845,14 @@ state_trait! {
     (4, "apic", apic, set_apic, Apic),
     (5, "xcr", xcr, set_xcr, Xcr0),
     (6, "xss", xss, set_xss, Xss),
-    (7, "cc", cache_control, set_cache_control, CacheControl),
-    (8, "msrs", virtual_msrs, set_virtual_msrs, VirtualMsrs),
-    (9, "drs", debug_regs, set_debug_regs, DebugRegisters),
-    (10, "tsc", tsc, set_tsc, Tsc),
-    (11, "cet", cet, set_cet, Cet),
-    (12, "cet_ss", cet_ss, set_cet_ss, CetSs),
-    (13, "tsc_aux", tsc_aux, set_tsc_aux, TscAux),
-    (14, "pat", pat, set_pat, Pat),
+    (7, "mtrrs", mtrrs, set_mtrrs, Mtrrs),
+    (8, "pat", pat, set_pat, Pat),
+    (9, "msrs", virtual_msrs, set_virtual_msrs, VirtualMsrs),
+    (10, "drs", debug_regs, set_debug_regs, DebugRegisters),
+    (11, "tsc", tsc, set_tsc, Tsc),
+    (12, "cet", cet, set_cet, Cet),
+    (13, "cet_ss", cet_ss, set_cet_ss, CetSs),
+    (14, "tsc_aux", tsc_aux, set_tsc_aux, TscAux),
 
     // Synic state
     (100, "synic", synic_msrs, set_synic_msrs, SyntheticMsrs),

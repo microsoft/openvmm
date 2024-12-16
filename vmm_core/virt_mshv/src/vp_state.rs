@@ -143,11 +143,11 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         self.set_register_state(value)
     }
 
-    fn cache_control(&mut self) -> Result<vp::CacheControl, Self::Error> {
+    fn mtrrs(&mut self) -> Result<vp::Mtrrs, Self::Error> {
         self.get_register_state()
     }
 
-    fn set_cache_control(&mut self, value: &vp::CacheControl) -> Result<(), Self::Error> {
+    fn set_mtrrs(&mut self, value: &vp::Mtrrs) -> Result<(), Self::Error> {
         self.set_register_state(value)
     }
 

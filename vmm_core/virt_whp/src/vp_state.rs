@@ -148,12 +148,12 @@ mod x86 {
             self.run.vp.set_register_state(self.vtl, value)
         }
 
-        fn cache_control(&mut self) -> Result<vp::CacheControl, Self::Error> {
+        fn mtrrs(&mut self) -> Result<vp::Mtrrs, Self::Error> {
             self.run.vp.get_register_state(self.vtl)
         }
 
-        fn set_cache_control(&mut self, cc: &vp::CacheControl) -> Result<(), Self::Error> {
-            self.run.vp.set_register_state(self.vtl, cc)
+        fn set_mtrrs(&mut self, mtrrs: &vp::Mtrrs) -> Result<(), Self::Error> {
+            self.run.vp.set_register_state(self.vtl, mtrrs)
         }
 
         fn pat(&mut self) -> Result<vp::Pat, Self::Error> {

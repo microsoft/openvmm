@@ -2897,15 +2897,15 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         Err(vp_state::Error::Unimplemented("xss"))
     }
 
-    fn cache_control(&mut self) -> Result<vp::CacheControl, Self::Error> {
-        Ok(vp::CacheControl {
+    fn mtrrs(&mut self) -> Result<vp::Mtrrs, Self::Error> {
+        Ok(vp::Mtrrs {
             msr_mtrr_def_type: 0, // TODO TDX: MTRRs
             fixed: [0; 11],       // TODO TDX: MTRRs
             variable: [0; 16],    // TODO TDX: MTRRs
         })
     }
 
-    fn set_cache_control(&mut self, _value: &vp::CacheControl) -> Result<(), Self::Error> {
+    fn set_mtrrs(&mut self, _value: &vp::Mtrrs) -> Result<(), Self::Error> {
         // TODO TDX: MTRRs
         Ok(())
     }
