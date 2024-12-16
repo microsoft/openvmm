@@ -156,6 +156,14 @@ mod x86 {
             self.run.vp.set_register_state(self.vtl, cc)
         }
 
+        fn pat(&mut self) -> Result<vp::Pat, Self::Error> {
+            self.run.vp.get_register_state(self.vtl)
+        }
+
+        fn set_pat(&mut self, value: &vp::Pat) -> Result<(), Self::Error> {
+            self.run.vp.set_register_state(self.vtl, value)
+        }
+
         fn virtual_msrs(&mut self) -> Result<vp::VirtualMsrs, Self::Error> {
             self.run.vp.get_register_state(self.vtl)
         }
