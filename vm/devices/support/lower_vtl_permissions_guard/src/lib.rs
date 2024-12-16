@@ -62,8 +62,12 @@ impl Drop for PagesAccessibleToLowerVtl {
             })
             .collect::<Result<Vec<_>>>()
         {
+            // The inability to rollback any pages is fatal. We cannot leave the
+            // pages in the state where the correct VTL protections are not
+            // applied, because that would compromise the security of the
+            // platform.
             panic!(
-                "Failed to reset page protections {}",
+                "failed to reset page protections {}",
                 err.as_ref() as &dyn std::error::Error
             );
         }
