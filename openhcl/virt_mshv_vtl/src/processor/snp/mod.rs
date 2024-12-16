@@ -221,10 +221,6 @@ impl HardwareIsolatedBacking for SnpBacked {
             ),
         }
     }
-
-    fn pat(&self, this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
-        this.runner.vmsa(vtl).pat()
-    }
 }
 
 /// Partition-wide shared data for SNP VPs.

@@ -287,8 +287,6 @@ pub trait HardwareIsolatedBacking: Backing {
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
     ) -> TranslationRegisters;
-    /// Gets the pat register
-    fn pat(&self, this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]

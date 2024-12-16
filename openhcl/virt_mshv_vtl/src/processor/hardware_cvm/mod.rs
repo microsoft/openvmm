@@ -1055,7 +1055,9 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
                 let cache_type = match cache_info {
                     TranslateCachingInfo::NoPaging => HvCacheType::HvCacheTypeWriteBack.0 as u8,
                     TranslateCachingInfo::Paging { pat_index } => {
-                        ((self.vp.backing.pat(self.vp, target_vtl) >> (pat_index * 8)) & 0xff) as u8
+                        ((self.vp.access_state(target_vtl.into()).pat().unwrap().value
+                            >> (pat_index * 8))
+                            & 0xff) as u8
                     }
                 };
 

@@ -503,10 +503,6 @@ impl HardwareIsolatedBacking for TdxBacked {
             ),
         }
     }
-
-    fn pat(&self, this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
-        this.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_PAT)
-    }
 }
 
 /// Partition-wide shared data for TDX VPs.
