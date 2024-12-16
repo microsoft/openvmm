@@ -1,4 +1,4 @@
-name: Unsafe Reviewers Check Clone
+name: Unsafe Reviewers Check
 on:
   workflow_dispatch:
   pull_request_target:
