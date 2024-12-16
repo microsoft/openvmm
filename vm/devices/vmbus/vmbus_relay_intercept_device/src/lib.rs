@@ -19,6 +19,8 @@ use anyhow::Result;
 use futures::StreamExt;
 use guid::Guid;
 use inspect::InspectMut;
+use lower_vtl_permissions_guard::LowerVtlDmaBuffer;
+use lower_vtl_permissions_guard::LowerVtlMemorySpawner;
 use lower_vtl_permissions_guard::PagesAccessibleToLowerVtl;
 use mesh::rpc::RpcSend;
 use pal_async::driver::SpawnDriver;
@@ -31,6 +33,7 @@ use task_control::StopTask;
 use task_control::TaskControl;
 use tracing::Instrument;
 use user_driver::lockmem::LockedMemorySpawner;
+use user_driver::memory::MappedDmaTarget;
 use user_driver::memory::MemoryBlock;
 use user_driver::vfio::VfioDmaBuffer;
 use virt::VtlMemoryProtection;
@@ -225,7 +228,10 @@ struct SimpleVmbusClientDeviceTaskState {
     offer: Option<OfferInfo>,
     #[inspect(skip)]
     recv_relay: mesh::Receiver<InterceptChannelRequest>,
-    vtl_pages: Option<PagesAccessibleToLowerVtl>,
+    #[inspect(
+        with = "|x| x.as_ref().map(|x| inspect::iter_by_index(x.pfns()).map_value(inspect::AsHex))"
+    )]
+    vtl_pages: Option<MemoryBlock>,
 }
 
 struct SimpleVmbusClientDeviceTask<T: SimpleVmbusClientDeviceAsync> {
@@ -403,11 +409,15 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             return;
         }
 
-        // Close the channel on every stop.
-        // Overlay devices cannot be saved / restored because the physical
-        // pages used for the ring buffer, et al. would need to be reserved at
-        // boot, otherwise the host may end up scribbling on random memory as
-        // it continues updating a ring buffer it assumes it has ownership of.
+        // Close the channel on every stop. Overlay devices cannot be saved /
+        // restored because the physical pages used for the ring buffer, et al.
+        // would need to be reserved at boot, otherwise the host may end up
+        // scribbling on random memory as it continues updating a ring buffer it
+        // assumes it has ownership of.
+        //
+        // TODO: We could support save restore, if we had a pool of memory that
+        // supports that. This should be possible once the page_pool_alloc is
+        // available everywhere.
         {
             let offer = state.offer.as_ref().expect("device opened");
             offer.request_send.send(ChannelRequest::Close);
@@ -438,17 +448,13 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         // one for the control bytes and at least one for the ring.
         assert!(page_count >= 4);
 
-        let shared_mem_spawner = LockedMemorySpawner;
-        let vmbus_mem = shared_mem_spawner
+        let mem = LowerVtlMemorySpawner::new(LockedMemorySpawner, self.vtl_protect.clone())
             .create_dma_buffer(page_count * PAGE_SIZE)
-            .context("Allocating memory for vmbus rings")?;
-        state.vtl_pages = Some(PagesAccessibleToLowerVtl::new_from_memory_block(
-            self.vtl_protect.clone(),
-            &vmbus_mem,
-        )?);
-        let buf: Vec<_> = [vmbus_mem.len() as u64]
+            .context("allocating memory for vmbus rings")?;
+        state.vtl_pages = Some(mem.clone());
+        let buf: Vec<_> = [mem.len() as u64]
             .iter()
-            .chain(vmbus_mem.pfns())
+            .chain(mem.pfns())
             .copied()
             .collect();
 
@@ -467,7 +473,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         if !success {
             return Err(anyhow!("Failed reserving GPADL ID"));
         }
-        Ok((vmbus_mem, gpadl_id))
+        Ok((mem, gpadl_id))
     }
 
     /// Open the channel offered by the host.

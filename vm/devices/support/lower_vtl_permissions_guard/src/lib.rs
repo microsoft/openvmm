@@ -4,15 +4,25 @@
 //! Implements a VtlMemoryProtection guard that can be used to temporarily allow
 //! access to pages that were previously protected.
 
-#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+#[cfg(feature = "vfio")]
+mod device_dma;
+
+#[cfg(feature = "vfio")]
+pub use device_dma::LowerVtlDmaBuffer;
 
 use anyhow::Context;
 use anyhow::Result;
 use inspect::Inspect;
 use std::sync::Arc;
 use user_driver::memory::MemoryBlock;
+#[cfg(feature = "vfio")]
+use user_driver::vfio::VfioDmaBuffer;
 use virt::VtlMemoryProtection;
 
+/// A guard that will restore [`HV_MAP_GPA_PERMISSIONS_NONE`] permissions on the
+/// pages when dropped.
 #[derive(Inspect)]
 pub struct PagesAccessibleToLowerVtl {
     #[inspect(skip)]
@@ -22,23 +32,21 @@ pub struct PagesAccessibleToLowerVtl {
 }
 
 impl PagesAccessibleToLowerVtl {
-    pub fn new_from_memory_block(
+    /// Creates a new guard that will lower the VTL permissions of the pages
+    /// while the returned guard is held.
+    pub fn new_from_pages(
         vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
-        memory: &MemoryBlock,
+        pages: &[u64],
     ) -> Result<Self> {
-        let pages = Vec::with_capacity(memory.pfns().len());
-        let mut this = Self { vtl_protect, pages };
-        for pfn in memory.pfns() {
-            this.vtl_protect
+        for pfn in pages {
+            vtl_protect
                 .modify_vtl_page_setting(*pfn, hvdef::HV_MAP_GPA_PERMISSIONS_ALL)
                 .context("failed to update VTL protections on page")?;
-            this.pages.push(*pfn);
         }
-        Ok(this)
-    }
-
-    pub fn pfns(&self) -> &[u64] {
-        &self.pages
+        Ok(Self {
+            vtl_protect,
+            pages: pages.to_vec(),
+        })
     }
 }
 
@@ -59,5 +67,52 @@ impl Drop for PagesAccessibleToLowerVtl {
                 err.as_ref() as &dyn std::error::Error
             );
         }
+    }
+}
+
+/// A [`VfioDmaBuffer`] wrapper that will lower the VTL permissions of the page
+/// on the allocated memory block.
+#[cfg(feature = "vfio")]
+pub struct LowerVtlMemorySpawner<T: VfioDmaBuffer> {
+    spawner: T,
+    vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
+}
+
+#[cfg(feature = "vfio")]
+impl<T: VfioDmaBuffer> LowerVtlMemorySpawner<T> {
+    /// Create a new wrapped [`VfioDmaBuffer`] spawner that will lower the VTL
+    /// permissions of the returned [`MemoryBlock`].
+    pub fn new(spawner: T, vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>) -> Self {
+        Self {
+            spawner,
+            vtl_protect,
+        }
+    }
+}
+
+#[cfg(feature = "vfio")]
+impl<T: VfioDmaBuffer> VfioDmaBuffer for LowerVtlMemorySpawner<T> {
+    fn create_dma_buffer(&self, len: usize) -> Result<MemoryBlock> {
+        let mem = self.spawner.create_dma_buffer(len)?;
+        let vtl_guard =
+            PagesAccessibleToLowerVtl::new_from_pages(self.vtl_protect.clone(), mem.pfns())
+                .context("failed to lower VTL permissions on memory block")?;
+
+        Ok(MemoryBlock::new(LowerVtlDmaBuffer {
+            block: mem,
+            _vtl_guard: vtl_guard,
+        }))
+    }
+
+    fn restore_dma_buffer(&self, len: usize, base_pfn: u64) -> Result<MemoryBlock> {
+        let mem = self.spawner.restore_dma_buffer(len, base_pfn)?;
+        let vtl_guard =
+            PagesAccessibleToLowerVtl::new_from_pages(self.vtl_protect.clone(), mem.pfns())
+                .context("failed to lower VTL permissions on memory block")?;
+
+        Ok(MemoryBlock::new(LowerVtlDmaBuffer {
+            block: mem,
+            _vtl_guard: vtl_guard,
+        }))
     }
 }
