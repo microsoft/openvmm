@@ -176,7 +176,11 @@ impl BackingPrivate for HypervisorBackedX86 {
 
     fn init(_this: &mut UhProcessor<'_, Self>) {}
 
-    type StateAccess<'p, 'a> = UhVpStateAccess<'a, 'p, Self> where Self: 'a + 'p, 'p: 'a;
+    type StateAccess<'p, 'a>
+        = UhVpStateAccess<'a, 'p, Self>
+    where
+        Self: 'a + 'p,
+        'p: 'a;
 
     fn access_vp_state<'a, 'p>(
         this: &'a mut UhProcessor<'p, Self>,
@@ -2062,7 +2066,6 @@ impl<T: CpuIo> ApicClient for UhApicClient<'_, '_, T> {
     }
 }
 
-// TODO GUEST VSM Audit save state
 mod save_restore {
     use super::HypervisorBackedX86;
     use super::UhProcessor;
@@ -2163,29 +2166,28 @@ mod save_restore {
             };
 
             self.runner
-                // TODO GUEST VSM: Does dr6 need special handling?
+                // All these registers are shared, so the VTL we ask for doesn't matter
                 .get_vp_registers(GuestVtl::Vtl0, &SHARED_REGISTERS[..len], &mut values[..len])
                 .context("failed to get shared registers")
                 .map_err(SaveError::Other)?;
 
-            let startup_suspend = match self
+            // Non-VTL0 VPs should never be in startup suspend, so we only need to check VTL0.
+            // The hypervisor handles halt and idle for us.
+            let internal_activity = self
                 .runner
-                // TODO GUEST VSM
                 .get_vp_register(GuestVtl::Vtl0, HvX64RegisterName::InternalActivityState)
-            {
-                Ok(val) => Some(HvInternalActivityRegister::from(val.as_u64()).startup_suspend()),
-                Err(e) => {
+                .inspect_err(|e| {
                     // The ioctl get_vp_register path does not tell us
                     // hv_status directly, so just log if it failed for any
                     // reason.
                     tracing::warn!(
-                            error = &e as &dyn std::error::Error,
-                            "unable to query startup suspend, unable to save VTL0 startup suspend state"
-                        );
-
-                    None
-                }
-            };
+                        error = e as &dyn std::error::Error,
+                        "unable to query startup suspend, unable to save VTL0 startup suspend state"
+                    );
+                })
+                .ok();
+            let startup_suspend = internal_activity
+                .map(|a| HvInternalActivityRegister::from(a.as_u64()).startup_suspend());
 
             let [rax, rcx, rdx, rbx, cr2, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15] =
                 self.runner.cpu_context().gps;
@@ -2285,7 +2287,7 @@ mod save_restore {
             let inject_startup_suspend = match startup_suspend {
                 Some(true) => {
                     // When Underhill brings up APs during a servicing update
-                    // via hypercall, this clears the lower VTL startup suspend
+                    // via hypercall, this clears the VTL0 startup suspend
                     // state and makes the VP runnable. Like the cold boot path,
                     // we need to put the AP back into the startup suspend state
                     // in order to not start running the VP incorrectly.
@@ -2304,7 +2306,7 @@ mod save_restore {
                     ];
                     let mut values = [FromZeroes::new_zeroed(); NAMES.len()];
                     self.runner
-                        // TODO GUEST VSM
+                        // Non-VTL0 VPs should never be in startup suspend, so we only need to handle VTL0.
                         .get_vp_registers(GuestVtl::Vtl0, &NAMES, &mut values)
                         .context("failed to get VP registers for startup suspend log")
                         .map_err(RestoreError::Other)?;
@@ -2326,8 +2328,8 @@ mod save_restore {
 
             if inject_startup_suspend {
                 let reg = u64::from(HvInternalActivityRegister::new().with_startup_suspend(true));
+                // Non-VTL0 VPs should never be in startup suspend, so we only need to handle VTL0.
                 let result = self.runner.set_vp_registers(
-                    // TODO GUEST VSM
                     GuestVtl::Vtl0,
                     [(HvX64RegisterName::InternalActivityState, reg)],
                 );
