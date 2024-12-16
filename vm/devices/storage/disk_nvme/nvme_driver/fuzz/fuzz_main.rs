@@ -24,15 +24,7 @@ lazy_static! {
     pub static ref RAW_DATA: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 }
 
-/** Uses static RAW_DATA to generate a vector of len=num_bytes with arbitrary bytes
-*   
-*  # Arguments
-*  num_bytes: The number of bytes requested/size of return vector
-*  
-*  # Returns
-*  - Ok(Vec<u8>) for success
-*  - Err(..) for failure
-*/
+/// Uses static RAW_DATA to generate a vector of len=num_bytes with arbitrary bytes
 pub fn get_raw_data(num_bytes: usize) -> arbitrary::Result<Vec<u8>>{
     // Lock RAW_DATA before consuming
     let mut raw_data = RAW_DATA.lock().unwrap();
