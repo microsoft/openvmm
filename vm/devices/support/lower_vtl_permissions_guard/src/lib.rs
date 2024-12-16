@@ -22,8 +22,8 @@ use user_driver::memory::MemoryBlock;
 use user_driver::vfio::VfioDmaBuffer;
 use virt::VtlMemoryProtection;
 
-/// A guard that will restore [`HV_MAP_GPA_PERMISSIONS_NONE`] permissions on the
-/// pages when dropped.
+/// A guard that will restore [`hvdef::HV_MAP_GPA_PERMISSIONS_NONE`] permissions
+/// on the pages when dropped.
 #[derive(Inspect)]
 pub struct PagesAccessibleToLowerVtl {
     #[inspect(skip)]

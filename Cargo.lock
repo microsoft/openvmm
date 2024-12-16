@@ -3524,7 +3524,6 @@ dependencies = [
  "anyhow",
  "hvdef",
  "inspect",
- "tracing",
  "user_driver",
  "virt",
 ]
@@ -7931,7 +7930,6 @@ dependencies = [
  "anyhow",
  "futures",
  "guid",
- "hvdef",
  "inspect",
  "lower_vtl_permissions_guard",
  "mesh",

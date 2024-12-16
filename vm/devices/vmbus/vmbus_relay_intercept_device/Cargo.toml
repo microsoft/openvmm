@@ -17,7 +17,6 @@ vmbus_server.workspace = true
 vmcore.workspace = true
 
 guid.workspace = true
-hvdef.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
