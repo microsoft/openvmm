@@ -272,12 +272,12 @@ pub mod cfg_space {
         pub parity_error_response: bool,
         /// must be 0
         #[bits(1)]
-        pub reserved: u16,
+        _reserved: u16,
         pub enable_serr: bool,
         pub enable_fast_b2b: bool,
         pub intx_disable: bool,
         #[bits(5)]
-        pub reserved2: u16,
+        _reserved2: u16,
     }
 
     /// Status Register

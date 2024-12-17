@@ -495,8 +495,8 @@ impl ConfigSpaceType0Emulator {
                 if command.into_bits() & !SUPPORTED_COMMAND_BITS != 0 {
                     tracelimit::warn_ratelimited!(offset, val, "setting invalid command bits");
                     // still do our best
-                    command.set_reserved(0);
-                    command.set_reserved2(0);
+                    command =
+                        cfg_space::Command::from_bits(command.into_bits() & SUPPORTED_COMMAND_BITS);
                 };
 
                 if self.state.command.intx_disable() != command.intx_disable() {
