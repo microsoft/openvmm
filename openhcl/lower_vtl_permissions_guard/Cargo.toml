@@ -9,7 +9,7 @@ rust-version.workspace = true
 [features]
 vfio = ["dep:user_driver"]
 
-[dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 hvdef.workspace = true
 inspect.workspace = true
 user_driver = { workspace = true, optional = true }
