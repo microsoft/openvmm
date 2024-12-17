@@ -8,6 +8,10 @@ use crate::driver::save_restore::CompletionQueueSavedState;
 use crate::driver::save_restore::SubmissionQueueSavedState;
 use crate::registers::DeviceRegisters;
 use inspect::Inspect;
+use safeatomic::AtomicSliceOps;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering::Acquire;
+use std::sync::atomic::Ordering::Relaxed;
 use user_driver::memory::MemoryBlock;
 use user_driver::DeviceBacking;
 
@@ -133,12 +137,21 @@ impl CompletionQueue {
     }
 
     pub fn read(&mut self) -> Option<spec::Completion> {
-        let completion = self
-            .mem
-            .read_obj::<spec::Completion>(self.head as usize * size_of::<spec::Completion>());
-        if completion.status.phase() != self.phase {
+        let completion_mem = self.mem.as_slice()
+            [self.head as usize * size_of::<spec::Completion>()..]
+            [..size_of::<spec::Completion>() * 2]
+            .as_atomic_slice::<AtomicU64>()
+            .unwrap();
+
+        // Check the phase bit, using an acquire read to ensure the rest of the
+        // completion is read with or after the phase bit.
+        let high = completion_mem[1].load(Acquire);
+        let status = spec::CompletionStatus::from((high >> 48) as u16);
+        if status.phase() != self.phase {
             return None;
         }
+        let low = completion_mem[0].load(Relaxed);
+        let completion: spec::Completion = zerocopy::transmute!([low, high]);
         self.head += 1;
         if self.head == self.len {
             self.head = 0;
