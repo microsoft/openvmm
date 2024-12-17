@@ -2150,15 +2150,15 @@ mod save_restore {
             #[mesh(23)]
             pub(super) startup_suspend: Option<bool>,
             #[mesh(24)]
-            pub(super) crash_reg: [u64; 5],
+            pub(super) crash_reg: Option<[u64; 5]>,
             #[mesh(25)]
             pub(super) crash_control: u64,
             #[mesh(26)]
             pub(super) msr_mtrr_def_type: u64,
             #[mesh(27)]
-            pub(super) fixed_mtrrs: [u64; 11],
+            pub(super) fixed_mtrrs: Option<[u64; 11]>,
             #[mesh(28)]
-            pub(super) variable_mtrrs: [u64; 16],
+            pub(super) variable_mtrrs: Option<[u64; 16]>,
             #[mesh(29)]
             pub(super) per_vtl: Vec<ProcessorVtlSavedState>,
         }
@@ -2307,11 +2307,11 @@ mod save_restore {
                 dr3: values[3].as_u64(),
                 dr6: dr6_shared.then(|| values[4].as_u64()),
                 startup_suspend,
-                crash_reg: *crash_reg,
+                crash_reg: Some(*crash_reg),
                 crash_control: crash_control.into_bits(),
                 msr_mtrr_def_type,
-                fixed_mtrrs,
-                variable_mtrrs,
+                fixed_mtrrs: Some(fixed_mtrrs),
+                variable_mtrrs: Some(variable_mtrrs),
                 per_vtl,
             };
 
@@ -2387,22 +2387,19 @@ mod save_restore {
                 .as_bytes_mut()
                 .copy_from_slice(&fx_state);
 
-            self.crash_reg = crash_reg;
+            self.crash_reg = crash_reg.unwrap_or_default();
             self.crash_control = crash_control.into();
 
             // Previous versions of Underhill did not save the MTRRs.
-            // If we get a restore state with them all 0 then assume they weren't
-            // saved and don't overwrite whatever the system already has.
-            if !(msr_mtrr_def_type == 0
-                && fixed_mtrrs.iter().all(|x| *x == 0)
-                && variable_mtrrs.iter().all(|x| *x == 0))
-            {
+            // If we get a restore state with them missing then assume they weren't
+            // saved and don't zero out whatever the system already has.
+            if let (Some(fixed), Some(variable)) = (fixed_mtrrs, variable_mtrrs) {
                 let mut access = self.access_state(Vtl::Vtl0);
                 access
                     .set_mtrrs(&Mtrrs {
                         msr_mtrr_def_type,
-                        fixed: fixed_mtrrs,
-                        variable: variable_mtrrs,
+                        fixed,
+                        variable,
                     })
                     .context("failed to set MTRRs")
                     .map_err(RestoreError::Other)?;
