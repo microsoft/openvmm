@@ -97,7 +97,7 @@ impl Registers {
             byte_count_high: protocol::ATAPI_RESET_LBA_HIGH,
             lba_low: 1, // CHS mode
             device_head: DeviceHeadReg::new(),
-            error: ErrorReg::new().with_ERR_AMNF_ILI_DEFAULT(true),
+            error: ErrorReg::new().with_err_amnf_ili_default(true),
             features: 0,
             sector_count: protocol::ATAPI_READY_FOR_PACKET_DEFAULT,
             device_control_reg: DeviceControlReg::new(),
@@ -329,13 +329,13 @@ impl AtapiDrive {
             }
             DriveRegister::AlternateStatusDeviceControl => {
                 let v = DeviceControlReg::from_bits_truncate(data);
-                self.state.regs.device_control_reg = v.with_RESET(false);
-                if v.RESET() && !self.state.pending_software_reset {
-                    if !self.state.regs.status.BSY() {
+                self.state.regs.device_control_reg = v.with_reset(false);
+                if v.reset() && !self.state.pending_software_reset {
+                    if !self.state.regs.status.bsy() {
                         self.reset();
                     } else {
                         self.state.pending_software_reset = true;
-                        self.state.regs.status.set_BSY(true);
+                        self.state.regs.status.set_bsy(true);
                     }
                 }
             }
@@ -344,7 +344,7 @@ impl AtapiDrive {
 
     pub fn interrupt_pending(&self) -> bool {
         self.state.pending_interrupt
-            && !self.state.regs.device_control_reg.INTERRUPT_MASK()
+            && !self.state.regs.device_control_reg.interrupt_mask()
             && self.is_selected()
             && !self.state.pending_software_reset
     }
@@ -389,8 +389,8 @@ impl AtapiDrive {
                 DmaType::Read => self.write_data_port_buffer_complete(),
             };
             if self.state.buffer.is_none() {
-                assert!(!self.state.regs.status.BSY());
-                assert!(!self.state.regs.status.DRQ());
+                assert!(!self.state.regs.status.bsy());
+                assert!(!self.state.regs.status.drq());
                 self.request_interrupt(true);
             }
         }
@@ -412,8 +412,8 @@ impl AtapiDrive {
                 DmaType::Read => self.write_data_port_buffer_complete(),
             };
             if self.state.buffer.is_none() {
-                assert!(!self.state.regs.status.BSY());
-                assert!(!self.state.regs.status.DRQ());
+                assert!(!self.state.regs.status.bsy());
+                assert!(!self.state.regs.status.drq());
                 self.request_interrupt(true);
             }
         }
@@ -438,7 +438,7 @@ impl AtapiDrive {
         // After the device select, update status for the selected device.
         if self.is_selected() && self.state.regs.status.into_bits() == 0 {
             // Update the status of the device if it is 0
-            self.state.regs.status = Status::new().with_DRDY(true).with_DSC(true);
+            self.state.regs.status = Status::new().with_drdy(true).with_dsc(true);
         }
     }
 
@@ -451,11 +451,11 @@ impl AtapiDrive {
     }
 
     fn complete_data_port_read(&mut self) {
-        self.state.regs.status.set_BSY(false);
-        self.state.regs.status.set_ERR(false);
-        self.state.regs.status.set_DRQ(false);
-        self.state.regs.status.set_DRDY(true);
-        self.state.regs.status.set_DSC(true);
+        self.state.regs.status.set_bsy(false);
+        self.state.regs.status.set_err(false);
+        self.state.regs.status.set_drq(false);
+        self.state.regs.status.set_drdy(true);
+        self.state.regs.status.set_dsc(true);
 
         self.state.regs.sector_count = protocol::ATAPI_COMMAND_COMPLETE;
         self.state.buffer = None;
@@ -561,8 +561,8 @@ impl AtapiDrive {
             if self.state.pending_software_reset {
                 self.reset();
             }
-            self.state.regs.status.set_BSY(false);
-            self.state.regs.status.set_DRQ(false);
+            self.state.regs.status.set_bsy(false);
+            self.state.regs.status.set_drq(false);
             return true;
         }
 
@@ -574,20 +574,20 @@ impl AtapiDrive {
         let command = IdeCommand(command);
         tracing::debug!(path = ?self.disk_path, ?command, ?self.state.regs, "atapi command");
 
-        if self.state.regs.status.BSY() {
+        if self.state.regs.status.bsy() {
             tracelimit::warn_ratelimited!(new_command = ?command, "A command is already pending");
             return;
         }
 
-        if self.state.regs.status.DRQ() {
+        if self.state.regs.status.drq() {
             tracelimit::warn_ratelimited!(new_command = ?command, "data transfer is in progress");
             return;
         }
 
-        self.state.regs.status.set_DRDY(false);
-        self.state.regs.status.set_BSY(true);
+        self.state.regs.status.set_drdy(false);
+        self.state.regs.status.set_bsy(true);
         self.state.regs.error = ErrorReg::new();
-        self.state.regs.status.set_ERR(false);
+        self.state.regs.status.set_err(false);
 
         match command {
             IdeCommand::DEVICE_RESET => {
@@ -597,7 +597,7 @@ impl AtapiDrive {
             IdeCommand::EXECUTE_DEVICE_DIAGNOSTIC => {
                 // As specified by ATA-6 9.12.
                 self.state.regs.reset_signature(true);
-                self.state.regs.error = ErrorReg::new().with_ERR_AMNF_ILI_DEFAULT(true);
+                self.state.regs.error = ErrorReg::new().with_err_amnf_ili_default(true);
             }
             IdeCommand::PACKET_COMMAND => {
                 // Needn't issue interrupt
@@ -618,19 +618,19 @@ impl AtapiDrive {
             IdeCommand::IDENTIFY_DEVICE | IdeCommand::READ_SECTORS => {
                 // As specified by ATA-6 9.12.
                 self.state.regs.reset_signature(false);
-                self.state.regs.status.set_ERR(true);
-                self.state.regs.error = ErrorReg::new().with_ERR_UNKNOWN_COMMAND(true);
+                self.state.regs.status.set_err(true);
+                self.state.regs.error = ErrorReg::new().with_err_unknown_command(true);
             }
             command => {
                 tracing::debug!(?command, "unknown command");
-                self.state.regs.status.set_ERR(true);
-                self.state.regs.error = ErrorReg::new().with_ERR_UNKNOWN_COMMAND(true);
+                self.state.regs.status.set_err(true);
+                self.state.regs.error = ErrorReg::new().with_err_unknown_command(true);
             }
         };
 
-        self.state.regs.status.set_BSY(false);
-        self.state.regs.status.set_DRDY(true);
-        self.state.regs.status.set_DSC(true);
+        self.state.regs.status.set_bsy(false);
+        self.state.regs.status.set_drdy(true);
+        self.state.regs.status.set_dsc(true);
         self.request_interrupt(true);
     }
 
@@ -651,10 +651,10 @@ impl AtapiDrive {
         // Specify that the buffer is ready to receive bytes
         self.state.buffer = Some(BufferState::new(COMMAND_PACKET_SIZE as u32, dma));
         self.state.regs.sector_count = protocol::ATAPI_READY_FOR_PACKET_DEFAULT;
-        self.state.regs.status.set_BSY(false);
-        self.state.regs.status.set_DRDY(true);
-        self.state.regs.status.set_DSC(true);
-        self.state.regs.status.set_DRQ(true);
+        self.state.regs.status.set_bsy(false);
+        self.state.regs.status.set_drdy(true);
+        self.state.regs.status.set_dsc(true);
+        self.state.regs.status.set_drq(true);
     }
 
     fn handle_soft_reset(&mut self, reset_dev: bool) {
@@ -662,7 +662,7 @@ impl AtapiDrive {
         self.state.buffer = None;
 
         self.state.regs.reset_signature(reset_dev);
-        self.state.regs.error = ErrorReg::new().with_ERR_AMNF_ILI_DEFAULT(true);
+        self.state.regs.error = ErrorReg::new().with_err_amnf_ili_default(true);
         self.state.regs.status = Status::new();
     }
 
@@ -699,7 +699,7 @@ impl AtapiDrive {
             None,
         ));
         self.state.regs.sector_count = protocol::ATAPI_DATA_FOR_HOST;
-        self.state.regs.status.set_DRQ(true);
+        self.state.regs.status.set_drq(true);
     }
 
     // This function handles ATAPI commands. These are only used
@@ -711,9 +711,9 @@ impl AtapiDrive {
             tracelimit::error_ratelimited!(path = ?self.disk_path, "Unexpected: pending_packet_command at beginning of atapi packet command");
         }
 
-        self.state.regs.status.set_DRDY(false);
-        self.state.regs.status.set_DRQ(false);
-        self.state.regs.status.set_BSY(true);
+        self.state.regs.status.set_drdy(false);
+        self.state.regs.status.set_drq(false);
+        self.state.regs.status.set_bsy(true);
 
         self.state.regs.byte_count_high = 0;
         self.state.regs.byte_count_low = 0;
@@ -768,21 +768,21 @@ impl AtapiDrive {
         // signal the status can be read. We do this by updating
         // the status and requesting an interrupt.
         self.state.regs.error = (sense.sense_key.0 << 4).into();
-        self.state.regs.status.set_BSY(false);
-        self.state.regs.status.set_ERR(false);
-        self.state.regs.status.set_DRQ(false);
-        self.state.regs.status.set_DRDY(true);
-        self.state.regs.status.set_DSC(true);
+        self.state.regs.status.set_bsy(false);
+        self.state.regs.status.set_err(false);
+        self.state.regs.status.set_drq(false);
+        self.state.regs.status.set_drdy(true);
+        self.state.regs.status.set_dsc(true);
 
         if self.state.regs.error != ErrorReg::new() {
             // Set error flag
             if sense.sense_key == SenseKey::ILLEGAL_REQUEST
                 || sense.sense_key == SenseKey::ABORTED_COMMAND
             {
-                self.state.regs.error.set_ERR_UNKNOWN_COMMAND(true);
+                self.state.regs.error.set_err_unknown_command(true);
             }
 
-            self.state.regs.status.set_ERR(true);
+            self.state.regs.status.set_err(true);
         }
 
         self.state.regs.sector_count = protocol::ATAPI_COMMAND_COMPLETE;
@@ -813,9 +813,9 @@ impl AtapiDrive {
         self.state.regs.byte_count_high = ((tx & 0xFF00) >> 8) as u8;
         self.state.regs.sector_count = protocol::ATAPI_DATA_FOR_HOST;
 
-        self.state.regs.status.set_BSY(false);
-        self.state.regs.status.set_DRQ(true);
-        self.state.regs.status.set_DRDY(true);
+        self.state.regs.status.set_bsy(false);
+        self.state.regs.status.set_drq(true);
+        self.state.regs.status.set_drdy(true);
         self.request_interrupt(true);
     }
 
@@ -842,7 +842,7 @@ impl AtapiDrive {
                 self.process_atapi_command_result(result);
 
                 // Wait until the command that initiated this IO is completed
-                if !self.state.regs.status.BSY() && self.state.pending_software_reset {
+                if !self.state.regs.status.bsy() && self.state.pending_software_reset {
                     self.reset();
                 }
             }

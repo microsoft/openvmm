@@ -136,7 +136,7 @@ struct ChannelBusMasterState {
 
 impl ChannelBusMasterState {
     fn dma_io_type(&self) -> DmaType {
-        if self.command_reg.WRITE() {
+        if self.command_reg.write() {
             DmaType::Write
         } else {
             DmaType::Read
@@ -298,12 +298,12 @@ impl Channel {
         }
 
         if let Some(status) = self.current_drive_status() {
-            if status.ERR() {
+            if status.err() {
                 tracelimit::warn_ratelimited!(
                     "drive is in error state, ignoring enlightened command",
                 );
                 return IoResult::Ok;
-            } else if status.BSY() || status.DRQ() {
+            } else if status.bsy() || status.drq() {
                 tracelimit::warn_ratelimited!(
                     "command is already pending on this drive, ignoring enlightened command"
                 );
@@ -451,19 +451,19 @@ impl Channel {
         self.write_drive_register(
             DriveRegister::AlternateStatusDeviceControl,
             DeviceControlReg::new()
-                .with_INTERRUPT_MASK(true)
+                .with_interrupt_mask(true)
                 .into_bits(),
             bus_master_state,
         );
 
         // Start the dma engine.
-        let mut bus_master_flags = BusMasterCommandReg::new().with_START(true);
+        let mut bus_master_flags = BusMasterCommandReg::new().with_start(true);
         if cmd == IdeCommand::READ_DMA_EXT
             || cmd == IdeCommand::READ_DMA
             || cmd == IdeCommand::READ_DMA_ALT
         {
             // set rw flag to 1 to inticate that bus master is performing a read
-            bus_master_flags.set_WRITE(true);
+            bus_master_flags.set_write(true);
         }
 
         self.write_bus_master_reg(
@@ -487,7 +487,7 @@ impl Channel {
 
         tracing::trace!(enlightened_write = ?self.enlightened_write, "enlightened_hdd_command");
         if let Some(status) = self.current_drive_status() {
-            if status.DRQ() {
+            if status.drq() {
                 tracelimit::warn_ratelimited!(
                     "command is waiting for data read from guest or data write to guest"
                 );
@@ -522,7 +522,7 @@ impl Channel {
         self.write_drive_register(
             DriveRegister::AlternateStatusDeviceControl,
             DeviceControlReg::new()
-                .with_INTERRUPT_MASK(true)
+                .with_interrupt_mask(true)
                 .into_bits(),
             bus_master_state,
         );
@@ -569,7 +569,7 @@ impl Channel {
 
         tracing::trace!(enlightened_write = ?self.enlightened_write, "enlightened_cd_command");
         if let Some(status) = self.current_drive_status() {
-            if status.DRQ() {
+            if status.drq() {
                 tracelimit::warn_ratelimited!(
                     "command is waiting for data read from guest or data write to guest"
                 );
@@ -593,7 +593,7 @@ impl Channel {
         let status = self.read_drive_register(DriveRegister::StatusCmd, bus_master_state);
         let status = Status::from_bits(status);
 
-        if status.ERR() {
+        if status.err() {
             // If there was an error, copy back the status into the enlightened INT13 command in
             // the guest so that the guest can check it.
             if let Err(err) = self.guest_memory.write_at(
@@ -628,7 +628,7 @@ impl Channel {
         let status = self.read_drive_register(DriveRegister::StatusCmd, bus_master_state);
         let status = Status::from_bits(status);
 
-        if status.ERR() {
+        if status.err() {
             // If there was an error, copy back the status into the enlightened INT13 command in
             // the guest so that the guest can check it.
             if let Err(err) = self.guest_memory.write_at(
@@ -1172,8 +1172,8 @@ impl Channel {
 
             let status = self.drive_status(drive_index);
             let completed = match self.drive_type(drive_index) {
-                DriveType::Hard => !(status.BSY() || status.DRQ()),
-                DriveType::Optical => status.DRDY(),
+                DriveType::Hard => !(status.bsy() || status.drq()),
+                DriveType::Optical => status.drdy(),
             };
             if completed {
                 // The command is done.
@@ -1197,7 +1197,7 @@ impl Channel {
             .any(|drive| drive.interrupt_pending());
         if interrupt {
             tracing::trace!(channel = self.channel, interrupt, "post_drive_access");
-            self.bus_master_state.status_reg.set_INTERRUPT(true);
+            self.bus_master_state.status_reg.set_interrupt(true);
         }
         self.interrupt.set_level(interrupt);
     }
@@ -1250,7 +1250,7 @@ impl Channel {
                 // Save this for restoring in the enlightened path.
                 self.state.shadow_adapter_control_reg = data;
                 let v = DeviceControlReg::from_bits_truncate(data);
-                if v.RESET() && (self.drives[0].is_some() || self.drives[1].is_some()) {
+                if v.reset() && (self.drives[0].is_some() || self.drives[1].is_some()) {
                     self.state = ChannelState::default();
                 }
             }
@@ -1323,7 +1323,7 @@ impl Channel {
                 let mut status = self.bus_master_state.status_reg;
 
                 if self.bus_master_state.dma_state.is_some() {
-                    status.set_ACTIVE(true);
+                    status.set_active(true);
                 }
 
                 match data_len {
@@ -1379,14 +1379,14 @@ impl Channel {
                 let mut new_value = BusMasterCommandReg::from_bits_truncate(value as u32);
 
                 // The read/write bit is marked as read-only when dma is active.
-                if old_value.START() {
+                if old_value.start() {
                     // Set the new value of the read/write flag to match the
                     // existing value, regardless of the new value of the flag.
-                    new_value.set_WRITE(old_value.WRITE());
-                    if !new_value.START() {
+                    new_value.set_write(old_value.write());
+                    if !new_value.start() {
                         self.bus_master_state.dma_state = None
                     }
-                } else if new_value.START() {
+                } else if new_value.start() {
                     self.bus_master_state.dma_state = Some(Default::default());
                 };
 
@@ -1402,11 +1402,11 @@ impl Channel {
                 let mut new_value = old_value.with_settable(value.settable());
 
                 // These bits are reset if a one is written
-                if value.INTERRUPT() {
-                    new_value.set_INTERRUPT(false);
+                if value.interrupt() {
+                    new_value.set_interrupt(false);
                 }
-                if value.DMA_ERROR() {
-                    new_value.set_DMA_ERROR(false);
+                if value.dma_error() {
+                    new_value.set_dma_error(false);
                 }
 
                 tracing::trace!(?old_value, ?new_value, "set bus master status");
@@ -1877,7 +1877,7 @@ mod tests {
         // loop until device is not busy and is ready to transfer data.
         wait_for(ide_device, |ide_device| {
             let status: Status = get_status(ide_device, dev_path);
-            (!status.BSY() && !status.DRQ()).then_some(status)
+            (!status.bsy() && !status.drq()).then_some(status)
         })
         .await
     }
@@ -1886,7 +1886,7 @@ mod tests {
         // loop until device is not busy and is ready to transfer data.
         wait_for(ide_device, |ide_device| {
             let status: Status = get_status(ide_device, dev_path);
-            (!status.BSY() && status.DRDY()).then_some(status)
+            (!status.bsy() && status.drdy()).then_some(status)
         })
         .await
     }
@@ -2079,22 +2079,22 @@ mod tests {
 
         // drive status should contain DRQ as data is ready to be exchanged with host
         let status = get_status(&mut ide_device, &dev_path);
-        assert!(status.DRQ() && !status.BSY());
+        assert!(status.drq() && !status.bsy());
 
         // PIO - writes to data port
         let data = &[0xFF_u8; 2][..];
         for _ in 0..SECTOR_COUNT {
             let status = check_command_ready(&mut ide_device, &dev_path).await;
-            assert!(status.DRQ());
-            assert!(!status.ERR());
+            assert!(status.drq());
+            assert!(!status.err());
             for _ in 0..protocol::HARD_DRIVE_SECTOR_BYTES / 2 {
                 ide_device.io_write(IdeIoPort::PRI_DATA.0, data).unwrap();
             }
         }
 
         let status = check_command_ready(&mut ide_device, &dev_path).await;
-        assert!(!status.ERR());
-        assert!(!status.DRQ());
+        assert!(!status.err());
+        assert!(!status.drq());
 
         let buffer =
             &mut [0_u8; (protocol::HARD_DRIVE_SECTOR_BYTES * SECTOR_COUNT as u32) as usize][..];
@@ -2130,11 +2130,11 @@ mod tests {
         execute_command(&mut ide_device, &dev_path, IdeCommand::WRITE_SECTORS.0);
         // drive status should contain DRQ as data is ready to be exchanged with host
         let status = get_status(&mut ide_device, &dev_path);
-        assert!(status.DRQ() && !status.BSY());
+        assert!(status.drq() && !status.bsy());
 
         execute_soft_reset_command(&mut ide_device, &dev_path, IdeCommand::SOFT_RESET.0);
         let status = get_status(&mut ide_device, &dev_path);
-        assert!(status.BSY());
+        assert!(status.bsy());
     }
 
     // Command: READ SECTOR(S)
@@ -2165,15 +2165,15 @@ mod tests {
         execute_command(&mut ide_device, &dev_path, IdeCommand::READ_SECTORS.0);
 
         let status = check_command_ready(&mut ide_device, &dev_path).await;
-        assert!(status.DRQ());
-        assert!(!status.ERR());
+        assert!(status.drq());
+        assert!(!status.err());
 
         // PIO - reads data from track cache buffer
         let content_bytes = file_contents.as_bytes();
         for sector in 0..SECTOR_COUNT {
             let status = check_command_ready(&mut ide_device, &dev_path).await;
-            assert!(status.DRQ());
-            assert!(!status.ERR());
+            assert!(status.drq());
+            assert!(!status.err());
             for word in 0..protocol::HARD_DRIVE_SECTOR_BYTES / 2 {
                 let data = &mut [0, 0][..];
                 ide_device.io_read(IdeIoPort::PRI_DATA.0, data).unwrap();
@@ -2286,8 +2286,8 @@ mod tests {
         );
 
         let status = check_command_ready(&mut ide_device, &dev_path).await;
-        assert!(status.DRQ());
-        assert!(!status.ERR());
+        assert!(status.drq());
+        assert!(!status.err());
 
         // PIO - reads data from track cache buffer
         let data = &mut [0_u8; protocol::IDENTIFY_DEVICE_BYTES];
@@ -2330,8 +2330,8 @@ mod tests {
         execute_command(&mut ide_device, &dev_path, IdeCommand::IDENTIFY_DEVICE.0);
 
         let status = check_command_ready(&mut ide_device, &dev_path).await;
-        assert!(status.DRQ());
-        assert!(!status.ERR());
+        assert!(status.drq());
+        assert!(!status.err());
 
         // PIO - reads data from track cache buffer
         let data = &mut [0_u8; protocol::IDENTIFY_DEVICE_BYTES];

@@ -19,21 +19,21 @@ mod packed_nums {
 #[bitfield(u8)]
 pub struct Status {
     /// Error occurred on last transaction (see error reg for details)
-    pub ERR: bool,
+    pub err: bool,
     /// Set once per rotation (we don't support it)
-    pub HIT: bool,
+    pub hit: bool,
     /// Correctable read error was hit (we don't support it)
-    pub CORR: bool,
+    pub corr: bool,
     /// Drive wants to exchange data with host
-    pub DRQ: bool,
+    pub drq: bool,
     /// Heads are positioned over desired cylinder
-    pub DSC: bool,
+    pub dsc: bool,
     /// Drive fault - major hardware error (we don't support it)
-    pub DF: bool,
+    pub df: bool,
     /// Drive is ready for next command
-    pub DRDY: bool,
+    pub drdy: bool,
     /// Host cannot access any IDE registers at this time
-    pub BSY: bool,
+    pub bsy: bool,
 }
 
 // ide commands
@@ -95,21 +95,21 @@ open_enum! {
 #[derive(AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
 pub struct ErrorReg {
     /// no address mark or illegal length indication, register default values
-    pub ERR_AMNF_ILI_DEFAULT: bool,
+    pub err_amnf_ili_default: bool,
     /// track 0 not found or end of media detected
-    pub ERR_TK0NF_EOM: bool,
+    pub err_tk0nf_eom: bool,
     /// Command aborted
-    pub ERR_UNKNOWN_COMMAND: bool,
+    pub err_unknown_command: bool,
     /// media change request
-    pub ERR_MCR: bool,
+    pub err_mcr: bool,
     /// IDNF, ID mark not found
-    pub ERR_BAD_LOCATION: bool,
+    pub err_bad_location: bool,
     /// mc, media changed
-    pub ERR_MEDIA_CHANGED: bool,
+    pub err_media_changed: bool,
     /// uncorrectable data
-    pub ERR_UNC: bool,
+    pub err_unc: bool,
     /// bbk, bad block
-    pub ERR_BAD_SECTOR: bool,
+    pub err_bad_sector: bool,
 }
 
 pub const MAX_SECTORS_MULT_TRANSFER_DEFAULT: u16 = 128;
@@ -234,10 +234,10 @@ open_enum! {
 #[derive(Inspect)]
 #[bitfield(u32)]
 pub struct BusMasterCommandReg {
-    pub START: bool,
+    pub start: bool,
     #[bits(2)]
     reserved: u32,
-    pub WRITE: bool,
+    pub write: bool,
     #[bits(28)]
     reserved2: u32,
 }
@@ -251,9 +251,9 @@ impl BusMasterCommandReg {
 #[derive(Inspect)]
 #[bitfield(u32)]
 pub struct BusMasterStatusReg {
-    pub ACTIVE: bool,
-    pub DMA_ERROR: bool,
-    pub INTERRUPT: bool,
+    pub active: bool,
+    pub dma_error: bool,
+    pub interrupt: bool,
     #[bits(2)]
     reserved: u32,
     /// Don't know what these bits mean, but they can be set by the guest.
@@ -274,13 +274,13 @@ impl BusMasterStatusReg {
 pub struct DeviceControlReg {
     reserved: bool,
     /// nIEN
-    pub INTERRUPT_MASK: bool,
+    pub interrupt_mask: bool,
     /// SRST
-    pub RESET: bool,
+    pub reset: bool,
     #[bits(4)]
     reserved2: u8,
     /// HOB
-    pub HIGH_ORDER_BYTE: bool,
+    pub high_order_byte: bool,
 }
 
 impl DeviceControlReg {

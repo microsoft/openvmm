@@ -81,7 +81,7 @@ impl Registers {
             lba_mid: 0,
             lba_high: 0,
             device_head: DeviceHeadReg::new(),
-            error: ErrorReg::new().with_ERR_AMNF_ILI_DEFAULT(true),
+            error: ErrorReg::new().with_err_amnf_ili_default(true),
             features: 0,
             device_control_reg: DeviceControlReg::new(),
         }
@@ -519,7 +519,7 @@ impl HardDrive {
         // Select a byte from a two-byte FIFO register based on the state of
         // the HOB bit.
         let select_byte = |x: u16| {
-            if self.state.regs.device_control_reg.HIGH_ORDER_BYTE() {
+            if self.state.regs.device_control_reg.high_order_byte() {
                 (x >> 8) as u8
             } else {
                 x as u8
@@ -584,8 +584,8 @@ impl HardDrive {
             DriveRegister::AlternateStatusDeviceControl => {
                 clear_hob = false;
                 let v = DeviceControlReg::from_bits_truncate(data);
-                self.state.regs.device_control_reg = v.with_RESET(false);
-                if v.RESET() && !self.state.pending_software_reset {
+                self.state.regs.device_control_reg = v.with_reset(false);
+                if v.reset() && !self.state.pending_software_reset {
                     if self.state.command.is_none() {
                         self.reset();
                     } else {
@@ -600,7 +600,7 @@ impl HardDrive {
             self.state
                 .regs
                 .device_control_reg
-                .set_HIGH_ORDER_BYTE(false);
+                .set_high_order_byte(false);
         }
     }
 
@@ -621,7 +621,7 @@ impl HardDrive {
 
     pub fn interrupt_pending(&self) -> bool {
         self.state.pending_interrupt
-            && !self.state.regs.device_control_reg.INTERRUPT_MASK()
+            && !self.state.regs.device_control_reg.interrupt_mask()
             && self.is_selected()
             && !self.state.pending_software_reset
     }
@@ -770,22 +770,22 @@ impl HardDrive {
         } else {
             let mut status = Status::new();
             if self.state.pending_software_reset {
-                status.set_BSY(true);
+                status.set_bsy(true);
             } else if self.state.buffer.is_some() {
                 // Set DRQ if there is an accessible buffer.
-                status.set_DRQ(true);
-                status.set_DRDY(true);
+                status.set_drq(true);
+                status.set_drdy(true);
             } else if self.state.command.is_some() {
                 // Set BSY if there is no buffer and a command is pending.
-                status.set_BSY(true);
+                status.set_bsy(true);
             } else {
-                status.set_DRDY(true);
+                status.set_drdy(true);
             }
             if self.state.error_pending {
-                status.set_ERR(true);
+                status.set_err(true);
             }
             // Always set DSC.
-            status.set_DSC(true);
+            status.set_dsc(true);
             status
         }
     }
@@ -809,7 +809,7 @@ impl HardDrive {
         let command = match command {
             IdeCommand::EXECUTE_DEVICE_DIAGNOSTIC => {
                 self.state.regs.reset_signature();
-                self.state.regs.error = ErrorReg::new().with_ERR_AMNF_ILI_DEFAULT(true);
+                self.state.regs.error = ErrorReg::new().with_err_amnf_ili_default(true);
                 return Ok(());
             }
             x if (IdeCommand::RECALIBRATE_START..=IdeCommand::RECALIBRATE_END).contains(&x) => {
@@ -953,7 +953,7 @@ impl HardDrive {
             command => {
                 tracing::debug!(?command, "unknown command");
                 self.state.error_pending = true;
-                self.state.regs.error = ErrorReg::new().with_ERR_UNKNOWN_COMMAND(true);
+                self.state.regs.error = ErrorReg::new().with_err_unknown_command(true);
                 None
             }
         };
@@ -1343,10 +1343,10 @@ impl HardDrive {
     fn log_and_update_error(&mut self, error: IdeError, register: Option<DriveRegister>) {
         let ide_error = match error {
             IdeError::IdeBadLocation { .. } | IdeError::ZeroSector | IdeError::LbaBitNotSet => {
-                ErrorReg::new().with_ERR_BAD_LOCATION(true)
+                ErrorReg::new().with_err_bad_location(true)
             }
-            IdeError::IdeBadSector { .. } => ErrorReg::new().with_ERR_BAD_SECTOR(true),
-            IdeError::Flush { .. } => ErrorReg::new().with_ERR_UNKNOWN_COMMAND(true), // strange, but matches Hyper-V behavior
+            IdeError::IdeBadSector { .. } => ErrorReg::new().with_err_bad_sector(true),
+            IdeError::Flush { .. } => ErrorReg::new().with_err_unknown_command(true), // strange, but matches Hyper-V behavior
         };
 
         tracelimit::warn_ratelimited!(
