@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![cfg(target_os = "linux")]
+
 //! This is an implementation of [`VtlMemoryProtection`] that uses the
 //! [`MshvHvcall`] type. This is only to be used for the GET, as we cannot use
 //! the normal partition implementation in OpenHCL due to ordering requirements

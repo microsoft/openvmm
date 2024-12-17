@@ -6,7 +6,7 @@ name = "get_lower_vtl"
 edition = "2021"
 rust-version.workspace = true
 
-[dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 hcl.workspace = true
 
 hvdef.workspace = true
