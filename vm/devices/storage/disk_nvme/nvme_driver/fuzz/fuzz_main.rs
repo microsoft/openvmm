@@ -16,9 +16,6 @@ use pal_async::DefaultPool;
 use std::sync::Mutex;
 use xtask_fuzz::fuzz_target;
 
-// Input bytes we want to use
-const MIN_INPUT:usize=200;
-
 // Use lazy_static to allow swapping out underlying vector
 lazy_static! {
     pub static ref RAW_DATA: Mutex<Vec<u8>> = Mutex::new(Vec::new());
@@ -94,11 +91,6 @@ fn do_fuzz() {
 // Closure that allows the fuzzer to invoke the nvme driver fuzzer.
 fuzz_target!(|input: Vec<u8>| -> libfuzzer_sys::Corpus {
     xtask_fuzz::init_tracing_if_repro();
-
-    // Not enought input data
-    if input.len() < MIN_INPUT {
-        return libfuzzer_sys::Corpus::Reject;
-    }
 
     // Swap out the underlying raw data.
     {
