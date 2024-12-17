@@ -280,6 +280,21 @@ pub mod cfg_space {
         pub reserved2: u16,
     }
 
+    impl Command {
+        pub const VALID_BITS: u16 = Command::new()
+            .with_pio_enabled(true)
+            .with_mmio_enabled(true)
+            .with_bus_master(true)
+            .with_special_cycles(true)
+            .with_enable_memory_write_invalidate(true)
+            .with_vga_palette_snoop(true)
+            .with_parity_error_response(true)
+            .with_enable_serr(true)
+            .with_enable_fast_b2b(true)
+            .with_intx_disable(true)
+            .into_bits();
+    }
+
     /// Status Register
     #[bitfield(u16)]
     #[derive(AsBytes, FromBytes, FromZeroes)]

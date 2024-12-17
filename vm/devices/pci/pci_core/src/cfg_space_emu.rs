@@ -479,7 +479,7 @@ impl ConfigSpaceType0Emulator {
         match HeaderType00(offset) {
             HeaderType00::STATUS_COMMAND => {
                 let mut command = cfg_space::Command::from_bits(val as u16);
-                if command.reserved() != 0 || command.reserved2() != 0 {
+                if command.into_bits() & !cfg_space::Command::VALID_BITS != 0 {
                     tracelimit::warn_ratelimited!(offset, val, "setting invalid command bits");
                     // still do our best
                     command.set_reserved(0);
@@ -643,7 +643,7 @@ mod save_restore {
                 latency_timer,
             };
 
-            if self.state.command.reserved() != 0 || self.state.command.reserved2() != 0 {
+            if command & !cfg_space::Command::VALID_BITS != 0 {
                 return Err(RestoreError::InvalidSavedState(
                     ConfigSpaceRestoreError::InvalidConfigBits.into(),
                 ));
