@@ -204,7 +204,15 @@ fn setup(
 
     use_host_entropy().context("use host entropy")?;
 
-    for setup in &options.setup_script {
+    Ok(())
+}
+
+/// Run the setup scripts provided in the options.
+///
+/// # Safety
+/// The caller is responsible for ensuring that this process is currently single-threaded.
+unsafe fn run_setup_scripts(scripts: &[String]) -> anyhow::Result<()> {
+    for setup in scripts {
         log::info!("Running provided setup script {}", setup);
 
         let result = Command::new("/bin/sh")
@@ -226,10 +234,14 @@ fn setup(
                 .and_then(|line| line.split_once('='))
             {
                 log::info!("setting env var {}={}", key, value);
-                std::env::set_var(key, value);
+                // SAFETY: Caller has guaranteed we are single threaded.
+                unsafe {
+                    std::env::set_var(key, value);
+                }
             }
         }
     }
+
     Ok(())
 }
 
@@ -423,10 +435,10 @@ fn timestamp() -> u64 {
 
 fn do_main() -> anyhow::Result<()> {
     let boot_time = timestamp();
-    std::env::set_var("KERNEL_BOOT_TIME", boot_time.to_string());
 
     init_logging();
 
+    log::info!("kernel boot time {}", boot_time);
     log::info!(
         "Initial process: crate_name={}, crate_revision={}, crate_branch={}",
         env!("CARGO_PKG_NAME"),
@@ -550,6 +562,10 @@ fn do_main() -> anyhow::Result<()> {
     ];
 
     setup(&stat_files, &options, writes, &filesystems)?;
+    // SAFETY: We have not spawned any threads yet.
+    unsafe {
+        run_setup_scripts(&options.setup_script)?;
+    }
 
     if matches!(
         std::env::var("OPENHCL_NVME_VFIO").as_deref(),
