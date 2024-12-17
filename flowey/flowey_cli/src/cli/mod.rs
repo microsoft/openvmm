@@ -51,13 +51,18 @@ pub fn cli_main<P: Subcommand + IntoPipeline>(
     // This mechanism is in-place because some YAML pipeline defn langs (*cough*
     // ADO *cough*) don't let you set pipeline-level env vars which are
     // automatically inherited by all shell contexts.
+    let mut log_override = None;
     if let Commands::VarDb(var_db::VarDb { job_idx, .. })
     | Commands::ExecSnippet(exec_snippet::ExecSnippet { job_idx, .. }) = &cli.command
     {
-        let _ = try_inject_flowey_log(*job_idx);
+        log_override = try_get_flowey_log(*job_idx).unwrap_or_default();
     }
 
-    ci_logger::init("FLOWEY_LOG").unwrap();
+    if let Some(log_level) = log_override {
+        ci_logger::init_value(&log_level).unwrap();
+    } else {
+        ci_logger::init("FLOWEY_LOG").unwrap();
+    }
 
     match cli.command {
         Commands::Debug(cmd) => cmd.run(),
@@ -85,7 +90,7 @@ impl From<FlowBackendCli> for FlowBackend {
     }
 }
 
-fn try_inject_flowey_log(job_idx: usize) -> anyhow::Result<()> {
+fn try_get_flowey_log(job_idx: usize) -> anyhow::Result<Option<String>> {
     // skip if the env var is already set
     if std::env::var("FLOWEY_LOG").is_err() {
         let log_level = var_db::open_var_db(job_idx)?
@@ -96,11 +101,9 @@ fn try_inject_flowey_log(job_idx: usize) -> anyhow::Result<()> {
             });
 
         if let Some(log_level) = log_level {
-            // Yes, this is a hack... but I kinda don't want to go update the
-            // ci_logger crate right now
-            std::env::set_var("FLOWEY_LOG", log_level)
+            return Ok(Some(log_level));
         }
     }
 
-    Ok(())
+    Ok(None)
 }
