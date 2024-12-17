@@ -1597,7 +1597,7 @@ async fn new_underhill_vm(
         //
         // TODO: Remove this requirement in the future when we can fix the host
         // to handle this packet differently.
-        let allocator = lower_vtl_permissions_guard::LowerVtlMemorySpawner::new(
+        let allocator = LowerVtlMemorySpawner::new(
             allocator.context("get private memory allocator")?,
             get_lower_vtl::GetLowerVtl::new().context("get lower vtl")?,
         );
