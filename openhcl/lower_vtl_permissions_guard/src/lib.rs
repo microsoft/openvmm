@@ -4,8 +4,8 @@
 //! Implements a VtlMemoryProtection guard that can be used to temporarily allow
 //! access to pages that were previously protected.
 
+#![cfg(target_os = "linux")]
 #![warn(missing_docs)]
-
 #[cfg(feature = "vfio")]
 mod device_dma;
 
