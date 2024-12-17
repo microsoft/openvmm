@@ -2150,7 +2150,14 @@ mod save_restore {
             #[mesh(28)]
             pub(super) variable_mtrrs: [u64; 16],
             #[mesh(29)]
-            pub(super) message_queues: Vec<virt::vp::SynicMessageQueues>, // Per-vtl
+            pub(super) per_vtl: Vec<ProcessorVtlSavedState>,
+        }
+
+        #[derive(Protobuf, SavedStateRoot)]
+        #[mesh(package = "underhill.partition")]
+        pub struct ProcessorVtlSavedState {
+            #[mesh(1)]
+            pub(super) message_queue: virt::vp::SynicMessageQueues,
         }
     }
 
@@ -2262,6 +2269,12 @@ mod save_restore {
                 backing: _,
             } = self;
 
+            let per_vtl = [GuestVtl::Vtl0, GuestVtl::Vtl1]
+                .map(|vtl| state::ProcessorVtlSavedState {
+                    message_queue: message_queues[vtl].save(),
+                })
+                .into();
+
             let state = state::ProcessorSavedState {
                 rax,
                 rcx,
@@ -2291,11 +2304,7 @@ mod save_restore {
                 msr_mtrr_def_type,
                 fixed_mtrrs,
                 variable_mtrrs,
-                message_queues: message_queues
-                    .each_ref()
-                    .map(|q| q.save())
-                    .into_inner()
-                    .into(),
+                per_vtl,
             };
 
             Ok(state)
@@ -2331,7 +2340,7 @@ mod save_restore {
                 msr_mtrr_def_type,
                 fixed_mtrrs,
                 variable_mtrrs,
-                message_queues,
+                per_vtl,
             } = state;
 
             let dr6_shared = self.partition.hcl.dr6_shared();
@@ -2394,18 +2403,12 @@ mod save_restore {
                     .map_err(RestoreError::Other)?;
             }
 
-            if self.inner.message_queues.len() != message_queues.len() {
-                return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
-                    "invalid message queue count"
-                )));
+            for (per, vtl) in per_vtl.into_iter().zip(0u8..) {
+                let vtl = GuestVtl::try_from(vtl)
+                    .context("too many vtls")
+                    .map_err(RestoreError::Other)?;
+                self.inner.message_queues[vtl].restore(&per.message_queue);
             }
-            self.inner
-                .message_queues
-                .iter()
-                .zip(message_queues)
-                .for_each(|(q, saved)| {
-                    q.restore(&saved);
-                });
 
             let inject_startup_suspend = match startup_suspend {
                 Some(true) => {
