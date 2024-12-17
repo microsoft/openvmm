@@ -17,7 +17,6 @@ vmcore.workspace = true
 
 guid.workspace = true
 hcl.workspace = true
-hvdef.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 pal_async.workspace = true

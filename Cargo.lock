@@ -7692,7 +7692,6 @@ dependencies = [
  "futures",
  "guid",
  "hcl",
- "hvdef",
  "inspect",
  "mesh",
  "pal_async",
