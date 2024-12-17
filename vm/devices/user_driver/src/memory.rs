@@ -115,6 +115,11 @@ impl MemoryBlock {
         }
     }
 
+    /// Get the base address of the buffer.
+    pub fn base(&self) -> *const u8 {
+        self.base
+    }
+
     /// Gets the length of the buffer in bytes.
     pub fn len(&self) -> usize {
         self.len
