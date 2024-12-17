@@ -25,9 +25,10 @@ jobs:
       # running code from a potentially malicious PR
       # https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/
       # https://nathandavison.com/blog/github-actions-and-the-threat-of-malicious-pull-requests
-      - name: Checkout base repo 
+      - name: Checkout base repo
         uses: actions/checkout@v4
         with:
+          path: base
           fetch-depth: 0
       - name: Checkout head repo
         uses: actions/checkout@v4
@@ -39,5 +40,5 @@ jobs:
           path: head-repo
 
       - name: Run unsafe code review script
-        run: pip3 install -r .github/scripts/add_unsafe_reviewers/requirements.txt && python3 .github/scripts/add_unsafe_reviewers/add-unsafe-reviewers.py ./head-repo "origin/${{ github.base_ref }}" --token "${{ secrets.GITHUB_TOKEN }}" --pull-request "${{ github.event.number }}"
+        run: pip3 install -r ./base/.github/scripts/add_unsafe_reviewers/requirements.txt && python3 ./base/.github/scripts/add_unsafe_reviewers/add-unsafe-reviewers.py ./head-repo "origin/${{ github.base_ref }}" --token "${{ secrets.GITHUB_TOKEN }}" --pull-request "${{ github.event.number }}"
         shell: bash
