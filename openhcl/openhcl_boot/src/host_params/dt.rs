@@ -460,7 +460,17 @@ impl PartitionInfo {
                 crate::cmdline::parse_boot_command_line(storage.cmdline.as_str())
                     .enable_vtl2_gpa_pool;
 
-            cmdline_page_count.unwrap_or(0)
+            // NOTE: This is a release/2411 only change to support AK cert
+            // renewal via the GET only. This branch does not need to support
+            // save restore of the pool, because the GET is the only user, which
+            // does not keep allocations live across servicing.
+            const AK_CERT_POOL_SIZE: u64 = 1;
+            let default_size = if params.isolation_type == IsolationType::None {
+                AK_CERT_POOL_SIZE
+            } else {
+                0
+            };
+            cmdline_page_count.unwrap_or(default_size)
         };
         if vtl2_gpa_pool_size != 0 {
             // Reserve the specified number of pages for the pool. Use the used
