@@ -25,7 +25,7 @@ use virt::VtlMemoryProtection;
 /// A guard that will restore [`hvdef::HV_MAP_GPA_PERMISSIONS_NONE`] permissions
 /// on the pages when dropped.
 #[derive(Inspect)]
-pub struct PagesAccessibleToLowerVtl {
+struct PagesAccessibleToLowerVtl {
     #[inspect(skip)]
     vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
@@ -35,7 +35,7 @@ pub struct PagesAccessibleToLowerVtl {
 impl PagesAccessibleToLowerVtl {
     /// Creates a new guard that will lower the VTL permissions of the pages
     /// while the returned guard is held.
-    pub fn new_from_pages(
+    fn new_from_pages(
         vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
         pages: &[u64],
     ) -> Result<Self> {

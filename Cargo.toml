@@ -151,6 +151,7 @@ diag_server = { path = "openhcl/diag_server" }
 hcl = { path = "openhcl/hcl" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }
 kmsg_defs = { path = "openhcl/kmsg_defs" }
+lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
 page_pool_alloc = { path = "openhcl/page_pool_alloc" }
@@ -269,7 +270,6 @@ fuse = { path = "vm/devices/support/fs/fuse" }
 lx = { path = "vm/devices/support/fs/lx" }
 lxutil = { path = "vm/devices/support/fs/lxutil" }
 plan9 = { path = "vm/devices/support/fs/plan9" }
-lower_vtl_permissions_guard = { path = "vm/devices/support/lower_vtl_permissions_guard" }
 power_resources = { path = "vm/power_resources" }
 serial_16550 = { path = "vm/devices/serial/serial_16550" }
 serial_16550_resources = { path = "vm/devices/serial/serial_16550_resources" }
