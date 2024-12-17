@@ -136,7 +136,7 @@ struct ChannelBusMasterState {
 
 impl ChannelBusMasterState {
     fn dma_io_type(&self) -> DmaType {
-        if self.command_reg.contains(BusMasterCommandReg::WRITE) {
+        if self.command_reg.WRITE() {
             DmaType::Write
         } else {
             DmaType::Read
@@ -298,12 +298,12 @@ impl Channel {
         }
 
         if let Some(status) = self.current_drive_status() {
-            if status.intersects(Status::ERR) {
+            if status.ERR() {
                 tracelimit::warn_ratelimited!(
                     "drive is in error state, ignoring enlightened command",
                 );
                 return IoResult::Ok;
-            } else if status.intersects(Status::BSY | Status::DRQ) {
+            } else if status.BSY() || status.DRQ() {
                 tracelimit::warn_ratelimited!(
                     "command is already pending on this drive, ignoring enlightened command"
                 );
@@ -450,23 +450,25 @@ impl Channel {
         let old_adapter_control_reg = self.state.shadow_adapter_control_reg;
         self.write_drive_register(
             DriveRegister::AlternateStatusDeviceControl,
-            DeviceControlReg::INTERRUPT_MASK.bits(),
+            DeviceControlReg::new()
+                .with_INTERRUPT_MASK(true)
+                .into_bits(),
             bus_master_state,
         );
 
         // Start the dma engine.
-        let mut bus_master_flags = BusMasterCommandReg::START;
+        let mut bus_master_flags = BusMasterCommandReg::new().with_START(true);
         if cmd == IdeCommand::READ_DMA_EXT
             || cmd == IdeCommand::READ_DMA
             || cmd == IdeCommand::READ_DMA_ALT
         {
             // set rw flag to 1 to inticate that bus master is performing a read
-            bus_master_flags |= BusMasterCommandReg::WRITE;
+            bus_master_flags.set_WRITE(true);
         }
 
         self.write_bus_master_reg(
             BusMasterReg::COMMAND,
-            &[bus_master_flags.bits() as u8],
+            &[bus_master_flags.into_bits() as u8],
             bus_master_state,
         )
         .unwrap();
@@ -485,7 +487,7 @@ impl Channel {
 
         tracing::trace!(enlightened_write = ?self.enlightened_write, "enlightened_hdd_command");
         if let Some(status) = self.current_drive_status() {
-            if status.intersects(Status::DRQ) {
+            if status.DRQ() {
                 tracelimit::warn_ratelimited!(
                     "command is waiting for data read from guest or data write to guest"
                 );
@@ -519,7 +521,9 @@ impl Channel {
         let old_adapter_control_reg = self.state.shadow_adapter_control_reg;
         self.write_drive_register(
             DriveRegister::AlternateStatusDeviceControl,
-            DeviceControlReg::INTERRUPT_MASK.bits(),
+            DeviceControlReg::new()
+                .with_INTERRUPT_MASK(true)
+                .into_bits(),
             bus_master_state,
         );
 
@@ -565,7 +569,7 @@ impl Channel {
 
         tracing::trace!(enlightened_write = ?self.enlightened_write, "enlightened_cd_command");
         if let Some(status) = self.current_drive_status() {
-            if status.intersects(Status::DRQ) {
+            if status.DRQ() {
                 tracelimit::warn_ratelimited!(
                     "command is waiting for data read from guest or data write to guest"
                 );
@@ -587,15 +591,15 @@ impl Channel {
 
         // Clear the pending interrupt and read status.
         let status = self.read_drive_register(DriveRegister::StatusCmd, bus_master_state);
-        let status = Status::from_bits_truncate(status);
+        let status = Status::from_bits(status);
 
-        if status.contains(Status::ERR) {
+        if status.ERR() {
             // If there was an error, copy back the status into the enlightened INT13 command in
             // the guest so that the guest can check it.
             if let Err(err) = self.guest_memory.write_at(
                 write.guest_address
                     + offset_of!(protocol::EnlightenedInt13Command, result_status) as u64,
-                &[status.bits()],
+                &[status.into_bits()],
             ) {
                 tracelimit::error_ratelimited!(
                     ?status,
@@ -622,15 +626,15 @@ impl Channel {
     ) {
         // Clear the pending interrupt and read status.
         let status = self.read_drive_register(DriveRegister::StatusCmd, bus_master_state);
-        let status = Status::from_bits_truncate(status);
+        let status = Status::from_bits(status);
 
-        if status.contains(Status::ERR) {
+        if status.ERR() {
             // If there was an error, copy back the status into the enlightened INT13 command in
             // the guest so that the guest can check it.
             if let Err(err) = self.guest_memory.write_at(
                 write.guest_address
                     + offset_of!(protocol::EnlightenedInt13Command, result_status) as u64,
-                &[status.bits()],
+                &[status.into_bits()],
             ) {
                 tracelimit::error_ratelimited!(
                     ?status,
@@ -1125,7 +1129,7 @@ impl Channel {
     fn current_drive_status(&mut self) -> Option<Status> {
         if let Some(drive) = &mut self.drives[self.state.current_drive_idx] {
             let status = drive.read_register(DriveRegister::AlternateStatusDeviceControl);
-            Some(Status::from_bits_truncate(status))
+            Some(Status::from_bits(status))
         } else {
             None
         }
@@ -1138,7 +1142,7 @@ impl Channel {
             .as_mut()
             .unwrap()
             .read_register(DriveRegister::AlternateStatusDeviceControl);
-        Status::from_bits_truncate(status)
+        Status::from_bits(status)
     }
 
     fn current_drive_type(&self) -> Option<DriveType> {
@@ -1168,8 +1172,8 @@ impl Channel {
 
             let status = self.drive_status(drive_index);
             let completed = match self.drive_type(drive_index) {
-                DriveType::Hard => !status.intersects(Status::BSY | Status::DRQ),
-                DriveType::Optical => status.intersects(Status::DRDY),
+                DriveType::Hard => !(status.BSY() || status.DRQ()),
+                DriveType::Optical => status.DRDY(),
             };
             if completed {
                 // The command is done.
@@ -1193,7 +1197,7 @@ impl Channel {
             .any(|drive| drive.interrupt_pending());
         if interrupt {
             tracing::trace!(channel = self.channel, interrupt, "post_drive_access");
-            self.bus_master_state.status_reg |= BusMasterStatusReg::INTERRUPT;
+            self.bus_master_state.status_reg.set_INTERRUPT(true);
         }
         self.interrupt.set_level(interrupt);
     }
@@ -1246,9 +1250,7 @@ impl Channel {
                 // Save this for restoring in the enlightened path.
                 self.state.shadow_adapter_control_reg = data;
                 let v = DeviceControlReg::from_bits_truncate(data);
-                if v.contains(DeviceControlReg::RESET)
-                    && (self.drives[0].is_some() || self.drives[1].is_some())
-                {
+                if v.RESET() && (self.drives[0].is_some() || self.drives[1].is_some()) {
                     self.state = ChannelState::default();
                 }
             }
@@ -1313,7 +1315,7 @@ impl Channel {
         match bus_master_reg {
             BusMasterReg::COMMAND => match data_len {
                 1 | 2 => data.copy_from_slice(
-                    &self.bus_master_state.command_reg.bits().to_ne_bytes()[..data_len],
+                    &self.bus_master_state.command_reg.into_bits().to_ne_bytes()[..data_len],
                 ),
                 _ => return IoResult::Err(IoError::InvalidAccessSize),
             },
@@ -1321,11 +1323,11 @@ impl Channel {
                 let mut status = self.bus_master_state.status_reg;
 
                 if self.bus_master_state.dma_state.is_some() {
-                    status |= BusMasterStatusReg::ACTIVE;
+                    status.set_ACTIVE(true);
                 }
 
                 match data_len {
-                    1 | 2 => data.copy_from_slice(&status.bits().to_ne_bytes()[..data_len]),
+                    1 | 2 => data.copy_from_slice(&status.into_bits().to_ne_bytes()[..data_len]),
                     _ => return IoResult::Err(IoError::InvalidAccessSize),
                 }
             }
@@ -1377,15 +1379,14 @@ impl Channel {
                 let mut new_value = BusMasterCommandReg::from_bits_truncate(value as u32);
 
                 // The read/write bit is marked as read-only when dma is active.
-                if old_value.contains(BusMasterCommandReg::START) {
+                if old_value.START() {
                     // Set the new value of the read/write flag to match the
                     // existing value, regardless of the new value of the flag.
-                    new_value.remove(BusMasterCommandReg::WRITE);
-                    new_value |= old_value & BusMasterCommandReg::WRITE;
-                    if !new_value.contains(BusMasterCommandReg::START) {
+                    new_value.set_WRITE(old_value.WRITE());
+                    if !new_value.START() {
                         self.bus_master_state.dma_state = None
                     }
-                } else if new_value.contains(BusMasterCommandReg::START) {
+                } else if new_value.START() {
                     self.bus_master_state.dma_state = Some(Default::default());
                 };
 
@@ -1398,12 +1399,15 @@ impl Channel {
 
                 let value = BusMasterStatusReg::from_bits_truncate(value as u32);
                 let old_value = self.bus_master_state.status_reg;
-                let mut new_value = (old_value & !BusMasterStatusReg::SETTABLE)
-                    | (value & BusMasterStatusReg::SETTABLE);
+                let mut new_value = old_value.with_settable(value.settable());
 
                 // These bits are reset if a one is written
-                new_value &=
-                    !(value & (BusMasterStatusReg::INTERRUPT | BusMasterStatusReg::DMA_ERROR));
+                if value.INTERRUPT() {
+                    new_value.set_INTERRUPT(false);
+                }
+                if value.DMA_ERROR() {
+                    new_value.set_DMA_ERROR(false);
+                }
 
                 tracing::trace!(?old_value, ?new_value, "set bus master status");
                 self.bus_master_state.status_reg = new_value;
@@ -1626,8 +1630,8 @@ mod save_restore {
                 shadow_adapter_control_reg,
                 shadow_features_reg,
                 bus_master: state::SavedChannelBusMasterState {
-                    command_reg: command_reg.bits(),
-                    status_reg: status_reg.bits(),
+                    command_reg: command_reg.into_bits(),
+                    status_reg: status_reg.into_bits(),
                     desc_table_ptr: *desc_table_ptr,
                     dma_state: dma_state.as_ref().map(|dma| {
                         let DmaState {
@@ -1683,8 +1687,8 @@ mod save_restore {
             };
 
             self.bus_master_state = ChannelBusMasterState {
-                command_reg: BusMasterCommandReg::from_bits(command_reg).unwrap(),
-                status_reg: BusMasterStatusReg::from_bits(status_reg).unwrap(),
+                command_reg: BusMasterCommandReg::from_bits(command_reg),
+                status_reg: BusMasterStatusReg::from_bits(status_reg),
                 desc_table_ptr,
                 dma_state: dma_state.map(|dma| {
                     let state::SavedDmaState {
@@ -1866,14 +1870,14 @@ mod tests {
             )
             .unwrap();
 
-        Status::from_bits(data[0]).unwrap()
+        Status::from_bits(data[0])
     }
 
     async fn check_status_loop(ide_device: &mut IdeDevice, dev_path: &IdePath) -> Status {
         // loop until device is not busy and is ready to transfer data.
         wait_for(ide_device, |ide_device| {
             let status: Status = get_status(ide_device, dev_path);
-            (!status.contains(Status::BSY) && !status.contains(Status::DRQ)).then_some(status)
+            (!status.BSY() && !status.DRQ()).then_some(status)
         })
         .await
     }
@@ -1882,7 +1886,7 @@ mod tests {
         // loop until device is not busy and is ready to transfer data.
         wait_for(ide_device, |ide_device| {
             let status: Status = get_status(ide_device, dev_path);
-            (!status.contains(Status::BSY) && status.contains(Status::DRDY)).then_some(status)
+            (!status.BSY() && status.DRDY()).then_some(status)
         })
         .await
     }
@@ -2075,20 +2079,22 @@ mod tests {
 
         // drive status should contain DRQ as data is ready to be exchanged with host
         let status = get_status(&mut ide_device, &dev_path);
-        assert!(status.contains(Status::DRQ) && !status.contains(Status::BSY));
+        assert!(status.DRQ() && !status.BSY());
 
         // PIO - writes to data port
         let data = &[0xFF_u8; 2][..];
         for _ in 0..SECTOR_COUNT {
             let status = check_command_ready(&mut ide_device, &dev_path).await;
-            assert_eq!(status & (Status::ERR | Status::DRQ), Status::DRQ);
+            assert!(status.DRQ());
+            assert!(!status.ERR());
             for _ in 0..protocol::HARD_DRIVE_SECTOR_BYTES / 2 {
                 ide_device.io_write(IdeIoPort::PRI_DATA.0, data).unwrap();
             }
         }
 
         let status = check_command_ready(&mut ide_device, &dev_path).await;
-        assert_eq!(status & (Status::ERR | Status::DRQ), Status::empty());
+        assert!(!status.ERR());
+        assert!(!status.DRQ());
 
         let buffer =
             &mut [0_u8; (protocol::HARD_DRIVE_SECTOR_BYTES * SECTOR_COUNT as u32) as usize][..];
@@ -2124,11 +2130,11 @@ mod tests {
         execute_command(&mut ide_device, &dev_path, IdeCommand::WRITE_SECTORS.0);
         // drive status should contain DRQ as data is ready to be exchanged with host
         let status = get_status(&mut ide_device, &dev_path);
-        assert!(status.contains(Status::DRQ) && !status.contains(Status::BSY));
+        assert!(status.DRQ() && !status.BSY());
 
         execute_soft_reset_command(&mut ide_device, &dev_path, IdeCommand::SOFT_RESET.0);
         let status = get_status(&mut ide_device, &dev_path);
-        assert!(status.contains(Status::BSY));
+        assert!(status.BSY());
     }
 
     // Command: READ SECTOR(S)
@@ -2159,13 +2165,15 @@ mod tests {
         execute_command(&mut ide_device, &dev_path, IdeCommand::READ_SECTORS.0);
 
         let status = check_command_ready(&mut ide_device, &dev_path).await;
-        assert_eq!(status & (Status::ERR | Status::DRQ), Status::DRQ);
+        assert!(status.DRQ());
+        assert!(!status.ERR());
 
         // PIO - reads data from track cache buffer
         let content_bytes = file_contents.as_bytes();
         for sector in 0..SECTOR_COUNT {
             let status = check_command_ready(&mut ide_device, &dev_path).await;
-            assert_eq!(status & (Status::ERR | Status::DRQ), Status::DRQ);
+            assert!(status.DRQ());
+            assert!(!status.ERR());
             for word in 0..protocol::HARD_DRIVE_SECTOR_BYTES / 2 {
                 let data = &mut [0, 0][..];
                 ide_device.io_read(IdeIoPort::PRI_DATA.0, data).unwrap();
@@ -2278,7 +2286,8 @@ mod tests {
         );
 
         let status = check_command_ready(&mut ide_device, &dev_path).await;
-        assert_eq!(status & (Status::ERR | Status::DRQ), Status::DRQ);
+        assert!(status.DRQ());
+        assert!(!status.ERR());
 
         // PIO - reads data from track cache buffer
         let data = &mut [0_u8; protocol::IDENTIFY_DEVICE_BYTES];
@@ -2321,7 +2330,8 @@ mod tests {
         execute_command(&mut ide_device, &dev_path, IdeCommand::IDENTIFY_DEVICE.0);
 
         let status = check_command_ready(&mut ide_device, &dev_path).await;
-        assert_eq!(status & (Status::ERR | Status::DRQ), Status::DRQ);
+        assert!(status.DRQ());
+        assert!(!status.ERR());
 
         // PIO - reads data from track cache buffer
         let data = &mut [0_u8; protocol::IDENTIFY_DEVICE_BYTES];
