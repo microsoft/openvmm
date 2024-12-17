@@ -4,7 +4,7 @@
 //! Implements the [`MappedDmaTarget`] trait for a wrapped [`MemoryBlock`]
 //! returned by [`LowerVtlMemorySpawner`].
 
-// SAFETY: No unsafe code here, but required for implementing MappedDmaTarget.
+// UNSAFETY: No unsafe code here, but required for implementing MappedDmaTarget.
 // The implementation is just forwarding the calls to the underlying wrapped
 // MemoryBlock.
 #![allow(unsafe_code)]

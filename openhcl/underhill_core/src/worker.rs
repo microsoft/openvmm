@@ -81,6 +81,7 @@ use input_core::InputData;
 use input_core::MultiplexedInputHandle;
 use inspect::Inspect;
 use loader_defs::shim::MemoryVtlType;
+use lower_vtl_permissions_guard::LowerVtlMemorySpawner;
 use memory_range::MemoryRange;
 use mesh::rpc::RpcSend;
 use mesh::CancelContext;
@@ -2889,7 +2890,10 @@ async fn new_underhill_vm(
 
         let shutdown_guest = SimpleVmbusClientDeviceWrapper::new(
             driver_source.simple(),
-            partition.clone(),
+            Arc::new(LowerVtlMemorySpawner::new(
+                LockedMemorySpawner,
+                partition.clone(),
+            )),
             vmbus_synic_client.clone().unwrap(),
             shutdown_guest,
         )?;
