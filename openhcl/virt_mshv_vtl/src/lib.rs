@@ -219,6 +219,9 @@ struct UhPartitionInner {
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(skip)]
     shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
+    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[inspect(skip)]
+    private_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
     #[inspect(with = "inspect::AtomicMut")]
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
@@ -1170,6 +1173,8 @@ pub struct UhLateParams<'a> {
     pub isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     /// Allocator for shared visibility pages.
     pub shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
+    /// Allocator for private visibility pages.
+    pub private_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
 }
 
 /// Trait for CVM-related protections on guest memory.
@@ -1606,6 +1611,7 @@ impl<'a> UhProtoPartition<'a> {
             guest_vsm: RwLock::new(vsm_state),
             isolated_memory_protector: late_params.isolated_memory_protector.clone(),
             shared_vis_pages_pool: late_params.shared_vis_pages_pool,
+            private_vis_pages_pool: late_params.private_vis_pages_pool,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
             backing_shared: BackingShared::new(isolation, BackingSharedParams { cvm_state })?,

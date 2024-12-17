@@ -14,6 +14,7 @@ use std::collections::VecDeque;
 use std::num::Wrapping;
 use x86defs::tdx::TdGlaVmAndFlags;
 use x86defs::tdx::TdxGlaListInfo;
+use zerocopy::AsBytes;
 
 pub(super) const FLUSH_GVA_LIST_SIZE: usize = 32;
 
@@ -174,14 +175,13 @@ impl UhProcessor<'_, TdxBacked> {
         } else {
             gla_flags.set_list(true);
 
-            // TODO: Actually copy addresses in.
-            // let page_mapping = flush_page.sparse_mapping().expect("allocated");
+            let page_mapping = flush_page.mapping().expect("allocated");
 
-            // for (i, gva_range) in flush_addrs.iter().enumerate() {
-            //     page_mapping
-            //         .write_at(i * size_of::<HvGvaRange>(), gva_range.as_bytes())
-            //         .expect("just allocated, should never fail");
-            // }
+            for (i, gva_range) in flush_addrs.iter().enumerate() {
+                page_mapping
+                    .write_at(i * size_of::<HvGvaRange>(), gva_range.as_bytes())
+                    .expect("just allocated, should never fail");
+            }
 
             let gla_list = TdxGlaListInfo::new()
                 .with_list_gpa(flush_page.base_pfn())

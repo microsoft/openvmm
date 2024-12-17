@@ -689,13 +689,12 @@ impl BackingPrivate for TdxBacked {
         let pfns = pfns_handle.base_pfn()..pfns_handle.base_pfn() + pfns_handle.size_pages();
         let overlays: Vec<_> = pfns.collect();
 
-        // TODO TDX: This needs to come from a private pool
         let flush_page = params
             .partition
-            .shared_vis_pages_pool
+            .private_vis_pages_pool
             .as_ref()
-            .expect("shared pool exists for cvm")
-            .alloc(1.try_into().unwrap(), "tdx_tlb_flush".into())
+            .expect("private pool exists for cvm")
+            .alloc_with_mapping(1.try_into().unwrap(), "tdx_tlb_flush".into())
             .expect("not out of memory");
 
         let untrusted_synic = params
