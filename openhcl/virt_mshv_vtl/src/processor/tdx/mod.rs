@@ -408,7 +408,7 @@ pub struct TdxBacked {
 
     /// TDX only TLB flush state.
     flush_state: VtlArray<TdxFlushState, 2>,
-    /// A mapped page used for issuing INVGLA hypercalls.
+    /// A mapped private page used for issuing INVGLA hypercalls.
     #[inspect(skip)]
     flush_page: page_pool_alloc::PagePoolHandle,
 
@@ -676,13 +676,12 @@ impl BackingPrivate for TdxBacked {
             )
             .into();
 
-        // TODO TDX: This needs to come from a private pool
         let flush_page = params
             .partition
-            .shared_vis_pages_pool
+            .private_vis_pages_pool
             .as_ref()
-            .expect("shared pool exists for cvm")
-            .alloc(1.try_into().unwrap(), "tdx_tlb_flush".into())
+            .expect("private pool exists for cvm")
+            .alloc_with_mapping(1.try_into().unwrap(), "tdx_tlb_flush".into())
             .expect("not out of memory");
 
         let untrusted_synic = params
