@@ -13,6 +13,7 @@ pub use device_dma::PagePoolDmaBuffer;
 
 #[cfg(all(feature = "vfio", target_os = "linux"))]
 use anyhow::Context;
+use cvm_tracing::CVM_CONFIDENTIAL;
 #[cfg(all(feature = "vfio", target_os = "linux"))]
 use hcl::ioctl::MshvVtlLow;
 use hvdef::HV_PAGE_SIZE;
@@ -643,12 +644,18 @@ impl PagePoolAllocator {
         let file_offset = match pool_type {
             PoolType::Private => gpa,
             PoolType::Shared => {
-                tracing::trace!("setting MshvVtlLow::SHARED_MEMORY_FLAG");
+                tracing::trace!(CVM_CONFIDENTIAL, "setting MshvVtlLow::SHARED_MEMORY_FLAG");
                 gpa | MshvVtlLow::SHARED_MEMORY_FLAG
             }
         };
 
-        tracing::trace!(gpa, file_offset, len, "mapping allocation");
+        tracing::trace!(
+            CVM_CONFIDENTIAL,
+            gpa,
+            file_offset,
+            len,
+            "mapping allocation"
+        );
 
         mapping
             .map_file(0, len, gpa_fd.get(), file_offset, true)

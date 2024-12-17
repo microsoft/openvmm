@@ -28,6 +28,7 @@ use crate::GuestVsmVtl1State;
 use crate::GuestVtl;
 use crate::UhPartitionInner;
 use crate::WakeReason;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use hcl::ioctl;
 use hcl::ioctl::x64::MshvX64;
 use hcl::ioctl::ApplyVtlProtectionsError;
@@ -1375,7 +1376,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         )
         .expect("unexpected intercept access type");
 
-        tracing::trace!(?message.guest_virtual_address, ?message.guest_physical_address, ?translate_mode, "initial translation");
+        tracing::trace!(CVM_CONFIDENTIAL, ?message.guest_virtual_address, ?message.guest_physical_address, ?translate_mode, "initial translation");
 
         Some(virt_support_x86emu::emulate::InitialTranslation {
             gva: message.guest_virtual_address,

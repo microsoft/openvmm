@@ -48,6 +48,7 @@ libc.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+cvm_tracing.workspace = true
 zerocopy.workspace = true
 safe_intrinsics.workspace = true
 

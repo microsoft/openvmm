@@ -21,6 +21,7 @@ use crate::Error;
 use aarch64defs::Cpsr64;
 use aarch64emu::AccessCpuState;
 use aarch64emu::InterceptState;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use hcl::ioctl;
 use hcl::ioctl::aarch64::MshvArm64;
 use hcl::GuestVtl;
@@ -553,7 +554,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
         let translate_mode = emulate::TranslateMode::try_from(message.header.intercept_access_type)
             .expect("unexpected intercept access type");
 
-        tracing::trace!(?message.guest_virtual_address, ?message.guest_physical_address, ?translate_mode, "initial translation");
+        tracing::trace!(CVM_CONFIDENTIAL, ?message.guest_virtual_address, ?message.guest_physical_address, ?translate_mode, "initial translation");
 
         Some(emulate::InitialTranslation {
             gva: message.guest_virtual_address,
