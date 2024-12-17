@@ -1165,6 +1165,12 @@ async fn new_underhill_vm(
         control_send,
     } = params;
 
+    if let Ok(kernel_boot_time) = std::env::var("KERNEL_BOOT_TIME") {
+        if let Ok(kernel_boot_time_ns) = kernel_boot_time.parse::<u64>() {
+            tracing::info!(kernel_boot_time_ns, "kernel boot time");
+        }
+    }
+
     // Read the initial configuration from the IGVM parameters.
     let (runtime_params, measured_vtl2_info) =
         crate::loader::vtl2_config::read_vtl2_params().context("failed to read load parameters")?;

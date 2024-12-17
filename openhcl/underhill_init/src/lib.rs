@@ -432,7 +432,6 @@ fn do_main() -> anyhow::Result<()> {
 
     init_logging();
 
-    log::info!("kernel boot time {}", boot_time);
     log::info!(
         "Initial process: crate_name={}, crate_revision={}, crate_branch={}",
         env!("CARGO_PKG_NAME"),
@@ -556,7 +555,8 @@ fn do_main() -> anyhow::Result<()> {
     ];
 
     setup(&stat_files, &options, writes, &filesystems)?;
-    let new_env = run_setup_scripts(&options.setup_script)?;
+    let mut new_env = run_setup_scripts(&options.setup_script)?;
+    new_env.push(("KERNEL_BOOT_TIME".into(), boot_time.to_string()));
 
     if matches!(
         std::env::var("OPENHCL_NVME_VFIO").as_deref(),
