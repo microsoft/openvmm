@@ -1776,6 +1776,10 @@ async fn new_underhill_vm(
             p.allocator("partition".into())
                 .expect("partition name should be unique")
         }),
+        private_vis_pages_pool: private_pool.as_ref().map(|p| {
+            p.allocator("partition".into())
+                .expect("partition name should be unique")
+        }),
     };
 
     let (partition, vps) = proto_partition
