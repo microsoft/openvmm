@@ -12,16 +12,12 @@ rust-version.workspace = true
 openssl-vendored = ["openssl/vendored"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
-get_protocol.workspace = true
 guest_emulation_transport.workspace = true
+openhcl_attestation_protocol.workspace = true
 vmgs = { workspace = true, features = ["encryption_ossl"] }
-
-open_enum.workspace = true
 guid.workspace = true
 mesh.workspace = true
 openssl_kdf.workspace = true
-sev_guest_device.workspace = true
-tdx_guest_device.workspace = true
 tee_call.workspace = true
 pal_async.workspace = true
 tracing.workspace = true
@@ -30,9 +26,7 @@ cvm_tracing.workspace = true
 base64.workspace = true
 base64-serde.workspace = true
 getrandom.workspace = true
-hex.workspace = true
 openssl.workspace = true
-serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 static_assertions.workspace = true
 thiserror.workspace = true

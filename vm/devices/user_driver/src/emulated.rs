@@ -235,6 +235,10 @@ unsafe impl MappedDmaTarget for DmaBuffer {
     fn pfns(&self) -> &[u64] {
         &self.pfns
     }
+
+    fn pfn_bias(&self) -> u64 {
+        0
+    }
 }
 
 pub struct EmulatedDmaAllocator {

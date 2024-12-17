@@ -146,6 +146,7 @@ build_info = { path = "openhcl/build_info" }
 diag_client = { path = "openhcl/diag_client" }
 diag_proto = { path = "openhcl/diag_proto" }
 diag_server = { path = "openhcl/diag_server" }
+get_lower_vtl = { path = "openhcl/get_lower_vtl" }
 hcl = { path = "openhcl/hcl" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }
 kmsg_defs = { path = "openhcl/kmsg_defs" }
@@ -163,6 +164,7 @@ underhill_dump = { path = "openhcl/underhill_dump" }
 underhill_entry = { path = "openhcl/underhill_entry" }
 underhill_init = { path = "openhcl/underhill_init" }
 underhill_mem = { path = "openhcl/underhill_mem" }
+openhcl_attestation_protocol = { path = "openhcl/openhcl_attestation_protocol" }
 openvmm_hcl_resources = { path = "openhcl/openvmm_hcl_resources" }
 underhill_threadpool = { path = "openhcl/underhill_threadpool" }
 virt_mshv_vtl = { path = "openhcl/virt_mshv_vtl" }

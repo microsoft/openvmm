@@ -37,4 +37,8 @@ unsafe impl MappedDmaTarget for LowerVtlDmaBuffer {
     fn pfns(&self) -> &[u64] {
         self.block.pfns()
     }
+
+    fn pfn_bias(&self) -> u64 {
+        self.block.pfn_bias()
+    }
 }

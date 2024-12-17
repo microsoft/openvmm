@@ -2112,6 +2112,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "get_lower_vtl"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "hcl",
+ "hvdef",
+ "inspect",
+ "memory_range",
+ "virt",
+]
+
+[[package]]
 name = "get_protocol"
 version = "0.0.0"
 dependencies = [
@@ -2253,6 +2265,7 @@ dependencies = [
  "guid",
  "inspect",
  "mesh",
+ "openhcl_attestation_protocol",
  "pal_async",
  "parking_lot",
  "power_resources",
@@ -2298,19 +2311,18 @@ dependencies = [
 name = "guest_emulation_transport"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "chipset_resources",
  "futures",
  "futures-concurrency",
  "get_protocol",
  "getrandom",
  "guest_emulation_device",
- "guestmem",
  "guid",
  "hvdef",
  "inspect",
  "inspect_counters",
  "mesh",
- "page_pool_alloc",
  "pal_async",
  "parking_lot",
  "power_resources",
@@ -2321,6 +2333,7 @@ dependencies = [
  "tracing_helpers",
  "underhill_config",
  "unicycle",
+ "user_driver",
  "vm_resource",
  "vmbus_async",
  "vmbus_ring",
@@ -4319,6 +4332,23 @@ dependencies = [
 [[package]]
 name = "open_enum"
 version = "0.0.0"
+
+[[package]]
+name = "openhcl_attestation_protocol"
+version = "0.0.0"
+dependencies = [
+ "base64 0.21.7",
+ "base64-serde",
+ "guid",
+ "hex",
+ "mesh",
+ "open_enum",
+ "serde",
+ "serde_json",
+ "sev_guest_device",
+ "tdx_guest_device",
+ "zerocopy",
+]
 
 [[package]]
 name = "openhcl_boot"
@@ -6600,21 +6630,16 @@ dependencies = [
  "base64 0.21.7",
  "base64-serde",
  "cvm_tracing",
- "get_protocol",
  "getrandom",
  "guest_emulation_transport",
  "guid",
- "hex",
  "mesh",
- "open_enum",
+ "openhcl_attestation_protocol",
  "openssl",
  "openssl_kdf",
  "pal_async",
- "serde",
  "serde_json",
- "sev_guest_device",
  "static_assertions",
- "tdx_guest_device",
  "tee_call",
  "thiserror 2.0.0",
  "time",
@@ -6676,6 +6701,7 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "get_helpers",
+ "get_lower_vtl",
  "get_protocol",
  "getrandom",
  "guest_emulation_transport",
@@ -6714,6 +6740,7 @@ dependencies = [
  "netvsp",
  "nvme_driver",
  "nvme_resources",
+ "openhcl_attestation_protocol",
  "page_pool_alloc",
  "pal",
  "pal_async",

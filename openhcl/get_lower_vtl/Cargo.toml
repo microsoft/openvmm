@@ -2,17 +2,19 @@
 # Licensed under the MIT License.
 
 [package]
-name = "tdx_guest_device"
+name = "get_lower_vtl"
 edition = "2021"
 rust-version.workspace = true
 
-[dependencies]
-static_assertions.workspace = true
-zerocopy.workspace = true
-
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { workspace = true, features = ["ioctl"] }
-thiserror.workspace = true
+hcl.workspace = true
+
+hvdef.workspace = true
+inspect.workspace = true
+memory_range.workspace = true
+virt.workspace = true
+
+anyhow.workspace = true
 
 [lints]
 workspace = true

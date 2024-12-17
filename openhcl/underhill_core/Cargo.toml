@@ -58,6 +58,7 @@ hyperv_uefi_custom_vars_json.workspace = true
 framebuffer.workspace = true
 hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect"] }
 get_helpers.workspace = true
+get_lower_vtl.workspace = true
 get_protocol.workspace = true
 guest_emulation_transport.workspace = true
 ide.workspace = true
@@ -90,6 +91,7 @@ underhill_confidentiality = { workspace = true, features = ["std"] }
 underhill_config.workspace = true
 underhill_mem.workspace = true
 underhill_threadpool.workspace = true
+openhcl_attestation_protocol.workspace = true
 bootloader_fdt_parser.workspace = true
 vga_proxy.workspace = true
 video_core.workspace = true

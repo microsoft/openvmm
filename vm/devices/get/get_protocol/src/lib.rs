@@ -581,8 +581,6 @@ pub const IGVM_ATTEST_MSG_REQ_REPORT_MAX_SIZE: usize = 4096;
 
 /// Maximum return pages
 pub const IGVM_ATTEST_MSG_MAX_SHARED_GPA: usize = 16;
-/// Current return pages
-pub const IGVM_ATTEST_MSG_SHARED_GPA: usize = IGVM_ATTEST_MSG_MAX_SHARED_GPA;
 
 // Error from the VM worker process in the host when sending an
 // attestation request.

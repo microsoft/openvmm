@@ -15,6 +15,7 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use std::cmp::min;
 use std::sync::Arc;
+use user_driver::vfio::VfioDmaBuffer;
 use vpci::bus_control::VpciBusEvent;
 use zerocopy::AsBytes;
 
@@ -385,16 +386,14 @@ impl GuestEmulationTransportClient {
         }
     }
 
-    /// Set the shared memory allocator, which is required by ['igvm_attest'].
-    pub fn set_shared_memory_allocator(
-        &mut self,
-        shared_pool_allocator: page_pool_alloc::PagePoolAllocator,
-        shared_guest_memory: guestmem::GuestMemory,
-    ) {
-        self.control.notify(msg::Msg::SetupSharedMemoryAllocator(
-            shared_pool_allocator,
-            shared_guest_memory,
-        ));
+    /// Set the gpa allocator, which is required by ['igvm_attest'].
+    ///
+    /// TODO: This isn't a VfioDevice, but the VfioDmaBuffer is a convienent
+    /// trait to use for wrapping the PFN allocations. Refactor this in the
+    /// future once a central DMA API is made.
+    pub fn set_gpa_allocator(&mut self, gpa_allocator: Arc<dyn VfioDmaBuffer>) {
+        self.control
+            .notify(msg::Msg::SetGpaAllocator(gpa_allocator));
     }
 
     /// Send the attestation request to the IGVM agent on the host.
@@ -402,8 +401,13 @@ impl GuestEmulationTransportClient {
         &self,
         agent_data: Vec<u8>,
         report: Vec<u8>,
+        response_buffer_len: usize,
     ) -> Result<crate::api::IgvmAttest, crate::error::IgvmAttestError> {
-        let request = IgvmAttestRequestData { agent_data, report };
+        let request = IgvmAttestRequestData {
+            agent_data,
+            report,
+            response_buffer_len,
+        };
 
         let response = self
             .control
