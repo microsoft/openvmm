@@ -207,11 +207,8 @@ fn setup(
     Ok(())
 }
 
-/// Run the setup scripts provided in the options.
-///
-/// # Safety
-/// The caller is responsible for ensuring that this process is currently single-threaded.
-unsafe fn run_setup_scripts(scripts: &[String]) -> anyhow::Result<()> {
+fn run_setup_scripts(scripts: &[String]) -> anyhow::Result<Vec<(String, String)>> {
+    let mut new_env = Vec::new();
     for setup in scripts {
         log::info!("Running provided setup script {}", setup);
 
@@ -234,21 +231,18 @@ unsafe fn run_setup_scripts(scripts: &[String]) -> anyhow::Result<()> {
                 .and_then(|line| line.split_once('='))
             {
                 log::info!("setting env var {}={}", key, value);
-                // SAFETY: Caller has guaranteed we are single threaded.
-                unsafe {
-                    std::env::set_var(key, value);
-                }
+                new_env.push((key.into(), value.into()));
             }
         }
     }
-
-    Ok(())
+    Ok(new_env)
 }
 
-fn run(options: &Options) -> anyhow::Result<()> {
+fn run(options: &Options, env: impl IntoIterator<Item = (String, String)>) -> anyhow::Result<()> {
     let mut command = Command::new(UNDERHILL_PATH);
     command.arg("--pid").arg("/run/underhill.pid");
     command.args(&options.underhill_args);
+    command.envs(env);
 
     // Update the file descriptor limit for the main process, since large VMs
     // require lots of fds. There is no downside to a larger value except that
@@ -562,10 +556,7 @@ fn do_main() -> anyhow::Result<()> {
     ];
 
     setup(&stat_files, &options, writes, &filesystems)?;
-    // SAFETY: We have not spawned any threads yet.
-    unsafe {
-        run_setup_scripts(&options.setup_script)?;
-    }
+    let new_env = run_setup_scripts(&options.setup_script)?;
 
     if matches!(
         std::env::var("OPENHCL_NVME_VFIO").as_deref(),
@@ -590,7 +581,7 @@ fn do_main() -> anyhow::Result<()> {
         }
     });
 
-    run(&options)
+    run(&options, new_env)
 }
 
 pub fn main() -> ! {
