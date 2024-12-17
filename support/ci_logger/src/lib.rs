@@ -14,23 +14,14 @@ struct AdoLogger {
 }
 
 impl AdoLogger {
-    fn new(log_env_var: &str) -> AdoLogger {
+    fn new(log_level: Option<&str>) -> AdoLogger {
         let mut builder = env_logger::filter::Builder::new();
-        if let Ok(var) = std::env::var(log_env_var) {
-            builder.parse(&var);
+        if let Some(log_level) = log_level {
+            builder.parse(log_level);
         } else {
             builder.filter_level(log::LevelFilter::Info);
         }
         let filter = builder.build();
-
-        AdoLogger {
-            in_ci: std::env::var("TF_BUILD").is_ok(),
-            filter,
-        }
-    }
-
-    fn new_value(log_level: &str) -> AdoLogger {
-        let filter = env_logger::filter::Builder::new().parse(log_level).build();
 
         AdoLogger {
             in_ci: std::env::var("TF_BUILD").is_ok(),
@@ -89,12 +80,14 @@ impl log::Log for AdoLogger {
 
 /// Initialize the ADO logger
 pub fn init(log_env_var: &str) -> Result<(), log::SetLoggerError> {
-    log::set_boxed_logger(Box::new(AdoLogger::new(log_env_var)))
-        .map(|()| log::set_max_level(log::LevelFilter::Trace))
+    log::set_boxed_logger(Box::new(AdoLogger::new(
+        std::env::var(log_env_var).ok().as_deref(),
+    )))
+    .map(|()| log::set_max_level(log::LevelFilter::Trace))
 }
 
 /// Initialize the ADO logger with a specific value, instead of an env var.
-pub fn init_value(log_level: &str) -> Result<(), log::SetLoggerError> {
-    log::set_boxed_logger(Box::new(AdoLogger::new_value(log_level)))
+pub fn init_with_level(log_level: &str) -> Result<(), log::SetLoggerError> {
+    log::set_boxed_logger(Box::new(AdoLogger::new(Some(log_level))))
         .map(|()| log::set_max_level(log::LevelFilter::Trace))
 }

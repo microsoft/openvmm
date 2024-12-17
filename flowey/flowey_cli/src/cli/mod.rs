@@ -59,7 +59,7 @@ pub fn cli_main<P: Subcommand + IntoPipeline>(
     }
 
     if let Some(log_level) = log_override {
-        ci_logger::init_value(&log_level).unwrap();
+        ci_logger::init_with_level(&log_level).unwrap();
     } else {
         ci_logger::init("FLOWEY_LOG").unwrap();
     }
