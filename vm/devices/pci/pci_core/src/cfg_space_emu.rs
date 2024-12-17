@@ -23,6 +23,19 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use vmcore::line_interrupt::LineInterrupt;
 
+const SUPPORTED_COMMAND_BITS: u16 = cfg_space::Command::new()
+    .with_pio_enabled(true)
+    .with_mmio_enabled(true)
+    .with_bus_master(true)
+    .with_special_cycles(true)
+    .with_enable_memory_write_invalidate(true)
+    .with_vga_palette_snoop(true)
+    .with_parity_error_response(true)
+    .with_enable_serr(true)
+    .with_enable_fast_b2b(true)
+    .with_intx_disable(true)
+    .into_bits();
+
 /// A wrapper around a [`LineInterrupt`] that considers PCI configuration space
 /// interrupt control bits.
 #[derive(Debug, Inspect)]
@@ -479,7 +492,7 @@ impl ConfigSpaceType0Emulator {
         match HeaderType00(offset) {
             HeaderType00::STATUS_COMMAND => {
                 let mut command = cfg_space::Command::from_bits(val as u16);
-                if command.into_bits() & !cfg_space::Command::VALID_BITS != 0 {
+                if command.into_bits() & !SUPPORTED_COMMAND_BITS != 0 {
                     tracelimit::warn_ratelimited!(offset, val, "setting invalid command bits");
                     // still do our best
                     command.set_reserved(0);
@@ -643,7 +656,7 @@ mod save_restore {
                 latency_timer,
             };
 
-            if command & !cfg_space::Command::VALID_BITS != 0 {
+            if command & !SUPPORTED_COMMAND_BITS != 0 {
                 return Err(RestoreError::InvalidSavedState(
                     ConfigSpaceRestoreError::InvalidConfigBits.into(),
                 ));
