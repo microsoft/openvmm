@@ -155,6 +155,9 @@ pub struct HclDevicePlatformSettingsV2Dynamic {
     pub generation_id_high: u64,
     pub smbios: HclDevicePlatformSettingsV2DynamicSmbios,
     pub is_servicing_scenario: bool,
+
+    #[serde(default)]
+    pub acpi_tables: Vec<Vec<u8>>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

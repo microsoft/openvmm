@@ -335,6 +335,7 @@ impl GuestEmulationTransportClient {
                 firmware_mode_is_pcat: json.v2.r#static.firmware_mode_is_pcat,
                 imc_enabled: json.v2.r#static.imc_enabled,
             },
+            acpi_tables: json.v2.dynamic.acpi_tables,
         })
     }
 

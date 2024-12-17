@@ -62,7 +62,7 @@ pub struct Entry {
     pub node: Node,
     /// The sensitivity level of this entry.
     #[mesh(3)]
-    pub sensitivity: Option<SensitivityLevel>,
+    pub sensitivity: SensitivityLevel,
 }
 
 /// A node resolution error.

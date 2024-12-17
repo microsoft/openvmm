@@ -281,7 +281,7 @@ fn validate_results(results: &Node, req_sens: Option<SensitivityLevel>) {
         Node::Dir(entries) => {
             for e in entries {
                 if let Some(sens) = req_sens {
-                    assert!(e.sensitivity.unwrap_or_default() <= sens);
+                    assert!(e.sensitivity <= sens);
                 }
                 validate_results(&e.node, req_sens);
             }

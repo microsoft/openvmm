@@ -528,6 +528,7 @@ impl TdxBackedShared {
 impl BackingPrivate for TdxBacked {
     type HclBacking = Tdx;
     type Shared = TdxBackedShared;
+    type EmulationCache = ();
 
     fn shared(shared: &BackingShared) -> &Self::Shared {
         let BackingShared::Tdx(shared) = shared else {
@@ -716,7 +717,8 @@ impl BackingPrivate for TdxBacked {
         })
     }
 
-    type StateAccess<'p, 'a> = UhVpStateAccess<'a, 'p, Self>
+    type StateAccess<'p, 'a>
+        = UhVpStateAccess<'a, 'p, Self>
     where
         Self: 'a + 'p,
         'p: 'a;
