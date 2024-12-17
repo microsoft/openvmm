@@ -9,12 +9,10 @@ rust-version.workspace = true
 [features]
 test_utilities = [ "guest_emulation_device/test_utilities" ]
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 get_protocol.workspace = true
 guest_emulation_device = { workspace = true, optional = true }
 hvdef.workspace = true
-page_pool_alloc.workspace = true
-sparse_mmap.workspace = true
 underhill_config.workspace = true
 user_driver.workspace = true
 vmbus_async.workspace = true
