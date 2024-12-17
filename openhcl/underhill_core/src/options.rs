@@ -7,6 +7,9 @@
 
 use anyhow::bail;
 use anyhow::Context;
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 // We've made our own parser here instead of using something like clap in order
@@ -119,26 +122,41 @@ pub struct Options {
 }
 
 impl Options {
-    pub(crate) fn parse(extra_args: Vec<String>) -> anyhow::Result<Self> {
-        /// Reads an environment variable, falling back to a legacy variable (replacing
-        /// "OPENHCL_" with "UNDERHILL_") if the original is not set.
-        fn legacy_openhcl_env(name: &str) -> Option<std::ffi::OsString> {
-            std::env::var_os(name).or_else(|| {
-                std::env::var_os(format!(
-                    "UNDERHILL_{}",
-                    name.strip_prefix("OPENHCL_").unwrap_or(name)
-                ))
-            })
+    pub(crate) fn parse(
+        extra_args: Vec<String>,
+        extra_env: Vec<(String, Option<String>)>,
+    ) -> anyhow::Result<Self> {
+        // Pull the entire environment into a BTreeMap for manipulation through extra_env.
+        let mut env: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+        for (key, value) in extra_env {
+            match value {
+                Some(value) => env.insert(key.into(), value.into()),
+                None => env.remove::<OsStr>(key.as_ref()),
+            };
         }
 
-        fn parse_bool(value: Option<std::ffi::OsString>) -> bool {
+        // Reads an environment variable, falling back to a legacy variable (replacing
+        // "OPENHCL_" with "UNDERHILL_") if the original is not set.
+        let legacy_openhcl_env = |name: &str| -> Option<&OsString> {
+            env.get::<OsStr>(name.as_ref()).or_else(|| {
+                env.get::<OsStr>(
+                    format!(
+                        "UNDERHILL_{}",
+                        name.strip_prefix("OPENHCL_").unwrap_or(name)
+                    )
+                    .as_ref(),
+                )
+            })
+        };
+
+        fn parse_bool(value: Option<&OsString>) -> bool {
             value
                 .map(|v| v.to_ascii_lowercase() == "true" || v == "1")
                 .unwrap_or_default()
         }
 
         let parse_legacy_env_bool = |name| parse_bool(legacy_openhcl_env(name));
-        let parse_env_bool = |name| parse_bool(std::env::var_os(name));
+        let parse_env_bool = |name: &str| parse_bool(env.get::<OsStr>(name.as_ref()));
 
         let parse_legacy_env_number = |name| {
             legacy_openhcl_env(name)

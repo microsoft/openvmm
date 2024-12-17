@@ -192,7 +192,7 @@ fn install_task_name_panic_hook() {
 }
 
 async fn do_main(driver: DefaultDriver, mut tracing: TracingBackend) -> anyhow::Result<()> {
-    let opt = Options::parse(Vec::new())?;
+    let opt = Options::parse(Vec::new(), Vec::new())?;
 
     let crate_name = build_info::get().crate_name();
     let crate_revision = build_info::get().scm_revision();
@@ -496,14 +496,7 @@ async fn run_control(
                             if workers.is_some() {
                                 Err(anyhow::anyhow!("workers have already been started"))?;
                             }
-                            for (key, value) in params.env {
-                                if let Some(value) = value {
-                                    std::env::set_var(key, value);
-                                } else {
-                                    std::env::remove_var(key);
-                                }
-                            }
-                            let new_opt = Options::parse(params.args)
+                            let new_opt = Options::parse(params.args, params.env)
                                 .context("failed to parse new options")?;
 
                             workers = Some(
