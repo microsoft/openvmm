@@ -81,7 +81,7 @@ impl Registers {
             lba_mid: 0,
             lba_high: 0,
             device_head: DeviceHeadReg::new(),
-            error: ErrorReg::new().with_err_amnf_ili_default(true),
+            error: ErrorReg::new().with_amnf_ili_default(true),
             features: 0,
             device_control_reg: DeviceControlReg::new(),
         }
@@ -809,7 +809,7 @@ impl HardDrive {
         let command = match command {
             IdeCommand::EXECUTE_DEVICE_DIAGNOSTIC => {
                 self.state.regs.reset_signature();
-                self.state.regs.error = ErrorReg::new().with_err_amnf_ili_default(true);
+                self.state.regs.error = ErrorReg::new().with_amnf_ili_default(true);
                 return Ok(());
             }
             x if (IdeCommand::RECALIBRATE_START..=IdeCommand::RECALIBRATE_END).contains(&x) => {
@@ -953,7 +953,7 @@ impl HardDrive {
             command => {
                 tracing::debug!(?command, "unknown command");
                 self.state.error_pending = true;
-                self.state.regs.error = ErrorReg::new().with_err_unknown_command(true);
+                self.state.regs.error = ErrorReg::new().with_unknown_command(true);
                 None
             }
         };
@@ -1343,10 +1343,10 @@ impl HardDrive {
     fn log_and_update_error(&mut self, error: IdeError, register: Option<DriveRegister>) {
         let ide_error = match error {
             IdeError::IdeBadLocation { .. } | IdeError::ZeroSector | IdeError::LbaBitNotSet => {
-                ErrorReg::new().with_err_bad_location(true)
+                ErrorReg::new().with_bad_location(true)
             }
-            IdeError::IdeBadSector { .. } => ErrorReg::new().with_err_bad_sector(true),
-            IdeError::Flush { .. } => ErrorReg::new().with_err_unknown_command(true), // strange, but matches Hyper-V behavior
+            IdeError::IdeBadSector { .. } => ErrorReg::new().with_bad_sector(true),
+            IdeError::Flush { .. } => ErrorReg::new().with_unknown_command(true), // strange, but matches Hyper-V behavior
         };
 
         tracelimit::warn_ratelimited!(

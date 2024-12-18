@@ -97,7 +97,7 @@ impl Registers {
             byte_count_high: protocol::ATAPI_RESET_LBA_HIGH,
             lba_low: 1, // CHS mode
             device_head: DeviceHeadReg::new(),
-            error: ErrorReg::new().with_err_amnf_ili_default(true),
+            error: ErrorReg::new().with_amnf_ili_default(true),
             features: 0,
             sector_count: protocol::ATAPI_READY_FOR_PACKET_DEFAULT,
             device_control_reg: DeviceControlReg::new(),
@@ -597,7 +597,7 @@ impl AtapiDrive {
             IdeCommand::EXECUTE_DEVICE_DIAGNOSTIC => {
                 // As specified by ATA-6 9.12.
                 self.state.regs.reset_signature(true);
-                self.state.regs.error = ErrorReg::new().with_err_amnf_ili_default(true);
+                self.state.regs.error = ErrorReg::new().with_amnf_ili_default(true);
             }
             IdeCommand::PACKET_COMMAND => {
                 // Needn't issue interrupt
@@ -619,12 +619,12 @@ impl AtapiDrive {
                 // As specified by ATA-6 9.12.
                 self.state.regs.reset_signature(false);
                 self.state.regs.status.set_err(true);
-                self.state.regs.error = ErrorReg::new().with_err_unknown_command(true);
+                self.state.regs.error = ErrorReg::new().with_unknown_command(true);
             }
             command => {
                 tracing::debug!(?command, "unknown command");
                 self.state.regs.status.set_err(true);
-                self.state.regs.error = ErrorReg::new().with_err_unknown_command(true);
+                self.state.regs.error = ErrorReg::new().with_unknown_command(true);
             }
         };
 
@@ -662,7 +662,7 @@ impl AtapiDrive {
         self.state.buffer = None;
 
         self.state.regs.reset_signature(reset_dev);
-        self.state.regs.error = ErrorReg::new().with_err_amnf_ili_default(true);
+        self.state.regs.error = ErrorReg::new().with_amnf_ili_default(true);
         self.state.regs.status = Status::new();
     }
 
@@ -779,7 +779,7 @@ impl AtapiDrive {
             if sense.sense_key == SenseKey::ILLEGAL_REQUEST
                 || sense.sense_key == SenseKey::ABORTED_COMMAND
             {
-                self.state.regs.error.set_err_unknown_command(true);
+                self.state.regs.error.set_unknown_command(true);
             }
 
             self.state.regs.status.set_err(true);

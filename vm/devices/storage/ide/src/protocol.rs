@@ -95,21 +95,21 @@ open_enum! {
 #[derive(AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
 pub struct ErrorReg {
     /// no address mark or illegal length indication, register default values
-    pub err_amnf_ili_default: bool,
+    pub amnf_ili_default: bool,
     /// track 0 not found or end of media detected
-    pub err_tk0nf_eom: bool,
+    pub tk0nf_eom: bool,
     /// Command aborted
-    pub err_unknown_command: bool,
+    pub unknown_command: bool,
     /// media change request
-    pub err_mcr: bool,
+    pub mcr: bool,
     /// IDNF, ID mark not found
-    pub err_bad_location: bool,
+    pub bad_location: bool,
     /// mc, media changed
-    pub err_media_changed: bool,
+    pub media_changed: bool,
     /// uncorrectable data
-    pub err_unc: bool,
+    pub unc: bool,
     /// bbk, bad block
-    pub err_bad_sector: bool,
+    pub bad_sector: bool,
 }
 
 pub const MAX_SECTORS_MULT_TRANSFER_DEFAULT: u16 = 128;
