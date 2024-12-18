@@ -21,7 +21,7 @@ pub use get_protocol::NUMBER_GSP;
 use guid::Guid;
 
 /// Device platform settings.
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub mod platform_settings {
     pub use get_protocol::dps_json::PcatBootDevice;
 

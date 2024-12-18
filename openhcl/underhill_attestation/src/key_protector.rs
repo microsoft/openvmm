@@ -13,7 +13,6 @@ use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use thiserror::Error;
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum GetKeysFromKeyProtectorError {
     #[error(

@@ -18,7 +18,7 @@ pub mod msi;
 pub mod spec;
 
 /// Defines one of the 4 legacy PCI INTx shared interrupt pins
-#[allow(missing_docs)] // self explanatory variants
+#[expect(missing_docs)] // self explanatory variants
 #[derive(Debug, Clone, Copy, inspect::Inspect)]
 pub enum PciInterruptPin {
     IntA = 0,

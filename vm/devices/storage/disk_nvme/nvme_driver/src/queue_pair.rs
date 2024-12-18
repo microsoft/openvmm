@@ -329,7 +329,7 @@ impl QueuePair {
 
 /// An error issuing an NVMe request.
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum RequestError {
     #[error("queue pair is gone")]
     Gone(#[source] RpcError),

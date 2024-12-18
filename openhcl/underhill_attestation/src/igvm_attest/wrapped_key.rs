@@ -7,7 +7,6 @@
 use openhcl_attestation_protocol::igvm_attest::cps;
 use thiserror::Error;
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum WrappedKeyError {
     #[error("failed to deserialize the response payload into JSON: {json_data}")]
