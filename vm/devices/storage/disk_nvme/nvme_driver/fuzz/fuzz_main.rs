@@ -12,15 +12,14 @@ use crate::fuzz_nvme_driver::FuzzNvmeDriver;
 
 use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
-use lazy_static::lazy_static;
 use pal_async::DefaultPool;
 use std::sync::Mutex;
 use xtask_fuzz::fuzz_target;
 
-// Use lazy_static to allow swapping out underlying vector
-lazy_static! {
-    pub static ref RAW_DATA: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-}
+// Storing raw data as static since it will be used from the DeviceBacking trait of
+// EmulatedDeviceFuzzer. DeviceBacking trait enforces a static lifetime for any data
+// used by the EmulatedDeviceFuzzer struct.
+pub static RAW_DATA: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 /// Consumes part of static RAW_DATA to generate a vector of len=num_bytes with arbitrary bytes
 fn get_raw_data(num_bytes: usize) -> Result<Vec<u8>, arbitrary::Error>{
