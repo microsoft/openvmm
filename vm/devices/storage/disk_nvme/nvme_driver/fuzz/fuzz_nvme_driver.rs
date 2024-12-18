@@ -5,20 +5,23 @@
 use crate::fuzz_emulated_device::FuzzEmulatedDevice;
 use crate::arbitrary_data;
 
-use arbitrary::{Arbitrary, Unstructured};
+use arbitrary::Arbitrary;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_ramdisk::RamDisk;
 use guestmem::GuestMemory;
 use guid::Guid;
-use nvme::{NvmeController, NvmeControllerCaps};
-use nvme_driver::{Namespace, NvmeDriver};
+use nvme::NvmeController;
+use nvme::NvmeControllerCaps;
+use nvme_driver::Namespace;
+use nvme_driver::NvmeDriver;
 use nvme_spec::nvm::DsmRange;
 use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
 use user_driver::emulated::DeviceSharedMemory;
-use vmcore::vm_task::{SingleDriverBackend, VmTaskDriverSource};
+use vmcore::vm_task::SingleDriverBackend;
+use vmcore::vm_task::VmTaskDriverSource;
 
 /// Nvme driver fuzzer
 pub struct FuzzNvmeDriver {

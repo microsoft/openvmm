@@ -4,14 +4,16 @@
 //! A shim layer to fuzz responses from an emulated device.
 use crate::arbitrary_data;
 
-use arbitrary::Unstructured;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pci_core::msi::MsiInterruptSet;
 use user_driver::DeviceBacking;
-use user_driver::emulated::{EmulatedDevice, Mapping, EmulatedDmaAllocator, DeviceSharedMemory};
+use user_driver::emulated::DeviceSharedMemory;
+use user_driver::emulated::EmulatedDevice;
+use user_driver::emulated::EmulatedDmaAllocator;
+use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
 
 /// An EmulatedDevice fuzzer that requires a working EmulatedDevice backend.

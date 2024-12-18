@@ -4,7 +4,7 @@
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
 
 //! A 2-way fuzzer developed to fuzz the nvme driver from the Guest side with arbitrary driver
-//! action and from the Host side with arbitrary responses from the backend.
+//! actions and from the Host side with arbitrary responses from the backend.
 mod fuzz_emulated_device;
 mod fuzz_nvme_driver;
 
@@ -23,7 +23,7 @@ lazy_static! {
 }
 
 /// Uses static RAW_DATA to generate a vector of len=num_bytes with arbitrary bytes
-pub fn get_raw_data(num_bytes: usize) -> Result<Vec<u8>, arbitrary::Error>{
+fn get_raw_data(num_bytes: usize) -> Result<Vec<u8>, arbitrary::Error>{
     // Lock RAW_DATA before consuming
     let mut raw_data = RAW_DATA.lock().unwrap();
 
@@ -36,7 +36,6 @@ pub fn get_raw_data(num_bytes: usize) -> Result<Vec<u8>, arbitrary::Error>{
     let drained: Vec<u8> = raw_data.drain(0..num_bytes).collect();
     return Ok(drained);
 }
-
 
 /// Returns an arbitrary data of type T or a NotEnoughData error. Generic type must
 /// implement Arbitrary (for any lifetime 'a) and the Sized traits.
