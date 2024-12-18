@@ -1228,8 +1228,13 @@ async fn new_underhill_vm(
     // The amount of memory required by the GET igvm_attest request
     let attestation = get_protocol::IGVM_ATTEST_MSG_MAX_SHARED_GPA as u64 * hvdef::HV_PAGE_SIZE;
 
-    // TODO: determine actual memory usage by NVME/MANA. hardcode as 10MB
-    let device_dma = 10 * 1024 * 1024;
+    // TODO: retrieve this via the host
+    // each MANA queue uses 21 pages per VP.  Max 32 queues from OpenHCL, unless overridden by Vtl2Settings
+    let net_dma = 21 * hvdef::HV_PAGE_SIZE * min(boot_info.cpus.len(), 32);
+    // each NVMe queue uses 130 pages.  While this can be set independently via vtl2 settings,
+    // will generally scale with VP count
+    let nvme_dma = 130 * hvdef::HV_PAGE_SIZE * boot_info.cpus.len();
+    let device_dma = net_dma + nvme_dma;
 
     // Determine the amount of shared memory to reserve from VTL0.
     let shared_pool_size = match isolation {
