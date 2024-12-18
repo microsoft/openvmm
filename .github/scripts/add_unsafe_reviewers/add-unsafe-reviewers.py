@@ -8,7 +8,7 @@ from github import Auth
 @click.argument('target_branch', required=True)
 @click.option('--token', default=None)
 @click.option('--pull-request', default=None)
-@click.option('--team', default='@microsoft/openvmm-unsafe-approvers')
+@click.option('--team', default='microsoft/openvmm-unsafe-approvers')
 def main(repo_path: str, target_branch: str, token: str, pull_request: str, team: str):
     def contains_unsafe(change) -> bool:
         if change.change_type not in ['A', 'M'] or not change.a_path.endswith('.rs'):
