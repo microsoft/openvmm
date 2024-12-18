@@ -3,22 +3,25 @@
 
 //! An interface to fuzz the nvme driver with arbitrary actions
 use crate::fuzz_emulated_device::FuzzEmulatedDevice;
-use crate::get_raw_data;
+use crate::arbitrary_data;
 
-use arbitrary::{Arbitrary, Unstructured};
+use arbitrary::Arbitrary;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_ramdisk::RamDisk;
 use guestmem::GuestMemory;
 use guid::Guid;
-use nvme::{NvmeController, NvmeControllerCaps};
-use nvme_driver::{Namespace, NvmeDriver};
+use nvme::NvmeController;
+use nvme::NvmeControllerCaps;
+use nvme_driver::Namespace;
+use nvme_driver::NvmeDriver;
 use nvme_spec::nvm::DsmRange;
 use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
 use user_driver::emulated::DeviceSharedMemory;
-use vmcore::vm_task::{SingleDriverBackend, VmTaskDriverSource};
+use vmcore::vm_task::SingleDriverBackend;
+use vmcore::vm_task::VmTaskDriverSource;
 
 /// Nvme driver fuzzer
 pub struct FuzzNvmeDriver {
@@ -100,29 +103,11 @@ impl FuzzNvmeDriver {
         self.driver.take().unwrap().shutdown().await;
     }
 
-    /// Generates and returns an aribtrary NvmeDriverAction
-    /// Returns a NotEnoughData error if an action was not generated, caller must handle this.
-    pub fn get_arbitrary_action(&self) -> arbitrary::Result<NvmeDriverAction>{
-        // Get required amount of arbitrary bytes
-        let arbitrary_data = get_raw_data(size_of::<NvmeDriverAction>());
+    /// Generates an arbitrary NvmeDriverAction and executes it.
+    /// Returns either an arbitrary error or the executed action.
+    pub async fn execute_arbitrary_action(&mut self) -> Result<NvmeDriverAction, arbitrary::Error> {
+        let action = arbitrary_data::<NvmeDriverAction>()?;
 
-        match arbitrary_data {
-            Ok(data) => {
-                let mut u = Unstructured::new(&data);
-
-                // Generate arbitrary action
-                let action = u.arbitrary()?;
-                return Ok(action);
-            },
-            Err(e) => {
-               // Bubble up errors
-               return Err(e);
-            }
-        }
-    }
-
-    /// Executes a NvmeDriverAction on the nvme driver.
-    pub async fn execute_action(&mut self, action: NvmeDriverAction) {
         match action {
             NvmeDriverAction::Read { lba, block_count, target_cpu} => {
                 let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
@@ -160,6 +145,8 @@ impl FuzzNvmeDriver {
                 self.driver.as_mut().unwrap().update_servicing_flags(nvme_keepalive)
             }
         } 
+
+        Ok(action)
     }
 }
 
