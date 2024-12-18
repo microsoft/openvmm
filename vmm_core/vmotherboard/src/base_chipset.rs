@@ -32,7 +32,7 @@ use vm_resource::ResourceResolver;
 use vmcore::vm_task::VmTaskDriverSource;
 
 /// Errors which may occur during base chipset construction
-#[allow(missing_docs)] // error enum with self-describing variants
+#[expect(missing_docs)] // error enum with self-describing variants
 #[derive(Error, Debug)]
 pub enum BaseChipsetBuilderError {
     // transparent + from here is fine, since `AddDeviceError`
@@ -52,7 +52,7 @@ pub enum BaseChipsetBuilderError {
 ///
 /// Fields may or may not be present, depending on what devices were
 /// instantiated by the [`BaseChipsetBuilder`]
-#[allow(missing_docs)] // self explanatory field names
+#[expect(missing_docs)] // self explanatory field names
 pub struct BaseChipsetDeviceInterfaces {
     pub framebuffer_local_control: Option<FramebufferLocalControl>,
 }
@@ -925,7 +925,7 @@ pub mod options {
     use vmcore::vmtime::VmTimeSource;
 
     /// Foundational `BaseChipset` dependencies (read: not device-specific)
-    #[allow(missing_docs)] // self explanatory field names
+    #[expect(missing_docs)] // self explanatory field names
     pub struct BaseChipsetFoundation<'a> {
         pub is_restoring: bool,
         /// Guest memory access for untrusted devices.
@@ -1026,7 +1026,7 @@ pub mod options {
     base_chipset_devices_and_manifest! {
         impls {
             /// Device-specific `BaseChipset` dependencies
-            #[allow(missing_docs)] // self explanatory field names
+            #[expect(missing_docs)] // self explanatory field names
             pub struct BaseChipsetDevices {
                 // generated struct has fields that look like this:
                 //
@@ -1035,7 +1035,7 @@ pub mod options {
             }
 
             /// A manifest of devices specified by [`BaseChipsetDevices`].
-            #[allow(missing_docs)] // self explanatory field names
+            #[expect(missing_docs)] // self explanatory field names
             #[derive(Debug, Clone, MeshPayload, PartialEq, Eq)]
             pub struct BaseChipsetManifest {
                 // generated struct has fields that look like this:
@@ -1341,7 +1341,7 @@ pub mod options {
         // TODO: this doesn't really belong in base_chipset... it's less-so a
         // device, and more a bit of "infrastructure" that supports other
         // video devices.
-        #[allow(missing_docs)] // see TODO above
+        #[expect(missing_docs)] // see TODO above
         pub struct HyperVFramebufferDeps {
             pub fb_mapper: Box<dyn guestmem::MemoryMapper>,
             pub fb: Framebuffer,

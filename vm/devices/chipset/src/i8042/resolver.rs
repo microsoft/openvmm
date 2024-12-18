@@ -30,7 +30,7 @@ declare_static_async_resolver! {
 
 /// Errors that can occur when resolving an i8042 device.
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum ResolveI8042Error {
     #[error("failed to resolve keyboard input")]
     ResolveKeyboardInput(#[source] ResolveError),

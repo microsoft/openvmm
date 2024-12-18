@@ -21,7 +21,7 @@ pub mod wrapped_key;
 
 base64_serde_type!(Base64Url, base64::engine::general_purpose::URL_SAFE_NO_PAD);
 
-#[allow(missing_docs)] // self-explanatory fields
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(
