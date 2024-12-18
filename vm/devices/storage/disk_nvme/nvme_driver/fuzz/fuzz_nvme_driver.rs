@@ -3,7 +3,7 @@
 
 //! An interface to fuzz the nvme driver with arbitrary actions
 use crate::fuzz_emulated_device::FuzzEmulatedDevice;
-use crate::get_raw_data;
+use crate::arbitrary_data;
 
 use arbitrary::{Arbitrary, Unstructured};
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
@@ -100,29 +100,11 @@ impl FuzzNvmeDriver {
         self.driver.take().unwrap().shutdown().await;
     }
 
-    /// Generates and returns an aribtrary NvmeDriverAction
-    /// Returns a NotEnoughData error if an action was not generated, caller must handle this.
-    pub fn get_arbitrary_action(&self) -> arbitrary::Result<NvmeDriverAction>{
-        // Get required amount of arbitrary bytes
-        let arbitrary_data = get_raw_data(size_of::<NvmeDriverAction>());
+    /// Generates an arbitrary NvmeDriverAction and executes it.
+    /// Returns either an arbitrary error or the executed action.
+    pub async fn execute_arbitrary_action(&mut self) -> Result<NvmeDriverAction, arbitrary::Error> {
+        let action = arbitrary_data::<NvmeDriverAction>()?;
 
-        match arbitrary_data {
-            Ok(data) => {
-                let mut u = Unstructured::new(&data);
-
-                // Generate arbitrary action
-                let action = u.arbitrary()?;
-                return Ok(action);
-            },
-            Err(e) => {
-               // Bubble up errors
-               return Err(e);
-            }
-        }
-    }
-
-    /// Executes a NvmeDriverAction on the nvme driver.
-    pub async fn execute_action(&mut self, action: NvmeDriverAction) {
         match action {
             NvmeDriverAction::Read { lba, block_count, target_cpu} => {
                 let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
@@ -160,6 +142,8 @@ impl FuzzNvmeDriver {
                 self.driver.as_mut().unwrap().update_servicing_flags(nvme_keepalive)
             }
         } 
+
+        Ok(action)
     }
 }
 

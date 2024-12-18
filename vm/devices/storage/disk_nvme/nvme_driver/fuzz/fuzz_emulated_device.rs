@@ -2,8 +2,7 @@
 // Licensed under the MIT License.
 
 //! A shim layer to fuzz responses from an emulated device.
-use crate::arbitrary_bool;
-use crate::get_raw_data;
+use crate::arbitrary_data;
 
 use arbitrary::Unstructured;
 use chipset_device::mmio::MmioIntercept;
@@ -57,19 +56,10 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmula
     /// Passthrough to backend or return arbitrary u32.
     fn max_interrupt_count(&self) -> u32 {
         // Case: Fuzz response
-        if arbitrary_bool() {
-            match get_raw_data(size_of::<u32>()) {
-                Ok(data) => {
-                    // Lazy create unstructured data
-                    let mut u = Unstructured::new(&data);
-
-                    // Generate an arbitrary return value
-                    match u.arbitrary() {
-                        Ok(arb) => { return arb; }
-                        Err(_e) => {}  // Ignore errors
-                    }
-                }
-                Err(_e) => {}  // Ignore errors
+        if let Ok(true) = arbitrary_data::<bool>() {
+            // Return an abritrary u32
+            if let Ok(num) = arbitrary_data::<u32>() {
+                return num;
             }
         }
 
