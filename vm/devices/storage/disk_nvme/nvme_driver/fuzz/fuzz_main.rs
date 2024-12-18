@@ -31,8 +31,9 @@ fn get_raw_data(num_bytes: usize) -> Result<Vec<u8>, arbitrary::Error>{
         return Err(arbitrary::Error::NotEnoughData);
     }
 
-    let drained: Vec<u8> = raw_data.drain(0..num_bytes).collect();
-    return Ok(drained);
+    let split = raw_data.len() - num_bytes;
+    let consumed_data: Vec<u8> = raw_data.split_off(split);
+    return Ok(consumed_data);
 }
 
 /// Returns an arbitrary data of type T or a NotEnoughData error. Generic type must
