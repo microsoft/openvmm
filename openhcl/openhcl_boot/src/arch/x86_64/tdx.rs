@@ -113,8 +113,6 @@ pub fn get_tdx_tsc_reftime() -> Option<u64> {
     // This is first called by the BSP from openhcl_boot and the frequency
     // is saved in this gloabal variable. Subsequent calls use the global variable.
     if TSC_FREQUENCY.get() == 0 {
-        // TODO TDX: Getting tsc frequency from HV currently. Explore the option
-        // of getting it from more reliable source such as CPUID.
         TSC_FREQUENCY.set(read_msr_tdcall(hvdef::HV_X64_MSR_TSC_FREQUENCY));
     }
 

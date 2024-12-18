@@ -357,8 +357,6 @@ pub fn tdcall_page_attr_wr(
 
     let output = call.tdcall(input);
 
-    // TODO TDX: RCX and RDX also contain info that could be returned
-
     match output.rax.code() {
         TdCallResultCode::SUCCESS => Ok(()),
         val => Err(val),
@@ -392,7 +390,6 @@ fn set_page_attr(
 /// The error returned by [`accept_pages`].
 #[derive(Debug)]
 pub enum AcceptPagesError {
-    // TODO TDX: better error types
     /// Unknown error type.
     Unknown(TdCallResultCode),
     /// Setting page attributes failed after accepting,
@@ -573,8 +570,6 @@ pub fn tdcall_map_gpa(
         };
 
         let output = call.tdcall(input);
-
-        // TODO TDX: check rax return code
 
         let result = TdVmCallR10Result(output.r10);
 
