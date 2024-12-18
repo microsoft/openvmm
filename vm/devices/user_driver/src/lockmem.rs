@@ -5,11 +5,13 @@
 
 use crate::memory::MappedDmaTarget;
 use anyhow::Context;
+use fs_err::os::unix::fs::OpenOptionsExt;
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
+use std::os::unix::prelude::*;
 use zerocopy::AsBytes;
 
 const PAGE_SIZE: usize = 4096;
@@ -30,7 +32,25 @@ struct Mapping {
 }
 
 impl Mapping {
-    fn new(len: usize) -> std::io::Result<Self> {
+    fn new(len: usize) -> anyhow::Result<Self> {
+        // Create a ramfs file to back the mapping. This is necessary to ensure
+        // the memory is not moved (which is possible for ordinary
+        // tmpfs/anonymous allocations, even when mlocked).
+        //
+        // FUTURE: investigate other mechanisms for this, since some
+        // enterprising kernel developer may change ramfs to use movable memory
+        // one day. Ideally, we'd use a proper IOMMU, but that's still not
+        // available in the paravisor environment.
+        let file = fs_err::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_TMPFILE)
+            .open("/ramfs/")
+            .context("failed to crate ramfs file")?;
+
+        file.set_len(len as u64)
+            .context("failed to set ramfs file length")?;
+
         // SAFETY: No file descriptor or address is being passed.
         // The result is being validated.
         let addr = unsafe {
@@ -38,30 +58,32 @@ impl Mapping {
                 std::ptr::null_mut(),
                 len,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_LOCKED,
-                -1,
+                libc::MAP_SHARED | libc::MAP_LOCKED,
+                file.as_raw_fd(),
                 0,
             )
         };
         if addr == libc::MAP_FAILED {
-            return Err(std::io::Error::last_os_error());
+            return Err(std::io::Error::last_os_error()).context("failed to map memory");
+        }
+        let this = Self { addr, len };
+
+        // Make sure the memory is locked.
+        //
+        // SAFETY: `this` contains a valid mmap result.
+        if unsafe { libc::mlock(this.addr, this.len) } < 0 {
+            return Err(std::io::Error::last_os_error()).context("failed to lock memory")?;
         }
 
-        Ok(Self { addr, len })
-    }
-
-    fn lock(&self) -> std::io::Result<()> {
-        // SAFETY: self contains a valid mmap result.
-        if unsafe { libc::mlock(self.addr, self.len) } < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(())
+        Ok(this)
     }
 
     fn pages(&self) -> anyhow::Result<Vec<u64>> {
         let mut pagemap = File::open("/proc/self/pagemap").context("failed to open pagemap")?;
         pagemap
-            .seek(SeekFrom::Start((8 * self.addr as usize / PAGE_SIZE) as u64))
+            .seek(SeekFrom::Start(
+                (8 * (self.addr as usize / PAGE_SIZE)) as u64,
+            ))
             .context("failed to seek")?;
         let n = self.len / PAGE_SIZE;
         let mut pfns = vec![0u64; n];
@@ -93,8 +115,9 @@ impl LockedMemory {
             anyhow::bail!("not a page-size multiple");
         }
         let mapping = Mapping::new(len).context("failed to create mapping")?;
-        mapping.lock().context("failed to lock mapping")?;
-        let pages = mapping.pages()?;
+        let pages = mapping
+            .pages()
+            .context("failed to get pfns for DMA buffer")?;
         Ok(Self {
             mapping,
             pfns: pages,

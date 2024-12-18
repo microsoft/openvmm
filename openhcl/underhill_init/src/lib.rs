@@ -547,6 +547,14 @@ fn do_main() -> anyhow::Result<()> {
             libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_RELATIME,
             c"",
         ),
+        // Used to allocate non-movable DMA buffers.
+        FilesystemMount::new(
+            c"ramfs",
+            c"/ramfs",
+            c"ramfs",
+            libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_RELATIME,
+            c"",
+        ),
     ];
 
     setup(&stat_files, &options, writes, &filesystems)?;
