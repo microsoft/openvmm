@@ -614,7 +614,7 @@ impl<T: LegacyVirtioDevice> Drop for LegacyWrapper<T> {
 
 // UNSAFETY: test code implements a custom `GuestMemory` backing, which requires
 // unsafe.
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,7 +5,7 @@
 //! files). This is useful for sharing memory between the host and the guest.
 
 // UNSAFETY: Calling Win32 Section Object APIs.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use crate::HandleMap;
 use fuse::protocol::FUSE_SETUPMAPPING_FLAG_WRITE;

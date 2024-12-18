@@ -1,11 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![cfg(all(target_os = "macos", target_arch = "aarch64"))] // xtask-fmt allow-target-arch sys-crate
+
 //! A hypervisor backend using macos's Hypervisor framework.
 
 // UNSAFETY: Calling Hypervisor framework APIs and manually managing memory.
-#![allow(unsafe_code)]
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))] // xtask-fmt allow-target-arch sys-crate
+#![expect(unsafe_code)]
 
 mod abi;
 mod hypercall;
@@ -381,7 +382,8 @@ impl virt::PartitionMemoryMap for HvfPartitionInner {
 }
 
 impl virt::PartitionAccessState for HvfPartition {
-    type StateAccess<'a> = HvfPartitionStateAccess<'a>
+    type StateAccess<'a>
+        = HvfPartitionStateAccess<'a>
     where
         Self: 'a;
 
@@ -742,7 +744,8 @@ impl<'p> Processor for HvfProcessor<'p> {
     type Error = Error;
     type RunVpError = Error;
 
-    type StateAccess<'a> = vp_state::HvfVpStateAccess<'a, 'p>
+    type StateAccess<'a>
+        = vp_state::HvfVpStateAccess<'a, 'p>
     where
         Self: 'a;
 

@@ -7,7 +7,7 @@
 // UNSAFETY: No unsafe code here, but required for implementing MappedDmaTarget.
 // The implementation is just forwarding the calls to the underlying wrapped
 // MemoryBlock.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use crate::PagesAccessibleToLowerVtl;
 use inspect::Inspect;

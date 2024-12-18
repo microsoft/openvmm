@@ -6,7 +6,7 @@
 
 #![no_std]
 // UNSAFETY: Interacting with low level hardware and bootloader primitives.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod arch;

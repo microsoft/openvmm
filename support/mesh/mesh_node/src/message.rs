@@ -4,7 +4,7 @@
 //! Implements the `Message` type.
 
 // UNSAFETY: Needed to define, implement, and call the unsafe extract function.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use crate::resource::Resource;
 use crate::resource::SerializedMessage;

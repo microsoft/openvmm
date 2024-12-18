@@ -4,7 +4,7 @@
 #![cfg(target_os = "linux")]
 // UNSAFETY: Calls to libc functions to get rlimit info.
 // TODO: replace unsafe with calls into the rlimit crate.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 //! [`Inspect`] support for process rlimits.
 

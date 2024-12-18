@@ -4,7 +4,7 @@
 //! Performance tests.
 
 // UNSAFETY: testing unsafe interfaces
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use sparse_mmap::initialize_try_copy;
 use std::hint::black_box;
