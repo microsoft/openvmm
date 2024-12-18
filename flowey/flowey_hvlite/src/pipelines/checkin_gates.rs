@@ -1008,6 +1008,27 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(job);
         }
 
+        {
+            // emit openvmm_hcl verify-size job
+            let job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    "verify openvmm_hcl size [x64-linux]",
+                )
+                .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                ))
+                .dep_on(
+                    |ctx| flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::Request {
+                        openvmm_hcl_target: CommonTriple::X86_64_LINUX_GNU,
+                        xtask_target: CommonTriple::X86_64_LINUX_GNU,
+                        done: ctx.new_done_handle(),
+                    },
+                );
+            all_jobs.push(job.finish());
+        }
+
         if matches!(config, PipelineConfig::Pr) {
             // Add a job that depends on all others as a workaround for
             // https://github.com/orgs/community/discussions/12395.
