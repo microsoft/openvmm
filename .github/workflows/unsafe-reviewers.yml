@@ -39,6 +39,14 @@ jobs:
           fetch-depth: 0
           path: head-repo
 
+      - name: Get merge base commit
+        id: merge-base
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          git merge-base HEAD origin/${{ github.base_ref }} > merge-base.txt
+          echo "MERGE_BASE=$(cat merge-base.txt)" >> $GITHUB_ENV
+        working-directory: head-repo
+
       - name: Run unsafe code review script
-        run: pip3 install -r ./base/.github/scripts/add_unsafe_reviewers/requirements.txt && python3 ./base/.github/scripts/add_unsafe_reviewers/add-unsafe-reviewers.py ./head-repo "origin/${{ github.base_ref }}" --token "${{ secrets.GITHUB_TOKEN }}" --pull-request "${{ github.event.number }}"
+        run: pip3 install -r ./base/.github/scripts/add_unsafe_reviewers/requirements.txt && python3 ./base/.github/scripts/add_unsafe_reviewers/add-unsafe-reviewers.py ./head-repo "${{ env.MERGE_BASE }}" --token "${{ secrets.GITHUB_TOKEN }}" --pull-request "${{ github.event.number }}"
         shell: bash
