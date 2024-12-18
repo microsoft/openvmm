@@ -36,10 +36,12 @@ pub fn check_unsafe_code_comment(path: &Path, _fix: bool) -> anyhow::Result<()> 
             continue;
         }
 
-        if line.contains("allow(unsafe_code)") && !in_comment {
+        if line.contains("expect(unsafe_code)")
+            || line.contains("allow(unsafe_code)") && !in_comment
+        {
             error = true;
             log::error!(
-                "unjustified `allow(unsafe_code)`: {}:{}",
+                "unjustified `expect(unsafe_code)`: {}:{}",
                 path.display(),
                 i + 1
             );
@@ -52,7 +54,7 @@ pub fn check_unsafe_code_comment(path: &Path, _fix: bool) -> anyhow::Result<()> 
 
     if error {
         Err(anyhow!(
-            "found unjustified uses of `allow(unsafe_code)` in {}",
+            "found unjustified uses of `expect(unsafe_code)` in {}",
             path.display()
         ))
     } else {

@@ -4,7 +4,7 @@
 //! Infrastructure for implementing PCI drivers in user mode.
 
 // UNSAFETY: Manual memory management around buffers and mmap.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;

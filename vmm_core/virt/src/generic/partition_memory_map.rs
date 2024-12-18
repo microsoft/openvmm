@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 // UNSAFETY: Declaring unsafe trait functions for manual memory management.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 /// Trait for mapping process memory into a partition.
 pub trait PartitionMemoryMap: Send + Sync {

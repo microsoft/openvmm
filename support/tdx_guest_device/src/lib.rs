@@ -6,7 +6,7 @@
 
 #![warn(missing_docs)]
 // UNSAFETY: unsafe needed to make ioctl calls.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 pub mod protocol;
 

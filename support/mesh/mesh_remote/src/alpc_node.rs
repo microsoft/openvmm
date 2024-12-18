@@ -5,7 +5,7 @@
 
 #![cfg(windows)]
 // UNSAFETY: Needed to implement the Buffer trait.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use crate::common::InvitationAddress;
 use crate::protocol;
