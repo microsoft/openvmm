@@ -18,7 +18,6 @@ use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum ReadFromVmgsError {
     #[error("failed to read {file_id:?} from vmgs")]

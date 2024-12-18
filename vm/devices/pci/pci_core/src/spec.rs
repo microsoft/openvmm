@@ -8,7 +8,7 @@
 pub mod hwid {
     //! Hardware ID types and constants
 
-    #![allow(missing_docs)] // constants/fields are self-explanatory
+    #![expect(missing_docs)] // constants/fields are self-explanatory
 
     use core::fmt;
     use inspect::Inspect;
@@ -184,7 +184,7 @@ pub mod hwid {
 /// Configuration Space
 ///
 /// Sources: PCI 2.3 Spec - Chapter 6
-#[allow(missing_docs)] // primarily enums/structs with self-explanatory variants
+#[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
 pub mod cfg_space {
     use bitfield_struct::bitfield;
     use inspect::Inspect;
@@ -337,14 +337,14 @@ pub mod caps {
         /// NOTE: this is a non-exhaustive list, so don't be afraid to add new
         /// variants on an as-needed basis!
         pub enum CapabilityId: u8 {
-            #![allow(missing_docs)] // self explanatory variants
+            #![expect(missing_docs)] // self explanatory variants
             VENDOR_SPECIFIC = 0x09,
             MSIX            = 0x11,
         }
     }
 
     /// MSI-X
-    #[allow(missing_docs)] // primarily enums/structs with self-explanatory variants
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
     pub mod msix {
         open_enum::open_enum! {
             /// Offsets into the MSI-X Capability Header

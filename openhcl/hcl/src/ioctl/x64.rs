@@ -37,7 +37,7 @@ pub struct TranslateErrorX64 {
 
 /// Result when the intercepted vtl is invalid.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum RegisterPageVtlError {
     #[error("no register page")]
     NoRegisterPage,

@@ -9,7 +9,7 @@ use thiserror::Error;
 
 /// Error returned by [`vp_stats`].
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum VpStatsError {
     #[error("failed to read /proc/mshv")]
     Read(#[source] std::io::Error),
