@@ -502,7 +502,7 @@ pub struct TdxExtendedFieldCode {
 /// Instruction info returned in r11 for a TDG.VP.ENTER call.
 #[bitfield(u64)]
 pub struct TdxInstructionInfo {
-    pub info: u32, // TODO TDX: what is this
+    pub info: u32,
     pub length: u32,
 }
 

@@ -483,7 +483,6 @@ impl HardwareIsolatedBacking for TdxBacked {
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
     ) -> TranslationRegisters {
-        // TODO TDX GUEST VSM: use vtl for all registers
         let cr0 = this.backing.cr0.read(&this.runner);
         let cr4 = this.backing.cr4.read(&this.runner);
         let efer = this.backing.efer;
@@ -538,9 +537,6 @@ impl BackingPrivate for TdxBacked {
         params: super::private::BackingParams<'_, '_, Self>,
         _shared: &TdxBackedShared,
     ) -> Result<Self, crate::Error> {
-        // TODO TDX: TDX shares the vp context page for xmm registers only. It
-        // should probably move to its own page.
-        //
         // FX regs and XMM registers are zero-initialized by the kernel. Set
         // them to the arch default.
         *params.runner.fx_state_mut() =
@@ -564,14 +560,6 @@ impl BackingPrivate for TdxBacked {
         ];
         *rflags = regs.rflags;
         *rip = regs.rip;
-
-        // TODO TDX: ssp is for shadow stack
-
-        // TODO TDX: direct overlay like snp?
-        // TODO TDX: lapic / APIC setup?
-
-        // TODO TDX: see ValInitializeVplc
-        // TODO TDX: XCR_XFMEM setup?
 
         // Configure L2 controls to permit shared memory.
         //
@@ -621,8 +609,6 @@ impl BackingPrivate for TdxBacked {
 
         // Allowed cr4 bits depend on the values allowed by the SEAM.
         //
-        // TODO TDX: Consider just using MSR kernel module instead of explicit
-        // ioctl.
         let read_cr4 = hcl.read_vmx_cr4_fixed1();
         let allowed_cr4_bits = (ShadowedRegister::Cr4.guest_owned_mask() | X64_CR4_MCE) & read_cr4;
 
@@ -677,7 +663,6 @@ impl BackingPrivate for TdxBacked {
             )
             .into();
 
-        // TODO TDX: This needs to come from a private pool
         let flush_page = params
             .partition
             .shared_vis_pages_pool
@@ -787,7 +772,6 @@ impl BackingPrivate for TdxBacked {
         this.run_vp_tdx(dev).await
     }
 
-    // TODO TDX GUEST VSM
     fn poll_apic(
         this: &mut UhProcessor<'_, Self>,
         _vtl: GuestVtl,
@@ -828,7 +812,6 @@ impl BackingPrivate for TdxBacked {
         this: &mut UhProcessor<'_, Self>,
         _dev: &impl CpuIo,
     ) -> Result<bool, UhRunVpError> {
-        // TODO TDX GUEST VSM
         this.hcvm_handle_cross_vtl_interrupts(|_this, _vtl, _check_rflags| false)
     }
 
@@ -856,7 +839,6 @@ impl UhProcessor<'_, TdxBacked> {
         // Check for interrupt requests from the host.
         let mut update_rvi = false;
         if let Some(irr) = self.runner.proxy_irr() {
-            // TODO TDX: filter proxy IRRs.
             if self.backing.cvm.lapics[GuestVtl::Vtl0]
                 .lapic
                 .can_offload_irr()
@@ -1332,11 +1314,6 @@ impl UhProcessor<'_, TdxBacked> {
             // otherwise the interrupt will be lost and the guest left in a bad
             // state.
             //
-            // TODO TDX: Unclear what kind of exits these would be, but they
-            // should be spurious EPT exits. Can we validate or assert that
-            // somehow? If we were to somehow call some other path which would
-            // set interruption_information before we inject this one, we would
-            // lose this interrupt.
             if next_interruption.valid() {
                 tracing::debug!(
                     ?next_interruption,
@@ -1498,7 +1475,6 @@ impl UhProcessor<'_, TdxBacked> {
                 let subleaf = enter_state.rcx() as u32;
                 let xfem = self
                     .runner
-                    // TODO TDX GUEST VSM
                     .get_vp_register(GuestVtl::Vtl0, HvX64RegisterName::Xfem)
                     .map_err(|err| VpHaltReason::Hypervisor(UhRunVpError::EmulationState(err)))?
                     .as_u64();
@@ -1610,7 +1586,6 @@ impl UhProcessor<'_, TdxBacked> {
                     })
                 {
                     self.runner
-                        // TODO TDX GUEST VSM
                         .set_vp_register(GuestVtl::Vtl0, HvX64RegisterName::Xfem, value.into())
                         .map_err(|err| {
                             VpHaltReason::Hypervisor(UhRunVpError::EmulationState(err))
@@ -1634,20 +1609,6 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.exit_stats.wbinvd
             }
             VmxExit::EPT_VIOLATION => {
-                // TODO TDX: If this is an access to a shared gpa, we need to
-                // check the intercept page to see if this is a real exit or
-                // spurious. This exit is only real if the hypervisor has
-                // delivered an intercept message for this GPA.
-                //
-                // However, at this point the kernel has cleared that
-                // information so some kind of redesign is required to figure
-                // this out.
-                //
-                // For now, we instead treat EPTs on readable RAM as spurious
-                // and log appropriately. This check is also not entirely
-                // sufficient, as it may be a write access where the page is
-                // protected, but we don't yet support MNF/guest VSM so this is
-                // okay enough.
                 let is_readable_ram =
                     self.partition.gm[intercepted_vtl].check_gpa_readable(exit_info.gpa());
                 if is_readable_ram {
@@ -1880,7 +1841,6 @@ impl UhProcessor<'_, TdxBacked> {
                 // so that the hypervisor can directly inject events.
                 if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
                     if let Err(err) = self.runner.set_vp_register(
-                        // TODO TDX GUEST VSM
                         GuestVtl::Vtl0,
                         HvX64RegisterName(
                             HvX64RegisterName::Sint0.0 + (msr - hvdef::HV_X64_MSR_SINT0),
@@ -1900,14 +1860,7 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn read_msr_cvm(&self, msr: u32, vtl: GuestVtl) -> Result<u64, MsrError> {
-        // TODO TDX: port remaining tdx and common values
-        //
-        // TODO TDX: consider if this can be shared with SnpBacked's
-        // implementation. For the most part other than Intel/TDX specific
-        // registers, MSR handling should be the same.
-
         match msr {
-            // TODO TDX: LIFTED FROM WHP
             x86defs::X86X_IA32_MSR_PLATFORM_ID => {
                 // Windows requires accessing this to boot. WHP
                 // used to pass this through to the hardware,
@@ -2064,8 +2017,6 @@ impl UhProcessor<'_, TdxBacked> {
         self.runner
             .write_vmcs32(vtl, seg.attributes(), !0, attributes.into());
 
-        // TODO TDX: cache CS into last exit because last exit contains CS optionally?
-
         Ok(())
     }
 
@@ -2101,7 +2052,6 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         let cs = TdxExit(self.vp.runner.tdx_vp_enter_exit_info()).cs();
         let enter_state = self.vp.runner.tdx_enter_guest_state();
 
-        // TODO TDX: Only supports VTL0
         Ok(x86emu::CpuState {
             gps: enter_state.gps,
             segs: [
@@ -2205,7 +2155,6 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         _gpa: u64,
         _mode: TranslateMode,
     ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
-        // TODO TDX: VTL1 not supported
         // Lock Vtl TLB
         Ok(())
     }
@@ -2590,9 +2539,6 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
             hv1_hypercall::HvPostMessage,
             hv1_hypercall::HvSignalEvent,
             hv1_hypercall::HvExtQueryCapabilities,
-            // TODO TDX: copied from SNP, enable individually as needed.
-            // hv1_hypercall::HvGetVpRegisters,
-            // hv1_hypercall::HvEnablePartitionVtl,
         ]
     );
 
@@ -2806,8 +2752,8 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             nmi_masked: interruptibility.blocked_by_nmi(),
             interrupt_shadow: interruptibility.blocked_by_sti()
                 || interruptibility.blocked_by_movss(),
-            pending_event: None,        // TODO TDX
-            pending_interruption: None, // TODO TDX
+            pending_event: None,
+            pending_interruption: None,
         })
     }
 
@@ -2817,8 +2763,8 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             nmi_pending,
             nmi_masked,
             interrupt_shadow,
-            pending_event: _,        // TODO TDX
-            pending_interruption: _, // TODO TDX
+            pending_event: _,
+            pending_interruption: _,
         } = value;
         self.vp.backing.cvm.lapics[self.vtl].activity = mp_state;
         self.vp.backing.cvm.lapics[self.vtl].nmi_pending = nmi_pending;
@@ -2887,14 +2833,13 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
 
     fn mtrrs(&mut self) -> Result<vp::Mtrrs, Self::Error> {
         Ok(vp::Mtrrs {
-            msr_mtrr_def_type: 0, // TODO TDX: MTRRs
-            fixed: [0; 11],       // TODO TDX: MTRRs
-            variable: [0; 16],    // TODO TDX: MTRRs
+            msr_mtrr_def_type: 0,
+            fixed: [0; 11],
+            variable: [0; 16],
         })
     }
 
     fn set_mtrrs(&mut self, _value: &vp::Mtrrs) -> Result<(), Self::Error> {
-        // TODO TDX: MTRRs
         Ok(())
     }
 
