@@ -36,8 +36,8 @@ pub fn check_unsafe_code_comment(path: &Path, _fix: bool) -> anyhow::Result<()> 
             continue;
         }
 
-        if line.contains("expect(unsafe_code)")
-            || line.contains("allow(unsafe_code)") && !in_comment
+        if (line.contains("expect(unsafe_code)") || line.contains("allow(unsafe_code)"))
+            && !in_comment
         {
             error = true;
             log::error!(
