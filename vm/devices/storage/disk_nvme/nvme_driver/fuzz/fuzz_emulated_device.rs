@@ -37,7 +37,6 @@ impl<T: PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<T> {
 }
 
 /// Implementation for DeviceBacking trait.
-/// Static is required here since the trait enforces static lifetime.
 impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<T> {
     type Registers = Mapping<T>;
     type DmaAllocator = EmulatedDmaAllocator;
@@ -50,12 +49,11 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmula
         self.device.map_bar(n)
     }
 
-    /// Returns an object that can allocate host memory to be shared with the device.
     fn host_allocator(&self) -> Self::DmaAllocator {
         self.device.host_allocator()
     }
 
-    /// Passthrough to backend or return arbitrary u32.
+    /// Arbitrarily decide to passthrough or return arbitrary value.
     fn max_interrupt_count(&self) -> u32 {
         // Case: Fuzz response
         if let Ok(true) = arbitrary_data::<bool>() {

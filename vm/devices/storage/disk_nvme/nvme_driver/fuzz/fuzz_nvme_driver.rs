@@ -62,7 +62,6 @@ impl FuzzNvmeDriver {
             },
         );
 
-        // Create nvme namespace
         nvme.client()
             .add_namespace(1, Arc::new(ram_disk))
             .await
@@ -103,8 +102,7 @@ impl FuzzNvmeDriver {
         self.driver.take().unwrap().shutdown().await;
     }
 
-    /// Generates an arbitrary NvmeDriverAction and executes it.
-    /// Returns either an arbitrary error or the executed action.
+    /// Generates and executes an arbitrary NvmeDriverAction. Returns either an arbitrary error or the executed action.
     pub async fn execute_arbitrary_action(&mut self) -> Result<NvmeDriverAction, arbitrary::Error> {
         let action = arbitrary_data::<NvmeDriverAction>()?;
 

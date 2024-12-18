@@ -22,17 +22,15 @@ lazy_static! {
     pub static ref RAW_DATA: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 }
 
-/// Uses static RAW_DATA to generate a vector of len=num_bytes with arbitrary bytes
+/// Consumes part of static RAW_DATA to generate a vector of len=num_bytes with arbitrary bytes
 fn get_raw_data(num_bytes: usize) -> Result<Vec<u8>, arbitrary::Error>{
-    // Lock RAW_DATA before consuming
     let mut raw_data = RAW_DATA.lock().unwrap();
 
-    // Case: Not enough bytes, return Error
+    // Case: Not enough data
     if raw_data.len() < num_bytes {
         return Err(arbitrary::Error::NotEnoughData);
     }
 
-    // Consume bytes from RAW_DATA
     let drained: Vec<u8> = raw_data.drain(0..num_bytes).collect();
     return Ok(drained);
 }
@@ -43,14 +41,11 @@ pub fn arbitrary_data<T>() -> Result<T, arbitrary::Error>
 where
 for <'a> T: Arbitrary<'a> + Sized,
 {
-    // Get required number of arbitrary bytes
     let arbitrary_data = get_raw_data(size_of::<T>());
 
-    // Generate an arbitrary boolean value
     let arbitrary_type = arbitrary_data.map(|data| -> T {
         let mut u = Unstructured::new(&data);
 
-        // Generate abritrary value for given type
         let value: T = u.arbitrary().unwrap();
         return value;
     });
@@ -58,29 +53,24 @@ for <'a> T: Arbitrary<'a> + Sized,
     return arbitrary_type;
 }
 
-/// Fuzzer loop. Uses the provided input to repeatedly create and execute an arbitrary action on
-/// the NvmeDriver. Loops till there all the input data is exhausted.
+/// Uses the provided input to repeatedly create and execute an arbitrary action on the NvmeDriver.
 fn do_fuzz() {
-    // DefaultPool provides us the standard DefaultDriver and takes care of async fn calls
     DefaultPool::run_with(|driver| async move {
-        // Setup
         let mut fuzzing_driver = FuzzNvmeDriver::new(driver).await;
 
         loop {
             let next_action = fuzzing_driver.execute_arbitrary_action().await;
 
-            // Case: Error generating action (not enough data)
+            // Not enough data
             if let Err(_e) = next_action {
                 break;
             }
         }
 
-        // Cleanup
         fuzzing_driver.shutdown().await;
     });
 }
 
-// Closure that allows the fuzzer to invoke the nvme driver fuzzer.
 fuzz_target!(|input: Vec<u8>| {
     xtask_fuzz::init_tracing_if_repro();
 
