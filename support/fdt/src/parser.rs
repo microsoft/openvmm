@@ -671,7 +671,7 @@ impl<'a> Property<'a> {
     }
 
     /// Read data as an iterator of u64 values.
-    pub fn as_64_list(&self) -> Result<impl Iterator<Item = u64> + 'a, Error<'a>> {
+    pub fn as_64_list(&self) -> Result<impl Iterator<Item = u64> + use<'a>, Error<'a>> {
         Ok(U64b::slice_from(self.data)
             .ok_or(Error(ErrorKind::PropertyDataTypeBuffer {
                 node_name: self.node_name,

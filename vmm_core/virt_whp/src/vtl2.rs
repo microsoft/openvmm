@@ -190,7 +190,7 @@ pub(crate) struct Vtl2Emulation {
 mod inspect_helpers {
     use super::*;
 
-    pub(super) fn vsm_config_raw(raw: &AtomicU64) -> impl Inspect {
+    pub(super) fn vsm_config_raw(raw: &AtomicU64) -> impl Inspect + use<> {
         let config = HvRegisterVsmPartitionConfig::from(raw.load(Ordering::Relaxed));
         inspect::AsDebug(config)
     }
