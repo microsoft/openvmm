@@ -41,12 +41,14 @@ impl Mapping {
         // enterprising kernel developer may change ramfs to use movable memory
         // one day. Ideally, we'd use a proper IOMMU, but that's still not
         // available in the paravisor environment.
-        let file = fs_err::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(libc::O_TMPFILE)
-            .open("/ramfs/")
-            .context("failed to crate ramfs file")?;
+        let file = unsafe {
+            let fd = libc::syscall(libc::SYS_memfd_secret, libc::O_CLOEXEC as usize);
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("failed to create memfd_secret file");
+            }
+            File::from_raw_fd(fd as i32)
+        };
 
         file.set_len(len as u64)
             .context("failed to set ramfs file length")?;
@@ -58,7 +60,7 @@ impl Mapping {
                 std::ptr::null_mut(),
                 len,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED | libc::MAP_LOCKED,
+                libc::MAP_SHARED,
                 file.as_raw_fd(),
                 0,
             )
@@ -68,12 +70,11 @@ impl Mapping {
         }
         let this = Self { addr, len };
 
-        // Make sure the memory is locked.
+        // Force populate the PTEs by zeroing the allocation. MAP_POPULATE does
+        // not work for memfd_secret mappings.
         //
-        // SAFETY: `this` contains a valid mmap result.
-        if unsafe { libc::mlock(this.addr, this.len) } < 0 {
-            return Err(std::io::Error::last_os_error()).context("failed to lock memory")?;
-        }
+        // SAFETY: The memory is valid for write.
+        unsafe { addr.cast::<u8>().write_bytes(0, len) };
 
         Ok(this)
     }
