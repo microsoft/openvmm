@@ -69,7 +69,7 @@ fn allocate_vtl2_ram(
     params: &ShimParams,
     partition_memory_map: &[MemoryEntry],
     ram_size: Option<u64>,
-) -> OffStackRef<'static, impl AsRef<[MemoryEntry]>> {
+) -> OffStackRef<'static, impl AsRef<[MemoryEntry]> + use<>> {
     // First, calculate how many numa nodes there are by looking at unique numa
     // nodes in the memory map.
     let mut numa_nodes = off_stack!(ArrayVec<u32, MAX_NUMA_NODES>, ArrayVec::new_const());
@@ -262,7 +262,7 @@ fn allocate_vtl2_ram(
 fn parse_host_vtl2_ram(
     params: &ShimParams,
     memory: &[MemoryEntry],
-) -> OffStackRef<'static, impl AsRef<[MemoryEntry]>> {
+) -> OffStackRef<'static, impl AsRef<[MemoryEntry]> + use<>> {
     // If no VTL2 protectable ram was provided by the host, use the build time
     // value encoded in ShimParams.
     let mut vtl2_ram = off_stack!(ArrayVec<MemoryEntry, MAX_NUMA_NODES>, ArrayVec::new_const());

@@ -126,7 +126,7 @@ impl PartitionInfo {
     }
 
     /// Returns the parameter regions that are not being reclaimed.
-    pub fn vtl2_config_regions(&self) -> impl Iterator<Item = MemoryRange> {
+    pub fn vtl2_config_regions(&self) -> impl Iterator<Item = MemoryRange> + use<> {
         subtract_ranges(
             [self.vtl2_full_config_region],
             [self.vtl2_config_region_reclaim],
