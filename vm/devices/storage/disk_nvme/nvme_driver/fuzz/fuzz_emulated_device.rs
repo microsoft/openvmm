@@ -17,17 +17,12 @@ use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
 
 /// An EmulatedDevice fuzzer that requires a working EmulatedDevice backend.
-pub struct FuzzEmulatedDevice<T> {
+#[derive(Inspect)]
+pub struct FuzzEmulatedDevice<T: InspectMut> {
     device: EmulatedDevice<T>,
 }
 
-impl<T: InspectMut> Inspect for FuzzEmulatedDevice<T> {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.device.inspect(req);
-    }
-}
-
-impl<T: PciConfigSpace + MmioIntercept> FuzzEmulatedDevice<T> {
+impl<T: PciConfigSpace + MmioIntercept + InspectMut> FuzzEmulatedDevice<T> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
     pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory) -> Self {
         Self {
