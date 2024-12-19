@@ -98,7 +98,7 @@ pub trait ScsiSaveRestore {
 pub mod save_restore {
     //! SCSI device saved state definitions.
 
-    #![allow(missing_docs)]
+    #![expect(missing_docs)]
 
     use mesh::payload::Protobuf;
 

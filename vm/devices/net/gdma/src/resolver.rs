@@ -28,7 +28,7 @@ declare_static_async_resolver! {
 
 /// Error returned by [`GdmaDeviceResolver`].
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum Error {
     #[error("failed to resolve vport")]
     VportResolve(#[source] ResolveError),

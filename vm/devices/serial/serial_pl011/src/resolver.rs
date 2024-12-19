@@ -26,7 +26,7 @@ declare_static_async_resolver! {
 }
 
 /// An error resolving a [`SerialPl011DeviceHandle`].
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 #[derive(Debug, Error)]
 pub enum ResolvePl011Error {
     #[error("failed to resolve io backend")]

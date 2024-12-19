@@ -59,7 +59,7 @@ pub struct Winbond83977FloppySioDevice<FDC: MaybeStubFloppyDiskController> {
 }
 
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum NewWinbond83977FloppySioDeviceError<FdcError> {
     #[error("failed to share interrupt line")]
     LineShare(#[source] vmcore::line_interrupt::NewLineError),
