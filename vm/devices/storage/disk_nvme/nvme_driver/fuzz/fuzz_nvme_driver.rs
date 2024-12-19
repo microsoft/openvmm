@@ -6,9 +6,8 @@ use crate::fuzz_emulated_device::FuzzEmulatedDevice;
 use crate::arbitrary_data;
 
 use arbitrary::Arbitrary;
-use arbitrary::Unstructured;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
-use disk_ramdisk::RamDisk;
+use disklayer_ram::RamDisk;
 use guestmem::GuestMemory;
 use guid::Guid;
 use nvme::NvmeController;

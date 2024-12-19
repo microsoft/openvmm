@@ -10,7 +10,7 @@ edition = "2021"
 [dependencies]
 anyhow.workspace = true
 chipset_device.workspace = true
-disk_ramdisk.workspace = true
+disklayer_ram.workspace = true
 guestmem.workspace = true
 guid.workspace = true
 inspect.workspace = true
