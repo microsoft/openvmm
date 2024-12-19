@@ -103,7 +103,7 @@ impl FuzzNvmeDriver {
     }
 
     /// Generates and executes an arbitrary NvmeDriverAction. Returns either an arbitrary error or the executed action.
-    pub async fn execute_arbitrary_action(&mut self) -> Result<NvmeDriverAction, arbitrary::Error> {
+    pub async fn execute_arbitrary_action(&mut self) -> Result<(), arbitrary::Error> {
         let action = arbitrary_data::<NvmeDriverAction>()?;
 
         match action {
@@ -144,7 +144,7 @@ impl FuzzNvmeDriver {
             }
         } 
 
-        Ok(action)
+        Ok(())
     }
 }
 
