@@ -26,7 +26,7 @@ where
 for <'a> T: Arbitrary<'a> + Sized,
 {
     let mut raw_data = RAW_DATA.lock().unwrap();
-    let input = raw_data.split_off(0);
+    let input = raw_data.split_off(0);  // Take all raw_data
     let mut u = Unstructured::new(&input);
 
     if u.is_empty() {
@@ -62,7 +62,6 @@ fn do_fuzz() {
 fuzz_target!(|input: Vec<u8>| {
     xtask_fuzz::init_tracing_if_repro();
 
-    // Swap out the underlying raw data.
     {
         let mut raw_data = RAW_DATA.lock().unwrap();
         *raw_data = input;
