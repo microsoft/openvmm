@@ -34,10 +34,10 @@ impl FuzzNvmeDriver {
     /// Setup a new nvme driver with a fuzz-enabled backend device.
     pub async fn new(driver: DefaultDriver) -> Self {
         // Physical storage to back the disk
-        let ram_disk = RamDisk::new(1 << 20, false).unwrap();
+        let ram_disk = RamDisk::new(1 << 20, false).unwrap();  // TODO: [use-arbitrary-input]
 
-        let base_len = 64 << 20;  // 64MB
-        let payload_len = 1 << 20;  // 1MB
+        let base_len = 64 << 20;  // 64MB TODO: [use-arbitrary-input] 
+        let payload_len = 1 << 20;  // 1MB TODO: [use-arbitrary-input]
         let mem = DeviceSharedMemory::new(base_len, payload_len);
 
         // Trasfer buffer
@@ -56,20 +56,20 @@ impl FuzzNvmeDriver {
             &mut msi_set,
             &mut ExternallyManagedMmioIntercepts,
             NvmeControllerCaps {
-                msix_count: 2,
-                max_io_queues: 64,
+                msix_count: 2,  // TODO: [use-arbitrary-input]
+                max_io_queues: 64,  // TODO: [use-arbitrary-input]
                 subsystem_id: Guid::new_random(),
             },
         );
 
         nvme.client()
-            .add_namespace(1, Arc::new(ram_disk))
+            .add_namespace(1, Arc::new(ram_disk))  // TODO: [use-arbitrary-input]
             .await
             .unwrap();
 
         let device = FuzzEmulatedDevice::new(nvme, msi_set, mem);
-        let nvme_driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();
-        let namespace = nvme_driver.namespace(1).await.unwrap();
+        let nvme_driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();  // TODO: [use-arbitrary-input]
+        let namespace = nvme_driver.namespace(1).await.unwrap();  // TODO: [use-arbitrary-input]
 
         Self {
             driver: Some(nvme_driver),
@@ -82,17 +82,17 @@ impl FuzzNvmeDriver {
     pub async fn shutdown(&mut self) {
         self.namespace
             .deallocate(
-                0,
+                0,  // TODO: [use-arbitrary-input]
                 &[
                     DsmRange {
-                        context_attributes: 0,
-                        starting_lba: 1000,
-                        lba_count: 2000,
+                        context_attributes: 0,  // TODO: [use-arbitrary-input]
+                        starting_lba: 1000,  // TODO: [use-arbitrary-input]
+                        lba_count: 2000,  // TODO: [use-arbitrary-input]
                     },
                     DsmRange {
-                        context_attributes: 0,
-                        starting_lba: 2,
-                        lba_count: 2,
+                        context_attributes: 0,  // TODO: [use-arbitrary-input]
+                        starting_lba: 2,  // TODO: [use-arbitrary-input]
+                        lba_count: 2,  // TODO: [use-arbitrary-input]
                     },
                 ],
             )
@@ -108,7 +108,7 @@ impl FuzzNvmeDriver {
 
         match action {
             NvmeDriverAction::Read { lba, block_count, target_cpu} => {
-                let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
+                let buf_range = OwnedRequestBuffers::linear(0, 16384, true);  // TODO: [use-arbitrary-input]
                 self.namespace
                     .read(
                         target_cpu,
@@ -120,7 +120,7 @@ impl FuzzNvmeDriver {
             }
 
             NvmeDriverAction::Write { lba, block_count, target_cpu } => {
-                let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
+                let buf_range = OwnedRequestBuffers::linear(0, 16384, true);  // TODO: [use-arbitrary-input]
                 self.namespace
                     .write(
                         target_cpu,
