@@ -391,7 +391,6 @@ impl BackingPrivate for HypervisorBackedX86 {
 
     fn request_untrusted_sint_readiness(
         this: &mut UhProcessor<'_, Self>,
-        _vtl: GuestVtl,
         sints: u16,
     ) {
         this.backing
