@@ -25,7 +25,6 @@ pub const MDBOOK_MERMAID: &str = "0.14.0";
 pub const RUSTUP_TOOLCHAIN: &str = "1.82.0";
 pub const MU_MSVM: &str = "24.0.4";
 pub const NEXTEST: &str = "0.9.74";
-pub const NODEJS: &str = "18.x";
 pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.6.51.9";
 pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.6.51.7";
 pub const OPENVMM_DEPS: &str = "0.1.0-20241014.2";
@@ -55,7 +54,6 @@ impl FlowNode for Node {
         ctx.import::<flowey_lib_common::download_mdbook::Node>();
         ctx.import::<flowey_lib_common::download_protoc::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
-        ctx.import::<flowey_lib_common::install_nodejs::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
     }
 
@@ -77,7 +75,6 @@ impl FlowNode for Node {
         ctx.req(flowey_lib_common::download_mdbook_mermaid::Request::Version(MDBOOK_MERMAID.into()));
         ctx.req(flowey_lib_common::download_protoc::Request::Version(PROTOC.into()));
         ctx.req(flowey_lib_common::install_azure_cli::Request::Version(AZURE_CLI.into()));
-        ctx.req(flowey_lib_common::install_nodejs::Request::Version(NODEJS.into()));
         if !matches!(ctx.backend(), FlowBackend::Ado) {
             ctx.req(flowey_lib_common::install_rust::Request::Version(RUSTUP_TOOLCHAIN.into()));
         }
