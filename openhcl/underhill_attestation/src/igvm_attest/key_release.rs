@@ -314,3 +314,18 @@ fn validate_cert_chain(
         .public_key()
         .map_err(CertificateChainValidationError::GetPublicKeyFromCertificate)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fail_to_parse_empty_response() {
+        let response = parse_response(&[], 256);
+        assert!(response.is_err());
+        assert_eq!(
+            response.unwrap_err().to_string(),
+            KeyReleaseError::ResponseSizeTooSmall.to_string()
+        );
+    }
+}
