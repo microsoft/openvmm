@@ -6,6 +6,7 @@ use crate::fuzz_emulated_device::FuzzEmulatedDevice;
 use crate::arbitrary_data;
 
 use arbitrary::Arbitrary;
+use arbitrary::Unstructured;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_ramdisk::RamDisk;
 use guestmem::GuestMemory;
@@ -32,7 +33,7 @@ pub struct FuzzNvmeDriver {
 
 impl FuzzNvmeDriver {
     /// Setup a new nvme driver with a fuzz-enabled backend device.
-    pub async fn new(driver: DefaultDriver) -> Self {
+    pub async fn new(driver: DefaultDriver) -> Result<Self, arbitrary::Error> {
         // Physical storage to back the disk
         let ram_disk = RamDisk::new(1 << 20, false).unwrap();  // TODO: [use-arbitrary-input]
 
@@ -50,6 +51,8 @@ impl FuzzNvmeDriver {
         let driver_source =
             VmTaskDriverSource::new(SingleDriverBackend::new(driver));
         let mut msi_set = MsiInterruptSet::new();
+
+        let guid = arbitrary_guid()?;
         let nvme = NvmeController::new(
             &driver_source,
             mem.guest_memory().clone(),
@@ -58,7 +61,7 @@ impl FuzzNvmeDriver {
             NvmeControllerCaps {
                 msix_count: 2,  // TODO: [use-arbitrary-input]
                 max_io_queues: 64,  // TODO: [use-arbitrary-input]
-                subsystem_id: Guid::new_random(),
+                subsystem_id: guid,
             },
         );
 
@@ -71,11 +74,11 @@ impl FuzzNvmeDriver {
         let nvme_driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap();  // TODO: [use-arbitrary-input]
         let namespace = nvme_driver.namespace(1).await.unwrap();  // TODO: [use-arbitrary-input]
 
-        Self {
+        Ok(Self {
             driver: Some(nvme_driver),
             namespace,
             payload_mem,
-        }
+        })
     }
 
     /// Clean up fuzzing infrastructure.
@@ -146,6 +149,21 @@ impl FuzzNvmeDriver {
 
         Ok(())
     }
+}
+
+/// Returns a Guid with arbitrary bytes or an error if there isn't enought arbitrary data left
+fn arbitrary_guid() -> Result<Guid, arbitrary::Error> {
+    let mut guid: Guid = Guid::new_random();
+
+    guid.data1 = arbitrary_data::<u32>()?;
+    guid.data2 = arbitrary_data::<u16>()?;
+    guid.data3 = arbitrary_data::<u16>()?;
+    
+    for byte in &mut guid.data4 {
+        *byte = arbitrary_data::<u8>()?;
+    }
+    
+    Ok(guid)
 }
 
 #[derive(Debug, Arbitrary)]

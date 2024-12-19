@@ -44,7 +44,12 @@ for <'a> T: Arbitrary<'a> + Sized,
 /// Uses the provided input to repeatedly create and execute an arbitrary action on the NvmeDriver.
 fn do_fuzz() {
     DefaultPool::run_with(|driver| async move {
-        let mut fuzzing_driver = FuzzNvmeDriver::new(driver).await;
+        let create_fuzzing_driver = FuzzNvmeDriver::new(driver).await;
+        if let Err(_e) = create_fuzzing_driver {
+            return;
+        }
+
+        let mut fuzzing_driver = create_fuzzing_driver.unwrap();
 
         loop {
             let next_action = fuzzing_driver.execute_arbitrary_action().await;
