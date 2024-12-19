@@ -59,7 +59,6 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
         ctx.import::<flowey_lib_common::install_git::Node>();
-        ctx.import::<flowey_lib_common::install_nodejs::Node>();
         ctx.import::<flowey_lib_common::install_nuget_azure_credential_provider::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
         ctx.import::<flowey_lib_common::nuget_install_package::Node>();
@@ -145,9 +144,6 @@ impl SimpleFlowNode for Node {
                         !auto_install,
                     ),
                 );
-                ctx.req(flowey_lib_common::install_nodejs::Request::AutoInstall(
-                    auto_install,
-                ));
                 ctx.req(flowey_lib_common::install_azure_cli::Request::AutoInstall(
                     auto_install,
                 ));

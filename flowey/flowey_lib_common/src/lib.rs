@@ -36,7 +36,6 @@ pub mod git_checkout;
 pub mod install_azure_cli;
 pub mod install_dist_pkg;
 pub mod install_git;
-pub mod install_nodejs;
 pub mod install_nuget_azure_credential_provider;
 pub mod install_rust;
 pub mod nuget_install_package;
