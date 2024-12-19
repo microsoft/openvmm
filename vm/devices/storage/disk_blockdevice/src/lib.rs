@@ -7,7 +7,7 @@
 //! device.
 
 // UNSAFETY: Issuing IOs and calling ioctls.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 mod ioctl;
 mod nvme;

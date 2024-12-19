@@ -5,7 +5,7 @@
 
 #![cfg(all(target_os = "linux", guest_is_native, guest_arch = "x86_64"))]
 // UNSAFETY: Calling HV APIs and manually managing memory.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 mod vm_state;
 mod vp_state;
@@ -386,7 +386,10 @@ pub struct MshvProcessorBinder {
 }
 
 impl virt::BindProcessor for MshvProcessorBinder {
-    type Processor<'a> = MshvProcessor<'a> where Self: 'a;
+    type Processor<'a>
+        = MshvProcessor<'a>
+    where
+        Self: 'a;
     type Error = Error;
 
     fn bind(&mut self) -> Result<Self::Processor<'_>, Self::Error> {
@@ -1265,7 +1268,10 @@ impl InspectMut for MshvProcessor<'_> {
 impl virt::Processor for MshvProcessor<'_> {
     type Error = Error;
     type RunVpError = MshvRunVpError;
-    type StateAccess<'a> = &'a mut Self where Self: 'a;
+    type StateAccess<'a>
+        = &'a mut Self
+    where
+        Self: 'a;
 
     fn set_debug_state(
         &mut self,

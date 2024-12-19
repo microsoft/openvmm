@@ -5,7 +5,7 @@
 
 #![cfg(any(target_os = "linux", target_os = "windows"))]
 // UNSAFETY: required for Windows shutdown API
-#![cfg_attr(windows, allow(unsafe_code))]
+#![cfg_attr(windows, expect(unsafe_code))]
 
 #[cfg(target_os = "linux")]
 pub fn handle_shutdown(request: pipette_protocol::ShutdownRequest) -> anyhow::Result<()> {

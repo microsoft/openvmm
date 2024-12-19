@@ -7,7 +7,7 @@
 // See build.rs.
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: Interacting with low level hardware and bootloader primitives.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 mod arch;
 mod boot_logger;

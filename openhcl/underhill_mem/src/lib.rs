@@ -15,7 +15,7 @@ pub use init::MemoryMappings;
 
 mod mapping {
     // UNSAFETY: Implementing GuestMemoryAccess.
-    #![allow(unsafe_code)]
+    #![expect(unsafe_code)]
 
     use crate::registrar::MemoryRegistrar;
     use guestmem::ranges::PagedRange;

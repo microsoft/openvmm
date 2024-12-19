@@ -6,7 +6,7 @@
 // UNSAFETY: This is required to implement the MappedDmaTarget trait which
 // unsafe because of it's requirement for the implementer to keep the
 // `base()..len()` mapped for the lifetime of the struct.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use crate::PagePoolHandle;
 use user_driver::memory::MappedDmaTarget;

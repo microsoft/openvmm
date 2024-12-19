@@ -5,7 +5,7 @@
 
 #![cfg(target_os = "linux")]
 // UNSAFETY: Calling libc functions to set up global system state.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 mod options;
 mod syslog;

@@ -5,7 +5,7 @@
 //! within it.
 
 // UNSAFETY: Needed to accept a raw Fd/Handle from our spawning process.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use anyhow::Context;
 use base64::Engine;

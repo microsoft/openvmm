@@ -3,7 +3,7 @@
 
 #![no_std]
 // UNSAFETY: Manual pointer manipulation and transmutes to/from atomic types.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 #![allow(clippy::undocumented_unsafe_blocks)]
 
 use core::mem;

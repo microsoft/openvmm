@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 // UNSAFETY: Calling libc file APIs.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 #![allow(clippy::undocumented_unsafe_blocks)]
 
 pub(crate) mod path;

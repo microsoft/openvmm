@@ -5,7 +5,7 @@
 
 #![cfg(all(windows, guest_is_native))]
 // UNSAFETY: Calling WHP APIs and manually managing memory.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 #![allow(clippy::undocumented_unsafe_blocks)]
 
 mod apic;
@@ -1468,7 +1468,10 @@ impl Drop for WhpProcessor<'_> {
 impl<'p> virt::Processor for WhpProcessor<'p> {
     type Error = Error;
     type RunVpError = WhpRunVpError;
-    type StateAccess<'a> = WhpVpStateAccess<'a, 'p> where Self: 'a;
+    type StateAccess<'a>
+        = WhpVpStateAccess<'a, 'p>
+    where
+        Self: 'a;
 
     fn set_debug_state(
         &mut self,

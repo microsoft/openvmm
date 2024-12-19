@@ -3,7 +3,7 @@
 
 #![cfg(unix)]
 // UNSAFETY: Manual memory management with mmap and vfio ioctls.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use anyhow::Context;
 use bitfield_struct::bitfield;

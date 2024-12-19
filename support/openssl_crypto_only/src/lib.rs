@@ -6,7 +6,7 @@
 #![cfg(unix)]
 // UNSAFETY: needed for exporting unmangled names and importing openssl
 // routines.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 #![warn(missing_docs)]
 #![no_std]
 
