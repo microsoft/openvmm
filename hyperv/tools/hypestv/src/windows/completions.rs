@@ -80,7 +80,7 @@ impl clap_dyn_complete::CustomCompleter for OpenvmmComplete {
         arg_id: &str,
     ) -> Vec<String> {
         match (subcommand_path, arg_id) {
-            (["hypestv", "inspect"], "element") => {
+            (["hypestv", "paravisor", "inspect"], "element") => {
                 let on_error = vec!["failed/to/connect".into()];
 
                 let (parent_path, to_complete) = (ctx.to_complete)
@@ -88,30 +88,11 @@ impl clap_dyn_complete::CustomCompleter for OpenvmmComplete {
                     .unwrap_or(("", ctx.to_complete));
 
                 let node = {
-                    let paravisor = {
-                        let raw_arg = ctx
-                            .matches
-                            .subcommand()
-                            .unwrap()
-                            .1
-                            .get_one::<String>("paravisor")
-                            .map(|x| x.as_str())
-                            .unwrap_or_default();
-                        raw_arg == "true"
-                    };
-
                     let r = self
                         .req
                         .call_failable(
                             super::Request::Inspect,
-                            (
-                                if paravisor {
-                                    super::InspectTarget::Paravisor
-                                } else {
-                                    super::InspectTarget::Host
-                                },
-                                parent_path.to_owned(),
-                            ),
+                            (super::InspectTarget::Paravisor, parent_path.to_owned()),
                         )
                         .await;
                     let Ok(node) = r else {

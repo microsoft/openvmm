@@ -21,6 +21,8 @@ mod single_threaded;
 
 use crate::arch::setup_vtl2_memory;
 use crate::arch::setup_vtl2_vp;
+#[cfg(target_arch = "x86_64")]
+use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::log;
@@ -287,18 +289,24 @@ fn shim_parameters(shim_params_raw_offset: isize) -> ShimParams {
 }
 
 /// The maximum number of reserved memory ranges that we might use.
-///
-/// 1. VTL2 parameter regions (could be up to 2).
-/// 2. Sidecar image.
-/// 3. One reserved range per sidecar node.
-pub const MAX_RESERVED_MEM_RANGES: usize = 3 + sidecar_defs::MAX_NODES;
+/// See ReservedMemoryType definition for details.
+pub const MAX_RESERVED_MEM_RANGES: usize = 5 + sidecar_defs::MAX_NODES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReservedMemoryType {
+    /// VTL2 parameter regions (could be up to 2).
     Vtl2Config,
+    /// Reserved memory that should not be used by the kernel or usermode. There
+    /// should only be one.
     Vtl2Reserved,
+    /// Sidecar image. There should only be one.
     SidecarImage,
+    /// A reserved range per sidecar node.
     SidecarNode,
+    /// Persistent VTL2 memory used for page allocations in usermode. This
+    /// memory is persisted, both location and contents, across servicing.
+    /// Today, we only support a single range.
+    Vtl2GpaPool,
 }
 
 /// Construct a slice representing the reserved memory ranges to be reported to
@@ -329,6 +337,14 @@ fn reserved_memory_regions(
         reserved.push((
             partition_info.vtl2_reserved_region,
             ReservedMemoryType::Vtl2Reserved,
+        ));
+    }
+
+    // Add any VTL2 private pool.
+    if partition_info.vtl2_pool_memory != MemoryRange::EMPTY {
+        reserved.push((
+            partition_info.vtl2_pool_memory,
+            ReservedMemoryType::Vtl2GpaPool,
         ));
     }
 
@@ -518,6 +534,16 @@ const fn zeroed<T: FromZeroes>() -> T {
     unsafe { core::mem::MaybeUninit::<T>::zeroed().assume_init() }
 }
 
+fn get_ref_time(isolation: IsolationType) -> Option<u64> {
+    match isolation {
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Tdx => get_tdx_tsc_reftime(),
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Snp => None,
+        _ => Some(minimal_rt::reftime::reference_time()),
+    }
+}
+
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
 
@@ -549,14 +575,11 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         boot_logger_init(p.isolation_type, typ);
         log!("openhcl_boot: early debugging enabled");
     }
+
     let can_trust_host =
         p.isolation_type == IsolationType::None || static_options.confidential_debug;
 
-    let boot_reftime = if p.isolation_type.is_hardware_isolated() {
-        None
-    } else {
-        Some(minimal_rt::reftime::reference_time())
-    };
+    let boot_reftime = get_ref_time(p.isolation_type);
 
     let mut dt_storage = off_stack!(PartitionInfo, PartitionInfo::new());
     let partition_info = match PartitionInfo::read_from_dt(&p, &mut dt_storage, can_trust_host) {
@@ -676,9 +699,10 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     // Compute the ending boot time. This has to be before writing to device
     // tree, so this is as late as we can do it.
+
     let boot_times = boot_reftime.map(|start| BootTimes {
         start,
-        end: minimal_rt::reftime::reference_time(),
+        end: get_ref_time(p.isolation_type).unwrap_or(0),
     });
 
     // Validate that no imported regions that are pending are not part of vtl2
@@ -866,6 +890,8 @@ mod test {
             vtl2_full_config_region: MemoryRange::EMPTY,
             vtl2_config_region_reclaim: MemoryRange::EMPTY,
             vtl2_reserved_region: MemoryRange::EMPTY,
+            vtl2_pool_memory: MemoryRange::EMPTY,
+            vtl2_used_ranges: ArrayVec::new(),
             partition_ram: ArrayVec::new(),
             isolation: IsolationType::None,
             bsp_reg: cpus[0].reg as u32,

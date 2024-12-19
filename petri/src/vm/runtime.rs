@@ -248,15 +248,11 @@ impl PetriVm {
 
 impl PetriVmInner {
     async fn openhcl_core_dump(&self, name: &str, path: &Path) -> anyhow::Result<()> {
-        self.openhcl_diag()?
-            .core_dump(&self.resources.driver, name, path)
-            .await
+        self.openhcl_diag()?.core_dump(name, path).await
     }
 
     async fn openhcl_crash(&self, name: &str) -> anyhow::Result<()> {
-        self.openhcl_diag()?
-            .crash(&self.resources.driver, name)
-            .await
+        self.openhcl_diag()?.crash(name).await
     }
 
     async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
@@ -369,9 +365,7 @@ impl PetriVmInner {
     }
 
     async fn test_inspect_openhcl(&self) -> anyhow::Result<()> {
-        self.openhcl_diag()?
-            .test_inspect(&self.resources.driver)
-            .await
+        self.openhcl_diag()?.test_inspect().await
     }
 
     async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
@@ -462,7 +456,6 @@ impl PetriVmInner {
         let res = self
             .openhcl_diag()?
             .run_vtl2_command(
-                &self.resources.driver,
                 "sh",
                 &[
                     "-c",

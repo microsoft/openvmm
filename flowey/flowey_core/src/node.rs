@@ -838,7 +838,7 @@ pub struct NodeCtx<'a> {
     backend: Rc<RefCell<&'a mut dyn NodeCtxBackend>>,
 }
 
-impl<'backend> NodeCtx<'backend> {
+impl NodeCtx<'_> {
     /// Emit a Rust-based step.
     ///
     /// As a convenience feature, this function returns a special _optional_

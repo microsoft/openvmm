@@ -9,6 +9,7 @@ use super::MessageDecode;
 use super::MessageEncode;
 use super::Result;
 use crate::Error;
+use alloc::vec::Vec;
 
 /// Encoding for using Prost messages as Mesh messages.
 pub struct ProstMessage;
@@ -44,6 +45,7 @@ impl<T: prost::Message + Default, R> MessageDecode<'_, T, R> for ProstMessage {
 #[cfg(test)]
 mod tests {
     use crate::SerializedMessage;
+    use alloc::string::ToString;
 
     mod items {
         // Crates used by generated code. Reference them explicitly to ensure that

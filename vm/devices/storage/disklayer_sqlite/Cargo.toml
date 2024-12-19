@@ -1,0 +1,34 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "disklayer_sqlite"
+edition = "2021"
+rust-version.workspace = true
+
+[dependencies]
+disk_backend_resources.workspace = true
+disk_backend.workspace = true
+disk_layered.workspace = true
+guestmem.workspace = true
+scsi_buffers.workspace = true
+vm_resource.workspace = true
+
+inspect = { workspace = true, features = ["filepath"] }
+
+anyhow.workspace = true
+blocking.workspace = true
+futures.workspace = true
+# NOTE: this crate does not rely on any particularly "modern" sqlite features at
+# the moment, and does not require the use of the "bundled" feature to build +
+# link against the most up-to-date sqlite version.
+#
+# That said - top-level binaries which use this crate may wish to enable the
+# "bundled" feature in order to ensure consistent behaviors across platforms.
+rusqlite.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

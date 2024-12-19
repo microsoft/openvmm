@@ -16,6 +16,7 @@ use anyhow::Context;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use mesh::CancelReason;
+use mesh_rpc::server::RpcReceiver;
 use mesh_rpc::service::Code;
 use mesh_rpc::service::Status;
 use pal_async::driver::Driver;
@@ -97,25 +98,36 @@ impl DiagServer {
         cancel: mesh::OneshotReceiver<()>,
         request_send: mesh::Sender<DiagRequest>,
     ) -> anyhow::Result<()> {
-        let (diag_send, diag_recv) = mesh::channel();
-        let (inspect_send, inspect_recv) = mesh::channel();
         // Disable all diag requests for CVMs. Inspect filtering will be handled
         // internally more granularly.
-        if !underhill_confidentiality::confidential_filtering_enabled() {
-            self.server.add_service(diag_send);
-        }
+        let (diag_recv, diag2_recv) = if underhill_confidentiality::confidential_filtering_enabled()
+        {
+            (RpcReceiver::disconnected(), RpcReceiver::disconnected())
+        } else {
+            (
+                self.server.add_service::<diag_proto::UnderhillDiag>(),
+                self.server.add_service::<diag_proto::OpenhclDiag>(),
+            )
+        };
 
-        self.server.add_service(inspect_send);
+        let inspect_recv = self.server.add_service::<inspect_proto::InspectService>();
 
         // TODO: split the profiler to a separate service provider.
-        let (profile_send, profile_recv) = mesh::channel();
-        self.server.add_service(profile_send);
+        let profile_recv = self
+            .server
+            .add_service::<azure_profiler_proto::AzureProfiler>();
 
         let diag_service = Arc::new(diag_service::DiagServiceHandler::new(
             request_send,
             self.inner.clone(),
         ));
-        let process = diag_service.process_requests(driver, diag_recv, inspect_recv, profile_recv);
+        let process = diag_service.process_requests(
+            driver,
+            diag_recv,
+            diag2_recv,
+            inspect_recv,
+            profile_recv,
+        );
 
         let serve = self.server.run(driver, self.control_listener, cancel);
         let data_connections = self

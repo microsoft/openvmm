@@ -163,7 +163,7 @@ impl Deferred {
                         InternalNode::DirResolved(alloc::vec![crate::InternalEntry {
                             name: name.to_owned(),
                             node,
-                            sensitivity: Some(sensitivity),
+                            sensitivity,
                         }])
                     });
 
@@ -204,7 +204,7 @@ impl InternalNode {
                     .into_iter()
                     .filter_map(|e| {
                         // If the returned sensitivity level is not allowed for this request, drop it.
-                        if e.sensitivity.unwrap_or_default() > request_sensitivity {
+                        if e.sensitivity > request_sensitivity {
                             return None;
                         }
                         InternalNode::from_node(e.node, request_sensitivity).map(|v| {

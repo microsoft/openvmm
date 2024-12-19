@@ -30,7 +30,7 @@ pub(crate) struct WhpHypercallExit<'a, 'b, T> {
     registers: arch::WhpHypercallRegisters<'a>,
 }
 
-impl<'a, 'b, T: CpuIo> WhpHypercallExit<'a, 'b, T> {
+impl<T: CpuIo> WhpHypercallExit<'_, '_, T> {
     const DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [

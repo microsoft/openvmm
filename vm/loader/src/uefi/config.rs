@@ -179,6 +179,10 @@ pub enum BlobStructureType {
     Aspt = 0x21,
     Pptt = 0x22,
     Gic = 0x23,
+    Mcfg = 0x24,
+    Ssdt = 0x25,
+    Hmat = 0x26,
+    Iort = 0x27,
 }
 
 //

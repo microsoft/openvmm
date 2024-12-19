@@ -411,8 +411,6 @@ impl DefaultEncoding for Port {
     type Encoding = PortField;
 }
 
-impl mesh_protobuf::Downcast<Port> for Port {}
-
 /// The core local node implementation for the transport-specific meshes.
 pub struct LocalNode {
     inner: Arc<LocalNodeInner>,

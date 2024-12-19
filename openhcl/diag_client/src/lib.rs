@@ -18,8 +18,6 @@ use futures::AsyncWrite;
 use futures::AsyncWriteExt;
 use inspect::Node;
 use inspect::ValueKind;
-use inspect_proto::InspectResponse2;
-use inspect_proto::UpdateResponse2;
 use kmsg_stream::KmsgStream;
 use mesh_rpc::service::Status;
 use pal_async::driver::Driver;
@@ -39,7 +37,7 @@ pub mod hyperv {
     use guid::Guid;
     use pal_async::driver::Driver;
     use pal_async::socket::PolledSocket;
-    use pal_async::windows::pipe::NamedPipeServer;
+    use pal_async::timer::PolledTimer;
     use std::fs::File;
     use std::io::Write;
     use std::process::Command;
@@ -113,8 +111,12 @@ pub mod hyperv {
 
     /// Opens a serial port on a Hyper-V VM.
     ///
-    /// If the VM is not running, it will act as a server for the pipe. Hyper-V
-    /// will connect to the server once the VM starts running.
+    /// If the VM is not running, it will periodically try to connect to the
+    /// pipe until the VM starts running. In theory, we could instead create a
+    /// named pipe server, which Hyper-V would connect to when the VM starts.
+    /// However, in this mode, once the named pipe is disconnected, Hyper-V
+    /// stops trying to reconnect until the VM is powered off and powered on
+    /// again, so don't do that.
     pub async fn open_serial_port(
         driver: &(impl Driver + ?Sized),
         vm: &str,
@@ -146,15 +148,19 @@ pub mod hyperv {
             anyhow::bail!("Requested VM COM port is not configured");
         }
 
-        let pipe = match fs_err::OpenOptions::new().read(true).write(true).open(path) {
-            Ok(pipe) => pipe.into(),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                let server =
-                    NamedPipeServer::create(path).context("failed to create pipe server")?;
-
-                server.accept(driver)?.await?
+        let mut timer = None;
+        let pipe = loop {
+            match fs_err::OpenOptions::new().read(true).write(true).open(path) {
+                Ok(pipe) => break pipe.into(),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    // The VM is not running. Wait a bit and try again.
+                    timer
+                        .get_or_insert_with(|| PolledTimer::new(driver))
+                        .sleep(Duration::from_millis(100))
+                        .await;
+                }
+                Err(err) => Err(err)?,
             }
-            Err(err) => Err(err)?,
         };
 
         Ok(pipe)
@@ -239,6 +245,7 @@ async fn new_data_connection(
 }
 
 /// Represents different VM types.
+#[derive(Clone)]
 enum VmType {
     /// A Hyper-V VM represented by a VM ID GUID, which uses a VmSocket to connect.
     #[cfg(windows)]
@@ -323,74 +330,119 @@ impl ConnectError {
     }
 }
 
+struct VmConnector {
+    vm: VmType,
+    driver: Box<dyn Driver>,
+}
+
+impl mesh_rpc::client::Dial for VmConnector {
+    type Stream = PolledSocket<socket2::Socket>;
+
+    async fn dial(&mut self) -> std::io::Result<Self::Stream> {
+        match &self.vm {
+            #[cfg(windows)]
+            VmType::HyperV(guid) => {
+                let socket = hyperv::connect_vsock(
+                    self.driver.as_ref(),
+                    *guid,
+                    diag_proto::VSOCK_CONTROL_PORT,
+                )
+                .await
+                .map_err(|err| std::io::Error::new(ErrorKind::Other, err))?;
+                Ok(PolledSocket::new(&self.driver, socket.into())?)
+            }
+            VmType::HybridVsock(path) => {
+                let socket = connect_hybrid_vsock(
+                    self.driver.as_ref(),
+                    path,
+                    diag_proto::VSOCK_CONTROL_PORT,
+                )
+                .await
+                .map_err(|err| std::io::Error::new(ErrorKind::Other, err))?;
+                Ok(socket)
+            }
+            VmType::None => unreachable!(),
+        }
+    }
+}
+
 impl DiagClient {
     /// Creates a client from Hyper-V VM name.
     #[cfg(windows)]
-    pub async fn from_hyperv_name(
-        driver: impl Driver + Spawn,
+    pub fn from_hyperv_name(
+        driver: impl Driver + Spawn + Clone,
         name: &str,
-    ) -> Result<Self, ConnectError> {
-        Self::from_hyperv_id(
+    ) -> anyhow::Result<Self> {
+        Ok(Self::from_hyperv_id(
             driver,
             hyperv::vm_id_from_name(name).map_err(ConnectError::other)?,
-        )
-        .await
+        ))
     }
 
     /// Creates a client from a Hyper-V or HCS VM ID.
     #[cfg(windows)]
-    pub async fn from_hyperv_id(
-        driver: impl Driver + Spawn,
-        vm_id: guid::Guid,
-    ) -> Result<Self, ConnectError> {
-        let socket = hyperv::connect_vsock(&driver, vm_id, diag_proto::VSOCK_CONTROL_PORT).await?;
-        Ok(Self {
-            vm: VmType::HyperV(vm_id),
-            ttrpc: mesh_rpc::Client::new(&driver, socket),
-            driver: Box::new(driver),
-        })
-    }
-
-    /// Creates a client from a Unix socket path.
-    pub async fn from_socket(
-        driver: impl Driver + Spawn,
-        path: &Path,
-    ) -> Result<Self, ConnectError> {
-        let socket = unix_socket::UnixStream::connect(path).map_err(ConnectError::other)?;
-        Ok(Self {
-            vm: VmType::None,
-            ttrpc: mesh_rpc::Client::new(&driver, socket),
-            driver: Box::new(driver),
-        })
+    pub fn from_hyperv_id(driver: impl Driver + Spawn + Clone, vm_id: guid::Guid) -> Self {
+        let vm = VmType::HyperV(vm_id);
+        Self::new(
+            driver.clone(),
+            vm.clone(),
+            VmConnector {
+                vm,
+                driver: Box::new(driver),
+            },
+        )
     }
 
     /// Creates a client from a hybrid vsock Unix socket path.
-    pub async fn from_hybrid_vsock(
-        driver: impl Driver + Spawn,
-        path: &Path,
-    ) -> Result<Self, ConnectError> {
-        let socket = connect_hybrid_vsock(&driver, path, diag_proto::VSOCK_CONTROL_PORT)
-            .await?
-            .into_inner();
-        Ok(Self {
-            vm: VmType::HybridVsock(path.into()),
-            ttrpc: mesh_rpc::Client::new(&driver, socket),
-            driver: Box::new(driver),
-        })
+    pub fn from_hybrid_vsock(driver: impl Driver + Spawn + Clone, path: &Path) -> Self {
+        let vm = VmType::HybridVsock(path.into());
+        Self::new(
+            driver.clone(),
+            vm.clone(),
+            VmConnector {
+                vm,
+                driver: Box::new(driver.clone()),
+            },
+        )
     }
 
-    /// Creates a client from an existing connection.
+    /// Creates a client from a dialer.
     ///
     /// This client won't be usable with operations that require additional connections.
-    pub fn from_conn<T>(driver: impl Driver + Spawn, conn: T) -> Self
-    where
-        T: 'static + Send + Sync + pal_async::socket::AsSockRef + std::io::Read + std::io::Write,
-    {
+    pub fn from_dialer(driver: impl Driver + Spawn, conn: impl mesh_rpc::client::Dial) -> Self {
+        Self::new(driver, VmType::None, conn)
+    }
+
+    fn new(driver: impl Driver + Spawn, vm: VmType, conn: impl mesh_rpc::client::Dial) -> Self {
         Self {
-            vm: VmType::None,
-            ttrpc: mesh_rpc::Client::new(&driver, conn),
+            vm,
+            ttrpc: mesh_rpc::client::ClientBuilder::new()
+                // Use a short reconnect timeout (compared to the normal 20
+                // seconds) since the VM may start at any time.
+                .retry_timeout(Duration::from_secs(1))
+                .build(&driver, conn),
             driver: Box::new(driver),
         }
+    }
+
+    /// Waits for the paravisor to be ready for RPCs.
+    pub async fn wait_for_server(&self) -> anyhow::Result<()> {
+        match self
+            .ttrpc
+            .call()
+            .wait_ready(true)
+            .start(diag_proto::OpenhclDiag::Ping, ())
+            .await
+        {
+            Ok(()) => {}
+            Err(Status { code, .. }) if code == mesh_rpc::service::Code::Unimplemented as i32 => {
+                // Older versions of the diag server don't support the ping
+                // RPC, but an unimplemented failure is good enough to know
+                // the server is ready.
+            }
+            Err(status) => return Err(grpc_status(status)),
+        }
+        Ok(())
     }
 
     /// Creates a builder for execing a command.
@@ -435,19 +487,16 @@ impl DiagClient {
         depth: Option<usize>,
         timeout: Option<Duration>,
     ) -> anyhow::Result<Node> {
-        let response = self.ttrpc.start_call(
+        let response = self.ttrpc.call().timeout(timeout).start(
             inspect_proto::InspectService::Inspect,
             inspect_proto::InspectRequest {
                 path: path.into(),
                 // It would be better to pass an Option<u32> in the proto, but that would break backcompat.
                 depth: depth.unwrap_or(u32::MAX as usize) as u32,
             },
-            timeout,
         );
 
-        let response = response.upcast::<Result<InspectResponse2, Status>>();
-        let response = response.await?.map_err(grpc_status)?;
-
+        let response = response.await.map_err(grpc_status)?;
         Ok(response.result)
     }
 
@@ -457,17 +506,15 @@ impl DiagClient {
         path: impl Into<String>,
         value: impl Into<String>,
     ) -> anyhow::Result<inspect::Value> {
-        let response = self.ttrpc.start_call(
+        let response = self.ttrpc.call().start(
             inspect_proto::InspectService::Update,
             inspect_proto::UpdateRequest {
                 path: path.into(),
                 value: value.into(),
             },
-            None,
         );
 
-        let response = response.upcast::<Result<UpdateResponse2, Status>>();
-        let response = response.await?.map_err(grpc_status)?;
+        let response = response.await.map_err(grpc_status)?;
 
         Ok(response.new_value)
     }
@@ -517,8 +564,9 @@ impl DiagClient {
             args: args.into_iter().collect(),
         };
         self.ttrpc
-            .call(diag_proto::UnderhillDiag::Start, request)
-            .await?
+            .call()
+            .start(diag_proto::UnderhillDiag::Start, request)
+            .await
             .map_err(grpc_status)?;
 
         Ok(())
@@ -529,11 +577,12 @@ impl DiagClient {
         let (conn, socket) = self.connect_data().await?;
 
         self.ttrpc
-            .call(
+            .call()
+            .start(
                 diag_proto::UnderhillDiag::Kmsg,
                 diag_proto::KmsgRequest { follow, conn },
             )
-            .await?
+            .await
             .map_err(grpc_status)?;
 
         Ok(KmsgStream::new(socket))
@@ -548,7 +597,8 @@ impl DiagClient {
         let (conn, socket) = self.connect_data().await?;
 
         self.ttrpc
-            .call(
+            .call()
+            .start(
                 diag_proto::UnderhillDiag::ReadFile,
                 diag_proto::FileRequest {
                     follow,
@@ -556,7 +606,7 @@ impl DiagClient {
                     file_path,
                 },
             )
-            .await?
+            .await
             .map_err(grpc_status)?;
 
         Ok(socket)
@@ -566,28 +616,19 @@ impl DiagClient {
     ///
     /// This can be used to support extension RPCs that are not part of the main
     /// diagnostics service.
-    pub fn custom_call<F, R, T, U>(
-        &self,
-        rpc: F,
-        input: T,
-        timeout: Option<Duration>,
-    ) -> mesh::OneshotReceiver<Result<U, Status>>
-    where
-        F: FnOnce(T, mesh::OneshotSender<Result<U, Status>>) -> R,
-        R: mesh_rpc::service::ServiceRpc,
-        U: mesh::MeshPayload,
-    {
-        self.ttrpc.start_call(rpc, input, timeout)
+    pub fn custom_call(&self) -> mesh_rpc::client::CallBuilder<'_> {
+        self.ttrpc.call()
     }
 
     /// Crashes the VM.
     pub async fn crash(&self, pid: i32) -> anyhow::Result<()> {
         self.ttrpc
-            .call(
+            .call()
+            .start(
                 diag_proto::UnderhillDiag::Crash,
                 diag_proto::CrashRequest { pid },
             )
-            .await?
+            .await
             .map_err(grpc_status)?;
 
         Ok(())
@@ -625,14 +666,15 @@ impl DiagClient {
 
         let response = self
             .ttrpc
-            .call(
+            .call()
+            .start(
                 diag_proto::UnderhillDiag::PacketCapture,
                 diag_proto::NetworkPacketCaptureRequest {
                     operation: operation.into(),
                     op_data,
                 },
             )
-            .await?
+            .await
             .map_err(grpc_status)?;
 
         Ok((sockets, response.num_streams))
@@ -689,8 +731,9 @@ impl DiagClient {
     /// Restarts the Underhill worker.
     pub async fn restart(&self) -> anyhow::Result<()> {
         self.ttrpc
-            .call(diag_proto::UnderhillDiag::Restart, ())
-            .await?
+            .call()
+            .start(diag_proto::UnderhillDiag::Restart, ())
+            .await
             .map_err(grpc_status)?;
 
         Ok(())
@@ -699,8 +742,9 @@ impl DiagClient {
     /// Pause the VM (including all devices).
     pub async fn pause(&self) -> anyhow::Result<()> {
         self.ttrpc
-            .call(diag_proto::UnderhillDiag::Pause, ())
-            .await?
+            .call()
+            .start(diag_proto::UnderhillDiag::Pause, ())
+            .await
             .map_err(grpc_status)?;
 
         Ok(())
@@ -709,8 +753,9 @@ impl DiagClient {
     /// Resume the VM.
     pub async fn resume(&self) -> anyhow::Result<()> {
         self.ttrpc
-            .call(diag_proto::UnderhillDiag::Resume, ())
-            .await?
+            .call()
+            .start(diag_proto::UnderhillDiag::Resume, ())
+            .await
             .map_err(grpc_status)?;
 
         Ok(())
@@ -720,8 +765,9 @@ impl DiagClient {
     pub async fn dump_saved_state(&self) -> anyhow::Result<Vec<u8>> {
         let state = self
             .ttrpc
-            .call(diag_proto::UnderhillDiag::DumpSavedState, ())
-            .await?
+            .call()
+            .start(diag_proto::UnderhillDiag::DumpSavedState, ())
+            .await
             .map_err(grpc_status)?;
 
         Ok(state.data)
@@ -858,14 +904,14 @@ impl ExecBuilder<'_> {
         let response = self
             .client
             .ttrpc
-            .call(diag_proto::UnderhillDiag::Exec, request)
-            .await?
+            .call()
+            .start(diag_proto::UnderhillDiag::Exec, request)
+            .await
             .map_err(grpc_status)?;
 
-        let wait = self.client.ttrpc.start_call(
+        let wait = self.client.ttrpc.call().start(
             diag_proto::UnderhillDiag::Wait,
             WaitRequest { pid: response.pid },
-            None,
         );
 
         Ok(Process {
@@ -888,7 +934,7 @@ pub struct Process {
     /// The standard error stream.
     pub stderr: Option<socket2::Socket>,
     pid: i32,
-    wait: mesh::OneshotReceiver<Result<WaitResponse, Status>>,
+    wait: mesh_rpc::client::Call<WaitResponse>,
 }
 
 impl Process {
@@ -902,7 +948,6 @@ impl Process {
         let response = self
             .wait
             .await
-            .context("disconnected")?
             .map_err(|err| anyhow::anyhow!("{}", err.message))?;
 
         Ok(ExitStatus { response })

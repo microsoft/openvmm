@@ -22,6 +22,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -211,6 +212,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -413,6 +415,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -773,6 +776,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -1196,6 +1200,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -1610,6 +1615,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -2196,6 +2202,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -2520,6 +2527,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -2892,6 +2900,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -3262,6 +3271,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -3548,6 +3558,7 @@ jobs:
     - job9
     - job9
     - job9
+    if: github.event.pull_request.draft == false
     steps:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
@@ -3906,6 +3917,7 @@ jobs:
     - job9
     - job9
     - job9
+    if: github.event.pull_request.draft == false
     steps:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
@@ -4257,6 +4269,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -4479,6 +4492,7 @@ jobs:
     - job11
     - job9
     - job11
+    if: github.event.pull_request.draft == false
     steps:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
@@ -4838,6 +4852,7 @@ jobs:
     - job7
     - job7
     - job7
+    if: github.event.pull_request.draft == false
     steps:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
@@ -5189,6 +5204,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -5321,6 +5337,7 @@ jobs:
     - job1
     - job2
     - job0
+    if: github.event.pull_request.draft == false
     steps:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
@@ -5398,6 +5415,7 @@ jobs:
       id-token: write
     needs:
     - job5
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -5587,6 +5605,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -5787,6 +5806,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -6086,6 +6106,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -6380,6 +6401,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey
@@ -6682,6 +6704,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    if: github.event.pull_request.draft == false
     steps:
     - run: echo "injected!"
       name: 🌼🥾 Bootstrap flowey

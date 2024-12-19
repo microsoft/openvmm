@@ -74,6 +74,7 @@ fn direct_run_do_work(
         ado_resources_repository: _,
         ado_post_process_yaml_cb: _,
         ado_variables: _,
+        ado_job_id_overrides: _,
         gh_name: _,
         gh_schedule_triggers: _,
         gh_ci_triggers: _,

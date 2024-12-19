@@ -16,14 +16,14 @@ use zerocopy_helpers::FromBytesExt;
 #[derive(Debug)]
 pub struct Error<'a>(ErrorKind<'a>);
 
-impl<'a> Display for Error<'a> {
+impl Display for Error<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.0.fmt(f)
     }
 }
 
 // TODO: Once core::error::Error is stablized, we can remove this feature gate.
-impl<'a> core::error::Error for Error<'a> {}
+impl core::error::Error for Error<'_> {}
 
 /// Types of errors when parsing a FDT.
 #[derive(Debug)]
@@ -91,7 +91,7 @@ enum ErrorKind<'a> {
     FdtEnd,
 }
 
-impl<'a> Display for ErrorKind<'a> {
+impl Display for ErrorKind<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             ErrorKind::BufferAlignment => f.write_str("Buffer is not aligned to u32"),

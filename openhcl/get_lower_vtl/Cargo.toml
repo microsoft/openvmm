@@ -2,27 +2,19 @@
 # Licensed under the MIT License.
 
 [package]
-name = "shared_pool_alloc"
+name = "get_lower_vtl"
 edition = "2021"
 rust-version.workspace = true
 
-[features]
-vfio = ["user_driver/vfio"]
-
-[dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 hcl.workspace = true
 
-user_driver.workspace = true
-vm_topology.workspace = true
 hvdef.workspace = true
-sparse_mmap.workspace = true
-
 inspect.workspace = true
+memory_range.workspace = true
+virt.workspace = true
 
-parking_lot.workspace = true
-thiserror.workspace = true
 anyhow.workspace = true
-tracing.workspace = true
 
 [lints]
 workspace = true

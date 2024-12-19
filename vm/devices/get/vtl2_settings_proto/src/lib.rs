@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 #![allow(unused_qualifications)] // pbjson-build doesn't use ::fully::qualified::paths.
+#![allow(clippy::needless_lifetimes)] // pbjson-build generates needless lifetimes for `impl` blocks.
 
 // These crates are referenced by the generated code. Reference them
 // explicitly here so that they are not removed by automated tools (xtask

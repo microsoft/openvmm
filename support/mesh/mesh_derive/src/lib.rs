@@ -10,13 +10,13 @@ use quote::format_ident;
 use quote::quote;
 use quote::quote_spanned;
 use quote::ToTokens;
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use syn::ext::IdentExt;
 use syn::parse::Parse;
 use syn::parse::ParseStream;
 use syn::parse_macro_input;
 use syn::parse_quote;
+use syn::parse_quote_spanned;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::Attribute;
@@ -31,6 +31,7 @@ use syn::ImplGenerics;
 use syn::Lifetime;
 use syn::LifetimeParam;
 use syn::LitInt;
+use syn::LitStr;
 use syn::Path;
 use syn::Token;
 use syn::TypePath;
@@ -99,8 +100,8 @@ fn derive(
     match &input.data {
         syn::Data::Struct(data) => derive_struct(input, modifiers, data),
         syn::Data::Enum(data) => derive_enum(input, modifiers, data),
-        syn::Data::Union(_) => Err(syn::Error::new(
-            Span::call_site(),
+        syn::Data::Union(data) => Err(syn::Error::new_spanned(
+            data.union_token,
             "unions not supported for MeshPayload",
         )),
     }
@@ -110,12 +111,11 @@ struct Modifiers {
     impl_for_type: Option<Path>,
     bound: Option<Punctuated<WherePredicate, Token![,]>>,
     prost: bool,
-    no_downcast: bool,
     transparent: Option<Span>,
     resource_type: Option<Path>,
     protobuf_mod: Path,
-    package: Option<syn::LitStr>,
-    rename: Option<syn::LitStr>,
+    package: Option<LitStr>,
+    rename: Option<LitStr>,
 }
 
 impl Modifiers {
@@ -126,7 +126,7 @@ impl Modifiers {
     }
 }
 
-fn parse_string_attr(input: ParseStream<'_>) -> syn::Result<syn::LitStr> {
+fn parse_string_attr(input: ParseStream<'_>) -> syn::Result<LitStr> {
     let _: syn::token::Eq = input.parse()?;
     input.parse()
 }
@@ -146,10 +146,9 @@ enum Attr {
     Mod(Path),
     Resource(Path),
     Prost,
-    NoUpcast,
     Transparent,
-    Package(syn::LitStr),
-    Rename(syn::LitStr),
+    Package(LitStr),
+    Rename(LitStr),
 }
 
 impl Parse for Attr {
@@ -163,8 +162,6 @@ impl Parse for Attr {
             Ok(Self::ImplFor(val.parse_with(Path::parse_mod_style)?))
         } else if ident == "prost" {
             Ok(Self::Prost)
-        } else if ident == "no_upcast" {
-            Ok(Self::NoUpcast)
         } else if ident == "mod" {
             let val = parse_string_attr(input)?;
             Ok(Self::Mod(val.parse_with(Path::parse_mod_style)?))
@@ -178,7 +175,7 @@ impl Parse for Attr {
         } else if ident == "rename" {
             Ok(Self::Rename(parse_string_attr(input)?))
         } else {
-            return Err(syn::Error::new(input.span(), "unknown attribute"));
+            return Err(syn::Error::new_spanned(ident, "unknown attribute"));
         }
     }
 }
@@ -197,7 +194,6 @@ fn parse_attributes(
     let mut impl_for_type = None;
     let mut bound = None;
     let mut prost = false;
-    let mut no_downcast = false;
     let mut protobuf_mod = None;
     let mut resource_type = None;
     let mut transparent = None;
@@ -210,7 +206,6 @@ fn parse_attributes(
                 Attr::ImplFor(path) => impl_for_type = Some(path),
                 Attr::Mod(path) => protobuf_mod = Some(path),
                 Attr::Prost => prost = true,
-                Attr::NoUpcast => no_downcast = true,
                 Attr::Resource(path) => resource_type = Some(path),
                 Attr::Transparent => transparent = Some(span),
                 Attr::Package(val) => package = Some(val),
@@ -222,7 +217,6 @@ fn parse_attributes(
         impl_for_type,
         bound,
         prost,
-        no_downcast,
         transparent,
         resource_type: resource_type
             .or_else(|| default_resource_type.map(|t| syn::parse_str(t).unwrap())),
@@ -257,7 +251,7 @@ impl Parse for ItemAttr {
         } else if ident == "transparent" {
             Ok(Self::Transparent)
         } else {
-            return Err(syn::Error::new(input.span(), "unknown attribute"));
+            return Err(syn::Error::new_spanned(ident, "unknown attribute"));
         }
     }
 }
@@ -331,7 +325,7 @@ fn field_data<'a>(protobuf_mod: &Path, fields: &'a Fields) -> syn::Result<Vec<Fi
                 .map(|e| e.into_token_stream())
                 .unwrap_or_else(|| {
                     let ty = &field.ty;
-                    quote!(<#ty as #protobuf_mod::DefaultEncoding>::Encoding)
+                    quote_spanned!(ty.span()=> <#ty as #protobuf_mod::DefaultEncoding>::Encoding)
                 });
 
             let field_name = if let Some(ident) = &field.ident {
@@ -397,9 +391,9 @@ fn add_payload_bounds(
                 let param = &type_param.ident;
                 let encoding_bound = match bound_type {
                     BoundType::Encode => {
-                        quote!(#protobuf_mod::FieldEncode<#param, #resource_type>)
+                        quote_spanned!(param.span()=> #protobuf_mod::FieldEncode<#param, #resource_type>)
                     }
-                    BoundType::Decode => quote!(
+                    BoundType::Decode => quote_spanned!(param.span()=>
                         #protobuf_mod::FieldDecode<'encoding, #param, #resource_type>
                     ),
                     BoundType::None => break,
@@ -408,8 +402,8 @@ fn add_payload_bounds(
                     .make_where_clause()
                     .predicates
                     .extend::<[WherePredicate; 2]>([
-                        parse_quote!(#param: #protobuf_mod::DefaultEncoding),
-                        parse_quote!(#param::Encoding: #encoding_bound),
+                        parse_quote_spanned!(param.span()=> #param: #protobuf_mod::DefaultEncoding),
+                        parse_quote_spanned!(param.span()=> #param::Encoding: #encoding_bound),
                     ]);
             }
         }
@@ -422,7 +416,7 @@ fn add_encoding_params(
     generics: &ImplGenerics<'_>,
     for_encode: bool,
 ) -> Generics {
-    let mut generics: Generics = parse_quote!(#generics);
+    let mut generics: Generics = syn::parse2(generics.to_token_stream()).unwrap();
     if modifiers.resource_type.is_none() {
         generics.params.push(parse_quote!(AnyR: 'static));
     }
@@ -439,208 +433,6 @@ fn add_encoding_params(
     generics
 }
 
-fn map_pair<T, P, U>(
-    p: syn::punctuated::Pair<T, P>,
-    mut f: impl FnMut(T) -> U,
-) -> syn::punctuated::Pair<U, P> {
-    match p {
-        syn::punctuated::Pair::Punctuated(t, p) => syn::punctuated::Pair::Punctuated(f(t), p),
-        syn::punctuated::Pair::End(t) => syn::punctuated::Pair::End(f(t)),
-    }
-}
-
-fn map_generics(ty: syn::Type, f: &mut impl FnMut(Ident) -> Ident) -> syn::Type {
-    let mut recurse = |t: syn::Type| map_generics(t, f);
-    match ty {
-        syn::Type::Array(a) => syn::Type::Array(syn::TypeArray {
-            elem: Box::new(recurse(*a.elem)),
-            ..a
-        }),
-        syn::Type::Group(g) => syn::Type::Group(syn::TypeGroup {
-            elem: Box::new(recurse(*g.elem)),
-            ..g
-        }),
-        syn::Type::Path(p) => syn::Type::Path(match p {
-            TypePath { qself: None, path } if path.get_ident().is_some() => TypePath {
-                qself: None,
-                path: f(path.get_ident().unwrap().clone()).into(),
-            },
-            p => TypePath {
-                qself: p.qself.map(|s| syn::QSelf {
-                    ty: Box::new(recurse(*s.ty)),
-                    ..s
-                }),
-                path: Path {
-                    segments: p
-                        .path
-                        .segments
-                        .into_pairs()
-                        .map(|p| {
-                            map_pair(p, |s: syn::PathSegment| syn::PathSegment {
-                                arguments: match s.arguments {
-                                    syn::PathArguments::None => syn::PathArguments::None,
-                                    syn::PathArguments::AngleBracketed(a) => {
-                                        syn::PathArguments::AngleBracketed(
-                                            syn::AngleBracketedGenericArguments {
-                                                args: a
-                                                    .args
-                                                    .into_pairs()
-                                                    .map(|p| {
-                                                        map_pair(p, |a: syn::GenericArgument| {
-                                                            match a {
-                                                                syn::GenericArgument::Type(t) => {
-                                                                    syn::GenericArgument::Type(
-                                                                        recurse(t),
-                                                                    )
-                                                                }
-                                                                _ => a,
-                                                            }
-                                                        })
-                                                    })
-                                                    .collect(),
-                                                ..a
-                                            },
-                                        )
-                                    }
-                                    syn::PathArguments::Parenthesized(p) => {
-                                        syn::PathArguments::Parenthesized(
-                                            syn::ParenthesizedGenericArguments {
-                                                inputs: p
-                                                    .inputs
-                                                    .into_pairs()
-                                                    .map(|p| map_pair(p, &mut recurse))
-                                                    .collect(),
-                                                output: match p.output {
-                                                    syn::ReturnType::Default => {
-                                                        syn::ReturnType::Default
-                                                    }
-                                                    syn::ReturnType::Type(a, t) => {
-                                                        syn::ReturnType::Type(
-                                                            a,
-                                                            Box::new(recurse(*t)),
-                                                        )
-                                                    }
-                                                },
-                                                ..p
-                                            },
-                                        )
-                                    }
-                                },
-                                ..s
-                            })
-                        })
-                        .collect(),
-                    ..p.path
-                },
-            },
-        }),
-        syn::Type::Ptr(p) => syn::Type::Ptr(syn::TypePtr {
-            elem: Box::new(recurse(*p.elem)),
-            ..p
-        }),
-        syn::Type::Reference(r) => syn::Type::Reference(syn::TypeReference {
-            elem: Box::new(recurse(*r.elem)),
-            ..r
-        }),
-        syn::Type::Slice(s) => syn::Type::Slice(syn::TypeSlice {
-            elem: Box::new(recurse(*s.elem)),
-            ..s
-        }),
-        syn::Type::Tuple(t) => syn::Type::Tuple(syn::TypeTuple {
-            elems: t
-                .elems
-                .into_pairs()
-                .map(|p| map_pair(p, &mut recurse))
-                .collect(),
-            ..t
-        }),
-        v @ syn::Type::BareFn(_)
-        | v @ syn::Type::ImplTrait(_)
-        | v @ syn::Type::Infer(_)
-        | v @ syn::Type::Macro(_)
-        | v @ syn::Type::Never(_)
-        | v @ syn::Type::Paren(_)
-        | v @ syn::Type::TraitObject(_)
-        | v => v,
-    }
-}
-
-fn impl_upcast(
-    protobuf_mod: &Path,
-    type_ident: &Path,
-    data: &syn::Data,
-    generics: &Generics,
-    allow_generic: bool,
-) -> TokenStream {
-    if allow_generic && generics.type_params().next().is_some() {
-        let mut generics = generics.clone();
-        let mapped: BTreeMap<Ident, Ident> = generics
-            .type_params()
-            .map(|tp| {
-                (
-                    tp.ident.clone(),
-                    Ident::new(&(tp.ident.to_string() + "_mapped"), Span::call_site()),
-                )
-            })
-            .collect();
-
-        let where_clause = generics.make_where_clause();
-        let mut update_where_for_field = |field: &syn::Field| {
-            let ty = map_generics(field.ty.clone(), &mut |i| {
-                mapped.get(&i).cloned().unwrap_or(i)
-            });
-            if ty != field.ty {
-                let field_ty = &field.ty;
-                where_clause
-                    .predicates
-                    .push(parse_quote! {#field_ty: #protobuf_mod::Downcast<#ty>});
-            }
-        };
-
-        match data {
-            syn::Data::Struct(data) => {
-                for field in &data.fields {
-                    update_where_for_field(field);
-                }
-            }
-            syn::Data::Enum(data) => {
-                for variant in &data.variants {
-                    for field in &variant.fields {
-                        update_where_for_field(field);
-                    }
-                }
-            }
-            syn::Data::Union(_) => unimplemented!(),
-        }
-        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-        let mut impl_generics: Generics = parse_quote! {#impl_generics};
-        let mut extra_impl_generics = Vec::new();
-        for p in &impl_generics.params {
-            if let GenericParam::Type(t) = p {
-                extra_impl_generics.push(GenericParam::Type(syn::TypeParam {
-                    ident: mapped.get(&t.ident).unwrap().clone(),
-                    ..t.clone()
-                }));
-            }
-        }
-        impl_generics.params.extend(extra_impl_generics);
-        let mut alt_ty_generics: Generics = parse_quote! { #ty_generics };
-        for p in alt_ty_generics.params.iter_mut() {
-            if let GenericParam::Type(t) = p {
-                t.ident = mapped.get(&t.ident).unwrap().clone();
-            }
-        }
-        quote! {
-            impl #impl_generics #protobuf_mod::Downcast<#type_ident #alt_ty_generics> for #type_ident #ty_generics #where_clause {}
-        }
-    } else {
-        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-        quote! {
-            impl #impl_generics #protobuf_mod::Downcast<#type_ident #ty_generics> for #type_ident #ty_generics #where_clause {}
-        }
-    }
-}
-
 fn derive_transparent_struct(
     input: &DeriveInput,
     modifiers: Modifiers,
@@ -650,7 +442,6 @@ fn derive_transparent_struct(
         impl_for_type,
         bound,
         prost,
-        no_downcast,
         transparent,
         resource_type,
         protobuf_mod,
@@ -661,7 +452,6 @@ fn derive_transparent_struct(
     if impl_for_type.is_some()
         || bound.is_some()
         || *prost
-        || *no_downcast
         || resource_type.is_some()
         || package.is_some()
         || name.is_some()
@@ -776,49 +566,8 @@ fn derive_struct(
             impl #message_impl_generics #protobuf_mod::DefaultEncoding for #type_ident #message_ty_generics #message_where_clause {
                 type Encoding = #protobuf_mod::encoding::MessageEncoding<#protobuf_mod::prost::ProstMessage>;
             }
-
-            impl #message_impl_generics #protobuf_mod::Downcast<#type_ident #message_ty_generics> for #type_ident #message_ty_generics #message_where_clause {}
         });
     }
-
-    let upcast = if modifiers.no_downcast {
-        quote! {}
-    } else if let Some((field_number, field)) = data
-        .fields
-        .iter()
-        .enumerate()
-        .find(|(_, f)| !matches!(f.vis, syn::Visibility::Public(_)))
-    {
-        // Do not implement the generic Downcast traits for structs with non-public
-        // fields, since:
-        // 1. we cannot generate the where clauses for them since their types might
-        //    be private.
-        // 2. those typically imply special handling is required in some way.
-        //
-        // Embed a string in the output so this is somewhat debuggable.
-        let comment = format!(
-            "skipping Downcast implementation for {} due to private field {}",
-            type_ident.to_token_stream(),
-            field
-                .ident
-                .as_ref()
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| field_number.to_string())
-        );
-        let body = impl_upcast(
-            protobuf_mod,
-            &type_ident,
-            &input.data,
-            &none_generics,
-            false,
-        );
-        quote! {
-            const _: &str = #comment;
-            #body
-        }
-    } else {
-        impl_upcast(protobuf_mod, &type_ident, &input.data, &none_generics, true)
-    };
 
     let field_data = field_data(protobuf_mod, &data.fields)?;
 
@@ -840,7 +589,7 @@ fn derive_struct(
         let field_descriptors = describe_fields(protobuf_mod, &field_data);
         describe_message(input, &modifiers, &field_descriptors, &[], &[], true)
     } else {
-        quote! {}
+        TokenStream::new()
     };
 
     let field_numbers = field_data.iter().map(|field| field.field_number);
@@ -874,8 +623,6 @@ fn derive_struct(
             type Encoding = #protobuf_mod::table::TableEncoder;
         }
 
-        #upcast
-
         #describe
     })
 }
@@ -889,7 +636,7 @@ fn describe_fields(protobuf_mod: &Path, field_data: &[FieldData<'_>]) -> Vec<Tok
         let field_encoding = &field.field_encoding_type;
         quote_spanned! {field.span=>
             #protobuf_mod::protofile::FieldDescriptor::new(#field_doc, <#field_encoding as #protobuf_mod::protofile::DescribeField<#field_type>>::FIELD_TYPE, #field_name, #field_number)
-        }
+         }
     }).collect()
 }
 
@@ -906,10 +653,9 @@ fn describe_message(
 
     let ty = &input.ident;
     let name = if let Some(name) = &modifiers.rename {
-        quote!(#name)
+        name.clone()
     } else {
-        let name = input.ident.to_string();
-        quote!(#name)
+        LitStr::new(&input.ident.to_string(), input.ident.span())
     };
 
     let tr = if table_encoder {
@@ -919,7 +665,7 @@ fn describe_message(
     };
 
     let doc = doc_string(&input.attrs);
-    quote! {
+    quote_spanned! {ty.span()=>
         impl #tr for #ty {
             const DESCRIPTION: #protobuf_mod::protofile::MessageDescription<'static> = {
                 let tld = &#protobuf_mod::protofile::TopLevelDescriptor::message(
@@ -941,7 +687,7 @@ fn derive_enum(
     let protobuf_mod = &modifiers.protobuf_mod;
     if modifiers.prost {
         // Prost enums (used for oneof) are not directly mesh compatible.
-        return Ok(quote!());
+        return Ok(TokenStream::new());
     }
 
     if let Some(transparent) = modifiers.transparent {
@@ -1016,10 +762,10 @@ fn derive_enum(
             .map_or(Ok(variant_index as u32 + 1), |n| n.base10_parse())?;
 
         if !variant_numbers.insert(variant_index) {
-            return Err(syn::Error::new(
+            return Err(syn::Error::new_spanned(
                 mods.field_number
                     .as_ref()
-                    .map_or(variant.ident.span(), |n| n.span()),
+                    .map_or_else(|| variant.ident.to_token_stream(), |n| n.to_token_stream()),
                 "duplicate field number",
             ));
         }
@@ -1054,8 +800,8 @@ fn derive_enum(
 
         if modifiers.package.is_some() {
             if mods.field_number.is_none() {
-                return Err(syn::Error::new(
-                    variant.ident.span(),
+                return Err(syn::Error::new_spanned(
+                    &variant.ident,
                     "all variants must have explicit numbers when package is set",
                 ));
             }
@@ -1257,12 +1003,6 @@ fn derive_enum(
         }
     }
 
-    let upcast = if modifiers.no_downcast {
-        quote! {}
-    } else {
-        impl_upcast(protobuf_mod, &type_ident, &input.data, &none_generics, true)
-    };
-
     let describe = if modifiers.package.is_some() {
         let oneof_descriptor = quote!(#protobuf_mod::protofile::OneofDescriptor::new("variant", &[#(#variant_descriptors,)*]));
         describe_message(
@@ -1274,7 +1014,7 @@ fn derive_enum(
             false,
         )
     } else {
-        quote!()
+        TokenStream::new()
     };
 
     Ok(quote! {
@@ -1306,7 +1046,6 @@ fn derive_enum(
             type Encoding = #protobuf_mod::oneof::OneofEncoder;
         }
 
-        #upcast
         #describe
     })
 }

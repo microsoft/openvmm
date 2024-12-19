@@ -71,6 +71,11 @@ impl RuntimeParameters {
     pub fn snp_secrets(&self) -> Option<&[u8]> {
         self.snp_secrets.as_deref()
     }
+
+    /// The memory ranges to use for the private pool
+    pub fn private_pool_ranges(&self) -> &[MemoryRangeWithNode] {
+        &self.parsed_openhcl_boot.private_pool_ranges
+    }
 }
 
 /// Structure that holds the read IGVM parameters from the guest address space.

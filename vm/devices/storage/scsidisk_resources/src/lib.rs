@@ -19,7 +19,7 @@ use vm_resource::ResourceId;
 /// Resource handle for an emulated SCSI disk.
 #[derive(MeshPayload)]
 pub struct SimpleScsiDiskHandle {
-    /// The backing simple disk handle.
+    /// The backing disk handle.
     pub disk: Resource<DiskHandleKind>,
     /// Whether the disk is read only.
     pub read_only: bool,
@@ -63,6 +63,11 @@ pub struct DiskParameters {
     pub max_transfer_length: Option<usize>,
     /// The minimum optimal number of sectors to unmap in a request.
     pub optimal_unmap_sectors: Option<u32>,
+    /// Report LBA status to the guest.
+    ///
+    /// Note that this will always report fully mapped LBAs, since the
+    /// underlying disk implementation has no mechanism to report unmapped LBAs.
+    pub get_lba_status: bool,
 }
 
 /// The disk identity.

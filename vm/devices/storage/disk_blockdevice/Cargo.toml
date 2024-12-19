@@ -33,7 +33,6 @@ tracing.workspace = true
 zerocopy.workspace = true
 blocking.workspace = true
 bitfield-struct.workspace = true
-stackfuture.workspace = true
 
 libc.workspace = true
 io-uring.workspace = true

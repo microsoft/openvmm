@@ -61,15 +61,19 @@ fn test_ttrpc_interface() -> anyhow::Result<()> {
     let kernel_path = artifacts.resolve(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64);
     let initrd_path = artifacts.resolve(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64);
 
-    let conn = UnixStream::connect(&socket_path)?;
+    let ttrpc_path = socket_path.clone();
     DefaultPool::run_with(|driver| async move {
-        let client = mesh_rpc::Client::new(&driver, conn);
+        let client = mesh_rpc::Client::new(
+            &driver,
+            mesh_rpc::client::UnixDialier::new(driver.clone(), ttrpc_path),
+        );
         for i in 0..3 {
             let mut com1_path = std::env::temp_dir();
             com1_path.push(Guid::new_random().to_string());
 
             client
-                .call(
+                .call()
+                .start(
                     vmservice::Vm::CreateVm,
                     vmservice::CreateVmRequest {
                         config: Some(vmservice::VmConfig {
@@ -102,7 +106,6 @@ fn test_ttrpc_interface() -> anyhow::Result<()> {
                     },
                 )
                 .await
-                .unwrap()
                 .unwrap();
 
             let com1 = UnixStream::connect(&com1_path).unwrap();
@@ -119,54 +122,51 @@ fn test_ttrpc_interface() -> anyhow::Result<()> {
 
             assert_eq!(
                 client
-                    .start_call(
-                        vmservice::Vm::WaitVm,
-                        (),
-                        Some(std::time::Duration::from_millis(100)),
-                    )
+                    .call()
+                    .timeout(Some(std::time::Duration::from_millis(100)))
+                    .start(vmservice::Vm::WaitVm, (),)
                     .await
-                    .unwrap()
                     .unwrap_err()
                     .code,
                 mesh_rpc::service::Code::DeadlineExceeded as i32
             );
 
-            let waiter = client.start_call(vmservice::Vm::WaitVm, (), None);
+            let waiter = client.call().start(vmservice::Vm::WaitVm, ());
 
             match i {
                 0 | 2 => {
                     client
-                        .call(vmservice::Vm::ResumeVm, ())
+                        .call()
+                        .start(vmservice::Vm::ResumeVm, ())
                         .await
-                        .unwrap()
                         .unwrap();
 
-                    waiter.await.unwrap().unwrap();
+                    waiter.await.unwrap();
 
                     if i == 0 {
                         client
-                            .call(vmservice::Vm::TeardownVm, ())
+                            .call()
+                            .start(vmservice::Vm::TeardownVm, ())
                             .await
-                            .unwrap()
                             .unwrap();
 
                         client
-                            .call(vmservice::Vm::WaitVm, ())
+                            .call()
+                            .start(vmservice::Vm::WaitVm, ())
                             .await
-                            .unwrap()
                             .unwrap_err();
                     } else {
-                        let _ = client.call(vmservice::Vm::Quit, ()).await;
+                        let _ = client.call().start(vmservice::Vm::Quit, ()).await;
                     }
                 }
                 1 => {
                     client
-                        .call(vmservice::Vm::TeardownVm, ())
+                        .call()
+                        .start(vmservice::Vm::TeardownVm, ())
                         .await
-                        .unwrap()
                         .unwrap();
 
-                    waiter.await.unwrap().unwrap_err();
+                    waiter.await.unwrap_err();
                 }
                 _ => unreachable!(),
             }

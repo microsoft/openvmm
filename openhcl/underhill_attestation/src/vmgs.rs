@@ -3,15 +3,14 @@
 
 //! Implementation of the helper functions for accessing VMGS entries.
 
-use crate::protocol;
-use crate::protocol::vmgs::GuestSecretKey;
-use crate::protocol::vmgs::HardwareKeyProtector;
-use crate::protocol::vmgs::KeyProtector;
-use crate::protocol::vmgs::KeyProtectorById;
-use crate::protocol::vmgs::SecurityProfile;
-use crate::protocol::vmgs::AGENT_DATA_MAX_SIZE;
-use crate::protocol::vmgs::GUEST_SECRET_KEY_MAX_SIZE;
 use guid::Guid;
+use openhcl_attestation_protocol::vmgs::GuestSecretKey;
+use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
+use openhcl_attestation_protocol::vmgs::KeyProtector;
+use openhcl_attestation_protocol::vmgs::KeyProtectorById;
+use openhcl_attestation_protocol::vmgs::SecurityProfile;
+use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
+use openhcl_attestation_protocol::vmgs::GUEST_SECRET_KEY_MAX_SIZE;
 use thiserror::Error;
 use vmgs::FileId;
 use vmgs::Vmgs;
@@ -67,7 +66,7 @@ pub async fn read_key_protector(
     vmgs: &mut Vmgs,
     dek_minimal_size: usize,
 ) -> Result<KeyProtector, ReadFromVmgsError> {
-    use protocol::vmgs::KEY_PROTECTOR_SIZE;
+    use openhcl_attestation_protocol::vmgs::KEY_PROTECTOR_SIZE;
 
     let file_id = FileId::KEY_PROTECTOR;
     match vmgs.read_file(file_id).await {
@@ -202,7 +201,7 @@ pub async fn read_security_profile(vmgs: &mut Vmgs) -> Result<SecurityProfile, R
 pub async fn read_hardware_key_protector(
     vmgs: &mut Vmgs,
 ) -> Result<HardwareKeyProtector, ReadFromVmgsError> {
-    use protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
+    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
 
     let file_id = FileId::HW_KEY_PROTECTOR;
     let data = vmgs

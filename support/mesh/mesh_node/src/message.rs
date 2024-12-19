@@ -271,8 +271,6 @@ impl mesh_protobuf::MessageDecode<'_, Message, Resource> for MessageEncoder {
     }
 }
 
-impl<T: MeshPayload> mesh_protobuf::Downcast<T> for Message {}
-
 #[cfg(test)]
 mod tests {
     use super::Message;

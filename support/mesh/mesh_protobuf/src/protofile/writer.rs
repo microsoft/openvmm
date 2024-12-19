@@ -3,6 +3,8 @@
 
 //! Code to write .proto files from descriptors.
 
+#![cfg(feature = "std")]
+
 use super::FieldDescriptor;
 use super::FieldType;
 use super::MessageDescriptor;
@@ -11,8 +13,12 @@ use super::TopLevelDescriptor;
 use crate::protofile::FieldKind;
 use crate::protofile::MessageDescription;
 use crate::protofile::SequenceType;
+use alloc::borrow::Cow;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 use heck::ToUpperCamelCase;
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io;
 use std::io::Write;
@@ -470,9 +476,12 @@ mod tests {
     use super::DescriptorWriter;
     use crate::protofile::message_description;
     use crate::Protobuf;
-    use std::cell::RefCell;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+    use core::cell::RefCell;
     use std::collections::HashMap;
     use std::io::Write;
+    use std::println;
 
     /// Comment on this guy.
     #[derive(Protobuf)]

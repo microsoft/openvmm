@@ -221,11 +221,11 @@ pub struct GhPrTriggers {
     /// Specify any branches which should be filtered out from the list of
     /// `branches` (supports glob syntax)
     pub exclude_branches: Vec<String>,
-    /// Run the pipeline even if the PR is a draft PR. Defaults to `false`.
-    pub run_on_draft: bool,
     /// Automatically cancel the pipeline run if a new commit lands in the
     /// branch. Defaults to `true`.
     pub auto_cancel: bool,
+    /// Run the pipeline whenever the PR trigger matches the specified types
+    pub types: Vec<String>,
 }
 
 /// Trigger Github Actions pipelines per PR
@@ -245,12 +245,18 @@ pub struct GhCiTriggers {
     pub exclude_tags: Vec<String>,
 }
 
-impl Default for GhPrTriggers {
-    fn default() -> Self {
+impl GhPrTriggers {
+    /// Triggers the pipeline on the default PR events plus when a draft is marked as ready for review.
+    pub fn new_draftable() -> Self {
         Self {
             branches: Vec::new(),
             exclude_branches: Vec::new(),
-            run_on_draft: false,
+            types: vec![
+                "opened".into(),
+                "synchronize".into(),
+                "reopened".into(),
+                "ready_for_review".into(),
+            ],
             auto_cancel: true,
         }
     }
@@ -322,6 +328,7 @@ pub struct Pipeline {
     inject_all_jobs_with: Option<Box<dyn for<'a> Fn(PipelineJob<'a>) -> PipelineJob<'a>>>,
     // backend specific
     ado_name: Option<String>,
+    ado_job_id_overrides: BTreeMap<usize, String>,
     ado_schedule_triggers: Vec<AdoScheduleTriggers>,
     ado_ci_triggers: Option<AdoCiTriggers>,
     ado_pr_triggers: Option<AdoPrTriggers>,
@@ -941,6 +948,17 @@ impl PipelineJob<'_> {
         self
     }
 
+    /// Overrides the id of the job.
+    ///
+    /// Flowey typically generates a reasonable job ID but some use cases that depend
+    /// on the ID may find it useful to override it to something custom.
+    pub fn ado_override_job_id(self, name: impl AsRef<str>) -> Self {
+        self.pipeline
+            .ado_job_id_overrides
+            .insert(self.job_idx, name.as_ref().into());
+        self
+    }
+
     /// (GitHub Actions only) specify which Github runner this job will be run on.
     pub fn gh_set_pool(self, pool: GhRunner) -> Self {
         self.pipeline.jobs[self.job_idx].gh_pool = Some(pool);
@@ -1178,6 +1196,7 @@ pub mod internal {
         pub ado_post_process_yaml_cb:
             Option<Box<dyn FnOnce(serde_yaml::Value) -> serde_yaml::Value>>,
         pub ado_variables: BTreeMap<String, String>,
+        pub ado_job_id_overrides: BTreeMap<usize, String>,
         pub gh_name: Option<String>,
         pub gh_schedule_triggers: Vec<GhScheduleTriggers>,
         pub gh_ci_triggers: Option<GhCiTriggers>,
@@ -1209,6 +1228,7 @@ pub mod internal {
                 ado_resources_repository,
                 ado_post_process_yaml_cb,
                 ado_variables,
+                ado_job_id_overrides,
                 gh_name,
                 gh_schedule_triggers,
                 gh_ci_triggers,
@@ -1240,6 +1260,7 @@ pub mod internal {
                 ado_resources_repository,
                 ado_post_process_yaml_cb,
                 ado_variables,
+                ado_job_id_overrides,
                 gh_name,
                 gh_schedule_triggers,
                 gh_ci_triggers,

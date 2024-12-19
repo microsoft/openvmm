@@ -19,7 +19,22 @@ impl<T: VmbusMessageSource> super::ClientTask<T> {
         // It's the responsibility of the caller to ensure the client is in a state where it's
         // possible to save.
         SavedState {
-            client_state: self.state.into(),
+            client_state: match &self.state {
+                super::ClientState::Disconnected => ClientState::Disconnected,
+                super::ClientState::Connecting(..) => {
+                    unreachable!("Cannot save in Connecting state.")
+                }
+                super::ClientState::Connected(info) => ClientState::Connected {
+                    version: info.version as u32,
+                    feature_flags: info.feature_flags.into(),
+                },
+                super::ClientState::RequestingOffers(..) => {
+                    unreachable!("Cannot save in RequestingOffers state.")
+                }
+                super::ClientState::Disconnecting(..) => {
+                    unreachable!("Cannot save in Disconnecting state.")
+                }
+            },
             channels: self
                 .inner
                 .channels
@@ -70,11 +85,6 @@ impl<T: VmbusMessageSource> super::ClientTask<T> {
             if let Some(channel) = self.inner.channels.get_mut(&ChannelId(saved_channel.id)) {
                 channel.state = saved_channel.state.restore()
             }
-        }
-
-        if let super::ClientState::RequestingOffers(_) = &self.state {
-            self.request_offers_send
-                .send(Some(super::Offer::AllOffersDelivered));
         }
 
         for gpadl in saved_state.gpadls {
@@ -134,29 +144,6 @@ pub enum ClientState {
         #[mesh(2)]
         feature_flags: u32,
     },
-}
-
-impl From<super::ClientState> for ClientState {
-    fn from(state: super::ClientState) -> Self {
-        // It is the responsibility of the caller to ensure the client is in a state where it's
-        // possible to save.
-        match state {
-            super::ClientState::Disconnected => ClientState::Disconnected,
-            super::ClientState::Connecting(..) => {
-                unreachable!("Cannot save in Connecting state.")
-            }
-            super::ClientState::Connected(info) => ClientState::Connected {
-                version: info.version as u32,
-                feature_flags: info.feature_flags.into(),
-            },
-            super::ClientState::RequestingOffers(..) => {
-                unreachable!("Cannot save in RequestingOffers state.")
-            }
-            super::ClientState::Disconnecting(..) => {
-                unreachable!("Cannot save in Disconnecting state.")
-            }
-        }
-    }
 }
 
 impl TryFrom<ClientState> for super::ClientState {

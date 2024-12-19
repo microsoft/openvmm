@@ -11,10 +11,10 @@ chipset_device.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
 
+bitfield-struct.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 open_enum.workspace = true
-bitflags.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true

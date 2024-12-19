@@ -5,7 +5,6 @@
 
 // Crates used by generated code. Reference them explicitly to ensure that
 // automated tools do not remove them.
-use mesh::payload::Downcast;
 use mesh_rpc as _;
 use prost as _;
 
@@ -19,9 +18,6 @@ pub struct InspectResponse2 {
     pub result: inspect::Node,
 }
 
-impl Downcast<InspectResponse> for InspectResponse2 {}
-impl Downcast<InspectResponse2> for InspectResponse {}
-
 /// Equivalent to [`InspectResponse`], but using [`inspect::Value`].
 /// These have equivalent encodings.
 #[derive(Debug, Clone, mesh::MeshPayload)]
@@ -29,9 +25,6 @@ pub struct UpdateResponse2 {
     #[mesh(1)]
     pub new_value: inspect::Value,
 }
-
-impl Downcast<UpdateResponse> for UpdateResponse2 {}
-impl Downcast<UpdateResponse2> for UpdateResponse {}
 
 #[cfg(test)]
 mod tests {
@@ -52,37 +45,32 @@ mod tests {
                 Entry {
                     name: "a".to_string(),
                     node: Node::Unevaluated,
-                    sensitivity: Some(SensitivityLevel::Unspecified),
+                    sensitivity: SensitivityLevel::Unspecified,
                 },
                 Entry {
                     name: "b".to_string(),
                     node: Node::Failed(Error::Update("foo".into())),
-                    sensitivity: Some(SensitivityLevel::Safe),
+                    sensitivity: SensitivityLevel::Safe,
                 },
                 Entry {
                     name: "c".to_string(),
                     node: Node::Value(Value::new(ValueKind::Signed(-1))),
-                    sensitivity: Some(SensitivityLevel::Sensitive),
+                    sensitivity: SensitivityLevel::Sensitive,
                 },
                 Entry {
                     name: "d".to_string(),
                     node: Node::Value(Value::new(ValueKind::Unsigned(2))),
-                    sensitivity: Some(SensitivityLevel::Safe),
+                    sensitivity: SensitivityLevel::Safe,
                 },
                 Entry {
                     name: "e".to_string(),
                     node: Node::Value(Value::new(ValueKind::Bool(true))),
-                    sensitivity: Some(SensitivityLevel::Sensitive),
+                    sensitivity: SensitivityLevel::Sensitive,
                 },
                 Entry {
                     name: "f".to_string(),
                     node: Node::Value(Value::new(ValueKind::String("foo".to_string()))),
-                    sensitivity: Some(SensitivityLevel::Unspecified),
-                },
-                Entry {
-                    name: "g".to_string(),
-                    node: Node::Value(Value::new(ValueKind::Bytes(b"abc".to_vec()))),
-                    sensitivity: None,
+                    sensitivity: SensitivityLevel::Unspecified,
                 },
             ]),
         };

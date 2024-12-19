@@ -50,6 +50,11 @@ function extract_include_lib {
     )
 }
 
+function fatal_error {
+    >&2 echo -e "\033[0;31m$1\033[0m"
+    exit 1
+}
+
 function setup_windows_cross {
     local llvm_version=${OPENVMM_LLVM_VERSION:-${HVLITE_LLVM_VERSION:-14}}
     # NOTE: clang-cl-<ver> is the msvc style arguments, which is what we want. This
@@ -75,7 +80,7 @@ function setup_windows_cross {
 
     if [[ -x /bin/wslpath ]] && [[ $(wslpath -aw "$myfulldir") != '\\wsl.localhost\'* ]];
     then
-        >&2 echo -e "\033[0;33mWARNING: This script is being run from a Windows partition. This will not work. Please move your repo clone to the WSL filesystem.\033[0m"
+        fatal_error "\033[0;33mWARNING: This script is being run from a Windows partition. This will not work. Please move your repo clone to the WSL filesystem.\033[0m"
     fi
 
     local tooldir="$(realpath "$myfulldir/../build_support/windows_cross")"
@@ -89,8 +94,8 @@ function setup_windows_cross {
         export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$tooldir/x86_64-lld-link"
         export AR_x86_64_pc_windows_msvc="$lib"
         export RC_x86_64_pc_windows_msvc="$rc"
-	[ -h $CC_x86_64_pc_windows_msvc ] || ci/error.sh "$CC_x86_64_pc_windows_msvc is not a symbolic link, check git config core.symlinks:\n" || exit 1
-        [ -h $CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER ] || ci/error.sh "$CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER is not a symbolic link, check git config core.symlinks:\n" || exit 1
+	[ -h $CC_x86_64_pc_windows_msvc ] || fatal_error "$CC_x86_64_pc_windows_msvc is not a symbolic link, check git config core.symlinks:\n"
+        [ -h $CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER ] || fatal_error "$CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER is not a symbolic link, check git config core.symlinks:\n"
         echo x86_64
     fi
 
@@ -104,14 +109,14 @@ function setup_windows_cross {
         export CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER="$tooldir/aarch64-lld-link"
         export AR_aarch64_pc_windows_msvc="$lib"
         export RC_aarch64_pc_windows_msvc="$rc"
-	[ -h $CC_aarch64_pc_windows_msvc ] || ci/error.sh "$CC_aarch64_pc_windows_msvc is not a symbolic link, check git config core.symlinks:\n" || exit 1
-        [ -h $CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER ] || ci/error.sh "$CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER is not a symbolic link, check git config core.symlinks:\n" || exit 1
+	[ -h $CC_aarch64_pc_windows_msvc ] || fatal_error "$CC_aarch64_pc_windows_msvc is not a symbolic link, check git config core.symlinks:\n"
+        [ -h $CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER ] || fatal_error "$CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER is not a symbolic link, check git config core.symlinks:\n"
         echo aarch64
     fi
 }
 
 # Check if this file was run directly instead of sourced, and fail with a
 # warning if so.
-(return 0 2>/dev/null) || ci/error.sh "You must run $0 by sourcing it. Try instead:\n  . $0" || exit 1
+(return 0 2>/dev/null) || fatal_error "You must run $0 by sourcing it. Try instead:\n  . $0"
 
 setup_windows_cross

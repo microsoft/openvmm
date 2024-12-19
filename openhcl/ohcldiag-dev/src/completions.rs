@@ -38,9 +38,7 @@ impl CustomCompleterFactory for OhcldiagDevCompleteFactory {
     async fn build(&self, ctx: &clap_dyn_complete::RootCtx<'_>) -> Self::CustomCompleter {
         let vm = ctx.matches.try_get_one::<VmId>("VM").unwrap_or_default();
         let client = if let Some(vm) = vm {
-            new_client(self.driver.clone(), &VmArg { id: vm.clone() })
-                .await
-                .ok()
+            new_client(self.driver.clone(), &VmArg { id: vm.clone() }).ok()
         } else {
             None
         };

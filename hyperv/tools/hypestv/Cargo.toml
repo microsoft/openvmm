@@ -12,11 +12,12 @@ console_relay.workspace = true
 diag_client.workspace = true
 guid.workspace = true
 inspect.workspace = true
+kmsg.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 
 anyhow.workspace = true
-clap.workspace = true
+clap = { workspace = true, features = ["wrap_help"] }
 dirs.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true

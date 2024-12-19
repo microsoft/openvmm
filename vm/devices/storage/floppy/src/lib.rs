@@ -44,7 +44,7 @@ use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
 use chipset_device::ChipsetDevice;
 use core::sync::atomic::Ordering;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use guestmem::ranges::PagedRange;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
@@ -942,31 +942,9 @@ pub enum DriveRibbon {
     /// No drives connected
     None,
     /// Single drive connected
-    Single(#[inspect(rename = "media")] FloppyMedia),
+    Single(#[inspect(rename = "media")] Disk),
     // TODO: consider supporting multiple disks per controller?
     // real hardware can support up to 4 per controller...
-}
-
-/// Floppy disk backing media
-#[derive(Clone)]
-pub struct FloppyMedia(Arc<dyn SimpleDisk>);
-
-impl FloppyMedia {
-    /// Create a new floppy disk media from a backing `SimpleDisk`
-    pub fn new(disk: Arc<dyn SimpleDisk>) -> Self {
-        FloppyMedia(disk)
-    }
-}
-
-impl Inspect for FloppyMedia {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        let mut resp = req.respond();
-        resp.field("drive_type", "DriveType::Floppy")
-            .field("backend_type", self.0.disk_type())
-            .field("backend", &self.0)
-            .field("sector_size", self.0.sector_size())
-            .field("sector_count", self.0.sector_count());
-    }
 }
 
 /// Error returned by `DriveRibbon::from_vec` when too many drives are provided.
@@ -975,11 +953,11 @@ impl Inspect for FloppyMedia {
 pub struct TooManyDrives;
 
 impl DriveRibbon {
-    /// Create a new `DriveRibbon` from a vector of `FloppyMedia`.
-    pub fn from_vec(drives: Vec<FloppyMedia>) -> Result<Self, TooManyDrives> {
-        match drives.as_slice() {
-            [] => Ok(Self::None),
-            [d] => Ok(Self::Single(d.clone())),
+    /// Create a new `DriveRibbon` from a vector of `Disk`s.
+    pub fn from_vec(drives: Vec<Disk>) -> Result<Self, TooManyDrives> {
+        match drives.len() {
+            0 => Ok(Self::None),
+            1 => Ok(Self::Single(drives.into_iter().next().unwrap())),
             _ => Err(TooManyDrives),
         }
     }
@@ -1027,7 +1005,6 @@ impl FloppyDiskController {
                             0
                         }
                         DriveRibbon::Single(disk) => {
-                            let FloppyMedia(disk) = disk;
                             let file_size = disk.sector_count() * disk.sector_size() as u64;
 
                             let image_type = FloppyImageType::from_file_size(file_size)
@@ -1037,7 +1014,7 @@ impl FloppyDiskController {
                     }
                 },
                 match &disk_drive {
-                    DriveRibbon::Single(disk) => disk.0.is_read_only(),
+                    DriveRibbon::Single(disk) => disk.is_read_only(),
                     DriveRibbon::None => false,
                 },
             ),
@@ -1052,14 +1029,12 @@ impl FloppyDiskController {
     /// Sets the asynchronous IO to be polled in `poll_device`.
     fn set_io<F, Fut>(&mut self, f: F)
     where
-        F: FnOnce(Arc<dyn SimpleDisk>) -> Fut,
+        F: FnOnce(Disk) -> Fut,
         Fut: 'static + Future<Output = Result<(), disk_backend::DiskError>> + Send,
     {
         let DriveRibbon::Single(disk) = &self.disk_drive else {
             panic!();
         };
-
-        let FloppyMedia(disk) = disk;
 
         let fut = (f)(disk.clone());
         assert!(self.io.is_none());
@@ -1127,8 +1102,8 @@ impl FloppyDiskController {
             }
         };
 
-        let size = (((buffer.size + STANDARD_FLOPPY_SECTOR_SIZE - 1) / STANDARD_FLOPPY_SECTOR_SIZE)
-            * STANDARD_FLOPPY_SECTOR_SIZE) as u32;
+        let size = (buffer.size.div_ceil(STANDARD_FLOPPY_SECTOR_SIZE) * STANDARD_FLOPPY_SECTOR_SIZE)
+            as u32;
 
         let buffer_ptr = &self.command_buffer.buffer[0..size as usize][..size as usize];
 
@@ -1626,8 +1601,7 @@ impl FloppyDiskController {
         let lba = (self.state.position).chs_to_lba(self.state.internals.sectors_per_track) as u64;
 
         let size = {
-            let num = (((size_hint + STANDARD_FLOPPY_SECTOR_SIZE - 1)
-                / STANDARD_FLOPPY_SECTOR_SIZE)
+            let num = (size_hint.div_ceil(STANDARD_FLOPPY_SECTOR_SIZE)
                 * STANDARD_FLOPPY_SECTOR_SIZE) as u32;
             if num < STANDARD_FLOPPY_SECTOR_SIZE as u32 {
                 STANDARD_FLOPPY_SECTOR_SIZE as u32
@@ -1713,8 +1687,7 @@ impl FloppyDiskController {
             }
         };
 
-        let size = ((buffer.size + STANDARD_FLOPPY_SECTOR_SIZE - 1) / STANDARD_FLOPPY_SECTOR_SIZE)
-            * STANDARD_FLOPPY_SECTOR_SIZE;
+        let size = buffer.size.div_ceil(STANDARD_FLOPPY_SECTOR_SIZE) * STANDARD_FLOPPY_SECTOR_SIZE;
 
         let command_buffer = self.command_buffer.access();
 
@@ -1736,8 +1709,6 @@ impl FloppyDiskController {
             tracelimit::error_ratelimited!("No disk");
             return false;
         };
-
-        let FloppyMedia(disk) = disk;
 
         if disk.is_read_only() {
             tracelimit::error_ratelimited!("Read only");
@@ -1775,8 +1746,6 @@ impl FloppyDiskController {
             return false;
         };
 
-        let FloppyMedia(disk) = disk;
-
         if disk.is_read_only() {
             tracelimit::error_ratelimited!("Read only");
             return false;
@@ -1790,8 +1759,8 @@ impl FloppyDiskController {
             }
         };
 
-        let size = (((buffer.size + STANDARD_FLOPPY_SECTOR_SIZE - 1) / STANDARD_FLOPPY_SECTOR_SIZE)
-            * STANDARD_FLOPPY_SECTOR_SIZE) as u32;
+        let size = (buffer.size.div_ceil(STANDARD_FLOPPY_SECTOR_SIZE) * STANDARD_FLOPPY_SECTOR_SIZE)
+            as u32;
 
         let command_buffer = self.command_buffer.access();
 

@@ -181,7 +181,7 @@ fn parse_probed_bars(probed_bars: [u32; 6]) -> [u32; 6] {
     let mut i = 0;
     while i < probed_bars.len() {
         bar_flags[i] = probed_bars[i] & 0xf;
-        if probed_bars[i] & cfg_space::BarEncodingBits::TYPE_64_BIT.bits() != 0 {
+        if cfg_space::BarEncodingBits::from_bits(probed_bars[i]).type_64_bit() {
             i += 2;
         } else {
             i += 1;
@@ -431,8 +431,8 @@ impl PciConfigSpace for AssignedPciDevice {
         match offset {
             4 => {
                 // Power on/off the device if there is no power cap.
-                let command = value as u16;
-                if command & cfg_space::Command::MMIO_ENABLED.bits() != 0 {
+                let command = cfg_space::Command::from_bits(value as u16);
+                if command.mmio_enabled() {
                     if self.power_reg.is_none() && self.power_state != 0 {
                         tracing::info!("implicitly transitioning to D0");
                         self.set_power_state(0);
@@ -448,7 +448,7 @@ impl PciConfigSpace for AssignedPciDevice {
                     }
                 }
                 self.write_phys_config(offset, value);
-                self.command = command;
+                self.command = command.into_bits();
             }
 
             0x10 | 0x14 | 0x18 | 0x1c | 0x20 | 0x24 => {
@@ -458,9 +458,7 @@ impl PciConfigSpace for AssignedPciDevice {
             _ => {
                 if Some(offset as u32) == self.power_reg {
                     let power_state = value & 3;
-                    if power_state == 0
-                        && self.command & cfg_space::Command::MMIO_ENABLED.bits() != 0
-                    {
+                    if power_state == 0 && cfg_space::Command::from(self.command).mmio_enabled() {
                         self.set_power_state(power_state);
                         self.enable_mmio();
                     } else {

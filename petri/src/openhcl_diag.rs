@@ -5,17 +5,12 @@ use anyhow::Context;
 use diag_client::DiagClient;
 use diag_client::ExitStatus;
 use futures::io::AllowStdIo;
-use get_resources::ged::GuestEmulationRequest;
-use mesh::rpc::RpcSend;
-use mesh::Sender;
-use pal_async::DefaultDriver;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 pub(crate) struct OpenHclDiagHandler {
     pub(crate) vtl2_vsock_path: PathBuf,
-    pub(crate) ged_send: Arc<Sender<GuestEmulationRequest>>,
+    pub(crate) client: DiagClient,
 }
 
 /// The result of running a VTL2 command.
@@ -36,19 +31,15 @@ pub(crate) struct Vtl2CommandResult {
 
 impl OpenHclDiagHandler {
     pub(crate) async fn wait_for_vtl2(&self) -> anyhow::Result<()> {
-        self.ged_send
-            .call(GuestEmulationRequest::WaitForConnect, ())
-            .await
-            .context("failed to connect to VTL2")
+        self.client.wait_for_server().await
     }
 
     pub(crate) async fn run_vtl2_command(
         &self,
-        driver: &DefaultDriver,
         command: impl AsRef<str>,
         args: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> anyhow::Result<Vtl2CommandResult> {
-        let client = self.diag_client(driver).await?;
+        let client = self.diag_client().await?;
         let mut proc = client
             .exec(command.as_ref())
             .args(args)
@@ -82,13 +73,8 @@ impl OpenHclDiagHandler {
         })
     }
 
-    pub(crate) async fn core_dump(
-        &self,
-        driver: &DefaultDriver,
-        name: &str,
-        path: &std::path::Path,
-    ) -> anyhow::Result<()> {
-        let client = self.diag_client(driver).await?;
+    pub(crate) async fn core_dump(&self, name: &str, path: &std::path::Path) -> anyhow::Result<()> {
+        let client = self.diag_client().await?;
         let pid = client.get_pid(name).await?;
         client
             .core_dump(
@@ -100,24 +86,22 @@ impl OpenHclDiagHandler {
             .await
     }
 
-    pub(crate) async fn crash(&self, driver: &DefaultDriver, name: &str) -> anyhow::Result<()> {
-        let client = self.diag_client(driver).await?;
+    pub(crate) async fn crash(&self, name: &str) -> anyhow::Result<()> {
+        let client = self.diag_client().await?;
         let pid = client.get_pid(name).await?;
         client.crash(pid).await
     }
 
-    pub(crate) async fn test_inspect(&self, driver: &DefaultDriver) -> anyhow::Result<()> {
-        self.diag_client(driver)
+    pub(crate) async fn test_inspect(&self) -> anyhow::Result<()> {
+        self.diag_client()
             .await?
             .inspect("", None, None)
             .await
             .map(|_| ())
     }
 
-    async fn diag_client(&self, driver: &DefaultDriver) -> anyhow::Result<DiagClient> {
+    async fn diag_client(&self) -> anyhow::Result<&DiagClient> {
         self.wait_for_vtl2().await?;
-        DiagClient::from_hybrid_vsock(driver.clone(), &self.vtl2_vsock_path)
-            .await
-            .map_err(anyhow::Error::from)
+        Ok(&self.client)
     }
 }

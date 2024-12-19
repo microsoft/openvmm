@@ -2765,7 +2765,6 @@ impl Emulator {
     /// This routine recalculates the VGA access range. It should be
     /// called when the graphics controller misc register value is
     /// changed.
-
     fn calculate_vga_address_range(&mut self) {
         let range_start;
         let range_end;

@@ -177,7 +177,7 @@ fn nvme_reservation_report(
 )> {
     // One page should be good enough for most cases. Just in case let caller set bigger buffer size.
     let size = std::cmp::max(size, PAGE_SIZE);
-    let mut buffer = vec![ZERO_PAGE; (size + PAGE_SIZE - 1) / PAGE_SIZE];
+    let mut buffer = vec![ZERO_PAGE; size.div_ceil(PAGE_SIZE)];
     let buffer = &mut buffer.as_bytes_mut()[..size];
     let cmd = NvmeCommand {
         ns_id,
@@ -246,7 +246,7 @@ pub fn nvme_identify_namespace_data(
     ns_id: u32,
 ) -> io::Result<nvm::IdentifyNamespace> {
     let size = size_of::<nvm::IdentifyNamespace>();
-    let mut buffer = vec![ZERO_PAGE; (size + PAGE_SIZE - 1) / PAGE_SIZE];
+    let mut buffer = vec![ZERO_PAGE; size.div_ceil(PAGE_SIZE)];
     let buffer = &mut buffer.as_bytes_mut()[..size];
     let cmd = NvmeCommand {
         ns_id,
@@ -270,7 +270,7 @@ pub fn nvme_identify_namespace_data(
 
 pub fn nvme_identify_controller_data(file: &fs::File) -> io::Result<nvme_spec::IdentifyController> {
     let size = size_of::<nvme_spec::IdentifyController>();
-    let mut buffer = vec![ZERO_PAGE; (size + PAGE_SIZE - 1) / PAGE_SIZE];
+    let mut buffer = vec![ZERO_PAGE; size.div_ceil(PAGE_SIZE)];
     let buffer = &mut buffer.as_bytes_mut()[..size];
     let cmd = NvmeCommand {
         cdw10: nvme_spec::Cdw10Identify::new()

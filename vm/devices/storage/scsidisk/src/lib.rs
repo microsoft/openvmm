@@ -16,8 +16,9 @@ mod tests;
 
 pub use inquiry::INQUIRY_DATA_TEMPLATE;
 
+use disk_backend::Disk;
 use disk_backend::DiskError;
-use disk_backend::SimpleDisk;
+use disk_backend::UnmapBehavior;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
@@ -46,7 +47,6 @@ use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use thiserror::Error;
 use tracing::Instrument;
 use tracing_helpers::ErrorValueExt;
@@ -106,13 +106,12 @@ impl ScsiSaveRestore for SimpleScsiDisk {
 }
 
 pub struct SimpleScsiDisk {
-    disk: Arc<dyn SimpleDisk>,
+    disk: Disk,
     sector_shift: u8,
     physical_extra_shift: u8,
     sector_size: u32,
     sense_data: SenseDataSlot,
     scsi_parameters: ScsiParameters,
-    support_get_lba_status: bool,
     support_pr: bool,
     last_sector_count: AtomicU64,
 }
@@ -125,6 +124,7 @@ struct ScsiParameters {
     write_cache_enabled: bool,
     support_odx: bool,
     support_unmap: bool,
+    support_get_lba_status: bool,
     maximum_transfer_length: usize,
     identity: DiskIdentity,
     serial_number: Vec<u8>,
@@ -133,7 +133,7 @@ struct ScsiParameters {
 }
 
 impl SimpleScsiDisk {
-    pub fn new(disk: Arc<dyn SimpleDisk>, disk_parameters: DiskParameters) -> Self {
+    pub fn new(disk: Disk, disk_parameters: DiskParameters) -> Self {
         let sector_size = disk.sector_size();
         let sector_shift = sector_size.trailing_zeros() as u8;
         let mut sector_count = disk.sector_count();
@@ -159,6 +159,7 @@ impl SimpleScsiDisk {
                 unmap,
                 max_transfer_length,
                 optimal_unmap_sectors,
+                get_lba_status,
             } = disk_parameters;
 
             fn nonzero_id(id: [u8; 16]) -> Option<[u8; 16]> {
@@ -183,7 +184,8 @@ impl SimpleScsiDisk {
                 support_fua: fua.unwrap_or_else(|| disk.is_fua_respected()),
                 write_cache_enabled: write_cache.unwrap_or(true),
                 support_odx: odx.unwrap_or(false),
-                support_unmap: unmap.unwrap_or(disk.unmap().is_some()),
+                support_get_lba_status: get_lba_status,
+                support_unmap: unmap.unwrap_or(disk.unmap_behavior() != UnmapBehavior::Ignored),
                 maximum_transfer_length: max_transfer_length.unwrap_or(8 * 1024 * 1024),
                 identity: identity.unwrap_or_else(DiskIdentity::msft),
                 serial_number,
@@ -194,7 +196,6 @@ impl SimpleScsiDisk {
 
         let physical_extra_shift =
             scsi_parameters.physical_sector_size.trailing_zeros() as u8 - sector_shift;
-        let support_get_lba_status = disk.lba_status().is_some();
         let support_pr = disk.pr().is_some();
 
         SimpleScsiDisk {
@@ -204,7 +205,6 @@ impl SimpleScsiDisk {
             sector_size,
             sense_data: Default::default(),
             scsi_parameters,
-            support_get_lba_status,
             support_pr,
             last_sector_count: AtomicU64::new(sector_count),
         }
@@ -573,7 +573,7 @@ impl SimpleScsiDisk {
                 Ok(tx)
             }
             scsi::SERVICE_ACTION_GET_LBA_STATUS => {
-                if !self.support_get_lba_status {
+                if !self.scsi_parameters.support_get_lba_status {
                     tracing::debug!("doesn't support get lba status");
                     Err(ScsiError::IllegalRequest(
                         AdditionalSenseCode::ILLEGAL_COMMAND,
@@ -1299,9 +1299,7 @@ impl Inspect for SimpleScsiDisk {
                 self.last_sector_count.load(Ordering::Relaxed),
             )
             .field("scsi_parameters", &self.scsi_parameters)
-            .field("lba", self.support_get_lba_status)
             .field("pr", self.support_pr)
-            .field("backend_type", self.disk.disk_type())
             .field("backend", &self.disk);
     }
 }

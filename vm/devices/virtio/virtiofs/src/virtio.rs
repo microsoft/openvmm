@@ -228,7 +228,7 @@ struct VirtioReplySender<'a> {
     mem: &'a GuestMemory,
 }
 
-impl<'a> fuse::ReplySender for VirtioReplySender<'a> {
+impl fuse::ReplySender for VirtioReplySender<'_> {
     fn send(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
         let mut writer = VirtioPayloadWriter::new(self.mem, &self.work);
         let mut size = 0;

@@ -86,7 +86,7 @@ pub enum SignatureList<'a> {
     X509(SignatureData<X509Data<'a>>),
 }
 
-impl<'a> SignatureList<'a> {
+impl SignatureList<'_> {
     /// Serialize the signature list as a `EFI_SIGNATURE_LIST` into a vec
     pub fn extend_as_spec_signature_list(&self, res: &mut Vec<u8>) {
         let (signature_type, sig_data_size, multiplier) = match &self {

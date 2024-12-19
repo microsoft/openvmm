@@ -6,8 +6,8 @@
 use crate::Device;
 use async_trait::async_trait;
 use net_backend::resolve::ResolveEndpointParams;
+use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
-use virtio::VirtioDevice;
 use virtio_resources::net::VirtioNetHandle;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::VirtioDeviceHandle;
@@ -24,7 +24,7 @@ declare_static_async_resolver! {
 
 #[async_trait]
 impl AsyncResolveResource<VirtioDeviceHandle, VirtioNetHandle> for VirtioNetResolver {
-    type Output = Box<dyn VirtioDevice>;
+    type Output = ResolvedVirtioDevice;
     type Error = anyhow::Error;
 
     async fn resolve(
@@ -54,6 +54,6 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioNetHandle> for VirtioNetReso
             resource.mac_address,
         );
 
-        Ok(Box::new(device))
+        Ok(device.into())
     }
 }

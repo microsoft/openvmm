@@ -82,7 +82,9 @@ impl<T: PciConfigSpace + MmioIntercept> EmulatedDevice<T> {
         device
             .pci_cfg_write(
                 0x4,
-                pci_core::spec::cfg_space::Command::MMIO_ENABLED.bits() as u32,
+                pci_core::spec::cfg_space::Command::new()
+                    .with_mmio_enabled(true)
+                    .into_bits() as u32,
             )
             .unwrap();
 
@@ -251,6 +253,10 @@ unsafe impl MappedDmaTarget for DmaBuffer {
     fn pfns(&self) -> &[u64] {
         &self.pfns
     }
+
+    fn pfn_bias(&self) -> u64 {
+        0
+    }
 }
 
 pub struct EmulatedDmaAllocator {
@@ -262,6 +268,24 @@ impl HostDmaAllocator for EmulatedDmaAllocator {
         let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);
         memory.as_slice().atomic_fill(0);
         Ok(memory)
+    }
+
+    fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        anyhow::bail!("restore is not supported for emulated DMA")
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[cfg(feature = "vfio")]
+impl crate::vfio::VfioDmaBuffer for EmulatedDmaAllocator {
+    fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
+        Ok(MemoryBlock::new(
+            self.shared_mem.alloc(len).context("out of memory")?,
+        ))
+    }
+
+    fn restore_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        anyhow::bail!("restore is not supported for emulated DMA")
     }
 }
 

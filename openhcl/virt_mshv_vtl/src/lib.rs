@@ -135,7 +135,7 @@ pub enum Error {
     #[error("failed to map overlay page")]
     MapOverlay(#[source] std::io::Error),
     #[error("failed to allocate shared visibility pages for overlay")]
-    AllocateSharedVisOverlay(#[source] shared_pool_alloc::SharedPoolOutOfMemory),
+    AllocateSharedVisOverlay(#[source] page_pool_alloc::Error),
     #[error("failed to open msr device")]
     OpenMsr(#[source] std::io::Error),
     #[error("cpuid did not contain valid TSC frequency information")]
@@ -218,7 +218,7 @@ struct UhPartitionInner {
     isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(skip)]
-    shared_vis_pages_pool: Option<shared_pool_alloc::SharedPoolAllocator>,
+    shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
     #[inspect(with = "inspect::AtomicMut")]
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
@@ -540,7 +540,7 @@ impl UhProcessorBox {
         &'a mut self,
         driver: &impl Driver,
         control: Option<&'a mut IdleControl>,
-    ) -> Result<UhProcessor<'_, T>, Error> {
+    ) -> Result<UhProcessor<'a, T>, Error> {
         if let Some(control) = &control {
             let vp_index = self.vp_info.base.vp_index;
 
@@ -1169,7 +1169,7 @@ pub struct UhLateParams<'a> {
     /// An object to call to change host visibility on guest memory.
     pub isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     /// Allocator for shared visibility pages.
-    pub shared_vis_pages_pool: Option<shared_pool_alloc::SharedPoolAllocator>,
+    pub shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
 }
 
 /// Trait for CVM-related protections on guest memory.

@@ -158,6 +158,7 @@ impl SimpleVmbusDevice for GuestCrashDevice {
     fn open(
         &mut self,
         channel: vmbus_channel::RawAsyncChannel<GpadlRingMem>,
+        _guest_memory: guestmem::GuestMemory,
     ) -> Result<Self::Runner, ChannelOpenError> {
         let pipe = MessagePipe::new(channel)?;
         Ok(GuestCrashChannel {

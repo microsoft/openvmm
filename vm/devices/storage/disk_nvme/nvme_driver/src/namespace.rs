@@ -5,6 +5,7 @@
 
 use super::spec;
 use super::spec::nvm;
+use crate::driver::save_restore::SavedNamespaceData;
 use crate::driver::IoIssuers;
 use crate::queue_pair::admin_cmd;
 use crate::queue_pair::Issuer;
@@ -21,7 +22,6 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::Instrument;
 use vmcore::vm_task::VmTaskDriver;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
@@ -76,12 +76,33 @@ impl Namespace {
         rescan_event: Arc<event_listener::Event>,
         controller_identify: Arc<spec::IdentifyController>,
         io_issuers: &Arc<IoIssuers>,
-        device_id: &str,
         nsid: u32,
     ) -> Result<Self, NamespaceError> {
         let identify = identify_namespace(&admin, nsid)
             .await
             .map_err(NamespaceError::Request)?;
+
+        Namespace::new_from_identify(
+            driver,
+            admin,
+            rescan_event,
+            controller_identify.clone(),
+            io_issuers,
+            nsid,
+            identify,
+        )
+    }
+
+    /// Create Namespace object from Identify data structure.
+    fn new_from_identify(
+        driver: &VmTaskDriver,
+        admin: Arc<Issuer>,
+        rescan_event: Arc<event_listener::Event>,
+        controller_identify: Arc<spec::IdentifyController>,
+        io_issuers: &Arc<IoIssuers>,
+        nsid: u32,
+        identify: nvm::IdentifyNamespace,
+    ) -> Result<Self, NamespaceError> {
         if identify.nsze == 0 {
             return Err(NamespaceError::NotFound);
         }
@@ -142,11 +163,6 @@ impl Namespace {
                         .poll_for_rescans(&mut ctx, &admin, nsid, &rescan_event)
                         .await
                 }
-                .instrument(tracing::info_span!(
-                    "nvme_poll_rescan",
-                    device_id,
-                    nsid,
-                ))
             })
             .detach();
 
@@ -498,6 +514,47 @@ impl Namespace {
             .await?;
 
         Ok(())
+    }
+
+    /// Return Namespace ID.
+    pub fn nsid(&self) -> u32 {
+        self.nsid
+    }
+
+    /// Save namespace object data for servicing.
+    /// Initially we will re-query namespace state after restore
+    /// to avoid possible contention if namespace was changed
+    /// during servicing.
+    /// TODO: Re-enable namespace save/restore once we confirm
+    /// that we can process namespace change AEN.
+    #[allow(dead_code)]
+    pub fn save(&self) -> anyhow::Result<SavedNamespaceData> {
+        Ok(SavedNamespaceData {
+            nsid: self.nsid,
+            identify_ns: self.state.identify.lock().clone(),
+        })
+    }
+
+    /// Restore namespace object data after servicing.
+    pub(super) fn restore(
+        driver: &VmTaskDriver,
+        admin: Arc<Issuer>,
+        rescan_event: Arc<event_listener::Event>,
+        identify_ctrl: Arc<spec::IdentifyController>,
+        io_issuers: &Arc<IoIssuers>,
+        saved_state: &SavedNamespaceData,
+    ) -> Result<Self, NamespaceError> {
+        let SavedNamespaceData { nsid, identify_ns } = saved_state;
+
+        Namespace::new_from_identify(
+            driver,
+            admin,
+            rescan_event,
+            identify_ctrl.clone(),
+            io_issuers,
+            *nsid,
+            identify_ns.clone(),
+        )
     }
 }
 

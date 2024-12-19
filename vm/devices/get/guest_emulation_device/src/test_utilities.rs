@@ -12,6 +12,7 @@ use get_protocol::HostRequests;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::UefiConsoleMode;
 use get_resources::ged::GuestEmulationRequest;
+use guestmem::GuestMemory;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -263,9 +264,7 @@ pub fn create_host_channel(
         None,
         recv,
         None,
-        Some(Arc::new(
-            disk_ramdisk::RamDisk::new(TEST_VMGS_CAPACITY as u64, false).unwrap(),
-        )),
+        Some(disklayer_ram::ram_disk(TEST_VMGS_CAPACITY as u64, false).unwrap()),
     );
 
     if let Some(ged_responses) = ged_responses {
@@ -284,7 +283,7 @@ pub fn create_host_channel(
         task.insert(
             spawn,
             "automated GED host channel",
-            GedChannel::new(host_vmbus),
+            GedChannel::new(host_vmbus, GuestMemory::empty()),
         );
         task.start();
 

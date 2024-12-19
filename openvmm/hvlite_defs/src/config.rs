@@ -307,10 +307,8 @@ pub enum PcatBootDevice {
 
 #[derive(Eq, PartialEq, Debug, Copy, Clone, MeshPayload)]
 pub enum VirtioBus {
-    Auto,
     Mmio,
     Pci,
-    Vpci,
 }
 
 /// Policy for the partition when mapping VTL0 memory late.

@@ -11,7 +11,6 @@ use clap::ArgGroup;
 use clap::Args;
 use clap::Parser;
 use clap::Subcommand;
-use diag_client::ConnectError;
 use diag_client::DiagClient;
 use diag_client::PacketCaptureOperation;
 use futures::io::AllowStdIo;
@@ -34,6 +33,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use unicycle::FuturesUnordered;
 
 #[derive(Parser)]
@@ -310,7 +311,6 @@ pub struct VmArg {
 enum VmId {
     #[cfg(windows)]
     HyperV(String),
-    Unix(PathBuf),
     HybridVsock(PathBuf),
 }
 
@@ -318,9 +318,7 @@ impl FromStr for VmId {
     type Err = Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some(s) = s.strip_prefix("unix:") {
-            Ok(Self::Unix(Path::new(s).to_owned()))
-        } else if let Some(s) = s.strip_prefix("vsock:") {
+        if let Some(s) = s.strip_prefix("vsock:") {
             Ok(Self::HybridVsock(Path::new(s).to_owned()))
         } else {
             #[cfg(windows)]
@@ -405,20 +403,21 @@ async fn run(
     std::process::exit(status.exit_code());
 }
 
-async fn new_client(
-    driver: impl Driver + Spawn,
-    input: &VmArg,
-) -> Result<DiagClient, ConnectError> {
-    match &input.id {
+fn new_client(driver: impl Driver + Spawn + Clone, input: &VmArg) -> anyhow::Result<DiagClient> {
+    let client = match &input.id {
         #[cfg(windows)]
-        VmId::HyperV(name) => DiagClient::from_hyperv_name(driver, name).await,
-        VmId::Unix(path) => DiagClient::from_socket(driver, path).await,
-        VmId::HybridVsock(path) => DiagClient::from_hybrid_vsock(driver, path).await,
-    }
+        VmId::HyperV(name) => DiagClient::from_hyperv_name(driver, name)?,
+        VmId::HybridVsock(path) => DiagClient::from_hybrid_vsock(driver, path),
+    };
+    Ok(client)
 }
 
 pub fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     term::enable_vt_and_utf8();
     DefaultPool::run_with(|driver| async move {
         let Options { vm, command } = Options::parse();
@@ -435,7 +434,7 @@ pub fn main() -> anyhow::Result<()> {
             }
             Command::Completions(cmd) => cmd.run()?,
             Command::Shell { shell, args } => {
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
 
                 // Set TERM to ensure function keys and other characters work.
                 let term = std::env::var("TERM");
@@ -473,7 +472,7 @@ pub fn main() -> anyhow::Result<()> {
                 }
             }
             Command::Run { command, args } => {
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
                 run(&client, command, &args).await?;
             }
             Command::Inspect {
@@ -488,7 +487,7 @@ pub fn main() -> anyhow::Result<()> {
                 path,
                 update,
             } => {
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
 
                 if let Some(update) = update {
                     let Some(path) = path else {
@@ -552,12 +551,12 @@ pub fn main() -> anyhow::Result<()> {
                 eprintln!(
                     "`update` is deprecated - please use `ohcldiag-dev inspect <path> -u <new value>`"
                 );
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
                 let value = client.update(path, value).await?;
                 println!("{value}");
             }
             Command::Start { env, unset, args } => {
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
 
                 let env = env
                     .into_iter()
@@ -617,26 +616,16 @@ pub fn main() -> anyhow::Result<()> {
                     eprintln!("Connecting to the diagnostics server.");
                 }
 
-                let mut timer = PolledTimer::new(&driver);
+                let client = new_client(driver.clone(), &vm)?;
                 'connect: loop {
-                    let client = match new_client(driver.clone(), &vm).await {
-                        Ok(client) => client,
-                        Err(err) => {
-                            if reconnect {
-                                if let Some(timeout) = err.retry_timeout() {
-                                    timer.sleep(timeout).await;
-                                    continue 'connect;
-                                }
-                            }
-                            return Err(err.into());
-                        }
-                    };
-
+                    if reconnect {
+                        client.wait_for_server().await?;
+                    }
+                    let mut file_stream = client.kmsg(follow).await?;
                     if verbose {
                         eprintln!("Connected.");
                     }
 
-                    let mut file_stream = client.kmsg(follow).await?;
                     while let Some(data) = file_stream.next().await {
                         match data {
                             Ok(data) => {
@@ -666,14 +655,14 @@ pub fn main() -> anyhow::Result<()> {
                 }
             }
             Command::File { follow, file_path } => {
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
                 let stream = client.read_file(follow, file_path).await?;
                 futures::io::copy(stream, &mut AllowStdIo::new(term::raw_stdout()))
                     .await
                     .context("failed to copy trace file")?;
             }
             Command::Gdbserver { multi, pid } => {
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
                 // Pass the --once flag so that gdbserver exits after the stdio
                 // pipes are closed. Otherwise, gdbserver spins in a tight loop
                 // and never exits.
@@ -700,7 +689,6 @@ pub fn main() -> anyhow::Result<()> {
                             diag_client::hyperv::connect_vsock(&driver, vm_id, port).await?;
                         PolledSocket::new(&driver, socket2::Socket::from(stream))?
                     }
-                    _ => anyhow::bail!("Unsupported VM type."),
                 };
 
                 let vsock = Arc::new(vsock.into_inner());
@@ -722,7 +710,7 @@ pub fn main() -> anyhow::Result<()> {
                 pid,
                 name,
             } => {
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
                 let pid = if let Some(name) = name {
                     client.get_pid(&name).await?
                 } else {
@@ -740,7 +728,7 @@ pub fn main() -> anyhow::Result<()> {
                 seconds,
                 snaplen,
             } => {
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
                 println!(
                     "Starting network packet capture. Wait for timeout or Ctrl-C to quit anytime."
                 );
@@ -772,7 +760,7 @@ pub fn main() -> anyhow::Result<()> {
                 dst,
             } => {
                 ensure_not_terminal(&dst)?;
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
                 let pid = if let Some(name) = name {
                     client.get_pid(&name).await?
                 } else {
@@ -790,13 +778,13 @@ pub fn main() -> anyhow::Result<()> {
                     .await?;
             }
             Command::Restart => {
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
                 client.restart().await?;
             }
             Command::PerfTrace { output } => {
                 ensure_not_terminal(&output)?;
 
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
 
                 // Flush the perf trace.
                 client
@@ -845,7 +833,6 @@ pub fn main() -> anyhow::Result<()> {
                                     .await?;
                             PolledSocket::new(&driver, socket2::Socket::from(stream))?
                         }
-                        _ => anyhow::bail!("Unsupported VM type."),
                     };
                     println!("VSOCK connect to port {:?}", vsock_port);
 
@@ -872,16 +859,16 @@ pub fn main() -> anyhow::Result<()> {
                 }
             }
             Command::Pause => {
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
                 client.pause().await?;
             }
             Command::Resume => {
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
                 client.resume().await?;
             }
             Command::DumpSavedState { output } => {
                 ensure_not_terminal(&output)?;
-                let client = new_client(driver.clone(), &vm).await?;
+                let client = new_client(driver.clone(), &vm)?;
                 let mut file = create_or_stderr(&output)?;
                 file.write_all(&client.dump_saved_state().await?)?;
             }

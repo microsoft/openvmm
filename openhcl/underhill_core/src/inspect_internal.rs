@@ -115,7 +115,7 @@ fn net_nic(
             if let Node::Dir(nodes) = vm_inspection.results() {
                 defer.respond(|resp| {
                     for entry in nodes {
-                        let sensitivity = entry.sensitivity.unwrap_or_default();
+                        let sensitivity = entry.sensitivity;
                         if [
                             "endpoint",
                             "ndis_config",
@@ -132,8 +132,7 @@ fn net_nic(
                             resp.sensitivity_child("queues", sensitivity, |req| {
                                 let mut resp = req.respond();
                                 for queue_entry in queues {
-                                    let queue_sensitivity =
-                                        queue_entry.sensitivity.unwrap_or_default();
+                                    let queue_sensitivity = queue_entry.sensitivity;
                                     resp.sensitivity_child(
                                         &queue_entry.name,
                                         queue_sensitivity,
@@ -184,7 +183,7 @@ fn flatten_with_prefix(
                     resp,
                     &next_prefix,
                     entry.node,
-                    sensitivity.max(entry.sensitivity.unwrap_or_default()),
+                    sensitivity.max(entry.sensitivity),
                     ignore_list,
                 );
             }

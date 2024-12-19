@@ -1,0 +1,21 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "lower_vtl_permissions_guard"
+edition = "2021"
+rust-version.workspace = true
+
+[features]
+vfio = ["dep:user_driver"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+hvdef.workspace = true
+inspect.workspace = true
+user_driver = { workspace = true, optional = true }
+virt.workspace = true
+
+anyhow.workspace = true
+
+[lints]
+workspace = true
