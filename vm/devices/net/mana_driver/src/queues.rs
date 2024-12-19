@@ -23,6 +23,7 @@ use gdma_defs::OWNER_MASK;
 use gdma_defs::WQE_ALIGNMENT;
 use inspect::Inspect;
 use std::marker::PhantomData;
+use std::sync::atomic::Ordering::Acquire;
 use std::sync::Arc;
 use user_driver::memory::MemoryBlock;
 use zerocopy::AsBytes;
@@ -140,7 +141,11 @@ impl<T: AsBytes + FromBytes> CqEq<T> {
 
     /// Pops an event queue entry.
     pub fn pop(&mut self) -> Option<T> {
-        let b = self.read_next::<u8>(size_of::<T>() as u32 - 1);
+        // Perform an acquire load to ensure that the read of the queue entry is
+        // not reordered before the read of the owner count.
+        let b = self.mem.as_slice()
+            [(self.next.wrapping_add(size_of::<T>() as u32 - 1) & (self.size - 1)) as usize]
+            .load(Acquire);
         let owner_count = b >> 5;
         let cur_owner_count = (self.next >> self.shift) as u8;
         if owner_count == (cur_owner_count.wrapping_sub(1)) & OWNER_MASK as u8 {
