@@ -12,29 +12,12 @@ use crate::fuzz_nvme_driver::FuzzNvmeDriver;
 
 use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
-use lazy_static::lazy_static;
 use pal_async::DefaultPool;
 use std::sync::Mutex;
 use xtask_fuzz::fuzz_target;
 
-// Use lazy_static to allow swapping out underlying vector
-lazy_static! {
-    pub static ref RAW_DATA: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-}
-
-/// Consumes part of static RAW_DATA to generate a vector of len=num_bytes with arbitrary bytes
-fn get_raw_data(num_bytes: usize) -> Result<Vec<u8>, arbitrary::Error>{
-    let mut raw_data = RAW_DATA.lock().unwrap();
-
-    // Case: Not enough data
-    if raw_data.len() < num_bytes {
-        return Err(arbitrary::Error::NotEnoughData);
-    }
-
-    let split = raw_data.len() - num_bytes;
-    let consumed_data: Vec<u8> = raw_data.split_off(split);
-    return Ok(consumed_data);
-}
+// Anything consumed by EmulatedDeviceFuzzer needs to be static because of DeviceBacking trait.
+pub static RAW_DATA: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 /// Returns an arbitrary data of type T or a NotEnoughData error. Generic type must
 /// implement Arbitrary (for any lifetime 'a) and the Sized traits.
@@ -42,16 +25,20 @@ pub fn arbitrary_data<T>() -> Result<T, arbitrary::Error>
 where
 for <'a> T: Arbitrary<'a> + Sized,
 {
-    let arbitrary_data = get_raw_data(size_of::<T>());
+    let mut raw_data = RAW_DATA.lock().unwrap();
+    let input = raw_data.split_off(0);
+    let mut u = Unstructured::new(&input);
 
-    let arbitrary_type = arbitrary_data.map(|data| -> T {
-        let mut u = Unstructured::new(&data);
+    if u.is_empty() {
+        return Err(arbitrary::Error::NotEnoughData);
+    }
 
-        let value: T = u.arbitrary().unwrap();
-        return value;
-    });
+    // If bytes needed is more than remaining bytes it will pad with 0s.
+    let arbitrary_type: T = u.arbitrary()?;
 
-    return arbitrary_type;
+    let x = u.take_rest().to_vec();
+    *raw_data = x; 
+    return Ok(arbitrary_type);
 }
 
 /// Uses the provided input to repeatedly create and execute an arbitrary action on the NvmeDriver.
