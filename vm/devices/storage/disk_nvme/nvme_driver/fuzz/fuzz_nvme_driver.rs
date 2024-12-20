@@ -7,7 +7,6 @@ use crate::arbitrary_data;
 
 use arbitrary::Arbitrary;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
-use disklayer_ram::RamDiskLayer;
 use guestmem::GuestMemory;
 use guid::Guid;
 use nvme::NvmeController;
@@ -18,7 +17,6 @@ use nvme_spec::nvm::DsmRange;
 use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
-use std::sync::Arc;
 use user_driver::emulated::DeviceSharedMemory;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
