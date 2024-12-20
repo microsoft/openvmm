@@ -319,7 +319,7 @@ fn validate_cert_chain(
 mod tests {
     use super::*;
 
-    const HEADER: &str = r#"{"typ":"JWT","alg":"HS256"}"#;
+    const HEADER: &str = r#"{"typ":"JWT","alg":"RS256"}"#;
     const KEY_HSM: &str = "http://example.com";
     // Example signature from https://www.rfc-editor.org/rfc/rfc7519
     const BASES64_SIGNATURE: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -347,7 +347,7 @@ mod tests {
 
         let jwt = AkvKeyReleaseJwtHelper::from(jwt.as_bytes()).unwrap();
 
-        assert_eq!(jwt.jwt.header.alg, "HS256");
+        assert_eq!(jwt.jwt.header.alg, "RS256");
         assert_eq!(
             jwt.jwt.body.response.key.key.key_hsm,
             base64_key_hsm.as_bytes()
@@ -377,6 +377,21 @@ mod tests {
         let jwt = AkvKeyReleaseJwtHelper::from(jwt.as_bytes()).unwrap();
 
         assert_eq!(jwt.jwt.signature, Vec::<u8>::from([]));
+    }
+
+    #[test]
+    fn fail_to_verify_non_rs256_signature() {
+        let rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
+        let pem = rsa_key.public_key_to_pem().unwrap();
+        let public = PKey::public_key_from_pem(&pem).unwrap();
+
+        let outcome = verify_jwt_signature("HS256", &public, &[], &[]);
+
+        assert!(outcome.is_err());
+        assert_eq!(
+            outcome.unwrap_err().to_string(),
+            "Unsupported signing algorithm \"HS256\"".to_string()
+        );
     }
 
     #[test]
