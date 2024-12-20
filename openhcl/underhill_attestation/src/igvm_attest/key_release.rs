@@ -395,6 +395,21 @@ mod tests {
     }
 
     #[test]
+    fn fail_to_verify_inconsistent_rs256_signature() {
+        let dsa_key = openssl::dsa::Dsa::generate(2048).unwrap();
+        let pem = dsa_key.public_key_to_pem().unwrap();
+        let public = PKey::public_key_from_pem(&pem).unwrap();
+
+        let outcome = verify_jwt_signature("RS256", &public, &[], &[]);
+
+        assert!(outcome.is_err());
+        assert_eq!(
+            outcome.unwrap_err().to_string(),
+            "invalid key type Id(116), expected Id(6)".to_string()
+        );
+    }
+
+    #[test]
     fn fail_to_parse_empty_response() {
         let response = parse_response(&[], 256);
         assert!(response.is_err());
