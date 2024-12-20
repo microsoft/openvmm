@@ -59,8 +59,7 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmula
         }
 
         // Case: Passthrough
-        return self.device.max_interrupt_count();
-            
+        self.device.max_interrupt_count()
     }
 
     fn map_interrupt(&mut self, msix: u32, _cpu: u32) -> anyhow::Result<DeviceInterrupt> {

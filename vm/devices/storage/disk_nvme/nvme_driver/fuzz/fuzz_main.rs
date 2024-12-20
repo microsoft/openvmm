@@ -13,7 +13,7 @@ use crate::fuzz_nvme_driver::FuzzNvmeDriver;
 use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
 use pal_async::DefaultPool;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use xtask_fuzz::fuzz_target;
 
 // Anything consumed by EmulatedDeviceFuzzer needs to be static because of DeviceBacking trait.
@@ -25,7 +25,7 @@ pub fn arbitrary_data<T>() -> Result<T, arbitrary::Error>
 where
 for <'a> T: Arbitrary<'a> + Sized,
 {
-    let mut raw_data = RAW_DATA.lock().unwrap();
+    let mut raw_data = RAW_DATA.lock();
     let input = raw_data.split_off(0);  // Take all raw_data
     let mut u = Unstructured::new(&input);
 
@@ -38,7 +38,7 @@ for <'a> T: Arbitrary<'a> + Sized,
 
     let x = u.take_rest().to_vec();
     *raw_data = x; 
-    return Ok(arbitrary_type);
+    Ok(arbitrary_type)
 }
 
 /// Uses the provided input to repeatedly create and execute an arbitrary action on the NvmeDriver.
@@ -68,7 +68,7 @@ fuzz_target!(|input: Vec<u8>| {
     xtask_fuzz::init_tracing_if_repro();
 
     {
-        let mut raw_data = RAW_DATA.lock().unwrap();
+        let mut raw_data = RAW_DATA.lock();
         *raw_data = input;
     }
 
