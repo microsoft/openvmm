@@ -322,10 +322,7 @@ mod tests {
     use openssl::pkey::Private;
     use openssl::x509::X509Name;
 
-    const HEADER: &str = r#"{"typ":"JWT","alg":"RS256"}"#;
     const KEY_HSM: &str = "http://example.com";
-    // Example signature from https://www.rfc-editor.org/rfc/rfc7519
-    const BASES64_SIGNATURE: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 
     fn generate_x509(private: &PKey<Private>) -> X509 {
         let mut x509 = X509::builder().unwrap();
@@ -376,66 +373,7 @@ mod tests {
         vec![base64_cert, base64_intermediate, base64_root]
     }
 
-    #[test]
-    fn jwt_from_bytes() {
-        let base64_header =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(HEADER.as_bytes());
-
-        let base64_key_hsm =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(KEY_HSM.as_bytes());
-        let body = akv::AkvKeyReleaseJwtBody {
-            response: akv::AkvKeyReleaseResponse {
-                key: akv::AkvKeyReleaseKeyObject {
-                    key: akv::AkvJwk {
-                        key_hsm: base64_key_hsm.as_bytes().to_vec(),
-                    },
-                },
-            },
-        };
-        let base64_body = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(serde_json::to_string(&body).unwrap().as_bytes());
-
-        let jwt = format!("{}.{}.{}", base64_header, base64_body, BASES64_SIGNATURE);
-
-        let jwt = AkvKeyReleaseJwtHelper::from(jwt.as_bytes()).unwrap();
-
-        assert_eq!(jwt.jwt.header.alg, "RS256");
-        assert_eq!(
-            jwt.jwt.body.response.key.key.key_hsm,
-            base64_key_hsm.as_bytes()
-        );
-    }
-
-    #[test]
-    fn jwt_from_bytes_with_empty_signature() {
-        let base64_header =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(HEADER.as_bytes());
-
-        let base64_key_hsm =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(KEY_HSM.as_bytes());
-        let body = akv::AkvKeyReleaseJwtBody {
-            response: akv::AkvKeyReleaseResponse {
-                key: akv::AkvKeyReleaseKeyObject {
-                    key: akv::AkvJwk {
-                        key_hsm: base64_key_hsm.as_bytes().to_vec(),
-                    },
-                },
-            },
-        };
-        let base64_body = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(serde_json::to_string(&body).unwrap().as_bytes());
-
-        let jwt = format!("{}.{}.{}", base64_header, base64_body, "");
-        let jwt = AkvKeyReleaseJwtHelper::from(jwt.as_bytes()).unwrap();
-
-        assert_eq!(jwt.jwt.signature, Vec::<u8>::from([]));
-    }
-
-    #[test]
-    fn successfully_verify_jwt_signature() {
-        let rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
-        let private = PKey::from_rsa(rsa_key).unwrap();
-
+    fn generate_base64_encoded_jwt_components(private: &PKey<Private>) -> (String, String, String) {
         let header = akv::AkvKeyReleaseJwtHeader {
             alg: "RS256".to_string(),
             x5c: generate_x5c(&private),
@@ -467,8 +405,53 @@ mod tests {
         let signature = signer.sign_to_vec().unwrap();
         let base64_signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&signature);
 
-        let jwt = format!("{}.{}.{}", base64_header, base64_body, base64_signature);
+        (base64_header, base64_body, base64_signature)
+    }
+
+    #[test]
+    fn jwt_from_bytes() {
+        let rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
+        let private = PKey::from_rsa(rsa_key.clone()).unwrap();
+
+        let (header, body, signature) = generate_base64_encoded_jwt_components(&private);
+
+        let jwt = format!("{}.{}.{}", header, body, signature);
         let jwt = AkvKeyReleaseJwtHelper::from(jwt.as_bytes()).unwrap();
+
+        assert_eq!(jwt.jwt.header.alg, "RS256");
+
+        let base64_key_hsm =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(KEY_HSM.as_bytes());
+
+        assert_eq!(
+            jwt.jwt.body.response.key.key.key_hsm,
+            base64_key_hsm.as_bytes()
+        );
+    }
+
+    #[test]
+    fn jwt_from_bytes_with_empty_signature() {
+        let rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
+        let private = PKey::from_rsa(rsa_key.clone()).unwrap();
+
+        let (header, body, _) = generate_base64_encoded_jwt_components(&private);
+
+        let jwt = format!("{}.{}.{}", header, body, "");
+        let jwt = AkvKeyReleaseJwtHelper::from(jwt.as_bytes()).unwrap();
+
+        assert_eq!(jwt.jwt.signature, Vec::<u8>::from([]));
+    }
+
+    #[test]
+    fn successfully_verify_jwt_signature() {
+        let rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
+        let private = PKey::from_rsa(rsa_key).unwrap();
+
+        let (header, body, signature) = generate_base64_encoded_jwt_components(&private);
+
+        let jwt = format!("{}.{}.{}", header, body, signature);
+        let jwt = AkvKeyReleaseJwtHelper::from(jwt.as_bytes()).unwrap();
+
         let verification_succeeded = jwt.verify_signature().unwrap();
         assert!(verification_succeeded);
     }
