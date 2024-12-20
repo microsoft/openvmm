@@ -19,7 +19,7 @@
 
 #![warn(missing_docs)]
 // UNSAFETY: Serialization and deserialization of structs directly.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 #![warn(clippy::std_instead_of_alloc)]
 #![warn(clippy::std_instead_of_core)]
 #![warn(clippy::alloc_instead_of_core)]

@@ -4,7 +4,7 @@
 //! Offline registry DLL wrappers.
 
 // UNSAFETY: needed for the FFI bindings.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use std::ops::Deref;
 use std::os::windows::ffi::OsStrExt;

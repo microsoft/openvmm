@@ -9,7 +9,7 @@
 
 #![warn(missing_docs)]
 // UNSAFETY: FFI into platform-specific APIs.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 mod unix;
 mod windows;

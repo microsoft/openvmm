@@ -3,6 +3,9 @@
 
 //! The module implements Linux SEV-SNP Guest APIs based on ioctl.
 
+// UNSAFETY: unsafe needed to make ioctl calls.
+#![expect(unsafe_code)]
+
 use crate::protocol;
 use std::fs::File;
 use std::os::fd::AsRawFd;

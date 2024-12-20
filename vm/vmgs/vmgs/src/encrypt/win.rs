@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 // UNSAFETY: Calling BCrypt APIs.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use crate::error::Error;
 use anyhow::anyhow;

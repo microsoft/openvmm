@@ -6,7 +6,7 @@
 #![cfg(target_os = "linux")]
 // UNSAFETY: Calling libc functions to gather system information, and manipulating
 // stdout & stderr.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 mod elf;
 mod options;

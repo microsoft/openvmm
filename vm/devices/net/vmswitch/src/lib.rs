@@ -6,7 +6,7 @@
 
 #![cfg(windows)]
 // UNSAFETY: Calling Win32 VMS and HCN APIs.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 #![allow(clippy::undocumented_unsafe_blocks)]
 
 pub mod dio;

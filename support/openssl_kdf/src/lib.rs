@@ -13,7 +13,7 @@
 // Currently this crate is only consumed by other cfg(unix) crates.
 #![cfg(unix)]
 // UNSAFETY: Calls into openssl.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 pub mod kdf;
 pub mod params;

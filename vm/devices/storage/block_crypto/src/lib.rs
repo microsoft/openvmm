@@ -116,7 +116,7 @@ mod ossl {
 #[cfg(windows)]
 mod bcrypt {
     // UNSAFETY: calling bcrypt APIs
-    #![allow(unsafe_code)]
+    #![expect(unsafe_code)]
 
     use std::sync::OnceLock;
     use thiserror::Error;

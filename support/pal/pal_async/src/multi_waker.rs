@@ -4,7 +4,7 @@
 //! A multi-waker that multiplexes multiple wakers onto a single waker.
 
 // UNSAFETY: Implementing a `RawWakerVTable`.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use parking_lot::Mutex;
 use std::sync::Arc;
