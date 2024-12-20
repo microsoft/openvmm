@@ -326,9 +326,6 @@ mod tests {
 
     #[test]
     fn jwt_from_bytes() {
-        // A JWT is composed of three parts: header, body, and signature
-        // All 3 parts are base64url encoded
-
         let base64_header =
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(HEADER.as_bytes());
 
@@ -347,7 +344,39 @@ mod tests {
             .encode(serde_json::to_string(&body).unwrap().as_bytes());
 
         let jwt = format!("{}.{}.{}", base64_header, base64_body, BASES64_SIGNATURE);
-        AkvKeyReleaseJwtHelper::from(jwt.as_bytes()).unwrap();
+
+        let jwt = AkvKeyReleaseJwtHelper::from(jwt.as_bytes()).unwrap();
+
+        assert_eq!(jwt.jwt.header.alg, "HS256");
+        assert_eq!(
+            jwt.jwt.body.response.key.key.key_hsm,
+            base64_key_hsm.as_bytes()
+        );
+    }
+
+    #[test]
+    fn jwt_from_bytes_with_empty_signature() {
+        let base64_header =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(HEADER.as_bytes());
+
+        let base64_key_hsm =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(KEY_HSM.as_bytes());
+        let body = akv::AkvKeyReleaseJwtBody {
+            response: akv::AkvKeyReleaseResponse {
+                key: akv::AkvKeyReleaseKeyObject {
+                    key: akv::AkvJwk {
+                        key_hsm: base64_key_hsm.as_bytes().to_vec(),
+                    },
+                },
+            },
+        };
+        let base64_body = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_string(&body).unwrap().as_bytes());
+
+        let jwt = format!("{}.{}.{}", base64_header, base64_body, "");
+        let jwt = AkvKeyReleaseJwtHelper::from(jwt.as_bytes()).unwrap();
+
+        assert_eq!(jwt.jwt.signature, Vec::<u8>::from([]));
     }
 
     #[test]
