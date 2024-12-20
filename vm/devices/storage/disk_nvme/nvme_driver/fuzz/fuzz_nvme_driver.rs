@@ -7,7 +7,7 @@ use crate::arbitrary_data;
 
 use arbitrary::Arbitrary;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
-use disklayer_ram::RamDisk;
+use disklayer_ram::RamDiskLayer;
 use guestmem::GuestMemory;
 use guid::Guid;
 use nvme::NvmeController;
@@ -33,9 +33,6 @@ pub struct FuzzNvmeDriver {
 impl FuzzNvmeDriver {
     /// Setup a new nvme driver with a fuzz-enabled backend device.
     pub async fn new(driver: DefaultDriver) -> Result<Self, arbitrary::Error> {
-        // Physical storage to back the disk
-        let ram_disk = RamDisk::new(1 << 20, false).unwrap();  // TODO: [use-arbitrary-input]
-
         let base_len = 64 << 20;  // 64MB TODO: [use-arbitrary-input] 
         let payload_len = 1 << 20;  // 1MB TODO: [use-arbitrary-input]
         let mem = DeviceSharedMemory::new(base_len, payload_len);
@@ -65,7 +62,7 @@ impl FuzzNvmeDriver {
         );
 
         nvme.client()
-            .add_namespace(1, Arc::new(ram_disk))  // TODO: [use-arbitrary-input]
+            .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())  // TODO: [use-arbitrary-input]
             .await
             .unwrap();
 
