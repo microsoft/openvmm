@@ -21,9 +21,9 @@ pub static RAW_DATA: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 /// Returns an arbitrary data of type T or a NotEnoughData error. Generic type must
 /// implement Arbitrary (for any lifetime 'a) and the Sized traits.
-pub fn arbitrary_data<T>() -> Result<T, arbitrary::Error> 
+pub fn arbitrary_data<T>() -> Result<T, arbitrary::Error>
 where
-for <'a> T: Arbitrary<'a> + Sized,
+    for <'a> T: Arbitrary<'a> + Sized,
 {
     let mut raw_data = RAW_DATA.lock();
     let input = raw_data.split_off(0);  // Take all raw_data
@@ -37,7 +37,7 @@ for <'a> T: Arbitrary<'a> + Sized,
     let arbitrary_type: T = u.arbitrary()?;
 
     let x = u.take_rest().to_vec();
-    *raw_data = x; 
+    *raw_data = x;
     Ok(arbitrary_type)
 }
 
