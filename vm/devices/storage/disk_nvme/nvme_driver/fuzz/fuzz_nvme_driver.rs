@@ -140,18 +140,11 @@ impl FuzzNvmeDriver {
                     .unwrap();
             }
 
-            NvmeDriverAction::Flush {
-                target_cpu,
-            } => {
-                self.namespace
-                    .flush(target_cpu)
-                    .await
-                    .unwrap();
+            NvmeDriverAction::Flush { target_cpu } => {
+                self.namespace.flush(target_cpu).await.unwrap();
             }
 
-            NvmeDriverAction::UpdateServicingFlags {
-                nvme_keepalive,
-            } => {
+            NvmeDriverAction::UpdateServicingFlags { nvme_keepalive } => {
                 self.driver
                     .as_mut()
                     .unwrap()
