@@ -319,6 +319,37 @@ fn validate_cert_chain(
 mod tests {
     use super::*;
 
+    const HEADER: &str = r#"{"typ":"JWT","alg":"HS256"}"#;
+    const KEY_HSM: &str = "http://example.com";
+    // Example signature from https://www.rfc-editor.org/rfc/rfc7519
+    const BASES64_SIGNATURE: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+    #[test]
+    fn jwt_from_bytes() {
+        // A JWT is composed of three parts: header, body, and signature
+        // All 3 parts are base64url encoded
+
+        let base64_header =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(HEADER.as_bytes());
+
+        let base64_key_hsm =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(KEY_HSM.as_bytes());
+        let body = akv::AkvKeyReleaseJwtBody {
+            response: akv::AkvKeyReleaseResponse {
+                key: akv::AkvKeyReleaseKeyObject {
+                    key: akv::AkvJwk {
+                        key_hsm: base64_key_hsm.as_bytes().to_vec(),
+                    },
+                },
+            },
+        };
+        let base64_body = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_string(&body).unwrap().as_bytes());
+
+        let jwt = format!("{}.{}.{}", base64_header, base64_body, BASES64_SIGNATURE);
+        AkvKeyReleaseJwtHelper::from(jwt.as_bytes()).unwrap();
+    }
+
     #[test]
     fn fail_to_parse_empty_response() {
         let response = parse_response(&[], 256);
