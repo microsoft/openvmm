@@ -31,7 +31,7 @@ pub struct FuzzNvmeDriver {
 impl FuzzNvmeDriver {
     /// Setup a new nvme driver with a fuzz-enabled backend device.
     pub async fn new(driver: DefaultDriver) -> Result<Self, arbitrary::Error> {
-        let base_len = 64 << 20; // 64MB TODO: [use-arbitrary-input] 
+        let base_len = 64 << 20; // 64MB TODO: [use-arbitrary-input]
         let payload_len = 1 << 20; // 1MB TODO: [use-arbitrary-input]
         let mem = DeviceSharedMemory::new(base_len, payload_len);
 
@@ -52,7 +52,7 @@ impl FuzzNvmeDriver {
             &mut msi_set,
             &mut ExternallyManagedMmioIntercepts,
             NvmeControllerCaps {
-                msix_count: 2, // TODO: [use-arbitrary-input]
+                msix_count: 2,     // TODO: [use-arbitrary-input]
                 max_io_queues: 64, // TODO: [use-arbitrary-input]
                 subsystem_id: guid,
             },
@@ -82,13 +82,13 @@ impl FuzzNvmeDriver {
                 &[
                     DsmRange {
                         context_attributes: 0, // TODO: [use-arbitrary-input]
-                        starting_lba: 1000, // TODO: [use-arbitrary-input]
-                        lba_count: 2000, // TODO: [use-arbitrary-input]
+                        starting_lba: 1000,    // TODO: [use-arbitrary-input]
+                        lba_count: 2000,       // TODO: [use-arbitrary-input]
                     },
                     DsmRange {
                         context_attributes: 0, // TODO: [use-arbitrary-input]
-                        starting_lba: 2, // TODO: [use-arbitrary-input]
-                        lba_count: 2, // TODO: [use-arbitrary-input]
+                        starting_lba: 2,       // TODO: [use-arbitrary-input]
+                        lba_count: 2,          // TODO: [use-arbitrary-input]
                     },
                 ],
             )
@@ -103,7 +103,11 @@ impl FuzzNvmeDriver {
         let action = arbitrary_data::<NvmeDriverAction>()?;
 
         match action {
-            NvmeDriverAction::Read { lba, block_count, target_cpu } => {
+            NvmeDriverAction::Read {
+                lba,
+                block_count,
+                target_cpu,
+            } => {
                 let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // TODO: [use-arbitrary-input]
                 self.namespace
                     .read(
@@ -117,7 +121,11 @@ impl FuzzNvmeDriver {
                     .unwrap();
             }
 
-            NvmeDriverAction::Write { lba, block_count, target_cpu } => {
+            NvmeDriverAction::Write {
+                lba,
+                block_count,
+                target_cpu,
+            } => {
                 let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // TODO: [use-arbitrary-input]
                 self.namespace
                     .write(
@@ -132,14 +140,24 @@ impl FuzzNvmeDriver {
                     .unwrap();
             }
 
-            NvmeDriverAction::Flush { target_cpu } => {
-                self.namespace.flush(target_cpu).await.unwrap();        
+            NvmeDriverAction::Flush {
+                target_cpu,
+            } => {
+                self.namespace
+                    .flush(target_cpu)
+                    .await
+                    .unwrap();
             }
 
-            NvmeDriverAction::UpdateServicingFlags { nvme_keepalive } => {
-                self.driver.as_mut().unwrap().update_servicing_flags(nvme_keepalive);
+            NvmeDriverAction::UpdateServicingFlags {
+                nvme_keepalive,
+            } => {
+                self.driver
+                    .as_mut()
+                    .unwrap()
+                    .update_servicing_flags(nvme_keepalive);
             }
-        } 
+        }
 
         Ok(())
     }
@@ -152,7 +170,7 @@ fn arbitrary_guid() -> Result<Guid, arbitrary::Error> {
     guid.data1 = arbitrary_data::<u32>()?;
     guid.data2 = arbitrary_data::<u16>()?;
     guid.data3 = arbitrary_data::<u16>()?;
- 
+
     for byte in &mut guid.data4 {
         *byte = arbitrary_data::<u8>()?;
     }
