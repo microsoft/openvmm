@@ -319,10 +319,62 @@ fn validate_cert_chain(
 mod tests {
     use super::*;
 
+    use openssl::pkey::Private;
+    use openssl::x509::X509Name;
+
     const HEADER: &str = r#"{"typ":"JWT","alg":"RS256"}"#;
     const KEY_HSM: &str = "http://example.com";
     // Example signature from https://www.rfc-editor.org/rfc/rfc7519
     const BASES64_SIGNATURE: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+    fn generate_x509(private: &PKey<Private>) -> X509 {
+        let mut x509 = X509::builder().unwrap();
+
+        let public = private.public_key_to_pem().unwrap();
+        let public = PKey::public_key_from_pem(&public).unwrap();
+
+        x509.set_pubkey(&public).unwrap();
+
+        x509.set_version(2).unwrap();
+        x509.set_serial_number(
+            &openssl::bn::BigNum::from_u32(1)
+                .unwrap()
+                .to_asn1_integer()
+                .unwrap(),
+        )
+        .unwrap();
+        x509.set_not_before(&openssl::asn1::Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        x509.set_not_after(&openssl::asn1::Asn1Time::days_from_now(365).unwrap())
+            .unwrap();
+
+        let mut name = X509Name::builder().unwrap();
+        name.append_entry_by_text("C", "US").unwrap();
+        name.append_entry_by_text("ST", "Washington").unwrap();
+        name.append_entry_by_text("L", "Redmond").unwrap();
+        name.append_entry_by_text("O", "Example INC").unwrap();
+        name.append_entry_by_text("CN", "example.com").unwrap();
+        let name = name.build();
+        x509.set_subject_name(&name).unwrap();
+        x509.set_issuer_name(&name).unwrap();
+
+        x509.sign(private, MessageDigest::sha256()).unwrap();
+
+        x509.build()
+    }
+
+    fn generate_x5c(private: &PKey<Private>) -> Vec<String> {
+        let cert = generate_x509(&private);
+        let intermediate = generate_x509(&private);
+        let root = generate_x509(&private);
+
+        let base64_cert = base64::engine::general_purpose::STANDARD.encode(cert.to_der().unwrap());
+        let base64_intermediate =
+            base64::engine::general_purpose::STANDARD.encode(intermediate.to_der().unwrap());
+        let base64_root = base64::engine::general_purpose::STANDARD.encode(root.to_der().unwrap());
+
+        vec![base64_cert, base64_intermediate, base64_root]
+    }
 
     #[test]
     fn jwt_from_bytes() {
@@ -381,6 +433,48 @@ mod tests {
 
     #[test]
     fn successfully_verify_jwt_signature() {
+        let rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
+        let private = PKey::from_rsa(rsa_key).unwrap();
+
+        let header = akv::AkvKeyReleaseJwtHeader {
+            alg: "RS256".to_string(),
+            x5c: generate_x5c(&private),
+        };
+
+        let base64_header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_string(&header).unwrap());
+
+        let base64_key_hsm =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(KEY_HSM.as_bytes());
+        let body = akv::AkvKeyReleaseJwtBody {
+            response: akv::AkvKeyReleaseResponse {
+                key: akv::AkvKeyReleaseKeyObject {
+                    key: akv::AkvJwk {
+                        key_hsm: base64_key_hsm.as_bytes().to_vec(),
+                    },
+                },
+            },
+        };
+
+        let base64_body = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_string(&body).unwrap().as_bytes());
+
+        let message = format!("{}.{}", base64_header, base64_body);
+
+        let mut signer = openssl::sign::Signer::new(MessageDigest::sha256(), &private).unwrap();
+        signer.set_rsa_padding(Padding::PKCS1).unwrap();
+        signer.update(message.as_bytes()).unwrap();
+        let signature = signer.sign_to_vec().unwrap();
+        let base64_signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&signature);
+
+        let jwt = format!("{}.{}.{}", base64_header, base64_body, base64_signature);
+        let jwt = AkvKeyReleaseJwtHelper::from(jwt.as_bytes()).unwrap();
+        let verification_succeeded = jwt.verify_signature().unwrap();
+        assert!(verification_succeeded);
+    }
+
+    #[test]
+    fn successfully_verify_jwt_signature_helper_function() {
         let rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
         let private = PKey::from_rsa(rsa_key.clone()).unwrap();
         let pem = rsa_key.public_key_to_pem().unwrap();
