@@ -1408,7 +1408,7 @@ jobs:
     - name: report built openhcl_boot
       run: flowey e 12 flowey_lib_hvlite::build_openhcl_boot 0
       shell: bash
-    - name: unpack Microsoft.OHCL.Kernel.Dev.6.6.51.9-arm64.tar.gz
+    - name: unpack Microsoft.OHCL.Kernel.Dev.6.6.63.1-arm64.tar.gz
       run: flowey e 12 flowey_lib_hvlite::download_openhcl_kernel_package 1
       shell: bash
     - name: 🌼 write_into Var
@@ -1498,7 +1498,7 @@ jobs:
     - name: 🌼 write_into Var
       run: flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 6
       shell: bash
-    - name: unpack Microsoft.OHCL.Kernel.6.6.51.7-main-arm64.tar.gz
+    - name: unpack Microsoft.OHCL.Kernel.6.6.63.1-arm64.tar.gz
       run: flowey e 12 flowey_lib_hvlite::download_openhcl_kernel_package 0
       shell: bash
     - name: building openhcl initrd
@@ -1817,7 +1817,7 @@ jobs:
     - name: report built openhcl_boot
       run: flowey e 13 flowey_lib_hvlite::build_openhcl_boot 0
       shell: bash
-    - name: unpack Microsoft.OHCL.Kernel.Dev.6.6.51.9-x64.tar.gz
+    - name: unpack Microsoft.OHCL.Kernel.Dev.6.6.63.1-x64.tar.gz
       run: flowey e 13 flowey_lib_hvlite::download_openhcl_kernel_package 2
       shell: bash
     - name: 🌼 write_into Var
@@ -1913,7 +1913,7 @@ jobs:
     - name: 🌼 write_into Var
       run: flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 39
       shell: bash
-    - name: unpack Microsoft.OHCL.Kernel.6.6.51.7-main-x64.tar.gz
+    - name: unpack Microsoft.OHCL.Kernel.6.6.63.1-x64.tar.gz
       run: flowey e 13 flowey_lib_hvlite::download_openhcl_kernel_package 0
       shell: bash
     - name: building openhcl initrd
@@ -2015,7 +2015,7 @@ jobs:
     - name: 🌼 write_into Var
       run: flowey e 13 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 0
       shell: bash
-    - name: unpack Microsoft.OHCL.Kernel.6.6.51.7-main-cvm-x64.tar.gz
+    - name: unpack Microsoft.OHCL.Kernel.6.6.63.1-cvm-x64.tar.gz
       run: flowey e 13 flowey_lib_hvlite::download_openhcl_kernel_package 1
       shell: bash
     - name: 🌼 write_into Var
