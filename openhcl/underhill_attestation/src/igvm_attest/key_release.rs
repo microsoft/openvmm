@@ -380,6 +380,25 @@ mod tests {
     }
 
     #[test]
+    fn successfully_verify_jwt_signature() {
+        let rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
+        let private = PKey::from_rsa(rsa_key.clone()).unwrap();
+        let pem = rsa_key.public_key_to_pem().unwrap();
+        let public = PKey::public_key_from_pem(&pem).unwrap();
+
+        let payload = "test";
+        let mut signer = openssl::sign::Signer::new(MessageDigest::sha256(), &private).unwrap();
+        signer.set_rsa_padding(Padding::PKCS1).unwrap();
+        signer.update(payload.as_bytes()).unwrap();
+        let signature = signer.sign_to_vec().unwrap();
+
+        let verification_succeeded =
+            verify_jwt_signature("RS256", &public, payload.as_bytes(), signature.as_slice())
+                .unwrap();
+        assert!(verification_succeeded);
+    }
+
+    #[test]
     fn fail_to_verify_non_rs256_signature() {
         let rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
         let pem = rsa_key.public_key_to_pem().unwrap();
