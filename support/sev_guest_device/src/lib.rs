@@ -5,8 +5,6 @@
 //! definitions of data structures according to SEV-SNP specification.
 
 #![warn(missing_docs)]
-// UNSAFETY: unsafe needed to make ioctl calls.
-#![expect(unsafe_code)]
 
 pub mod protocol;
 
