@@ -565,6 +565,57 @@ mod tests {
     }
 
     #[test]
+    fn fail_to_verify_certificate_chain_with_mismatched_subject_and_issuer() {
+        let rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
+        let private = PKey::from_rsa(rsa_key).unwrap();
+        let public = private.public_key_to_pem().unwrap();
+        let public = PKey::public_key_from_pem(&public).unwrap();
+
+        let cert = generate_x509(&private);
+        let intermediate = generate_x509(&private);
+
+        let mut root = X509::builder().unwrap();
+
+        root.set_pubkey(&public).unwrap();
+
+        root.set_version(2).unwrap();
+        root.set_serial_number(
+            &openssl::bn::BigNum::from_u32(1)
+                .unwrap()
+                .to_asn1_integer()
+                .unwrap(),
+        )
+        .unwrap();
+        root.set_not_before(&openssl::asn1::Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        root.set_not_after(&openssl::asn1::Asn1Time::days_from_now(365).unwrap())
+            .unwrap();
+
+        let mut name = X509Name::builder().unwrap();
+        name.append_entry_by_text("C", "US").unwrap();
+        name.append_entry_by_text("ST", "Washington").unwrap();
+        name.append_entry_by_text("L", "Redmond").unwrap();
+        name.append_entry_by_text("O", "ACME INC").unwrap();
+        name.append_entry_by_text("CN", "acme.com").unwrap();
+        let name = name.build();
+        root.set_subject_name(&name).unwrap();
+        root.set_issuer_name(&name).unwrap();
+
+        root.sign(&private, MessageDigest::sha256()).unwrap();
+        let root = root.build();
+
+        let cert_chain = vec![cert, intermediate, root];
+
+        let outcome = validate_cert_chain(&cert_chain);
+
+        assert!(outcome.is_err());
+        assert_eq!(
+            outcome.unwrap_err().to_string(),
+            CertificateChainValidationError::CertChainSubjectIssuerMismatch.to_string()
+        );
+    }
+
+    #[test]
     fn fail_to_parse_empty_response() {
         let response = parse_response(&[], 256);
         assert!(response.is_err());
