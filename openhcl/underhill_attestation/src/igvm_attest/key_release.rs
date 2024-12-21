@@ -539,6 +539,32 @@ mod tests {
     }
 
     #[test]
+    fn fail_to_verify_certificate_chain_with_various_signers() {
+        let cert_rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
+        let cert_private = PKey::from_rsa(cert_rsa_key).unwrap();
+
+        let intermediate_rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
+        let intermediate_private = PKey::from_rsa(intermediate_rsa_key).unwrap();
+
+        let root_rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
+        let root_private = PKey::from_rsa(root_rsa_key).unwrap();
+
+        let cert = generate_x509(&cert_private);
+        let intermediate = generate_x509(&intermediate_private);
+        let root = generate_x509(&root_private);
+
+        let cert_chain = vec![cert, intermediate, root];
+
+        let outcome = validate_cert_chain(&cert_chain);
+
+        assert!(outcome.is_err());
+        assert_eq!(
+            outcome.unwrap_err().to_string(),
+            CertificateChainValidationError::CertChainSignatureMismatch.to_string()
+        );
+    }
+
+    #[test]
     fn fail_to_parse_empty_response() {
         let response = parse_response(&[], 256);
         assert!(response.is_err());
