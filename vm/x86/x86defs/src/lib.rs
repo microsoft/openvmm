@@ -121,6 +121,17 @@ pub struct SegmentRegister {
     pub attributes: SegmentAttributes,
 }
 
+impl Default for SegmentRegister {
+    fn default() -> Self {
+        Self {
+            base: 0,
+            limit: 0,
+            selector: 0,
+            attributes: SegmentAttributes(0)
+        }
+    }
+}
+
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for SegmentRegister {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
