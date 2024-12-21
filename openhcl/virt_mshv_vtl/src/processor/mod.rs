@@ -35,6 +35,8 @@ use super::UhVpInner;
 use crate::GuestVsmState;
 use crate::GuestVtl;
 use crate::WakeReason;
+#[cfg(guest_arch = "x86_64")]
+use bitvec::prelude::*;
 use hcl::ioctl;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
@@ -560,7 +562,10 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
     type Error = ProcessorError;
     type RunVpError = UhRunVpError;
-    type StateAccess<'a> = T::StateAccess<'p, 'a> where Self: 'a;
+    type StateAccess<'a>
+        = T::StateAccess<'p, 'a>
+    where
+        Self: 'a;
 
     #[cfg(guest_arch = "aarch64")]
     fn set_debug_state(
@@ -689,6 +694,17 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 }
 
                 for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
+                    #[cfg(guest_arch = "x86_64")]
+                    if self.partition.isolation.is_hardware_isolated() {
+                        // Complete any proxy filter update if required
+                        self.partition.complete_vp_proxy_filter_update(
+                            vtl,
+                            self.vp_index().index(),
+                            || {
+                                self.update_proxy_irr_filter(vtl);
+                            },
+                        );
+                    }
                     // Process interrupts.
                     if self.backing.hv(vtl).is_some() {
                         self.update_synic(vtl, false);
@@ -965,6 +981,18 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg(guest_arch = "x86_64")]
     fn write_msr(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
         if msr & 0xf0000000 == 0x40000000 {
+            // If udpate is Synic MSR, then check if its proxy or previous was proxy
+            // in eaither case, we need to update the `roxy_irr_filter`
+            if msr >= hvdef::HV_X64_MSR_SINT0 && msr <= hvdef::HV_X64_MSR_SINT15 {
+                if let Some(hv) = self.backing.hv(vtl).as_ref() {
+                    let sint_curr =
+                        HvSynicSint::from(hv.synic.sint((msr - hvdef::HV_X64_MSR_SINT0) as u8));
+                    let sint_new = HvSynicSint::from(value);
+                    if sint_curr.proxy() || sint_new.proxy() {
+                        self.update_proxy_irr_filter(vtl);
+                    }
+                }
+            }
             if let Some(hv) = self.backing.hv_mut(vtl).as_mut() {
                 let r = hv.msr_write(msr, value);
                 if !matches!(r, Err(MsrError::Unknown)) {
@@ -1124,6 +1152,30 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             });
 
         self.request_sint_notifications(vtl, pending_sints);
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn update_proxy_irr_filter(&mut self, vtl: GuestVtl) {
+        let mut proxy_irr_filter: [u32; 8] = Default::default();
+        let irr_bits = proxy_irr_filter.view_bits_mut::<Lsb0>();
+
+        // Get all not maksed && proxy SINT vectors
+        for sint in 0..NUM_SINTS as u8 {
+            if let Some(hv) = self.backing.hv(vtl).as_ref() {
+                let sint_msr = hv.synic.sint(sint);
+                let hv_sint = HvSynicSint::from(sint_msr);
+                if hv_sint.proxy() && !hv_sint.masked() {
+                    irr_bits.set(hv_sint.vector() as usize, true);
+                }
+            }
+        }
+
+        // Get all device vectors
+        self.partition
+            .get_device_irr_filter_vectors(vtl, &mut proxy_irr_filter);
+
+        // Update final filter in run page
+        self.runner.update_proxy_irr_filter(proxy_irr_filter);
     }
 }
 

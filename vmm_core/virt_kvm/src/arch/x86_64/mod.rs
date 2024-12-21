@@ -968,7 +968,10 @@ impl<T: CpuIo> hv1_hypercall::SignalEvent for KvmHypercallExit<'_, T> {
 impl Processor for KvmProcessor<'_> {
     type Error = KvmError;
     type RunVpError = KvmRunVpError;
-    type StateAccess<'a> = KvmVpStateAccess<'a> where Self: 'a;
+    type StateAccess<'a>
+        = KvmVpStateAccess<'a>
+    where
+        Self: 'a;
 
     fn set_debug_state(
         &mut self,

@@ -378,7 +378,10 @@ impl<'a> virt::vm::AccessVmState for &'a KvmPartition {
 impl virt::Processor for KvmProcessor<'_> {
     type Error = KvmError;
     type RunVpError = KvmRunVpError;
-    type StateAccess<'a> = &'a mut Self where Self: 'a;
+    type StateAccess<'a>
+        = &'a mut Self
+    where
+        Self: 'a;
 
     fn set_debug_state(
         &mut self,

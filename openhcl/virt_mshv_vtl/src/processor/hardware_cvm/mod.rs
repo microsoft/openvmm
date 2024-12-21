@@ -734,6 +734,16 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         multicast: bool,
         target_processors: &[u32],
     ) -> HvResult<()> {
+        // Before dispatching retarget_device_interrupt, update `proxy_irr_filter` on all other VPs
+        self.vp.partition.request_proxy_irr_filter_update(
+            self.intercepted_vtl,
+            vector as u8,
+            self.vp.vp_index().index(),
+        );
+
+        // Update `proxy_irr_filter` for this VP itself
+        self.vp.update_proxy_irr_filter(self.intercepted_vtl);
+
         self.vp.partition.hcl.retarget_device_interrupt(
             device_id,
             hvdef::hypercall::InterruptEntry {

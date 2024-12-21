@@ -716,7 +716,8 @@ impl BackingPrivate for TdxBacked {
         })
     }
 
-    type StateAccess<'p, 'a> = UhVpStateAccess<'a, 'p, Self>
+    type StateAccess<'p, 'a>
+        = UhVpStateAccess<'a, 'p, Self>
     where
         Self: 'a + 'p,
         'p: 'a;

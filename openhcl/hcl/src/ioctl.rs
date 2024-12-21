@@ -1854,7 +1854,28 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
                     *r = irr.swap(0, Ordering::Relaxed);
                 }
             }
+
+            // `proxy_irr`received from host is untrusted, only allow vectors that L2 expects
+            for (f, v) in self.run.as_ref().proxy_irr_filter.iter().zip(r.iter_mut()) {
+                *v &= *f;
+            }
             Some(r)
+        }
+    }
+
+    /// Update the `proxy_irr_filter` in run page
+    pub fn update_proxy_irr_filter(&mut self, irr_filter: [u32; 8]) {
+        // N.B filter is only updated by user mode and by this processor only
+        unsafe {
+            for (dst_irr, src_irr) in self
+                .run
+                .as_mut()
+                .proxy_irr_filter
+                .iter_mut()
+                .zip(irr_filter.iter())
+            {
+                *dst_irr = *src_irr;
+            }
         }
     }
 

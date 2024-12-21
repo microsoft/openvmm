@@ -386,7 +386,10 @@ pub struct MshvProcessorBinder {
 }
 
 impl virt::BindProcessor for MshvProcessorBinder {
-    type Processor<'a> = MshvProcessor<'a> where Self: 'a;
+    type Processor<'a>
+        = MshvProcessor<'a>
+    where
+        Self: 'a;
     type Error = Error;
 
     fn bind(&mut self) -> Result<Self::Processor<'_>, Self::Error> {
@@ -1265,7 +1268,10 @@ impl InspectMut for MshvProcessor<'_> {
 impl virt::Processor for MshvProcessor<'_> {
     type Error = Error;
     type RunVpError = MshvRunVpError;
-    type StateAccess<'a> = &'a mut Self where Self: 'a;
+    type StateAccess<'a>
+        = &'a mut Self
+    where
+        Self: 'a;
 
     fn set_debug_state(
         &mut self,
