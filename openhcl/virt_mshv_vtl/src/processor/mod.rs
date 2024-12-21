@@ -981,21 +981,26 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg(guest_arch = "x86_64")]
     fn write_msr(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
         if msr & 0xf0000000 == 0x40000000 {
-            // If udpate is Synic MSR, then check if its proxy or previous was proxy
-            // in eaither case, we need to update the `roxy_irr_filter`
+            // If updated is Synic MSR, then check if its proxy or previous was proxy
+            // in either case, we need to update the `proxy_irr_filter`
+            let mut irr_filter_update = false;
             if msr >= hvdef::HV_X64_MSR_SINT0 && msr <= hvdef::HV_X64_MSR_SINT15 {
                 if let Some(hv) = self.backing.hv(vtl).as_ref() {
                     let sint_curr =
                         HvSynicSint::from(hv.synic.sint((msr - hvdef::HV_X64_MSR_SINT0) as u8));
                     let sint_new = HvSynicSint::from(value);
                     if sint_curr.proxy() || sint_new.proxy() {
-                        self.update_proxy_irr_filter(vtl);
+                        irr_filter_update = true;
                     }
                 }
             }
             if let Some(hv) = self.backing.hv_mut(vtl).as_mut() {
                 let r = hv.msr_write(msr, value);
                 if !matches!(r, Err(MsrError::Unknown)) {
+                    // SINT updated, check if proxy filter update was required
+                    if irr_filter_update {
+                        self.update_proxy_irr_filter(vtl);
+                    }
                     return r;
                 }
             }
