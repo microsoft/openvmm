@@ -14,7 +14,6 @@ use super::super::vp_state::UhVpStateAccess;
 use super::super::BackingPrivate;
 use super::super::UhEmulationState;
 use super::super::UhRunVpError;
-use super::super::UhX86EmulatorRegisters;
 use crate::processor::from_seg;
 use crate::processor::LapicState;
 use crate::processor::SidecarExitReason;
@@ -127,7 +126,7 @@ struct ProcessorStatsX86 {
 impl BackingPrivate for HypervisorBackedX86 {
     type HclBacking = MshvX64;
     type Shared = ();
-    type EmulationCache = ();
+    type EmulationCache = x86emu::CpuState;
 
     fn shared(_: &BackingShared) -> &Self::Shared {
         &()
@@ -935,6 +934,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
     }
 }
 
+/*
 impl<'a, 'b> UhX86EmulatorRegisters<'a, 'b, HypervisorBackedX86> for x86emu::CpuState {
     fn new(vp: &'a mut UhProcessor<'b, HypervisorBackedX86>, vtl: GuestVtl) -> Self {
         const NAMES: &[HvX64RegisterName] = &[
@@ -992,6 +992,7 @@ impl<'a, 'b> UhX86EmulatorRegisters<'a, 'b, HypervisorBackedX86> for x86emu::Cpu
         vp.runner.cpu_context_mut().gps = self.gps;
     }
 }
+*/
 
 impl UhProcessor<'_, HypervisorBackedX86> {
     fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
@@ -1300,9 +1301,65 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 }
 
 impl<T: CpuIo> EmulatorSupport
-    for UhEmulationState<'_, '_, T, HypervisorBackedX86, x86emu::CpuState>
+    for UhEmulationState<'_, '_, T, HypervisorBackedX86>
 {
     type Error = UhRunVpError;
+
+    fn load_registers(&mut self) {
+        const NAMES: &[HvX64RegisterName] = &[
+            HvX64RegisterName::Rsp,
+            HvX64RegisterName::Es,
+            HvX64RegisterName::Ds,
+            HvX64RegisterName::Fs,
+            HvX64RegisterName::Gs,
+            HvX64RegisterName::Ss,
+            HvX64RegisterName::Cr0,
+            HvX64RegisterName::Efer,
+        ];
+        let mut values = [FromZeroes::new_zeroed(); NAMES.len()];
+        self.vp.runner
+            .get_vp_registers(self.vtl, NAMES, &mut values)
+            .expect("register query should not fail");
+
+        let [rsp, es, ds, fs, gs, ss, cr0, efer] = values;
+
+        let mut gps = self.vp.runner.cpu_context().gps;
+        gps[x86emu::CpuState::RSP] = rsp.as_u64();
+
+        let message = self.vp.runner.exit_message();
+        let header = HvX64InterceptMessageHeader::ref_from_prefix(message.payload()).unwrap();
+
+        self.cache = x86emu::CpuState {
+            gps,
+            segs: [
+                from_seg(es.into()),
+                from_seg(header.cs_segment),
+                from_seg(ss.into()),
+                from_seg(ds.into()),
+                from_seg(fs.into()),
+                from_seg(gs.into()),
+            ],
+            rip: header.rip,
+            rflags: header.rflags.into(),
+            cr0: cr0.as_u64(),
+            efer: efer.as_u64(),
+        };
+    }
+
+    fn flush(&mut self) {
+        self.vp.runner
+            .set_vp_registers(
+                self.vtl,
+                [
+                    (HvX64RegisterName::Rip, self.cache.rip),
+                    (HvX64RegisterName::Rflags, self.cache.rflags.into()),
+                    (HvX64RegisterName::Rsp, self.cache.gps[x86emu::CpuState::RSP]),
+                ],
+            )
+            .unwrap();
+
+        self.vp.runner.cpu_context_mut().gps = self.cache.gps;
+    }
 
     fn vp_index(&self) -> VpIndex {
         self.vp.vp_index()
@@ -1318,12 +1375,12 @@ impl<T: CpuIo> EmulatorSupport
 
     fn gp(&mut self, reg: Register) -> u64 {
         let index = reg.number();
-        self.registers.gps[index]
+        self.cache.gps[index]
     }
 
     fn set_gp(&mut self, reg: Register, v: u64) {
         let index = reg.number();
-        self.registers.gps[index] = v;
+        self.cache.gps[index] = v;
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
@@ -1336,31 +1393,31 @@ impl<T: CpuIo> EmulatorSupport
     }
 
     fn rip(&mut self) -> u64 {
-        self.registers.rip
+        self.cache.rip
     }
 
     fn set_rip(&mut self, v: u64) {
-        self.registers.rip = v;
+        self.cache.rip = v;
     }
 
     fn segment(&mut self, index: usize) -> SegmentRegister {
-        self.registers.segs[index]
+        self.cache.segs[index]
     }
 
     fn efer(&mut self) -> u64 {
-        self.registers.efer
+        self.cache.efer
     }
 
     fn cr0(&mut self) -> u64 {
-        self.registers.cr0
+        self.cache.cr0
     }
 
     fn rflags(&mut self) -> RFlags {
-        self.registers.rflags
+        self.cache.rflags
     }
 
     fn set_rflags(&mut self, v: RFlags) {
-        self.registers.rflags = v;
+        self.cache.rflags = v;
     }
 
     fn instruction_bytes(&self) -> &[u8] {

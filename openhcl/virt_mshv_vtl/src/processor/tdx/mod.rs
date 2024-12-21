@@ -14,7 +14,6 @@ use super::HardwareIsolatedBacking;
 use super::UhEmulationState;
 use super::UhHypercallHandler;
 use super::UhRunVpError;
-use super::UhX86EmulatorRegisters;
 use crate::BackingShared;
 use crate::GuestVtl;
 use crate::UhCvmPartitionState;
@@ -562,7 +561,7 @@ impl TdxBackedShared {
 impl BackingPrivate for TdxBacked {
     type HclBacking = Tdx;
     type Shared = TdxBackedShared;
-    type EmulationCache = ();
+    type EmulationCache = TdxCpuState;
 
     fn shared(shared: &BackingShared) -> &Self::Shared {
         let BackingShared::Tdx(shared) = shared else {
@@ -2237,33 +2236,31 @@ impl UhProcessor<'_, TdxBacked> {
     }
 }
 
-impl<'a, 'b> UhX86EmulatorRegisters<'a, 'b, TdxBacked> for TdxCpuState {
-    fn new(vp: &'a mut UhProcessor<'b, TdxBacked>, _vtl: GuestVtl) -> Self {
-        let cs = TdxExit(vp.runner.tdx_vp_enter_exit_info()).cs();
-        let enter_state = vp.runner.tdx_enter_guest_state();
-        TdxCpuState {
-            gps: enter_state.gps,
-            segs: [None, cs.into(), None, None, None, None],
-            rip: enter_state.rip,
-            rflags: enter_state.rflags.into(),
-            cr0: vp.backing.cr0.read(&vp.runner),
-            efer: vp.backing.efer,
-        }
-    }
-
-    fn flush(&self, vp: &'a mut UhProcessor<'b, TdxBacked>, _vtl: GuestVtl) {
-        let enter_state = vp.runner.tdx_enter_guest_state_mut();
-        enter_state.gps = self.gps;
-        enter_state.rip = self.rip;
-        enter_state.rflags = self.rflags.into();
-    }
-}
-
-impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, TdxCpuState> {
+impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
     type Error = UhRunVpError;
 
     fn vp_index(&self) -> VpIndex {
         self.vp.vp_index()
+    }
+
+    fn load_registers(&mut self) {
+        let cs = TdxExit(self.vp.runner.tdx_vp_enter_exit_info()).cs();
+        let enter_state = self.vp.runner.tdx_enter_guest_state();
+        self.cache = TdxCpuState {
+            gps: enter_state.gps,
+            segs: [None, cs.into(), None, None, None, None],
+            rip: enter_state.rip,
+            rflags: enter_state.rflags.into(),
+            cr0: self.vp.backing.cr0.read(&self.vp.runner),
+            efer: self.vp.backing.efer,
+        };
+    }
+
+    fn flush(&mut self) {
+        let enter_state = self.vp.runner.tdx_enter_guest_state_mut();
+        enter_state.gps = self.cache.gps;
+        enter_state.rip = self.cache.rip;
+        enter_state.rflags = self.cache.rflags.into();
     }
 
     fn vendor(&self) -> x86defs::cpuid::Vendor {
@@ -2276,12 +2273,12 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, Tdx
 
     fn gp(&mut self, reg: Register) -> u64 {
         let index = reg.number();
-        self.registers.gps[index]
+        self.cache.gps[index]
     }
 
     fn set_gp(&mut self, reg: Register, v: u64) {
         let index = reg.number();
-        self.registers.gps[index] = v;
+        self.cache.gps[index] = v;
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
@@ -2294,11 +2291,11 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, Tdx
     }
 
     fn rip(&mut self) -> u64 {
-        self.registers.rip
+        self.cache.rip
     }
 
     fn set_rip(&mut self, v: u64) {
-        self.registers.rip = v;
+        self.cache.rip = v;
     }
 
     fn segment(&mut self, index: usize) -> x86defs::SegmentRegister {
@@ -2311,25 +2308,25 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked, Tdx
             CpuState::GS => TdxSegmentReg::Gs,
             _ => panic!("invalid segment register"),
         };
-        let reg = self.registers.segs[index]
+        let reg = self.cache.segs[index]
             .get_or_insert_with(|| self.vp.read_segment(GuestVtl::Vtl0, tdx_segment_index));
         (*reg).into()
     }
 
     fn efer(&mut self) -> u64 {
-        self.registers.efer
+        self.cache.efer
     }
 
     fn cr0(&mut self) -> u64 {
-        self.registers.cr0
+        self.cache.cr0
     }
 
     fn rflags(&mut self) -> RFlags {
-        self.registers.rflags
+        self.cache.rflags
     }
 
     fn set_rflags(&mut self, v: RFlags) {
-        self.registers.rflags = v;
+        self.cache.rflags = v;
     }
 
     fn instruction_bytes(&self) -> &[u8] {

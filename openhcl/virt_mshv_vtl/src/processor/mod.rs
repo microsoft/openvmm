@@ -64,6 +64,7 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 use virt::io::CpuIo;
+use virt_support_x86emu::emulate::EmulatorSupport;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
@@ -1024,7 +1025,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
     /// Emulates an instruction due to a single-bit monitor page write
     #[cfg(guest_arch = "x86_64")]
-    fn emulate_fast_path<D: CpuIo, S>(
+    fn emulate_fast_path<D: CpuIo>(
         &mut self,
         tlb_lock_held: bool,
         devices: &D,
@@ -1032,19 +1033,18 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         vtl: GuestVtl,
     ) -> Option<u32>
     where
-        for<'b> UhEmulationState<'b, 'a, D, T, S>:
-            virt_support_x86emu::emulate::EmulatorSupport<Error = UhRunVpError>,
-        for<'b> S: UhX86EmulatorRegisters<'b, 'a, T>,
+        for<'b> UhEmulationState<'b, 'a, D, T>:
+            virt_support_x86emu::emulate::EmulatorSupport<Error = UhRunVpError>
     {
         let guest_memory = &self.partition.gm[vtl];
-        let registers = S::new(&mut *self, vtl);
         let mut emulation_state = UhEmulationState {
             vp: &mut *self,
             interruption_pending,
             devices,
-            registers,
             vtl,
+            cache: T::EmulationCache::default(),
         };
+        emulation_state.load_registers();
         let res = virt_support_x86emu::emulate::emulate_mnf_write_fast_path(
             &mut emulation_state,
             guest_memory,
@@ -1052,35 +1052,38 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             interruption_pending,
             tlb_lock_held,
         );
-        emulation_state.registers.flush(&mut *self, vtl);
+        emulation_state.flush();
         res
     }
 
     /// Emulates an instruction due to a memory access exit.
     #[cfg(guest_arch = "x86_64")]
-    async fn emulate<D: CpuIo, S>(
+    async fn emulate<D: CpuIo>(
         &mut self,
         devices: &D,
         interruption_pending: bool,
         vtl: GuestVtl,
     ) -> Result<(), VpHaltReason<UhRunVpError>>
     where
-        for<'b> UhEmulationState<'b, 'a, D, T, S>:
+        for<'b> UhEmulationState<'b, 'a, D, T>:
             virt_support_x86emu::emulate::EmulatorSupport<Error = UhRunVpError>,
-        for<'b> S: UhX86EmulatorRegisters<'b, 'a, T>,
     {
         let guest_memory = &self.partition.gm[vtl];
-        virt_support_x86emu::emulate::emulate(
-            &mut UhEmulationState {
+        let mut emulation_state = UhEmulationState {
                 vp: &mut *self,
                 interruption_pending,
                 devices,
                 vtl,
                 cache: T::EmulationCache::default(),
-            },
+            };
+        emulation_state.load_registers();
+        let res = virt_support_x86emu::emulate::emulate(
+            &mut emulation_state,
             guest_memory,
             devices,
-            ).await
+            ).await;
+        emulation_state.flush();
+        res
     }
 
     /// Emulates an instruction due to a memory access exit.
@@ -1200,7 +1203,7 @@ fn from_seg(reg: HvX64SegmentRegister) -> x86defs::SegmentRegister {
     }
 }
 
-struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing, S: UhX86EmulatorRegisters<'a, 'b, U>> {
+struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing> {
     vp: &'a mut UhProcessor<'b, U>,
     interruption_pending: bool,
     devices: &'a T,
