@@ -2096,6 +2096,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuzz_nvme_driver"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "arbitrary",
+ "chipset_device",
+ "disklayer_ram",
+ "guestmem",
+ "guid",
+ "inspect",
+ "libfuzzer-sys",
+ "nvme",
+ "nvme_driver",
+ "nvme_spec",
+ "pal_async",
+ "parking_lot",
+ "pci_core",
+ "scsi_buffers",
+ "user_driver",
+ "vmcore",
+ "xtask_fuzz",
+]
+
+[[package]]
 name = "fuzz_scsi_buffers"
 version = "0.0.0"
 dependencies = [
@@ -3081,7 +3105,6 @@ name = "ide"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct",
- "bitflags 1.3.2",
  "chipset_device",
  "disk_backend",
  "disk_file",
