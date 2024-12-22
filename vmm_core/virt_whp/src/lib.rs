@@ -1468,7 +1468,10 @@ impl Drop for WhpProcessor<'_> {
 impl<'p> virt::Processor for WhpProcessor<'p> {
     type Error = Error;
     type RunVpError = WhpRunVpError;
-    type StateAccess<'a> = WhpVpStateAccess<'a, 'p> where Self: 'a;
+    type StateAccess<'a>
+        = WhpVpStateAccess<'a, 'p>
+    where
+        Self: 'a;
 
     fn set_debug_state(
         &mut self,

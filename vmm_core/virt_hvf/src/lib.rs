@@ -381,7 +381,8 @@ impl virt::PartitionMemoryMap for HvfPartitionInner {
 }
 
 impl virt::PartitionAccessState for HvfPartition {
-    type StateAccess<'a> = HvfPartitionStateAccess<'a>
+    type StateAccess<'a>
+        = HvfPartitionStateAccess<'a>
     where
         Self: 'a;
 
@@ -742,7 +743,8 @@ impl<'p> Processor for HvfProcessor<'p> {
     type Error = Error;
     type RunVpError = Error;
 
-    type StateAccess<'a> = vp_state::HvfVpStateAccess<'a, 'p>
+    type StateAccess<'a>
+        = vp_state::HvfVpStateAccess<'a, 'p>
     where
         Self: 'a;
 
