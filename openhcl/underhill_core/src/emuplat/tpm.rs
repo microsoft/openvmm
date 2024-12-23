@@ -9,7 +9,6 @@ use thiserror::Error;
 use tpm::ak_cert::RequestAkCert;
 use underhill_attestation::AttestationType;
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum TpmAttestationError {
     #[error("failed to get a hardware attestation report")]

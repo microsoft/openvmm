@@ -21,7 +21,6 @@ mod packed_nums {
     pub type u64_be = zerocopy::U64<zerocopy::BigEndian>;
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum InvalidInput {
     #[error("input data size too large for buffer - input size > upper bound: {0} > {1}")]
@@ -32,7 +31,6 @@ pub enum InvalidInput {
     NvPublicPayloadTooLarge(usize, usize),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum TpmProtoError {
     #[error("input user_auth to TpmsSensitiveCreate is invalid")]
@@ -61,7 +59,6 @@ pub enum TpmProtoError {
     ImportData(#[source] InvalidInput),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum ResponseValidationError {
     #[error("response size is too small to fit into the buffer")]

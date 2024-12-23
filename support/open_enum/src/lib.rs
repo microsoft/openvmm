@@ -26,7 +26,7 @@
 /// open_enum! {
 ///     #[allow(dead_code)] // This will apply to the generated struct defn
 ///     pub enum ExampleEnumName: u32 {
-///         #![allow(missing_docs)] // This will apply to all subfields of the enum
+///         #![expect(missing_docs)] // This will apply to all subfields of the enum
 ///         THIS_IS_AN_ENUM = 32,
 ///     }
 /// }
@@ -37,7 +37,7 @@
 /// // #[allow(dead_code)]
 /// // struct ExampleEnumName(u32);
 /// //
-/// // #[allow(missing_docs)]
+/// // #[expect(missing_docs)]
 /// // impl ExampleEnumName {
 /// //     pub const THIS_IS_AN_ENUM: ExampleEnumName = ExampleEnumName(0)
 /// // }

@@ -431,7 +431,7 @@ impl LineSet {
     }
 }
 
-#[allow(missing_docs)] // self explanatory struct/functions
+#[expect(missing_docs)] // self explanatory struct/functions
 pub mod test_helpers {
     use crate::line_interrupt::LineSetTarget;
     use parking_lot::Mutex;

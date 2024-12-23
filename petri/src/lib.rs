@@ -34,7 +34,7 @@ pub const SIZE_1_MB: u64 = 1024 * SIZE_1_KB;
 pub const SIZE_1_GB: u64 = 1024 * SIZE_1_MB;
 
 /// The kind of shutdown to perform.
-#[allow(missing_docs)] // Self-describing names.
+#[expect(missing_docs)] // Self-describing names.
 pub enum ShutdownKind {
     Shutdown,
     Reboot,

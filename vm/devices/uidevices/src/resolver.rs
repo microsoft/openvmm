@@ -33,7 +33,7 @@ declare_static_async_resolver! {
 
 /// Error returned when resolving video device handles.
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum VideoError {
     #[error("failed to create video device")]
     Video(#[source] anyhow::Error),
@@ -66,7 +66,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, SynthVideoHandle> for VmbusUiRe
 
 /// Error returned when resolving input device handles.
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum InputError {
     #[error("failed to resolve input source")]
     InputSource(#[source] ResolveError),
