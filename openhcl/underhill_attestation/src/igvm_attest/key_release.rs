@@ -35,6 +35,10 @@ pub(crate) enum KeyReleaseError {
 pub(crate) enum AkvKeyReleaseJwtError {
     #[error("invalid JWT format, data: {0}")]
     InvalidJwtFormat(String),
+    #[error("invalid JWT header format, data: {0}")]
+    InvalidJwtHeaderFormat(String),
+    #[error("invalid JWT body format, data: {0}")]
+    InvalidJwtBodyFormat(String),
     #[error("failed to decode JWT header in base64 url format")]
     DecodeBase64UrlJwtHeader(#[source] base64::DecodeError),
     #[error("failed to decode JWT body in base64 url format")]
@@ -169,7 +173,9 @@ impl AkvKeyReleaseJwtHelper {
         // Base64URL(Header).Base64URL(Body).Base64URL(Signature)
         // Header and Body are JSON payloads
 
-        let utf8 = String::from_utf8_lossy(data);
+        let utf8 = std::str::from_utf8(data).map_err(|_| {
+            AkvKeyReleaseJwtError::InvalidJwtFormat(String::from_utf8_lossy(data).to_string())
+        })?;
 
         let [header, body, signature]: [&str; 3] = utf8
             .split('.')
@@ -190,14 +196,20 @@ impl AkvKeyReleaseJwtHelper {
         let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(header)
             .map_err(AkvKeyReleaseJwtError::DecodeBase64UrlJwtHeader)?;
-        let header = String::from_utf8_lossy(&header);
+        let header = std::str::from_utf8(&header).map_err(|_| {
+            AkvKeyReleaseJwtError::InvalidJwtHeaderFormat(
+                String::from_utf8_lossy(&header).to_string(),
+            )
+        })?;
         let header: akv::AkvKeyReleaseJwtHeader =
             serde_json::from_str(&header).map_err(AkvKeyReleaseJwtError::JwtHeaderToJson)?;
 
         let body = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(body)
             .map_err(AkvKeyReleaseJwtError::DecodeBase64UrlJwtBody)?;
-        let body = String::from_utf8_lossy(&body);
+        let body = std::str::from_utf8(&body).map_err(|_| {
+            AkvKeyReleaseJwtError::InvalidJwtBodyFormat(String::from_utf8_lossy(&body).to_string())
+        })?;
         let body: akv::AkvKeyReleaseJwtBody =
             serde_json::from_str(&body).map_err(AkvKeyReleaseJwtError::JwtBodyToJson)?;
 
