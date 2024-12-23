@@ -41,6 +41,7 @@ members = [
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
   "hyperv/tools/hypestv",
+  "vm/devices/storage/storvsp/fuzz",
 ]
 exclude = [
   "xsync",

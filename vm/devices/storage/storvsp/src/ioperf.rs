@@ -54,7 +54,7 @@ impl PerfTester {
         let test_guest_mem = GuestMemory::allocate(16 * 1024);
 
         let worker = TestWorker::start(
-            controller.state.clone(),
+            controller,
             driver,
             test_guest_mem.clone(),
             host,

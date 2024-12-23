@@ -17,6 +17,7 @@ use vm_resource::ResourceId;
 
 /// A path at which to enumerate a SCSI logical unit.
 #[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ScsiPath {
     /// The SCSI path number.
     pub path: u8,

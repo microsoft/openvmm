@@ -13,7 +13,7 @@ use crate::InitState;
 use crate::PacketError;
 use crate::Protocol;
 use crate::ProtocolState;
-use crate::ScsiControllerState;
+use crate::ScsiController;
 use crate::ScsiPath;
 use crate::Worker;
 use crate::WorkerError;
@@ -38,7 +38,7 @@ use vmbus_ring::PAGE_SIZE;
 use zerocopy::AsBytes;
 use zerocopy::FromZeroes;
 
-pub(crate) struct TestWorker {
+pub struct TestWorker {
     task: Task<Result<(), WorkerError>>,
 }
 
@@ -48,7 +48,7 @@ impl TestWorker {
     }
 
     pub fn start<T: ring::RingMem + 'static + Sync>(
-        controller: Arc<ScsiControllerState>,
+        controller: ScsiController,
         spawner: impl Spawn,
         mem: GuestMemory,
         channel: RawAsyncChannel<T>,
@@ -56,7 +56,7 @@ impl TestWorker {
     ) -> Self {
         let task = spawner.spawn("test", async move {
             let mut worker = Worker::new(
-                controller.clone(),
+                controller.state.clone(),
                 channel,
                 0,
                 mem,
@@ -164,7 +164,7 @@ pub(crate) fn parse_guest_enumerate_bus<T: ring::RingMem>(
     }
 }
 
-pub(crate) struct TestGuest {
+pub struct TestGuest {
     pub queue: Queue<FlatRingMem>,
     pub transaction_id: u64,
 }
@@ -343,7 +343,7 @@ impl TestGuest {
     }
 
     // Send protocol negotiation packets for a test guest.
-    pub(crate) async fn perform_protocol_negotiation(&mut self) {
+    pub async fn perform_protocol_negotiation(&mut self) {
         let negotiate_packet = protocol::Packet {
             operation: protocol::Operation::BEGIN_INITIALIZATION,
             flags: 0,
