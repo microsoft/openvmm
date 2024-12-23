@@ -5,20 +5,19 @@
 use crate::arbitrary_data;
 use crate::fuzz_emulated_device::FuzzEmulatedDevice;
 
-use std::convert::TryFrom;
-
 use arbitrary::Arbitrary;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use guestmem::GuestMemory;
 use guid::Guid;
-use nvme::NvmeController;
-use nvme::NvmeControllerCaps;
 use nvme_driver::Namespace;
 use nvme_driver::NvmeDriver;
 use nvme_spec::nvm::DsmRange;
+use nvme::NvmeController;
+use nvme::NvmeControllerCaps;
 use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
+use std::convert::TryFrom;
 use user_driver::emulated::DeviceSharedMemory;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -105,7 +104,7 @@ impl FuzzNvmeDriver {
 
     /// Generates and executes an arbitrary NvmeDriverAction. Returns either an arbitrary
     /// error or the executed action. `NvmeDriver` is not intended to be an interface
-    /// consumed by anyhing ther than `NvmeDisk`, yet the fuzzer targets the driver directly.
+    /// consumed by anything ther than `NvmeDisk`, yet the fuzzer targets the driver directly.
     /// In addition, the `NvmeDriver` is not at any trust boundary. This is done to allow
     /// for providing arbitrary data in more places. However, you'll notice that many
     /// of these actions do sanitize the arbitrary data to some degree, to get past
@@ -126,7 +125,6 @@ impl FuzzNvmeDriver {
                     .read(
                         target_cpu % self.cpu_count,
                         lba,
-                        // invalid block count: 261632 > 16384
                         block_count
                             % (u32::try_from(buf_range.len()).unwrap()
                                 >> self.namespace.block_size().trailing_zeros())
