@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! Implements a generic ATA disk drive with 48-bit LBA support, wrapping a
-//! [`SimpleDisk`].
+//! [`Disk`].
 
 use super::DriveRegister;
 use crate::protocol;
@@ -13,8 +13,8 @@ use crate::protocol::IdeCommand;
 use crate::protocol::Status;
 use crate::DmaType;
 use crate::NewDeviceError;
+use disk_backend::Disk;
 use disk_backend::DiskError;
-use disk_backend::SimpleDisk;
 use guestmem::ranges::PagedRange;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
@@ -81,9 +81,9 @@ impl Registers {
             lba_mid: 0,
             lba_high: 0,
             device_head: DeviceHeadReg::new(),
-            error: ErrorReg::ERR_AMNF_ILI_DEFAULT,
+            error: ErrorReg::new().with_amnf_ili_default(true),
             features: 0,
-            device_control_reg: DeviceControlReg::empty(),
+            device_control_reg: DeviceControlReg::new(),
         }
     }
 
@@ -239,7 +239,7 @@ impl DriveState {
 
 #[derive(Inspect)]
 pub(crate) struct HardDrive {
-    disk: Arc<dyn SimpleDisk>,
+    disk: Disk,
     state: DriveState,
     geometry: MediaGeometry,
     disk_path: IdePath,
@@ -482,7 +482,7 @@ enum IoPortData<'a> {
 }
 
 impl HardDrive {
-    pub fn new(disk: Arc<dyn SimpleDisk>, disk_path: IdePath) -> Result<Self, NewDeviceError> {
+    pub fn new(disk: Disk, disk_path: IdePath) -> Result<Self, NewDeviceError> {
         // Initialize drive geometry
         let read_only = disk.is_read_only();
         let geometry = MediaGeometry::new(disk.sector_count(), disk.sector_size())?;
@@ -519,19 +519,14 @@ impl HardDrive {
         // Select a byte from a two-byte FIFO register based on the state of
         // the HOB bit.
         let select_byte = |x: u16| {
-            if self
-                .state
-                .regs
-                .device_control_reg
-                .contains(DeviceControlReg::HIGH_ORDER_BYTE)
-            {
+            if self.state.regs.device_control_reg.high_order_byte() {
                 (x >> 8) as u8
             } else {
                 x as u8
             }
         };
         match register {
-            DriveRegister::ErrorFeatures => self.state.regs.error.bits(),
+            DriveRegister::ErrorFeatures => self.state.regs.error.into_bits(),
             DriveRegister::SectorCount => select_byte(self.state.regs.sector_count),
             DriveRegister::LbaLow => select_byte(self.state.regs.lba_low),
             DriveRegister::LbaMid => select_byte(self.state.regs.lba_mid),
@@ -541,9 +536,9 @@ impl HardDrive {
                 let status = self.status();
                 tracing::trace!(status = ?status, "status query, deasserting");
                 self.state.pending_interrupt = false;
-                status.bits()
+                status.into_bits()
             }
-            DriveRegister::AlternateStatusDeviceControl => self.status().bits(),
+            DriveRegister::AlternateStatusDeviceControl => self.status().into_bits(),
         }
     }
 
@@ -589,8 +584,8 @@ impl HardDrive {
             DriveRegister::AlternateStatusDeviceControl => {
                 clear_hob = false;
                 let v = DeviceControlReg::from_bits_truncate(data);
-                self.state.regs.device_control_reg = v & !DeviceControlReg::RESET;
-                if v.contains(DeviceControlReg::RESET) && !self.state.pending_software_reset {
+                self.state.regs.device_control_reg = v.with_reset(false);
+                if v.reset() && !self.state.pending_software_reset {
                     if self.state.command.is_none() {
                         self.reset();
                     } else {
@@ -602,7 +597,10 @@ impl HardDrive {
         // Clear the HOB bit on command register writes, as specified in the
         // ATA spec.
         if clear_hob {
-            self.state.regs.device_control_reg &= !DeviceControlReg::HIGH_ORDER_BYTE;
+            self.state
+                .regs
+                .device_control_reg
+                .set_high_order_byte(false);
         }
     }
 
@@ -623,11 +621,7 @@ impl HardDrive {
 
     pub fn interrupt_pending(&self) -> bool {
         self.state.pending_interrupt
-            && !self
-                .state
-                .regs
-                .device_control_reg
-                .contains(DeviceControlReg::INTERRUPT_MASK)
+            && !self.state.regs.device_control_reg.interrupt_mask()
             && self.is_selected()
             && !self.state.pending_software_reset
     }
@@ -772,25 +766,27 @@ impl HardDrive {
             // The drive was not selected, so don't return status for the wrong
             // drive. This is used to support configurations with only device 0
             // enabled.
-            Status::empty()
+            Status::new()
         } else {
-            let mut status = Status::empty();
+            let mut status = Status::new();
             if self.state.pending_software_reset {
-                status |= Status::BSY;
+                status.set_bsy(true);
             } else if self.state.buffer.is_some() {
                 // Set DRQ if there is an accessible buffer.
-                status |= Status::DRQ | Status::DRDY;
+                status.set_drq(true);
+                status.set_drdy(true);
             } else if self.state.command.is_some() {
                 // Set BSY if there is no buffer and a command is pending.
-                status |= Status::BSY;
+                status.set_bsy(true);
             } else {
-                status |= Status::DRDY;
+                status.set_drdy(true);
             }
             if self.state.error_pending {
-                status |= Status::ERR;
+                status.set_err(true);
             }
             // Always set DSC.
-            status | Status::DSC
+            status.set_dsc(true);
+            status
         }
     }
 
@@ -808,12 +804,12 @@ impl HardDrive {
         }
 
         self.state.error_pending = false;
-        self.state.regs.error = ErrorReg::ERR_NONE;
+        self.state.regs.error = ErrorReg::new();
 
         let command = match command {
             IdeCommand::EXECUTE_DEVICE_DIAGNOSTIC => {
                 self.state.regs.reset_signature();
-                self.state.regs.error = ErrorReg::ERR_AMNF_ILI_DEFAULT;
+                self.state.regs.error = ErrorReg::new().with_amnf_ili_default(true);
                 return Ok(());
             }
             x if (IdeCommand::RECALIBRATE_START..=IdeCommand::RECALIBRATE_END).contains(&x) => {
@@ -957,7 +953,7 @@ impl HardDrive {
             command => {
                 tracing::debug!(?command, "unknown command");
                 self.state.error_pending = true;
-                self.state.regs.error = ErrorReg::ERR_UNKNOWN_COMMAND;
+                self.state.regs.error = ErrorReg::new().with_unknown_command(true);
                 None
             }
         };
@@ -1347,10 +1343,10 @@ impl HardDrive {
     fn log_and_update_error(&mut self, error: IdeError, register: Option<DriveRegister>) {
         let ide_error = match error {
             IdeError::IdeBadLocation { .. } | IdeError::ZeroSector | IdeError::LbaBitNotSet => {
-                ErrorReg::ERR_BAD_LOCATION
+                ErrorReg::new().with_bad_location(true)
             }
-            IdeError::IdeBadSector { .. } => ErrorReg::ERR_BAD_SECTOR,
-            IdeError::Flush { .. } => ErrorReg::ERR_UNKNOWN_COMMAND, // strange, but matches Hyper-V behavior
+            IdeError::IdeBadSector { .. } => ErrorReg::new().with_bad_sector(true),
+            IdeError::Flush { .. } => ErrorReg::new().with_unknown_command(true), // strange, but matches Hyper-V behavior
         };
 
         tracelimit::warn_ratelimited!(
@@ -1369,7 +1365,7 @@ impl HardDrive {
     /// Sets the asynchronous IO to be polled in `poll_device`.
     fn set_io<F, Fut>(&mut self, f: F)
     where
-        F: FnOnce(Arc<dyn SimpleDisk>) -> Fut,
+        F: FnOnce(Disk) -> Fut,
         Fut: 'static + Future<Output = Result<(), DiskError>> + Send,
     {
         let fut = (f)(self.disk.clone());
@@ -1531,14 +1527,14 @@ pub(crate) mod save_restore {
 
             Ok(state::SavedHardDriveState {
                 registers: SavedRegisterState {
-                    error: error.bits(),
+                    error: error.into_bits(),
                     features: *features,
                     device_head: (*device_head).into(),
                     lba_low: *lba_low,
                     lba_mid: *lba_mid,
                     lba_high: *lba_high,
                     sector_count: *sector_count,
-                    device_control_reg: device_control_reg.bits(),
+                    device_control_reg: device_control_reg.into_bits(),
                 },
                 pending_interrupt: *pending_interrupt,
                 max_sector: *max_sector,
@@ -1621,7 +1617,7 @@ pub(crate) mod save_restore {
                     lba_mid,
                     lba_high,
                     sector_count,
-                    device_control_reg: DeviceControlReg::from_bits(device_control_reg).unwrap(),
+                    device_control_reg: DeviceControlReg::from_bits(device_control_reg),
                 },
                 pending_software_reset,
                 pending_interrupt,

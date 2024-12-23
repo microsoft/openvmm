@@ -3,12 +3,13 @@
 
 //! Resolver-related definitions for disk resources.
 
-use crate::SimpleDisk;
-use std::sync::Arc;
+use crate::Disk;
+use crate::DiskIo;
+use crate::InvalidDisk;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::CanResolveTo;
 
-impl CanResolveTo<ResolvedSimpleDisk> for DiskHandleKind {
+impl CanResolveTo<ResolvedDisk> for DiskHandleKind {
     type Input<'a> = ResolveDiskParameters<'a>;
 }
 
@@ -24,11 +25,12 @@ pub struct ResolveDiskParameters<'a> {
     pub _async_trait_workaround: &'a (),
 }
 
-/// A resolved [`SimpleDisk`].
-pub struct ResolvedSimpleDisk(pub Arc<dyn SimpleDisk>);
+/// A resolved [`Disk`].
+pub struct ResolvedDisk(pub Disk);
 
-impl<T: 'static + SimpleDisk> From<T> for ResolvedSimpleDisk {
-    fn from(value: T) -> Self {
-        Self(Arc::new(value))
+impl ResolvedDisk {
+    /// Returns a resolved disk wrapping a backing object.
+    pub fn new<T: DiskIo>(disk: T) -> Result<Self, InvalidDisk> {
+        Ok(Self(Disk::new(disk)?))
     }
 }

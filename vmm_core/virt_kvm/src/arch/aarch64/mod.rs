@@ -363,7 +363,7 @@ impl virt::vp::AccessVpState for &'_ mut KvmProcessor<'_> {
     }
 }
 
-impl<'a> virt::vm::AccessVmState for &'a KvmPartition {
+impl virt::vm::AccessVmState for &KvmPartition {
     type Error = KvmError;
 
     fn caps(&self) -> &PartitionCapabilities {
@@ -378,7 +378,10 @@ impl<'a> virt::vm::AccessVmState for &'a KvmPartition {
 impl virt::Processor for KvmProcessor<'_> {
     type Error = KvmError;
     type RunVpError = KvmRunVpError;
-    type StateAccess<'a> = &'a mut Self where Self: 'a;
+    type StateAccess<'a>
+        = &'a mut Self
+    where
+        Self: 'a;
 
     fn set_debug_state(
         &mut self,
@@ -597,7 +600,7 @@ impl KvmProtoPartition<'_> {
     }
 }
 
-impl<'a> virt::ProtoPartition for KvmProtoPartition<'a> {
+impl virt::ProtoPartition for KvmProtoPartition<'_> {
     type Error = KvmError;
     type Partition = KvmPartition;
     type ProcessorBinder = KvmProcessorBinder;

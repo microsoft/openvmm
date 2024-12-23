@@ -9,6 +9,7 @@ use crate::vmgs_json;
 use crate::Error;
 use crate::FilePathArg;
 use crate::KeyPathArg;
+use crate::OpenMode;
 use anyhow::Result;
 use clap::Args;
 use clap::Subcommand;
@@ -28,7 +29,6 @@ use uefi_nvram_specvars::ParsedNvramEntry;
 use uefi_nvram_storage::NvramStorage;
 use uefi_specs::uefi::nvram::vars::EFI_GLOBAL_VARIABLE;
 use uefi_specs::uefi::time::EFI_TIME;
-use vmgs::disk::vhd_file::FileDiskFlag;
 use vmgs::Vmgs;
 
 #[derive(Args)]
@@ -127,7 +127,7 @@ async fn vmgs_file_dump_nvram(
     key_path: Option<impl AsRef<Path>>,
     truncate: bool,
 ) -> Result<(), Error> {
-    let mut nvram_storage = vmgs_file_open_nvram(file_path, key_path, FileDiskFlag::Read).await?;
+    let mut nvram_storage = vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadOnly).await?;
 
     let mut out: Box<dyn Write + Send> = if let Some(path) = output_path {
         Box::new(File::create(path.as_ref()).map_err(Error::DataFile)?)
@@ -334,9 +334,9 @@ fn print_hex_compact(
 async fn vmgs_file_open_nvram(
     file_path: impl AsRef<Path>,
     key_path: Option<impl AsRef<Path>>,
-    flag: FileDiskFlag,
+    open_mode: OpenMode,
 ) -> Result<HclCompatNvram<VmgsStorageBackend>, Error> {
-    let vmgs = vmgs_file_open(file_path, key_path, flag, false).await?;
+    let vmgs = vmgs_file_open(file_path, key_path, open_mode, false).await?;
     let encrypted = vmgs.is_encrypted();
 
     open_nvram(vmgs, encrypted)
@@ -359,8 +359,7 @@ async fn vmgs_file_remove_boot_entries(
     key_path: Option<impl AsRef<Path>>,
     dry_run: bool,
 ) -> Result<(), Error> {
-    let mut nvram_storage =
-        vmgs_file_open_nvram(file_path, key_path, FileDiskFlag::ReadWrite).await?;
+    let mut nvram_storage = vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadWrite).await?;
 
     if dry_run {
         println!("Printing Boot Entries (Dry-run)");
@@ -416,8 +415,7 @@ async fn vmgs_file_remove_nvram_entry(
     name: String,
     vendor: String,
 ) -> Result<(), Error> {
-    let mut nvram_storage =
-        vmgs_file_open_nvram(file_path, key_path, FileDiskFlag::ReadWrite).await?;
+    let mut nvram_storage = vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadWrite).await?;
 
     let name = Ucs2LeVec::from(name);
     let vendor = Guid::from_str(&vendor)?;

@@ -11,9 +11,9 @@ use crate::protobuf::MessageSizer;
 use crate::protobuf::MessageWriter;
 use crate::FieldEncode;
 use crate::MessageEncode;
+use alloc::slice;
 use core::marker::PhantomData;
-use std::mem::MaybeUninit;
-use std::slice;
+use core::mem::MaybeUninit;
 
 impl<T, R> MessageEncode<T, R> for TableEncoder
 where
@@ -42,7 +42,7 @@ where
                 T::NUMBERS,
                 T::ENCODERS,
                 T::OFFSETS,
-                std::ptr::from_mut(item).cast::<u8>(),
+                core::ptr::from_mut(item).cast::<u8>(),
                 sizer,
             );
         }
@@ -80,7 +80,7 @@ where
                 T::NUMBERS,
                 T::ENCODERS,
                 T::OFFSETS,
-                std::ptr::from_mut(item).cast::<u8>(),
+                core::ptr::from_mut(item).cast::<u8>(),
                 sizer,
             );
         }
@@ -367,7 +367,7 @@ impl<T, R> EncoderEntry<T, R> {
     pub(crate) const fn custom<E: FieldEncode<T, R>>() -> Self {
         Self(
             ErasedEncoderEntry(
-                std::ptr::from_ref(
+                core::ptr::from_ref(
                     const {
                         &StaticEncoderVtable {
                             write_fn: write_field_dyn::<T, R, E>,
@@ -388,7 +388,7 @@ impl<T, R> EncoderEntry<T, R> {
     {
         Self(
             ErasedEncoderEntry(
-                std::ptr::from_ref(
+                core::ptr::from_ref(
                     const {
                         &EncoderTable {
                             count: T::NUMBERS.len(),

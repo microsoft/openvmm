@@ -16,7 +16,7 @@ use zerocopy::LE;
 use zerocopy::U16;
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes, Inspect)]
+#[derive(Debug, AsBytes, FromBytes, FromZeroes, Inspect, Clone)]
 pub struct IdentifyNamespace {
     pub nsze: u64,
     pub ncap: u64,

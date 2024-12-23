@@ -581,8 +581,6 @@ pub const IGVM_ATTEST_MSG_REQ_REPORT_MAX_SIZE: usize = 4096;
 
 /// Maximum return pages
 pub const IGVM_ATTEST_MSG_MAX_SHARED_GPA: usize = 16;
-/// Current return pages
-pub const IGVM_ATTEST_MSG_SHARED_GPA: usize = IGVM_ATTEST_MSG_MAX_SHARED_GPA;
 
 // Error from the VM worker process in the host when sending an
 // attestation request.
@@ -747,8 +745,8 @@ const_assert_eq!(24, size_of::<VmgsGetDeviceInfoResponse>());
 pub struct VmgsWriteRequest {
     pub message_header: HeaderHostRequest,
     pub flags: VmgsWriteFlags,
-    pub offset: u64, // logical sectors
-    pub length: u32, // logical sectors
+    pub sector_offset: u64, // logical sectors
+    pub sector_count: u32,  // logical sectors
     pub _pad: u32,
     // Variable size payload follows
 }
@@ -756,12 +754,12 @@ pub struct VmgsWriteRequest {
 const_assert_eq!(24, size_of::<VmgsWriteRequest>());
 
 impl VmgsWriteRequest {
-    pub fn new(flags: VmgsWriteFlags, offset: u64, length: u32) -> Self {
+    pub fn new(flags: VmgsWriteFlags, sector_offset: u64, sector_count: u32) -> Self {
         Self {
             message_header: HeaderGeneric::new(HostRequests::VMGS_WRITE),
             flags,
-            offset,
-            length,
+            sector_offset,
+            sector_count,
             _pad: 0,
         }
     }
@@ -790,20 +788,20 @@ const_assert_eq!(8, size_of::<VmgsWriteResponse>());
 pub struct VmgsReadRequest {
     pub message_header: HeaderHostRequest,
     pub flags: VmgsReadFlags,
-    pub offset: u64, // logical sectors
-    pub length: u32, // logical sectors
+    pub sector_offset: u64, // logical sectors
+    pub sector_count: u32,  // logical sectors
     pub _pad: u32,
 }
 
 const_assert_eq!(24, size_of::<VmgsReadRequest>());
 
 impl VmgsReadRequest {
-    pub fn new(flags: VmgsReadFlags, offset: u64, length: u32) -> Self {
+    pub fn new(flags: VmgsReadFlags, sector_offset: u64, sector_count: u32) -> Self {
         Self {
             message_header: HeaderGeneric::new(HostRequests::VMGS_READ),
             flags,
-            offset,
-            length,
+            sector_offset,
+            sector_count,
             _pad: 0,
         }
     }
@@ -1179,13 +1177,10 @@ impl UpdateGenerationId {
 
 /// Bitfield describing SaveGuestVtl2StateNotification::capabilities_flags
 #[bitfield(u64)]
+#[derive(AsBytes, FromBytes, FromZeroes)]
 pub struct SaveGuestVtl2StateFlags {
-    /// Disable nvme_keepalive feature when servicing.
-    #[bits(1)]
-    pub disable_nvme_keepalive: bool,
-
-    /// Reserved
-    #[bits(63)]
+    /// Reserved, must be zero.
+    #[bits(64)]
     _rsvd1: u64,
 }
 
@@ -1194,7 +1189,7 @@ pub struct SaveGuestVtl2StateFlags {
 pub struct SaveGuestVtl2StateNotification {
     pub message_header: HeaderGuestNotification,
     pub correlation_id: Guid,
-    pub capabilities_flags: u64,
+    pub capabilities_flags: SaveGuestVtl2StateFlags,
     pub timeout_hint_secs: u16,
 }
 
@@ -1871,6 +1866,6 @@ impl ResetRamGpaRangeResponse {
 
 pub mod test_utilities {
     // These constants are shared across GED and GET testing
-    pub const TEST_VMGS_SECTOR_SIZE: usize = 512;
+    pub const TEST_VMGS_SECTOR_SIZE: u32 = 512;
     pub const TEST_VMGS_CAPACITY: usize = 4194816; // 4 MB
 }

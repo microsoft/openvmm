@@ -7,6 +7,9 @@
 
 use anyhow::bail;
 use anyhow::Context;
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 // We've made our own parser here instead of using something like clap in order
@@ -100,6 +103,10 @@ pub struct Options {
     /// Enable support for guest vsm in CVMs. This is disabled by default.
     pub cvm_guest_vsm: bool,
 
+    /// (OPENHCL_HIDE_ISOLATION=1)
+    /// Hide the isolation mode from the guest.
+    pub hide_isolation: bool,
+
     /// (OPENHCL_HALT_ON_GUEST_HALT=1) When receiving a halt request from a
     /// lower VTL, halt underhill instead of forwarding the halt request to the
     /// host. This allows for debugging state without the partition state
@@ -109,29 +116,47 @@ pub struct Options {
     /// (OPENHCL_NO_SIDECAR_HOTPLUG=1) Leave sidecar VPs remote even if they
     /// hit exits.
     pub no_sidecar_hotplug: bool,
+
+    /// (OPENHCL_NVME_KEEP_ALIVE=1) Enable nvme keep alive when servicing.
+    pub nvme_keep_alive: bool,
 }
 
 impl Options {
-    pub(crate) fn parse(extra_args: Vec<String>) -> anyhow::Result<Self> {
-        /// Reads an environment variable, falling back to a legacy variable (replacing
-        /// "OPENHCL_" with "UNDERHILL_") if the original is not set.
-        fn legacy_openhcl_env(name: &str) -> Option<std::ffi::OsString> {
-            std::env::var_os(name).or_else(|| {
-                std::env::var_os(format!(
-                    "UNDERHILL_{}",
-                    name.strip_prefix("OPENHCL_").unwrap_or(name)
-                ))
-            })
+    pub(crate) fn parse(
+        extra_args: Vec<String>,
+        extra_env: Vec<(String, Option<String>)>,
+    ) -> anyhow::Result<Self> {
+        // Pull the entire environment into a BTreeMap for manipulation through extra_env.
+        let mut env: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+        for (key, value) in extra_env {
+            match value {
+                Some(value) => env.insert(key.into(), value.into()),
+                None => env.remove::<OsStr>(key.as_ref()),
+            };
         }
 
-        fn parse_bool(value: Option<std::ffi::OsString>) -> bool {
+        // Reads an environment variable, falling back to a legacy variable (replacing
+        // "OPENHCL_" with "UNDERHILL_") if the original is not set.
+        let legacy_openhcl_env = |name: &str| -> Option<&OsString> {
+            env.get::<OsStr>(name.as_ref()).or_else(|| {
+                env.get::<OsStr>(
+                    format!(
+                        "UNDERHILL_{}",
+                        name.strip_prefix("OPENHCL_").unwrap_or(name)
+                    )
+                    .as_ref(),
+                )
+            })
+        };
+
+        fn parse_bool(value: Option<&OsString>) -> bool {
             value
                 .map(|v| v.to_ascii_lowercase() == "true" || v == "1")
                 .unwrap_or_default()
         }
 
         let parse_legacy_env_bool = |name| parse_bool(legacy_openhcl_env(name));
-        let parse_env_bool = |name| parse_bool(std::env::var_os(name));
+        let parse_env_bool = |name: &str| parse_bool(env.get::<OsStr>(name.as_ref()));
 
         let parse_legacy_env_number = |name| {
             legacy_openhcl_env(name)
@@ -172,10 +197,12 @@ impl Options {
         let enable_shared_visibility_pool =
             parse_legacy_env_bool("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL");
         let cvm_guest_vsm = parse_legacy_env_bool("OPENHCL_CVM_GUEST_VSM");
+        let hide_isolation = parse_env_bool("OPENHCL_HIDE_ISOLATION");
         let halt_on_guest_halt = parse_legacy_env_bool("OPENHCL_HALT_ON_GUEST_HALT");
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
+        let nvme_keep_alive = parse_env_bool("OPENHCL_NVME_KEEP_ALIVE");
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -226,8 +253,10 @@ impl Options {
             emulate_apic,
             enable_shared_visibility_pool,
             cvm_guest_vsm,
+            hide_isolation,
             halt_on_guest_halt,
             no_sidecar_hotplug,
+            nvme_keep_alive,
         })
     }
 

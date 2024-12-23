@@ -20,41 +20,23 @@ use x86defs::cpuid::SgxCpuidSubleafEax;
 use x86defs::cpuid::Vendor;
 use x86defs::xsave::XSAVE_VARIABLE_OFFSET;
 
-/// Subset of VP state for debuggers.
-#[derive(Debug, PartialEq, Eq, Protobuf)]
-pub struct VpState {
-    pub gp: [u64; 16],
-    pub rip: u64,
-    pub rflags: u64,
-    pub cr0: u64,
-    pub cr2: u64,
-    pub cr3: u64,
-    pub cr4: u64,
-    pub cr8: u64,
-    pub efer: u64,
-    pub kernel_gs_base: u64,
-    pub es: SegmentRegister,
-    pub cs: SegmentRegister,
-    pub ss: SegmentRegister,
-    pub ds: SegmentRegister,
-    pub fs: SegmentRegister,
-    pub gs: SegmentRegister,
-}
-
 /// VP state that can be set for initial boot.
 #[derive(Debug, PartialEq, Eq, Protobuf)]
 pub struct X86InitialRegs {
     /// Register state to be set on the BSP.
     pub registers: vp::Registers,
     /// MTRR state to be set on all processors.
-    pub cc: vp::CacheControl,
+    pub mtrrs: vp::Mtrrs,
+    /// PAT state to be set on all processors.
+    pub pat: vp::Pat,
 }
 
 impl X86InitialRegs {
     pub fn at_reset(caps: &X86PartitionCapabilities, bsp: &X86VpInfo) -> Self {
         Self {
             registers: vp::Registers::at_reset(caps, bsp),
-            cc: vp::CacheControl::at_reset(caps, bsp),
+            mtrrs: vp::Mtrrs::at_reset(caps, bsp),
+            pat: vp::Pat::at_reset(caps, bsp),
         }
     }
 }
@@ -495,7 +477,7 @@ pub enum MsrError {
     /// The MSR is not implemented. Depending on the configuration, this should
     /// either be ignored (returning 0 for reads) or should result in a #GP.
     Unknown,
-    /// The msr is implemented but this is an invalid read or write and should
+    /// The MSR is implemented but this is an invalid read or write and should
     /// always result in a #GP.
     InvalidAccess,
 }

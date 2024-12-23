@@ -40,6 +40,9 @@ const MAX_PARTITION_RAM_RANGES: usize = 1024;
 /// Maximum size of the host-provided entropy
 pub const MAX_ENTROPY_SIZE: usize = 256;
 
+/// Maximum number of supported VTL2 used ranges.
+pub const MAX_VTL2_USED_RANGES: usize = 16;
+
 /// Information about the guest partition.
 #[derive(Debug)]
 pub struct PartitionInfo {
@@ -53,7 +56,18 @@ pub struct PartitionInfo {
     /// Additional ram that can be reclaimed from the parameter region. Today,
     /// this is the whole device tree provided by the host.
     pub vtl2_config_region_reclaim: MemoryRange,
-    /// The full memory map provided by the host.
+    /// The vtl2 reserved region, that is reserved to both the kernel and
+    /// usermode.
+    pub vtl2_reserved_region: MemoryRange,
+    /// Memory used for the VTL2 private pool.
+    pub vtl2_pool_memory: MemoryRange,
+    /// Memory ranges that are in use by the bootshim, and any other persisted
+    /// ranges, such as the VTL2 private pool.
+    ///
+    /// TODO: Refactor these different ranges and consolidate address space
+    /// management.
+    pub vtl2_used_ranges: ArrayVec<MemoryRange, MAX_VTL2_USED_RANGES>,
+    ///  The full memory map provided by the host.
     pub partition_ram: ArrayVec<MemoryEntry, MAX_PARTITION_RAM_RANGES>,
     /// The partiton's isolation type.
     pub isolation: IsolationType,
@@ -87,6 +101,9 @@ impl PartitionInfo {
             vtl2_ram: ArrayVec::new_const(),
             vtl2_full_config_region: MemoryRange::EMPTY,
             vtl2_config_region_reclaim: MemoryRange::EMPTY,
+            vtl2_reserved_region: MemoryRange::EMPTY,
+            vtl2_pool_memory: MemoryRange::EMPTY,
+            vtl2_used_ranges: ArrayVec::new_const(),
             partition_ram: ArrayVec::new_const(),
             isolation: IsolationType::None,
             bsp_reg: 0,

@@ -8,6 +8,8 @@ mod vmgs_json;
 use anyhow::Result;
 use clap::Args;
 use clap::Parser;
+use disk_backend::Disk;
+use disk_vhd1::Vhd1Disk;
 use fs_err::File;
 use pal_async::DefaultPool;
 use std::io::prelude::*;
@@ -15,11 +17,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use thiserror::Error;
 use uefi_nvram::UefiNvramOperation;
-use vmgs::disk::vhd_file::FileDiskFlag;
-use vmgs::disk::vhd_file::VhdFileDisk;
-use vmgs::disk::vhd_file::SECTOR_SIZE;
-use vmgs::disk::vhd_file::VMGS_DEFAULT_FILE_SIZE;
-use vmgs::disk::BlockStorage;
 use vmgs::vmgs_helpers::get_active_header;
 use vmgs::vmgs_helpers::read_headers;
 use vmgs::vmgs_helpers::validate_header;
@@ -29,6 +26,7 @@ use vmgs_format::EncryptionAlgorithm;
 use vmgs_format::FileId;
 use vmgs_format::VmgsHeader;
 use vmgs_format::VMGS_BYTES_PER_BLOCK;
+use vmgs_format::VMGS_DEFAULT_CAPACITY;
 use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
 
 const ONE_MEGA_BYTE: u64 = 1024 * 1024;
@@ -38,6 +36,10 @@ const ONE_GIGA_BYTE: u64 = ONE_MEGA_BYTE * 1024;
 enum Error {
     #[error("VMGS file IO")]
     VmgsFile(#[source] std::io::Error),
+    #[error("VHD file error")]
+    Vhd1(#[source] disk_vhd1::OpenError),
+    #[error("invalid disk")]
+    InvalidDisk(#[source] disk_backend::InvalidDisk),
     #[error("VMGS format")]
     Vmgs(#[from] vmgs::Error),
     #[error("VMGS file already exists")]
@@ -438,7 +440,7 @@ async fn vmgs_file_update_key(
     new_key_path: impl AsRef<Path>,
 ) -> Result<(), Error> {
     let new_encryption_key = read_key_path(new_key_path)?;
-    let mut vmgs = vmgs_file_open(file_path, key_path, FileDiskFlag::ReadWrite, false).await?;
+    let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWrite, false).await?;
 
     vmgs_update_key(&mut vmgs, encryption_alg, new_encryption_key.as_ref()).await
 }
@@ -471,7 +473,7 @@ async fn vmgs_file_create(
     force_create: bool,
     encryption_alg_key: Option<(EncryptionAlgorithm, impl AsRef<Path>)>,
 ) -> Result<(), Error> {
-    let storage = vhdfiledisk_create(path, file_size, force_create)?;
+    let disk = vhdfiledisk_create(path, file_size, force_create)?;
 
     let encryption_key = encryption_alg_key
         .as_ref()
@@ -480,7 +482,7 @@ async fn vmgs_file_create(
     let encryption_alg_key =
         encryption_alg_key.map(|(alg, _)| (alg, encryption_key.as_deref().unwrap()));
 
-    let _ = vmgs_create(Box::new(storage), encryption_alg_key).await?;
+    let _ = vmgs_create(disk, encryption_alg_key).await?;
 
     println!("Done!");
     Ok(())
@@ -488,58 +490,69 @@ async fn vmgs_file_create(
 
 fn vhdfiledisk_create(
     path: impl AsRef<Path>,
-    file_size: Option<u64>,
+    req_file_size: Option<u64>,
     force_create: bool,
-) -> Result<VhdFileDisk, Error> {
+) -> Result<Disk, Error> {
     const MIN_VMGS_FILE_SIZE: u64 = 4 * VMGS_BYTES_PER_BLOCK as u64;
+    const SECTOR_SIZE: u64 = 512;
 
-    let mut overwrite_existing_file = false;
-
-    // Make sure that a file does not already exist.
-    if Path::new(path.as_ref()).exists() {
-        if force_create {
-            overwrite_existing_file = true;
-            println!(
-                "File already exists. Recreating the file {:?}",
-                path.as_ref()
-            );
-        } else {
-            return Err(Error::FileExists);
-        }
+    let file_size = req_file_size.unwrap_or(VMGS_DEFAULT_CAPACITY);
+    if file_size < MIN_VMGS_FILE_SIZE || file_size % SECTOR_SIZE != 0 {
+        return Err(Error::InvalidVmgsFileSize(
+            file_size,
+            format!(
+                "Must be a multiple of {} and at least {}",
+                SECTOR_SIZE, MIN_VMGS_FILE_SIZE
+            ),
+        ));
     }
 
-    print!("Creating file {:?}", path.as_ref());
-
-    if let Some(file_size) = file_size {
-        if file_size < MIN_VMGS_FILE_SIZE || file_size % SECTOR_SIZE != 0 {
-            return Err(Error::InvalidVmgsFileSize(
-                file_size,
-                format!(
-                    "Must be a multiple of {} and at least {}",
-                    SECTOR_SIZE, MIN_VMGS_FILE_SIZE
-                ),
-            ));
-        }
-        println!(" with file size {}...", file_size);
-    } else {
-        println!(" with file size {} (default)...", VMGS_DEFAULT_FILE_SIZE);
+    if force_create && Path::new(path.as_ref()).exists() {
+        println!(
+            "File already exists. Recreating the file {:?}",
+            path.as_ref()
+        );
     }
 
-    let flag = FileDiskFlag::Create {
-        file_size,
-        force_create: overwrite_existing_file,
+    let file = match fs_err::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .create_new(!force_create)
+        .truncate(true)
+        .open(path.as_ref())
+    {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(Error::FileExists)
+        }
+        Err(err) => return Err(Error::VmgsFile(err)),
     };
-    let storage = VhdFileDisk::new(&path, flag).map_err(Error::VmgsFile)?;
 
-    Ok(storage)
+    println!(
+        "Creating file {} with file size {}{}...",
+        path.as_ref().display(),
+        file_size,
+        if req_file_size.is_some() {
+            ""
+        } else {
+            " (default)"
+        }
+    );
+
+    file.set_len(file_size).map_err(Error::VmgsFile)?;
+
+    Vhd1Disk::make_fixed(file.file()).map_err(Error::Vhd1)?;
+    let disk = Vhd1Disk::open_fixed(file.into(), false).map_err(Error::Vhd1)?;
+    Disk::new(disk).map_err(Error::InvalidDisk)
 }
 
 #[cfg_attr(not(with_encryption), allow(unused_mut), allow(unused_variables))]
 async fn vmgs_create(
-    storage: Box<dyn BlockStorage>,
+    disk: Disk,
     encryption_alg_key: Option<(EncryptionAlgorithm, &[u8])>,
 ) -> Result<Vmgs, Error> {
-    let mut vmgs = Vmgs::format_new(storage).await?;
+    let mut vmgs = Vmgs::format_new(disk).await?;
 
     if let Some((algorithm, encryption_key)) = encryption_alg_key {
         #[cfg(with_encryption)]
@@ -580,7 +593,7 @@ async fn vmgs_file_write(
     println!("Size: {} bytes", buf.len());
 
     let encrypt = key_path.is_some();
-    let mut vmgs = vmgs_file_open(file_path, key_path, FileDiskFlag::ReadWrite, false).await?;
+    let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWrite, false).await?;
 
     vmgs_write(&mut vmgs, file_id, &buf, encrypt, allow_overwrite).await?;
 
@@ -632,7 +645,7 @@ async fn vmgs_file_read(
     );
 
     let decrypt = key_path.is_some();
-    let mut vmgs = vmgs_file_open(file_path, key_path, FileDiskFlag::Read, true).await?;
+    let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadOnly, true).await?;
 
     let buf = vmgs_read(&mut vmgs, file_id, decrypt).await?;
 
@@ -685,12 +698,12 @@ async fn vmgs_read(vmgs: &mut Vmgs, file_id: FileId, decrypt: bool) -> Result<Ve
 }
 
 async fn vmgs_file_dump_headers(file_path: impl AsRef<Path>) -> Result<(), Error> {
-    let flag = FileDiskFlag::Read;
-    let mut storage = VhdFileDisk::new(file_path, flag).map_err(Error::VmgsFile)?;
+    let file = File::open(file_path.as_ref()).map_err(Error::VmgsFile)?;
+    let validate_result = vmgs_file_validate(&file);
+    let disk = Disk::new(Vhd1Disk::open_fixed(file.into(), true).map_err(Error::Vhd1)?)
+        .map_err(Error::InvalidDisk)?;
 
-    let validate_result = vmgs_file_validate(&storage);
-
-    let headers_result = match read_headers(&mut storage).await {
+    let headers_result = match read_headers(disk).await {
         Ok((header1, header2)) => vmgs_dump_headers(&header1, &header2),
         Err(e) => Err(e.into()),
     };
@@ -866,23 +879,33 @@ fn vmgs_dump_headers(header1: &VmgsHeader, header2: &VmgsHeader) -> Result<(), E
     Ok(())
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum OpenMode {
+    ReadOnly,
+    ReadWrite,
+}
+
 async fn vmgs_file_open(
     file_path: impl AsRef<Path>,
     key_path: Option<impl AsRef<Path>>,
-    flag: FileDiskFlag,
+    open_mode: OpenMode,
     encrypted_no_key_ok: bool,
 ) -> Result<Vmgs, Error> {
-    let storage = VhdFileDisk::new(file_path.as_ref(), flag).map_err(Error::VmgsFile)?;
+    let file = fs_err::OpenOptions::new()
+        .read(true)
+        .write(open_mode == OpenMode::ReadWrite)
+        .open(file_path.as_ref())
+        .map_err(Error::VmgsFile)?;
+
+    vmgs_file_validate(&file)?;
+
+    let disk = Disk::new(
+        Vhd1Disk::open_fixed(file.into(), open_mode == OpenMode::ReadOnly).map_err(Error::Vhd1)?,
+    )
+    .map_err(Error::InvalidDisk)?;
     let encryption_key = key_path.map(read_key_path).transpose()?;
 
-    vmgs_file_validate(&storage)?;
-
-    let res = vmgs_open(
-        Box::new(storage),
-        encryption_key.as_deref(),
-        encrypted_no_key_ok,
-    )
-    .await;
+    let res = vmgs_open(disk, encryption_key.as_deref(), encrypted_no_key_ok).await;
 
     if matches!(
         res,
@@ -898,11 +921,11 @@ async fn vmgs_file_open(
 
 #[cfg_attr(not(with_encryption), allow(unused_mut), allow(unused_variables))]
 async fn vmgs_open(
-    storage: Box<dyn BlockStorage>,
+    disk: Disk,
     encryption_key: Option<&[u8]>,
     encrypted_no_key_ok: bool,
 ) -> Result<Vmgs, Error> {
-    let mut vmgs: Vmgs = Vmgs::open(storage).await?;
+    let mut vmgs: Vmgs = Vmgs::open(disk).await?;
 
     if let Some(encryption_key) = encryption_key {
         #[cfg(with_encryption)]
@@ -948,7 +971,7 @@ async fn vmgs_file_query_file_size(
     file_path: impl AsRef<Path>,
     file_id: FileId,
 ) -> Result<(), Error> {
-    let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, FileDiskFlag::Read, true).await?;
+    let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnly, true).await?;
 
     let file_size = vmgs_query_file_size(&vmgs, file_id).await?;
 
@@ -967,7 +990,7 @@ async fn vmgs_query_file_size(vmgs: &Vmgs, file_id: FileId) -> Result<u64, Error
 async fn vmgs_file_query_encryption(file_path: impl AsRef<Path>) -> Result<(), Error> {
     print!("{} is ", file_path.as_ref().display());
 
-    let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, FileDiskFlag::Read, true).await?;
+    let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnly, true).await?;
 
     match vmgs.get_encryption_algorithm() {
         EncryptionAlgorithm::NONE => {
@@ -986,9 +1009,9 @@ async fn vmgs_file_query_encryption(file_path: impl AsRef<Path>) -> Result<(), E
     Ok(())
 }
 
-fn vmgs_file_validate(storage: &VhdFileDisk) -> Result<(), Error> {
-    vmgs_file_validate_not_empty(storage)?;
-    vmgs_file_validate_not_v1(storage)?;
+fn vmgs_file_validate(file: &File) -> Result<(), Error> {
+    vmgs_file_validate_not_empty(file)?;
+    vmgs_file_validate_not_v1(file)?;
     Ok(())
 }
 
@@ -997,11 +1020,11 @@ fn vmgs_file_validate(storage: &VhdFileDisk) -> Result<(), Error> {
 /// A file can be empty in the following 2 cases:
 ///     1) the size is zero
 ///     2) the size is non-zero but there is no content inside the file except the footer.
-fn vmgs_file_validate_not_empty(storage: &VhdFileDisk) -> Result<(), Error> {
+fn vmgs_file_validate_not_empty(mut file: &File) -> Result<(), Error> {
     const VHD_DISK_FOOTER_PACKED_SIZE: u64 = 512;
     const MAX_VMGS_FILE_SIZE: u64 = 4 * ONE_GIGA_BYTE;
 
-    let file_size = storage.len().map_err(Error::VmgsFile)?;
+    let file_size = file.metadata().map_err(Error::VmgsFile)?.len();
 
     if file_size > MAX_VMGS_FILE_SIZE {
         return Err(Error::InvalidVmgsFileSize(
@@ -1036,9 +1059,7 @@ fn vmgs_file_validate_not_empty(storage: &VhdFileDisk) -> Result<(), Error> {
         let bytes_to_read =
             std::cmp::min(32 * ONE_MEGA_BYTE, bytes_to_compare - bytes_read) as usize;
 
-        storage
-            .get_file()
-            .read(&mut buf[..bytes_to_read])
+        file.read(&mut buf[..bytes_to_read])
             .map_err(Error::VmgsFile)?;
 
         if !buf[..bytes_to_read].iter().all(|&x| x == 0) {
@@ -1057,17 +1078,12 @@ fn vmgs_file_validate_not_empty(storage: &VhdFileDisk) -> Result<(), Error> {
 }
 
 /// Validate that this is not a VMGSv1 file
-fn vmgs_file_validate_not_v1(storage: &VhdFileDisk) -> Result<(), Error> {
+fn vmgs_file_validate_not_v1(mut file: &File) -> Result<(), Error> {
     const EFI_SIGNATURE: &[u8] = b"EFI PART";
-    let logical_sector_size = storage.meta().logical_sector_size as u64;
     let mut maybe_efi_signature = [0; EFI_SIGNATURE.len()];
-    storage
-        .get_file()
-        .seek(std::io::SeekFrom::Start(logical_sector_size))
+    file.seek(std::io::SeekFrom::Start(512))
         .map_err(Error::VmgsFile)?;
-    storage
-        .get_file()
-        .read(&mut maybe_efi_signature)
+    file.read(&mut maybe_efi_signature)
         .map_err(Error::VmgsFile)?;
     if maybe_efi_signature == EFI_SIGNATURE {
         return Err(Error::V1Format);
@@ -1079,8 +1095,8 @@ fn vmgs_file_validate_not_v1(storage: &VhdFileDisk) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pal_async::async_test;
     use tempfile::tempdir;
-    use vmgs::disk::BlockStorage;
 
     async fn test_vmgs_create(
         path: impl AsRef<Path>,
@@ -1088,20 +1104,29 @@ mod tests {
         force_create: bool,
         encryption_alg_key: Option<(EncryptionAlgorithm, &[u8])>,
     ) -> Result<(), Error> {
-        let storage = vhdfiledisk_create(path, file_size, force_create)?;
-        let _ = vmgs_create(Box::new(storage), encryption_alg_key).await?;
+        let disk = vhdfiledisk_create(path, file_size, force_create)?;
+        let _ = vmgs_create(disk, encryption_alg_key).await?;
         Ok(())
     }
 
     async fn test_vmgs_open(
         path: impl AsRef<Path>,
-        flag: FileDiskFlag,
+        open_mode: OpenMode,
         encryption_key: Option<&[u8]>,
         encrypted_no_key_ok: bool,
     ) -> Result<Vmgs, Error> {
-        let storage = VhdFileDisk::new(path, flag).map_err(Error::VmgsFile)?;
-        vmgs_file_validate(&storage)?;
-        let vmgs = vmgs_open(Box::new(storage), encryption_key, encrypted_no_key_ok).await?;
+        let file = fs_err::OpenOptions::new()
+            .read(true)
+            .write(open_mode == OpenMode::ReadWrite)
+            .open(path.as_ref())
+            .map_err(Error::VmgsFile)?;
+        vmgs_file_validate(&file)?;
+        let disk = Disk::new(
+            Vhd1Disk::open_fixed(file.into(), open_mode == OpenMode::ReadOnly)
+                .map_err(Error::Vhd1)?,
+        )
+        .unwrap();
+        let vmgs = vmgs_open(disk, encryption_key, encrypted_no_key_ok).await?;
         Ok(vmgs)
     }
 
@@ -1110,7 +1135,7 @@ mod tests {
         file_id: FileId,
     ) -> Result<u64, Error> {
         let vmgs =
-            vmgs_file_open(file_path, None as Option<PathBuf>, FileDiskFlag::Read, true).await?;
+            vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnly, true).await?;
 
         vmgs_query_file_size(&vmgs, file_id).await
     }
@@ -1120,7 +1145,7 @@ mod tests {
         file_path: impl AsRef<Path>,
     ) -> Result<EncryptionAlgorithm, Error> {
         let vmgs =
-            vmgs_file_open(file_path, None as Option<PathBuf>, FileDiskFlag::Read, true).await?;
+            vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnly, true).await?;
 
         Ok(vmgs.get_encryption_algorithm())
     }
@@ -1133,7 +1158,7 @@ mod tests {
         new_encryption_key: &[u8],
     ) -> Result<(), Error> {
         let mut vmgs =
-            test_vmgs_open(file_path, FileDiskFlag::ReadWrite, encryption_key, false).await?;
+            test_vmgs_open(file_path, OpenMode::ReadWrite, encryption_key, false).await?;
 
         vmgs_update_key(&mut vmgs, encryption_alg, new_encryption_key).await
     }
@@ -1145,391 +1170,360 @@ mod tests {
         (dir, file_path)
     }
 
-    #[test]
-    fn read_invalid_file() {
-        DefaultPool::run_with(|_| async move {
-            let (_dir, path) = new_path();
+    #[async_test]
+    async fn read_invalid_file() {
+        let (_dir, path) = new_path();
 
-            let result = test_vmgs_open(path, FileDiskFlag::Read, None, false).await;
+        let result = test_vmgs_open(path, OpenMode::ReadOnly, None, false).await;
 
-            assert!(result.is_err());
-        })
+        assert!(result.is_err());
     }
 
-    #[test]
-    fn read_empty_file() {
-        DefaultPool::run_with(|_| async move {
-            let (_dir, path) = new_path();
+    #[async_test]
+    async fn read_empty_file() {
+        let (_dir, path) = new_path();
 
-            test_vmgs_create(&path, None, false, None).await.unwrap();
+        test_vmgs_create(&path, None, false, None).await.unwrap();
 
-            let mut vmgs = test_vmgs_open(path, FileDiskFlag::Read, None, false)
-                .await
-                .unwrap();
-            let result = vmgs_read(&mut vmgs, FileId::FILE_TABLE, false).await;
-            assert!(result.is_err());
-        })
+        let mut vmgs = test_vmgs_open(path, OpenMode::ReadOnly, None, false)
+            .await
+            .unwrap();
+        let result = vmgs_read(&mut vmgs, FileId::FILE_TABLE, false).await;
+        assert!(result.is_err());
     }
 
-    #[test]
-    fn read_write_file() {
-        DefaultPool::run_with(|_| async move {
-            let (_dir, path) = new_path();
-            let buf = b"Plain text data".to_vec();
+    #[async_test]
+    async fn read_write_file() {
+        let (_dir, path) = new_path();
+        let buf = b"Plain text data".to_vec();
 
-            test_vmgs_create(&path, None, false, None).await.unwrap();
+        test_vmgs_create(&path, None, false, None).await.unwrap();
 
-            let mut vmgs = test_vmgs_open(path, FileDiskFlag::ReadWrite, None, false)
+        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWrite, None, false)
+            .await
+            .unwrap();
+
+        vmgs_write(&mut vmgs, FileId::ATTEST, &buf, false, false)
+            .await
+            .unwrap();
+        let read_buf = vmgs_read(&mut vmgs, FileId::ATTEST, false).await.unwrap();
+
+        assert_eq!(buf, read_buf);
+    }
+
+    #[async_test]
+    async fn multiple_write_file() {
+        let (_dir, path) = new_path();
+        let buf_1 = b"Random super sensitive data".to_vec();
+        let buf_2 = b"Other super secret data".to_vec();
+        let buf_3 = b"I'm storing so much data".to_vec();
+
+        test_vmgs_create(&path, None, false, None).await.unwrap();
+
+        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWrite, None, false)
+            .await
+            .unwrap();
+
+        vmgs_write(&mut vmgs, FileId::BIOS_NVRAM, &buf_1, false, false)
+            .await
+            .unwrap();
+        let read_buf_1 = vmgs_read(&mut vmgs, FileId::BIOS_NVRAM, false)
+            .await
+            .unwrap();
+
+        assert_eq!(buf_1, read_buf_1);
+
+        vmgs_write(&mut vmgs, FileId::TPM_PPI, &buf_2, false, false)
+            .await
+            .unwrap();
+        let read_buf_2 = vmgs_read(&mut vmgs, FileId::TPM_PPI, false).await.unwrap();
+
+        assert_eq!(buf_2, read_buf_2);
+
+        let result = vmgs_write(&mut vmgs, FileId::BIOS_NVRAM, &buf_3, false, false).await;
+        assert!(result.is_err());
+
+        vmgs_write(&mut vmgs, FileId::BIOS_NVRAM, &buf_3, false, true)
+            .await
+            .unwrap();
+        let read_buf_3 = vmgs_read(&mut vmgs, FileId::BIOS_NVRAM, false)
+            .await
+            .unwrap();
+
+        assert_eq!(buf_2, read_buf_2);
+        assert_eq!(buf_3, read_buf_3);
+    }
+
+    #[cfg(with_encryption)]
+    #[async_test]
+    async fn read_write_encrypted_file() {
+        let (_dir, path) = new_path();
+        let encryption_key = vec![5; 32];
+        let buf_1 = b"123".to_vec();
+
+        test_vmgs_create(
+            &path,
+            None,
+            false,
+            Some((EncryptionAlgorithm::AES_GCM, &encryption_key)),
+        )
+        .await
+        .unwrap();
+
+        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWrite, Some(&encryption_key), false)
+            .await
+            .unwrap();
+
+        vmgs_write(&mut vmgs, FileId::BIOS_NVRAM, &buf_1, true, false)
+            .await
+            .unwrap();
+        let read_buf = vmgs_read(&mut vmgs, FileId::BIOS_NVRAM, true)
+            .await
+            .unwrap();
+
+        assert!(read_buf == buf_1);
+
+        // try to normal write encrypted VMGs
+        vmgs_write(&mut vmgs, FileId::TPM_PPI, &buf_1, false, false)
+            .await
+            .unwrap();
+
+        // try to normal read encrypted FileId
+        let _encrypted_read = vmgs_read(&mut vmgs, FileId::BIOS_NVRAM, false)
+            .await
+            .unwrap();
+    }
+
+    #[cfg(with_encryption)]
+    #[async_test]
+    async fn encrypted_read_write_plain_file() {
+        // You shouldn't be able to use encryption if you create the VMGS
+        // file without encryption.
+        let (_dir, path) = new_path();
+        let encryption_key = vec![5; VMGS_ENCRYPTION_KEY_SIZE];
+
+        test_vmgs_create(&path, None, false, None).await.unwrap();
+
+        let result = test_vmgs_open(path, OpenMode::ReadWrite, Some(&encryption_key), false).await;
+
+        assert!(result.is_err());
+    }
+
+    #[async_test]
+    async fn query_size() {
+        let (_dir, path) = new_path();
+        let buf = b"Plain text data".to_vec();
+
+        test_vmgs_create(&path, None, false, None).await.unwrap();
+
+        {
+            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWrite, None, false)
                 .await
                 .unwrap();
 
             vmgs_write(&mut vmgs, FileId::ATTEST, &buf, false, false)
                 .await
                 .unwrap();
-            let read_buf = vmgs_read(&mut vmgs, FileId::ATTEST, false).await.unwrap();
+        }
 
-            assert_eq!(buf, read_buf);
-        })
-    }
-
-    #[test]
-    fn multiple_write_file() {
-        DefaultPool::run_with(|_| async move {
-            let (_dir, path) = new_path();
-            let buf_1 = b"Random super sensitive data".to_vec();
-            let buf_2 = b"Other super secret data".to_vec();
-            let buf_3 = b"I'm storing so much data".to_vec();
-
-            test_vmgs_create(&path, None, false, None).await.unwrap();
-
-            let mut vmgs = test_vmgs_open(path, FileDiskFlag::ReadWrite, None, false)
-                .await
-                .unwrap();
-
-            vmgs_write(&mut vmgs, FileId::BIOS_NVRAM, &buf_1, false, false)
-                .await
-                .unwrap();
-            let read_buf_1 = vmgs_read(&mut vmgs, FileId::BIOS_NVRAM, false)
-                .await
-                .unwrap();
-
-            assert_eq!(buf_1, read_buf_1);
-
-            vmgs_write(&mut vmgs, FileId::TPM_PPI, &buf_2, false, false)
-                .await
-                .unwrap();
-            let read_buf_2 = vmgs_read(&mut vmgs, FileId::TPM_PPI, false).await.unwrap();
-
-            assert_eq!(buf_2, read_buf_2);
-
-            let result = vmgs_write(&mut vmgs, FileId::BIOS_NVRAM, &buf_3, false, false).await;
-            assert!(result.is_err());
-
-            vmgs_write(&mut vmgs, FileId::BIOS_NVRAM, &buf_3, false, true)
-                .await
-                .unwrap();
-            let read_buf_3 = vmgs_read(&mut vmgs, FileId::BIOS_NVRAM, false)
-                .await
-                .unwrap();
-
-            assert_eq!(buf_2, read_buf_2);
-            assert_eq!(buf_3, read_buf_3);
-        })
+        let file_size = test_vmgs_query_file_size(&path, FileId::ATTEST)
+            .await
+            .unwrap();
+        assert_eq!(file_size, buf.len() as u64);
     }
 
     #[cfg(with_encryption)]
-    #[test]
-    fn read_write_encrypted_file() {
-        DefaultPool::run_with(|_| async move {
-            let (_dir, path) = new_path();
-            let encryption_key = vec![5; 32];
-            let buf_1 = b"123".to_vec();
+    #[async_test]
+    async fn query_encrypted_file() {
+        let (_dir, path) = new_path();
+        let encryption_key = vec![5; 32];
+        let buf_1 = b"123".to_vec();
 
-            test_vmgs_create(
-                &path,
-                None,
-                false,
-                Some((EncryptionAlgorithm::AES_GCM, &encryption_key)),
-            )
-            .await
-            .unwrap();
+        test_vmgs_create(
+            &path,
+            None,
+            false,
+            Some((EncryptionAlgorithm::AES_GCM, &encryption_key)),
+        )
+        .await
+        .unwrap();
 
-            let mut vmgs =
-                test_vmgs_open(path, FileDiskFlag::ReadWrite, Some(&encryption_key), false)
-                    .await
-                    .unwrap();
+        {
+            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWrite, Some(&encryption_key), false)
+                .await
+                .unwrap();
 
             vmgs_write(&mut vmgs, FileId::BIOS_NVRAM, &buf_1, true, false)
                 .await
                 .unwrap();
-            let read_buf = vmgs_read(&mut vmgs, FileId::BIOS_NVRAM, true)
-                .await
-                .unwrap();
+        }
 
-            assert!(read_buf == buf_1);
-
-            // try to normal write encrypted VMGs
-            vmgs_write(&mut vmgs, FileId::TPM_PPI, &buf_1, false, false)
-                .await
-                .unwrap();
-
-            // try to normal read encrypted FileId
-            let _encrypted_read = vmgs_read(&mut vmgs, FileId::BIOS_NVRAM, false)
-                .await
-                .unwrap();
-        })
-    }
-
-    #[cfg(with_encryption)]
-    #[test]
-    fn encrypted_read_write_plain_file() {
-        DefaultPool::run_with(|_| async move {
-            // You shouldn't be able to use encryption if you create the VMGS
-            // file without encryption.
-            let (_dir, path) = new_path();
-            let encryption_key = vec![5; VMGS_ENCRYPTION_KEY_SIZE];
-
-            test_vmgs_create(&path, None, false, None).await.unwrap();
-
-            let result =
-                test_vmgs_open(path, FileDiskFlag::ReadWrite, Some(&encryption_key), false).await;
-
-            assert!(result.is_err());
-        })
-    }
-
-    #[test]
-    fn query_size() {
-        DefaultPool::run_with(|_| async move {
-            let (_dir, path) = new_path();
-            let buf = b"Plain text data".to_vec();
-
-            test_vmgs_create(&path, None, false, None).await.unwrap();
-
-            {
-                let mut vmgs = test_vmgs_open(&path, FileDiskFlag::ReadWrite, None, false)
-                    .await
-                    .unwrap();
-
-                vmgs_write(&mut vmgs, FileId::ATTEST, &buf, false, false)
-                    .await
-                    .unwrap();
-            }
-
-            let file_size = test_vmgs_query_file_size(&path, FileId::ATTEST)
-                .await
-                .unwrap();
-            assert_eq!(file_size, buf.len() as u64);
-        })
-    }
-
-    #[cfg(with_encryption)]
-    #[test]
-    fn query_encrypted_file() {
-        DefaultPool::run_with(|_| async move {
-            let (_dir, path) = new_path();
-            let encryption_key = vec![5; 32];
-            let buf_1 = b"123".to_vec();
-
-            test_vmgs_create(
-                &path,
-                None,
-                false,
-                Some((EncryptionAlgorithm::AES_GCM, &encryption_key)),
-            )
+        let file_size = test_vmgs_query_file_size(&path, FileId::BIOS_NVRAM)
             .await
             .unwrap();
-
-            {
-                let mut vmgs =
-                    test_vmgs_open(&path, FileDiskFlag::ReadWrite, Some(&encryption_key), false)
-                        .await
-                        .unwrap();
-
-                vmgs_write(&mut vmgs, FileId::BIOS_NVRAM, &buf_1, true, false)
-                    .await
-                    .unwrap();
-            }
-
-            let file_size = test_vmgs_query_file_size(&path, FileId::BIOS_NVRAM)
-                .await
-                .unwrap();
-            assert_eq!(file_size, buf_1.len() as u64);
-        })
+        assert_eq!(file_size, buf_1.len() as u64);
     }
 
-    #[test]
-    fn test_validate_vmgs_file_not_empty() {
-        DefaultPool::run_with(|_| async move {
-            let buf: Vec<u8> = (0..255).collect();
-            let (_dir, path) = new_path();
+    #[async_test]
+    async fn test_validate_vmgs_file_not_empty() {
+        let buf: Vec<u8> = (0..255).collect();
+        let (_dir, path) = new_path();
 
-            test_vmgs_create(&path, None, false, None).await.unwrap();
+        test_vmgs_create(&path, None, false, None).await.unwrap();
 
-            let mut storage = VhdFileDisk::new(path, FileDiskFlag::ReadWrite).unwrap();
+        let mut file = fs_err::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
 
-            let result = vmgs_file_validate_not_empty(&storage);
-            matches!(result, Err(Error::ZeroSize));
+        let result = vmgs_file_validate_not_empty(&file);
+        matches!(result, Err(Error::ZeroSize));
 
-            storage.write_block(1024, &buf).await.unwrap();
-            let result = vmgs_file_validate_not_empty(&storage);
-            matches!(result, Err(Error::VmgsFile(_)));
-        })
+        file.seek(std::io::SeekFrom::Start(1024)).unwrap();
+        file.write_all(&buf).unwrap();
+        let result = vmgs_file_validate_not_empty(&file);
+        matches!(result, Err(Error::VmgsFile(_)));
     }
 
-    #[test]
-    fn test_misaligned_size() {
-        DefaultPool::run_with(|_| async move {
-            let (_dir, path) = new_path();
-            //File size must be % 512 to be valid, should produce error and file should not be created
-            let result = test_vmgs_create(&path, Some(65537), false, None).await;
-            assert!(result.is_err());
-            assert!(!path.exists());
-        })
+    #[async_test]
+    async fn test_misaligned_size() {
+        let (_dir, path) = new_path();
+        //File size must be % 512 to be valid, should produce error and file should not be created
+        let result = test_vmgs_create(&path, Some(65537), false, None).await;
+        assert!(result.is_err());
+        assert!(!path.exists());
     }
 
-    #[test]
-    fn test_forcecreate() {
-        DefaultPool::run_with(|_| async move {
-            let (_dir, path) = new_path();
-            let result = test_vmgs_create(&path, Some(4194304), false, None).await;
-            assert!(result.is_ok());
-            // Recreating file should fail without force create flag
-            let result = test_vmgs_create(&path, Some(4194304), false, None).await;
-            assert!(result.is_err());
-            // Should be able to resize the file when force create is passed in
-            let result = test_vmgs_create(&path, Some(8388608), true, None).await;
-            assert!(result.is_ok());
-        })
+    #[async_test]
+    async fn test_forcecreate() {
+        let (_dir, path) = new_path();
+        let result = test_vmgs_create(&path, Some(4194304), false, None).await;
+        assert!(result.is_ok());
+        // Recreating file should fail without force create flag
+        let result = test_vmgs_create(&path, Some(4194304), false, None).await;
+        assert!(result.is_err());
+        // Should be able to resize the file when force create is passed in
+        let result = test_vmgs_create(&path, Some(8388608), true, None).await;
+        assert!(result.is_ok());
     }
 
     #[cfg(with_encryption)]
-    #[test]
-    fn test_update_encryption_key() {
-        DefaultPool::run_with(|_| async move {
-            let (_dir, path) = new_path();
-            let encryption_key = vec![5; 32];
-            let new_encryption_key = vec![6; 32];
-            let buf_1 = b"123".to_vec();
+    #[async_test]
+    async fn test_update_encryption_key() {
+        let (_dir, path) = new_path();
+        let encryption_key = vec![5; 32];
+        let new_encryption_key = vec![6; 32];
+        let buf_1 = b"123".to_vec();
 
-            test_vmgs_create(
-                &path,
-                None,
-                false,
-                Some((EncryptionAlgorithm::AES_GCM, &encryption_key)),
-            )
-            .await
-            .unwrap();
+        test_vmgs_create(
+            &path,
+            None,
+            false,
+            Some((EncryptionAlgorithm::AES_GCM, &encryption_key)),
+        )
+        .await
+        .unwrap();
 
-            {
-                let mut vmgs =
-                    test_vmgs_open(&path, FileDiskFlag::ReadWrite, Some(&encryption_key), false)
-                        .await
-                        .unwrap();
-
-                vmgs_write(&mut vmgs, FileId::BIOS_NVRAM, &buf_1, true, false)
-                    .await
-                    .unwrap();
-            }
-
-            test_vmgs_update_key(
-                &path,
-                EncryptionAlgorithm::AES_GCM,
-                Some(&encryption_key),
-                &new_encryption_key,
-            )
-            .await
-            .unwrap();
-
-            {
-                let mut vmgs =
-                    test_vmgs_open(&path, FileDiskFlag::Read, Some(&new_encryption_key), false)
-                        .await
-                        .unwrap();
-
-                let read_buf = vmgs_read(&mut vmgs, FileId::BIOS_NVRAM, true)
-                    .await
-                    .unwrap();
-                assert!(read_buf == buf_1);
-            }
-
-            // Old key should no longer work
-            let result =
-                test_vmgs_open(&path, FileDiskFlag::Read, Some(&encryption_key), false).await;
-            assert!(result.is_err());
-        })
-    }
-
-    #[cfg(with_encryption)]
-    #[test]
-    fn test_add_encryption_key() {
-        DefaultPool::run_with(|_| async move {
-            let (_dir, path) = new_path();
-            let encryption_key = vec![5; 32];
-            let buf_1 = b"123".to_vec();
-
-            test_vmgs_create(&path, None, false, None).await.unwrap();
-
-            test_vmgs_update_key(&path, EncryptionAlgorithm::AES_GCM, None, &encryption_key)
+        {
+            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWrite, Some(&encryption_key), false)
                 .await
                 .unwrap();
-
-            let mut vmgs =
-                test_vmgs_open(&path, FileDiskFlag::ReadWrite, Some(&encryption_key), false)
-                    .await
-                    .unwrap();
 
             vmgs_write(&mut vmgs, FileId::BIOS_NVRAM, &buf_1, true, false)
                 .await
                 .unwrap();
+        }
+
+        test_vmgs_update_key(
+            &path,
+            EncryptionAlgorithm::AES_GCM,
+            Some(&encryption_key),
+            &new_encryption_key,
+        )
+        .await
+        .unwrap();
+
+        {
+            let mut vmgs =
+                test_vmgs_open(&path, OpenMode::ReadOnly, Some(&new_encryption_key), false)
+                    .await
+                    .unwrap();
 
             let read_buf = vmgs_read(&mut vmgs, FileId::BIOS_NVRAM, true)
                 .await
                 .unwrap();
-
             assert!(read_buf == buf_1);
-        })
+        }
+
+        // Old key should no longer work
+        let result = test_vmgs_open(&path, OpenMode::ReadOnly, Some(&encryption_key), false).await;
+        assert!(result.is_err());
     }
 
     #[cfg(with_encryption)]
-    #[test]
-    fn test_query_encryption_update() {
-        DefaultPool::run_with(|_| async move {
-            let (_dir, path) = new_path();
-            let encryption_key = vec![5; 32];
+    #[async_test]
+    async fn test_add_encryption_key() {
+        let (_dir, path) = new_path();
+        let encryption_key = vec![5; 32];
+        let buf_1 = b"123".to_vec();
 
-            test_vmgs_create(&path, None, false, None).await.unwrap();
+        test_vmgs_create(&path, None, false, None).await.unwrap();
 
-            let encryption_algorithm = test_vmgs_query_encryption(&path).await.unwrap();
-            assert_eq!(encryption_algorithm, EncryptionAlgorithm::NONE);
-
-            test_vmgs_update_key(&path, EncryptionAlgorithm::AES_GCM, None, &encryption_key)
-                .await
-                .unwrap();
-
-            let encryption_algorithm = test_vmgs_query_encryption(&path).await.unwrap();
-            assert_eq!(encryption_algorithm, EncryptionAlgorithm::AES_GCM);
-        })
-    }
-
-    #[cfg(with_encryption)]
-    #[test]
-    fn test_query_encryption_new() {
-        DefaultPool::run_with(|_| async move {
-            let (_dir, path) = new_path();
-            let encryption_key = vec![5; 32];
-
-            test_vmgs_create(
-                &path,
-                None,
-                false,
-                Some((EncryptionAlgorithm::AES_GCM, &encryption_key)),
-            )
+        test_vmgs_update_key(&path, EncryptionAlgorithm::AES_GCM, None, &encryption_key)
             .await
             .unwrap();
 
-            let encryption_algorithm = test_vmgs_query_encryption(&path).await.unwrap();
-            assert_eq!(encryption_algorithm, EncryptionAlgorithm::AES_GCM);
-        })
+        let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWrite, Some(&encryption_key), false)
+            .await
+            .unwrap();
+
+        vmgs_write(&mut vmgs, FileId::BIOS_NVRAM, &buf_1, true, false)
+            .await
+            .unwrap();
+
+        let read_buf = vmgs_read(&mut vmgs, FileId::BIOS_NVRAM, true)
+            .await
+            .unwrap();
+
+        assert!(read_buf == buf_1);
+    }
+
+    #[cfg(with_encryption)]
+    #[async_test]
+    async fn test_query_encryption_update() {
+        let (_dir, path) = new_path();
+        let encryption_key = vec![5; 32];
+
+        test_vmgs_create(&path, None, false, None).await.unwrap();
+
+        let encryption_algorithm = test_vmgs_query_encryption(&path).await.unwrap();
+        assert_eq!(encryption_algorithm, EncryptionAlgorithm::NONE);
+
+        test_vmgs_update_key(&path, EncryptionAlgorithm::AES_GCM, None, &encryption_key)
+            .await
+            .unwrap();
+
+        let encryption_algorithm = test_vmgs_query_encryption(&path).await.unwrap();
+        assert_eq!(encryption_algorithm, EncryptionAlgorithm::AES_GCM);
+    }
+
+    #[cfg(with_encryption)]
+    #[async_test]
+    async fn test_query_encryption_new() {
+        let (_dir, path) = new_path();
+        let encryption_key = vec![5; 32];
+
+        test_vmgs_create(
+            &path,
+            None,
+            false,
+            Some((EncryptionAlgorithm::AES_GCM, &encryption_key)),
+        )
+        .await
+        .unwrap();
+
+        let encryption_algorithm = test_vmgs_query_encryption(&path).await.unwrap();
+        assert_eq!(encryption_algorithm, EncryptionAlgorithm::AES_GCM);
     }
 }

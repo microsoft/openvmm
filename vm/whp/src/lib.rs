@@ -1721,7 +1721,7 @@ pub struct ProcessorRunner<'a> {
     ctx: abi::WHV_RUN_VP_EXIT_CONTEXT,
 }
 
-impl<'a> ProcessorRunner<'a> {
+impl ProcessorRunner<'_> {
     pub fn run(&mut self) -> Result<Exit<'_>> {
         unsafe {
             check_hresult(api::WHvRunVirtualProcessor(

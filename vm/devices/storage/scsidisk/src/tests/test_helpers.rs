@@ -6,11 +6,10 @@
 use crate::atapi_scsi::AtapiScsiDisk;
 use crate::scsi;
 use crate::scsidvd::SimpleScsiDvd;
-use crate::SimpleDisk;
 use crate::SimpleScsiDisk;
-use disk_backend::AsyncDisk;
+use disk_backend::Disk;
 use disk_backend::DiskError;
-use disk_backend::ASYNC_DISK_STACK_SIZE;
+use disk_backend::DiskIo;
 use disk_prwrap::DiskWithReservations;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
@@ -24,7 +23,6 @@ use scsi_buffers::RequestBuffers;
 use scsi_core::AsyncScsiDisk;
 use scsi_core::Request;
 use scsi_core::ScsiResult;
-use stackfuture::StackFuture;
 use std::sync::Arc;
 use zerocopy::AsBytes;
 
@@ -78,7 +76,7 @@ impl TestDisk {
     }
 }
 
-impl SimpleDisk for TestDisk {
+impl DiskIo for TestDisk {
     fn disk_type(&self) -> &str {
         "test"
     }
@@ -106,68 +104,57 @@ impl SimpleDisk for TestDisk {
     fn is_fua_respected(&self) -> bool {
         false
     }
-}
 
-impl AsyncDisk for TestDisk {
-    fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
+    async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let offset = sector as usize * self.sector_size() as usize;
-            let end_point = offset + buffers.len();
-            let mut state = self.state.lock();
-            if state.storage.len() < end_point {
-                println!(
-                    "exceed storage limit: storage_len {:?} offset {:?} len {:?}",
-                    state.storage.len(),
-                    offset,
-                    buffers.len()
-                );
-                return Err(DiskError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "exceed storage limit",
-                )));
-            }
-            buffers.writer().write(&state.storage[offset..end_point])?;
-            state.is_fua_set = false;
-            Ok(())
-        })
+    ) -> Result<(), DiskError> {
+        let offset = sector as usize * self.sector_size() as usize;
+        let end_point = offset + buffers.len();
+        let mut state = self.state.lock();
+        if state.storage.len() < end_point {
+            return Err(DiskError::IllegalBlock);
+        }
+        buffers.writer().write(&state.storage[offset..end_point])?;
+        state.is_fua_set = false;
+        Ok(())
     }
 
-    fn write_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
+    async fn write_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
         fua: bool,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let offset = sector as usize * self.sector_size() as usize;
-            let end_point = offset + buffers.len();
-            let mut state = self.state.lock();
-            if state.storage.len() < end_point {
-                println!(
-                    "exceed storage limit: storage_len {:?} offset {:?} len {:?}",
-                    state.storage.len(),
-                    offset,
-                    buffers.len()
-                );
-                return Err(DiskError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "exceed storage limit",
-                )));
-            }
-            buffers
-                .reader()
-                .read(&mut state.storage[offset..end_point])?;
-            state.is_fua_set = fua;
-            Ok(())
-        })
+    ) -> Result<(), DiskError> {
+        let offset = sector as usize * self.sector_size() as usize;
+        let end_point = offset + buffers.len();
+        let mut state = self.state.lock();
+        if state.storage.len() < end_point {
+            return Err(DiskError::IllegalBlock);
+        }
+        buffers
+            .reader()
+            .read(&mut state.storage[offset..end_point])?;
+        state.is_fua_set = fua;
+        Ok(())
     }
 
-    fn sync_cache(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move { Ok(()) })
+    async fn sync_cache(&self) -> Result<(), DiskError> {
+        Ok(())
+    }
+
+    async fn unmap(
+        &self,
+        _sector: u64,
+        _count: u64,
+        _block_level_only: bool,
+    ) -> Result<(), DiskError> {
+        Ok(())
+    }
+
+    fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
+        disk_backend::UnmapBehavior::Ignored
     }
 }
 
@@ -187,10 +174,10 @@ pub fn new_scsi_disk(
         storage,
     );
 
-    let simple_disk: Arc<dyn SimpleDisk> = if pr {
-        Arc::new(DiskWithReservations::new(Arc::new(disk)))
+    let simple_disk = if pr {
+        Disk::new(DiskWithReservations::new(Disk::new(disk).unwrap())).unwrap()
     } else {
-        Arc::new(disk)
+        Disk::new(disk).unwrap()
     };
 
     let scsi_disk = SimpleScsiDisk::new(simple_disk, Default::default());
@@ -225,7 +212,7 @@ pub fn new_scsi_dvd(
         true,
         storage,
     );
-    let scsi_dvd = SimpleScsiDvd::new(Some(Arc::new(disk)));
+    let scsi_dvd = SimpleScsiDvd::new(Some(Disk::new(disk).unwrap()));
     (scsi_dvd, state)
 }
 

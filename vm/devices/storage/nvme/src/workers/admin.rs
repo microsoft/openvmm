@@ -23,7 +23,7 @@ use crate::NVME_VERSION;
 use crate::PAGE_MASK;
 use crate::PAGE_SIZE;
 use crate::VENDOR_ID;
-use disk_backend::SimpleDisk;
+use disk_backend::Disk;
 use futures::FutureExt;
 use futures::SinkExt;
 use futures::StreamExt;
@@ -366,7 +366,7 @@ impl AdminHandler {
         &mut self,
         state: Option<&mut AdminState>,
         nsid: u32,
-        disk: Arc<dyn SimpleDisk>,
+        disk: Disk,
     ) -> Result<(), NsidConflict> {
         let namespace = &*match self.namespaces.entry(nsid) {
             btree_map::Entry::Vacant(entry) => entry.insert(Arc::new(Namespace::new(

@@ -7,6 +7,7 @@
 pub mod all_good_job;
 pub mod build_and_publish_guest_test_uefi;
 pub mod build_and_publish_guide;
+pub mod build_and_publish_hypestv;
 pub mod build_and_publish_igvmfilegen;
 pub mod build_and_publish_nextest_unit_tests_archive;
 pub mod build_and_publish_nextest_vmm_tests_archive;
@@ -30,5 +31,6 @@ pub mod consolidate_and_publish_gh_pages;
 pub mod consume_and_test_nextest_unit_tests_archive;
 pub mod consume_and_test_nextest_vmm_tests_archive;
 pub mod local_build_igvm;
+pub mod local_custom_vmfirmwareigvm_dll;
 pub mod local_restore_packages;
 pub mod test_local_flowey_build_igvm;

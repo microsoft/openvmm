@@ -7,20 +7,23 @@ use super::ArchError;
 use super::TargetArch;
 use crate::gdb::arch::x86::reg::X86CoreRegs;
 use crate::gdb::arch::x86::reg::X86SegmentRegs;
-use vmm_core_defs::debug_rpc::VpState;
+use vmm_core_defs::debug_rpc::DebuggerVpState;
 
 impl TargetArch for crate::gdb::arch::x86::I8086 {
     type Address = u32;
 
     fn register(
-        _state: &VpState,
+        _state: &DebuggerVpState,
         _reg_id: Self::RegId,
         _buf: &mut [u8],
     ) -> Result<usize, ArchError> {
         Err(ArchError)
     }
 
-    fn registers(state: &VpState, regs: &mut Self::Registers) -> Result<(), ArchError> {
+    fn registers(state: &DebuggerVpState, regs: &mut Self::Registers) -> Result<(), ArchError> {
+        let DebuggerVpState::X86_64(state) = state else {
+            return Err(ArchError);
+        };
         let [eax, ecx, edx, ebx, esp, ebp, esi, edi] = {
             let [rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, ..] = state.gp;
             [
@@ -62,12 +65,15 @@ impl TargetArch for crate::gdb::arch::x86::I8086 {
         Ok(())
     }
 
-    fn update_registers(_state: &mut VpState, _regs: &Self::Registers) -> Result<(), ArchError> {
+    fn update_registers(
+        _state: &mut DebuggerVpState,
+        _regs: &Self::Registers,
+    ) -> Result<(), ArchError> {
         Err(ArchError)
     }
 
     fn update_register(
-        _state: &mut VpState,
+        _state: &mut DebuggerVpState,
         _reg_id: Self::RegId,
         _val: &[u8],
     ) -> Result<(), ArchError> {

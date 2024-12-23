@@ -7,10 +7,11 @@
 
 mod writer;
 
+#[cfg(feature = "std")]
 pub use writer::DescriptorWriter;
 
 use crate::DefaultEncoding;
-use std::fmt::Display;
+use core::fmt::Display;
 
 /// A trait for a self-describing protobuf message field.
 pub trait DescribeField<T> {
@@ -66,7 +67,7 @@ impl TypeUrl<'_> {
 }
 
 impl Display for TypeUrl<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "type.googleapis.com/{}.{}", self.package, self.name)
     }
 }

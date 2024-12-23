@@ -52,7 +52,7 @@ impl Endpoint for LoopbackEndpoint {
         queues.extend(config.into_iter().map(|config| {
             Box::new(LoopbackQueue {
                 pool: config.pool,
-                rx_avail: config.initial_rx.to_vec(),
+                rx_avail: config.initial_rx.to_vec().into(),
                 rx_done: VecDeque::new(),
             }) as _
         }));
@@ -77,7 +77,7 @@ impl Endpoint for LoopbackEndpoint {
 #[inspect(skip)]
 pub struct LoopbackQueue {
     pub(crate) pool: Box<dyn BufferAccess>,
-    pub(crate) rx_avail: Vec<RxId>,
+    pub(crate) rx_avail: VecDeque<RxId>,
     pub(crate) rx_done: VecDeque<RxId>,
 }
 
@@ -110,7 +110,7 @@ impl Queue for LoopbackQueue {
             let before = segments.len();
             let packet = linearize(self.pool.as_ref(), &mut segments)?;
             sent += before - segments.len();
-            let rx_id = self.rx_avail.pop().unwrap();
+            let rx_id = self.rx_avail.pop_front().unwrap();
             self.pool.write_packet(
                 rx_id,
                 &RxMetadata {

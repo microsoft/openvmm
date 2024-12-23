@@ -1,13 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::disk::BlockStorage;
-use crate::disk::BlockStorageMetadata;
 use crate::error::Error;
+use crate::storage::VmgsStorage;
 #[cfg(with_encryption)]
 use anyhow::anyhow;
 #[cfg(with_encryption)]
 use anyhow::Context;
+use disk_backend::Disk;
 #[cfg(feature = "inspect")]
 use inspect::Inspect;
 #[cfg(feature = "inspect")]
@@ -64,13 +64,12 @@ struct ResolvedFileControlBlock {
     encryption_key: VmgsDatastoreKey,
 }
 
-/// Implementation of the VMGS file format, backed by a generic [`BlockStorage`]
+/// Implementation of the VMGS file format, backed by a generic [`Disk`]
 /// device.
 #[cfg_attr(not(with_encryption), allow(dead_code))]
 #[cfg_attr(feature = "inspect", derive(Inspect))]
 pub struct Vmgs {
-    #[cfg_attr(feature = "inspect", inspect(skip))]
-    storage: Box<dyn BlockStorage>,
+    storage: VmgsStorage,
 
     #[cfg(feature = "inspect")]
     stats: vmgs_inspect::VmgsStats,
@@ -134,7 +133,8 @@ mod vmgs_inspect {
 
 impl Vmgs {
     /// Format and open a new VMGS file.
-    pub async fn format_new(mut storage: Box<dyn BlockStorage>) -> Result<Self, Error> {
+    pub async fn format_new(disk: Disk) -> Result<Self, Error> {
+        let mut storage = VmgsStorage::new(disk);
         tracing::debug!("formatting and initializing VMGS datastore");
         // Errors from validate_file are fatal, as they involve invalid device metadata
         Vmgs::validate_file(&storage)?;
@@ -145,12 +145,13 @@ impl Vmgs {
     }
 
     /// Open the VMGS file.
-    pub async fn open(mut storage: Box<dyn BlockStorage>) -> Result<Self, Error> {
+    pub async fn open(disk: Disk) -> Result<Self, Error> {
         tracing::debug!("opening VMGS datastore");
+        let mut storage = VmgsStorage::new(disk);
         // Errors from validate_file are fatal, as they involve invalid device metadata
         Vmgs::validate_file(&storage)?;
 
-        let (header_1, header_2) = read_headers(&mut storage).await?;
+        let (header_1, header_2) = read_headers_inner(&mut storage).await?;
 
         let empty_header = VmgsHeader::new_zeroed();
 
@@ -173,7 +174,7 @@ impl Vmgs {
     }
 
     async fn finish_open(
-        mut storage: Box<dyn BlockStorage>,
+        mut storage: VmgsStorage,
         active_header: VmgsHeader,
         active_header_index: usize,
     ) -> Result<Vmgs, Error> {
@@ -253,10 +254,9 @@ impl Vmgs {
     }
 
     /// Formats the backing store with initial metadata, and sets active header.
-    async fn format(storage: &mut impl BlockStorage, version: u32) -> Result<VmgsHeader, Error> {
+    async fn format(storage: &mut VmgsStorage, version: u32) -> Result<VmgsHeader, Error> {
         tracing::info!("Formatting new VMGS file.");
-        let aligned_header_size =
-            round_up_count(size_of::<VmgsHeader>(), storage.meta().logical_sector_size);
+        let aligned_header_size = round_up_count(size_of::<VmgsHeader>(), storage.sector_size());
 
         // The second header is initialized as invalid (all zeros).
         let mut header = VmgsHeader::new_zeroed();
@@ -327,15 +327,9 @@ impl Vmgs {
         Ok(header)
     }
 
-    fn validate_file(storage: &impl BlockStorage) -> Result<(), Error> {
-        let BlockStorageMetadata {
-            sector_count,
-            sector_size,
-            physical_sector_size,
-            max_trans_size_bytes,
-            logical_sector_size,
-            ..
-        } = storage.meta();
+    fn validate_file(storage: &VmgsStorage) -> Result<(), Error> {
+        let sector_count = storage.sector_count();
+        let sector_size = storage.sector_size();
 
         // Don't need to parse MBR/GPT table, VMGS uses RAW file format
 
@@ -348,30 +342,15 @@ impl Vmgs {
             )));
         }
 
-        if let Err(e) = storage.validate_transfer_size(max_trans_size_bytes) {
-            return Err(Error::Initialization(format!("{}", e,)));
-        }
-
         // Any power-of-2 sector size up to 4096 bytes works, but in practice only 512 and 4096
         // indicate a supported (tested) device configuration.
-        if (logical_sector_size != 512 && logical_sector_size != 4096)
-            || (physical_sector_size != 512 && physical_sector_size != 4096)
-            || (physical_sector_size < logical_sector_size)
-        {
+        if sector_size != 512 && sector_size != 4096 {
             return Err(Error::Initialization(format!(
-                "Invalid sector size: logical={}, physical={}",
-                logical_sector_size, physical_sector_size
+                "Invalid sector size {}",
+                sector_size
             )));
         }
 
-        // Capacity and max transfer size should be multiple of the physical sector size
-        if ((sector_count * sector_size as u64) % physical_sector_size as u64 != 0)
-            || (max_trans_size_bytes % physical_sector_size != 0)
-        {
-            return Err(Error::Initialization(String::from(
-                "Capacity and max transfer size should be a multiple of the physical sector size",
-            )));
-        }
         Ok(())
     }
 
@@ -1389,9 +1368,11 @@ impl Vmgs {
 
 /// Read both headers. For compatibility with the V1 format, the headers are
 /// at logical sectors 0 and 1
-pub async fn read_headers(
-    storage: &mut impl BlockStorage,
-) -> Result<(VmgsHeader, VmgsHeader), Error> {
+pub async fn read_headers(disk: Disk) -> Result<(VmgsHeader, VmgsHeader), Error> {
+    read_headers_inner(&mut VmgsStorage::new(disk)).await
+}
+
+async fn read_headers_inner(storage: &mut VmgsStorage) -> Result<(VmgsHeader, VmgsHeader), Error> {
     // Read both headers, and determine the active one. For compatibility with
     // the V1 format, the headers are at logical sectors 0 and 1
     let mut first_two_blocks = [0; (VMGS_BYTES_PER_BLOCK * 2) as usize];
@@ -1544,23 +1525,6 @@ fn initialize_file_metadata(
     }
 
     Ok(file_control_blocks)
-}
-
-// A handful of helpers to compute derived constants based on BlockStorage metadata.
-trait StorageMetaExt {
-    fn block_capacity(&self) -> u32;
-    fn aligned_header_size(&self) -> u64;
-}
-
-impl<T: BlockStorage> StorageMetaExt for T {
-    fn block_capacity(&self) -> u32 {
-        ((self.meta().capacity).min(vmgs_format::VMGS_MAX_CAPACITY_BYTES)
-            / VMGS_BYTES_PER_BLOCK as u64) as u32
-    }
-
-    fn aligned_header_size(&self) -> u64 {
-        round_up_count(size_of::<VmgsHeader>(), self.meta().logical_sector_size)
-    }
 }
 
 /// Convert block count to byte count.
@@ -1727,45 +1691,6 @@ pub mod save_restore {
             #[mesh(10)]
             pub encrypted_metadata_keys: [SavedVmgsEncryptionKey; 2],
         }
-
-        #[derive(Protobuf)]
-        #[mesh(package = "vmgs")]
-        pub struct SavedBlockStorageMetadata {
-            #[mesh(1)]
-            pub capacity: u64,
-            #[mesh(2)]
-            pub logical_sector_size: u32,
-            #[mesh(3)]
-            pub sector_count: u64,
-            #[mesh(4)]
-            pub sector_size: u32,
-            #[mesh(5)]
-            pub physical_sector_size: u32,
-            #[mesh(6)]
-            pub max_trans_size_bytes: u32,
-        }
-
-        impl From<SavedBlockStorageMetadata> for crate::disk::BlockStorageMetadata {
-            fn from(value: SavedBlockStorageMetadata) -> Self {
-                let SavedBlockStorageMetadata {
-                    capacity,
-                    logical_sector_size,
-                    sector_count,
-                    sector_size,
-                    physical_sector_size,
-                    max_trans_size_bytes,
-                } = value;
-
-                crate::disk::BlockStorageMetadata {
-                    capacity,
-                    logical_sector_size,
-                    sector_count,
-                    sector_size,
-                    physical_sector_size,
-                    max_trans_size_bytes,
-                }
-            }
-        }
     }
 
     impl Vmgs {
@@ -1786,10 +1711,7 @@ pub mod save_restore {
         /// failures, encryption errors, etc... (though, notably: it will _not_
         /// result in any memory-unsafety, hence why the function isn't marked
         /// `unsafe`).
-        pub fn open_from_saved(
-            storage: Box<dyn BlockStorage>,
-            state: state::SavedVmgsState,
-        ) -> Self {
+        pub fn open_from_saved(disk: Disk, state: state::SavedVmgsState) -> Self {
             let state::SavedVmgsState {
                 active_header_index,
                 active_header_sequence_number,
@@ -1804,7 +1726,7 @@ pub mod save_restore {
             } = state;
 
             Self {
-                storage,
+                storage: VmgsStorage::new(disk),
                 #[cfg(feature = "inspect")]
                 stats: Default::default(),
 
@@ -1857,31 +1779,6 @@ pub mod save_restore {
                         encryption_key,
                     }
                 }),
-            }
-        }
-
-        /// Save the storage device's metadata.
-        ///
-        /// This is not used by `Vmgs` directly. Rather - it can be used to
-        /// accelerate the instantiation of the `BlockStorage` object that `Vmgs`
-        /// wraps.
-        pub fn save_storage_meta(&self) -> state::SavedBlockStorageMetadata {
-            let BlockStorageMetadata {
-                capacity,
-                logical_sector_size,
-                sector_count,
-                sector_size,
-                physical_sector_size,
-                max_trans_size_bytes,
-            } = self.storage.meta();
-
-            state::SavedBlockStorageMetadata {
-                capacity,
-                logical_sector_size,
-                sector_count,
-                sector_size,
-                physical_sector_size,
-                max_trans_size_bytes,
             }
         }
 
@@ -1967,49 +1864,35 @@ pub mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::disk::vhd_file::FileDiskFlag;
-    use crate::disk::vhd_file::VhdFileDisk;
     use pal_async::async_test;
-    use std::path::PathBuf;
     #[cfg(with_encryption)]
     use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 
-    fn new_test_file(flag: FileDiskFlag) -> (VhdFileDisk, PathBuf) {
-        tempfile_helpers::with_temp_path(|path| VhdFileDisk::new(path, flag)).unwrap()
+    fn new_test_file() -> Disk {
+        disklayer_ram::ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
     }
 
-    // BlockStorage tests
     #[async_test]
     async fn empty_vmgs() {
-        let (storage, _path) = new_test_file(FileDiskFlag::Create {
-            file_size: None,
-            force_create: false,
-        });
+        let disk = new_test_file();
 
-        let result = Vmgs::open(Box::new(storage)).await;
+        let result = Vmgs::open(disk).await;
         assert!(matches!(result, Err(Error::EmptyFile)));
     }
 
     #[async_test]
     async fn format_empty_vmgs() {
-        let (storage, _path) = new_test_file(FileDiskFlag::Create {
-            file_size: None,
-            force_create: false,
-        });
-
-        let result = Vmgs::format_new(Box::new(storage)).await;
+        let disk = new_test_file();
+        let result = Vmgs::format_new(disk).await;
         assert!(result.is_ok());
     }
 
     #[async_test]
     async fn basic_read_write() {
-        let (storage, _path) = new_test_file(FileDiskFlag::Create {
-            file_size: None,
-            force_create: false,
-        });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
         assert_eq!(vmgs.active_header_index, 0);
         assert_eq!(vmgs.active_header_sequence_number, 1);
         assert_eq!(vmgs.version, VMGS_VERSION_3_0);
@@ -2031,12 +1914,8 @@ mod tests {
 
     #[async_test]
     async fn basic_read_write_large() {
-        let (storage, _path) = new_test_file(FileDiskFlag::Create {
-            file_size: None,
-            force_create: false,
-        });
-
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
 
         // write
         let buf: Vec<u8> = (0..).map(|x| x as u8).take(1024 * 4 + 1).collect();
@@ -2091,11 +1970,8 @@ mod tests {
         let buf_3 = b"funny joke";
 
         // Create VMGS file and write to different FileId's
-        let (storage, path) = new_test_file(FileDiskFlag::Create {
-            file_size: None,
-            force_create: false,
-        });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone()).await.unwrap();
 
         vmgs.write_file(FileId::BIOS_NVRAM, buf_1).await.unwrap();
 
@@ -2123,8 +1999,7 @@ mod tests {
         // Re-open VMGS file and read from the same FileId's
         drop(vmgs);
 
-        let storage = VhdFileDisk::new(&path, FileDiskFlag::ReadWrite).unwrap();
-        let mut vmgs = Vmgs::open(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::open(disk).await.unwrap();
 
         assert_eq!(vmgs.fcbs[&FileId(0)].block_offset, 4);
         assert_eq!(vmgs.fcbs[&FileId(1)].block_offset, 7);
@@ -2145,11 +2020,8 @@ mod tests {
 
     #[async_test]
     async fn multiple_read_write() {
-        let (storage, _path) = new_test_file(FileDiskFlag::Create {
-            file_size: None,
-            force_create: false,
-        });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
 
         let buf_1 = b"Data data data";
         let buf_2 = b"password";
@@ -2196,11 +2068,8 @@ mod tests {
 
     #[async_test]
     async fn test_insufficient_resources() {
-        let (storage, _path) = new_test_file(FileDiskFlag::Create {
-            file_size: None,
-            force_create: false,
-        });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
 
         let buf: Vec<u8> = vec![1; ONE_MEGA_BYTE as usize * 5];
         let result = vmgs.write_file(FileId::BIOS_NVRAM, &buf).await;
@@ -2217,11 +2086,8 @@ mod tests {
 
     #[async_test]
     async fn test_empty_write() {
-        let (storage, _path) = new_test_file(FileDiskFlag::Create {
-            file_size: None,
-            force_create: false,
-        });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
 
         let buf: Vec<u8> = Vec::new();
         vmgs.write_file(FileId::BIOS_NVRAM, &buf).await.unwrap();
@@ -2341,11 +2207,8 @@ mod tests {
 
     #[async_test]
     async fn test_header_sequence_overflow() {
-        let (storage, _path) = new_test_file(FileDiskFlag::Create {
-            file_size: None,
-            force_create: false,
-        });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
 
         vmgs.active_header_sequence_number = u32::MAX;
 
@@ -2369,11 +2232,8 @@ mod tests {
     #[cfg(with_encryption)]
     #[async_test]
     async fn write_file_v3() {
-        let (storage, path) = new_test_file(FileDiskFlag::Create {
-            file_size: None,
-            force_create: false,
-        });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone()).await.unwrap();
         let encryption_key = [12; VMGS_ENCRYPTION_KEY_SIZE];
 
         // write
@@ -2397,8 +2257,7 @@ mod tests {
 
         // Read the file after re-opening the vmgs file
         drop(vmgs);
-        let storage = VhdFileDisk::new(&path, FileDiskFlag::Read).unwrap();
-        let mut vmgs = Vmgs::open(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::open(disk).await.unwrap();
         let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
         assert_eq!(buf, read_buf.as_bytes());
         let info = vmgs.get_file_info(FileId::TPM_PPI).unwrap();
@@ -2419,11 +2278,8 @@ mod tests {
     #[cfg(with_encryption)]
     #[async_test]
     async fn overwrite_file_v3() {
-        let (storage, _path) = new_test_file(FileDiskFlag::Create {
-            file_size: None,
-            force_create: false,
-        });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
         let encryption_key = [1; VMGS_ENCRYPTION_KEY_SIZE];
         let buf = vec![1; 8 * 1024];
         let buf_1 = vec![2; 8 * 1024];
@@ -2456,11 +2312,8 @@ mod tests {
         let buf: Vec<u8> = (0..255).collect();
         let encryption_key = [1; VMGS_ENCRYPTION_KEY_SIZE];
 
-        let (storage, path) = new_test_file(FileDiskFlag::Create {
-            file_size: None,
-            force_create: false,
-        });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone()).await.unwrap();
 
         // Add datastore key.
         let key_index = vmgs
@@ -2481,8 +2334,7 @@ mod tests {
         drop(vmgs);
 
         // Read the file, after closing and reopening the data store.
-        let storage = VhdFileDisk::new(&path, FileDiskFlag::ReadWrite).unwrap();
-        let mut vmgs = Vmgs::open(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::open(disk).await.unwrap();
 
         let info = vmgs.get_file_info(FileId::BIOS_NVRAM).unwrap();
         assert_eq!(info.valid_bytes as usize, buf.len());
@@ -2517,11 +2369,8 @@ mod tests {
         let new_encryption_key = [5; VMGS_ENCRYPTION_KEY_SIZE];
 
         // Initialize version 3 data store
-        let (storage, path) = new_test_file(FileDiskFlag::Create {
-            file_size: None,
-            force_create: false,
-        });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone()).await.unwrap();
 
         // Add datastore key.
         let key_index = vmgs
@@ -2537,8 +2386,7 @@ mod tests {
 
         // Read the file, after closing and reopening the data store.
         drop(vmgs);
-        let storage = VhdFileDisk::new(&path, FileDiskFlag::ReadWrite).unwrap();
-        let mut vmgs = Vmgs::open(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::open(disk.clone()).await.unwrap();
         let key_index = vmgs
             .unlock_with_encryption_key(&encryption_key)
             .await
@@ -2556,8 +2404,7 @@ mod tests {
 
         // Read the file by using two different datastore keys, after closing and reopening the data store.
         drop(vmgs);
-        let storage = VhdFileDisk::new(path, FileDiskFlag::ReadWrite).unwrap();
-        let mut vmgs = Vmgs::open(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::open(disk).await.unwrap();
         let key_index = vmgs
             .unlock_with_encryption_key(&encryption_key)
             .await
@@ -2600,11 +2447,8 @@ mod tests {
         // Call write_file_encrypted on an unencrypted VMGS and check that plaintext was written
 
         // Initialize version 3 data store
-        let (storage, path) = new_test_file(FileDiskFlag::Create {
-            file_size: None,
-            force_create: false,
-        });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone()).await.unwrap();
         let buf = b"This is plaintext";
 
         // call write file encrypted
@@ -2620,8 +2464,7 @@ mod tests {
         // ensure that when we re-create the VMGS object, we can still read the
         // FileId as plaintext
         drop(vmgs);
-        let storage = VhdFileDisk::new(&path, FileDiskFlag::ReadWrite).unwrap();
-        let mut vmgs = Vmgs::open(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::open(disk).await.unwrap();
 
         let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
         assert_eq!(vmgs.encryption_algorithm, EncryptionAlgorithm::NONE);

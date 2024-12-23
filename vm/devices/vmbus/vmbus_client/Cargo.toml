@@ -14,6 +14,7 @@ vmbus_core.workspace = true
 guid.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
+pal_event.workspace = true
 inspect.workspace = true
 
 anyhow.workspace = true

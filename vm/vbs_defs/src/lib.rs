@@ -54,7 +54,7 @@ pub struct VBS_VM_BOOT_MEASUREMENT_SIGNED_DATA {
 ///     } u;
 /// } VBS_VM_BOOT_MEASUREMENT_CHUNK, *PVBS_VM_BOOT_MEASUREMENT_CHUNK;
 /// ```
-
+///
 /// Structure describing the chunk to be measured
 #[repr(C)]
 #[derive(AsBytes)]

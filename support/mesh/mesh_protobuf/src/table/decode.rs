@@ -11,9 +11,10 @@ use crate::protobuf::MessageReader;
 use crate::Error;
 use crate::FieldDecode;
 use crate::MessageDecode;
+use alloc::slice;
+use alloc::vec;
 use core::marker::PhantomData;
-use std::mem::MaybeUninit;
-use std::slice;
+use core::mem::MaybeUninit;
 
 /// Calls `f` on `item`, splitting the pointer and initialized flag out.
 ///
@@ -404,12 +405,12 @@ impl<'a, T, R> DecoderEntry<'a, T, R> {
     pub(crate) const fn custom<E: FieldDecode<'a, T, R>>() -> Self {
         Self(
             ErasedDecoderEntry(
-                std::ptr::from_ref(
+                core::ptr::from_ref(
                     const {
                         &StaticDecoderVtable {
                             read_fn: read_field_dyn::<T, R, E>,
                             default_fn: default_field_dyn::<T, R, E>,
-                            drop_fn: if std::mem::needs_drop::<T>() {
+                            drop_fn: if core::mem::needs_drop::<T>() {
                                 Some(drop_field_dyn::<T>)
                             } else {
                                 None
@@ -429,7 +430,7 @@ impl<'a, T, R> DecoderEntry<'a, T, R> {
     {
         Self(
             ErasedDecoderEntry(
-                std::ptr::from_ref(
+                core::ptr::from_ref(
                     const {
                         &DecoderTable {
                             count: T::NUMBERS.len(),

@@ -5,6 +5,7 @@
 - One of:
   - [Getting started on Windows](./windows.md)
   - [Getting started on Linux / WSL2](./linux.md).
+  - [Getting started via Dev Container](./devcontainer.md)
 - One of:
   - [Building OpenVMM](./build_openvmm.md)
   - [Building OpenHCL](./build_openhcl.md)
@@ -330,6 +331,13 @@ You can then run the windows version of OpenVMM by running:
 
 ```bash
 cargo winrun
+```
+
+OpenVMM configures some environment variables that specify the default Linux kernel,
+initrd, and UEFI firmware. To make those variables available in Windows, run the following:
+
+```bash
+export WSLENV=$WSLENV:X86_64_OPENVMM_LINUX_DIRECT_KERNEL:X86_64_OPENVMM_LINUX_DIRECT_INITRD:AARCH64_OPENVMM_LINUX_DIRECT_KERNEL:AARCH64_OPENVMM_LINUX_DIRECT_INITRD:X86_64_OPENVMM_UEFI_FIRMWARE:AARCH64_OPENVMM_UEFI_FIRMWARE
 ```
 
 ### Speeding up Windows OpenVMM launch

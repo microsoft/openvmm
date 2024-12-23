@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Implements the SimpleDisk and AsyncDisk traits for virtual disks backed by a raw block device.
-
 #![cfg(target_os = "linux")]
+
+//! Implements the [`DiskIo`] trait for virtual disks backed by a raw block
+//! device.
+
 // UNSAFETY: Issuing IOs and calling ioctls.
 #![allow(unsafe_code)]
 
@@ -18,13 +20,10 @@ use disk_backend::pr::ReservationCapabilities;
 use disk_backend::pr::ReservationReport;
 use disk_backend::pr::ReservationType;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedSimpleDisk;
-use disk_backend::AsyncDisk;
+use disk_backend::resolve::ResolvedDisk;
 use disk_backend::DiskError;
-use disk_backend::GetLbaStatus;
-use disk_backend::SimpleDisk;
-use disk_backend::Unmap;
-use disk_backend::ASYNC_DISK_STACK_SIZE;
+use disk_backend::DiskIo;
+use disk_backend::UnmapBehavior;
 use fs_err::PathExt;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
@@ -40,16 +39,13 @@ use pal_uring::Initiate;
 use pal_uring::IoInitiator;
 use scsi_buffers::BounceBufferTracker;
 use scsi_buffers::RequestBuffers;
-use stackfuture::StackFuture;
 use std::fmt::Debug;
 use std::fs;
-use std::future::Future;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::prelude::FileTypeExt;
 use std::os::unix::prelude::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -94,10 +90,18 @@ impl ResourceId<DiskHandleKind> for OpenBlockDeviceConfig {
     const ID: &'static str = "block";
 }
 
+#[derive(Debug, Error)]
+pub enum ResolveDiskError {
+    #[error("failed to create new device")]
+    NewDevice(#[source] NewDeviceError),
+    #[error("invalid disk")]
+    InvalidDisk(#[source] disk_backend::InvalidDisk),
+}
+
 #[async_trait]
 impl AsyncResolveResource<DiskHandleKind, OpenBlockDeviceConfig> for BlockDeviceResolver {
-    type Output = ResolvedSimpleDisk;
-    type Error = NewDeviceError;
+    type Output = ResolvedDisk;
+    type Error = ResolveDiskError;
 
     async fn resolve(
         &self,
@@ -113,8 +117,9 @@ impl AsyncResolveResource<DiskHandleKind, OpenBlockDeviceConfig> for BlockDevice
             self.bounce_buffer_tracker.clone(),
             self.always_bounce,
         )
-        .await?;
-        Ok(disk.into())
+        .await
+        .map_err(ResolveDiskError::NewDevice)?;
+        ResolvedDisk::new(disk).map_err(ResolveDiskError::InvalidDisk)
     }
 }
 
@@ -167,7 +172,9 @@ struct ResizeEpoch {
 #[derive(Debug, Copy, Clone, Inspect)]
 #[inspect(tag = "device_type")]
 enum DeviceType {
-    File,
+    File {
+        sector_count: u64,
+    },
     UnknownBlock,
     NVMe {
         ns_id: u32,
@@ -184,7 +191,7 @@ impl BlockDevice {
                 });
             }
             DeviceType::UnknownBlock => {}
-            DeviceType::File => {}
+            DeviceType::File { .. } => {}
         }
     }
 
@@ -356,12 +363,14 @@ impl BlockDevice {
     }
 
     fn map_io_error(&self, err: std::io::Error) -> DiskError {
-        if !matches!(self.device_type, DeviceType::File) && err.raw_os_error() == Some(libc::EBADE)
-        {
-            DiskError::ReservationConflict
-        } else {
-            DiskError::Io(err)
+        if !matches!(self.device_type, DeviceType::File { .. }) {
+            match err.raw_os_error() {
+                Some(libc::EBADE) => return DiskError::ReservationConflict,
+                Some(libc::ENOSPC) => return DiskError::IllegalBlock,
+                _ => {}
+            }
         }
+        DiskError::Io(err)
     }
 }
 
@@ -445,10 +454,13 @@ impl DeviceMetadata {
     }
 
     fn from_file(metadata: &fs::Metadata) -> anyhow::Result<Self> {
+        let logical_block_size = 512;
         Self {
-            device_type: DeviceType::File,
+            device_type: DeviceType::File {
+                sector_count: metadata.len() / logical_block_size as u64,
+            },
             disk_size: metadata.size(),
-            logical_block_size: 512,
+            logical_block_size,
             physical_block_size: metadata.blksize() as u32,
             discard_granularity: 0,
             supports_pr: false,
@@ -483,7 +495,7 @@ impl DeviceMetadata {
     }
 }
 
-impl SimpleDisk for BlockDevice {
+impl DiskIo for BlockDevice {
     fn disk_type(&self) -> &str {
         "block_device"
     }
@@ -517,14 +529,6 @@ impl SimpleDisk for BlockDevice {
         self.read_only
     }
 
-    fn unmap(&self) -> Option<&dyn Unmap> {
-        (self.optimal_unmap_sectors != 0).then_some(self)
-    }
-
-    fn lba_status(&self) -> Option<&dyn GetLbaStatus> {
-        Some(self)
-    }
-
     fn pr(&self) -> Option<&dyn PersistentReservation> {
         if self.supports_pr {
             Some(self)
@@ -533,45 +537,193 @@ impl SimpleDisk for BlockDevice {
         }
     }
 
-    fn eject(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let file = self.file.clone();
-            unblock(move || {
-                ioctl::lockdoor(&file, false)?;
-                ioctl::eject(&file)
-            })
-            .await
-            .map_err(|err| self.map_io_error(err))?;
-            Ok(())
+    async fn eject(&self) -> Result<(), DiskError> {
+        let file = self.file.clone();
+        unblock(move || {
+            ioctl::lockdoor(&file, false)?;
+            ioctl::eject(&file)
         })
+        .await
+        .map_err(|err| self.map_io_error(err))?;
+        Ok(())
     }
-}
 
-impl Unmap for BlockDevice {
-    fn unmap(
+    async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
+        sector: u64,
+    ) -> Result<(), DiskError> {
+        let io_size = buffers.len();
+        tracing::trace!(sector, io_size, "read_vectored");
+
+        let mut bounce_buffer = None;
+        let locked;
+        let should_bounce = self.always_bounce || !buffers.is_aligned(self.sector_size() as usize);
+        let io_vecs = if !should_bounce {
+            locked = buffers.lock(true)?;
+            locked.io_vecs()
+        } else {
+            tracing::trace!("double buffering IO");
+
+            bounce_buffer
+                .insert(
+                    self.bounce_buffer_tracker
+                        .acquire_bounce_buffers(buffers.len(), affinity::get_cpu_number() as usize)
+                        .await,
+                )
+                .buffer
+                .io_vecs()
+        };
+
+        // SAFETY: the buffers for the IO are this stack, and they will be
+        // kept alive for the duration of the IO since we immediately call
+        // await on the IO.
+        let (r, _) = unsafe {
+            self.initiator().issue_io((), |_| {
+                opcode::Readv::new(
+                    types::Fd(self.file.as_raw_fd()),
+                    io_vecs.as_ptr().cast(),
+                    io_vecs.len() as u32,
+                )
+                .offset((sector * self.sector_size() as u64) as _)
+                .build()
+            })
+        }
+        .await;
+
+        let bytes_read = r.map_err(|err| self.map_io_error(err))?;
+        tracing::trace!(bytes_read, "read_vectored");
+        if bytes_read != io_size as i32 {
+            return Err(DiskError::IllegalBlock);
+        }
+
+        if let Some(mut bounce_buffer) = bounce_buffer {
+            buffers
+                .writer()
+                .write(bounce_buffer.buffer.as_mut_bytes())?;
+        }
+        Ok(())
+    }
+
+    async fn write_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
+        sector: u64,
+        fua: bool,
+    ) -> Result<(), DiskError> {
+        let io_size = buffers.len();
+        tracing::trace!(sector, io_size, "write_vectored");
+
+        // Ensure the write doesn't extend the file.
+        if let DeviceType::File { sector_count } = self.device_type {
+            if sector + (io_size as u64 >> self.sector_shift) > sector_count {
+                return Err(DiskError::IllegalBlock);
+            }
+        }
+
+        let mut bounce_buffer;
+        let locked;
+        let should_bounce = self.always_bounce || !buffers.is_aligned(self.sector_size() as usize);
+        let io_vecs = if !should_bounce {
+            locked = buffers.lock(false)?;
+            locked.io_vecs()
+        } else {
+            tracing::trace!("double buffering IO");
+            bounce_buffer = self
+                .bounce_buffer_tracker
+                .acquire_bounce_buffers(buffers.len(), affinity::get_cpu_number() as usize)
+                .await;
+            buffers.reader().read(bounce_buffer.buffer.as_mut_bytes())?;
+            bounce_buffer.buffer.io_vecs()
+        };
+
+        // Documented in Linux manual page: https://man7.org/linux/man-pages/man2/readv.2.html
+        // It's only defined in linux_gnu but not in linux_musl. So we have to define it.
+        const RWF_DSYNC: RwFlags = 0x00000002;
+
+        // SAFETY: the buffers for the IO are this stack, and they will be
+        // kept alive for the duration of the IO since we immediately call
+        // await on the IO.
+        let (r, _) = unsafe {
+            self.initiator().issue_io((), |_| {
+                opcode::Writev::new(
+                    types::Fd(self.file.as_raw_fd()),
+                    io_vecs.as_ptr().cast::<libc::iovec>(),
+                    io_vecs.len() as _,
+                )
+                .offset((sector * self.sector_size() as u64) as _)
+                .rw_flags(if fua { RWF_DSYNC } else { 0 })
+                .build()
+            })
+        }
+        .await;
+
+        let bytes_written = r.map_err(|err| self.map_io_error(err))?;
+        tracing::trace!(bytes_written, "write_vectored");
+        if bytes_written != io_size as i32 {
+            return Err(DiskError::IllegalBlock);
+        }
+
+        Ok(())
+    }
+
+    async fn sync_cache(&self) -> Result<(), DiskError> {
+        // SAFETY: No data buffers.
+        unsafe {
+            self.initiator()
+                .issue_io((), |_| {
+                    opcode::Fsync::new(types::Fd(self.file.as_raw_fd())).build()
+                })
+                .await
+                .0
+                .map_err(|err| self.map_io_error(err))?;
+        }
+        Ok(())
+    }
+
+    async fn wait_resize(&self, sector_count: u64) -> u64 {
+        loop {
+            let listen = self.resize_epoch.event.listen();
+            let current = self.sector_count();
+            if current != sector_count {
+                break current;
+            }
+            listen.await;
+        }
+    }
+
+    async fn unmap(
         &self,
         sector_offset: u64,
         sector_count: u64,
         _block_level_only: bool,
-    ) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let file = self.file.clone();
-            let file_offset = sector_offset << self.sector_shift;
-            let length = sector_count << self.sector_shift;
-            tracing::debug!(file = ?file, file_offset, length, "unmap_async");
-            unblock(move || ioctl::discard(&file, file_offset, length))
-                .await
-                .map_err(|err| self.map_io_error(err))?;
-            Ok(())
-        })
+    ) -> Result<(), DiskError> {
+        let file = self.file.clone();
+        let file_offset = sector_offset << self.sector_shift;
+        let length = sector_count << self.sector_shift;
+        tracing::debug!(file = ?file, file_offset, length, "unmap_async");
+        match unblock(move || ioctl::discard(&file, file_offset, length)).await {
+            Ok(()) => {}
+            Err(_) if sector_offset + sector_count > self.sector_count() => {
+                return Err(DiskError::IllegalBlock)
+            }
+            Err(err) => return Err(self.map_io_error(err)),
+        }
+        Ok(())
+    }
+
+    fn unmap_behavior(&self) -> UnmapBehavior {
+        if self.optimal_unmap_sectors == 0 {
+            UnmapBehavior::Ignored
+        } else {
+            UnmapBehavior::Unspecified
+        }
     }
 
     fn optimal_unmap_sectors(&self) -> u32 {
         self.optimal_unmap_sectors
     }
 }
-
-impl GetLbaStatus for BlockDevice {}
 
 #[async_trait::async_trait]
 impl PersistentReservation for BlockDevice {
@@ -580,7 +732,7 @@ impl PersistentReservation for BlockDevice {
             &DeviceType::NVMe { rescap, .. } => {
                 nvme_common::from_nvme_reservation_capabilities(rescap)
             }
-            DeviceType::File | DeviceType::UnknownBlock => unreachable!(),
+            DeviceType::File { .. } | DeviceType::UnknownBlock => unreachable!(),
         }
     }
 
@@ -671,161 +823,6 @@ impl PersistentReservation for BlockDevice {
         .and_then(check_nvme_status)
         .map_err(|err| self.map_io_error(err))?;
         Ok(())
-    }
-}
-
-impl AsyncDisk for BlockDevice {
-    fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
-        sector: u64,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let io_size = buffers.len();
-            tracing::trace!(sector, io_size, "read_vectored");
-
-            let mut bounce_buffer = None;
-            let locked;
-            let should_bounce =
-                self.always_bounce || !buffers.is_aligned(self.sector_size() as usize);
-            let io_vecs = if !should_bounce {
-                locked = buffers.lock(true)?;
-                locked.io_vecs()
-            } else {
-                tracing::trace!("double buffering IO");
-
-                bounce_buffer
-                    .insert(
-                        self.bounce_buffer_tracker
-                            .acquire_bounce_buffers(
-                                buffers.len(),
-                                affinity::get_cpu_number() as usize,
-                            )
-                            .await,
-                    )
-                    .buffer
-                    .io_vecs()
-            };
-
-            // SAFETY: the buffers for the IO are this stack, and they will be
-            // kept alive for the duration of the IO since we immediately call
-            // await on the IO.
-            let (r, _) = unsafe {
-                self.initiator().issue_io((), |_| {
-                    opcode::Readv::new(
-                        types::Fd(self.file.as_raw_fd()),
-                        io_vecs.as_ptr().cast(),
-                        io_vecs.len() as u32,
-                    )
-                    .offset((sector * self.sector_size() as u64) as _)
-                    .build()
-                })
-            }
-            .await;
-
-            let bytes_read = r.map_err(|err| self.map_io_error(err))?;
-            tracing::trace!(bytes_read, "read_vectored");
-            if bytes_read != io_size as i32 {
-                return Err(DiskError::Io(std::io::ErrorKind::UnexpectedEof.into()));
-            }
-
-            if let Some(mut bounce_buffer) = bounce_buffer {
-                buffers
-                    .writer()
-                    .write(bounce_buffer.buffer.as_mut_bytes())?;
-            }
-            Ok(())
-        })
-    }
-
-    fn write_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
-        sector: u64,
-        fua: bool,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let io_size = buffers.len();
-            tracing::trace!(sector, io_size, "write_vectored");
-
-            let mut bounce_buffer;
-            let locked;
-            let should_bounce =
-                self.always_bounce || !buffers.is_aligned(self.sector_size() as usize);
-            let io_vecs = if !should_bounce {
-                locked = buffers.lock(false)?;
-                locked.io_vecs()
-            } else {
-                tracing::trace!("double buffering IO");
-                bounce_buffer = self
-                    .bounce_buffer_tracker
-                    .acquire_bounce_buffers(buffers.len(), affinity::get_cpu_number() as usize)
-                    .await;
-                buffers.reader().read(bounce_buffer.buffer.as_mut_bytes())?;
-                bounce_buffer.buffer.io_vecs()
-            };
-
-            // Documented in Linux manual page: https://man7.org/linux/man-pages/man2/readv.2.html
-            // It's only defined in linux_gnu but not in linux_musl. So we have to define it.
-            const RWF_DSYNC: RwFlags = 0x00000002;
-
-            // SAFETY: the buffers for the IO are this stack, and they will be
-            // kept alive for the duration of the IO since we immediately call
-            // await on the IO.
-            let (r, _) = unsafe {
-                self.initiator().issue_io((), |_| {
-                    opcode::Writev::new(
-                        types::Fd(self.file.as_raw_fd()),
-                        io_vecs.as_ptr().cast::<libc::iovec>(),
-                        io_vecs.len() as _,
-                    )
-                    .offset((sector * self.sector_size() as u64) as _)
-                    .rw_flags(if fua { RWF_DSYNC } else { 0 })
-                    .build()
-                })
-            }
-            .await;
-
-            let bytes_written = r.map_err(|err| self.map_io_error(err))?;
-            tracing::trace!(bytes_written, "write_vectored");
-            if bytes_written != io_size as i32 {
-                return Err(DiskError::Io(std::io::ErrorKind::UnexpectedEof.into()));
-            }
-
-            Ok(())
-        })
-    }
-
-    fn sync_cache(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            // SAFETY: No data buffers.
-            unsafe {
-                self.initiator()
-                    .issue_io((), |_| {
-                        opcode::Fsync::new(types::Fd(self.file.as_raw_fd())).build()
-                    })
-                    .await
-                    .0
-                    .map_err(|err| self.map_io_error(err))?;
-            }
-            Ok(())
-        })
-    }
-
-    fn wait_resize<'a>(
-        &'a self,
-        sector_count: u64,
-    ) -> Pin<Box<dyn 'a + Send + Future<Output = u64>>> {
-        Box::pin(async move {
-            loop {
-                let listen = self.resize_epoch.event.listen();
-                let current = self.sector_count();
-                if current != sector_count {
-                    break current;
-                }
-                listen.await;
-            }
-        })
     }
 }
 
@@ -990,5 +987,22 @@ mod tests {
     #[async_test]
     async fn test_async_disk_io_unaligned_fua() {
         run_async_disk_io_unaligned(true).await;
+    }
+
+    #[async_test]
+    async fn test_illegal_lba() {
+        let disk = get_block_device_or_skip!();
+        let gm = GuestMemory::allocate(512);
+        match disk
+            .write_vectored(
+                &OwnedRequestBuffers::linear(0, 512, true).buffer(&gm),
+                i64::MAX as u64 / 512,
+                false,
+            )
+            .await
+        {
+            Err(DiskError::IllegalBlock) => {}
+            r => panic!("unexpected result: {:?}", r),
+        }
     }
 }

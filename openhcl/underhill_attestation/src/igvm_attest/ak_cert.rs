@@ -4,8 +4,8 @@
 //! The module for `AK_CERT_REQUEST` request type that supports parsing the
 //! response.
 
-use crate::protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
-use crate::protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
+use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
 use thiserror::Error;
 use zerocopy::FromBytes;
 

@@ -20,7 +20,6 @@ mod reference_time;
 mod servicing;
 mod threadpool_vm_task_backend;
 mod vmbus_relay_unit;
-mod vmgs;
 mod vp;
 mod vpci;
 mod worker;
@@ -193,7 +192,7 @@ fn install_task_name_panic_hook() {
 }
 
 async fn do_main(driver: DefaultDriver, mut tracing: TracingBackend) -> anyhow::Result<()> {
-    let opt = Options::parse(Vec::new())?;
+    let opt = Options::parse(Vec::new(), Vec::new())?;
 
     let crate_name = build_info::get().crate_name();
     let crate_revision = build_info::get().scm_revision();
@@ -322,6 +321,8 @@ async fn launch_workers(
         halt_on_guest_halt: opt.halt_on_guest_halt,
         no_sidecar_hotplug: opt.no_sidecar_hotplug,
         gdbstub: opt.gdbstub,
+        hide_isolation: opt.hide_isolation,
+        nvme_keep_alive: opt.nvme_keep_alive,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =
@@ -381,6 +382,11 @@ async fn launch_workers(
                         listener,
                         req_chan: send,
                         vp_count,
+                        target_arch: if cfg!(guest_arch = "x86_64") {
+                            debug_worker_defs::TargetArch::X86_64
+                        } else {
+                            debug_worker_defs::TargetArch::Aarch64
+                        },
                     },
                 )
                 .await?,
@@ -490,14 +496,7 @@ async fn run_control(
                             if workers.is_some() {
                                 Err(anyhow::anyhow!("workers have already been started"))?;
                             }
-                            for (key, value) in params.env {
-                                if let Some(value) = value {
-                                    std::env::set_var(key, value);
-                                } else {
-                                    std::env::remove_var(key);
-                                }
-                            }
-                            let new_opt = Options::parse(params.args)
+                            let new_opt = Options::parse(params.args, params.env)
                                 .context("failed to parse new options")?;
 
                             workers = Some(

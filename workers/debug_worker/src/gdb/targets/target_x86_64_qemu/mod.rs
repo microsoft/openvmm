@@ -10,14 +10,21 @@ use crate::gdb::arch::x86::reg::id::X86SegmentRegId;
 use crate::gdb::arch::x86::reg::id::X86_64CoreRegId;
 use crate::gdb::arch::x86::reg::X86SegmentRegs;
 use crate::gdb::arch::x86::reg::X86_64CoreRegs;
-use vmm_core_defs::debug_rpc::VpState;
+use vmm_core_defs::debug_rpc::DebuggerVpState;
 
 mod target_xml;
 
 impl TargetArch for crate::gdb::arch::x86::X86_64_QEMU {
     type Address = u64;
 
-    fn register(state: &VpState, reg_id: Self::RegId, buf: &mut [u8]) -> Result<usize, ArchError> {
+    fn register(
+        state: &DebuggerVpState,
+        reg_id: Self::RegId,
+        buf: &mut [u8],
+    ) -> Result<usize, ArchError> {
+        let DebuggerVpState::X86_64(state) = state else {
+            return Err(ArchError);
+        };
         match reg_id {
             X86_64CoreRegId::Segment(X86SegmentRegId::CS) => {
                 buf[..4].copy_from_slice(&(state.cs.selector as u32).to_le_bytes());
@@ -31,7 +38,10 @@ impl TargetArch for crate::gdb::arch::x86::X86_64_QEMU {
         }
     }
 
-    fn registers(state: &VpState, regs: &mut Self::Registers) -> Result<(), ArchError> {
+    fn registers(state: &DebuggerVpState, regs: &mut Self::Registers) -> Result<(), ArchError> {
+        let DebuggerVpState::X86_64(state) = state else {
+            return Err(ArchError);
+        };
         let gp_regs = {
             let [rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15] =
                 state.gp;
@@ -76,7 +86,13 @@ impl TargetArch for crate::gdb::arch::x86::X86_64_QEMU {
         Ok(())
     }
 
-    fn update_registers(state: &mut VpState, regs: &Self::Registers) -> Result<(), ArchError> {
+    fn update_registers(
+        state: &mut DebuggerVpState,
+        regs: &Self::Registers,
+    ) -> Result<(), ArchError> {
+        let DebuggerVpState::X86_64(state) = state else {
+            return Err(ArchError);
+        };
         state.gp = {
             let [rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8, r9, r10, r11, r12, r13, r14, r15] =
                 regs.regs;
@@ -93,10 +109,13 @@ impl TargetArch for crate::gdb::arch::x86::X86_64_QEMU {
     }
 
     fn update_register(
-        state: &mut VpState,
+        state: &mut DebuggerVpState,
         reg_id: Self::RegId,
         val: &[u8],
     ) -> Result<(), ArchError> {
+        let DebuggerVpState::X86_64(state) = state else {
+            return Err(ArchError);
+        };
         // Works for the set of supported registers. Some registers are
         // greater than 8 bytes, and would need a different handler.
         fn to_u64_le(val: &[u8]) -> u64 {

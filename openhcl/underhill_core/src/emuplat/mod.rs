@@ -6,6 +6,7 @@ pub mod framebuffer;
 pub mod i440bx_host_pci_bridge;
 pub mod local_clock;
 pub mod netvsp;
+pub mod non_volatile_store;
 pub mod tpm;
 pub mod vga_proxy;
 pub mod watchdog;
@@ -19,7 +20,6 @@ use vmcore::save_restore::SaveRestore;
 
 // These resolvers are defined in this crate and are always linked in.
 register_static_resolvers! {
-    tpm::resources::GetTpmGetAttestationReportHelperResolver,
     tpm::resources::GetTpmRequestAkCertHelperResolver,
 }
 

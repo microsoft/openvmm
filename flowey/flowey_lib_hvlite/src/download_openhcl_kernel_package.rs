@@ -99,10 +99,8 @@ impl FlowNode for Node {
                 },
                 version,
                 match kind {
-                    OpenhclKernelPackageKind::Main => "-main",
-                    OpenhclKernelPackageKind::Cvm => "-main-cvm",
-                    OpenhclKernelPackageKind::Dev => "",
-                    OpenhclKernelPackageKind::CvmDev => "-cvm",
+                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Dev => "",
+                    OpenhclKernelPackageKind::Cvm | OpenhclKernelPackageKind::CvmDev => "-cvm",
                 },
                 match arch {
                     OpenhclKernelPackageArch::X86_64 => "x64",

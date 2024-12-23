@@ -3,6 +3,7 @@
 
 use crate::GuestEmulationDevice;
 use async_trait::async_trait;
+use disk_backend::resolve::ResolveDiskParameters;
 use get_protocol::SecureBootTemplateType;
 use get_resources::ged::GuestEmulationDeviceHandle;
 use get_resources::ged::GuestFirmwareConfig;
@@ -35,6 +36,8 @@ pub enum Error {
     Framebuffer(#[source] ResolveError),
     #[error("failed to resolve power request")]
     Power(#[source] ResolveError),
+    #[error("failed to resolve vmgs disk")]
+    Vmgs(#[source] ResolveError),
 }
 
 #[async_trait]
@@ -66,6 +69,24 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
             .resolve::<PowerRequestHandleKind, _>(PlatformResource.into_resource(), ())
             .await
             .map_err(Error::Power)?;
+
+        let vmgs_disk = if let Some(disk) = resource.vmgs_disk {
+            Some(
+                resolver
+                    .resolve(
+                        disk,
+                        ResolveDiskParameters {
+                            read_only: false,
+                            _async_trait_workaround: &(),
+                        },
+                    )
+                    .await
+                    .map_err(Error::Vmgs)?
+                    .0,
+            )
+        } else {
+            None
+        };
 
         let device = GuestEmulationDevice::new(
             crate::GuestConfig {
@@ -126,6 +147,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
             resource.firmware_event_send,
             resource.guest_request_recv,
             framebuffer_control,
+            vmgs_disk,
         );
         Ok(SimpleDeviceWrapper::new(input.driver_source.simple(), device).into())
     }

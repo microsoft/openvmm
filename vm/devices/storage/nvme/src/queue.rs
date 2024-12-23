@@ -266,8 +266,20 @@ impl CompletionQueue {
             return Ok(false);
         }
         data.status.set_phase(self.phase);
-        mem.write_plain(self.gpa.wrapping_add(self.tail as u64 * 16), &data)
+
+        // Atomically write the low part of the completion entry first, then the
+        // high part, using release fences to ensure ordering.
+        //
+        // This is necessary to ensure the guest can observe the full completion
+        // once it observes the phase bit change (which is in the high part).
+        let [low, high]: [u64; 2] = zerocopy::transmute!(data);
+        let gpa = self.gpa.wrapping_add(self.tail as u64 * 16);
+        mem.write_plain(gpa, &low).map_err(QueueError::Memory)?;
+        std::sync::atomic::fence(Ordering::Release);
+        mem.write_plain(gpa + 8, &high)
             .map_err(QueueError::Memory)?;
+        std::sync::atomic::fence(Ordering::Release);
+
         if let Some(interrupt) = &self.interrupt {
             interrupt.deliver();
         }

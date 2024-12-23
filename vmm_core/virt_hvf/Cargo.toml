@@ -15,6 +15,7 @@ virt.workspace = true
 virt_support_gic.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
+vm_topology.workspace = true
 memory_range.workspace = true
 
 inspect.workspace = true

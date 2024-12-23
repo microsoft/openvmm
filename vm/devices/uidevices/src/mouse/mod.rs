@@ -222,6 +222,7 @@ impl SimpleVmbusDevice for Mouse {
     fn open(
         &mut self,
         channel: RawAsyncChannel<GpadlRingMem>,
+        _guest_memory: guestmem::GuestMemory,
     ) -> Result<Self::Runner, ChannelOpenError> {
         let pipe = MessagePipe::new(channel)?;
         Ok(MouseChannel::new(pipe, ChannelState::default()))
@@ -402,10 +403,10 @@ async fn post_mouse_packet(
 mod tests {
     use super::*;
     use input_core::mesh_input::input_pair;
+    use pal_async::async_test;
     use pal_async::task::Spawn;
     use pal_async::task::Task;
     use pal_async::DefaultDriver;
-    use pal_async::DefaultPool;
     use std::io::ErrorKind;
     use test_with_tracing::test;
     use vmbus_async::pipe::connected_message_pipes;
@@ -451,75 +452,71 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_channel_working() {
-        DefaultPool::run_with(|driver| async move {
-            let (host, mut guest) = connected_message_pipes(16384);
-            let (source, _sink) = input_pair();
-            let worker = start_worker(&driver, Mouse::new(Box::new(source)), host);
+    #[async_test]
+    async fn test_channel_working(driver: DefaultDriver) {
+        let (host, mut guest) = connected_message_pipes(16384);
+        let (source, _sink) = input_pair();
+        let worker = start_worker(&driver, Mouse::new(Box::new(source)), host);
 
-            send_packet(
-                &mut guest,
-                protocol::SYNTHHID_PROTOCOL_REQUEST,
-                size_of::<protocol::MessageProtocolRequest>() as u32,
-                &protocol::MessageProtocolRequest {
-                    version: protocol::SYNTHHID_INPUT_VERSION,
-                },
-            )
-            .await
-            .unwrap();
+        send_packet(
+            &mut guest,
+            protocol::SYNTHHID_PROTOCOL_REQUEST,
+            size_of::<protocol::MessageProtocolRequest>() as u32,
+            &protocol::MessageProtocolRequest {
+                version: protocol::SYNTHHID_INPUT_VERSION,
+            },
+        )
+        .await
+        .unwrap();
 
-            match recv_packet(&mut guest).await.unwrap() {
-                Packet::ProtocolResponse(protocol::MessageProtocolResponse {
-                    version_requested: protocol::SYNTHHID_INPUT_VERSION,
-                    accepted: 1,
-                }) => (),
-                p => panic!("unexpected {:?}", p),
-            }
+        match recv_packet(&mut guest).await.unwrap() {
+            Packet::ProtocolResponse(protocol::MessageProtocolResponse {
+                version_requested: protocol::SYNTHHID_INPUT_VERSION,
+                accepted: 1,
+            }) => (),
+            p => panic!("unexpected {:?}", p),
+        }
 
-            match recv_packet(&mut guest).await.unwrap() {
-                Packet::DeviceInfo(protocol::MessageDeviceInfo {
-                    device_attributes: _,
-                    descriptor_info: _,
-                    report_descriptor: _,
-                }) => (),
-                p => panic!("unexpected {:?}", p),
-            }
+        match recv_packet(&mut guest).await.unwrap() {
+            Packet::DeviceInfo(protocol::MessageDeviceInfo {
+                device_attributes: _,
+                descriptor_info: _,
+                report_descriptor: _,
+            }) => (),
+            p => panic!("unexpected {:?}", p),
+        }
 
-            drop(guest);
-            worker.await.unwrap();
-        })
+        drop(guest);
+        worker.await.unwrap();
     }
 
-    #[test]
-    fn test_channel_negotiation_failed() {
-        DefaultPool::run_with(|driver| async move {
-            let (host, mut guest) = connected_message_pipes(16384);
-            let (source, _sink) = input_pair();
-            let worker = start_worker(&driver, Mouse::new(Box::new(source)), host);
+    #[async_test]
+    async fn test_channel_negotiation_failed(driver: DefaultDriver) {
+        let (host, mut guest) = connected_message_pipes(16384);
+        let (source, _sink) = input_pair();
+        let worker = start_worker(&driver, Mouse::new(Box::new(source)), host);
 
-            send_packet(
-                &mut guest,
-                protocol::SYNTHHID_PROTOCOL_REQUEST,
-                size_of::<protocol::MessageProtocolRequest>() as u32,
-                &protocol::MessageProtocolRequest { version: 0xbadf00d },
-            )
-            .await
-            .unwrap();
+        send_packet(
+            &mut guest,
+            protocol::SYNTHHID_PROTOCOL_REQUEST,
+            size_of::<protocol::MessageProtocolRequest>() as u32,
+            &protocol::MessageProtocolRequest { version: 0xbadf00d },
+        )
+        .await
+        .unwrap();
 
-            let mut failed = false;
-            match recv_packet(&mut guest).await.unwrap() {
-                Packet::ProtocolResponse(protocol::MessageProtocolResponse {
-                    version_requested: protocol::SYNTHHID_INPUT_VERSION,
-                    accepted: 0,
-                }) => (),
-                _ => failed = true,
-            }
+        let mut failed = false;
+        match recv_packet(&mut guest).await.unwrap() {
+            Packet::ProtocolResponse(protocol::MessageProtocolResponse {
+                version_requested: protocol::SYNTHHID_INPUT_VERSION,
+                accepted: 0,
+            }) => (),
+            _ => failed = true,
+        }
 
-            assert_eq!(failed, true);
+        assert_eq!(failed, true);
 
-            drop(guest);
-            worker.await.unwrap();
-        })
+        drop(guest);
+        worker.await.unwrap();
     }
 }

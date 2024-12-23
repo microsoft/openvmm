@@ -38,7 +38,7 @@ local_clock.workspace = true
 mesh.workspace = true
 open_enum.workspace = true
 pal_async.workspace = true
-ucs2 = { workspace = true, features = ["mesh"] }
+ucs2.workspace = true
 
 async-trait.workspace = true
 bitfield-struct.workspace = true

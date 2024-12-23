@@ -27,7 +27,6 @@ hyper-tls.workspace = true
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "http2"] }
 once_cell.workspace = true
 thiserror.workspace = true
-stackfuture.workspace = true
 zerocopy.workspace = true
 
 # tokio use is allowed in this crate only.

@@ -9,6 +9,7 @@
 pub mod _jobs;
 pub mod artifact_guest_test_uefi;
 pub mod artifact_guide;
+pub mod artifact_hypestv;
 pub mod artifact_igvmfilegen;
 pub mod artifact_nextest_unit_tests_archive;
 pub mod artifact_nextest_vmm_tests_archive;
@@ -24,6 +25,7 @@ pub mod artifact_vmgstool;
 pub mod build_and_test_vmgs_lib;
 pub mod build_guest_test_uefi;
 pub mod build_guide;
+pub mod build_hypestv;
 pub mod build_igvmfilegen;
 pub mod build_nextest_unit_tests;
 pub mod build_nextest_vmm_tests;

@@ -29,6 +29,7 @@ pub enum KnownVhd {
     Gen2WindowsDataCenterCore2022,
     FreeBsd13_2,
     Ubuntu2204Server,
+    Ubuntu2404ServerAarch64,
 }
 
 struct KnownVhdMeta {
@@ -68,6 +69,11 @@ const KNOWN_VHD_METADATA: &[KnownVhdMeta] = &[
         KnownVhd::Ubuntu2204Server,
         petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64::FILENAME,
         petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64::SIZE,
+    ),
+    KnownVhdMeta::new(
+        KnownVhd::Ubuntu2404ServerAarch64,
+        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64::FILENAME,
+        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64::SIZE,
     ),
 ];
 

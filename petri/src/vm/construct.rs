@@ -18,7 +18,9 @@ use crate::BOOT_NVME_NSID;
 use crate::SCSI_INSTANCE;
 use crate::SIZE_1_GB;
 use anyhow::Context;
-use disk_backend_resources::RamDiffDiskHandle;
+use disk_backend_resources::layer::DiskLayerHandle;
+use disk_backend_resources::layer::RamDiskLayerHandle;
+use disk_backend_resources::LayeredDiskHandle;
 use framebuffer::Framebuffer;
 use framebuffer::FramebufferAccess;
 use framebuffer::FRAMEBUFFER_SIZE;
@@ -194,7 +196,10 @@ impl PetriVmConfig {
                         vmbusproxy_handle: None,
                     }),
                     Some(OpenHclDiagHandler {
-                        ged_send: ged_send.clone(),
+                        client: diag_client::DiagClient::from_hybrid_vsock(
+                            driver.clone(),
+                            &vtl2_vsock_path,
+                        ),
                         vtl2_vsock_path,
                     }),
                     Some(ged),
@@ -336,7 +341,8 @@ impl PetriVmConfig {
             virtio_devices: vec![],
             #[cfg(windows)]
             vpci_resources: vec![],
-            vmgs_file: None,
+            vmgs_disk: None,
+            format_vmgs: false,
             secure_boot_enabled: false,
             debugger_rpc: None,
             generation_id_recv: None,
@@ -749,7 +755,13 @@ impl PetriVmConfigSetupCore<'_> {
                     PcatGuest::Vhd(_) => GuestMedia::Disk {
                         read_only: false,
                         disk_parameters: None,
-                        disk_type: (RamDiffDiskHandle { lower: inner_disk }).into_resource(),
+                        disk_type: LayeredDiskHandle {
+                            layers: vec![
+                                RamDiskLayerHandle { len: None }.into_resource().into(),
+                                DiskLayerHandle(inner_disk).into_resource().into(),
+                            ],
+                        }
+                        .into_resource(),
                     },
                     PcatGuest::Iso(_) => GuestMedia::Dvd(
                         SimpleScsiDvdHandle {
@@ -789,8 +801,13 @@ impl PetriVmConfigSetupCore<'_> {
                             device: SimpleScsiDiskHandle {
                                 read_only: false,
                                 parameters: Default::default(),
-                                disk: RamDiffDiskHandle {
-                                    lower: open_disk_type(&path, true)?,
+                                disk: LayeredDiskHandle {
+                                    layers: vec![
+                                        RamDiskLayerHandle { len: None }.into_resource().into(),
+                                        DiskLayerHandle(open_disk_type(&path, true)?)
+                                            .into_resource()
+                                            .into(),
+                                    ],
                                 }
                                 .into_resource(),
                             }
@@ -816,8 +833,13 @@ impl PetriVmConfigSetupCore<'_> {
                         msix_count: 64,
                         namespaces: vec![NamespaceDefinition {
                             nsid: BOOT_NVME_NSID,
-                            disk: RamDiffDiskHandle {
-                                lower: open_disk_type(&path, true)?,
+                            disk: LayeredDiskHandle {
+                                layers: vec![
+                                    RamDiskLayerHandle { len: None }.into_resource().into(),
+                                    DiskLayerHandle(open_disk_type(&path, true)?)
+                                        .into_resource()
+                                        .into(),
+                                ],
                             }
                             .into_resource(),
                             read_only: false,
@@ -923,6 +945,12 @@ impl PetriVmConfigSetupCore<'_> {
             com2: true,
             vmbus_redirection: false,
             vtl2_settings: None, // Will be added at startup to allow tests to modify
+            vmgs_disk: Some(
+                LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                    len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
+                })
+                .into_resource(),
+            ),
             framebuffer: framebuffer.then(|| SharedFramebufferHandle.into_resource()),
             guest_request_recv,
             enable_tpm: false,

@@ -12,6 +12,7 @@ use crate::emuplat::EmuplatServicing;
 use crate::nvme_manager::NvmeManager;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
+use crate::servicing::NvmeSavedState;
 use crate::servicing::ServicingState;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
 use crate::worker::FirmwareType;
@@ -40,10 +41,10 @@ use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
+use page_pool_alloc::PagePool;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
-use shared_pool_alloc::SharedPool;
 use socket2::Socket;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
@@ -104,7 +105,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         threadpool: &AffinitizedThreadpool,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        shared_vis_pages_pool: &Option<SharedPool>,
+        shared_vis_pages_pool: &Option<PagePool>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
@@ -160,6 +161,7 @@ pub(crate) struct LoadedVm {
     )>,
 
     pub vmgs_thin_client: vmgs_broker::VmgsThinClient,
+    pub vmgs_disk_metadata: disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
     pub _vmgs_handle: Task<()>,
 
     // dependencies of the vtl2 settings service
@@ -175,7 +177,9 @@ pub(crate) struct LoadedVm {
 
     pub _periodic_telemetry_task: Task<()>,
 
-    pub shared_vis_pool: Option<SharedPool>,
+    pub shared_vis_pool: Option<PagePool>,
+    pub private_pool: Option<PagePool>,
+    pub nvme_keep_alive: bool,
 }
 
 pub struct LoadedVmState<T> {
@@ -261,7 +265,7 @@ impl LoadedVm {
                     WorkerRpc::Restart(response) => {
                         let state = async {
                             let running = self.stop().await;
-                            match self.save(None).await {
+                            match self.save(None, false).await {
                                 Ok(servicing_state) => Some((response, servicing_state)),
                                 Err(err) => {
                                     if running {
@@ -301,6 +305,7 @@ impl LoadedVm {
                             inspect_helpers::vtl0_memory_map(&self.vtl0_memory_map),
                         );
                         resp.field("shared_vis_pool", &self.shared_vis_pool);
+                        resp.field("private_pool", &self.private_pool);
                         resp.field("memory", &self.memory);
                     }),
                 },
@@ -323,7 +328,7 @@ impl LoadedVm {
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(|()| async {
                             let running = self.stop().await;
-                            let r = self.save(None).await;
+                            let r = self.save(None, false).await;
                             if running {
                                 self.start(None).await;
                             }
@@ -465,12 +470,16 @@ impl LoadedVm {
         &mut self,
         correlation_id: Guid,
         deadline: std::time::Instant,
-        capabilities_flags: SaveGuestVtl2StateFlags,
+        _capabilities_flags: SaveGuestVtl2StateFlags,
     ) -> anyhow::Result<ServicingState> {
         if self.isolation.is_isolated() {
             anyhow::bail!("Servicing is not yet supported for isolated VMs");
         }
-        let nvme_keepalive = !capabilities_flags.disable_nvme_keepalive();
+
+        // NOTE: This is set via the corresponding env arg, as this feature is
+        // experimental.
+        let nvme_keepalive = self.nvme_keep_alive;
+
         // Do everything before the log flush under a span.
         let mut state = async {
             if !self.stop().await {
@@ -484,7 +493,7 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
-            let mut state = self.save(Some(deadline)).await?;
+            let mut state = self.save(Some(deadline), nvme_keepalive).await?;
             state.init_state.correlation_id = Some(correlation_id);
 
             // Unload any network devices.
@@ -502,7 +511,7 @@ impl LoadedVm {
                 if let Some(nvme_manager) = self.nvme_manager.take() {
                     nvme_manager
                         .shutdown(nvme_keepalive)
-                        .instrument(tracing::info_span!("shutdown_nvme_vfio", %correlation_id))
+                        .instrument(tracing::info_span!("shutdown_nvme_vfio", %correlation_id, %nvme_keepalive))
                         .await;
                 }
             };
@@ -613,25 +622,48 @@ impl LoadedVm {
     async fn save(
         &mut self,
         _deadline: Option<std::time::Instant>,
+        vf_keepalive_flag: bool,
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
-        if self.shared_vis_pool.is_some() {
-            anyhow::bail!("save not supported for shared pages yet")
-        }
-
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
+
+        // Only save NVMe state when there are NVMe controllers and keep alive
+        // was enabled.
+        let nvme_state = if let Some(n) = &self.nvme_manager {
+            n.save(vf_keepalive_flag)
+                .instrument(tracing::info_span!("nvme_manager_save"))
+                .await
+                .map(|s| NvmeSavedState { nvme_state: s })
+        } else {
+            None
+        };
+
         let units = self.save_units().await.context("state unit save failed")?;
         let vmgs = self
             .vmgs_thin_client
             .save()
             .await
             .context("vmgs save failed")?;
-        let vmgs_get_storage_meta = self
-            .vmgs_thin_client
-            .save_storage_meta()
-            .await
-            .context("vmgs get metadata save failed")?;
+        let shared_vis_pool = self
+            .shared_vis_pool
+            .as_mut()
+            .map(vmcore::save_restore::SaveRestore::save)
+            .transpose()
+            .context("shared_vis_pool save failed")?;
+
+        // Only save private pool state if we are expected to keep VF devices
+        // alive across save. Otherwise, don't persist the state at all, as
+        // there should be no live DMA across save.
+        let private_pool = if vf_keepalive_flag {
+            self.private_pool
+                .as_mut()
+                .map(vmcore::save_restore::SaveRestore::save)
+                .transpose()
+                .context("private_pool save failed")?
+        } else {
+            None
+        };
 
         Ok(ServicingState {
             init_state: servicing::ServicingInitState {
@@ -640,8 +672,11 @@ impl LoadedVm {
                 correlation_id: None,
                 emuplat,
                 flush_logs_result: None,
-                vmgs: (vmgs, vmgs_get_storage_meta),
+                vmgs: (vmgs, self.vmgs_disk_metadata.clone()),
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
+                nvme_state,
+                shared_pool_state: shared_vis_pool,
+                private_pool_state: private_pool,
             },
             units,
         })

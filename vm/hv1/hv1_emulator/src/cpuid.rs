@@ -17,9 +17,10 @@ pub fn hv_cpuid_leaves(
     emulate_apic: bool,
     isolation: IsolationType,
     access_vsm: bool,
-    mut hardware_isolated: Option<&mut dyn FnMut(u32, u32) -> [u32; 4]>,
+    hv_version: [u32; 4],
     vtom: Option<u64>,
 ) -> Vec<CpuidLeaf> {
+    let hardware_isolated = isolation.is_hardware_isolated();
     let split_u128 = |x: u128| -> [u32; 4] {
         let bytes = x.to_le_bytes();
         [
@@ -41,17 +42,17 @@ pub fn hv_cpuid_leaves(
             .with_access_apic_msrs(true)
             .with_access_vp_runtime_msr(true)
             .with_access_partition_reference_tsc(true)
-            .with_start_virtual_processor(true);
+            .with_start_virtual_processor(true)
+            .with_access_vsm(access_vsm)
+            // TODO GUEST_VSM: Not actually implemented yet, but this is
+            // needed for guest vsm bringup
+            .with_enable_extended_gva_ranges_flush_va_list(access_vsm);
 
-        if hardware_isolated.is_some() {
+        if hardware_isolated {
             privileges = privileges
                 .with_isolation(true)
-                // hvlite host doesn't currently support guest vsm, so restrict
-                // this to isolated scenarios
-                .with_access_vsm(access_vsm)
-                // TODO GUEST_VSM: Not actually implemented yet, but this is
-                // needed for guest vsm bringup
-                .with_enable_extended_gva_ranges_flush_va_list(access_vsm);
+                // Some guests require enhanced idle for tick skipping support
+                .with_access_guest_idle_msr(true);
 
             // TODO SNP:
             //     .with_fast_hypercall_output(true);
@@ -64,7 +65,7 @@ pub fn hv_cpuid_leaves(
         CpuidLeaf::new(
             hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION,
             [
-                if hardware_isolated.is_some() {
+                if hardware_isolated {
                     hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION
                 } else {
                     hvdef::HV_CPUID_FUNCTION_MS_HV_IMPLEMENTATION_LIMITS
@@ -78,34 +79,26 @@ pub fn hv_cpuid_leaves(
             hvdef::HV_CPUID_FUNCTION_HV_INTERFACE,
             [u32::from_le_bytes(*b"Hv#1"), 0, 0, 0],
         ),
-        CpuidLeaf::new(
-            hvdef::HV_CPUID_FUNCTION_MS_HV_VERSION,
-            if let Some(cpuid_fn) = &mut hardware_isolated {
-                // Allow the guest to see the reported hypervisor version. This
-                // leaf is provided for reporting purposes only.
-                cpuid_fn(hvdef::HV_CPUID_FUNCTION_MS_HV_VERSION, 0)
-            } else {
-                [0, 0, 0, 0]
-            },
-        ),
+        CpuidLeaf::new(hvdef::HV_CPUID_FUNCTION_MS_HV_VERSION, hv_version),
         CpuidLeaf::new(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, {
             let mut features = hvdef::HvFeatures::new()
                 .with_privileges(privileges)
-                .with_frequency_regs_available(true);
+                .with_frequency_regs_available(true)
+                .with_direct_synthetic_timers(true)
+                // TODO GUEST_VSM: flush virtual address list is not
+                // actually implemented yet, but this is needed for guest
+                // vsm bringup
+                .with_extended_gva_ranges_for_flush_virtual_address_list_available(access_vsm);
 
-            if hardware_isolated.is_some() {
-                features = features
-                    .with_direct_synthetic_timers(true)
-                    // TODO GUEST_VSM: flush virtual address list is not
-                    // actually implemented yet, but this is needed for guest
-                    // vsm bringup
-                    .with_extended_gva_ranges_for_flush_virtual_address_list_available(access_vsm);
+            // TODO SNP
+            //    .with_fast_hypercall_output_available(true);
 
-                // TODO SNP
-                //    .with_fast_hypercall_output_available(true);
+            if hardware_isolated {
+                // Some guests require enhanced idle for tick skipping support
+                features = features.with_guest_idle_available(true);
             }
 
-            if cfg!(guest_arch = "x86_64") && hardware_isolated.is_some() {
+            if cfg!(guest_arch = "x86_64") {
                 features = features.with_xmm_registers_for_fast_hypercall_available(true);
             }
 
@@ -135,7 +128,7 @@ pub fn hv_cpuid_leaves(
                 .with_use_ex_processor_masks(true)
                 .with_use_apic_msrs(use_apic_msrs);
 
-            if hardware_isolated.is_some() {
+            if hardware_isolated {
                 // TODO TDX too when it's ready
                 if isolation == IsolationType::Snp {
                     enlightenments = enlightenments
@@ -156,7 +149,7 @@ pub fn hv_cpuid_leaves(
         ),
     ];
 
-    if hardware_isolated.is_some() {
+    if hardware_isolated {
         hv_cpuid.append(&mut vec![
             CpuidLeaf::new(
                 hvdef::HV_CPUID_FUNCTION_MS_HV_HARDWARE_FEATURES,

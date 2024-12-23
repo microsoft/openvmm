@@ -179,6 +179,10 @@ pub enum BlobStructureType {
     Aspt = 0x21,
     Pptt = 0x22,
     Gic = 0x23,
+    Mcfg = 0x24,
+    Ssdt = 0x25,
+    Hmat = 0x26,
+    Iort = 0x27,
 }
 
 //
@@ -315,8 +319,10 @@ pub struct Flags {
     pub watchdog_enabled: bool,
     pub tpm_locality_regs_enabled: bool,
     pub dhcp6_link_layer_address: bool,
+    pub cxl_memory_enabled: bool,
+    pub mtrrs_initialized_at_load: bool,
 
-    #[bits(37)]
+    #[bits(35)]
     _reserved: u64,
 }
 

@@ -6,11 +6,19 @@ name = "guest_emulation_device"
 edition = "2021"
 rust-version.workspace = true
 
+[features]
+test_utilities = ["dep:disklayer_ram"]
+
 [dependencies]
 get_protocol.workspace = true
 get_resources.workspace = true
 
+disk_backend.workspace = true
+disklayer_ram = { workspace = true, optional = true }
+guestmem.workspace = true
+openhcl_attestation_protocol.workspace = true
 power_resources.workspace = true
+scsi_buffers.workspace = true
 video_core.workspace = true
 vmbus_async.workspace = true
 vmbus_channel.workspace = true
@@ -23,6 +31,7 @@ inspect.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 task_control.workspace = true
+tracelimit.workspace = true
 
 futures.workspace = true
 parking_lot.workspace = true

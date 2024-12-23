@@ -19,7 +19,6 @@ use super::protobuf::PackedWriter;
 use super::CopyExtend;
 use super::DecodeError;
 use super::DefaultEncoding;
-use super::Downcast;
 use super::FieldDecode;
 use super::FieldEncode;
 use super::InplaceOption;
@@ -39,23 +38,25 @@ use crate::protofile::DescribeMessage;
 use crate::protofile::FieldType;
 use crate::protofile::MessageDescription;
 use crate::Error;
-use std::borrow::Cow;
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::convert::Infallible;
-use std::marker::PhantomData;
-use std::num::NonZeroI16;
-use std::num::NonZeroI32;
-use std::num::NonZeroI64;
-use std::num::NonZeroI8;
-use std::num::NonZeroIsize;
-use std::num::NonZeroU16;
-use std::num::NonZeroU32;
-use std::num::NonZeroU64;
-use std::num::NonZeroU8;
-use std::num::NonZeroUsize;
-use std::sync::Arc;
-use std::time::Duration;
+use alloc::borrow::Cow;
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::convert::Infallible;
+use core::marker::PhantomData;
+use core::num::NonZeroI16;
+use core::num::NonZeroI32;
+use core::num::NonZeroI64;
+use core::num::NonZeroI8;
+use core::num::NonZeroIsize;
+use core::num::NonZeroU16;
+use core::num::NonZeroU32;
+use core::num::NonZeroU64;
+use core::num::NonZeroU8;
+use core::num::NonZeroUsize;
+use core::time::Duration;
 use thiserror::Error;
 
 /// An encoding derived by `mesh_derive` for `T`.
@@ -254,7 +255,7 @@ impl FromNumber for char {
     fn from_u64(v: u64) -> Result<Self> {
         v.try_into()
             .ok()
-            .and_then(std::char::from_u32)
+            .and_then(core::char::from_u32)
             .ok_or_else(|| DecodeError::InvalidUtf32.into())
     }
 
@@ -825,7 +826,7 @@ impl<T: AsRef<str>, R> FieldEncode<T, R> for StringField {
 impl<'a, T: From<&'a str> + Default, R> FieldDecode<'a, T, R> for StringField {
     fn read_field(item: &mut InplaceOption<'_, T>, reader: FieldReader<'a, '_, R>) -> Result<()> {
         item.set(
-            std::str::from_utf8(reader.bytes()?)
+            core::str::from_utf8(reader.bytes()?)
                 .map_err(DecodeError::InvalidUtf8)?
                 .into(),
         );
@@ -842,7 +843,7 @@ impl<'a, T: From<&'a str> + Default, R> FieldDecode<'a, T, R> for StringField {
 /// [`Cow::Borrowed`] on read.
 pub struct BorrowedCowField;
 
-impl<'a> DescribeField<Cow<'a, str>> for BorrowedCowField {
+impl DescribeField<Cow<'_, str>> for BorrowedCowField {
     const FIELD_TYPE: FieldType<'static> = FieldType::builtin("string");
 }
 
@@ -862,7 +863,7 @@ impl<'a, R> FieldDecode<'a, Cow<'a, str>, R> for BorrowedCowField {
         reader: FieldReader<'a, '_, R>,
     ) -> Result<()> {
         item.set(Cow::Borrowed(
-            std::str::from_utf8(reader.bytes()?).map_err(DecodeError::InvalidUtf8)?,
+            core::str::from_utf8(reader.bytes()?).map_err(DecodeError::InvalidUtf8)?,
         ));
         Ok(())
     }
@@ -930,7 +931,7 @@ impl<'a, 'b, R> FieldDecode<'a, Cow<'b, str>, R> for OwningCowField {
         reader: FieldReader<'a, '_, R>,
     ) -> Result<()> {
         item.set(Cow::Owned(
-            std::str::from_utf8(reader.bytes()?)
+            core::str::from_utf8(reader.bytes()?)
                 .map_err(DecodeError::InvalidUtf8)?
                 .into(),
         ));
@@ -1605,8 +1606,6 @@ macro_rules! default_encodings {
             impl $crate::DefaultEncoding for $ty {
                 type Encoding = $mp;
             }
-
-            impl $crate::Downcast<$ty> for $ty {}
         )*
     };
 }
@@ -1650,15 +1649,15 @@ default_encodings! {
     Infallible: ImpossibleField,
 }
 
-impl<'a> DefaultEncoding for &'a str {
+impl DefaultEncoding for &str {
     type Encoding = StringField;
 }
 
-impl<'a> DefaultEncoding for &'a [u8] {
+impl DefaultEncoding for &[u8] {
     type Encoding = BytesField;
 }
 
-impl<'a> DefaultEncoding for Cow<'a, str> {
+impl DefaultEncoding for Cow<'_, str> {
     type Encoding = StringField;
 }
 
@@ -1666,15 +1665,12 @@ impl<T: DefaultEncoding> DefaultEncoding for Option<T> {
     type Encoding = OptionField<T::Encoding>;
 }
 
-impl<T, U> Downcast<Option<U>> for Option<T> where T: Downcast<U> {}
-
 impl<T: DefaultEncoding> DefaultEncoding for Vec<T> {
     type Encoding = VecField<T::Encoding>;
 }
 
-impl<T, U> Downcast<Vec<U>> for Vec<T> where T: Downcast<U> {}
-
-impl<K: DefaultEncoding, V: DefaultEncoding> DefaultEncoding for HashMap<K, V> {
+#[cfg(feature = "std")]
+impl<K: DefaultEncoding, V: DefaultEncoding> DefaultEncoding for std::collections::HashMap<K, V> {
     type Encoding = MapField<K, V, K::Encoding, V::Encoding>;
 }
 
@@ -1690,19 +1686,13 @@ impl<T: DefaultEncoding, const N: usize> DefaultEncoding for [T; N] {
     type Encoding = ArrayField<T::Encoding>;
 }
 
-impl<T, U, const N: usize> Downcast<[U; N]> for Option<[T; N]> where T: Downcast<U> {}
-
 impl<T: DefaultEncoding> DefaultEncoding for Box<T> {
     type Encoding = BoxEncoding<T::Encoding>;
 }
 
-impl<T, U> Downcast<Box<U>> for Box<T> where T: Downcast<U> {}
-
 impl<T: DefaultEncoding + Clone> DefaultEncoding for Arc<T> {
     type Encoding = ArcEncoding<T::Encoding>;
 }
-
-impl<T, U> Downcast<Arc<U>> for Arc<T> where T: Downcast<U> {}
 
 // Derive an encoding for `Result`.
 #[derive(mesh_derive::Protobuf)]
@@ -1796,7 +1786,7 @@ impl<T, U, R> FieldDecode<'_, T, R> for ResourceField<U>
 where
     T: From<U>,
     U: TryFrom<R>,
-    U::Error: 'static + std::error::Error + Send + Sync,
+    U::Error: 'static + core::error::Error + Send + Sync,
 {
     fn read_field(item: &mut InplaceOption<'_, T>, reader: FieldReader<'_, '_, R>) -> Result<()> {
         let resource = T::from(reader.resource()?.try_into().map_err(Error::new)?);
@@ -1822,7 +1812,7 @@ macro_rules! os_resource {
     };
 }
 
-#[cfg(windows)]
+#[cfg(all(feature = "std", windows))]
 mod windows {
     use crate::os_resource;
     use std::os::windows::prelude::*;
@@ -1839,7 +1829,7 @@ mod windows {
     os_resource!(socket2::Socket, OwnedSocket);
 }
 
-#[cfg(unix)]
+#[cfg(all(feature = "std", unix))]
 mod unix {
     use crate::os_resource;
     use std::os::unix::prelude::*;

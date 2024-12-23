@@ -9,6 +9,9 @@
 *.img
 *.iso
 *.vmgs
+*.dbhd
+*.dbhd-shm
+*.dbhd-wal
 
 # macOS files
 .DS_Store
@@ -38,7 +41,7 @@
 vmm_test_results/
 
 .gdb_history
-.hvlite_history
+.openvmm_history
 __pycache__
 
 flowey-out

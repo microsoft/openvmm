@@ -61,6 +61,7 @@ pub trait PersistentReservation: Sync {
 /// Capabilities returned by [`PersistentReservation::capabilities`].
 ///
 /// These bits correspond to values in [`ReservationType`].
+#[allow(missing_docs)] // TODO
 pub struct ReservationCapabilities {
     pub write_exclusive: bool,
     pub exclusive_access: bool,
@@ -75,6 +76,7 @@ pub struct ReservationCapabilities {
 ///
 /// These are defined in the SCSI spec.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Inspect)]
+#[allow(missing_docs)] // TODO
 pub enum ReservationType {
     WriteExclusive,
     ExclusiveAccess,
@@ -84,6 +86,7 @@ pub enum ReservationType {
     ExclusiveAccessAllRegistrants,
 }
 
+/// A registered controller.
 #[derive(Debug, Clone)]
 pub struct RegisteredController {
     /// The registration key.

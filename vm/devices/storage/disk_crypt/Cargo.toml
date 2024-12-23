@@ -1,0 +1,23 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "disk_crypt"
+edition = "2021"
+rust-version.workspace = true
+
+[dependencies]
+disk_crypt_resources.workspace = true
+
+block_crypto.workspace = true
+disk_backend.workspace = true
+guestmem.workspace = true
+inspect.workspace = true
+scsi_buffers.workspace = true
+vm_resource.workspace = true
+
+async-trait.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

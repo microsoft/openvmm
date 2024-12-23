@@ -7,25 +7,19 @@
 
 use async_trait::async_trait;
 use disk_backend::pr;
-use disk_backend::AsyncDisk;
 use disk_backend::DiskError;
-use disk_backend::GetLbaStatus;
+use disk_backend::DiskIo;
 use disk_backend::MediumErrorDetails;
-use disk_backend::SimpleDisk;
-use disk_backend::Unmap;
-use disk_backend::ASYNC_DISK_STACK_SIZE;
 use inspect::Inspect;
 use nvme_common::from_nvme_reservation_report;
 use nvme_spec::nvm;
 use nvme_spec::Status;
 use pal::unix::affinity::get_cpu_number;
-use stackfuture::StackFuture;
-use std::future::Future;
 use std::io;
-use std::pin::Pin;
 
 #[derive(Debug, Inspect)]
 pub struct NvmeDisk {
+    /// NVMe namespace mapped to the disk representation.
     #[inspect(flatten)]
     namespace: nvme_driver::Namespace,
     #[inspect(skip)]
@@ -41,7 +35,7 @@ impl NvmeDisk {
     }
 }
 
-impl SimpleDisk for NvmeDisk {
+impl DiskIo for NvmeDisk {
     fn disk_type(&self) -> &str {
         "nvme"
     }
@@ -71,136 +65,122 @@ impl SimpleDisk for NvmeDisk {
         false // TODO
     }
 
-    fn unmap(&self) -> Option<&dyn Unmap> {
-        self.namespace.supports_dataset_management().then_some(self)
-    }
-
-    fn lba_status(&self) -> Option<&dyn GetLbaStatus> {
-        Some(self)
-    }
-
     fn pr(&self) -> Option<&dyn pr::PersistentReservation> {
         (u8::from(self.namespace.reservation_capabilities()) != 0).then_some(self)
     }
-}
 
-impl AsyncDisk for NvmeDisk {
-    fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a scsi_buffers::RequestBuffers<'a>,
+    async fn read_vectored(
+        &self,
+        buffers: &scsi_buffers::RequestBuffers<'_>,
         sector: u64,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let block_count = buffers.len() as u64 >> self.block_shift;
-            let mut block_offset = 0;
-            while block_offset < block_count {
-                let this_block_count = (block_count - block_offset)
-                    .min(self.namespace.max_transfer_block_count().into())
-                    as u32;
+    ) -> Result<(), DiskError> {
+        let block_count = buffers.len() as u64 >> self.block_shift;
+        let mut block_offset = 0;
+        while block_offset < block_count {
+            let this_block_count = (block_count - block_offset)
+                .min(self.namespace.max_transfer_block_count().into())
+                as u32;
 
-                self.namespace
-                    .read(
-                        get_cpu_number(),
-                        sector + block_offset,
-                        this_block_count,
-                        buffers.guest_memory(),
-                        buffers.range().subrange(
-                            (block_offset as usize) << self.block_shift,
-                            (this_block_count as usize) << self.block_shift,
-                        ),
-                    )
-                    .await
-                    .map_err(map_nvme_error)?;
-
-                block_offset += this_block_count as u64;
-            }
-            Ok(())
-        })
-    }
-
-    fn write_vectored<'a>(
-        &'a self,
-        buffers: &'a scsi_buffers::RequestBuffers<'a>,
-        sector: u64,
-        fua: bool,
-    ) -> StackFuture<'a, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let block_count = buffers.len() as u64 >> self.block_shift;
-            let mut block_offset = 0;
-            while block_offset < block_count {
-                let this_block_count = (block_count - block_offset)
-                    .min(self.namespace.max_transfer_block_count().into())
-                    as u32;
-
-                self.namespace
-                    .write(
-                        get_cpu_number(),
-                        sector + block_offset,
-                        this_block_count,
-                        fua,
-                        buffers.guest_memory(),
-                        buffers.range().subrange(
-                            (block_offset as usize) << self.block_shift,
-                            (this_block_count as usize) << self.block_shift,
-                        ),
-                    )
-                    .await
-                    .map_err(map_nvme_error)?;
-
-                block_offset += this_block_count as u64;
-            }
-            Ok(())
-        })
-    }
-
-    fn sync_cache(&self) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
             self.namespace
-                .flush(get_cpu_number())
+                .read(
+                    get_cpu_number(),
+                    sector + block_offset,
+                    this_block_count,
+                    buffers.guest_memory(),
+                    buffers.range().subrange(
+                        (block_offset as usize) << self.block_shift,
+                        (this_block_count as usize) << self.block_shift,
+                    ),
+                )
                 .await
                 .map_err(map_nvme_error)?;
-            Ok(())
-        })
+
+            block_offset += this_block_count as u64;
+        }
+        Ok(())
     }
 
-    fn wait_resize<'a>(
-        &'a self,
-        sector_count: u64,
-    ) -> Pin<Box<dyn 'a + Send + Future<Output = u64>>> {
-        Box::pin(self.namespace.wait_resize(sector_count))
+    async fn write_vectored(
+        &self,
+        buffers: &scsi_buffers::RequestBuffers<'_>,
+        sector: u64,
+        fua: bool,
+    ) -> Result<(), DiskError> {
+        let block_count = buffers.len() as u64 >> self.block_shift;
+        let mut block_offset = 0;
+        while block_offset < block_count {
+            let this_block_count = (block_count - block_offset)
+                .min(self.namespace.max_transfer_block_count().into())
+                as u32;
+
+            self.namespace
+                .write(
+                    get_cpu_number(),
+                    sector + block_offset,
+                    this_block_count,
+                    fua,
+                    buffers.guest_memory(),
+                    buffers.range().subrange(
+                        (block_offset as usize) << self.block_shift,
+                        (this_block_count as usize) << self.block_shift,
+                    ),
+                )
+                .await
+                .map_err(map_nvme_error)?;
+
+            block_offset += this_block_count as u64;
+        }
+        Ok(())
     }
-}
 
-impl GetLbaStatus for NvmeDisk {}
+    async fn sync_cache(&self) -> Result<(), DiskError> {
+        self.namespace
+            .flush(get_cpu_number())
+            .await
+            .map_err(map_nvme_error)?;
+        Ok(())
+    }
 
-impl Unmap for NvmeDisk {
-    fn unmap(
+    async fn wait_resize(&self, sector_count: u64) -> u64 {
+        self.namespace.wait_resize(sector_count).await
+    }
+
+    async fn unmap(
         &self,
         sector_offset: u64,
         sector_count: u64,
         _block_level_only: bool,
-    ) -> StackFuture<'_, Result<(), DiskError>, { ASYNC_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let mut processed = 0;
-            let max = self.namespace.dataset_management_range_size_limit();
-            while processed < sector_count {
-                let lba_count = (sector_count - processed).min(max.into());
-                self.namespace
-                    .deallocate(
-                        get_cpu_number(),
-                        &[nvm::DsmRange {
-                            context_attributes: 0,
-                            lba_count: lba_count as u32,
-                            starting_lba: sector_offset + processed,
-                        }],
-                    )
-                    .await
-                    .map_err(map_nvme_error)?;
+    ) -> Result<(), DiskError> {
+        if !self.namespace.supports_dataset_management() {
+            return Ok(());
+        }
+        let mut processed = 0;
+        let max = self.namespace.dataset_management_range_size_limit();
+        while processed < sector_count {
+            let lba_count = (sector_count - processed).min(max.into());
+            self.namespace
+                .deallocate(
+                    get_cpu_number(),
+                    &[nvm::DsmRange {
+                        context_attributes: 0,
+                        lba_count: lba_count as u32,
+                        starting_lba: sector_offset + processed,
+                    }],
+                )
+                .await
+                .map_err(map_nvme_error)?;
 
-                processed += lba_count;
-            }
-            Ok(())
-        })
+            processed += lba_count;
+        }
+        Ok(())
+    }
+
+    fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
+        if self.namespace.supports_dataset_management() {
+            disk_backend::UnmapBehavior::Unspecified
+        } else {
+            disk_backend::UnmapBehavior::Ignored
+        }
     }
 
     fn optimal_unmap_sectors(&self) -> u32 {

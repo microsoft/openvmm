@@ -141,7 +141,7 @@ impl<'a, M: RingMem> ReadBatch<'a, M> {
     }
 }
 
-impl<'a, 'b, M: RingMem> Iterator for ReadBatchIter<'a, 'b, M> {
+impl<'a, M: RingMem> Iterator for ReadBatchIter<'a, '_, M> {
     type Item = Result<IncomingPacket<'a, M>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -149,7 +149,7 @@ impl<'a, 'b, M: RingMem> Iterator for ReadBatchIter<'a, 'b, M> {
     }
 }
 
-impl<'a, M: RingMem> Drop for ReadBatch<'a, M> {
+impl<M: RingMem> Drop for ReadBatch<'_, M> {
     fn drop(&mut self) {
         self.read.clear_poll(self.core);
         if self.core.in_ring().commit_read(&mut self.read.ptrs) {
@@ -179,7 +179,7 @@ impl<'a, M: RingMem> AsRef<IncomingPacket<'a, M>> for PacketRef<'a, M> {
     }
 }
 
-impl<'a, M: RingMem> PacketRef<'a, M> {
+impl<M: RingMem> PacketRef<'_, M> {
     /// Revert the read pointers, allowing a peek at the next packet.
     ///
     /// Use this with care: a malicious guest could change the packet's
@@ -457,7 +457,7 @@ impl<'a, M: RingMem> ReadHalf<'a, M> {
 /// An asynchronous batch read operation.
 pub struct BatchRead<'a, 'b, M: RingMem>(Option<&'a mut ReadHalf<'b, M>>);
 
-impl<'a, 'b, M: RingMem> Future for BatchRead<'a, 'b, M> {
+impl<'a, M: RingMem> Future for BatchRead<'a, '_, M> {
     type Output = Result<ReadBatch<'a, M>, Error>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -475,7 +475,7 @@ impl<'a, 'b, M: RingMem> Future for BatchRead<'a, 'b, M> {
 /// An asynchronous read operation.
 pub struct Read<'a, 'b, M: RingMem>(BatchRead<'a, 'b, M>);
 
-impl<'a, 'b, M: RingMem> Future for Read<'a, 'b, M> {
+impl<'a, M: RingMem> Future for Read<'a, '_, M> {
     type Output = Result<PacketRef<'a, M>, Error>;
 
     fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -667,7 +667,7 @@ pub struct Write<'a, 'b, 'c, M: RingMem> {
     packet: OutgoingPacket<'c, 'b>,
 }
 
-impl<'a, 'b, 'c, M: RingMem> Future for Write<'a, 'b, 'c, M> {
+impl<M: RingMem> Future for Write<'_, '_, '_, M> {
     type Output = Result<(), Error>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -732,12 +732,12 @@ pub fn connected_queues(ring_size: usize) -> (Queue<FlatRingMem>, Queue<FlatRing
 }
 
 #[cfg(test)]
-pub mod tests {
+mod tests {
     use super::*;
     use pal_async::async_test;
     use pal_async::task::Spawn;
     use pal_async::timer::PolledTimer;
-    use pal_async::DefaultPool;
+    use pal_async::DefaultDriver;
     use ring::OutgoingPacketType;
     use std::future::poll_fn;
     use std::time::Duration;
@@ -887,69 +887,67 @@ pub mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn test_ring_full() {
-        DefaultPool::run_with(|driver| async move {
-            let (mut host_queue, mut guest_queue) = connected_queues(4096);
+    #[async_test]
+    async fn test_ring_full(driver: DefaultDriver) {
+        let (mut host_queue, mut guest_queue) = connected_queues(4096);
 
-            assert!(poll_fn(|cx| host_queue.split().1.poll_ready(cx, 4000))
-                .now_or_never()
-                .is_some());
+        assert!(poll_fn(|cx| host_queue.split().1.poll_ready(cx, 4000))
+            .now_or_never()
+            .is_some());
 
-            host_queue
-                .split()
-                .1
-                .try_write(&OutgoingPacket {
-                    transaction_id: 0,
-                    packet_type: OutgoingPacketType::InBandNoCompletion,
-                    payload: &[&[0u8; 4000]],
-                })
+        host_queue
+            .split()
+            .1
+            .try_write(&OutgoingPacket {
+                transaction_id: 0,
+                packet_type: OutgoingPacketType::InBandNoCompletion,
+                payload: &[&[0u8; 4000]],
+            })
+            .unwrap();
+
+        let n = match host_queue
+            .split()
+            .1
+            .try_write(&OutgoingPacket {
+                transaction_id: 0,
+                packet_type: OutgoingPacketType::InBandNoCompletion,
+                payload: &[&[0u8; 4000]],
+            })
+            .unwrap_err()
+        {
+            TryWriteError::Full(n) => n,
+            _ => unreachable!(),
+        };
+
+        let mut poll = async move {
+            let mut host_queue = host_queue;
+            poll_fn(|cx| host_queue.split().1.poll_ready(cx, n))
+                .await
                 .unwrap();
-
-            let n = match host_queue
-                .split()
-                .1
-                .try_write(&OutgoingPacket {
-                    transaction_id: 0,
-                    packet_type: OutgoingPacketType::InBandNoCompletion,
-                    payload: &[&[0u8; 4000]],
-                })
-                .unwrap_err()
-            {
-                TryWriteError::Full(n) => n,
-                _ => unreachable!(),
-            };
-
-            let mut poll = async move {
-                let mut host_queue = host_queue;
-                poll_fn(|cx| host_queue.split().1.poll_ready(cx, n))
-                    .await
-                    .unwrap();
-                host_queue
-            }
-            .boxed();
-
-            assert!(futures::poll!(&mut poll).is_pending());
-            let poll = driver.spawn("test", poll);
-
-            PolledTimer::new(&driver)
-                .sleep(Duration::from_millis(50))
-                .await;
-
-            guest_queue.split().0.read().await.unwrap();
-            assert!(guest_queue.split().0.try_read().is_err());
-
-            let mut host_queue = poll.await;
-
             host_queue
-                .split()
-                .1
-                .try_write(&OutgoingPacket {
-                    transaction_id: 0,
-                    packet_type: OutgoingPacketType::InBandNoCompletion,
-                    payload: &[&[0u8; 4000]],
-                })
-                .unwrap();
-        })
+        }
+        .boxed();
+
+        assert!(futures::poll!(&mut poll).is_pending());
+        let poll = driver.spawn("test", poll);
+
+        PolledTimer::new(&driver)
+            .sleep(Duration::from_millis(50))
+            .await;
+
+        guest_queue.split().0.read().await.unwrap();
+        assert!(guest_queue.split().0.try_read().is_err());
+
+        let mut host_queue = poll.await;
+
+        host_queue
+            .split()
+            .1
+            .try_write(&OutgoingPacket {
+                transaction_id: 0,
+                packet_type: OutgoingPacketType::InBandNoCompletion,
+                payload: &[&[0u8; 4000]],
+            })
+            .unwrap();
     }
 }

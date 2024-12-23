@@ -6,7 +6,6 @@
 use crate::translate::translate_gva_to_gpa;
 use crate::translate::TranslateFlags;
 use crate::translate::TranslatePrivilegeCheck;
-use crate::translate::TranslationRegisters;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use hvdef::HvInterceptAccessType;
@@ -16,7 +15,6 @@ use thiserror::Error;
 use virt::io::CpuIo;
 use virt::VpHaltReason;
 use vm_topology::processor::VpIndex;
-use x86defs::apic::APIC_BASE_ADDRESS;
 use x86defs::Exception;
 use x86emu::CpuState;
 use zerocopy::AsBytes;
@@ -93,25 +91,19 @@ pub trait EmulatorSupport {
 
     /// Returns the page-aligned base address of the enabled local APIC in xapic
     /// mode.
-    fn lapic_base_address(&self) -> Option<u64> {
-        None
-    }
+    fn lapic_base_address(&self) -> Option<u64>;
 
     /// Read from the current processor's local APIC memory mapped interface.
     ///
     /// This will only be called on an address in the page returned by
     /// `lapic_base_address`.
-    fn lapic_read(&mut self, _address: u64, _data: &mut [u8]) {
-        unimplemented!()
-    }
+    fn lapic_read(&mut self, address: u64, data: &mut [u8]);
 
     /// Write to the current processor's local APIC memory mapped interface.
     ///
     /// This will only be called on an address in the page returned by
     /// `lapic_base_address`.
-    fn lapic_write(&mut self, _address: u64, _data: &[u8]) {
-        unimplemented!()
-    }
+    fn lapic_write(&mut self, address: u64, data: &[u8]);
 }
 
 pub trait TranslateGvaSupport {
@@ -124,7 +116,7 @@ pub trait TranslateGvaSupport {
     fn acquire_tlb_lock(&mut self);
 
     /// Returns the registers used to walk the page table.
-    fn registers(&mut self) -> Result<TranslationRegisters, Self::Error>;
+    fn registers(&mut self) -> Result<crate::translate::TranslationRegisters, Self::Error>;
 }
 
 /// Emulates a page table walk.
@@ -151,7 +143,7 @@ pub fn emulate_translate_gva<T: TranslateGvaSupport>(
     let registers = support.registers()?;
 
     let r = match translate_gva_to_gpa(support.guest_memory(), gva, &registers, flags) {
-        Ok(gpa) => Ok(EmuTranslateResult {
+        Ok(crate::translate::TranslateResult { gpa, cache_info: _ }) => Ok(EmuTranslateResult {
             gpa,
             overlay_page: None,
         }),
@@ -703,7 +695,7 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
     ) -> Result<(), Self::Error> {
         let gpa = self.translate_gva(gva, TranslateMode::Read, is_user_mode)?;
 
-        if gpa & !0xfff == APIC_BASE_ADDRESS as u64 {
+        if Some(gpa & !0xfff) == self.support.lapic_base_address() {
             self.support.lapic_read(gpa, bytes);
             return Ok(());
         }
@@ -728,7 +720,7 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
     ) -> Result<(), Self::Error> {
         let gpa = self.translate_gva(gva, TranslateMode::Write, is_user_mode)?;
 
-        if gpa & !0xfff == APIC_BASE_ADDRESS as u64 {
+        if Some(gpa & !0xfff) == self.support.lapic_base_address() {
             self.support.lapic_write(gpa, bytes);
             return Ok(());
         }

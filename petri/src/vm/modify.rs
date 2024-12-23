@@ -59,8 +59,7 @@ impl PetriVmConfig {
                     ppi_store: EphemeralNonVolatileStoreHandle.into_resource(),
                     nvram_store: EphemeralNonVolatileStoreHandle.into_resource(),
                     refresh_tpm_seeds: false,
-                    get_attestation_report: None,
-                    request_ak_cert: None,
+                    ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
                     register_layout: TpmRegisterLayout::IoPort,
                     guest_secret_key: None,
                 }

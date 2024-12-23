@@ -12,6 +12,7 @@ use mesh::MeshPayload;
 use net_backend_resources::mac_address::MacAddress;
 use std::fmt;
 use std::fs::File;
+use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
@@ -42,7 +43,8 @@ pub struct Config {
     pub virtio_devices: Vec<(VirtioBus, Resource<VirtioDeviceHandle>)>,
     #[cfg(windows)]
     pub vpci_resources: Vec<virt_whp::device::DeviceHandle>,
-    pub vmgs_file: Option<String>,
+    pub format_vmgs: bool,
+    pub vmgs_disk: Option<Resource<DiskHandleKind>>,
     pub secure_boot_enabled: bool,
     pub custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     // TODO: move FirmwareEvent somewhere not GED-specific.
@@ -305,10 +307,8 @@ pub enum PcatBootDevice {
 
 #[derive(Eq, PartialEq, Debug, Copy, Clone, MeshPayload)]
 pub enum VirtioBus {
-    Auto,
     Mmio,
     Pci,
-    Vpci,
 }
 
 /// Policy for the partition when mapping VTL0 memory late.

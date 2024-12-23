@@ -925,7 +925,7 @@ impl WhpPartitionInner {
                         proto_config.user_mode_apic,
                         IsolationType::None,
                         false,
-                        None,
+                        [0; 4],
                         None,
                     ));
                 }
@@ -1224,7 +1224,8 @@ impl VtlPartition {
                     Reserved: 0,
                     GicLpiIntIdBits: 1,
                     GicPpiOverflowInterruptFromCntv: 0x14,
-                    Reserved1: [0; 7],
+                    GicPpiPerformanceMonitorsInterrupt: 0x17,
+                    Reserved1: [0; 6],
                 },
             };
             whp_config

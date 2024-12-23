@@ -98,19 +98,4 @@ impl VmgsClient {
         let res = self.control.call(VmgsBrokerRpc::Save, ()).await?;
         Ok(res)
     }
-
-    /// Save the storage device's metadata.
-    ///
-    /// This is not used by `Vmgs` directly. Rather - it can be used to
-    /// accelerate the instantiation of the `BlockStorage` object that `Vmgs`
-    /// wraps.
-    pub async fn save_storage_meta(
-        &self,
-    ) -> Result<vmgs::save_restore::state::SavedBlockStorageMetadata, VmgsClientError> {
-        let res = self
-            .control
-            .call(VmgsBrokerRpc::SaveStorageMeta, ())
-            .await?;
-        Ok(res)
-    }
 }

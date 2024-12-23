@@ -42,7 +42,9 @@ vm_resource::register_static_resolvers! {
     net_dio::resolver::DioResolver,
 
     // Disks
-    disk_ramdisk::resolver::RamDiskResolver,
+    disk_layered::resolver::LayeredDiskResolver,
+    #[cfg(feature = "disk_crypt")]
+    disk_crypt::resolver::DiskCryptResolver,
     disk_file::FileDiskResolver,
     disk_prwrap::DiskWithReservationsResolver,
     disk_vhd1::Vhd1Resolver,
@@ -51,9 +53,15 @@ vm_resource::register_static_resolvers! {
     #[cfg(feature = "disk_blob")]
     disk_blob::resolver::BlobDiskResolver,
 
+    // Disk Layers
+    disklayer_ram::resolver::RamDiskLayerResolver,
+    #[cfg(feature = "disklayer_sqlite")]
+    disklayer_sqlite::resolver::SqliteDiskLayerResolver,
+
     // PCI devices
     gdma::resolver::GdmaDeviceResolver,
     nvme::resolver::NvmeControllerResolver,
+    virtio::resolver::VirtioPciResolver,
 
     // SCSI
     scsidisk::resolver::SimpleScsiResolver,

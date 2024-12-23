@@ -27,6 +27,7 @@ members = [
   "support/ucs2/fuzz",
   "vm/devices/chipset/fuzz",
   "vm/devices/firmware/firmware_uefi/fuzz",
+  "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
   "vm/devices/storage/scsi_buffers/fuzz",
   "vm/vmcore/guestmem/fuzz",
@@ -39,6 +40,7 @@ members = [
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
+  "hyperv/tools/hypestv",
 ]
 exclude = [
   "xsync",
@@ -60,7 +62,7 @@ schema_ado_yaml = { path = "flowey/schema_ado_yaml" }
 
 hvlite_core = { path = "openvmm/hvlite_core" }
 hvlite_defs = { path = "openvmm/hvlite_defs" }
-hvlite_entry = { path = "openvmm/hvlite_entry" }
+openvmm_entry = { path = "openvmm/openvmm_entry" }
 hvlite_helpers = { path = "openvmm/hvlite_helpers" }
 hvlite_pcat_locator = { path = "openvmm/hvlite_pcat_locator" }
 openvmm_resources = { path = "openvmm/openvmm_resources" }
@@ -86,6 +88,7 @@ cache_topology = { path = "support/cache_topology" }
 closeable_mutex = { path = "support/closeable_mutex" }
 ci_logger = { path = "support/ci_logger" }
 clap_dyn_complete = { path = "support/clap_dyn_complete" }
+console_relay = { path = "support/console_relay" }
 safe_intrinsics = { path = "support/safe_intrinsics" }
 debug_ptr = { path = "support/debug_ptr" }
 fast_select = { path = "support/fast_select" }
@@ -146,14 +149,16 @@ build_info = { path = "openhcl/build_info" }
 diag_client = { path = "openhcl/diag_client" }
 diag_proto = { path = "openhcl/diag_proto" }
 diag_server = { path = "openhcl/diag_server" }
+get_lower_vtl = { path = "openhcl/get_lower_vtl" }
 hcl = { path = "openhcl/hcl" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }
 kmsg_defs = { path = "openhcl/kmsg_defs" }
+lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
+page_pool_alloc = { path = "openhcl/page_pool_alloc" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
-shared_pool_alloc = { path = "openhcl/shared_pool_alloc" }
 underhill_attestation = { path = "openhcl/underhill_attestation" }
 underhill_confidentiality = { path = "openhcl/underhill_confidentiality" }
 underhill_core = { path = "openhcl/underhill_core" }
@@ -162,6 +167,7 @@ underhill_dump = { path = "openhcl/underhill_dump" }
 underhill_entry = { path = "openhcl/underhill_entry" }
 underhill_init = { path = "openhcl/underhill_init" }
 underhill_mem = { path = "openhcl/underhill_mem" }
+openhcl_attestation_protocol = { path = "openhcl/openhcl_attestation_protocol" }
 openvmm_hcl_resources = { path = "openhcl/openvmm_hcl_resources" }
 underhill_threadpool = { path = "openhcl/underhill_threadpool" }
 virt_mshv_vtl = { path = "openhcl/virt_mshv_vtl" }
@@ -170,6 +176,7 @@ aarch64defs = { path = "vm/aarch64/aarch64defs" }
 aarch64emu = { path = "vm/aarch64/aarch64emu" }
 acpi = { path = "vm/acpi" }
 acpi_spec = { path = "vm/acpi_spec" }
+block_crypto = { path = "vm/devices/storage/block_crypto" }
 chipset_arc_mutex_device = { path = "vm/chipset_arc_mutex_device" }
 chipset_device = { path = "vm/chipset_device" }
 chipset_device_fuzz = { path = "vm/chipset_device_fuzz" }
@@ -237,18 +244,23 @@ disk_backend = { path = "vm/devices/storage/disk_backend" }
 disk_backend_resources = { path = "vm/devices/storage/disk_backend_resources" }
 disk_blob = { path = "vm/devices/storage/disk_blob" }
 disk_blockdevice = { path = "vm/devices/storage/disk_blockdevice" }
+disk_crypt = { path = "vm/devices/storage/disk_crypt" }
+disk_crypt_resources = { path = "vm/devices/storage/disk_crypt_resources" }
 disk_file = { path = "vm/devices/storage/disk_file" }
+disk_get_vmgs = { path = "vm/devices/storage/disk_get_vmgs" }
+disk_layered = { path = "vm/devices/storage/disk_layered" }
 disk_nvme = { path = "vm/devices/storage/disk_nvme" }
-disk_ramdisk = { path = "vm/devices/storage/disk_ramdisk" }
+disk_prwrap = { path = "vm/devices/storage/disk_prwrap" }
 disk_striped = { path = "vm/devices/storage/disk_striped" }
 disk_vhd1 = { path = "vm/devices/storage/disk_vhd1" }
 disk_vhdmp = { path = "vm/devices/storage/disk_vhdmp" }
-disk_prwrap = { path = "vm/devices/storage/disk_prwrap" }
+disklayer_ram = { path = "vm/devices/storage/disklayer_ram" }
+disklayer_sqlite = { path = "vm/devices/storage/disklayer_sqlite" }
+floppy = { path = "vm/devices/storage/floppy" }
+floppy_pcat_stub = { path = "vm/devices/storage/floppy_pcat_stub" }
+floppy_resources = { path = "vm/devices/storage/floppy_resources" }
 ide = { path = "vm/devices/storage/ide" }
 ide_resources = { path = "vm/devices/storage/ide_resources" }
-floppy = { path = "vm/devices/storage/floppy" }
-floppy_resources = { path = "vm/devices/storage/floppy_resources" }
-floppy_pcat_stub = { path = "vm/devices/storage/floppy_pcat_stub" }
 scsi_buffers = { path = "vm/devices/storage/scsi_buffers" }
 scsi_core = { path = "vm/devices/storage/scsi_core" }
 scsi_defs = { path = "vm/devices/storage/scsi_defs" }
@@ -291,6 +303,7 @@ vmbfs_resources = { path = "vm/devices/vmbus/vmbfs_resources" }
 vmbus_async = { path = "vm/devices/vmbus/vmbus_async" }
 vmbus_channel = { path = "vm/devices/vmbus/vmbus_channel" }
 vmbus_client = { path = "vm/devices/vmbus/vmbus_client" }
+vmbus_client_hcl = { path = "vm/devices/vmbus/vmbus_client_hcl" }
 vmbus_core = { path = "vm/devices/vmbus/vmbus_core" }
 vmbus_proxy = { path = "vm/devices/vmbus/vmbus_proxy" }
 vmbus_relay = { path = "vm/devices/vmbus/vmbus_relay" }
@@ -369,7 +382,6 @@ awaitgroup = "0.7"
 base64 = "0.21.7"
 base64-serde = "0.7"
 bitfield-struct = "0.7"
-bitflags = "1.3"
 bitvec = { version = "1.1", default-features = false }
 blocking = "1.2"
 caps = "0.5"
@@ -392,13 +404,14 @@ fatfs = { version = "0.3.6", default-features = false }
 filepath = "0.1"
 fs-err = "2.9"
 fscommon = "0.1.1"
-futures = "0.3"
+futures = "0.3.31"
 futures-concurrency = "7.2.1"
 futures-executor = "0.3"
 futures-core = "0.3"
 futures-channel = "0.3"
 futures-io = "0.3"
 gdbstub = "0.6"
+gdbstub_arch = "0.2"
 getrandom = "0.2"
 glob = "0.3"
 gptman = "1.0"
@@ -462,8 +475,9 @@ range_map_vec = "0.2.0"
 rayon = "1.5"
 resolv-conf = "0.7"
 rlimit = "0.10.1"
-rustyline = "13"
+rusqlite = "0.32"
 rustc-hash = "1.1"
+rustyline = "13"
 seccompiler = "0.4"
 serde = "1.0.185"
 serde_json = "1.0"
@@ -571,8 +585,6 @@ rust-2024-compatibility = { level = "warn", priority = -1 }
 edition_2024_expr_fragment_specifier = "allow"
 impl_trait_overcaptures = "allow"
 deprecated-safe-2024 = "allow"
-# Needed for linkme compatibility for now, https://github.com/dtolnay/linkme/issues/101
-unsafe-attr-outside-unsafe = "allow"
 
 unused_qualifications = "warn"
 
@@ -642,8 +654,6 @@ bool_assert_comparison = "allow"
 # This lint suggests collapsing Box::new(Foo::default()) into Box::default(). We often
 # prefer to specify types completely for local code clarity's sake.
 box_default = "allow"
-# Needed for bitflags 1.x compatibility. Remove when we update to bitflags 2.x
-bad_bit_mask = "allow"
 # Besides the misleading name (this lint also triggers on arrays), we believe that it
 # doesn't provide value. If a developer gets their type wrong they'll notice and fix it.
 # Sometimes you do want a list of a single range.

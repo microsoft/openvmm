@@ -66,8 +66,11 @@ impl BufferAccess for Bufs {
         2048
     }
 
-    fn write_data(&mut self, _id: RxId, _: &[u8]) {
-        unimplemented!()
+    fn write_data(&mut self, id: RxId, buf: &[u8]) {
+        self.inner
+            .guest_memory
+            .write_at(id.0 as u64 * 2048, buf)
+            .unwrap();
     }
 
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata) {

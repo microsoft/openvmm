@@ -61,5 +61,8 @@ pub trait DeviceRegisterIo: Send + Sync {
 }
 
 pub trait HostDmaAllocator: Send + Sync {
+    /// Allocate a new block using default allocation strategy.
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
+    /// Attach to a previously allocated memory block with contiguous PFNs.
+    fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }

@@ -4,8 +4,8 @@
 //! Defines the resource resolver for virtio-pmem devices.
 
 use crate::Device;
+use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
-use virtio::VirtioDevice;
 use virtio_resources::pmem::VirtioPmemHandle;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::VirtioDeviceHandle;
@@ -20,7 +20,7 @@ declare_static_resolver! {
 }
 
 impl ResolveResource<VirtioDeviceHandle, VirtioPmemHandle> for VirtioPmemResolver {
-    type Output = Box<dyn VirtioDevice>;
+    type Output = ResolvedVirtioDevice;
     type Error = anyhow::Error;
 
     fn resolve(
@@ -30,6 +30,6 @@ impl ResolveResource<VirtioDeviceHandle, VirtioPmemHandle> for VirtioPmemResolve
     ) -> Result<Self::Output, Self::Error> {
         let file = fs_err::File::open(resource.path)?.into();
         let device = Device::new(input.driver_source, input.guest_memory.clone(), file, false)?;
-        Ok(Box::new(device))
+        Ok(device.into())
     }
 }

@@ -22,6 +22,11 @@ use crate::protofile::MessageDescription;
 pub struct TableEncoder;
 
 /// A table-encoded type that has a protobuf message description.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a stable protobuf type",
+    label = "`{Self}` does not have a mesh package name",
+    note = "consider adding `#[mesh(package = \"my.package.name\")]` to the type"
+)]
 pub trait DescribeTable {
     /// The protobuf message description for this type.
     const DESCRIPTION: MessageDescription<'static>;
@@ -91,7 +96,7 @@ mod tests {
             <StringField as FieldDecode<'de, &'de str, R>>::ENTRY.erase(),
         ];
     }
-    impl<'a> crate::DefaultEncoding for Foo<'a> {
+    impl crate::DefaultEncoding for Foo<'_> {
         type Encoding = TableEncoder;
     }
 

@@ -10,7 +10,7 @@ use hvdef::hypercall::HvInputVtl;
 use hvdef::HvAllArchRegisterName;
 use hvdef::Vtl;
 
-impl<'a> UhProcessor<'a, HypervisorBacked> {
+impl UhProcessor<'_, HypervisorBacked> {
     /// Causes the specified VTL on the current VP to wait on all TLB locks.
     /// This is typically used to synchronize VTL permission changes with
     /// concurrent instruction emulation.

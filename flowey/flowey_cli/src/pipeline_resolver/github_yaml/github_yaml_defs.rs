@@ -70,6 +70,8 @@ pub struct PrTrigger {
     pub branches: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub branches_ignore: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

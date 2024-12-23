@@ -6,12 +6,13 @@ use crate::GedChannel;
 use crate::GuestConfig;
 use crate::GuestEmulationDevice;
 use crate::GuestFirmwareConfig;
-use crate::VMGS_CAPACITY;
+use get_protocol::test_utilities::TEST_VMGS_CAPACITY;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::UefiConsoleMode;
 use get_resources::ged::GuestEmulationRequest;
+use guestmem::GuestMemory;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -78,7 +79,7 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
     ) -> Self {
         Self {
             channel,
-            vmgs: vec![0; VMGS_CAPACITY],
+            vmgs: vec![0; TEST_VMGS_CAPACITY],
             responses,
             version,
             halt_reason,
@@ -174,10 +175,10 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                                                 &message_buf[..request_size],
                                             )
                                             .unwrap();
-                                        let offset =
-                                            request.offset as usize * TEST_VMGS_SECTOR_SIZE;
-                                        let length =
-                                            request.length as usize * TEST_VMGS_SECTOR_SIZE;
+                                        let offset = request.sector_offset as usize
+                                            * TEST_VMGS_SECTOR_SIZE as usize;
+                                        let length = request.sector_count as usize
+                                            * TEST_VMGS_SECTOR_SIZE as usize;
                                         response.extend_from_slice(&self.vmgs[offset..][..length])
                                     }
                                     HostRequests::VMGS_WRITE => {
@@ -189,10 +190,10 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                                             )
                                             .unwrap();
                                         let buf = &message_buf[request_size..];
-                                        let offset =
-                                            request.offset as usize * TEST_VMGS_SECTOR_SIZE;
-                                        let length =
-                                            request.length as usize * TEST_VMGS_SECTOR_SIZE;
+                                        let offset = request.sector_offset as usize
+                                            * TEST_VMGS_SECTOR_SIZE as usize;
+                                        let length = request.sector_count as usize
+                                            * TEST_VMGS_SECTOR_SIZE as usize;
                                         self.vmgs[offset..][..length]
                                             .copy_from_slice(&buf[..length]);
                                     }
@@ -257,8 +258,14 @@ pub fn create_host_channel(
 
     let (send, recv) = mesh::channel();
 
-    let mut ged_state: GuestEmulationDevice =
-        GuestEmulationDevice::new(guest_config, halt.into(), None, recv, None);
+    let mut ged_state: GuestEmulationDevice = GuestEmulationDevice::new(
+        guest_config,
+        halt.into(),
+        None,
+        recv,
+        None,
+        Some(disklayer_ram::ram_disk(TEST_VMGS_CAPACITY as u64, false).unwrap()),
+    );
 
     if let Some(ged_responses) = ged_responses {
         let mut host_get_channel =
@@ -276,7 +283,7 @@ pub fn create_host_channel(
         task.insert(
             spawn,
             "automated GED host channel",
-            GedChannel::new(host_vmbus),
+            GedChannel::new(host_vmbus, GuestMemory::empty()),
         );
         task.start();
 

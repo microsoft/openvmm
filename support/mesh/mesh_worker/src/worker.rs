@@ -393,7 +393,8 @@ pub async fn launch_local_worker<T: Worker>(
     result_recv.await.unwrap()?;
     Ok(WorkerHandle {
         name: T::ID.id().to_owned(),
-        send: rpc_send.upcast(),
+        // Erase the type of the worker state.
+        send: mesh::local_node::Port::from(rpc_send).into(),
         events: events_recv,
     })
 }
@@ -524,7 +525,8 @@ trait Run {
 
 impl<T: Worker> Run for T {
     fn run(self: Box<Self>, recv: mesh::Receiver<WorkerRpc<mesh::Message>>) -> anyhow::Result<()> {
-        let recv = recv.upcast();
+        // Unerase the type of the worker state.
+        let recv = mesh::local_node::Port::from(recv).into();
         Worker::run(*self, recv)
     }
 }
@@ -539,7 +541,11 @@ where
                 T::new(parameters.parse().context("failed to receive parameters")?)
             }
             BuildRequest::Restart(state) => T::restart(
-                mesh::upcast::force_downcast(state).context("failed to parse restart state")?,
+                // Unerase the type of the worker state.
+                state
+                    .serialize()
+                    .into_message()
+                    .context("failed to parse restart state")?,
             ),
         }?;
 

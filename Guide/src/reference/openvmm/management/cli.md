@@ -3,7 +3,7 @@
 ```admonish danger title="Disclaimer"
 The following list is not exhaustive, and may be out of date.
 
-The most up to date reference is always the [code itself](https://openvmm.dev/rustdoc/linux/hvlite_entry/struct.Options.html),
+The most up to date reference is always the [code itself](https://openvmm.dev/rustdoc/linux/openvmm_entry/struct.Options.html),
 as well as the generated CLI help (via `cargo run -- --help`).
 ```
 
@@ -20,7 +20,7 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--virtio-console`: Enables a virtio serial device (via the MMIO transport) for Linux console access instead of COM1.
 * `--virtio-console-pci`: Uses the PCI transport for the virtio serial console.
 * `--gfx`: Enable a graphical console over VNC (see below)
-* `--virtio-9p`: Expose a virtio 9p file system. Uses the format `tag:root_path`, e.g. `myfs:C:\\`.
+* `--virtio-9p`: Expose a virtio 9p file system. Uses the format `tag,root_path`, e.g. `myfs,C:\\`.
   The file system can be mounted in a Linux guest using `mount -t 9p  -o trans=virtio tag /mnt/point`.
   You can specify this argument multiple times to create multiple file systems.
 * `--virtio-fs`: Expose a virtio-fs file system. The format is the same as `--virtio-9p`. The

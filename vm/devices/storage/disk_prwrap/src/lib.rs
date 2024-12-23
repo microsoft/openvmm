@@ -11,18 +11,18 @@ use async_trait::async_trait;
 use disk_backend::pr;
 use disk_backend::pr::ReservationType;
 use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedSimpleDisk;
-use disk_backend::AsyncDisk;
+use disk_backend::resolve::ResolvedDisk;
+use disk_backend::Disk;
 use disk_backend::DiskError;
-use disk_backend::SimpleDisk;
+use disk_backend::DiskIo;
 use disk_backend_resources::DiskWithReservationsHandle;
 use inspect::Inspect;
 use parking_lot::Mutex;
 use scsi_buffers::RequestBuffers;
-use stackfuture::StackFuture;
+use std::future::Future;
 use std::num::NonZeroU64;
 use std::num::Wrapping;
-use std::sync::Arc;
+use thiserror::Error;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::AsyncResolveResource;
@@ -35,12 +35,20 @@ declare_static_async_resolver!(
     (DiskHandleKind, DiskWithReservationsHandle)
 );
 
+#[derive(Debug, Error)]
+pub enum ResolvePrDiskError {
+    #[error("failed to resolve inner disk")]
+    Resolve(#[source] ResolveError),
+    #[error("invalid disk")]
+    InvalidDisk(#[source] disk_backend::InvalidDisk),
+}
+
 #[async_trait]
 impl AsyncResolveResource<DiskHandleKind, DiskWithReservationsHandle>
     for DiskWithReservationsResolver
 {
-    type Output = ResolvedSimpleDisk;
-    type Error = ResolveError;
+    type Output = ResolvedDisk;
+    type Error = ResolvePrDiskError;
 
     async fn resolve(
         &self,
@@ -48,8 +56,13 @@ impl AsyncResolveResource<DiskHandleKind, DiskWithReservationsHandle>
         rsrc: DiskWithReservationsHandle,
         input: ResolveDiskParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let inner = resolver.resolve(rsrc.0, input).await?;
-        Ok(DiskWithReservations::new(inner.0).into())
+        let inner = resolver
+            .resolve(rsrc.0, input)
+            .await
+            .map_err(ResolvePrDiskError::Resolve)?;
+
+        ResolvedDisk::new(DiskWithReservations::new(inner.0))
+            .map_err(ResolvePrDiskError::InvalidDisk)
     }
 }
 
@@ -59,7 +72,7 @@ impl AsyncResolveResource<DiskHandleKind, DiskWithReservationsHandle>
 /// actually share a disk.
 #[derive(Inspect)]
 pub struct DiskWithReservations {
-    inner: Arc<dyn SimpleDisk>,
+    inner: Disk,
     #[inspect(flatten)]
     state: Mutex<ReservationState>,
 }
@@ -74,7 +87,7 @@ struct ReservationState {
 
 impl DiskWithReservations {
     /// Wraps `inner` with persistent reservations support.
-    pub fn new(inner: Arc<dyn SimpleDisk>) -> Self {
+    pub fn new(inner: Disk) -> Self {
         Self {
             inner,
             state: Default::default(),
@@ -82,7 +95,7 @@ impl DiskWithReservations {
     }
 }
 
-impl SimpleDisk for DiskWithReservations {
+impl DiskIo for DiskWithReservations {
     fn disk_type(&self) -> &str {
         "prwrap"
     }
@@ -111,41 +124,45 @@ impl SimpleDisk for DiskWithReservations {
         self.inner.is_read_only()
     }
 
-    fn unmap(&self) -> Option<&dyn disk_backend::Unmap> {
-        None // TODO
+    fn unmap(
+        &self,
+        sector: u64,
+        count: u64,
+        block_level_only: bool,
+    ) -> impl Future<Output = Result<(), DiskError>> + Send {
+        self.inner.unmap(sector, count, block_level_only)
     }
 
-    fn lba_status(&self) -> Option<&dyn disk_backend::GetLbaStatus> {
-        self.inner.lba_status()
+    fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
+        self.inner.unmap_behavior()
+    }
+
+    fn optimal_unmap_sectors(&self) -> u32 {
+        self.inner.optimal_unmap_sectors()
     }
 
     fn pr(&self) -> Option<&dyn pr::PersistentReservation> {
         Some(self)
     }
-}
 
-#[async_trait::async_trait]
-impl AsyncDisk for DiskWithReservations {
-    fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
+    async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
-    ) -> StackFuture<'a, Result<(), DiskError>, { disk_backend::ASYNC_DISK_STACK_SIZE }> {
-        self.inner.read_vectored(buffers, sector)
+    ) -> Result<(), DiskError> {
+        self.inner.read_vectored(buffers, sector).await
     }
 
-    fn write_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'a>,
+    async fn write_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
         fua: bool,
-    ) -> StackFuture<'a, Result<(), DiskError>, { disk_backend::ASYNC_DISK_STACK_SIZE }> {
-        self.inner.write_vectored(buffers, sector, fua)
+    ) -> Result<(), DiskError> {
+        self.inner.write_vectored(buffers, sector, fua).await
     }
 
-    fn sync_cache(
-        &self,
-    ) -> StackFuture<'_, Result<(), DiskError>, { disk_backend::ASYNC_DISK_STACK_SIZE }> {
+    fn sync_cache(&self) -> impl Future<Output = Result<(), DiskError>> + Send {
         self.inner.sync_cache()
     }
 }

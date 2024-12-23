@@ -6,6 +6,7 @@
 mod common;
 pub mod queue;
 pub mod resolve;
+pub mod resolver;
 pub mod spec;
 pub mod transport;
 

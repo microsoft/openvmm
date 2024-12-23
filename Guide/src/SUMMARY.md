@@ -21,6 +21,7 @@
 - [Getting Started](./dev_guide/getting_started.md)
   - [On Linux / WSL2](./dev_guide/getting_started/linux.md)
   - [On Windows](./dev_guide/getting_started/windows.md)
+  - [Via Codespaces / Dev Container](./dev_guide/getting_started/devcontainer.md)
   - [Building OpenVMM](./dev_guide/getting_started/build_openvmm.md)
   - [Building OpenHCL](./dev_guide/getting_started/build_openhcl.md)
     - [Building a Custom Kernel](./dev_guide/getting_started/build_ohcl_kernel.md)
@@ -39,6 +40,7 @@
   - [update-rootfs.py]()
   - [igvmfilegen]()
   - [guest_test_uefi](./dev_guide/dev_tools/guest_test_uefi.md)
+  - [hypestv](./dev_guide/dev_tools/hypestv.md)
 - [Contributing](./dev_guide/contrib.md)
   - [Coding Conventions](./dev_guide/contrib/code.md)
   - [Submitting Changes](./dev_guide/contrib/pr.md)
@@ -47,10 +49,10 @@
 # Reference
 
 - [OpenVMM Features](./reference/openvmm.md)
-  - [Configuration and Management]()
+  - [Configuration and Management](./reference/openvmm/management.md)
     - [CLI](./reference/openvmm/management/cli.md)
     - [Interactive Console](./reference/openvmm/management/interactive_console.md)
-    - [gRPC / ttrpc]()
+    - [gRPC / ttrpc](./reference/openvmm/management/grpc.md)
   - [Graphical Console](./reference/openvmm/graphical_console.md)
   - [Logging](./reference/openvmm/logging.md)
 - [OpenHCL Features](./reference/openhcl.md)

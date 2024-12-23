@@ -14,13 +14,13 @@ use bootloader_fdt_parser::ParsedBootDtInfo;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use loader_defs::paravisor::ParavisorMeasuredVtl2Config;
-use loader_defs::paravisor::PARAVISOR_CONFIG_CPUID_PAGE_INDEX;
-use loader_defs::paravisor::PARAVISOR_CONFIG_CPUID_SIZE_PAGES;
 use loader_defs::paravisor::PARAVISOR_CONFIG_PPTT_PAGE_INDEX;
-use loader_defs::paravisor::PARAVISOR_CONFIG_SECRETS_PAGE_INDEX;
-use loader_defs::paravisor::PARAVISOR_CONFIG_SECRETS_SIZE_PAGES;
 use loader_defs::paravisor::PARAVISOR_CONFIG_SLIT_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX;
+use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_PAGE_INDEX;
+use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_SIZE_PAGES;
+use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX;
+use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_SIZE_PAGES;
 use memory_range::MemoryRange;
 use sparse_mmap::SparseMapping;
 use vm_topology::memory::MemoryRangeWithNode;
@@ -71,6 +71,11 @@ impl RuntimeParameters {
     pub fn snp_secrets(&self) -> Option<&[u8]> {
         self.snp_secrets.as_deref()
     }
+
+    /// The memory ranges to use for the private pool
+    pub fn private_pool_ranges(&self) -> &[MemoryRangeWithNode] {
+        &self.parsed_openhcl_boot.private_pool_ranges
+    }
 }
 
 /// Structure that holds the read IGVM parameters from the guest address space.
@@ -88,16 +93,17 @@ impl MeasuredVtl2Info {
 }
 
 #[derive(Debug)]
-/// Map of the portion of memory that contains the VTL2 parameters.
+/// Map of the portion of memory that contains the VTL2 parameters to read.
 ///
-/// On drop, this mapping zeroes out the specified config ranges.
+/// If configured, on drop this mapping zeroes out the specified config ranges.
 struct Vtl2ParamsMap<'a> {
     mapping: SparseMapping,
+    zero_on_drop: bool,
     ranges: &'a [MemoryRange],
 }
 
 impl<'a> Vtl2ParamsMap<'a> {
-    fn new(config_ranges: &'a [MemoryRange]) -> anyhow::Result<Self> {
+    fn new(config_ranges: &'a [MemoryRange], zero_on_drop: bool) -> anyhow::Result<Self> {
         // No overlaps.
         // TODO: Move this check to host_fdt_parser?
         if let Some((l, r)) = config_ranges
@@ -121,7 +127,7 @@ impl<'a> Vtl2ParamsMap<'a> {
 
         let dev_mem = fs_err::OpenOptions::new()
             .read(true)
-            .write(true)
+            .write(zero_on_drop)
             .open("/dev/mem")?;
         for range in config_ranges {
             mapping
@@ -130,7 +136,7 @@ impl<'a> Vtl2ParamsMap<'a> {
                     range.len() as usize,
                     dev_mem.file(),
                     range.start(),
-                    true,
+                    zero_on_drop,
                 )
                 .context("failed to memory map igvm parameters")?;
         }
@@ -138,6 +144,7 @@ impl<'a> Vtl2ParamsMap<'a> {
         Ok(Self {
             mapping,
             ranges: config_ranges,
+            zero_on_drop,
         })
     }
 
@@ -152,25 +159,27 @@ impl<'a> Vtl2ParamsMap<'a> {
 
 impl Drop for Vtl2ParamsMap<'_> {
     fn drop(&mut self) {
-        let base = self
-            .ranges
-            .first()
-            .expect("already checked that there is at least one range")
-            .start();
+        if self.zero_on_drop {
+            let base = self
+                .ranges
+                .first()
+                .expect("already checked that there is at least one range")
+                .start();
 
-        for range in self.ranges {
-            self.mapping
-                .fill_at((range.start() - base) as usize, 0, range.len() as usize)
-                .unwrap();
+            for range in self.ranges {
+                self.mapping
+                    .fill_at((range.start() - base) as usize, 0, range.len() as usize)
+                    .unwrap();
+            }
         }
     }
 }
 
-/// Reads the VTL 2 parameters from the vtl-boot-data region.
+/// Reads the VTL 2 parameters from the config region and VTL2 reserved region.
 pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info)> {
     let parsed_openhcl_boot = ParsedBootDtInfo::new().context("failed to parse openhcl_boot dt")?;
 
-    let mapping = Vtl2ParamsMap::new(&parsed_openhcl_boot.config_ranges)
+    let mapping = Vtl2ParamsMap::new(&parsed_openhcl_boot.config_ranges, true)
         .context("failed to map igvm parameters")?;
 
     // For the various ACPI tables, read the header to see how big the table
@@ -216,21 +225,26 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         }
     };
 
+    // Read SNP specific information from the reserved region.
     let (cvm_cpuid_info, snp_secrets) = {
         if parsed_openhcl_boot.isolation == IsolationType::Snp {
+            let ranges = &[parsed_openhcl_boot.vtl2_reserved_range];
+            let reserved_mapping =
+                Vtl2ParamsMap::new(ranges, false).context("failed to map vtl2 reserved region")?;
+
             let mut cpuid_pages: Vec<u8> =
-                vec![0; (HV_PAGE_SIZE * PARAVISOR_CONFIG_CPUID_SIZE_PAGES) as usize];
-            mapping
+                vec![0; (PARAVISOR_RESERVED_VTL2_SNP_CPUID_SIZE_PAGES * HV_PAGE_SIZE) as usize];
+            reserved_mapping
                 .read_at(
-                    (PARAVISOR_CONFIG_CPUID_PAGE_INDEX * HV_PAGE_SIZE) as usize,
+                    (PARAVISOR_RESERVED_VTL2_SNP_CPUID_PAGE_INDEX * HV_PAGE_SIZE) as usize,
                     cpuid_pages.as_mut_slice(),
                 )
                 .context("failed to read cpuid pages")?;
             let mut secrets =
-                vec![0; (HV_PAGE_SIZE * PARAVISOR_CONFIG_SECRETS_SIZE_PAGES) as usize];
-            mapping
+                vec![0; (PARAVISOR_RESERVED_VTL2_SNP_SECRETS_SIZE_PAGES * HV_PAGE_SIZE) as usize];
+            reserved_mapping
                 .read_at(
-                    (HV_PAGE_SIZE * PARAVISOR_CONFIG_SECRETS_PAGE_INDEX) as usize,
+                    (PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX * HV_PAGE_SIZE) as usize,
                     secrets.as_mut_slice(),
                 )
                 .context("failed to read secrets page")?;

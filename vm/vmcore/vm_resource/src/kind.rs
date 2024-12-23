@@ -66,6 +66,14 @@ impl ResourceKind for DiskHandleKind {
     const NAME: &'static str = "disk_handle";
 }
 
+/// A disk layer resource kind, where the underlying resources have already been
+/// opened in a privileged context.
+pub enum DiskLayerHandleKind {}
+
+impl ResourceKind for DiskLayerHandleKind {
+    const NAME: &'static str = "disk_layer_handle";
+}
+
 /// A resource kind for SCSI devices.
 pub enum ScsiDeviceHandleKind {}
 

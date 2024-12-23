@@ -50,6 +50,7 @@ pub mod ged {
     use mesh::rpc::Rpc;
     use mesh::MeshPayload;
     use thiserror::Error;
+    use vm_resource::kind::DiskHandleKind;
     use vm_resource::kind::FramebufferHandleKind;
     use vm_resource::kind::VmbusDeviceHandleKind;
     use vm_resource::Resource;
@@ -70,6 +71,10 @@ pub mod ged {
         pub enable_tpm: bool,
         /// Encoded VTL2 settings.
         pub vtl2_settings: Option<Vec<u8>>,
+        /// The disk to back the GET's VMGS interface.
+        ///
+        /// If `None`, then VMGS services will not be provided to the guest.
+        pub vmgs_disk: Option<Resource<DiskHandleKind>>,
         /// Framebuffer device control.
         pub framebuffer: Option<Resource<FramebufferHandleKind>>,
         /// Access to VTL2 functionality.

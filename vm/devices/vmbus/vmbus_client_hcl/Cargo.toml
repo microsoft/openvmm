@@ -1,0 +1,23 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "vmbus_client_hcl"
+edition = "2021"
+rust-version.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+hcl.workspace = true
+hvdef.workspace = true
+pal_async.workspace = true
+pal_event.workspace = true
+vmbus_async.workspace = true
+vmbus_client.workspace = true
+
+anyhow.workspace = true
+futures.workspace = true
+tracing.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true

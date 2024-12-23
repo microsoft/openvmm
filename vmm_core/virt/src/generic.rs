@@ -398,6 +398,8 @@ pub trait Processor: InspectMut {
     /// Sets the debug state: conditions under which the VP should exit for
     /// debugging the guest. This including single stepping and hardware
     /// breakpoints.
+    ///
+    /// TODO: generalize for non-x86 architectures.
     fn set_debug_state(&mut self, vtl: Vtl, state: Option<&DebugState>) -> Result<(), Self::Error>;
 
     /// Runs the VP.

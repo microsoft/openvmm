@@ -9,6 +9,7 @@ use super::generic::ResolvedJobArtifact;
 use super::generic::ResolvedJobUseParameter;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
+use crate::cli::pipeline::CheckMode;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
 use crate::flow_resolver::stage1_dag::Step;
 use crate::pipeline_resolver::generic::ResolvedPipeline;
@@ -25,7 +26,6 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::path::Path;
-use std::path::PathBuf;
 
 /// We use $(Build.StagingDirectory)/.flowey-internal instead
 /// of $(Agent.TempDirectory) to (hopefully) guarantee that this folder
@@ -42,7 +42,7 @@ pub fn ado_yaml(
     repo_root: &Path,
     pipeline_file: &Path,
     flowey_crate: &str,
-    check: Option<PathBuf>,
+    check: CheckMode,
 ) -> anyhow::Result<()> {
     if pipeline_file.extension().and_then(|s| s.to_str()) != Some("yaml") {
         anyhow::bail!("pipeline name must end with .yaml")
@@ -60,6 +60,7 @@ pub fn ado_yaml(
         ado_resources_repository,
         ado_post_process_yaml_cb,
         ado_variables,
+        ref ado_job_id_overrides,
         gh_name: _,
         gh_schedule_triggers: _,
         gh_ci_triggers: _,
@@ -205,6 +206,30 @@ pub fn ado_yaml(
             });
         }
 
+        let flowey_bin = platform.binary("flowey");
+        let flowey_executable_bash = format!(
+            r###"
+set -e
+AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
+AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+echo "##vso[task.setvariable variable=AgentTempDirNormal;]$AgentTempDirNormal"
+
+chmod +x $AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}
+FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}"
+echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
+"###
+        ).trim_start().to_string();
+
+        ado_steps.push({
+            let mut map = serde_yaml::Mapping::new();
+            map.insert(
+                "bash".into(),
+                serde_yaml::Value::String(flowey_executable_bash),
+            );
+            map.insert("displayName".into(), "Set flowey path".into());
+            map.into()
+        });
+
         let mut flowey_bootstrap_bash = String::new();
 
         let bootstrap_bash_var_db_inject = |var, is_raw_string| {
@@ -222,8 +247,6 @@ pub fn ado_yaml(
 
         // and now use those vars to do some flowey bootstrap
         writeln!(flowey_bootstrap_bash, "{}", {
-            let flowey_bin = platform.binary("flowey");
-
             let runtime_debug_level = if runtime_debug_log { "debug" } else { "info" };
 
             let var_db_insert_runtime_debug_level =
@@ -238,14 +261,7 @@ pub fn ado_yaml(
             // https://github.com/microsoft/azure-pipelines-tasks/issues/10653#issuecomment-585669089
             format!(
                 r###"
-AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
-AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-echo "##vso[task.setvariable variable=AgentTempDirNormal;]$AgentTempDirNormal"
-
-chmod +x $AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}
-FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}"
-echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
-
+set -e
 echo '"{runtime_debug_level}"' | {var_db_insert_runtime_debug_level}
 echo "$(FLOWEY_TEMP_DIR)/work" | {var_db_insert_working_dir}
 "###
@@ -292,12 +308,9 @@ EOF
         // next, emit ado steps to create dirs for artifacts which will be
         // published
         for ResolvedJobArtifact { flowey_var, name } in artifacts_published {
-            // do NOT use ADO macro syntax $(...), since this is in the same
-            // bootstrap block as where those ADO vars get defined, meaning it's
-            // not available yet!
             writeln!(
                 flowey_bootstrap_bash,
-                r#"mkdir -p "$AgentTempDirNormal/publish_artifacts/{name}""#
+                r#"mkdir -p "$(AgentTempDirNormal)/publish_artifacts/{name}""#
             )?;
             let var_db_inject_cmd = bootstrap_bash_var_db_inject(flowey_var, true);
             writeln!(
@@ -319,16 +332,6 @@ EOF
             )?;
         }
 
-        ado_steps.push({
-            let mut map = serde_yaml::Mapping::new();
-            map.insert(
-                "bash".into(),
-                serde_yaml::Value::String(flowey_bootstrap_bash),
-            );
-            map.insert("displayName".into(), "🌼🛫 Initialize job".into());
-            map.into()
-        });
-
         // if this was a bootstrap job, also take a moment to run a "self check"
         // to make sure that the current checked-in template matches the one it
         // expected
@@ -338,19 +341,22 @@ EOF
             current_invocation[0] = "$(FLOWEY_BIN)".into();
 
             // if this code path is run while generating the YAML to compare the
-            // check against, we want to remove the --check param from the
+            // check against, we want to remove the --runtime or --check param from the
             // current call, or else there'll be a dupe
-            if let Some(i) = current_invocation
-                .iter()
-                .position(|s| s.starts_with("--check"))
-            {
-                // remove the --check param
-                let s = current_invocation.remove(i);
-                if !s.starts_with("--check=") {
-                    // remove its freestanding argument
+            let mut strip_parameter = |prefix: &str| {
+                if let Some(i) = current_invocation
+                    .iter()
+                    .position(|s| s.starts_with(prefix))
+                {
                     current_invocation.remove(i);
+                    if !current_invocation[i].starts_with(prefix) {
+                        current_invocation.remove(i);
+                    }
                 }
-            }
+            };
+
+            strip_parameter("--runtime");
+            strip_parameter("--check");
 
             // insert the --check bit of the call alongside the --out param
             {
@@ -369,7 +375,7 @@ EOF
                 };
 
                 current_invocation.insert(i, current_yaml.into());
-                current_invocation.insert(i, "--check".into());
+                current_invocation.insert(i, "--runtime".into());
             }
 
             // Need to use an escaped version of the "true" windows/linux path
@@ -396,6 +402,16 @@ EOF
                 map.into()
             })
         }
+
+        ado_steps.push({
+            let mut map = serde_yaml::Mapping::new();
+            map.insert(
+                "bash".into(),
+                serde_yaml::Value::String(flowey_bootstrap_bash),
+            );
+            map.insert("displayName".into(), "🌼🛫 Initialize job".into());
+            map.into()
+        });
 
         // now that we've done all the job-level bootstrapping, we can emit all
         // the actual steps the user cares about
@@ -495,8 +511,14 @@ EOF
             )
         };
 
+        let get_job_id = |id: usize| {
+            ado_job_id_overrides
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| format!("job{}", id.clone()))
+        };
         ado_jobs.push(schema_ado_yaml::Job {
-            job: format!("job{}", job_idx.index()),
+            job: get_job_id(job_idx.index()),
             display_name: label.clone(),
             pool,
             depends_on: {
@@ -504,7 +526,7 @@ EOF
                     .edges_directed(job_idx, petgraph::Direction::Incoming)
                     .map(|e| {
                         use petgraph::prelude::*;
-                        format!("job{}", e.source().index())
+                        get_job_id(e.source().index())
                     })
                     .collect()
             },
@@ -709,23 +731,22 @@ EOF
         extends: None,
     };
 
-    if let Some(check) = check {
-        check_generated_yaml_and_json(
+    match check {
+        CheckMode::Check(_) | CheckMode::Runtime(_) => check_generated_yaml_and_json(
             &ado_pipeline,
             &pipeline_static_db,
             check,
             repo_root,
             pipeline_file,
             ado_post_process_yaml_cb,
-        )
-    } else {
-        write_generated_yaml_and_json(
+        ),
+        CheckMode::None => write_generated_yaml_and_json(
             &ado_pipeline,
             &pipeline_static_db,
             repo_root,
             pipeline_file,
             ado_post_process_yaml_cb,
-        )
+        ),
     }
 }
 

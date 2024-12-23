@@ -23,7 +23,7 @@ struct InspectNode<'a, 'b> {
     depth_limit: usize,
 }
 
-impl<'a, 'b> InspectMut for InspectNode<'a, 'b> {
+impl InspectMut for InspectNode<'_, '_> {
     fn inspect_mut(&mut self, req: Request<'_>) {
         fuzz_eprintln!("depth {}", self.depth);
         // Depth limit so that we don't recurse infinitely
@@ -35,7 +35,7 @@ impl<'a, 'b> InspectMut for InspectNode<'a, 'b> {
     }
 }
 
-impl<'a, 'b> InspectNode<'a, 'b> {
+impl InspectNode<'_, '_> {
     fn inspect_inner(&mut self, req: Request<'_>) -> Result<(), arbitrary::Error> {
         match self.u.int_in_range(0..=5)? {
             0 => {
@@ -281,7 +281,7 @@ fn validate_results(results: &Node, req_sens: Option<SensitivityLevel>) {
         Node::Dir(entries) => {
             for e in entries {
                 if let Some(sens) = req_sens {
-                    assert!(e.sensitivity.unwrap_or_default() <= sens);
+                    assert!(e.sensitivity <= sens);
                 }
                 validate_results(&e.node, req_sens);
             }

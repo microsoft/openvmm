@@ -25,6 +25,7 @@ use vm_topology::memory::MemoryRangeWithNode;
 use vm_topology::processor::ProcessorTopology;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
 use zerocopy::AsBytes;
+use zerocopy::FromBytes;
 
 pub mod vtl0_config;
 pub mod vtl2_config;
@@ -71,6 +72,10 @@ pub enum Error {
     LinuxSupport,
     #[error("finalizing boot")]
     Finalize(#[source] vtl0_config::Error),
+    #[error("invalid acpi table: too short")]
+    InvalidAcpiTableLength,
+    #[error("invalid acpi table: unknown header signature {0:?}")]
+    InvalidAcpiTableSignature([u8; 4]),
 }
 
 pub const PV_CONFIG_BASE_PAGE: u64 = if cfg!(guest_arch = "x86_64") {
@@ -605,8 +610,12 @@ pub fn write_uefi_config(
         }
 
         // Some settings do not depend on host config
+
+        // All OpenHCL vTPMs must opt-in to these settings
         flags.set_measure_additional_pcrs(true);
         flags.set_tpm_locality_regs_enabled(true);
+        // OpenHCL pre-sets the MTRRs; tell the firmware
+        flags.set_mtrrs_initialized_at_load(true);
 
         flags
     });
@@ -617,6 +626,22 @@ pub fn write_uefi_config(
             gic_distributor_base: processor_topology.gic_distributor_base(),
             gic_redistributors_base: processor_topology.gic_redistributors_base(),
         });
+    }
+
+    // ACPI tables that come from the DevicePlatformSettings
+    // We can only trust these tables from the host if this is not an isolated VM
+    if !isolated {
+        for table in &platform_config.acpi_tables {
+            let header =
+                acpi_spec::Header::ref_from_prefix(table).ok_or(Error::InvalidAcpiTableLength)?;
+            match &header.signature {
+                b"HMAT" => cfg.add_raw(config::BlobStructureType::Hmat, table),
+                b"IORT" => cfg.add_raw(config::BlobStructureType::Iort, table),
+                b"MCFG" => cfg.add_raw(config::BlobStructureType::Mcfg, table),
+                b"SSDT" => cfg.add_raw(config::BlobStructureType::Ssdt, table),
+                _ => return Err(Error::InvalidAcpiTableSignature(header.signature)),
+            };
+        }
     }
 
     // Finally, with the bios config constructed, we can inject it into guest memory

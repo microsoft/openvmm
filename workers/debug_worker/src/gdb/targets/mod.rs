@@ -8,10 +8,11 @@ use gdbstub::target::TargetError;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;
-use vmm_core_defs::debug_rpc::VpState;
+use vmm_core_defs::debug_rpc::DebuggerVpState;
 
 mod base;
 mod breakpoints;
+mod target_aarch64;
 mod target_i8086;
 mod target_x86_64_qemu;
 
@@ -62,19 +63,26 @@ pub trait TargetArch:
     type Address: Copy + Into<u64> + TryFrom<u64>;
 
     /// Extract a single register.
-    fn register(state: &VpState, reg_id: Self::RegId, buf: &mut [u8]) -> Result<usize, ArchError>;
+    fn register(
+        state: &DebuggerVpState,
+        reg_id: Self::RegId,
+        buf: &mut [u8],
+    ) -> Result<usize, ArchError>;
 
     /// Extract the register file.
-    fn registers(state: &VpState, regs: &mut Self::Registers) -> Result<(), ArchError>;
+    fn registers(state: &DebuggerVpState, regs: &mut Self::Registers) -> Result<(), ArchError>;
 
     /// Update the register state from the register file.
     ///
     /// Returns false
-    fn update_registers(state: &mut VpState, regs: &Self::Registers) -> Result<(), ArchError>;
+    fn update_registers(
+        state: &mut DebuggerVpState,
+        regs: &Self::Registers,
+    ) -> Result<(), ArchError>;
 
     /// Update a single register.
     fn update_register(
-        state: &mut VpState,
+        state: &mut DebuggerVpState,
         reg_id: Self::RegId,
         val: &[u8],
     ) -> Result<(), ArchError>;

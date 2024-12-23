@@ -5,10 +5,15 @@
 
 use crate::RequestInterrupt;
 use guestmem::GuestMemory;
+use hvdef::HvAllArchRegisterName;
 use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvMessageHeader;
 use hvdef::HvMessageType;
+use hvdef::HvRegisterName;
+use hvdef::HvRegisterValue;
+use hvdef::HvRegisterVsmVina;
+use hvdef::HvResult;
 use hvdef::HvSynicSimpSiefp;
 use hvdef::HvSynicStimerConfig;
 use hvdef::TimerMessagePayload;
@@ -33,6 +38,8 @@ pub struct ProcessorSynic {
     timers: [Timer; hvdef::NUM_TIMERS],
     #[inspect(skip)]
     shared: Arc<RwLock<SharedProcessorState>>,
+    #[inspect(debug)]
+    vina: HvRegisterVsmVina,
 }
 
 #[derive(Inspect)]
@@ -256,6 +263,7 @@ impl GlobalSynic {
             sints: SintState::AT_RESET,
             timers: array::from_fn(|_| Timer::default()),
             shared,
+            vina: HvRegisterVsmVina::new(),
         }
     }
 }
@@ -267,10 +275,12 @@ impl ProcessorSynic {
             sints,
             timers,
             shared,
+            vina,
         } = self;
         *sints = SintState::AT_RESET;
         *timers = array::from_fn(|_| Timer::default());
         *shared.write() = SharedProcessorState::AT_RESET;
+        *vina = HvRegisterVsmVina::new();
     }
 
     /// Returns the event flags page register.
@@ -320,6 +330,11 @@ impl ProcessorSynic {
     /// Returns the specified synthetic timer count register.
     pub fn stimer_count(&self, n: usize) -> u64 {
         self.timers[n].count
+    }
+
+    /// Returns the value of the VINA register.
+    pub fn vina(&self) -> HvRegisterVsmVina {
+        self.vina
     }
 
     /// Sets the event flags page register.
@@ -435,7 +450,101 @@ impl ProcessorSynic {
         Ok(())
     }
 
-    /// Reads a non-synthetic-timer x64 MSR.
+    fn reg_to_msr(reg: HvRegisterName) -> HvResult<u32> {
+        Ok(match HvAllArchRegisterName(reg.0) {
+            HvAllArchRegisterName::Sint0
+            | HvAllArchRegisterName::Sint1
+            | HvAllArchRegisterName::Sint2
+            | HvAllArchRegisterName::Sint3
+            | HvAllArchRegisterName::Sint4
+            | HvAllArchRegisterName::Sint5
+            | HvAllArchRegisterName::Sint6
+            | HvAllArchRegisterName::Sint7
+            | HvAllArchRegisterName::Sint8
+            | HvAllArchRegisterName::Sint9
+            | HvAllArchRegisterName::Sint10
+            | HvAllArchRegisterName::Sint11
+            | HvAllArchRegisterName::Sint12
+            | HvAllArchRegisterName::Sint13
+            | HvAllArchRegisterName::Sint14
+            | HvAllArchRegisterName::Sint15 => {
+                hvdef::HV_X64_MSR_SINT0 + (reg.0 - HvAllArchRegisterName::Sint0.0)
+            }
+            HvAllArchRegisterName::Scontrol => hvdef::HV_X64_MSR_SCONTROL,
+            HvAllArchRegisterName::Sversion => hvdef::HV_X64_MSR_SVERSION,
+            HvAllArchRegisterName::Sifp => hvdef::HV_X64_MSR_SIEFP,
+            HvAllArchRegisterName::Sipp => hvdef::HV_X64_MSR_SIMP,
+            HvAllArchRegisterName::Eom => hvdef::HV_X64_MSR_EOM,
+            HvAllArchRegisterName::Stimer0Config
+            | HvAllArchRegisterName::Stimer0Count
+            | HvAllArchRegisterName::Stimer1Config
+            | HvAllArchRegisterName::Stimer1Count
+            | HvAllArchRegisterName::Stimer2Config
+            | HvAllArchRegisterName::Stimer2Count
+            | HvAllArchRegisterName::Stimer3Config
+            | HvAllArchRegisterName::Stimer3Count => {
+                hvdef::HV_X64_MSR_STIMER0_CONFIG + (reg.0 - HvAllArchRegisterName::Stimer0Config.0)
+            }
+            _ => {
+                tracelimit::error_ratelimited!(?reg, "unknown synic register");
+                return Err(HvError::UnknownRegisterName);
+            }
+        })
+    }
+
+    fn msrerr_to_hverr(err: MsrError) -> HvError {
+        match err {
+            MsrError::Unknown => HvError::UnknownRegisterName,
+            MsrError::InvalidAccess => HvError::InvalidParameter,
+        }
+    }
+
+    /// Writes a synthetic interrupt controller register.
+    pub fn write_reg(
+        &mut self,
+        guest_memory: &GuestMemory,
+        reg: HvRegisterName,
+        v: HvRegisterValue,
+    ) -> HvResult<()> {
+        match HvAllArchRegisterName(reg.0) {
+            HvAllArchRegisterName::VsmVina => {
+                let v = HvRegisterVsmVina::from(v.as_u64());
+                if v.reserved() != 0 {
+                    return Err(HvError::InvalidParameter);
+                }
+                self.vina = v;
+            }
+            _ => self
+                .write_msr(guest_memory, Self::reg_to_msr(reg)?, v.as_u64())
+                .map_err(Self::msrerr_to_hverr)?,
+        }
+        Ok(())
+    }
+
+    /// Writes an x64 MSR.
+    pub fn write_msr(
+        &mut self,
+        guest_memory: &GuestMemory,
+        msr: u32,
+        v: u64,
+    ) -> Result<(), MsrError> {
+        match msr {
+            msr @ hvdef::HV_X64_MSR_STIMER0_CONFIG..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
+                let offset = msr - hvdef::HV_X64_MSR_STIMER0_CONFIG;
+                let timer = (offset >> 1) as _;
+                let is_count = offset & 1 != 0;
+                if is_count {
+                    self.set_stimer_count(timer, v);
+                } else {
+                    self.set_stimer_config(timer, v);
+                }
+            }
+            _ => self.write_nontimer_msr(guest_memory, msr, v)?,
+        }
+        Ok(())
+    }
+
+    /// Writes a non-synthetic-timer x64 MSR.
     pub fn write_nontimer_msr(
         &mut self,
         guest_memory: &GuestMemory,
@@ -454,6 +563,35 @@ impl ProcessorSynic {
             _ => return Err(MsrError::Unknown),
         }
         Ok(())
+    }
+
+    /// Reads a synthetic interrupt controller register.
+    pub fn read_reg(&self, reg: HvRegisterName) -> HvResult<HvRegisterValue> {
+        let v = match HvAllArchRegisterName(reg.0) {
+            HvAllArchRegisterName::VsmVina => self.vina.into_bits(),
+            _ => self
+                .read_msr(Self::reg_to_msr(reg)?)
+                .map_err(Self::msrerr_to_hverr)?,
+        };
+        Ok(v.into())
+    }
+
+    /// Reads an x64 MSR.
+    pub fn read_msr(&self, msr: u32) -> Result<u64, MsrError> {
+        let value = match msr {
+            msr @ hvdef::HV_X64_MSR_STIMER0_CONFIG..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
+                let offset = msr - hvdef::HV_X64_MSR_STIMER0_CONFIG;
+                let timer = (offset >> 1) as _;
+                let is_count = offset & 1 != 0;
+                if is_count {
+                    self.stimer_count(timer)
+                } else {
+                    self.stimer_config(timer)
+                }
+            }
+            _ => self.read_nontimer_msr(msr)?,
+        };
+        Ok(value)
     }
 
     /// Reads a non-synthetic-timer x64 MSR.

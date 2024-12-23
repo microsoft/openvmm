@@ -35,7 +35,7 @@ impl PrpRange {
         let pfns = if len + offset <= PAGE_SIZE * 2 {
             PrpPfns::Short(prp.map(|x| x >> PAGE_SHIFT))
         } else {
-            let count = (offset + len + PAGE_SIZE - 1) / PAGE_SIZE;
+            let count = (offset + len).div_ceil(PAGE_SIZE);
             let mut v = vec![0; count];
             v[0] = prp[0];
             let mut pfns = &mut v[1..];

@@ -19,13 +19,13 @@ term.workspace = true
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 ctrlc.workspace = true
-env_logger.workspace = true
 fs-err.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 kmsg.workspace = true
 socket2.workspace = true
 thiserror.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 unicycle.workspace = true
 
 [lints]

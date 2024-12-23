@@ -58,6 +58,12 @@ pub fn build_agent_image(
                         "user-data",
                         PathOrBinary::Binary(include_bytes!("../guest-bootstrap/user-data")),
                     ),
+                    // Specify a non-present NIC to work around https://github.com/canonical/cloud-init/issues/5511
+                    // TODO: support dynamically configuring the network based on vm configuration
+                    (
+                        "network-config",
+                        PathOrBinary::Binary(include_bytes!("../guest-bootstrap/network-config")),
+                    ),
                 ],
             )
         }

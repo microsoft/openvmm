@@ -30,7 +30,7 @@ pub(crate) struct WhpHypercallExit<'a, 'b, T> {
     registers: arch::WhpHypercallRegisters<'a>,
 }
 
-impl<'a, 'b, T: CpuIo> WhpHypercallExit<'a, 'b, T> {
+impl<T: CpuIo> WhpHypercallExit<'_, '_, T> {
     const DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [
@@ -716,6 +716,7 @@ mod x86 {
     use virt::VpIndex;
     use virt_support_x86emu::translate::translate_gva_to_gpa;
     use virt_support_x86emu::translate::TranslateFlags;
+    use virt_support_x86emu::translate::TranslateResult;
     use vmcore::vpci_msi::VpciInterruptParameters;
     use whp::abi::WHV_REGISTER_VALUE;
     use whp::RegisterName;
@@ -1291,10 +1292,12 @@ mod x86 {
             );
 
             let result = match result {
-                Ok(gpa) => hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
-                    gpa_page: gpa / HV_PAGE_SIZE,
-                    ..FromZeroes::new_zeroed()
-                },
+                Ok(TranslateResult { gpa, cache_info: _ }) => {
+                    hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
+                        gpa_page: gpa / HV_PAGE_SIZE,
+                        ..FromZeroes::new_zeroed()
+                    }
+                }
                 Err(err) => hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
                     translation_result: hvdef::hypercall::TranslateGvaResultExX64 {
                         result: hvdef::hypercall::TranslateGvaResult::new()

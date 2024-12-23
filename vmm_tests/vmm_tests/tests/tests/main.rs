@@ -9,10 +9,8 @@
 //! If you use the #[vmm_test] macro then all of the above requirements
 //! are handled for you automatically.
 
-// Tests that currently run only on arm but can compile when targeting any
-// architecture. As our ARM64 support improves these tests should be able to
-// someday run on both x86-64 and ARM64, and be moved into a multi-arch module.
-mod aarch64;
+// Tests that run on more than one architecture.
+mod multiarch;
 // Tests for the TTRPC interface that currently only run on x86-64 but can
 // compile when targeting any architecture. As our ARM64 support improves
 // these tests should be able to someday run on both x86-64 and ARM64, and be

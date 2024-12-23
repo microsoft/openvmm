@@ -3,8 +3,8 @@
 
 //! Implementation of the required cryptographic functions for the crate.
 
-use crate::protocol::vmgs::AES_GCM_KEY_LENGTH;
-use crate::protocol::vmgs::HMAC_SHA_256_KEY_LENGTH;
+use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
+use openhcl_attestation_protocol::vmgs::HMAC_SHA_256_KEY_LENGTH;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use openssl_kdf::kdf::Kbkdf;

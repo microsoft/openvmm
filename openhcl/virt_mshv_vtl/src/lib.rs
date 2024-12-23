@@ -135,7 +135,7 @@ pub enum Error {
     #[error("failed to map overlay page")]
     MapOverlay(#[source] std::io::Error),
     #[error("failed to allocate shared visibility pages for overlay")]
-    AllocateSharedVisOverlay(#[source] shared_pool_alloc::SharedPoolOutOfMemory),
+    AllocateSharedVisOverlay(#[source] page_pool_alloc::Error),
     #[error("failed to open msr device")]
     OpenMsr(#[source] std::io::Error),
     #[error("cpuid did not contain valid TSC frequency information")]
@@ -152,6 +152,8 @@ pub enum Error {
     FailedToSetL2Ctls(TdCallResult),
     #[error("debugging is configured but the binary does not have the gdb feature")]
     InvalidDebugConfiguration,
+    #[error("missing shared memory for an isolated partition")]
+    MissingSharedMemory,
 }
 
 /// Error revoking guest VSM.
@@ -190,7 +192,7 @@ struct UhPartitionInner {
     cpuid: Mutex<CpuidLeafSet>,
     lower_vtl_memory_layout: MemoryLayout,
     gm: VtlArray<GuestMemory, 2>,
-    untrusted_dma_memory: GuestMemory,
+    shared_memory: Option<GuestMemory>,
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(skip)]
     crash_notification_send: mesh::Sender<VtlCrash>,
@@ -200,6 +202,7 @@ struct UhPartitionInner {
     #[inspect(skip)]
     vmtime: VmTimeSource,
     isolation: IsolationType,
+    hide_isolation: bool,
     /// The emulated hypervisor state. This is only present for
     /// hardware-isolated VMs (and for software VMs in test environments).
     hv: Option<GlobalHv>,
@@ -215,21 +218,23 @@ struct UhPartitionInner {
     isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(skip)]
-    shared_vis_pages_pool: Option<shared_pool_alloc::SharedPoolAllocator>,
+    shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
     #[inspect(with = "inspect::AtomicMut")]
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
+    backing_shared: BackingShared,
 }
 
-#[derive(Clone, Inspect)]
+#[derive(Inspect)]
 #[inspect(external_tag)]
-enum BackingShared {
+#[doc(hidden)]
+pub enum BackingShared {
     // No shared state for hypervisor-backed VMs today.
     Hypervisor,
     #[cfg(guest_arch = "x86_64")]
-    Snp(#[inspect(flatten)] Arc<SnpBackedShared>),
+    Snp(#[inspect(flatten)] SnpBackedShared),
     #[cfg(guest_arch = "x86_64")]
-    Tdx(#[inspect(flatten)] Arc<TdxBackedShared>),
+    Tdx(#[inspect(flatten)] TdxBackedShared),
 }
 
 impl BackingShared {
@@ -247,13 +252,9 @@ impl BackingShared {
                 BackingShared::Hypervisor
             }
             #[cfg(guest_arch = "x86_64")]
-            IsolationType::Snp => {
-                BackingShared::Snp(Arc::new(SnpBackedShared::new(backing_shared_params)?))
-            }
+            IsolationType::Snp => BackingShared::Snp(SnpBackedShared::new(backing_shared_params)?),
             #[cfg(guest_arch = "x86_64")]
-            IsolationType::Tdx => {
-                BackingShared::Tdx(Arc::new(TdxBackedShared::new(backing_shared_params)?))
-            }
+            IsolationType::Tdx => BackingShared::Tdx(TdxBackedShared::new(backing_shared_params)?),
             #[cfg(not(guest_arch = "x86_64"))]
             _ => unreachable!(),
         })
@@ -312,16 +313,22 @@ pub struct UhCvmVpState {
     exit_vtl: GuestVtl,
     /// Hypervisor enlightenment emulator state.
     hv: VtlArray<ProcessorVtlHv, 2>,
+    /// LAPIC state.
+    lapics: VtlArray<processor::LapicState, 2>,
 }
 
 #[cfg(guest_arch = "x86_64")]
 impl UhCvmVpState {
     /// Creates a new CVM VP state.
-    pub fn new(hv: VtlArray<ProcessorVtlHv, 2>) -> Self {
+    pub fn new(
+        hv: VtlArray<ProcessorVtlHv, 2>,
+        lapics: VtlArray<processor::LapicState, 2>,
+    ) -> Self {
         Self {
             vtls_tlb_waiting: VtlArray::new(false),
             exit_vtl: GuestVtl::Vtl0,
             hv,
+            lapics,
         }
     }
 }
@@ -342,6 +349,7 @@ pub struct UhCvmPartitionState {
         with = "|vec| inspect::iter_by_index(vec.iter().map(|arr| inspect::iter_by_index(arr.iter())))"
     )]
     tlb_lock_info: Vec<VtlArray<TlbLockInfo, 2>>,
+    shared_memory: GuestMemory,
 }
 
 /// Partition-wide state for CVMs.
@@ -389,6 +397,16 @@ impl GuestVsmState {
                 vtl1: GuestVsmVtl1State::HardwareCvm { state },
             } => Some(state),
 
+            _ => None,
+        }
+    }
+
+    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    fn get_hardware_cvm(&self) -> Option<&HardwareCvmVtl1State> {
+        match self {
+            GuestVsmState::Enabled {
+                vtl1: GuestVsmVtl1State::HardwareCvm { state },
+            } => Some(state),
             _ => None,
         }
     }
@@ -496,7 +514,6 @@ impl virt::Aarch64Partition for UhPartition {
 pub struct UhProcessorBox {
     partition: Arc<UhPartitionInner>,
     vp_info: TargetVpInfo,
-    backing_shared: BackingShared,
 }
 
 impl UhProcessorBox {
@@ -523,7 +540,7 @@ impl UhProcessorBox {
         &'a mut self,
         driver: &impl Driver,
         control: Option<&'a mut IdleControl>,
-    ) -> Result<UhProcessor<'_, T>, Error> {
+    ) -> Result<UhProcessor<'a, T>, Error> {
         if let Some(control) = &control {
             let vp_index = self.vp_info.base.vp_index;
 
@@ -540,13 +557,7 @@ impl UhProcessorBox {
                 .map_err(Error::Hcl)?;
         }
 
-        UhProcessor::new(
-            driver,
-            &self.partition,
-            self.vp_info,
-            &self.backing_shared,
-            control,
-        )
+        UhProcessor::new(driver, &self.partition, self.vp_info, control)
     }
 
     /// Sets the sidecar remove reason for the processor to be due to a task
@@ -1108,6 +1119,9 @@ fn set_vtl2_vsm_partition_config(hcl: &mut Hcl) -> Result<(), Error> {
 pub struct UhPartitionNewParams<'a> {
     /// The isolation type for the partition.
     pub isolation: IsolationType,
+    /// Hide isolation from the guest. The guest will run as if it is not
+    /// isolated.
+    pub hide_isolation: bool,
     /// The memory layout for lower VTLs.
     pub lower_vtl_memory_layout: &'a MemoryLayout,
     /// The guest processor topology.
@@ -1139,7 +1153,7 @@ pub struct UhPartitionNewParams<'a> {
 /// Parameters to [`UhProtoPartition::build`].
 pub struct UhLateParams<'a> {
     /// Guest memory for untrusted devices, like overlay pages.
-    pub untrusted_dma_memory: GuestMemory,
+    pub shared_memory: Option<GuestMemory>,
     /// Guest memory for lower VTLs.
     pub gm: VtlArray<GuestMemory, 2>,
     /// The CPUID leaves to expose to the guest.
@@ -1155,7 +1169,7 @@ pub struct UhLateParams<'a> {
     /// An object to call to change host visibility on guest memory.
     pub isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     /// Allocator for shared visibility pages.
-    pub shared_vis_pages_pool: Option<shared_pool_alloc::SharedPoolAllocator>,
+    pub shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
 }
 
 /// Trait for CVM-related protections on guest memory.
@@ -1217,7 +1231,8 @@ pub trait ProtectIsolatedMemory: Send + Sync {
 pub struct UhProtoPartition<'a> {
     params: UhPartitionNewParams<'a>,
     hcl: Hcl,
-    cvm_state: Option<UhCvmPartitionState>,
+    #[cfg(guest_arch = "x86_64")]
+    cvm_cpuid: Option<cvm_cpuid::CpuidResults>,
     guest_vsm_available: bool,
 }
 
@@ -1276,13 +1291,33 @@ impl<'a> UhProtoPartition<'a> {
 
         hcl.set_allowed_hypercalls(allowed_hypercalls.as_slice());
 
-        let cvm_state = Self::construct_cvm_state(&params)?;
-        let guest_vsm_available = Self::check_guest_vsm_support(&hcl, &params, cvm_state.as_ref());
+        #[cfg(guest_arch = "x86_64")]
+        let cvm_cpuid = match params.isolation {
+            IsolationType::Snp => Some(
+                cvm_cpuid::CpuidResults::new(cvm_cpuid::CpuidResultsIsolationType::Snp {
+                    cpuid_pages: params.cvm_cpuid_info.unwrap(),
+                })
+                .map_err(Error::CvmCpuid)?,
+            ),
+            IsolationType::Tdx => Some(
+                cvm_cpuid::CpuidResults::new(cvm_cpuid::CpuidResultsIsolationType::Tdx)
+                    .map_err(Error::CvmCpuid)?,
+            ),
+            IsolationType::Vbs | IsolationType::None => None,
+        };
+
+        let guest_vsm_available = Self::check_guest_vsm_support(
+            &hcl,
+            &params,
+            #[cfg(guest_arch = "x86_64")]
+            cvm_cpuid.as_ref(),
+        );
 
         Ok(UhProtoPartition {
             hcl,
             params,
-            cvm_state,
+            #[cfg(guest_arch = "x86_64")]
+            cvm_cpuid,
             guest_vsm_available,
         })
     }
@@ -1300,7 +1335,8 @@ impl<'a> UhProtoPartition<'a> {
         let Self {
             mut hcl,
             params,
-            cvm_state,
+            #[cfg(guest_arch = "x86_64")]
+            cvm_cpuid,
             guest_vsm_available,
         } = self;
         let isolation = params.isolation;
@@ -1453,15 +1489,16 @@ impl<'a> UhProtoPartition<'a> {
             guest_vsm_available,
             params.vtom,
             isolation,
-            is_hardware_isolated,
+            params.hide_isolation,
         );
 
         #[cfg(guest_arch = "x86_64")]
         let caps = UhPartition::construct_capabilities(
             params.topology,
             &cpuid,
-            cvm_state.as_ref().map(|state| &state.cpuid),
+            cvm_cpuid.as_ref(),
             isolation,
+            params.hide_isolation,
         );
 
         #[cfg(guest_arch = "x86_64")]
@@ -1514,7 +1551,11 @@ impl<'a> UhProtoPartition<'a> {
                 // sharing the untrusted SINTs with the TDX L1. Even if it did,
                 // performance would be poor for cases where the L1 implements
                 // high-performance devices.
-                Some(GlobalSynic::new(params.topology.vp_count()))
+                if !params.hide_isolation {
+                    Some(GlobalSynic::new(params.topology.vp_count()))
+                } else {
+                    None
+                }
             } else {
                 // The hypervisor will manage the untrusted SINTs (or the whole
                 // synic for non-hardware-isolated VMs), but some event ports
@@ -1533,6 +1574,13 @@ impl<'a> UhProtoPartition<'a> {
             None
         };
 
+        #[cfg(guest_arch = "x86_64")]
+        let cvm_state = cvm_cpuid
+            .map(|cpuid| Self::construct_cvm_state(&params, &late_params, cpuid))
+            .transpose()?;
+        #[cfg(guest_arch = "aarch64")]
+        let cvm_state = None;
+
         let enter_modes = EnterModes::default();
 
         let partition = Arc::new(UhPartitionInner {
@@ -1543,7 +1591,7 @@ impl<'a> UhProtoPartition<'a> {
             enter_modes: Mutex::new(enter_modes),
             enter_modes_atomic: u8::from(hcl::protocol::EnterModes::from(enter_modes)).into(),
             gm: late_params.gm,
-            untrusted_dma_memory: late_params.untrusted_dma_memory,
+            shared_memory: late_params.shared_memory,
             cpuid,
             crash_notification_send: late_params.crash_notification_send,
             monitor_page: MonitorPage::new(),
@@ -1552,6 +1600,7 @@ impl<'a> UhProtoPartition<'a> {
             lapic,
             vmtime: late_params.vmtime.clone(),
             isolation,
+            hide_isolation: params.hide_isolation,
             hv,
             untrusted_synic,
             guest_vsm: RwLock::new(vsm_state),
@@ -1559,6 +1608,7 @@ impl<'a> UhProtoPartition<'a> {
             shared_vis_pages_pool: late_params.shared_vis_pages_pool,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
+            backing_shared: BackingShared::new(isolation, BackingSharedParams { cvm_state })?,
         });
 
         if cfg!(guest_arch = "x86_64") {
@@ -1566,15 +1616,12 @@ impl<'a> UhProtoPartition<'a> {
             partition.manage_io_port_intercept_region(0, !0, true);
         }
 
-        let backing_shared = BackingShared::new(isolation, BackingSharedParams { cvm_state })?;
-
         let vps = params
             .topology
             .vps_arch()
             .map(|vp_info| UhProcessorBox {
                 partition: partition.clone(),
                 vp_info,
-                backing_shared: backing_shared.clone(),
             })
             .collect();
 
@@ -1646,11 +1693,8 @@ impl UhProtoPartition<'_> {
     fn check_guest_vsm_support(
         hcl: &Hcl,
         params: &UhPartitionNewParams<'_>,
-        cvm_state: Option<&UhCvmPartitionState>,
+        #[cfg(guest_arch = "x86_64")] cvm_cpuid: Option<&cvm_cpuid::CpuidResults>,
     ) -> bool {
-        #[cfg(guest_arch = "aarch64")]
-        let _ = cvm_state;
-
         match params.isolation {
             IsolationType::None | IsolationType::Vbs => {}
             #[cfg(guest_arch = "x86_64")]
@@ -1662,9 +1706,8 @@ impl UhProtoPartition<'_> {
                 }
                 // Require RMP Query
                 let rmp_query = x86defs::cpuid::ExtendedSevFeaturesEax::from(
-                    cvm_state
+                    cvm_cpuid
                         .unwrap()
-                        .cpuid
                         .registered_result(x86defs::cpuid::CpuidFunction::ExtendedSevFeatures, 0)
                         .eax,
                 )
@@ -1702,47 +1745,26 @@ impl UhProtoPartition<'_> {
 
     #[cfg(guest_arch = "x86_64")]
     /// Constructs partition-wide CVM state.
-    ///
-    /// Returns whether guest vsm should be exposed to the guest as available.
     fn construct_cvm_state(
         params: &UhPartitionNewParams<'_>,
-    ) -> Result<Option<UhCvmPartitionState>, Error> {
-        let cpuid = match params.isolation {
-            IsolationType::Snp => Some(
-                cvm_cpuid::CpuidResults::new(cvm_cpuid::CpuidResultsIsolationType::Snp {
-                    cpuid_pages: params.cvm_cpuid_info.unwrap(),
-                })
-                .map_err(Error::CvmCpuid)?,
-            ),
-            IsolationType::Tdx => Some(
-                cvm_cpuid::CpuidResults::new(cvm_cpuid::CpuidResultsIsolationType::Tdx)
-                    .map_err(Error::CvmCpuid)?,
-            ),
-            IsolationType::Vbs | IsolationType::None => None,
-        };
-
+        late_params: &UhLateParams<'_>,
+        cpuid: cvm_cpuid::CpuidResults,
+    ) -> Result<UhCvmPartitionState, Error> {
         let vp_count = params.topology.vp_count() as usize;
-        let cvm_state = cpuid.map(|cpuid| {
-            let tlb_lock_info = (0..vp_count)
-                .map(|_| VtlArray::from_fn(|_| TlbLockInfo::new(vp_count)))
-                .collect();
-            let tlb_locked_vps =
-                VtlArray::from_fn(|_| BitVec::repeat(false, vp_count).into_boxed_bitslice());
-            UhCvmPartitionState {
-                cpuid,
-                tlb_locked_vps,
-                tlb_lock_info,
-            }
-        });
-
-        Ok(cvm_state)
-    }
-
-    #[cfg(not(guest_arch = "x86_64"))]
-    fn construct_cvm_state(
-        _params: &UhPartitionNewParams<'_>,
-    ) -> Result<Option<UhCvmPartitionState>, Error> {
-        Ok(None)
+        let tlb_lock_info = (0..vp_count)
+            .map(|_| VtlArray::from_fn(|_| TlbLockInfo::new(vp_count)))
+            .collect();
+        let tlb_locked_vps =
+            VtlArray::from_fn(|_| BitVec::repeat(false, vp_count).into_boxed_bitslice());
+        Ok(UhCvmPartitionState {
+            cpuid,
+            tlb_locked_vps,
+            tlb_lock_info,
+            shared_memory: late_params
+                .shared_memory
+                .clone()
+                .ok_or(Error::MissingSharedMemory)?,
+        })
     }
 }
 
@@ -1756,20 +1778,30 @@ impl UhPartition {
         access_vsm: bool,
         vtom: Option<u64>,
         isolation: IsolationType,
-        is_hardware_isolated: bool,
+        hide_isolation: bool,
     ) -> CpuidLeafSet {
         let mut cpuid = CpuidLeafSet::new(Vec::new());
 
-        if emulate_apic || is_hardware_isolated {
+        if emulate_apic || isolation.is_hardware_isolated() {
+            // Get the hypervisor version from the host. This is just for
+            // reporting purposes, so it is safe even if the hypervisor is not
+            // trusted.
+            let hv_version = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_VERSION, 0);
             cpuid.extend(&hv1_emulator::cpuid::hv_cpuid_leaves(
                 topology,
                 emulate_apic,
-                isolation,
+                if hide_isolation {
+                    IsolationType::None
+                } else {
+                    isolation
+                },
                 access_vsm,
-                is_hardware_isolated.then_some(&mut |leaf, sub_leaf| {
-                    let result = safe_intrinsics::cpuid(leaf, sub_leaf);
-                    [result.eax, result.ebx, result.ecx, result.edx]
-                }),
+                [
+                    hv_version.eax,
+                    hv_version.ebx,
+                    hv_version.ecx,
+                    hv_version.edx,
+                ],
                 vtom,
             ));
         }
@@ -1785,6 +1817,7 @@ impl UhPartition {
         cpuid: &CpuidLeafSet,
         cvm_cpuid: Option<&cvm_cpuid::CpuidResults>,
         isolation: IsolationType,
+        hide_isolation: bool,
     ) -> virt::x86::X86PartitionCapabilities {
         let mut native_cpuid_fn;
         let mut cvm_cpuid_fn;
@@ -1821,12 +1854,12 @@ impl UhPartition {
         let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(topology, cpuid_fn);
         match isolation {
             IsolationType::Tdx => {
-                assert!(caps.vtom.is_some());
+                assert_eq!(caps.vtom.is_some(), !hide_isolation);
                 // TDX 1.5 requires EFER.NXE to be set to 1, so set it at RESET/INIT.
                 caps.nxe_forced_on = true;
             }
             IsolationType::Snp => {
-                assert!(caps.vtom.is_some());
+                assert_eq!(caps.vtom.is_some(), !hide_isolation);
             }
             _ => {
                 assert!(caps.vtom.is_none());
