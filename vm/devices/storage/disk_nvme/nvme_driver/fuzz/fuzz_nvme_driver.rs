@@ -9,11 +9,11 @@ use arbitrary::Arbitrary;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use guestmem::GuestMemory;
 use guid::Guid;
+use nvme::NvmeController;
+use nvme::NvmeControllerCaps;
 use nvme_driver::Namespace;
 use nvme_driver::NvmeDriver;
 use nvme_spec::nvm::DsmRange;
-use nvme::NvmeController;
-use nvme::NvmeControllerCaps;
 use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
@@ -111,6 +111,9 @@ impl FuzzNvmeDriver {
     /// contract-checking `assert!`s in the driver. This does not break the goal of fuzzing,
     /// since these contract checks imply programmer error and the primary goal of this is
     /// to drive actions to get invalid data back from the underlying PCI & NVMe emulators.
+    ///
+    /// All that being said, be careful when deciding to sanitize inputs here: consider
+    /// and explicitly rule out adding graceful error handling in the `NvmeDriver` itself.
     pub async fn execute_arbitrary_action(&mut self) -> Result<(), anyhow::Error> {
         let action = arbitrary_data::<NvmeDriverAction>()?;
 
@@ -123,9 +126,9 @@ impl FuzzNvmeDriver {
                 let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // TODO: [use-arbitrary-input]
                 self.namespace
                     .read(
-                        target_cpu % self.cpu_count,
+                        target_cpu % self.cpu_count, // TODO: [panic-or-bail-on-fuzz]
                         lba,
-                        block_count
+                        block_count  // TODO: [panic-or-bail-on-fuzz]
                             % (u32::try_from(buf_range.len()).unwrap()
                                 >> self.namespace.block_size().trailing_zeros())
                             % self.namespace.max_transfer_block_count(),
@@ -143,9 +146,9 @@ impl FuzzNvmeDriver {
                 let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // TODO: [use-arbitrary-input]
                 self.namespace
                     .write(
-                        target_cpu % self.cpu_count,
+                        target_cpu % self.cpu_count, // TODO: [panic-or-bail-on-fuzz]
                         lba,
-                        block_count
+                        block_count // TODO: [panic-or-bail-on-fuzz]
                             % (u32::try_from(buf_range.len()).unwrap()
                                 >> self.namespace.block_size().trailing_zeros())
                             % self.namespace.max_transfer_block_count(),
@@ -157,7 +160,7 @@ impl FuzzNvmeDriver {
             }
 
             NvmeDriverAction::Flush { target_cpu } => {
-                self.namespace.flush(target_cpu % self.cpu_count).await?;
+                self.namespace.flush(target_cpu % self.cpu_count).await?; // TODO: [panic-or-bail-on-fuzz]
             }
 
             NvmeDriverAction::UpdateServicingFlags { nvme_keepalive } => {
