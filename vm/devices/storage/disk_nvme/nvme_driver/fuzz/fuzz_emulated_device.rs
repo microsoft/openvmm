@@ -2,6 +2,9 @@
 // Licensed under the MIT License.
 
 //! A shim layer to fuzz responses from an emulated device.
+//! This is the primary fuzzer for the host (a.k.a device) ->
+//! openhcl attack surface. Do not sanitize any arbitrary data
+//! responses in this routine.
 use crate::arbitrary_data;
 
 use chipset_device::mmio::MmioIntercept;
