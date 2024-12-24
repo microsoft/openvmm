@@ -63,7 +63,7 @@ pub struct KeyProtectorById {
 }
 
 /// Maximum size of the `agent_data`.
-pub const AGENT_DATA_MAX_SIZE: usize = get_protocol::IGVM_ATTEST_MSG_REQ_AGENT_DATA_MAX_SIZE;
+pub const AGENT_DATA_MAX_SIZE: usize = 2048;
 
 /// The data format of the `FileId::ATTEST` entry in the VMGS file.
 #[repr(C)]

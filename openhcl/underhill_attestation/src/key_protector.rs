@@ -4,11 +4,11 @@
 //! Implementation of the key retrieval logic for the [`KeyProtector`].
 
 use crate::crypto;
-use crate::protocol::vmgs::KeyProtector;
-use crate::protocol::vmgs::AES_GCM_KEY_LENGTH;
 use crate::Keys;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
+use openhcl_attestation_protocol::vmgs::KeyProtector;
+use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use thiserror::Error;
@@ -88,7 +88,7 @@ impl KeyProtectorExt for KeyProtector {
         ingress_idx: usize,
         egress_idx: usize,
     ) -> Result<Keys, GetKeysFromKeyProtectorError> {
-        use crate::protocol::vmgs::DEK_BUFFER_SIZE;
+        use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
 
         let found_ingress_dek = !self.dek[ingress_idx].dek_buffer.iter().all(|&x| x == 0);
         let found_egress_dek = !self.dek[egress_idx].dek_buffer.iter().all(|&x| x == 0);
@@ -307,7 +307,7 @@ mod tests {
         let ingress_index = 0;
         let egress_index = 1;
 
-        let mut data = [0u8; crate::protocol::vmgs::KEY_PROTECTOR_SIZE];
+        let mut data = [0u8; openhcl_attestation_protocol::vmgs::KEY_PROTECTOR_SIZE];
         data[..rsa_wrapped_dek.len()].copy_from_slice(&rsa_wrapped_dek);
 
         let result = KeyProtector::read_from_prefix(&data);
@@ -417,7 +417,7 @@ mod tests {
         let ingress_index = 0;
         let egress_index = 1;
 
-        let mut data = [0u8; crate::protocol::vmgs::KEY_PROTECTOR_SIZE];
+        let mut data = [0u8; openhcl_attestation_protocol::vmgs::KEY_PROTECTOR_SIZE];
 
         // Test the scenario where DEK is larger than AES-wrapped key size.
         aes_wrapped_dek.resize(DEK_EXTENDED_DATA_SIZE, 1);

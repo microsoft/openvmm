@@ -482,9 +482,9 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             HvX64RegisterName::Pat => Ok(self
                 .vp
                 .access_state(vtl.into())
-                .cache_control()
+                .pat()
                 .map_err(Self::reg_access_error_to_hv_err)?
-                .msr_cr_pat
+                .value
                 .into()),
             synic_reg @ (HvX64RegisterName::Sint0
             | HvX64RegisterName::Sint1
@@ -584,18 +584,15 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 self.vp
                     .access_state(vtl.into())
                     .set_virtual_msrs(&msrs)
-                    .map_err(Self::reg_access_error_to_hv_err)?;
-                Ok(())
+                    .map_err(Self::reg_access_error_to_hv_err)
             }
-            HvX64RegisterName::TscAux => {
-                self.vp
-                    .access_state(vtl.into())
-                    .set_tsc_aux(&virt::vp::TscAux {
-                        value: reg.value.as_u64(),
-                    })
-                    .map_err(Self::reg_access_error_to_hv_err)?;
-                Ok(())
-            }
+            HvX64RegisterName::TscAux => self
+                .vp
+                .access_state(vtl.into())
+                .set_tsc_aux(&virt::vp::TscAux {
+                    value: reg.value.as_u64(),
+                })
+                .map_err(Self::reg_access_error_to_hv_err),
 
             debug_reg @ (HvX64RegisterName::Dr3 | HvX64RegisterName::Dr7) => {
                 let mut debug_registers = self
@@ -612,22 +609,15 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 self.vp
                     .access_state(vtl.into())
                     .set_debug_regs(&debug_registers)
-                    .map_err(Self::reg_access_error_to_hv_err)?;
-                Ok(())
+                    .map_err(Self::reg_access_error_to_hv_err)
             }
-            HvX64RegisterName::Pat => {
-                let mut cache_control = self
-                    .vp
-                    .access_state(vtl.into())
-                    .cache_control()
-                    .map_err(Self::reg_access_error_to_hv_err)?;
-                cache_control.msr_cr_pat = reg.value.as_u64();
-                self.vp
-                    .access_state(vtl.into())
-                    .set_cache_control(&cache_control)
-                    .map_err(Self::reg_access_error_to_hv_err)?;
-                Ok(())
-            }
+            HvX64RegisterName::Pat => self
+                .vp
+                .access_state(vtl.into())
+                .set_pat(&virt::vp::Pat {
+                    value: reg.value.as_u64(),
+                })
+                .map_err(Self::reg_access_error_to_hv_err),
             register @ (HvX64RegisterName::Efer
             | HvX64RegisterName::Cr0
             | HvX64RegisterName::Cr4
@@ -665,8 +655,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 self.vp
                     .access_state(vtl.into())
                     .set_registers(&registers)
-                    .map_err(Self::reg_access_error_to_hv_err)?;
-                Ok(())
+                    .map_err(Self::reg_access_error_to_hv_err)
             }
             synic_reg @ (HvX64RegisterName::Sint0
             | HvX64RegisterName::Sint1
@@ -1009,9 +998,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
         // protections on the VTL itself. Therefore, for a hardware CVM,
         // given that only VTL 1 can set the protections, the default
         // permissions should be changed for VTL 0.
-        protector.change_vtl_protections(GuestVtl::Vtl0, gpa_pages, map_flags)?;
-
-        Ok(())
+        protector.change_vtl_protections(GuestVtl::Vtl0, gpa_pages, map_flags)
     }
 }
 
@@ -1078,7 +1065,9 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
                 let cache_type = match cache_info {
                     TranslateCachingInfo::NoPaging => HvCacheType::HvCacheTypeWriteBack.0 as u8,
                     TranslateCachingInfo::Paging { pat_index } => {
-                        ((self.vp.backing.pat(self.vp, target_vtl) >> (pat_index * 8)) & 0xff) as u8
+                        ((self.vp.access_state(target_vtl.into()).pat().unwrap().value
+                            >> (pat_index * 8))
+                            & 0xff) as u8
                     }
                 };
 

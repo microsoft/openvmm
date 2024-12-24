@@ -1102,8 +1102,8 @@ impl FloppyDiskController {
             }
         };
 
-        let size = (((buffer.size + STANDARD_FLOPPY_SECTOR_SIZE - 1) / STANDARD_FLOPPY_SECTOR_SIZE)
-            * STANDARD_FLOPPY_SECTOR_SIZE) as u32;
+        let size = (buffer.size.div_ceil(STANDARD_FLOPPY_SECTOR_SIZE) * STANDARD_FLOPPY_SECTOR_SIZE)
+            as u32;
 
         let buffer_ptr = &self.command_buffer.buffer[0..size as usize][..size as usize];
 
@@ -1601,8 +1601,7 @@ impl FloppyDiskController {
         let lba = (self.state.position).chs_to_lba(self.state.internals.sectors_per_track) as u64;
 
         let size = {
-            let num = (((size_hint + STANDARD_FLOPPY_SECTOR_SIZE - 1)
-                / STANDARD_FLOPPY_SECTOR_SIZE)
+            let num = (size_hint.div_ceil(STANDARD_FLOPPY_SECTOR_SIZE)
                 * STANDARD_FLOPPY_SECTOR_SIZE) as u32;
             if num < STANDARD_FLOPPY_SECTOR_SIZE as u32 {
                 STANDARD_FLOPPY_SECTOR_SIZE as u32
@@ -1688,8 +1687,7 @@ impl FloppyDiskController {
             }
         };
 
-        let size = ((buffer.size + STANDARD_FLOPPY_SECTOR_SIZE - 1) / STANDARD_FLOPPY_SECTOR_SIZE)
-            * STANDARD_FLOPPY_SECTOR_SIZE;
+        let size = buffer.size.div_ceil(STANDARD_FLOPPY_SECTOR_SIZE) * STANDARD_FLOPPY_SECTOR_SIZE;
 
         let command_buffer = self.command_buffer.access();
 
@@ -1761,8 +1759,8 @@ impl FloppyDiskController {
             }
         };
 
-        let size = (((buffer.size + STANDARD_FLOPPY_SECTOR_SIZE - 1) / STANDARD_FLOPPY_SECTOR_SIZE)
-            * STANDARD_FLOPPY_SECTOR_SIZE) as u32;
+        let size = (buffer.size.div_ceil(STANDARD_FLOPPY_SECTOR_SIZE) * STANDARD_FLOPPY_SECTOR_SIZE)
+            as u32;
 
         let command_buffer = self.command_buffer.access();
 

@@ -45,37 +45,32 @@ mod tests {
                 Entry {
                     name: "a".to_string(),
                     node: Node::Unevaluated,
-                    sensitivity: Some(SensitivityLevel::Unspecified),
+                    sensitivity: SensitivityLevel::Unspecified,
                 },
                 Entry {
                     name: "b".to_string(),
                     node: Node::Failed(Error::Update("foo".into())),
-                    sensitivity: Some(SensitivityLevel::Safe),
+                    sensitivity: SensitivityLevel::Safe,
                 },
                 Entry {
                     name: "c".to_string(),
                     node: Node::Value(Value::new(ValueKind::Signed(-1))),
-                    sensitivity: Some(SensitivityLevel::Sensitive),
+                    sensitivity: SensitivityLevel::Sensitive,
                 },
                 Entry {
                     name: "d".to_string(),
                     node: Node::Value(Value::new(ValueKind::Unsigned(2))),
-                    sensitivity: Some(SensitivityLevel::Safe),
+                    sensitivity: SensitivityLevel::Safe,
                 },
                 Entry {
                     name: "e".to_string(),
                     node: Node::Value(Value::new(ValueKind::Bool(true))),
-                    sensitivity: Some(SensitivityLevel::Sensitive),
+                    sensitivity: SensitivityLevel::Sensitive,
                 },
                 Entry {
                     name: "f".to_string(),
                     node: Node::Value(Value::new(ValueKind::String("foo".to_string()))),
-                    sensitivity: Some(SensitivityLevel::Unspecified),
-                },
-                Entry {
-                    name: "g".to_string(),
-                    node: Node::Value(Value::new(ValueKind::Bytes(b"abc".to_vec()))),
-                    sensitivity: None,
+                    sensitivity: SensitivityLevel::Unspecified,
                 },
             ]),
         };

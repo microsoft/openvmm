@@ -74,6 +74,7 @@ impl SimpleVmbusDevice for GuestEmulationLog {
     fn open(
         &mut self,
         channel: RawAsyncChannel<GpadlRingMem>,
+        _guest_memory: guestmem::GuestMemory,
     ) -> Result<Self::Runner, ChannelOpenError> {
         let pipe = MessagePipe::new(channel)?;
         Ok(GelChannel::new(pipe))

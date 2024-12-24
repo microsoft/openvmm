@@ -64,7 +64,7 @@ struct Bitmap(Vec<AtomicU64>);
 
 impl Bitmap {
     fn new(address_space_size: u64) -> Self {
-        let chunks = (address_space_size + (GRANULARITY - 1)) / GRANULARITY;
+        let chunks = address_space_size.div_ceil(GRANULARITY);
         let words = (chunks + 63) / 64;
         let mut v = Vec::new();
         v.resize_with(words as usize, AtomicU64::default);
@@ -114,7 +114,7 @@ impl<T: RegisterMemory> MemoryRegistrar<T> {
         let address_space_size = layout.ram().last().unwrap().range.end();
 
         Self {
-            chunk_count: (address_space_size + (GRANULARITY - 1)) / GRANULARITY,
+            chunk_count: address_space_size.div_ceil(GRANULARITY),
             registered: Bitmap::new(address_space_size),
             state: Mutex::new(RegistrarState {
                 failed: Bitmap::new(address_space_size),
@@ -127,7 +127,7 @@ impl<T: RegisterMemory> MemoryRegistrar<T> {
 
     fn chunks(range: MemoryRange) -> Range<u64> {
         let start = range.start() / GRANULARITY;
-        let end = (range.end() + (GRANULARITY - 1)) / GRANULARITY;
+        let end = range.end().div_ceil(GRANULARITY);
         start..end
     }
 

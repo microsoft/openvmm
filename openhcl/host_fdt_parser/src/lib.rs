@@ -60,13 +60,13 @@ pub struct GicInfo {
 #[derive(Debug)]
 pub struct Error<'a>(ErrorKind<'a>);
 
-impl<'a> Display for Error<'a> {
+impl Display for Error<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("Parsing failed due to: {}", self.0))
     }
 }
 
-impl<'a> core::error::Error for Error<'a> {}
+impl core::error::Error for Error<'_> {}
 
 #[derive(Debug)]
 enum ErrorKind<'a> {
@@ -138,7 +138,7 @@ enum ErrorKind<'a> {
     },
 }
 
-impl<'a> Display for ErrorKind<'a> {
+impl Display for ErrorKind<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             ErrorKind::Dt(e) => f.write_fmt(format_args!("invalid device tree: {}", e)),
@@ -229,8 +229,11 @@ pub struct ParsedDeviceTree<
     /// Entropy from the host to be used by the OpenHCL kernel
     #[cfg_attr(feature = "inspect", inspect(with = "Option::is_some"))]
     pub entropy: Option<ArrayVec<u8, MAX_ENTROPY_SIZE>>,
-    /// Preserved DMA memory size in pages.
-    pub preserve_dma_4k_pages: Option<u64>,
+    /// The number of pages the host has provided as a hint for device dma.
+    ///
+    /// This is used to allocate a persistent VTL2 pool on non-isolated guests,
+    /// to allow devices to stay alive during a servicing operation.
+    pub device_dma_page_count: Option<u64>,
 }
 
 /// The memory allocation mode provided by the host. This determines how OpenHCL
@@ -309,7 +312,7 @@ impl<
             gic: None,
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
-            preserve_dma_4k_pages: None,
+            device_dma_page_count: None,
         }
     }
 
@@ -511,7 +514,7 @@ impl<
                             }
                             // These parameters may not be present so it is not an error if they are missing.
                             "servicing" => {
-                                storage.preserve_dma_4k_pages = openhcl_child
+                                storage.device_dma_page_count = openhcl_child
                                     .find_property("dma-preserve-pages")
                                     .ok()
                                     .flatten()
@@ -709,7 +712,7 @@ impl<
             gic: _,
             memory_allocation_mode: _,
             entropy: _,
-            preserve_dma_4k_pages: _,
+            device_dma_page_count: _,
         } = storage;
 
         *device_tree_size = parser.total_size;
@@ -1351,10 +1354,11 @@ mod tests {
             .end_node()
             .unwrap();
 
-        // openhcl node - contains memory allocation mode.
+        // openhcl node - contains openhcl specific information.
         let p_memory_allocation_mode = root.add_string("memory-allocation-mode").unwrap();
         let p_memory_allocation_size = root.add_string("memory-size").unwrap();
         let p_mmio_allocation_size = root.add_string("mmio-size").unwrap();
+        let p_device_dma_page_count = root.add_string("dma-preserve-pages").unwrap();
         let mut openhcl = root.start_node("openhcl").unwrap();
 
         let memory_alloc_str = match context.memory_allocation_mode {
@@ -1376,11 +1380,22 @@ mod tests {
             }
         };
 
-        root = openhcl
+        openhcl = openhcl
             .add_str(p_memory_allocation_mode, memory_alloc_str)
-            .unwrap()
-            .end_node()
             .unwrap();
+
+        // add device_dma_page_count
+        if let Some(device_dma_page_count) = context.device_dma_page_count {
+            openhcl = openhcl
+                .start_node("servicing")
+                .unwrap()
+                .add_u64(p_device_dma_page_count, device_dma_page_count)
+                .unwrap()
+                .end_node()
+                .unwrap();
+        }
+
+        root = openhcl.end_node().unwrap();
 
         let bytes_used = root
             .end_node()
@@ -1404,6 +1419,7 @@ mod tests {
         com3_serial: bool,
         gic: Option<GicInfo>,
         memory_allocation_mode: MemoryAllocationMode,
+        device_dma_page_count: Option<u64>,
     ) -> TestParsedDeviceTree {
         let mut context = TestParsedDeviceTree::new();
         context.device_tree_size = dt_size;
@@ -1416,13 +1432,14 @@ mod tests {
         context.cpus.try_extend_from_slice(cpus).unwrap();
         context.gic = gic;
         context.memory_allocation_mode = memory_allocation_mode;
+        context.device_dma_page_count = device_dma_page_count;
         context
     }
 
     #[test]
     fn test_basic_dt() {
         let orig = create_parsed(
-            2568,
+            2608,
             &[
                 MemoryEntry {
                     range: MemoryRange::try_new(0..(1024 * HV_PAGE_SIZE)).unwrap(),
@@ -1473,6 +1490,7 @@ mod tests {
                 gic_redistributor_stride: 0x20000,
             }),
             MemoryAllocationMode::Host,
+            Some(1234),
         );
 
         let dt = build_dt(&orig);
@@ -1538,6 +1556,7 @@ mod tests {
                 memory_size: Some(1000 * 1024 * 1024), // 1000 MB
                 mmio_size: Some(128 * 1024 * 1024),    // 128 MB
             },
+            None,
         );
 
         let dt = build_dt(&orig);
@@ -1584,6 +1603,7 @@ mod tests {
             false,
             None,
             MemoryAllocationMode::Host,
+            None,
         );
 
         let dt = build_dt(&bad);
@@ -1621,6 +1641,7 @@ mod tests {
             false,
             None,
             MemoryAllocationMode::Host,
+            None,
         );
 
         let dt = build_dt(&bad);
@@ -1663,6 +1684,7 @@ mod tests {
             false,
             None,
             MemoryAllocationMode::Host,
+            None,
         );
 
         let dt = build_dt(&bad);
@@ -1705,6 +1727,7 @@ mod tests {
             false,
             None,
             MemoryAllocationMode::Host,
+            None,
         );
 
         let dt = build_dt(&bad);
@@ -1764,6 +1787,7 @@ mod tests {
             true,
             None,
             MemoryAllocationMode::Host,
+            None,
         );
 
         let dt = build_dt(&orig);

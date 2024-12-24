@@ -626,6 +626,17 @@ pub enum DiskCliKind {
     Memory(u64),
     // memdiff:<kind>
     MemoryDiff(Box<DiskCliKind>),
+    // sql:<path>[;create=<len>]
+    Sqlite {
+        path: PathBuf,
+        create_with_len: Option<u64>,
+    },
+    // sqldiff:<path>[;create]:<kind>
+    SqliteDiff {
+        path: PathBuf,
+        create: bool,
+        disk: Box<DiskCliKind>,
+    },
     // prwrap:<kind>
     PersistentReservationsWrapper(Box<DiskCliKind>),
     // file:<path>
@@ -665,6 +676,45 @@ impl FromStr for DiskCliKind {
             Some((kind, arg)) => match kind {
                 "mem" => DiskCliKind::Memory(parse_memory(arg)?),
                 "memdiff" => DiskCliKind::MemoryDiff(Box::new(arg.parse()?)),
+                "sql" => match arg.split_once(';') {
+                    Some((path, len)) => {
+                        let Some(len) = len.strip_prefix("create=") else {
+                            anyhow::bail!("invalid syntax after ';', expected 'create=<len>'")
+                        };
+
+                        DiskCliKind::Sqlite {
+                            path: path.into(),
+                            create_with_len: Some(parse_memory(len)?),
+                        }
+                    }
+                    None => DiskCliKind::Sqlite {
+                        path: arg.into(),
+                        create_with_len: None,
+                    },
+                },
+                "sqldiff" => {
+                    let (path_and_opts, kind) =
+                        arg.split_once(':').context("expected path[;opts]:kind")?;
+                    let disk = Box::new(kind.parse()?);
+
+                    match path_and_opts.split_once(';') {
+                        Some((path, create)) => {
+                            if create != "create" {
+                                anyhow::bail!("invalid syntax after ';', expected 'create'")
+                            }
+                            DiskCliKind::SqliteDiff {
+                                path: path.into(),
+                                create: true,
+                                disk,
+                            }
+                        }
+                        None => DiskCliKind::SqliteDiff {
+                            path: path_and_opts.into(),
+                            create: false,
+                            disk,
+                        },
+                    }
+                }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
                 "file" => DiskCliKind::File(PathBuf::from(arg)),
                 "blob" => {

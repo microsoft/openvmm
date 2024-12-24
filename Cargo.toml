@@ -27,6 +27,7 @@ members = [
   "support/ucs2/fuzz",
   "vm/devices/chipset/fuzz",
   "vm/devices/firmware/firmware_uefi/fuzz",
+  "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
   "vm/devices/storage/scsi_buffers/fuzz",
   "vm/vmcore/guestmem/fuzz",
@@ -148,10 +149,11 @@ build_info = { path = "openhcl/build_info" }
 diag_client = { path = "openhcl/diag_client" }
 diag_proto = { path = "openhcl/diag_proto" }
 diag_server = { path = "openhcl/diag_server" }
-fixed_pool_alloc = { path = "openhcl/fixed_pool_alloc" }
+get_lower_vtl = { path = "openhcl/get_lower_vtl" }
 hcl = { path = "openhcl/hcl" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }
 kmsg_defs = { path = "openhcl/kmsg_defs" }
+lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
 page_pool_alloc = { path = "openhcl/page_pool_alloc" }
@@ -165,6 +167,7 @@ underhill_dump = { path = "openhcl/underhill_dump" }
 underhill_entry = { path = "openhcl/underhill_entry" }
 underhill_init = { path = "openhcl/underhill_init" }
 underhill_mem = { path = "openhcl/underhill_mem" }
+openhcl_attestation_protocol = { path = "openhcl/openhcl_attestation_protocol" }
 openvmm_hcl_resources = { path = "openhcl/openvmm_hcl_resources" }
 underhill_threadpool = { path = "openhcl/underhill_threadpool" }
 virt_mshv_vtl = { path = "openhcl/virt_mshv_vtl" }
@@ -247,16 +250,17 @@ disk_file = { path = "vm/devices/storage/disk_file" }
 disk_get_vmgs = { path = "vm/devices/storage/disk_get_vmgs" }
 disk_layered = { path = "vm/devices/storage/disk_layered" }
 disk_nvme = { path = "vm/devices/storage/disk_nvme" }
-disklayer_ram = { path = "vm/devices/storage/disklayer_ram" }
+disk_prwrap = { path = "vm/devices/storage/disk_prwrap" }
 disk_striped = { path = "vm/devices/storage/disk_striped" }
 disk_vhd1 = { path = "vm/devices/storage/disk_vhd1" }
 disk_vhdmp = { path = "vm/devices/storage/disk_vhdmp" }
-disk_prwrap = { path = "vm/devices/storage/disk_prwrap" }
+disklayer_ram = { path = "vm/devices/storage/disklayer_ram" }
+disklayer_sqlite = { path = "vm/devices/storage/disklayer_sqlite" }
+floppy = { path = "vm/devices/storage/floppy" }
+floppy_pcat_stub = { path = "vm/devices/storage/floppy_pcat_stub" }
+floppy_resources = { path = "vm/devices/storage/floppy_resources" }
 ide = { path = "vm/devices/storage/ide" }
 ide_resources = { path = "vm/devices/storage/ide_resources" }
-floppy = { path = "vm/devices/storage/floppy" }
-floppy_resources = { path = "vm/devices/storage/floppy_resources" }
-floppy_pcat_stub = { path = "vm/devices/storage/floppy_pcat_stub" }
 scsi_buffers = { path = "vm/devices/storage/scsi_buffers" }
 scsi_core = { path = "vm/devices/storage/scsi_core" }
 scsi_defs = { path = "vm/devices/storage/scsi_defs" }
@@ -378,7 +382,6 @@ awaitgroup = "0.7"
 base64 = "0.21.7"
 base64-serde = "0.7"
 bitfield-struct = "0.7"
-bitflags = "1.3"
 bitvec = { version = "1.1", default-features = false }
 blocking = "1.2"
 caps = "0.5"
@@ -472,8 +475,9 @@ range_map_vec = "0.2.0"
 rayon = "1.5"
 resolv-conf = "0.7"
 rlimit = "0.10.1"
-rustyline = "13"
+rusqlite = "0.32"
 rustc-hash = "1.1"
+rustyline = "13"
 seccompiler = "0.4"
 serde = "1.0.185"
 serde_json = "1.0"
@@ -650,8 +654,6 @@ bool_assert_comparison = "allow"
 # This lint suggests collapsing Box::new(Foo::default()) into Box::default(). We often
 # prefer to specify types completely for local code clarity's sake.
 box_default = "allow"
-# Needed for bitflags 1.x compatibility. Remove when we update to bitflags 2.x
-bad_bit_mask = "allow"
 # Besides the misleading name (this lint also triggers on arrays), we believe that it
 # doesn't provide value. If a developer gets their type wrong they'll notice and fix it.
 # Sometimes you do want a list of a single range.

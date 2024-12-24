@@ -141,6 +141,34 @@ pub mod opt_base64_vec {
     }
 }
 
+pub mod vec_base64_vec {
+    use base64::Engine;
+    use ser::SerializeSeq;
+    use serde::*;
+
+    #[allow(clippy::ptr_arg)] // required by serde
+    pub fn serialize<S: Serializer>(v: &Vec<Vec<u8>>, ser: S) -> Result<S::Ok, S::Error> {
+        let mut seq = ser.serialize_seq(Some(v.len()))?;
+        for element in v {
+            seq.serialize_element(&base64::engine::general_purpose::STANDARD.encode(element))?;
+        }
+        seq.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Vec<u8>>, D::Error> {
+        let ss: Vec<&str> = Deserialize::deserialize(d)?;
+        let mut vs = Vec::new();
+        for s in ss {
+            vs.push(
+                base64::engine::general_purpose::STANDARD
+                    .decode(s)
+                    .map_err(de::Error::custom)?,
+            );
+        }
+        Ok(vs)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

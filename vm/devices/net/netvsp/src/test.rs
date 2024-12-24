@@ -805,9 +805,8 @@ impl<'a> TestNicChannel<'a> {
     pub async fn send_receive_buffer_message(&mut self) {
         // Need reserved control channel buffers and one queue buffer (more if subchannels are requested).
         let min_buffer_pages = ((RX_RESERVED_CONTROL_BUFFERS as usize + 1)
-            * sub_allocation_size_for_mtu(DEFAULT_MTU) as usize
-            + (PAGE_SIZE - 1))
-            / PAGE_SIZE;
+            * sub_allocation_size_for_mtu(DEFAULT_MTU) as usize)
+            .div_ceil(PAGE_SIZE);
         let (gpadl_handle, page_array) = self.nic.add_guest_pages(min_buffer_pages).await;
         let recv_range = MultiPagedRangeBuf::new(1, page_array).unwrap();
         self.gpadl_map.add(gpadl_handle, recv_range);

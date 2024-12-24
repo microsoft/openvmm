@@ -137,7 +137,7 @@ pub enum Error {
     #[error("failed to map overlay page")]
     MapOverlay(#[source] std::io::Error),
     #[error("failed to allocate shared visibility pages for overlay")]
-    AllocateSharedVisOverlay(#[source] page_pool_alloc::PagePoolOutOfMemory),
+    AllocateSharedVisOverlay(#[source] page_pool_alloc::Error),
     #[error("failed to open msr device")]
     OpenMsr(#[source] std::io::Error),
     #[error("cpuid did not contain valid TSC frequency information")]
@@ -598,7 +598,7 @@ impl UhProcessorBox {
         &'a mut self,
         driver: &impl Driver,
         control: Option<&'a mut IdleControl>,
-    ) -> Result<UhProcessor<'_, T>, Error> {
+    ) -> Result<UhProcessor<'a, T>, Error> {
         if let Some(control) = &control {
             let vp_index = self.vp_info.base.vp_index;
 

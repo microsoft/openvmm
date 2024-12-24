@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The crate includes the abstraction layer of Linux TDX Guest APIs and
-//! definitions of data structures according to TDX specification.
+//! The module includes the definitions of data structures according to TDX specification.
 
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;

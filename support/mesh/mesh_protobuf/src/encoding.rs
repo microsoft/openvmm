@@ -843,7 +843,7 @@ impl<'a, T: From<&'a str> + Default, R> FieldDecode<'a, T, R> for StringField {
 /// [`Cow::Borrowed`] on read.
 pub struct BorrowedCowField;
 
-impl<'a> DescribeField<Cow<'a, str>> for BorrowedCowField {
+impl DescribeField<Cow<'_, str>> for BorrowedCowField {
     const FIELD_TYPE: FieldType<'static> = FieldType::builtin("string");
 }
 
@@ -1649,15 +1649,15 @@ default_encodings! {
     Infallible: ImpossibleField,
 }
 
-impl<'a> DefaultEncoding for &'a str {
+impl DefaultEncoding for &str {
     type Encoding = StringField;
 }
 
-impl<'a> DefaultEncoding for &'a [u8] {
+impl DefaultEncoding for &[u8] {
     type Encoding = BytesField;
 }
 
-impl<'a> DefaultEncoding for Cow<'a, str> {
+impl DefaultEncoding for Cow<'_, str> {
     type Encoding = StringField;
 }
 

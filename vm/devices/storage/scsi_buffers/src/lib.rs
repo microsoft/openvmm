@@ -149,7 +149,7 @@ pub struct BounceBuffer {
 impl BounceBuffer {
     /// Allocates a new bounce buffer of `size` bytes.
     pub fn new(size: usize) -> Self {
-        let mut pages = vec![ZERO_PAGE; (size + PAGE_SIZE - 1) / PAGE_SIZE];
+        let mut pages = vec![ZERO_PAGE; size.div_ceil(PAGE_SIZE)];
         let io_vec = pages.as_bytes_mut()[..size].as_atomic_bytes().into();
         BounceBuffer { pages, io_vec }
     }
@@ -327,7 +327,7 @@ impl OwnedRequestBuffers {
     /// `offset..offset+len`.
     pub fn linear(offset: u64, len: usize, is_write: bool) -> Self {
         let start_page = offset / PAGE_SIZE as u64;
-        let end_page = offset + (len as u64 + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64;
+        let end_page = offset + (len as u64).div_ceil(PAGE_SIZE as u64);
         let gpns: Vec<u64> = (start_page..end_page).collect();
         Self {
             gpns,
@@ -365,7 +365,7 @@ pub struct TrackedBounceBuffer<'a> {
 
 impl Drop for TrackedBounceBuffer<'_> {
     fn drop(&mut self) {
-        let pages = (self.buffer.len() + 4096 - 1) / 4096;
+        let pages = self.buffer.len().div_ceil(4096);
         self.free_pages.fetch_add(pages, Ordering::SeqCst);
         self.event.notify(usize::MAX);
     }
@@ -407,7 +407,7 @@ impl BounceBufferTracker {
     where
         'b: 'a,
     {
-        let pages = (size + 4096 - 1) / 4096;
+        let pages = size.div_ceil(4096);
         let event = self.event.get(thread).unwrap();
         let free_pages = self.free_pages.get(thread).unwrap();
 

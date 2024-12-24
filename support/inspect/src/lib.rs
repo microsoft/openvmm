@@ -818,7 +818,7 @@ impl Response<'_> {
                 children.push(InternalEntry {
                     name: name.to_owned(),
                     node: InternalNode::Unevaluated,
-                    sensitivity: Some(sensitivity),
+                    sensitivity,
                 });
                 let entry = children.last_mut().unwrap();
                 Some(Request::new(
@@ -834,7 +834,7 @@ impl Response<'_> {
                 self.cell.as_dir().push(InternalEntry {
                     name: name.to_owned(),
                     node: InternalNode::DepthExhausted,
-                    sensitivity: Some(sensitivity),
+                    sensitivity,
                 });
                 None
             }
@@ -999,7 +999,7 @@ assert_eq!(
         children.push(InternalEntry {
             name: String::new(),
             node: InternalNode::Unevaluated,
-            sensitivity: Some(SensitivityLevel::Unspecified),
+            sensitivity: SensitivityLevel::Unspecified,
         });
         let entry = children.last_mut().unwrap();
         Request::new(
@@ -1863,7 +1863,7 @@ enum InternalNode {
 struct InternalEntry {
     name: String,
     node: InternalNode,
-    sensitivity: Option<SensitivityLevel>,
+    sensitivity: SensitivityLevel,
 }
 
 impl InternalNode {

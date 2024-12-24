@@ -8,7 +8,7 @@ on:
 permissions:
   id-token: write
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref }}
@@ -20,11 +20,33 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event.pull_request.merged != true && github.event.action != 'closed'
     steps:
-      - name: Checkout actions
+      # NOTE: We're checking out both repos to avoid a security vulnerability
+      # Any code that runs in this workflow should be using the checked out base repo to avoid
+      # running code from a potentially malicious PR
+      # https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/
+      # https://nathandavison.com/blog/github-actions-and-the-threat-of-malicious-pull-requests
+      - name: Checkout base repo
         uses: actions/checkout@v4
         with:
+          path: base
           fetch-depth: 0
+      - name: Checkout head repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          path: head-repo
+
+      - name: Get merge base commit
+        id: merge-base
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          git merge-base HEAD origin/${{ github.base_ref }} > merge-base.txt
+          echo "MERGE_BASE=$(cat merge-base.txt)" >> $GITHUB_ENV
+        working-directory: head-repo
 
       - name: Run unsafe code review script
-        run: pip3 install -r .github/scripts/add_unsafe_reviewers/requirements.txt && python3 .github/scripts/add_unsafe_reviewers/add-unsafe-reviewers.py . "origin/${{ github.base_ref }}" --token "${{ secrets.ONEBLUE_GH_PAT }}" --pull-request "${{ github.event.number }}"
+        run: pip3 install -r ./base/.github/scripts/add_unsafe_reviewers/requirements.txt && python3 ./base/.github/scripts/add_unsafe_reviewers/add-unsafe-reviewers.py ./head-repo "${{ env.MERGE_BASE }}" --token "${{ secrets.GITHUB_TOKEN }}" --pull-request "${{ github.event.number }}"
         shell: bash

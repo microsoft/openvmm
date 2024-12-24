@@ -402,7 +402,7 @@ pub struct SnpCpuidIterator<'a> {
     index: CpuidPageIndex,
 }
 
-impl<'a> Iterator for SnpCpuidIterator<'a> {
+impl Iterator for SnpCpuidIterator<'_> {
     type Item = ParsedCpuidEntry;
 
     fn next(&mut self) -> Option<Self::Item> {

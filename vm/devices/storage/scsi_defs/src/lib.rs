@@ -500,7 +500,7 @@ pub struct VpdMsftPagingExtentPropertiesPage {
     pub reserved: [u8; 2],
 }
 
-/// VPD Page 0xB2, Logical Block Provisioning
+// VPD Page 0xB2, Logical Block Provisioning
 
 pub const PROVISIONING_TYPE_UNKNOWN: u8 = 0x0;
 pub const PROVISIONING_TYPE_RESOURCE: u8 = 0x1;

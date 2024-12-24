@@ -86,7 +86,7 @@ pub struct Buf<'a> {
     filled: &'a mut usize,
 }
 
-impl<'a> Buf<'a> {
+impl Buf<'_> {
     /// Returns the remaining bytes that fit.
     #[inline(always)]
     pub fn remaining(&self) -> usize {

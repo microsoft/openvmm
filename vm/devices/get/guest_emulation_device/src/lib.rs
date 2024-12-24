@@ -27,7 +27,9 @@ use get_protocol::BatteryStatusNotification;
 use get_protocol::HeaderGeneric;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
+use get_protocol::IgvmAttestRequest;
 use get_protocol::RegisterState;
+use get_protocol::SaveGuestVtl2StateFlags;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::StartVtl0Status;
 use get_protocol::UefiConsoleMode;
@@ -44,6 +46,10 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestHeader;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
+use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
@@ -91,6 +97,12 @@ enum Error {
     InvalidFieldValue,
     #[error("large device platform settings v2 is currently unimplemented")]
     LargeDpsV2Unimplemented,
+    #[error("invalid IGVM_ATTEST request")]
+    InvalidIgvmAttestRequest,
+    #[error("unsupported igvm attest request type: {0:?}")]
+    UnsupportedIgvmAttestRequestType(u32),
+    #[error("failed to write to shared memory")]
+    SharedMemoryWriteFailed(#[source] guestmem::GuestMemoryError),
 }
 
 impl From<task_control::Cancelled> for Error {
@@ -253,9 +265,10 @@ impl SimpleVmbusDevice for GuestEmulationDevice {
     fn open(
         &mut self,
         channel: RawAsyncChannel<GpadlRingMem>,
+        guest_memory: GuestMemory,
     ) -> Result<Self::Runner, ChannelOpenError> {
         let pipe = MessagePipe::new(channel)?;
-        Ok(GedChannel::new(pipe))
+        Ok(GedChannel::new(pipe, guest_memory))
     }
 
     async fn run(
@@ -299,6 +312,11 @@ pub struct GedChannel<T: RingMem = GpadlRingMem> {
     vtl0_start_report: Option<Result<(), Vtl0StartError>>,
     #[inspect(with = "Option::is_some")]
     modify: Option<mesh::OneshotSender<Result<(), ModifyVtl2SettingsError>>>,
+    // TODO: allow unused temporarily as a follow up change will use it to
+    // implement AK cert renewal.
+    #[inspect(skip)]
+    #[allow(dead_code)]
+    gm: GuestMemory,
 }
 
 struct InProgressSave {
@@ -313,13 +331,14 @@ enum GedState {
 }
 
 impl<T: RingMem + Unpin> GedChannel<T> {
-    fn new(channel: MessagePipe<T>) -> Self {
+    fn new(channel: MessagePipe<T>, guest_memory: GuestMemory) -> Self {
         Self {
             channel,
             save: None,
             state: GedState::Init,
             vtl0_start_report: None,
             modify: None,
+            gm: guest_memory,
         }
     }
 
@@ -519,7 +538,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                             get_protocol::GuestNotifications::SAVE_GUEST_VTL2_STATE,
                         ),
                         correlation_id: Guid::ZERO,
-                        capabilities_flags: 0,
+                        capabilities_flags: SaveGuestVtl2StateFlags::new(),
                         timeout_hint_secs: 60,
                     };
 
@@ -562,6 +581,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostRequests::GUEST_STATE_PROTECTION_BY_ID => {
                 self.handle_guest_state_protection_by_id()?;
             }
+            HostRequests::IGVM_ATTEST => self.handle_igvm_attest(message_buf)?,
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2 => {
                 self.handle_device_platform_settings_v2(state)?
             }
@@ -787,6 +807,51 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         self.channel
             .try_send(response.as_bytes())
             .map_err(Error::Vmbus)?;
+        Ok(())
+    }
+
+    /// Stub implementation that simulates the behavior of GED and the host agent.
+    /// Used only for test scenarios such as VMM tests.
+    fn handle_igvm_attest(&mut self, message_buf: &[u8]) -> Result<(), Error> {
+        let request =
+            IgvmAttestRequest::read_from_prefix(message_buf).ok_or(Error::MessageTooSmall)?;
+
+        // Request sanitization (match GED behavior)
+        if request.agent_data_length as usize > request.agent_data.len()
+            || request.report_length as usize > request.report.len()
+            || request.number_gpa as usize > get_protocol::IGVM_ATTEST_MSG_MAX_SHARED_GPA
+        {
+            Err(Error::InvalidIgvmAttestRequest)?
+        }
+
+        let request_payload = IgvmAttestRequestHeader::read_from_prefix(&request.report)
+            .ok_or(Error::MessageTooSmall)?;
+
+        let response = match request_payload.request_type {
+            IgvmAttestRequestType::AK_CERT_REQUEST => {
+                let data = vec![0xab; 2500];
+                let header = IgvmAttestAkCertResponseHeader {
+                    data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>()) as u32,
+                    version: AK_CERT_RESPONSE_HEADER_VERSION,
+                };
+                let payload = [header.as_bytes(), &data].concat();
+
+                self.gm
+                    .write_at(request.shared_gpa[0], &payload)
+                    .map_err(Error::SharedMemoryWriteFailed)?;
+
+                get_protocol::IgvmAttestResponse {
+                    message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
+                    length: payload.len() as u32,
+                }
+            }
+            ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
+        };
+
+        self.channel
+            .try_send(response.as_bytes())
+            .map_err(Error::Vmbus)?;
+
         Ok(())
     }
 

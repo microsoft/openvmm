@@ -18,13 +18,11 @@ use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
 use crate::BackingShared;
 use crate::Error;
-use crate::HypervisorBacked;
 use aarch64defs::Cpsr64;
 use aarch64emu::AccessCpuState;
 use aarch64emu::InterceptState;
 use hcl::ioctl;
 use hcl::ioctl::aarch64::MshvArm64;
-use hcl::ioctl::ProcessorRunner;
 use hcl::GuestVtl;
 use hcl::UnsupportedGuestVtl;
 use hv1_emulator::hv::ProcessorVtlHv;
@@ -57,34 +55,6 @@ use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
 
-/// The current CPU register state. Some of the fields are updated by the emulator.
-#[derive(Debug, Default, Clone, Inspect, PartialEq)]
-pub struct CpuState {
-    /// X0-x30.
-    #[inspect(iter_by_index)]
-    x: [u64; 31],
-    // Q0-Q31
-    #[inspect(skip)]
-    q: [u128; 32],
-
-    pc: Option<u64>,
-    sp: Option<u64>,
-    cpsr: Option<u64>,
-    x18_valid: bool,
-}
-
-impl CpuState {
-    /// Get current state after an intercept.
-    pub fn sync(&mut self, runner: &ProcessorRunner<'_, MshvArm64>) {
-        self.x = runner.cpu_context().x;
-        self.q = runner.cpu_context().q;
-        self.pc = None;
-        self.sp = None;
-        self.cpsr = None;
-        self.x18_valid = false;
-    }
-}
-
 /// A backing for hypervisor-backed partitions (non-isolated and
 /// software-isolated).
 #[derive(InspectMut)]
@@ -94,7 +64,6 @@ pub struct HypervisorBackedArm64 {
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
     next_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     stats: ProcessorStatsArm64,
-    cpu_state: CpuState,
 }
 
 #[derive(Inspect, Default)]
@@ -107,6 +76,7 @@ struct ProcessorStatsArm64 {
 
 impl BackingPrivate for HypervisorBackedArm64 {
     type HclBacking = MshvArm64;
+    type EmulationCache = UhCpuStateCache;
     type Shared = ();
 
     fn shared(_shared: &BackingShared) -> &Self::Shared {
@@ -122,7 +92,6 @@ impl BackingPrivate for HypervisorBackedArm64 {
             deliverability_notifications: Default::default(),
             next_deliverability_notifications: Default::default(),
             stats: Default::default(),
-            cpu_state: CpuState::default(),
         })
     }
 
@@ -329,7 +298,6 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
         .unwrap();
         // tracing::trace!(msg = %format_args!("{:x?}", message), "mmio");
 
-        self.backing.cpu_state.sync(&self.runner);
         let intercept_state = InterceptState {
             instruction_bytes: message.instruction_bytes,
             instruction_byte_count: message.instruction_byte_count,
@@ -368,7 +336,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
                 UhRunVpError::UnacceptedMemoryAccess(gpa),
             ))
         } else {
-            // TODO SNP: for hardware isolation, if the intercept is due to a guest
+            // TODO: for hardware isolation, if the intercept is due to a guest
             // error, inject a machine check
             self.handle_mmio_exit(dev).await?;
             Ok(())
@@ -376,56 +344,70 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
     }
 }
 
-impl AccessCpuState for UhProcessor<'_, HypervisorBackedArm64> {
+#[derive(Default)]
+pub struct UhCpuStateCache {
+    pc: Option<(u64, bool)>,
+    sp: Option<(u64, bool)>,
+    x18: Option<(u64, bool)>,
+
+    cpsr: Option<Cpsr64>,
+}
+
+impl<T: CpuIo> AccessCpuState for UhEmulationState<'_, '_, T, HypervisorBackedArm64> {
     fn commit(&mut self) {
         let mut expensive_regs = Vec::with_capacity(3);
-        if self.backing.cpu_state.x18_valid {
-            expensive_regs.push((HvArm64RegisterName::X18, self.x(18)));
+        if let Some((x18, true)) = self.cache.x18 {
+            expensive_regs.push((HvArm64RegisterName::X18, x18));
         }
-        if self.backing.cpu_state.pc.is_some() {
-            expensive_regs.push((HvArm64RegisterName::XPc, self.pc()));
+        if let Some((pc, true)) = self.cache.pc {
+            expensive_regs.push((HvArm64RegisterName::XPc, pc));
         }
-        if self.backing.cpu_state.sp.is_some() {
-            expensive_regs.push((HvArm64RegisterName::XSp, self.sp()));
+        if let Some((sp, true)) = self.cache.sp {
+            expensive_regs.push((HvArm64RegisterName::XSp, sp));
         }
-        self.runner
-            // TODO GUEST VSM
-            .set_vp_registers(GuestVtl::Vtl0, expensive_regs)
+        self.vp
+            .runner
+            .set_vp_registers(self.vtl, expensive_regs)
             .unwrap();
-        self.runner.cpu_context_mut().x = self.backing.cpu_state.x;
-        self.runner.cpu_context_mut().q = self.backing.cpu_state.q;
     }
 
     fn x(&mut self, index: u8) -> u64 {
         assert!(index < 31);
-        if index == 18 && !self.backing.cpu_state.x18_valid {
-            let reg_val = self
-                .runner
-                // TODO GUEST VSM
-                .get_vp_register(GuestVtl::Vtl0, HvArm64RegisterName::X18)
-                .expect("register query should not fail");
-            self.backing.cpu_state.x[18] = reg_val.as_u64();
-            self.backing.cpu_state.x18_valid = true;
+        if index == 18 {
+            self.cache
+                .x18
+                .get_or_insert_with(|| {
+                    (
+                        self.vp
+                            .runner
+                            .get_vp_register(self.vtl, HvArm64RegisterName::X18)
+                            .expect("register query should not fail")
+                            .as_u64(),
+                        false,
+                    )
+                })
+                .0
+        } else {
+            self.vp.runner.cpu_context().x[index as usize]
         }
-        self.backing.cpu_state.x[index as usize]
     }
 
     fn update_x(&mut self, index: u8, data: u64) {
         assert!(index < 31);
-        self.backing.cpu_state.x[index as usize] = data;
+        self.vp.runner.cpu_context_mut().x[index as usize] = data;
         if index == 18 {
-            self.backing.cpu_state.x18_valid = true;
+            self.cache.x18 = Some((data, true));
         }
     }
 
     fn q(&self, index: u8) -> u128 {
         assert!(index < 32);
-        self.backing.cpu_state.q[index as usize]
+        self.vp.runner.cpu_context().q[index as usize]
     }
 
     fn update_q(&mut self, index: u8, data: u128) {
         assert!(index < 32);
-        self.backing.cpu_state.q[index as usize] = data;
+        self.vp.runner.cpu_context_mut().q[index as usize] = data;
     }
 
     fn d(&self, index: u8) -> u64 {
@@ -461,19 +443,23 @@ impl AccessCpuState for UhProcessor<'_, HypervisorBackedArm64> {
     }
 
     fn sp(&mut self) -> u64 {
-        if self.backing.cpu_state.sp.is_none() {
-            let reg_val = self
-                .runner
-                // TODO GUEST VSM
-                .get_vp_register(GuestVtl::Vtl0, HvArm64RegisterName::XSp)
-                .expect("register query should not fail");
-            self.backing.cpu_state.sp = Some(reg_val.as_u64());
-        }
-        self.backing.cpu_state.sp.unwrap()
+        self.cache
+            .sp
+            .get_or_insert_with(|| {
+                (
+                    self.vp
+                        .runner
+                        .get_vp_register(self.vtl, HvArm64RegisterName::XSp)
+                        .expect("register query should not fail")
+                        .as_u64(),
+                    false,
+                )
+            })
+            .0
     }
 
     fn update_sp(&mut self, data: u64) {
-        self.backing.cpu_state.sp = Some(data);
+        self.cache.sp = Some((data, true));
     }
 
     fn fp(&mut self) -> u64 {
@@ -493,35 +479,38 @@ impl AccessCpuState for UhProcessor<'_, HypervisorBackedArm64> {
     }
 
     fn pc(&mut self) -> u64 {
-        if self.backing.cpu_state.pc.is_none() {
-            let reg_val = self
-                .runner
-                // TODO GUEST VSM
-                .get_vp_register(GuestVtl::Vtl0, HvArm64RegisterName::XPc)
-                .expect("register query should not fail");
-            self.backing.cpu_state.pc = Some(reg_val.as_u64());
-        }
-        self.backing.cpu_state.pc.unwrap()
+        self.cache
+            .pc
+            .get_or_insert_with(|| {
+                (
+                    self.vp
+                        .runner
+                        .get_vp_register(self.vtl, HvArm64RegisterName::XPc)
+                        .expect("register query should not fail")
+                        .as_u64(),
+                    false,
+                )
+            })
+            .0
     }
 
     fn update_pc(&mut self, data: u64) {
-        self.backing.cpu_state.pc = Some(data);
+        self.cache.pc = Some((data, true));
     }
 
     fn cpsr(&mut self) -> Cpsr64 {
-        if self.backing.cpu_state.cpsr.is_none() {
-            let reg_val = self
+        *self.cache.cpsr.get_or_insert_with(|| {
+            self.vp
                 .runner
-                // TODO GUEST VSM
-                .get_vp_register(GuestVtl::Vtl0, HvArm64RegisterName::Cpsr)
-                .expect("register query should not fail");
-            self.backing.cpu_state.cpsr = Some(reg_val.as_u64());
-        }
-        Cpsr64::from(self.backing.cpu_state.cpsr.unwrap())
+                .get_vp_register(self.vtl, HvArm64RegisterName::Cpsr)
+                .expect("register query should not fail")
+                .as_u64()
+                .into()
+        })
     }
 }
 
-impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked> {
+impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedArm64> {
     type Error = UhRunVpError;
 
     fn vp_index(&self) -> VpIndex {
@@ -711,75 +700,6 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBacked>
     }
 }
 
-impl<'a, 'b, T: CpuIo> AccessCpuState for UhEmulationState<'a, 'b, T, HypervisorBacked> {
-    fn commit(&mut self) {
-        self.vp.commit()
-    }
-    fn x(&mut self, index: u8) -> u64 {
-        self.vp.x(index)
-    }
-    fn update_x(&mut self, index: u8, data: u64) {
-        self.vp.update_x(index, data)
-    }
-    fn q(&self, index: u8) -> u128 {
-        self.vp.q(index)
-    }
-    fn update_q(&mut self, index: u8, data: u128) {
-        self.vp.update_q(index, data)
-    }
-    fn d(&self, index: u8) -> u64 {
-        self.vp.d(index)
-    }
-    fn update_d(&mut self, index: u8, data: u64) {
-        self.vp.update_d(index, data)
-    }
-    fn h(&self, index: u8) -> u32 {
-        self.vp.h(index)
-    }
-    fn update_h(&mut self, index: u8, data: u32) {
-        self.vp.update_h(index, data)
-    }
-    fn s(&self, index: u8) -> u16 {
-        self.vp.s(index)
-    }
-    fn update_s(&mut self, index: u8, data: u16) {
-        self.vp.update_s(index, data)
-    }
-    fn b(&self, index: u8) -> u8 {
-        self.vp.b(index)
-    }
-    fn update_b(&mut self, index: u8, data: u8) {
-        self.vp.update_b(index, data)
-    }
-    fn sp(&mut self) -> u64 {
-        self.vp.sp()
-    }
-    fn update_sp(&mut self, data: u64) {
-        self.vp.update_sp(data)
-    }
-    fn fp(&mut self) -> u64 {
-        self.vp.fp()
-    }
-    fn update_fp(&mut self, data: u64) {
-        self.vp.update_fp(data)
-    }
-    fn lr(&mut self) -> u64 {
-        self.vp.lr()
-    }
-    fn update_lr(&mut self, data: u64) {
-        self.vp.update_lr(data)
-    }
-    fn pc(&mut self) -> u64 {
-        self.vp.pc()
-    }
-    fn update_pc(&mut self, data: u64) {
-        self.vp.update_pc(data)
-    }
-    fn cpsr(&mut self) -> Cpsr64 {
-        self.vp.cpsr()
-    }
-}
-
 impl<T: CpuIo> UhHypercallHandler<'_, '_, T, HypervisorBackedArm64> {
     const MSHV_DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
@@ -902,7 +822,6 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedArm64> {
     }
 }
 
-// TODO GUEST VSM Audit save state
 mod save_restore {
     use super::HypervisorBackedArm64;
     use super::UhProcessor;
@@ -941,7 +860,8 @@ mod save_restore {
 
             let internal_activity = self
                 .runner
-                // TODO GUEST VSM
+                // Non-VTL0 VPs should never be in startup suspend, so we only need to check VTL0.
+                // The hypervisor handles halt and idle for us.
                 .get_vp_register(GuestVtl::Vtl0, HvArm64RegisterName::InternalActivityState)
                 .map_err(|err| {
                     SaveError::Other(anyhow!("unable to query startup suspend: {}", err))
@@ -964,7 +884,8 @@ mod save_restore {
                 let reg = u64::from(HvInternalActivityRegister::new().with_startup_suspend(true));
                 self.runner
                     .set_vp_registers(
-                        // TODO GUEST VSM
+                        // Non-VTL0 VPs should never be in startup suspend, so we only need to handle VTL0.
+                        // The hypervisor handles halt and idle for us.
                         GuestVtl::Vtl0,
                         [(HvArm64RegisterName::InternalActivityState, reg)],
                     )

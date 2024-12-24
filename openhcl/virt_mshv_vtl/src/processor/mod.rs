@@ -19,7 +19,9 @@ cfg_if::cfg_if! {
         use hvdef::HvX64SegmentRegister;
         use virt::state::StateElement;
         use virt::vp::AccessVpState;
+        use virt::vp::MpState;
         use virt::x86::MsrError;
+        use virt_support_apic::LocalApic;
         use virt_support_x86emu::translate::TranslationRegisters;
     } else if #[cfg(guest_arch = "aarch64")] {
         use hv1_hypercall::Arm64RegisterState;
@@ -68,7 +70,6 @@ use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
-use virt_support_apic::LocalApic;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::vmtime::VmTimeAccess;
 use vtl_array::VtlArray;
@@ -149,12 +150,11 @@ impl VtlsTlbLocked {
     }
 }
 
+#[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
 pub struct LapicState {
     lapic: LocalApic,
-    halted: bool,
-    idle: bool,
-    startup_suspend: bool,
+    activity: MpState,
     nmi_pending: bool,
 }
 
@@ -189,6 +189,7 @@ mod private {
 
     pub trait BackingPrivate: 'static + Sized + InspectMut + Sized {
         type HclBacking: hcl::ioctl::Backing;
+        type EmulationCache: Default;
         type Shared;
 
         fn shared(shared: &BackingShared) -> &Self::Shared;
@@ -289,8 +290,6 @@ pub trait HardwareIsolatedBacking: Backing {
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
     ) -> TranslationRegisters;
-    /// Gets the pat register
-    fn pat(&self, this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
@@ -456,7 +455,7 @@ fn duration_from_100ns(n: u64) -> Duration {
     Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
 }
 
-impl<'a, T: Backing> UhProcessor<'a, T> {
+impl<T: Backing> UhProcessor<'_, T> {
     fn inspect_extra(&mut self, resp: &mut inspect::Response<'_>) {
         resp.child("stats", |req| {
             // Get all the VP stats and just grab this VP's.
@@ -815,20 +814,22 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             lapics
                 .each_mut()
                 .map(|lapic| lapic.set_apic_base(apic_base).unwrap());
-            // Only the VTL 0 non-BSP LAPICs should be in the startup suspend state.
-            let mut first = true;
-            let lapic_states = lapics.map(|lapic| {
+            // Only the VTL 0 non-BSP LAPICs should be in the WaitForSipi state.
+            let mut first_vtl = true;
+            lapics.map(|lapic| {
+                let activity = if first_vtl && !vp_info.base.is_bsp() {
+                    MpState::WaitForSipi
+                } else {
+                    MpState::Running
+                };
                 let state = LapicState {
                     lapic,
-                    halted: false,
-                    idle: false,
+                    activity,
                     nmi_pending: false,
-                    startup_suspend: first && !vp_info.base.is_bsp(),
                 };
-                first = false;
+                first_vtl = false;
                 state
-            });
-            lapic_states.into()
+            })
         });
 
         let hv = partition.hv.as_ref().map(|hv| {
@@ -1073,6 +1074,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 interruption_pending,
                 devices,
                 vtl,
+                cache: T::EmulationCache::default(),
             },
             guest_memory,
             devices,
@@ -1099,6 +1101,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 interruption_pending: intercept_state.interruption_pending,
                 devices,
                 vtl,
+                cache: T::EmulationCache::default(),
             },
             intercept_state,
             guest_memory,
@@ -1225,6 +1228,11 @@ struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing> {
     interruption_pending: bool,
     devices: &'a T,
     vtl: GuestVtl,
+    #[cfg_attr(
+        guest_arch = "x86_64",
+        expect(dead_code, reason = "not used yet in x86_64")
+    )]
+    cache: U::EmulationCache,
 }
 
 struct UhHypercallHandler<'a, 'b, T, B: Backing> {
