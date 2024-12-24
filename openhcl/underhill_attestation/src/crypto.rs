@@ -466,4 +466,81 @@ mod tests {
         let unwrapped_key = result.unwrap();
         assert_eq!(unwrapped_key, KEY);
     }
+
+    #[test]
+    fn test_pkcs11_rsa_aes_key_unwrap() {
+        let target_key = Rsa::generate(2048).unwrap();
+        let pkcs8_target_key = openssl::pkey::PKey::from_rsa(target_key.clone())
+            .unwrap()
+            .private_key_to_pkcs8()
+            .unwrap();
+
+        let mut wrapping_aes_key = [0u8; 32];
+        openssl::rand::rand_bytes(&mut wrapping_aes_key[..]).unwrap();
+
+        let wrapping_rsa_key = Rsa::generate(2048).unwrap();
+        let wrapped_aes_key = rsa_oaep_encrypt(
+            &wrapping_rsa_key,
+            &wrapping_aes_key,
+            RsaOaepHashAlgorithm::Sha1,
+        )
+        .unwrap();
+        let wrapped_target_key =
+            aes_key_wrap_with_padding(&wrapping_aes_key, &pkcs8_target_key).unwrap();
+        let wrapped_key_blob = [wrapped_aes_key, wrapped_target_key].concat();
+        let unwrapped_target_key =
+            pkcs11_rsa_aes_key_unwrap(&wrapping_rsa_key, wrapped_key_blob.as_slice()).unwrap();
+        assert_eq!(
+            unwrapped_target_key.private_key_to_der().unwrap(),
+            target_key.private_key_to_der().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_hmac_sha_256() {
+        let key: Vec<u8> = (0..32).collect();
+
+        const EMPTY_HMAC: [u8; 32] = [
+            0xd3, 0x8b, 0x42, 0x09, 0x6d, 0x80, 0xf4, 0x5f, 0x82, 0x6b, 0x44, 0xa9, 0xd5, 0x60,
+            0x7d, 0xe7, 0x24, 0x96, 0xa4, 0x15, 0xd3, 0xf4, 0xa1, 0xa8, 0xc8, 0x8e, 0x3b, 0xb9,
+            0xda, 0x8d, 0xc1, 0xcb,
+        ];
+
+        let hmac = hmac_sha_256(key.as_slice(), &[]).unwrap();
+        assert_eq!(hmac, EMPTY_HMAC);
+
+        const PANGRAM: [u8; 32] = [
+            0xf8, 0x7a, 0xd2, 0x56, 0x15, 0x1f, 0xc7, 0xb4, 0xc5, 0xdf, 0xfa, 0x4a, 0xdb, 0x3e,
+            0xbe, 0x91, 0x1a, 0x8e, 0xeb, 0x8a, 0x8e, 0xbd, 0xee, 0x3c, 0x2a, 0x4a, 0x8e, 0x5f,
+            0x5e, 0xc0, 0x2c, 0x32,
+        ];
+
+        let hmac = hmac_sha_256(
+            key.as_slice(),
+            b"The quick brown fox jumps over the lazy dog",
+        )
+        .unwrap();
+        assert_eq!(hmac, PANGRAM);
+    }
+
+    #[test]
+    fn test_sha256() {
+        const EMPTY_HASH: [u8; 32] = [
+            0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+            0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+            0x78, 0x52, 0xb8, 0x55,
+        ];
+
+        let hash = sha_256(&[]);
+        assert_eq!(hash, EMPTY_HASH);
+
+        const PANGRAM: [u8; 32] = [
+            0xd7, 0xa8, 0xfb, 0xb3, 0x07, 0xd7, 0x80, 0x94, 0x69, 0xca, 0x9a, 0xbc, 0xb0, 0x08,
+            0x2e, 0x4f, 0x8d, 0x56, 0x51, 0xe4, 0x6d, 0x3c, 0xdb, 0x76, 0x2d, 0x02, 0xd0, 0xbf,
+            0x37, 0xc9, 0xe5, 0x92,
+        ];
+
+        let hash = sha_256(b"The quick brown fox jumps over the lazy dog");
+        assert_eq!(hash, PANGRAM);
+    }
 }
