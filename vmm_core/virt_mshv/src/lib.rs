@@ -5,7 +5,7 @@
 
 #![cfg(all(target_os = "linux", guest_is_native, guest_arch = "x86_64"))]
 // UNSAFETY: Calling HV APIs and manually managing memory.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 mod vm_state;
 mod vp_state;

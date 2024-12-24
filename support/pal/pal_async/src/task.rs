@@ -4,7 +4,7 @@
 //! Task spawning support.
 
 // UNSAFETY: Managing information stored as pointers for debugging purposes.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use parking_lot::Mutex;
 use slab::Slab;

@@ -4,7 +4,7 @@
 //! AF_VSOCK support.
 
 // UNSAFETY: Calling libc functions on a raw socket fd.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use crate::VmListener;
 use crate::VmSocket;

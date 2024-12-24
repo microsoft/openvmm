@@ -51,7 +51,7 @@ are enforced using a custom in-house tool:
 - enforce files end with a single trailing newline
 - deny usage of `#[repr(packed)]` (you want `#[repr(C, packed)]`)
 - justify usage of `cfg(target_arch = ...)` (use `guest_arch` instead!)
-- justify usage of `allow(unsafe_code)` with an UNSAFETY comment
+- justify usage of `expect(unsafe_code)` with an UNSAFETY comment
 
 Some of these lints are self explanatory, whereas others are described in more
 detail elsewhere on this page.
@@ -198,7 +198,7 @@ In a nutshell:
 - `unsafe {}` blocks are required to include a `// SAFETY:` comment describing
   how the preconditions for calling the `unsafe` function(s) within the block
   are being satisfied.
-- `allow(unsafe_code)` annotations are required to include an `// UNSAFETY:`
+- `expect(unsafe_code)` annotations are required to include an `// UNSAFETY:`
   comment justifying why the code in question needs to use `unsafe`. This
   annotation must be placed at the module or crate level.
 

@@ -9,7 +9,7 @@
 
 #![warn(missing_docs)]
 // UNSAFETY: needed for saving per-thread state.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use inspect::Inspect;
 use pal::unix::affinity::CpuSet;

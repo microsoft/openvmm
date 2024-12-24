@@ -3,7 +3,7 @@
 
 #![warn(missing_docs)]
 // UNSAFETY: Defining and implementing from_slice_unchecked.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 //! Wrappers around possibly misaligned `[u8]` buffers containing UCS-2 LE data.
 

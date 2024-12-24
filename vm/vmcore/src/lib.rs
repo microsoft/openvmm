@@ -7,7 +7,7 @@
 //! HvLite-specific infrastructure (such as WHP).
 
 // UNSAFETY: linkme uses link_section which is unsafe.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 // Needed for `save_restore_derive`.
 extern crate self as vmcore;

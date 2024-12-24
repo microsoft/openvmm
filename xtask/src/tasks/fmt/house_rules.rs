@@ -30,7 +30,7 @@ RULES:
     - enforce files end with a single trailing newline
     - deny usage of `#[repr(packed)]` (you want `#[repr(C, packed)]`)
     - justify usage of `cfg(target_arch = ...)` (use `guest_arch` instead!)
-    - justify usage of `allow(unsafe_code)` with an UNSAFETY comment
+    - justify usage of `expect(unsafe_code)` with an UNSAFETY comment
     "#)]
 pub struct HouseRules {
     /// Attempt to fix formatting issues
@@ -74,7 +74,7 @@ pub struct HouseRules {
     #[clap(long)]
     pub skip_cfg_target_arch: bool,
 
-    /// Don't run the `#[allow(unsafe_code)]` comment check
+    /// Don't run the `#[expect(unsafe_code)]` comment check
     #[clap(long)]
     pub skip_unsafe_code_comment: bool,
 }

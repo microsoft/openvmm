@@ -7,7 +7,7 @@
 
 // UNSAFETY: Implementing a custom data structure that requires manual memory
 // management and pointer manipulation.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 #![allow(clippy::undocumented_unsafe_blocks)]
 
 use std::alloc::Layout;

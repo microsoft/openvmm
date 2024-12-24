@@ -8,7 +8,7 @@
 
 #![no_std]
 // UNSAFETY: Calling a cpu intrinsic.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 /// Invokes the cpuid instruction with input values `eax` and `ecx`.
 #[cfg(target_arch = "x86_64")]

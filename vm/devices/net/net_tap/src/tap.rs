@@ -4,7 +4,7 @@
 //! A structure corresponding to a TAP interface.
 
 // UNSAFETY: Interacting with a union in bindgen-generated code and calling an ioctl.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use futures::AsyncRead;
 use linux_net_bindings::gen_if;

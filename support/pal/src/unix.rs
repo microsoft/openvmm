@@ -3,7 +3,7 @@
 
 #![cfg(unix)]
 // UNSAFETY: Calls to libc functions to interact with low level primitives.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 pub mod affinity;
 pub mod pipe;

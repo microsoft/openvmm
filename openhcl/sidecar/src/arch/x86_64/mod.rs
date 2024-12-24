@@ -4,6 +4,8 @@
 //! x86_64-specific sidecar code.
 
 #![cfg(target_arch = "x86_64")]
+// UNSAFETY: Interacting with low level hardware and memory primitives.
+#![expect(unsafe_code)]
 
 mod init;
 mod temporary_map;
