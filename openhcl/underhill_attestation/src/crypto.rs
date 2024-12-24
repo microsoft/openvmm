@@ -468,6 +468,35 @@ mod tests {
     }
 
     #[test]
+    fn test_pkcs11_rsa_aes_key_unwrap() {
+        let target_key = Rsa::generate(2048).unwrap();
+        let pkcs8_target_key = openssl::pkey::PKey::from_rsa(target_key.clone())
+            .unwrap()
+            .private_key_to_pkcs8()
+            .unwrap();
+
+        let mut wrapping_aes_key = [0u8; 32];
+        openssl::rand::rand_bytes(&mut wrapping_aes_key[..]).unwrap();
+
+        let wrapping_rsa_key = Rsa::generate(2048).unwrap();
+        let wrapped_aes_key = rsa_oaep_encrypt(
+            &wrapping_rsa_key,
+            &wrapping_aes_key,
+            RsaOaepHashAlgorithm::Sha1,
+        )
+        .unwrap();
+        let wrapped_target_key =
+            aes_key_wrap_with_padding(&wrapping_aes_key, &pkcs8_target_key).unwrap();
+        let wrapped_key_blob = [wrapped_aes_key, wrapped_target_key].concat();
+        let unwrapped_target_key =
+            pkcs11_rsa_aes_key_unwrap(&wrapping_rsa_key, wrapped_key_blob.as_slice()).unwrap();
+        assert_eq!(
+            unwrapped_target_key.private_key_to_der().unwrap(),
+            target_key.private_key_to_der().unwrap()
+        );
+    }
+
+    #[test]
     fn test_hmac_sha_256() {
         let key: Vec<u8> = (0..32).collect();
 
