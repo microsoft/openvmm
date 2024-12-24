@@ -20,6 +20,10 @@ pub(crate) enum KbkdfError {
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum Pkcs11RsaAesKeyUnwrapError {
+    #[error("undersized wrapped key blob: {0}")]
+    UndersizedWrappedKeyBlob(String),
+    #[error("oversized wrapped key blob")]
+    OversizedWrappedKeyBlob,
     #[error("RSA unwrap failed")]
     RsaUnwrap(#[from] RsaOaepError),
     #[error("AES unwrap failed")]
@@ -130,8 +134,28 @@ pub fn pkcs11_rsa_aes_key_unwrap(
     wrapped_key_blob: &[u8],
 ) -> Result<Rsa<Private>, Pkcs11RsaAesKeyUnwrapError> {
     let modulus_size = unwrapping_rsa_key.size();
-    let wrapped_aes_key = &wrapped_key_blob[..modulus_size as usize];
-    let wrapped_rsa_key = &wrapped_key_blob[modulus_size as usize..];
+
+    let mut blob_chunks = wrapped_key_blob
+        .chunks_exact(modulus_size as usize)
+        .into_iter();
+    let wrapped_aes_key = blob_chunks.next().ok_or_else(|| {
+        Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedKeyBlob(format!(
+            "expected wrapped AES key blob to be {} bytes, but found {}",
+            modulus_size,
+            blob_chunks.remainder().len()
+        ))
+    })?;
+    let wrapped_rsa_key = blob_chunks.next().ok_or_else(|| {
+        Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedKeyBlob(format!(
+            "expected wrapped RSA key blob to be {} bytes, but found {}",
+            modulus_size,
+            blob_chunks.remainder().len()
+        ))
+    })?;
+    if blob_chunks.next().is_some() || blob_chunks.remainder().len() > 0 {
+        Err(Pkcs11RsaAesKeyUnwrapError::OversizedWrappedKeyBlob)?
+    }
+
     let unwrapped_aes_key = rsa_oaep_decrypt(
         unwrapping_rsa_key,
         wrapped_aes_key,
@@ -465,5 +489,37 @@ mod tests {
         assert!(result.is_ok());
         let unwrapped_key = result.unwrap();
         assert_eq!(unwrapped_key, KEY);
+    }
+
+    #[test]
+    fn fail_to_unwrap_pkcs11_rsa_aep_with_undersized_wrapped_key_blob() {
+        let rsa = Rsa::generate(2048).unwrap();
+
+        // undersized aes key blob
+        let wrapped_key_blob = vec![0; 256 - 1];
+        let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "undersized wrapped key blob: expected wrapped AES key blob to be 256 bytes, but found 255".to_string()
+        );
+
+        // undersized rsa key blob
+        let wrapped_key_blob = vec![0; 256 + 255];
+        let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "undersized wrapped key blob: expected wrapped RSA key blob to be 256 bytes, but found 255".to_string()
+        );
+
+        // oversized wrapped key blob
+        let wrapped_key_blob = vec![0; 256 + 256 + 1];
+        let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "oversized wrapped key blob".to_string()
+        );
     }
 }
