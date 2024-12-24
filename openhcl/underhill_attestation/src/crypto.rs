@@ -468,6 +468,31 @@ mod tests {
     }
 
     #[test]
+    fn test_hmac_sha_256() {
+        const EMPTY_HMAC: [u8; 32] = [
+            211, 139, 66, 9, 109, 128, 244, 95, 130, 107, 68, 169, 213, 96, 125, 231, 36, 150, 164,
+            21, 211, 244, 161, 168, 200, 142, 59, 185, 218, 141, 193, 203,
+        ];
+
+        let key: Vec<u8> = (0..32).collect();
+
+        let hmac = hmac_sha_256(key.as_slice(), &[]).unwrap();
+        assert_eq!(hmac, EMPTY_HMAC);
+
+        const PANGRAM: [u8; 32] = [
+            248, 122, 210, 86, 21, 31, 199, 180, 197, 223, 250, 74, 219, 62, 190, 145, 26, 142,
+            235, 138, 142, 189, 238, 60, 42, 74, 142, 95, 94, 192, 44, 50,
+        ];
+
+        let hmac = hmac_sha_256(
+            key.as_slice(),
+            b"The quick brown fox jumps over the lazy dog",
+        )
+        .unwrap();
+        assert_eq!(hmac, PANGRAM);
+    }
+
+    #[test]
     fn test_sha256() {
         const EMPTY_HASH: [u8; 32] = [
             227, 176, 196, 66, 152, 252, 28, 20, 154, 251, 244, 200, 153, 111, 185, 36, 39, 174,
