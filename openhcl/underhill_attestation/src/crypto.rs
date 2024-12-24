@@ -135,9 +135,7 @@ pub fn pkcs11_rsa_aes_key_unwrap(
 ) -> Result<Rsa<Private>, Pkcs11RsaAesKeyUnwrapError> {
     let modulus_size = unwrapping_rsa_key.size();
 
-    let mut blob_chunks = wrapped_key_blob
-        .chunks_exact(modulus_size as usize)
-        .into_iter();
+    let mut blob_chunks = wrapped_key_blob.chunks_exact(modulus_size as usize);
     let wrapped_aes_key = blob_chunks.next().ok_or_else(|| {
         Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedKeyBlob(format!(
             "expected wrapped AES key blob to be {} bytes, but found {}",
@@ -152,7 +150,7 @@ pub fn pkcs11_rsa_aes_key_unwrap(
             blob_chunks.remainder().len()
         ))
     })?;
-    if blob_chunks.next().is_some() || blob_chunks.remainder().len() > 0 {
+    if blob_chunks.next().is_some() || !blob_chunks.remainder().is_empty() {
         Err(Pkcs11RsaAesKeyUnwrapError::OversizedWrappedKeyBlob)?
     }
 
