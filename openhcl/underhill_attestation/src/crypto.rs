@@ -466,4 +466,23 @@ mod tests {
         let unwrapped_key = result.unwrap();
         assert_eq!(unwrapped_key, KEY);
     }
+
+    #[test]
+    fn test_sha256() {
+        const EMPTY_HASH: [u8; 32] = [
+            227, 176, 196, 66, 152, 252, 28, 20, 154, 251, 244, 200, 153, 111, 185, 36, 39, 174,
+            65, 228, 100, 155, 147, 76, 164, 149, 153, 27, 120, 82, 184, 85,
+        ];
+
+        let hash = sha_256(&[]);
+        assert_eq!(hash, EMPTY_HASH);
+
+        const PANGRAM: [u8; 32] = [
+            215, 168, 251, 179, 7, 215, 128, 148, 105, 202, 154, 188, 176, 8, 46, 79, 141, 86, 81,
+            228, 109, 60, 219, 118, 45, 2, 208, 191, 55, 201, 229, 146,
+        ];
+
+        let hash = sha_256(b"The quick brown fox jumps over the lazy dog");
+        assert_eq!(hash, PANGRAM);
+    }
 }
