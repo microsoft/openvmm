@@ -3,10 +3,10 @@
 
 //! Runtime support for the UEFI application environment.
 
+#![cfg(target_os = "uefi")]
 // UNSAFETY: Raw assembly needed for panic handling to abort.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
-#[cfg(target_os = "uefi")]
 #[panic_handler]
 fn panic_handler(panic: &core::panic::PanicInfo<'_>) -> ! {
     use uefi::println;
