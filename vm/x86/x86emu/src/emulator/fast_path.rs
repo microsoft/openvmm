@@ -51,7 +51,7 @@ pub fn emulate_fast_path_set_bit<T: Cpu>(instruction_bytes: &[u8], cpu: &mut T) 
             let op_size = instr.memory_size().size() as u8 as i64;
 
             // When in the register form, the offset is treated as a signed value
-            let bit_offset = cpu.gp_sign_extend(instr.op1_register());
+            let bit_offset = cpu.gp_sign_extend(instr.op1_register().into());
 
             let address_size = instruction::address_size(&instr);
 
@@ -76,7 +76,7 @@ pub fn emulate_fast_path_set_bit<T: Cpu>(instruction_bytes: &[u8], cpu: &mut T) 
             if instr.op0_kind() == OpKind::Memory =>
         {
             let address = instruction::memory_op_offset(cpu, &instr, 0);
-            let mask = cpu.gp(instr.op1_register());
+            let mask = cpu.gp(instr.op1_register().into());
             if !mask.is_power_of_two() {
                 tracing::debug!(mask, "fast path set bit: or without exactly one bit");
                 return None;

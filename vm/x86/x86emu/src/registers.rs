@@ -6,6 +6,16 @@
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
 
+#[derive(Debug, Copy, Clone, PartialEq, Default)]
+pub struct RegisterIndex {
+    /// Index of the full register size. E.g. this would be the index of RAX for the register EAX.
+    pub extended_index: usize,
+    /// The size of the register
+    pub size: usize,
+    /// Register shift, only applicable for 8-bit registers
+    pub shift: usize
+}
+
 /// The current CPU register state. Some of the fields are updated by the emulator.
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]

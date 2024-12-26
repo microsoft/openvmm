@@ -50,7 +50,6 @@ thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 safe_intrinsics.workspace = true
-iced-x86 = { workspace = true, features = ["std"] }
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

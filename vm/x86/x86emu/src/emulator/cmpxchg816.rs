@@ -64,8 +64,8 @@ impl<T: Cpu> Emulator<'_, T> {
             let high_val = (left >> (op_size / 2)) as u64;
             let low_val = (left & !(u128::MAX << (op_size / 2))) as u64;
             let (high_reg, low_reg) = RegisterPair::DxAx.to_registers(op_size);
-            self.cpu.set_gp(high_reg, high_val);
-            self.cpu.set_gp(low_reg, low_val);
+            self.cpu.set_gp(high_reg.into(), high_val);
+            self.cpu.set_gp(low_reg.into(), low_val);
             self.cpu.set_rflags(rflags);
         }
 
@@ -74,8 +74,8 @@ impl<T: Cpu> Emulator<'_, T> {
 
     fn get_combined_value(&mut self, op_size: usize, pair: RegisterPair) -> u128 {
         let (high_reg, low_reg) = pair.to_registers(op_size);
-        let high_val = self.cpu.gp(high_reg) as u128;
-        let low_val = self.cpu.gp(low_reg) as u128;
+        let high_val = self.cpu.gp(high_reg.into()) as u128;
+        let low_val = self.cpu.gp(low_reg.into()) as u128;
         (high_val << (op_size / 2)) | low_val
     }
 }

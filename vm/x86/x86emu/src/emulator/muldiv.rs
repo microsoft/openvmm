@@ -46,7 +46,7 @@ impl<T: Cpu> Emulator<'_, T> {
 
         let (high_register, low_register) = unary_register_pair(operand_bit_size);
 
-        let left = self.cpu.gp(low_register) as u128;
+        let left = self.cpu.gp(low_register.into()) as u128;
 
         let (product, flag) = do_multiply(left, operand_bit_size);
 
@@ -54,8 +54,8 @@ impl<T: Cpu> Emulator<'_, T> {
         let product_high = ((product & high_mask) >> operand_bit_size) as u64;
         let product_low = (!high_mask & product) as u64;
 
-        self.cpu.set_gp(low_register, product_low);
-        self.cpu.set_gp(high_register, product_high);
+        self.cpu.set_gp(low_register.into(), product_low);
+        self.cpu.set_gp(high_register.into(), product_high);
 
         let mut rflags = self.cpu.rflags();
         rflags.set_carry(flag);
@@ -160,8 +160,8 @@ impl<T: Cpu> Emulator<'_, T> {
 
         let (high_register, low_register) = unary_register_pair(operand_bit_size);
 
-        let left_high_bits = self.cpu.gp(high_register) as u128;
-        let left_low_bits = self.cpu.gp(low_register) as u128;
+        let left_high_bits = self.cpu.gp(high_register.into()) as u128;
+        let left_low_bits = self.cpu.gp(low_register.into()) as u128;
         let left = (left_high_bits << operand_bit_size) | left_low_bits;
 
         let (quotient, remainder) = do_division(left, right, operand_bit_size).map_err(|_| {
@@ -172,8 +172,8 @@ impl<T: Cpu> Emulator<'_, T> {
             )
         })?;
 
-        self.cpu.set_gp(low_register, quotient);
-        self.cpu.set_gp(high_register, remainder);
+        self.cpu.set_gp(low_register.into(), quotient);
+        self.cpu.set_gp(high_register.into(), remainder);
 
         // flags are undefined
         Ok(())

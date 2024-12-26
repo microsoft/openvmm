@@ -3,8 +3,8 @@
 
 //! Trait for asynchronous callouts from the emulator to the VM.
 
-use iced_x86::Register;
 use std::future::Future;
+use crate::registers::RegisterIndex;
 use x86defs::{RFlags, SegmentRegister};
 
 /// Trait for asynchronous callouts from the emulator to the VM.
@@ -58,9 +58,9 @@ pub trait Cpu {
         bytes: &[u8],
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
-    fn gp(&mut self, reg: Register) -> u64;
-    fn gp_sign_extend(&mut self, reg: Register) -> i64;
-    fn set_gp(&mut self, reg: Register, v: u64);
+    fn gp(&mut self, reg: RegisterIndex) -> u64;
+    fn gp_sign_extend(&mut self, reg: RegisterIndex) -> i64;
+    fn set_gp(&mut self, reg: RegisterIndex, v: u64);
     fn xmm(&mut self, index: usize) -> u128;
     fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error>;
     fn rip(&mut self) -> u64;
@@ -119,15 +119,15 @@ impl<T: Cpu + ?Sized> Cpu for &mut T {
         (*self).write_io(io_port, bytes)
     }
 
-    fn gp(&mut self, reg: Register) -> u64 {
+    fn gp(&mut self, reg: RegisterIndex) -> u64 {
         (*self).gp(reg)
     }
 
-    fn gp_sign_extend(&mut self, reg: Register) -> i64 {
+    fn gp_sign_extend(&mut self, reg: RegisterIndex) -> i64 {
         (*self).gp_sign_extend(reg)
     }
 
-    fn set_gp(&mut self, reg: Register, v: u64) {
+    fn set_gp(&mut self, reg: RegisterIndex, v: u64) {
         (*self).set_gp(reg, v)
     }
 

@@ -63,7 +63,7 @@ impl<T: Cpu> Emulator<'_, T> {
     ) -> Result<(), InternalError<T::Error>> {
         let mut buffer = [0; 64];
         let src = self.memory_op_offset(instr, 1);
-        let dst = self.cpu.gp(instr.op0_register());
+        let dst = self.cpu.gp(instr.op0_register().into());
 
         self.read_memory(
             instr.memory_segment(),

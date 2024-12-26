@@ -37,7 +37,6 @@ use hvdef::HvX64PendingExceptionEvent;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
-use iced_x86::Register;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -1503,18 +1502,16 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         self.vp.partition.caps.vendor
     }
 
-    fn gp_sign_extend(&mut self, reg: Register) -> i64 {
+    fn gp_sign_extend(&mut self, reg: usize) -> i64 {
         self.gp(reg) as i64
     }
 
-    fn gp(&mut self, reg: Register) -> u64 {
-        let index = reg.number();
-        self.cache.gps[index]
+    fn gp(&mut self, reg: usize) -> u64 {
+        self.cache.gps[reg]
     }
 
-    fn set_gp(&mut self, reg: Register, v: u64) {
-        let index = reg.number();
-        self.cache.gps[index] = v;
+    fn set_gp(&mut self, reg: usize, v: u64) {
+        self.cache.gps[reg] = v;
     }
 
     fn xmm(&mut self, index: usize) -> u128 {

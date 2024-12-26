@@ -53,7 +53,6 @@ use hvdef::HvX64PendingInterruptionType;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
-use iced_x86::Register;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -934,66 +933,6 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
     }
 }
 
-/*
-impl<'a, 'b> UhX86EmulatorRegisters<'a, 'b, HypervisorBackedX86> for x86emu::CpuState {
-    fn new(vp: &'a mut UhProcessor<'b, HypervisorBackedX86>, vtl: GuestVtl) -> Self {
-        const NAMES: &[HvX64RegisterName] = &[
-            HvX64RegisterName::Rsp,
-            HvX64RegisterName::Es,
-            HvX64RegisterName::Ds,
-            HvX64RegisterName::Fs,
-            HvX64RegisterName::Gs,
-            HvX64RegisterName::Ss,
-            HvX64RegisterName::Cr0,
-            HvX64RegisterName::Efer,
-        ];
-        let mut values = [FromZeroes::new_zeroed(); NAMES.len()];
-        vp.runner
-            .get_vp_registers(vtl, NAMES, &mut values)
-            .expect("register query should not fail");
-
-        let [rsp, es, ds, fs, gs, ss, cr0, efer] = values;
-
-        let mut gps = vp.runner.cpu_context().gps;
-        gps[x86emu::CpuState::RSP] = rsp.as_u64();
-
-        let message = vp.runner.exit_message();
-        let header = HvX64InterceptMessageHeader::ref_from_prefix(message.payload()).unwrap();
-
-        x86emu::CpuState {
-            gps,
-            segs: [
-                from_seg(es.into()),
-                from_seg(header.cs_segment),
-                from_seg(ss.into()),
-                from_seg(ds.into()),
-                from_seg(fs.into()),
-                from_seg(gs.into()),
-            ],
-            rip: header.rip,
-            rflags: header.rflags.into(),
-            cr0: cr0.as_u64(),
-            efer: efer.as_u64(),
-        }
-    }
-
-    fn flush(&self, vp: &'a mut UhProcessor<'b, HypervisorBackedX86>, vtl: GuestVtl) {
-        vp.runner
-            .set_vp_registers(
-                vtl,
-                [
-                    (HvX64RegisterName::Rip, self.rip),
-                    (HvX64RegisterName::Rflags, self.rflags.into()),
-                    (HvX64RegisterName::Rsp, self.gps[x86emu::CpuState::RSP]),
-                ],
-            )
-            .unwrap();
-
-        vp.runner.cpu_context_mut().gps = self.gps;
-    }
-}
-*/
-
 impl UhProcessor<'_, HypervisorBackedX86> {
     fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
         const NAMES: &[HvX64RegisterName] = &[
@@ -1369,18 +1308,16 @@ impl<T: CpuIo> EmulatorSupport
         self.vp.partition.caps.vendor
     }
 
-    fn gp_sign_extend(&mut self, reg: Register) -> i64 {
+    fn gp_sign_extend(&mut self, reg: usize) -> i64 {
         self.gp(reg) as i64
     }
 
-    fn gp(&mut self, reg: Register) -> u64 {
-        let index = reg.number();
-        self.cache.gps[index]
+    fn gp(&mut self, reg: usize) -> u64 {
+        self.cache.gps[reg]
     }
 
-    fn set_gp(&mut self, reg: Register, v: u64) {
-        let index = reg.number();
-        self.cache.gps[index] = v;
+    fn set_gp(&mut self, reg: usize, v: u64) {
+        self.cache.gps[reg] = v;
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
