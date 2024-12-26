@@ -1533,8 +1533,7 @@ async fn new_underhill_vm(
     };
 
     // Enable the private pool which supports persisting ranges across servicing
-    // for DMA devices that support save restore. Today, this is only used for
-    // NVMe.
+    // for DMA devices that support save restore.
     let mut private_pool = if !runtime_params.private_pool_ranges().is_empty() {
         use vmcore::save_restore::SaveRestore;
 
@@ -1773,11 +1772,11 @@ async fn new_underhill_vm(
         vmtime: &vmtime_source,
         isolated_memory_protector: gm.isolated_memory_protector()?,
         shared_vis_pages_pool: shared_vis_pages_pool.as_ref().map(|p| {
-            p.allocator("partition".into())
+            p.allocator("partition-shared".into())
                 .expect("partition name should be unique")
         }),
         private_vis_pages_pool: private_pool.as_ref().map(|p| {
-            p.allocator("partition".into())
+            p.allocator("partition-private".into())
                 .expect("partition name should be unique")
         }),
     };
