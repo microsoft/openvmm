@@ -1037,7 +1037,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     ) -> Option<u32>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>:
-            virt_support_x86emu::emulate::EmulatorSupport<Error = UhRunVpError>
+            EmulatorSupport<Error = UhRunVpError>
     {
         let guest_memory = &self.partition.gm[vtl];
         let mut emulation_state = UhEmulationState {
@@ -1069,7 +1069,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     ) -> Result<(), VpHaltReason<UhRunVpError>>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>:
-            virt_support_x86emu::emulate::EmulatorSupport<Error = UhRunVpError>,
+            EmulatorSupport<Error = UhRunVpError>,
     {
         let guest_memory = &self.partition.gm[vtl];
         let mut emulation_state = UhEmulationState {
@@ -1211,10 +1211,6 @@ struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing> {
     interruption_pending: bool,
     devices: &'a T,
     vtl: GuestVtl,
-    #[cfg_attr(
-        guest_arch = "x86_64",
-        expect(dead_code, reason = "not used yet in x86_64")
-    )]
     cache: U::EmulationCache,
 }
 

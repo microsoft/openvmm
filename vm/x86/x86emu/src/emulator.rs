@@ -5,6 +5,7 @@
 
 use crate::bitness;
 use crate::Bitness;
+use crate::registers::RegisterIndex;
 use crate::Cpu;
 use iced_x86::Code;
 use iced_x86::Decoder;
@@ -62,6 +63,32 @@ impl EmulatorRegister for u128 {
     fn to_le_bytes(&self) -> Self::Array {
         (*self).to_le_bytes()
     }
+}
+
+impl Into<RegisterIndex> for Register {
+  fn into(self) -> RegisterIndex {
+      let size = self.size();
+      let shift = match size {
+          1 => {
+              if self >= Register::SPL || self < Register::AH {
+                 0
+              }
+              else {
+                 8
+              }
+          }
+          2 => 0,
+          4 => 0,
+          8 => 0,
+          _ => panic!("invalid gp register size")
+      };
+      let extended_index = self.full_register().number();
+      RegisterIndex {
+          extended_index,
+          size,
+          shift
+      }
+  }
 }
 
 /// An instruction emulator.
@@ -580,7 +607,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                 self.read_memory_op(instr, operand, AlignmentMode::Standard)
                     .await?
             }
-            OpKind::Register => self.cpu.gp(instr.op_register(operand)),
+            OpKind::Register => self.cpu.gp(instr.op_register(operand).into()),
             OpKind::Immediate8
             | OpKind::Immediate16
             | OpKind::Immediate32
@@ -618,7 +645,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                     .await?
             }
             OpKind::Register => {
-                self.cpu.set_gp(instr.op0_register(), value);
+                self.cpu.set_gp(instr.op0_register().into(), value);
             }
             _ => Err(self.unsupported_instruction(instr))?,
         };
@@ -650,7 +677,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                 .await?
             }
             OpKind::Register => {
-                self.cpu.set_gp(instr.op0_register(), new);
+                self.cpu.set_gp(instr.op0_register().into(), new);
             }
             _ => Err(self.unsupported_instruction(instr))?,
         };

@@ -7483,7 +7483,6 @@ dependencies = [
  "hv1_emulator",
  "hv1_hypercall",
  "hvdef",
- "iced-x86",
  "inspect",
  "inspect_counters",
  "libc",

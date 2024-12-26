@@ -15,3 +15,4 @@ pub use emulator::MAX_REP_LOOPS;
 pub use registers::bitness;
 pub use registers::Bitness;
 pub use registers::CpuState;
+pub use registers::RegisterIndex;
