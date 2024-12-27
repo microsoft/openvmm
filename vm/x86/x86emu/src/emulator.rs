@@ -3,8 +3,8 @@
 
 //! Implements an x86 instruction emulator.
 
-use crate::bitness;
-use crate::Bitness;
+use crate::registers::bitness;
+use crate::registers::Bitness;
 use crate::registers::RegisterIndex;
 use crate::Cpu;
 use iced_x86::Code;
