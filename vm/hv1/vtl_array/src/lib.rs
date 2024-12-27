@@ -94,6 +94,16 @@ impl<T> From<[T; 3]> for VtlArray<T, 3> {
     }
 }
 
+// TODO: Remove this when deriving Default for arrays is stable
+impl<T, const N: usize> Default for VtlArray<T, N>
+where
+    T: Default,
+{
+    fn default() -> Self {
+        Self::from_fn(|_| T::default())
+    }
+}
+
 impl<T, const N: usize> Inspect for VtlArray<T, N>
 where
     T: Inspect,
