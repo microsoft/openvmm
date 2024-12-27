@@ -84,7 +84,7 @@ impl CpuState {
     pub const GS: usize = 5;
 }
 
-pub fn bitness(cr0: u64, efer: u64, cs: SegmentRegister) -> Bitness {
+pub(crate) fn bitness(cr0: u64, efer: u64, cs: SegmentRegister) -> Bitness {
     if cr0 & x86defs::X64_CR0_PE != 0 {
         if efer & x86defs::X64_EFER_LMA != 0 {
             if cs.attributes.long() {
@@ -105,7 +105,7 @@ pub fn bitness(cr0: u64, efer: u64, cs: SegmentRegister) -> Bitness {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Bitness {
+pub(crate) enum Bitness {
     Bit64,
     Bit32,
     Bit16,
