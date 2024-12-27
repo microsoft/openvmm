@@ -3,8 +3,8 @@
 
 //! Trait for asynchronous callouts from the emulator to the VM.
 
-use std::future::Future;
 use crate::registers::RegisterIndex;
+use std::future::Future;
 use x86defs::{RFlags, SegmentRegister};
 
 /// Trait for asynchronous callouts from the emulator to the VM.

@@ -127,7 +127,7 @@ impl Default for SegmentRegister {
             base: 0,
             limit: 0,
             selector: 0,
-            attributes: SegmentAttributes(0)
+            attributes: SegmentAttributes(0),
         }
     }
 }

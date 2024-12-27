@@ -1243,9 +1243,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
     }
 }
 
-impl<T: CpuIo> EmulatorSupport
-    for UhEmulationState<'_, '_, T, HypervisorBackedX86>
-{
+impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX86> {
     type Error = UhRunVpError;
 
     fn load_registers(&mut self) {
@@ -1260,7 +1258,8 @@ impl<T: CpuIo> EmulatorSupport
             HvX64RegisterName::Efer,
         ];
         let mut values = [FromZeroes::new_zeroed(); NAMES.len()];
-        self.vp.runner
+        self.vp
+            .runner
             .get_vp_registers(self.vtl, NAMES, &mut values)
             .expect("register query should not fail");
 
@@ -1290,13 +1289,17 @@ impl<T: CpuIo> EmulatorSupport
     }
 
     fn flush(&mut self) {
-        self.vp.runner
+        self.vp
+            .runner
             .set_vp_registers(
                 self.vtl,
                 [
                     (HvX64RegisterName::Rip, self.cache.rip),
                     (HvX64RegisterName::Rflags, self.cache.rflags.into()),
-                    (HvX64RegisterName::Rsp, self.cache.gps[x86emu::CpuState::RSP]),
+                    (
+                        HvX64RegisterName::Rsp,
+                        self.cache.gps[x86emu::CpuState::RSP],
+                    ),
                 ],
             )
             .unwrap();

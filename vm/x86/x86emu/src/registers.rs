@@ -13,7 +13,7 @@ pub struct RegisterIndex {
     /// The size of the register
     pub size: usize,
     /// Register shift, only applicable for 8-bit registers
-    pub shift: usize
+    pub shift: usize,
 }
 
 /// The current CPU register state. Some of the fields are updated by the emulator.
