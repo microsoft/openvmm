@@ -69,9 +69,6 @@ pub trait EmulatorSupport {
     /// Sets the value of an XMM* register.
     fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error>;
 
-    /// Load registers from backing into a cache
-    fn load_registers(&mut self);
-
     /// Flush registers in the emulation cache to the backing
     fn flush(&mut self);
 

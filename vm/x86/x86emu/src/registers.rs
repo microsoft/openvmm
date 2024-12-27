@@ -17,7 +17,7 @@ pub struct RegisterIndex {
 }
 
 /// The current CPU register state. Some of the fields are updated by the emulator.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CpuState {
     /// GP registers, in the canonical order (as defined by `RAX`, etc.).
