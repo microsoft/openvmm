@@ -64,11 +64,11 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 use virt::io::CpuIo;
-use virt_support_x86emu::emulate::EmulatorSupport;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use virt_support_x86emu::emulate::EmulatorSupport;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::vmtime::VmTimeAccess;
 use vtl_array::VtlArray;
@@ -1033,8 +1033,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         vtl: GuestVtl,
     ) -> Option<u32>
     where
-        for<'b> UhEmulationState<'b, 'a, D, T>:
-            EmulatorSupport<Error = UhRunVpError>
+        for<'b> UhEmulationState<'b, 'a, D, T>: EmulatorSupport<Error = UhRunVpError>,
     {
         let guest_memory = &self.partition.gm[vtl];
         let mut emulation_state = UhEmulationState {
@@ -1065,23 +1064,20 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         vtl: GuestVtl,
     ) -> Result<(), VpHaltReason<UhRunVpError>>
     where
-        for<'b> UhEmulationState<'b, 'a, D, T>:
-            EmulatorSupport<Error = UhRunVpError>,
+        for<'b> UhEmulationState<'b, 'a, D, T>: EmulatorSupport<Error = UhRunVpError>,
     {
         let guest_memory = &self.partition.gm[vtl];
         let mut emulation_state = UhEmulationState {
-                vp: &mut *self,
-                interruption_pending,
-                devices,
-                vtl,
-                cache: T::EmulationCache::default(),
-            };
-        emulation_state.load_registers();
-        let res = virt_support_x86emu::emulate::emulate(
-            &mut emulation_state,
-            guest_memory,
+            vp: &mut *self,
+            interruption_pending,
             devices,
-            ).await;
+            vtl,
+            cache: T::EmulationCache::default(),
+        };
+        emulation_state.load_registers();
+        let res =
+            virt_support_x86emu::emulate::emulate(&mut emulation_state, guest_memory, devices)
+                .await;
         emulation_state.flush();
         res
     }

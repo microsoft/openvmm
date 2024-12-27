@@ -15,9 +15,9 @@ use thiserror::Error;
 use virt::io::CpuIo;
 use virt::VpHaltReason;
 use vm_topology::processor::VpIndex;
-use x86emu::RegisterIndex;
 use x86defs::Exception;
 use x86defs::{RFlags, SegmentRegister};
+use x86emu::RegisterIndex;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 
@@ -809,23 +809,18 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         let extended_register = self.support.gp(reg.extended_index);
 
         (match reg.size {
-            1 => {
-                ((extended_register >> reg.shift) as u8).into()
-            }
+            1 => ((extended_register >> reg.shift) as u8).into(),
             2 => (extended_register as u16).into(),
             4 => (extended_register as u32).into(),
             8 => extended_register,
             _ => panic!("invalid gp register size"),
         }) as u64
-
     }
 
     fn gp_sign_extend(&mut self, reg: RegisterIndex) -> i64 {
         let extended_register = self.support.gp(reg.extended_index);
         match reg.size {
-            1 => {
-                ((extended_register << reg.shift) as i8).into()
-            }
+            1 => ((extended_register << reg.shift) as i8).into(),
             2 => (extended_register as i16).into(),
             4 => (extended_register as i32).into(),
             8 => extended_register as i64,
@@ -841,9 +836,7 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
                 let mask = (!0xff) << reg.shift;
                 (register_value & mask) | (((v as u8) as u64) << reg.shift)
             }
-            2 => {
-                (register_value & !0xffff) | (v as u16) as u64
-            }
+            2 => (register_value & !0xffff) | (v as u16) as u64,
             // N.B. setting a 32-bit register zero extends the result to the 64-bit
             //      register. This is different from 16-bit and 8-bit registers.
             4 => (v as u32) as u64,

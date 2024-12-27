@@ -66,29 +66,28 @@ impl EmulatorRegister for u128 {
 }
 
 impl Into<RegisterIndex> for Register {
-  fn into(self) -> RegisterIndex {
-      let size = self.size();
-      let shift = match size {
-          1 => {
-              if self >= Register::SPL || self < Register::AH {
-                 0
-              }
-              else {
-                 8
-              }
-          }
-          2 => 0,
-          4 => 0,
-          8 => 0,
-          _ => panic!("invalid gp register size")
-      };
-      let extended_index = self.full_register().number();
-      RegisterIndex {
-          extended_index,
-          size,
-          shift
-      }
-  }
+    fn into(self) -> RegisterIndex {
+        let size = self.size();
+        let shift = match size {
+            1 => {
+                if self >= Register::SPL || self < Register::AH {
+                    0
+                } else {
+                    8
+                }
+            }
+            2 => 0,
+            4 => 0,
+            8 => 0,
+            _ => panic!("invalid gp register size"),
+        };
+        let extended_index = self.full_register().number();
+        RegisterIndex {
+            extended_index,
+            size,
+            shift,
+        }
+    }
 }
 
 /// An instruction emulator.

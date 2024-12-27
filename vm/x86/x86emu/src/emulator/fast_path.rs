@@ -6,8 +6,8 @@
 use super::instruction;
 use crate::emulator::arith::ArithOp;
 use crate::emulator::arith::OrOp;
-use crate::registers::Bitness;
 use crate::registers::bitness;
+use crate::registers::Bitness;
 use crate::Cpu;
 use iced_x86::OpKind;
 use iced_x86::Register;

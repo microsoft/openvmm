@@ -140,8 +140,10 @@ impl<T: Cpu> Emulator<'_, T> {
 
     fn rep_again(&mut self, rep_state: &mut RepState) -> bool {
         if rep_state.rep.is_some() {
-            self.cpu
-                .set_gp(rep_state.count_reg.into(), rep_state.requested - rep_state.done);
+            self.cpu.set_gp(
+                rep_state.count_reg.into(),
+                rep_state.requested - rep_state.done,
+            );
         }
         if rep_state.is_done() || rep_state.done == MAX_REP_LOOPS {
             return false;
@@ -280,8 +282,10 @@ impl<T: Cpu> Emulator<'_, T> {
             self.write_memory(Register::ES, di_offset, AlignmentMode::Standard, data)
                 .await?;
 
-            self.cpu.set_gp(rsi.into(), si_offset.wrapping_add(rep.delta));
-            self.cpu.set_gp(rdi.into(), di_offset.wrapping_add(rep.delta));
+            self.cpu
+                .set_gp(rsi.into(), si_offset.wrapping_add(rep.delta));
+            self.cpu
+                .set_gp(rdi.into(), di_offset.wrapping_add(rep.delta));
         }
         rep.check_done()?;
         Ok(())
@@ -325,8 +329,10 @@ impl<T: Cpu> Emulator<'_, T> {
             right = u64::from_le_bytes(data_right);
             rep.update_zero(left == right);
 
-            self.cpu.set_gp(rsi.into(), si_offset.wrapping_add(rep.delta));
-            self.cpu.set_gp(rdi.into(), di_offset.wrapping_add(rep.delta));
+            self.cpu
+                .set_gp(rsi.into(), si_offset.wrapping_add(rep.delta));
+            self.cpu
+                .set_gp(rdi.into(), di_offset.wrapping_add(rep.delta));
         }
 
         rep.check_done()?;
@@ -365,7 +371,8 @@ impl<T: Cpu> Emulator<'_, T> {
             memval = u64::from_le_bytes(data);
             rep.update_zero(memval == rax);
 
-            self.cpu.set_gp(rdi.into(), di_offset.wrapping_add(rep.delta));
+            self.cpu
+                .set_gp(rdi.into(), di_offset.wrapping_add(rep.delta));
         }
 
         rep.check_done()?;

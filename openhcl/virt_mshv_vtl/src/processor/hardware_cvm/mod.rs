@@ -1311,8 +1311,8 @@ pub(crate) fn validate_xsetbv_exit(input: XsetbvExitInput) -> Option<u64> {
     Some(xfem)
 }
 
-impl<'a, 'b, T: CpuIo, B: HardwareIsolatedBacking>
-    TranslateGvaSupport for UhEmulationState<'a, 'b, T, B>
+impl<'a, 'b, T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport
+    for UhEmulationState<'a, 'b, T, B>
 {
     type Error = UhRunVpError;
 
