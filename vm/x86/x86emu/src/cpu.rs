@@ -5,7 +5,8 @@
 
 use crate::registers::RegisterIndex;
 use std::future::Future;
-use x86defs::{RFlags, SegmentRegister};
+use x86defs::SegmentRegister;
+use x86defs::RFlags;
 
 /// Trait for asynchronous callouts from the emulator to the VM.
 pub trait Cpu {
