@@ -1436,12 +1436,8 @@ impl UhProcessor<'_, SnpBacked> {
 impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
     type Error = UhRunVpError;
 
-    fn load_registers(&mut self) {
-        unimplemented!("Querying the VMSA is not expensive, no emulation cache needed");
-    }
-
     fn flush(&mut self) {
-        unimplemented!("Querying the VMSA is not expensive, no emulation cache needed");
+        //AMD SNP does not require an emulation cache
     }
 
     fn vp_index(&self) -> VpIndex {

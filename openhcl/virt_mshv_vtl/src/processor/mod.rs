@@ -1043,7 +1043,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             vtl,
             cache: T::EmulationCache::default(),
         };
-        emulation_state.load_registers();
         let res = virt_support_x86emu::emulate::emulate_mnf_write_fast_path(
             &mut emulation_state,
             guest_memory,
@@ -1074,7 +1073,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             vtl,
             cache: T::EmulationCache::default(),
         };
-        emulation_state.load_registers();
         let res =
             virt_support_x86emu::emulate::emulate(&mut emulation_state, guest_memory, devices)
                 .await;

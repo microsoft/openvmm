@@ -437,21 +437,10 @@ struct TdxVtl {
     exit_stats: ExitStats,
 }
 
-#[derive(Default, Clone, Copy)]
-pub struct TdxCpuState {
-    /// GP registers, in the canonical order (as defined by `RAX`, etc.).
-    pub gps: [u64; 16],
-    /// Segment registers, in the canonical order (as defined by `ES`, etc.).
+#[derive(Default)]
+pub struct TdxEmulationCache {
     pub segs: [Option<SegmentRegister>; 6],
-    /// RIP.
-    pub rip: u64,
-    /// RFLAGS.
-    pub rflags: RFlags,
-
-    /// CR0. Immutable.
-    pub cr0: u64,
-    /// EFER. Immutable.
-    pub efer: u64,
+    pub cr0: Option<u64>
 }
 
 #[derive(Inspect, Default)]
@@ -560,7 +549,7 @@ impl TdxBackedShared {
 impl BackingPrivate for TdxBacked {
     type HclBacking = Tdx;
     type Shared = TdxBackedShared;
-    type EmulationCache = TdxCpuState;
+    type EmulationCache = TdxEmulationCache;
 
     fn shared(shared: &BackingShared) -> &Self::Shared {
         let BackingShared::Tdx(shared) = shared else {
@@ -2242,24 +2231,8 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         self.vp.vp_index()
     }
 
-    fn load_registers(&mut self) {
-        let cs = TdxExit(self.vp.runner.tdx_vp_enter_exit_info()).cs();
-        let enter_state = self.vp.runner.tdx_enter_guest_state();
-        self.cache = TdxCpuState {
-            gps: enter_state.gps,
-            segs: [None, cs.into(), None, None, None, None],
-            rip: enter_state.rip,
-            rflags: enter_state.rflags.into(),
-            cr0: self.vp.backing.cr0.read(&self.vp.runner),
-            efer: self.vp.backing.efer,
-        };
-    }
-
     fn flush(&mut self) {
-        let enter_state = self.vp.runner.tdx_enter_guest_state_mut();
-        enter_state.gps = self.cache.gps;
-        enter_state.rip = self.cache.rip;
-        enter_state.rflags = self.cache.rflags.into();
+        // no cached registers are modifiable by the emulator for TDX
     }
 
     fn vendor(&self) -> x86defs::cpuid::Vendor {
@@ -2271,11 +2244,13 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
     }
 
     fn gp(&mut self, reg: usize) -> u64 {
-        self.cache.gps[reg]
+        let enter_state = self.vp.runner.tdx_enter_guest_state();
+        enter_state.gps[reg]
     }
 
     fn set_gp(&mut self, reg: usize, v: u64) {
-        self.cache.gps[reg] = v;
+        let enter_state = self.vp.runner.tdx_enter_guest_state_mut();
+        enter_state.gps[reg] = v;
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
@@ -2288,42 +2263,49 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
     }
 
     fn rip(&mut self) -> u64 {
-        self.cache.rip
+        let enter_state = self.vp.runner.tdx_enter_guest_state();
+        enter_state.rip
     }
 
     fn set_rip(&mut self, v: u64) {
-        self.cache.rip = v;
+        let enter_state = self.vp.runner.tdx_enter_guest_state_mut();
+        enter_state.rip = v;
     }
 
     fn segment(&mut self, index: usize) -> x86defs::SegmentRegister {
         let tdx_segment_index = match index {
-            CpuState::ES => TdxSegmentReg::Es,
             CpuState::CS => TdxSegmentReg::Cs,
+            CpuState::ES => TdxSegmentReg::Es,
             CpuState::SS => TdxSegmentReg::Ss,
             CpuState::DS => TdxSegmentReg::Ds,
             CpuState::FS => TdxSegmentReg::Fs,
             CpuState::GS => TdxSegmentReg::Gs,
             _ => panic!("invalid segment register"),
         };
-        let reg = self.cache.segs[index]
-            .get_or_insert_with(|| self.vp.read_segment(GuestVtl::Vtl0, tdx_segment_index));
+        let reg = match tdx_segment_index {
+            TdxSegmentReg::Cs => {self.cache.segs[index].get_or_insert_with(|| TdxExit(self.vp.runner.tdx_vp_enter_exit_info()).cs())}
+           _ => self.cache.segs[index].get_or_insert_with(|| self.vp.read_segment(self.vtl, tdx_segment_index))
+        };
         (*reg).into()
     }
 
     fn efer(&mut self) -> u64 {
-        self.cache.efer
+        self.vp.backing.efer
     }
 
     fn cr0(&mut self) -> u64 {
-        self.cache.cr0
+        let reg = self.cache.cr0.get_or_insert_with(|| self.vp.backing.cr0.read(&self.vp.runner));
+        (*reg).into()
     }
 
     fn rflags(&mut self) -> RFlags {
-        self.cache.rflags
+        let enter_state = self.vp.runner.tdx_enter_guest_state();
+        enter_state.rflags.into()
     }
 
     fn set_rflags(&mut self, v: RFlags) {
-        self.cache.rflags = v;
+        let enter_state = self.vp.runner.tdx_enter_guest_state_mut();
+        enter_state.rflags = v.into();
     }
 
     fn instruction_bytes(&self) -> &[u8] {

@@ -126,7 +126,7 @@ struct ProcessorStatsX86 {
 impl BackingPrivate for HypervisorBackedX86 {
     type HclBacking = MshvX64;
     type Shared = ();
-    type EmulationCache = x86emu::CpuState;
+    type EmulationCache = ();
 
     fn shared(_: &BackingShared) -> &Self::Shared {
         &()
@@ -1243,6 +1243,8 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX86> {
     type Error = UhRunVpError;
 
+    //TODO(babayet2) check w/ Steven, seems like we should keep some of this logic for MSHV
+    /*
     fn load_registers(&mut self) {
         const NAMES: &[HvX64RegisterName] = &[
             HvX64RegisterName::Rsp,
@@ -1283,25 +1285,10 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             cr0: cr0.as_u64(),
             efer: efer.as_u64(),
         };
-    }
+    }*/
 
     fn flush(&mut self) {
-        self.vp
-            .runner
-            .set_vp_registers(
-                self.vtl,
-                [
-                    (HvX64RegisterName::Rip, self.cache.rip),
-                    (HvX64RegisterName::Rflags, self.cache.rflags.into()),
-                    (
-                        HvX64RegisterName::Rsp,
-                        self.cache.gps[x86emu::CpuState::RSP],
-                    ),
-                ],
-            )
-            .unwrap();
-
-        self.vp.runner.cpu_context_mut().gps = self.cache.gps;
+        todo!()
     }
 
     fn vp_index(&self) -> VpIndex {
@@ -1317,11 +1304,11 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn gp(&mut self, reg: usize) -> u64 {
-        self.cache.gps[reg]
+        todo!();
     }
 
     fn set_gp(&mut self, reg: usize, v: u64) {
-        self.cache.gps[reg] = v;
+        todo!();
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
@@ -1334,31 +1321,31 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn rip(&mut self) -> u64 {
-        self.cache.rip
+        todo!();
     }
 
     fn set_rip(&mut self, v: u64) {
-        self.cache.rip = v;
+        todo!();
     }
 
     fn segment(&mut self, index: usize) -> SegmentRegister {
-        self.cache.segs[index]
+        todo!();
     }
 
     fn efer(&mut self) -> u64 {
-        self.cache.efer
+        todo!();
     }
 
     fn cr0(&mut self) -> u64 {
-        self.cache.cr0
+        todo!();
     }
 
     fn rflags(&mut self) -> RFlags {
-        self.cache.rflags
+        todo!();
     }
 
     fn set_rflags(&mut self, v: RFlags) {
-        self.cache.rflags = v;
+        todo!();
     }
 
     fn instruction_bytes(&self) -> &[u8] {
