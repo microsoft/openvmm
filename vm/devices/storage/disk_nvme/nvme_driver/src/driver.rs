@@ -1126,4 +1126,3 @@ pub mod save_restore {
         pub identify_ns: nvme_spec::nvm::IdentifyNamespace,
     }
 }
-
