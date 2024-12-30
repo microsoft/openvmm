@@ -30,12 +30,12 @@ unsafe extern "C" {
 #[macro_export]
 macro_rules! openssl_crypto_only {
     () => {
-        // SAFETY: We are purposefully overriding this symbol and we have made
-        // sure the definition is compatible with the original.
-        #[unsafe(no_mangle)]
         /// # Safety
         ///
         /// The caller must call as documented for `OPENSSL_init_ssl`.
+        // SAFETY: We are purposefully overriding this symbol and we have made
+        // sure the definition is compatible with the original.
+        #[unsafe(no_mangle)]
         unsafe extern "C" fn OPENSSL_init_ssl(
             opts: u64,
             settings: *const ::core::ffi::c_void,

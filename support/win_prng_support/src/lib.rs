@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 //! Support for running in smaller Windows editions such as Win1.
+//! This crate purposefully overrides symbols normally provided by system DLLs.
+//! In order for this to be safe the definitions are compatible with the originals.
 
 #![cfg(windows)]
 // UNSAFETY: needed to call internal Windows functions and to export unmangled
@@ -25,25 +27,22 @@ macro_rules! use_win10_prng_apis {
         $($crate::use_win10_prng_apis!(@x $lib);)*
     };
     (@x advapi32) => {
-        // SAFETY: We are purposefully overriding this symbol and we have made
-        // sure the definition is compatible with the original.
+        // SAFETY: see module level safety justification
         #[unsafe(no_mangle)]
         pub unsafe extern "system" fn SystemFunction036(data: *mut u8, len: u32) -> u8 {
             // SAFETY: passing through guarantees.
             unsafe { $crate::private::SystemFunction036(data, len) }
         }
 
-        // SAFETY: We are purposefully overriding this symbol and we have made
-        // sure the definition is compatible with the original.
-        #[unsafe(no_mangle)]
         /// If a call to SystemFunction036 is marked as a dllimport, then it may be an indirect call
         /// through __imp_SystemFunction036 instead.
+        // SAFETY: see module level safety justification
+        #[unsafe(no_mangle)]
         pub static __imp_SystemFunction036: unsafe extern "system" fn(*mut u8, u32) -> u8 =
             SystemFunction036;
     };
     (@x bcrypt) => {
-        // SAFETY: We are purposefully overriding this symbol and we have made
-        // sure the definition is compatible with the original.
+        // SAFETY: see module level safety justification
         #[unsafe(no_mangle)]
         pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(
             handle: *mut ::core::ffi::c_void,
@@ -62,8 +61,7 @@ macro_rules! use_win10_prng_apis {
             }
         }
 
-        // SAFETY: We are purposefully overriding this symbol and we have made
-        // sure the definition is compatible with the original.
+        // SAFETY: see module level safety justification
         #[unsafe(no_mangle)]
         pub unsafe extern "system" fn BCryptCloseAlgorithmProvider(
             handle: *mut ::core::ffi::c_void,
@@ -73,8 +71,7 @@ macro_rules! use_win10_prng_apis {
             unsafe { $crate::private::BCryptCloseAlgorithmProvider(handle, flags) }
         }
 
-        // SAFETY: We are purposefully overriding this symbol and we have made
-        // sure the definition is compatible with the original.
+        // SAFETY: see module level safety justification
         #[unsafe(no_mangle)]
         pub unsafe extern "system" fn BCryptGenRandom(
             algorithm: usize,
@@ -86,11 +83,11 @@ macro_rules! use_win10_prng_apis {
             unsafe { $crate::private::BCryptGenRandom(algorithm, data, len, flags) }
         }
 
-        // SAFETY: We are purposefully overriding this symbol and we have made
-        // sure the definition is compatible with the original.
-        #[unsafe(no_mangle)]
+
         /// If a call to BCryptGenRandom is marked as a dllimport, then it may be an indirect call
         /// through __imp_BCryptGenRandom instead.
+        // SAFETY: see module level safety justification
+        #[unsafe(no_mangle)]
         pub static __imp_BCryptGenRandom: unsafe extern "system" fn(
             usize,
             *mut u8,
@@ -98,8 +95,7 @@ macro_rules! use_win10_prng_apis {
             u32,
         ) -> u32 = BCryptGenRandom;
 
-        // SAFETY: We are purposefully overriding this symbol and we have made
-        // sure the definition is compatible with the original.
+        // SAFETY: see module level safety justification
         #[unsafe(no_mangle)]
         pub static __imp_BCryptOpenAlgorithmProvider: unsafe extern "system" fn(
             *mut ::core::ffi::c_void,
@@ -108,8 +104,7 @@ macro_rules! use_win10_prng_apis {
             u32,
         ) -> u32 = BCryptOpenAlgorithmProvider;
 
-        // SAFETY: We are purposefully overriding this symbol and we have made
-        // sure the definition is compatible with the original.
+        // SAFETY: see module level safety justification
         #[unsafe(no_mangle)]
         pub static __imp_BCryptCloseAlgorithmProvider: unsafe extern "system" fn(
             *mut ::core::ffi::c_void,
