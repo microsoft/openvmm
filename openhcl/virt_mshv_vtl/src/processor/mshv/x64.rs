@@ -1303,10 +1303,6 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         self.vp.partition.caps.vendor
     }
 
-    fn gp_sign_extend(&mut self, reg: usize) -> i64 {
-        self.gp(reg) as i64
-    }
-
     fn gp(&mut self, reg: usize) -> u64 {
         todo!();
     }
