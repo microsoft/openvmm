@@ -36,9 +36,6 @@ pub trait EmulatorSupport {
     /// Read a GP
     fn gp(&mut self, index: usize) -> u64;
 
-    /// Read a GP as signed
-    fn gp_sign_extend(&mut self, reg: usize) -> i64;
-
     /// Set a GP as signed
     fn set_gp(&mut self, reg: usize, v: u64);
 

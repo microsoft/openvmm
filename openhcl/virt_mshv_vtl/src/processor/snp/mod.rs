@@ -1448,10 +1448,6 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         self.vp.partition.caps.vendor
     }
 
-    fn gp_sign_extend(&mut self, reg: usize) -> i64 {
-        self.gp(reg) as i64
-    }
-
     fn gp(&mut self, reg: usize) -> u64 {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         match reg {

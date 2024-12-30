@@ -2239,10 +2239,6 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         self.vp.partition.caps.vendor
     }
 
-    fn gp_sign_extend(&mut self, reg: usize) -> i64 {
-        self.gp(reg) as i64
-    }
-
     fn gp(&mut self, reg: usize) -> u64 {
         let enter_state = self.vp.runner.tdx_enter_guest_state();
         enter_state.gps[reg]
