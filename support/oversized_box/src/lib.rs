@@ -8,7 +8,7 @@
 //! reallocating.
 
 // UNSAFETY: Manual memory management and pointer manipulation.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;

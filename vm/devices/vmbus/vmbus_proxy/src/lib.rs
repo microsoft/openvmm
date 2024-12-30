@@ -3,7 +3,7 @@
 
 #![cfg(windows)]
 // UNSAFETY: Calling vmbus proxy ioctls.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 #![allow(clippy::undocumented_unsafe_blocks)]
 
 use guestmem::GuestMemory;

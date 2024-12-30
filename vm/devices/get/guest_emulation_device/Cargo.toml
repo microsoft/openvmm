@@ -16,6 +16,7 @@ get_resources.workspace = true
 disk_backend.workspace = true
 disklayer_ram = { workspace = true, optional = true }
 guestmem.workspace = true
+openhcl_attestation_protocol.workspace = true
 power_resources.workspace = true
 scsi_buffers.workspace = true
 video_core.workspace = true

@@ -6,12 +6,13 @@
 
 use crate::crypto;
 use crate::igvm_attest;
-use crate::protocol;
-use crate::protocol::vmgs::AGENT_DATA_MAX_SIZE;
-use crate::AttestationVmConfig;
 use crate::IgvmAttestRequestHelper;
 use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::GuestEmulationTransportClient;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+use openhcl_attestation_protocol::igvm_attest::get::KEY_RELEASE_RESPONSE_BUFFER_SIZE;
+use openhcl_attestation_protocol::igvm_attest::get::WRAPPED_KEY_RESPONSE_BUFFER_SIZE;
+use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use pal_async::local::LocalDriver;
@@ -125,7 +126,7 @@ pub async fn request_vmgs_encryption_keys(
 
         // Get attestation report on each iteration. Failures here are fatal.
         let result = tee_call
-            .get_attestation_report(&igvm_attest_request_helper.runtime_claims_hash)
+            .get_attestation_report(igvm_attest_request_helper.get_runtime_claims_hash())
             .map_err(RequestVmgsEncryptionKeysError::GetAttestationReport)?;
 
         tcb_version = result.tcb_version;
@@ -155,16 +156,30 @@ pub async fn request_vmgs_encryption_keys(
                 rsa_aes_wrapped_key: _,
                 wrapped_des_key: _,
             }) if i == (max_retry - 1) => {
-                tracing::error!("VMGS key-encryption failed after max number of attempts");
+                tracing::error!(
+                    CVM_ALLOWED,
+                    "VMGS key-encryption failed due to invalid key format, max number of attempts reached"
+                );
                 break;
             }
             Ok(WrappedKeyVmgsEncryptionKeys {
                 rsa_aes_wrapped_key: _,
                 wrapped_des_key: _,
             }) => {
-                tracing::warn!(CVM_ALLOWED, retry = i, "Failed to get VMGS key-encryption")
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    retry = i,
+                    "Failed to get VMGS key-encryption due to invalid key format"
+                )
             }
-            Err(e) if i == (max_retry - 1) => Err(e)?,
+            Err(e) if i == (max_retry - 1) => {
+                tracing::error!(
+                    CVM_ALLOWED,
+                    error = &e as &dyn std::error::Error,
+                    "VMGS key-encryption failed due to error, max number of attempts reached"
+                );
+                Err(e)?
+            }
             Err(e) => {
                 tracing::error!(
                     CVM_ALLOWED,
@@ -227,14 +242,15 @@ async fn make_igvm_attest_requests(
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
 ) -> Result<WrappedKeyVmgsEncryptionKeys, RequestVmgsEncryptionKeysError> {
     // Attempt to get wrapped DiskEncryptionSettings key
-    igvm_attest_request_helper.request_type =
-        protocol::igvm_attest::get::IgvmAttestRequestType::WRAPPED_KEY_REQUEST;
+    igvm_attest_request_helper.set_request_type(
+        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
+    );
     let request = igvm_attest_request_helper
         .create_request(attestation_report)
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestWrappedKeyRequest)?;
 
     let response = get
-        .igvm_attest([].into(), request)
+        .igvm_attest([].into(), request, WRAPPED_KEY_RESPONSE_BUFFER_SIZE)
         .await
         .map_err(RequestVmgsEncryptionKeysError::SendIgvmAttestWrappedKeyRequest)?;
 
@@ -274,15 +290,20 @@ async fn make_igvm_attest_requests(
         Err(e) => Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(e))?,
     };
 
-    igvm_attest_request_helper.request_type =
-        protocol::igvm_attest::get::IgvmAttestRequestType::KEY_RELEASE_REQUEST;
+    igvm_attest_request_helper.set_request_type(
+        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+    );
     let request = igvm_attest_request_helper
         .create_request(attestation_report)
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestKeyReleaseRequest)?;
 
     // Get tenant keys based on attestation results
     let response = get
-        .igvm_attest(agent_data.to_vec(), request)
+        .igvm_attest(
+            agent_data.to_vec(),
+            request,
+            KEY_RELEASE_RESPONSE_BUFFER_SIZE,
+        )
         .await
         .map_err(RequestVmgsEncryptionKeysError::SendIgvmAttestKeyReleaseRequest)?;
 

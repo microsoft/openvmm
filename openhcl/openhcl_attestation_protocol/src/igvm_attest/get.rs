@@ -12,17 +12,33 @@ use zerocopy::FromZeroes;
 
 const ATTESTATION_VERSION: u32 = 2;
 const ATTESTATION_SIGNATURE: u32 = 0x414c4348; // 'HCLA'
+/// The value is based on the maximum report size of the supported isolated VM
+/// Currently it's the size of a SNP report.
 const ATTESTATION_REPORT_SIZE_MAX: usize = SNP_VM_REPORT_SIZE;
 
 pub const VBS_VM_REPORT_SIZE: usize = 0x230;
 pub const SNP_VM_REPORT_SIZE: usize = sev_guest_device::protocol::SNP_REPORT_SIZE;
 pub const TDX_VM_REPORT_SIZE: usize = tdx_guest_device::protocol::TDX_REPORT_SIZE;
+/// No TEE attestation report for TVM
+pub const TVM_REPORT_SIZE: usize = 0;
+
+const PAGE_SIZE: usize = 4096;
+
+/// Number of pages required by the response buffer of WRAPPED_KEY request
+/// Currently the number matches the maximum value defined by `get_protocol`
+pub const WRAPPED_KEY_RESPONSE_BUFFER_SIZE: usize = 16 * PAGE_SIZE;
+/// Number of pages required by the response buffer of KEY_RELEASE request
+/// Currently the number matches the maximum value defined by `get_protocol`
+pub const KEY_RELEASE_RESPONSE_BUFFER_SIZE: usize = 16 * PAGE_SIZE;
+/// Number of pages required by the response buffer of AK_CERT request
+/// Currently the AK cert request only requires 1 page.
+pub const AK_CERT_RESPONSE_BUFFER_SIZE: usize = PAGE_SIZE;
 
 /// Current AK cert response header version
 pub const AK_CERT_RESPONSE_HEADER_VERSION: u32 = 1;
 
 /// Request structure (C-style)
-/// The struct (includes the appended [`RuntimeClaims`]) also serves as the
+/// The struct (includes the appended [`runtime_claims::RuntimeClaims`]) also serves as the
 /// attestation report in vTPM guest attestation.
 #[repr(C)]
 #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
@@ -33,9 +49,9 @@ pub struct IgvmAttestRequest {
     pub attestation_report: [u8; ATTESTATION_REPORT_SIZE_MAX],
     /// Request data (unmeasured)
     pub request_data: IgvmAttestRequestData,
-    // Variable-length [`RuntimeClaims`] (JSON string) in raw bytes will be
+    // Variable-length [`runtime_claims::RuntimeClaims`] (JSON string) in raw bytes will be
     // appended to here.
-    // The hash of [`RuntimeClaims`] in [`IgvmAttestHashType`] will be captured
+    // The hash of [`runtime_claims::RuntimeClaims`] in [`IgvmAttestHashType`] will be captured
     // in the `report_data` or equivalent field of the TEE attestation report.
 }
 

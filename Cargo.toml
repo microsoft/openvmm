@@ -27,6 +27,7 @@ members = [
   "support/ucs2/fuzz",
   "vm/devices/chipset/fuzz",
   "vm/devices/firmware/firmware_uefi/fuzz",
+  "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
   "vm/devices/storage/scsi_buffers/fuzz",
   "vm/vmcore/guestmem/fuzz",
@@ -148,9 +149,11 @@ build_info = { path = "openhcl/build_info" }
 diag_client = { path = "openhcl/diag_client" }
 diag_proto = { path = "openhcl/diag_proto" }
 diag_server = { path = "openhcl/diag_server" }
+get_lower_vtl = { path = "openhcl/get_lower_vtl" }
 hcl = { path = "openhcl/hcl" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }
 kmsg_defs = { path = "openhcl/kmsg_defs" }
+lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
 page_pool_alloc = { path = "openhcl/page_pool_alloc" }
@@ -164,6 +167,7 @@ underhill_dump = { path = "openhcl/underhill_dump" }
 underhill_entry = { path = "openhcl/underhill_entry" }
 underhill_init = { path = "openhcl/underhill_init" }
 underhill_mem = { path = "openhcl/underhill_mem" }
+openhcl_attestation_protocol = { path = "openhcl/openhcl_attestation_protocol" }
 openvmm_hcl_resources = { path = "openhcl/openvmm_hcl_resources" }
 underhill_threadpool = { path = "openhcl/underhill_threadpool" }
 virt_mshv_vtl = { path = "openhcl/virt_mshv_vtl" }
@@ -378,7 +382,6 @@ awaitgroup = "0.7"
 base64 = "0.21.7"
 base64-serde = "0.7"
 bitfield-struct = "0.7"
-bitflags = "1.3"
 bitvec = { version = "1.1", default-features = false }
 blocking = "1.2"
 caps = "0.5"
@@ -651,8 +654,6 @@ bool_assert_comparison = "allow"
 # This lint suggests collapsing Box::new(Foo::default()) into Box::default(). We often
 # prefer to specify types completely for local code clarity's sake.
 box_default = "allow"
-# Needed for bitflags 1.x compatibility. Remove when we update to bitflags 2.x
-bad_bit_mask = "allow"
 # Besides the misleading name (this lint also triggers on arrays), we believe that it
 # doesn't provide value. If a developer gets their type wrong they'll notice and fix it.
 # Sometimes you do want a list of a single range.

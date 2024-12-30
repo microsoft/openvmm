@@ -6,7 +6,7 @@
 
 #![warn(missing_docs)]
 // UNSAFETY: needed to call Win32 functions to query cache topology
-#![cfg_attr(windows, allow(unsafe_code))]
+#![cfg_attr(windows, expect(unsafe_code))]
 
 use thiserror::Error;
 

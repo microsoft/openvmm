@@ -3,7 +3,7 @@
 
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
 // UNSAFETY: Manipulating IoBuffers for the crate to use.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use arbitrary::Arbitrary;
 use arbitrary::Unstructured;

@@ -162,7 +162,7 @@ open_enum! {
 
 pub use header::*;
 // UNSAFETY: The unsafe manual impl of AsBytes for HeaderGeneric
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 pub mod header {
     use super::MessageTypes;
     use super::MessageVersions;
@@ -581,8 +581,6 @@ pub const IGVM_ATTEST_MSG_REQ_REPORT_MAX_SIZE: usize = 4096;
 
 /// Maximum return pages
 pub const IGVM_ATTEST_MSG_MAX_SHARED_GPA: usize = 16;
-/// Current return pages
-pub const IGVM_ATTEST_MSG_SHARED_GPA: usize = IGVM_ATTEST_MSG_MAX_SHARED_GPA;
 
 // Error from the VM worker process in the host when sending an
 // attestation request.
@@ -1181,12 +1179,8 @@ impl UpdateGenerationId {
 #[bitfield(u64)]
 #[derive(AsBytes, FromBytes, FromZeroes)]
 pub struct SaveGuestVtl2StateFlags {
-    /// Disable nvme_keepalive feature when servicing.
-    #[bits(1)]
-    pub disable_nvme_keepalive: bool,
-
-    /// Reserved
-    #[bits(63)]
+    /// Reserved, must be zero.
+    #[bits(64)]
     _rsvd1: u64,
 }
 

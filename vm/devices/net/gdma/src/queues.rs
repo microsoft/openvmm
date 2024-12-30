@@ -24,6 +24,7 @@ use parking_lot::Mutex;
 use parking_lot::MutexGuard;
 use pci_core::capabilities::msix::MsixEmulator;
 use std::marker::PhantomData;
+use std::sync::atomic::Ordering::Release;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
@@ -95,9 +96,19 @@ impl<T: AsBytes> CqEq<T> {
         let offset = (self.tail & (self.cap - 1)) as usize * size_of::<T>();
         let mut range = self.region.range();
         range.skip(offset);
-        if let Err(err) = range.writer(gm).write(entry.as_bytes()) {
+        let mut writer = range.writer(gm);
+        let (entry, last) = entry.as_bytes().split_at(entry.as_bytes().len() - 1);
+        if let Err(err) = writer.write(entry) {
             tracing::warn!(err = &err as &dyn std::error::Error, "failed to write");
         }
+        // Write the final byte last after a release fence to ensure that the
+        // guest sees the entire entry before the owner count is updated.
+        std::sync::atomic::fence(Release);
+        if let Err(err) = writer.write(last) {
+            tracing::warn!(err = &err as &dyn std::error::Error, "failed to write");
+        }
+        // Ensure the write is flushed before sending the interrupt.
+        std::sync::atomic::fence(Release);
         let new_tail = self.tail.wrapping_add(1);
         self.tail = new_tail;
         std::mem::take(&mut self.armed)

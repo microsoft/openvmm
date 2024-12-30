@@ -212,24 +212,37 @@ where
         state: &InitialRegs,
         to_set: RegistersToSet,
     ) -> Result<(), RegisterSetError> {
+        let InitialRegs {
+            registers,
+            #[cfg(guest_arch = "x86_64")]
+            mtrrs,
+            #[cfg(guest_arch = "x86_64")]
+            pat,
+            #[cfg(guest_arch = "aarch64")]
+            system_registers,
+        } = state;
         let mut access = self.vp.access_state(vtl);
         // Only set the registers on the BSP.
         if self.vp_index.is_bsp() && to_set == RegistersToSet::All {
             access
-                .set_registers(&state.registers)
+                .set_registers(registers)
                 .map_err(|err| RegisterSetError("registers", err.into()))?;
 
             #[cfg(guest_arch = "aarch64")]
             access
-                .set_system_registers(&state.system_registers)
+                .set_system_registers(system_registers)
                 .map_err(|err| RegisterSetError("system_registers", err.into()))?;
         }
 
-        // Set MTRRs on all VPs.
+        // Set MTRRs and PAT on all VPs.
         #[cfg(guest_arch = "x86_64")]
         access
-            .set_cache_control(&state.cc)
+            .set_mtrrs(mtrrs)
             .map_err(|err| RegisterSetError("mtrrs", err.into()))?;
+        #[cfg(guest_arch = "x86_64")]
+        access
+            .set_pat(pat)
+            .map_err(|err| RegisterSetError("pat", err.into()))?;
 
         Ok(())
     }

@@ -15,7 +15,7 @@ pub use init::MemoryMappings;
 
 mod mapping {
     // UNSAFETY: Implementing GuestMemoryAccess.
-    #![allow(unsafe_code)]
+    #![expect(unsafe_code)]
 
     use crate::registrar::MemoryRegistrar;
     use guestmem::ranges::PagedRange;
@@ -459,7 +459,7 @@ mod mapping {
     }
 
     impl GpaVtlPermissions {
-        fn new(isolation: IsolationType, vtl: Vtl, protections: HvMapGpaFlags) -> Self {
+        fn new(isolation: IsolationType, vtl: GuestVtl, protections: HvMapGpaFlags) -> Self {
             match isolation {
                 IsolationType::None => unreachable!(),
                 IsolationType::Vbs => GpaVtlPermissions::Vbs(protections),
@@ -479,7 +479,7 @@ mod mapping {
             }
         }
 
-        fn set(&mut self, vtl: Vtl, protections: HvMapGpaFlags) {
+        fn set(&mut self, vtl: GuestVtl, protections: HvMapGpaFlags) {
             match self {
                 GpaVtlPermissions::Vbs(flags) => *flags = protections,
                 GpaVtlPermissions::Snp(rmpadjust) => {
@@ -489,9 +489,8 @@ mod mapping {
                         .with_enable_user_execute(protections.user_executable())
                         .with_enable_kernel_execute(protections.kernel_executable())
                         .with_target_vmpl(match vtl {
-                            Vtl::Vtl0 => x86defs::snp::Vmpl::Vmpl2.into(),
-                            Vtl::Vtl1 => x86defs::snp::Vmpl::Vmpl1.into(),
-                            Vtl::Vtl2 => unreachable!(), // Cannot set VTL 2 protections
+                            GuestVtl::Vtl0 => x86defs::snp::Vmpl::Vmpl2.into(),
+                            GuestVtl::Vtl1 => x86defs::snp::Vmpl::Vmpl1.into(),
                         });
                 }
                 GpaVtlPermissions::Tdx((attributes, mask)) => {
@@ -503,19 +502,18 @@ mod mapping {
                         .with_user_execute(protections.user_executable());
 
                     let (new_attributes, new_mask) = match vtl {
-                        Vtl::Vtl0 => {
+                        GuestVtl::Vtl0 => {
                             let attributes = TdgMemPageGpaAttr::new().with_l2_vm1(vm_attributes);
                             let mask =
                                 TdgMemPageAttrWriteR8::new().with_l2_vm1(vm_attributes.to_mask());
                             (attributes, mask)
                         }
-                        Vtl::Vtl1 => {
+                        GuestVtl::Vtl1 => {
                             let attributes = TdgMemPageGpaAttr::new().with_l2_vm2(vm_attributes);
                             let mask =
                                 TdgMemPageAttrWriteR8::new().with_l2_vm2(vm_attributes.to_mask());
                             (attributes, mask)
                         }
-                        Vtl::Vtl2 => unreachable!(),
                     };
 
                     *attributes = new_attributes;
@@ -618,7 +616,7 @@ mod mapping {
             &self,
             range: MemoryRange,
         ) -> Result<(), ApplyVtlProtectionsError> {
-            self.apply_protections_from_flags(range, Vtl::Vtl0, HV_MAP_GPA_PERMISSIONS_ALL)
+            self.apply_protections_from_flags(range, GuestVtl::Vtl0, HV_MAP_GPA_PERMISSIONS_ALL)
         }
 
         /// Query the current permissions for a vtl on a page.
@@ -651,11 +649,11 @@ mod mapping {
         fn apply_protections_from_flags(
             &self,
             range: MemoryRange,
-            vtl: Vtl,
+            vtl: GuestVtl,
             flags: HvMapGpaFlags,
         ) -> Result<(), ApplyVtlProtectionsError> {
             let permissions = GpaVtlPermissions::new(self.isolation, vtl, flags);
-            self.apply_protections(range, vtl, permissions)
+            self.apply_protections(range, vtl.into(), permissions)
         }
 
         fn apply_protections(
@@ -780,33 +778,27 @@ mod mapping {
             for range in ranges {
                 match overlay_lock.as_mut() {
                     Some(overlay) if range.contains_addr(overlay.gpn * HV_PAGE_SIZE) => {
-                        overlay.permissions.set(vtl.into(), protections);
+                        overlay.permissions.set(vtl, protections);
 
                         let overlay_address = overlay.gpn * HV_PAGE_SIZE;
                         let overlay_offset = range.offset_of(overlay_address).unwrap();
                         let (left, right) = range.split_at_offset(overlay_offset);
 
-                        self.acceptor.apply_protections_from_flags(
-                            left,
-                            vtl.into(),
-                            protections,
-                        )?;
+                        self.acceptor
+                            .apply_protections_from_flags(left, vtl, protections)?;
                         let sub_range =
                             MemoryRange::new((overlay.gpn + 1) * HV_PAGE_SIZE..right.end());
                         if !sub_range.is_empty() {
                             self.acceptor.apply_protections_from_flags(
                                 sub_range,
-                                vtl.into(),
+                                vtl,
                                 protections,
                             )?;
                         }
                     }
                     _ => {
-                        self.acceptor.apply_protections_from_flags(
-                            *range,
-                            vtl.into(),
-                            protections,
-                        )?;
+                        self.acceptor
+                            .apply_protections_from_flags(*range, vtl, protections)?;
                     }
                 }
             }
@@ -952,14 +944,14 @@ mod mapping {
                     self.acceptor
                         .apply_protections_from_flags(
                             range,
-                            Vtl::Vtl0,
+                            GuestVtl::Vtl0,
                             inner.default_vtl_permissions.vtl0,
                         )
                         .expect("should be able to apply default protections");
 
                     if let Some(vtl1_protections) = inner.default_vtl_permissions.vtl1 {
                         self.acceptor
-                            .apply_protections_from_flags(range, Vtl::Vtl1, vtl1_protections)
+                            .apply_protections_from_flags(range, GuestVtl::Vtl1, vtl1_protections)
                             .expect("everything should be in a state where we can apply VTL protections");
                     }
                 }
@@ -1143,11 +1135,7 @@ mod mapping {
                         // Since there's no VTL 1 and VTL 0 can't change its own
                         // permissions, the permissions should be the same as
                         // when VTL 2 initialized guest memory.
-                        GpaVtlPermissions::new(
-                            IsolationType::Snp,
-                            vtl.into(),
-                            HV_MAP_GPA_PERMISSIONS_ALL,
-                        )
+                        GpaVtlPermissions::new(IsolationType::Snp, vtl, HV_MAP_GPA_PERMISSIONS_ALL)
                     }
                 }
                 IsolationType::Tdx => {
@@ -1157,11 +1145,7 @@ mod mapping {
                     // permissions should be the same as when VTL 2 initialized
                     // guest memory.
 
-                    GpaVtlPermissions::new(
-                        IsolationType::Tdx,
-                        vtl.into(),
-                        HV_MAP_GPA_PERMISSIONS_ALL,
-                    )
+                    GpaVtlPermissions::new(IsolationType::Tdx, vtl, HV_MAP_GPA_PERMISSIONS_ALL)
                 }
             };
 
@@ -1173,7 +1157,7 @@ mod mapping {
             self.acceptor
                 .apply_protections_from_flags(
                     MemoryRange::new(gpn * HV_PAGE_SIZE..(gpn + 1) * HV_PAGE_SIZE),
-                    vtl.into(),
+                    vtl,
                     HV_MAP_GPA_PERMISSIONS_ALL,
                 )
                 .expect("applying vtl protections should succeed");

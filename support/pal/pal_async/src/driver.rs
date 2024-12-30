@@ -4,7 +4,7 @@
 //! Driver trait.
 
 // UNSAFETY: Needed to define and implement the unsafe new_dyn_overlapped_file method.
-#![cfg_attr(windows, allow(unsafe_code))]
+#![cfg_attr(windows, expect(unsafe_code))]
 
 #[cfg(unix)]
 use crate::fd::FdReadyDriver;

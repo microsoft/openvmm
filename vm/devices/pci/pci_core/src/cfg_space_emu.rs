@@ -23,6 +23,19 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use vmcore::line_interrupt::LineInterrupt;
 
+const SUPPORTED_COMMAND_BITS: u16 = cfg_space::Command::new()
+    .with_pio_enabled(true)
+    .with_mmio_enabled(true)
+    .with_bus_master(true)
+    .with_special_cycles(true)
+    .with_enable_memory_write_invalidate(true)
+    .with_vga_palette_snoop(true)
+    .with_parity_error_response(true)
+    .with_enable_serr(true)
+    .with_enable_fast_b2b(true)
+    .with_intx_disable(true)
+    .into_bits();
+
 /// A wrapper around a [`LineInterrupt`] that considers PCI configuration space
 /// interrupt control bits.
 #[derive(Debug, Inspect)]
@@ -98,7 +111,7 @@ impl ConfigSpaceType0EmulatorState {
     fn new() -> Self {
         Self {
             latency_timer: 0,
-            command: cfg_space::Command::empty(),
+            command: cfg_space::Command::new(),
             base_addresses: [0; 6],
             interrupt_line: 0,
         }
@@ -247,7 +260,9 @@ impl ConfigSpaceType0Emulator {
             const MIN_BAR_SIZE: u64 = 4096;
             let len = std::cmp::max(len.next_power_of_two(), MIN_BAR_SIZE);
             let mask64 = !(len - 1);
-            bar_masks[bar_index] = mask64 as u32 | cfg_space::BarEncodingBits::TYPE_64_BIT.bits();
+            bar_masks[bar_index] = cfg_space::BarEncodingBits::from_bits(mask64 as u32)
+                .with_type_64_bit(true)
+                .into_bits();
             bar_masks[bar_index + 1] = (mask64 >> 32) as u32;
             mapped_memory[bar_index] = Some(mapped);
         }
@@ -264,7 +279,7 @@ impl ConfigSpaceType0Emulator {
             intx_interrupt: None,
 
             state: ConfigSpaceType0EmulatorState {
-                command: cfg_space::Command::empty(),
+                command: cfg_space::Command::new(),
                 base_addresses: [0; 6],
                 interrupt_line: 0,
                 latency_timer: 0,
@@ -332,18 +347,16 @@ impl ConfigSpaceType0Emulator {
                 (self.hardware_ids.device_id as u32) << 16 | self.hardware_ids.vendor_id as u32
             }
             HeaderType00::STATUS_COMMAND => {
-                let mut status = cfg_space::Status::empty();
-                if !self.capabilities.is_empty() {
-                    status |= cfg_space::Status::CAPABILITIES_LIST;
-                }
+                let mut status =
+                    cfg_space::Status::new().with_capabilities_list(!self.capabilities.is_empty());
 
                 if let Some(intx_interrupt) = &self.intx_interrupt {
                     if intx_interrupt.interrupt_status.load(Ordering::SeqCst) {
-                        status |= cfg_space::Status::INTERRUPT_STATUS;
+                        status.set_interrupt_status(true);
                     }
                 }
 
-                (status.bits() as u32) << 16 | self.state.command.bits() as u32
+                (status.into_bits() as u32) << 16 | self.state.command.into_bits() as u32
             }
             HeaderType00::CLASS_REVISION => {
                 (u8::from(self.hardware_ids.base_class) as u32) << 24
@@ -436,12 +449,12 @@ impl ConfigSpaceType0Emulator {
 
     fn update_intx_disable(&mut self, command: cfg_space::Command) {
         if let Some(intx_interrupt) = &self.intx_interrupt {
-            intx_interrupt.set_disabled(command.contains(cfg_space::Command::INTX_DISABLE))
+            intx_interrupt.set_disabled(command.intx_disable())
         }
     }
 
     fn update_mmio_enabled(&mut self, command: cfg_space::Command) {
-        if command.contains(cfg_space::Command::MMIO_ENABLED) {
+        if command.mmio_enabled() {
             self.active_bars = BarMappings::parse(&self.state.base_addresses, &self.bar_masks);
             for (bar, mapping) in self.mapped_memory.iter_mut().enumerate() {
                 if let Some(mapping) = mapping {
@@ -478,30 +491,19 @@ impl ConfigSpaceType0Emulator {
 
         match HeaderType00(offset) {
             HeaderType00::STATUS_COMMAND => {
-                let command = match cfg_space::Command::from_bits(val as u16) {
-                    Some(command) => command,
-                    None => {
-                        tracelimit::warn_ratelimited!(offset, val, "setting invalid command bits");
-                        // still do our best
-                        cfg_space::Command::from_bits_truncate(val as u16)
-                    }
+                let mut command = cfg_space::Command::from_bits(val as u16);
+                if command.into_bits() & !SUPPORTED_COMMAND_BITS != 0 {
+                    tracelimit::warn_ratelimited!(offset, val, "setting invalid command bits");
+                    // still do our best
+                    command =
+                        cfg_space::Command::from_bits(command.into_bits() & SUPPORTED_COMMAND_BITS);
                 };
 
-                if self
-                    .state
-                    .command
-                    .contains(cfg_space::Command::INTX_DISABLE)
-                    != command.contains(cfg_space::Command::INTX_DISABLE)
-                {
+                if self.state.command.intx_disable() != command.intx_disable() {
                     self.update_intx_disable(command)
                 }
 
-                if self
-                    .state
-                    .command
-                    .contains(cfg_space::Command::MMIO_ENABLED)
-                    != command.contains(cfg_space::Command::MMIO_ENABLED)
-                {
+                if self.state.command.mmio_enabled() != command.mmio_enabled() {
                     self.update_mmio_enabled(command)
                 }
 
@@ -518,15 +520,13 @@ impl ConfigSpaceType0Emulator {
             | HeaderType00::BAR3
             | HeaderType00::BAR4
             | HeaderType00::BAR5 => {
-                if !self
-                    .state
-                    .command
-                    .contains(cfg_space::Command::MMIO_ENABLED)
-                {
+                if !self.state.command.mmio_enabled() {
                     let bar_index = (offset - HeaderType00::BAR0.0) as usize / 4;
                     let mut bar_value = val & self.bar_masks[bar_index];
                     if bar_index & 1 == 0 && self.bar_masks[bar_index] != 0 {
-                        bar_value |= cfg_space::BarEncodingBits::TYPE_64_BIT.bits();
+                        bar_value = cfg_space::BarEncodingBits::from_bits(bar_value)
+                            .with_type_64_bit(true)
+                            .into_bits();
                     }
                     self.state.base_addresses[bar_index] = bar_value;
                 }
@@ -623,7 +623,7 @@ mod save_restore {
             } = self.state;
 
             let saved_state = state::SavedState {
-                command: command.bits(),
+                command: command.into_bits(),
                 base_addresses,
                 interrupt_line,
                 latency_timer,
@@ -650,15 +650,17 @@ mod save_restore {
             } = state;
 
             self.state = ConfigSpaceType0EmulatorState {
-                command: cfg_space::Command::from_bits(command).ok_or(
-                    RestoreError::InvalidSavedState(
-                        ConfigSpaceRestoreError::InvalidConfigBits.into(),
-                    ),
-                )?,
+                command: cfg_space::Command::from_bits(command),
                 base_addresses,
                 interrupt_line,
                 latency_timer,
             };
+
+            if command & !SUPPORTED_COMMAND_BITS != 0 {
+                return Err(RestoreError::InvalidSavedState(
+                    ConfigSpaceRestoreError::InvalidConfigBits.into(),
+                ));
+            }
 
             self.sync_command_register(self.state.command);
             for (id, entry) in capabilities {

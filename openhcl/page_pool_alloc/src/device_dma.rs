@@ -6,7 +6,7 @@
 // UNSAFETY: This is required to implement the MappedDmaTarget trait which
 // unsafe because of it's requirement for the implementer to keep the
 // `base()..len()` mapped for the lifetime of the struct.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use crate::PagePoolHandle;
 use user_driver::memory::MappedDmaTarget;
@@ -17,6 +17,7 @@ pub struct PagePoolDmaBuffer {
     // Holds allocation until dropped.
     pub(crate) _alloc: PagePoolHandle,
     pub(crate) pfns: Vec<u64>,
+    pub(crate) pfn_bias: u64,
 }
 
 /// SAFETY: This struct keeps both the shared memory region which the sparse
@@ -33,5 +34,9 @@ unsafe impl MappedDmaTarget for PagePoolDmaBuffer {
 
     fn pfns(&self) -> &[u64] {
         &self.pfns
+    }
+
+    fn pfn_bias(&self) -> u64 {
+        self.pfn_bias
     }
 }

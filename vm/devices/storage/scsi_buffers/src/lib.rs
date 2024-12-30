@@ -6,7 +6,7 @@
 
 #![warn(missing_docs)]
 // UNSAFETY: Handling raw pointers and transmuting between types for different use cases.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use guestmem::ranges::PagedRange;
 use guestmem::AccessError;

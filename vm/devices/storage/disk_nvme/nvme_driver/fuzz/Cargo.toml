@@ -1,0 +1,50 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "fuzz_nvme_driver"
+publish = false
+edition = "2021"
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+arbitrary = { workspace = true, features = ["derive"] }
+chipset_device.workspace = true
+disklayer_ram.workspace = true
+guestmem.workspace = true
+guid.workspace = true
+inspect.workspace = true
+nvme.workspace = true
+nvme_driver.workspace = true
+nvme_spec.workspace = true
+pal_async.workspace = true
+parking_lot.workspace = true
+pci_core.workspace = true
+scsi_buffers.workspace = true
+user_driver.workspace = true
+vmcore.workspace = true
+xtask_fuzz.workspace = true
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libfuzzer-sys.workspace = true
+
+[package.metadata.xtask.unused-deps]
+# required for the xtask_fuzz macro, but unused_deps doesn't know that
+ignored = ["libfuzzer-sys"]
+
+[package.metadata]
+cargo-fuzz = true
+
+[package.metadata.xtask.fuzz.onefuzz-allowlist]
+fuzz_nvme_driver = ["**/*.rs", "../src/**/*.rs"]
+
+[[bin]]
+name = "fuzz_nvme_driver"
+path = "fuzz_main.rs"
+test = false
+doc = false
+doctest = false
+
+[lints]
+workspace = true

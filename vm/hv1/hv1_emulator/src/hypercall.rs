@@ -53,15 +53,8 @@ pub fn set_x86_vp_context<T: virt::x86::vp::AccessVpState>(
         ..registers
     };
 
-    let cache_control = access.cache_control()?;
-    let cache_control = virt::x86::vp::CacheControl {
-        msr_cr_pat,
-        ..cache_control
-    };
-
     access.set_registers(&registers)?;
-
-    access.set_cache_control(&cache_control)?;
+    access.set_pat(&virt::x86::vp::Pat { value: msr_cr_pat })?;
 
     let mut activity = access.activity()?;
     activity.mp_state = virt::x86::vp::MpState::Running;

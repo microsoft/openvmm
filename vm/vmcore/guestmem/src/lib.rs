@@ -4,7 +4,7 @@
 //! Interfaces to read and write guest memory.
 
 // UNSAFETY: This crate's whole purpose is manual memory mapping and management.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 pub mod ranges;
 

@@ -61,7 +61,7 @@ impl BuildInfo {
 // to use.
 
 // UNSAFETY: link_section and export_name are considered unsafe.
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 #[unsafe(link_section = ".build_info")]
 #[unsafe(export_name = "BUILD_INFO")]
 static BUILD_INFO: BuildInfo = BuildInfo::new();

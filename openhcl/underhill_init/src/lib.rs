@@ -5,7 +5,7 @@
 
 #![cfg(target_os = "linux")]
 // UNSAFETY: Calling libc functions to set up global system state.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 mod options;
 mod syslog;
@@ -204,7 +204,12 @@ fn setup(
 
     use_host_entropy().context("use host entropy")?;
 
-    for setup in &options.setup_script {
+    Ok(())
+}
+
+fn run_setup_scripts(scripts: &[String]) -> anyhow::Result<Vec<(String, String)>> {
+    let mut new_env = Vec::new();
+    for setup in scripts {
         log::info!("Running provided setup script {}", setup);
 
         let result = Command::new("/bin/sh")
@@ -226,17 +231,18 @@ fn setup(
                 .and_then(|line| line.split_once('='))
             {
                 log::info!("setting env var {}={}", key, value);
-                std::env::set_var(key, value);
+                new_env.push((key.into(), value.into()));
             }
         }
     }
-    Ok(())
+    Ok(new_env)
 }
 
-fn run(options: &Options) -> anyhow::Result<()> {
+fn run(options: &Options, env: impl IntoIterator<Item = (String, String)>) -> anyhow::Result<()> {
     let mut command = Command::new(UNDERHILL_PATH);
     command.arg("--pid").arg("/run/underhill.pid");
     command.args(&options.underhill_args);
+    command.envs(env);
 
     // Update the file descriptor limit for the main process, since large VMs
     // require lots of fds. There is no downside to a larger value except that
@@ -423,7 +429,6 @@ fn timestamp() -> u64 {
 
 fn do_main() -> anyhow::Result<()> {
     let boot_time = timestamp();
-    std::env::set_var("KERNEL_BOOT_TIME", boot_time.to_string());
 
     init_logging();
 
@@ -550,6 +555,8 @@ fn do_main() -> anyhow::Result<()> {
     ];
 
     setup(&stat_files, &options, writes, &filesystems)?;
+    let mut new_env = run_setup_scripts(&options.setup_script)?;
+    new_env.push(("KERNEL_BOOT_TIME".into(), boot_time.to_string()));
 
     if matches!(
         std::env::var("OPENHCL_NVME_VFIO").as_deref(),
@@ -574,7 +581,7 @@ fn do_main() -> anyhow::Result<()> {
         }
     });
 
-    run(&options)
+    run(&options, new_env)
 }
 
 pub fn main() -> ! {

@@ -2096,6 +2096,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuzz_nvme_driver"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "arbitrary",
+ "chipset_device",
+ "disklayer_ram",
+ "guestmem",
+ "guid",
+ "inspect",
+ "libfuzzer-sys",
+ "nvme",
+ "nvme_driver",
+ "nvme_spec",
+ "pal_async",
+ "parking_lot",
+ "pci_core",
+ "scsi_buffers",
+ "user_driver",
+ "vmcore",
+ "xtask_fuzz",
+]
+
+[[package]]
 name = "fuzz_scsi_buffers"
 version = "0.0.0"
 dependencies = [
@@ -2242,6 +2266,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "get_lower_vtl"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "hcl",
+ "hvdef",
+ "inspect",
+ "memory_range",
+ "virt",
+]
+
+[[package]]
 name = "get_protocol"
 version = "0.0.0"
 dependencies = [
@@ -2385,6 +2421,7 @@ dependencies = [
  "guid",
  "inspect",
  "mesh",
+ "openhcl_attestation_protocol",
  "pal_async",
  "parking_lot",
  "power_resources",
@@ -2432,19 +2469,18 @@ dependencies = [
 name = "guest_emulation_transport"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "chipset_resources",
  "futures",
  "futures-concurrency",
  "get_protocol",
  "getrandom",
  "guest_emulation_device",
- "guestmem",
  "guid",
  "hvdef",
  "inspect",
  "inspect_counters",
  "mesh",
- "page_pool_alloc",
  "pal_async",
  "parking_lot",
  "power_resources",
@@ -2455,6 +2491,7 @@ dependencies = [
  "tracing_helpers",
  "underhill_config",
  "unicycle",
+ "user_driver",
  "vm_resource",
  "vmbus_async",
  "vmbus_ring",
@@ -3068,7 +3105,6 @@ name = "ide"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct",
- "bitflags 1.3.2",
  "chipset_device",
  "disk_backend",
  "disk_file",
@@ -3516,6 +3552,17 @@ name = "log"
 version = "0.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
+
+[[package]]
+name = "lower_vtl_permissions_guard"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "hvdef",
+ "inspect",
+ "user_driver",
+ "virt",
+]
 
 [[package]]
 name = "lx"
@@ -4404,6 +4451,23 @@ name = "open_enum"
 version = "0.0.0"
 
 [[package]]
+name = "openhcl_attestation_protocol"
+version = "0.0.0"
+dependencies = [
+ "base64 0.21.7",
+ "base64-serde",
+ "guid",
+ "hex",
+ "mesh",
+ "open_enum",
+ "serde",
+ "serde_json",
+ "sev_guest_device",
+ "tdx_guest_device",
+ "zerocopy",
+]
+
+[[package]]
 name = "openhcl_boot"
 version = "0.0.0"
 dependencies = [
@@ -4912,7 +4976,7 @@ dependencies = [
 name = "pci_core"
 version = "0.0.0"
 dependencies = [
- "bitflags 1.3.2",
+ "bitfield-struct",
  "chipset_device",
  "guestmem",
  "inspect",
@@ -6808,21 +6872,16 @@ dependencies = [
  "base64 0.21.7",
  "base64-serde",
  "cvm_tracing",
- "get_protocol",
  "getrandom",
  "guest_emulation_transport",
  "guid",
- "hex",
  "mesh",
- "open_enum",
+ "openhcl_attestation_protocol",
  "openssl",
  "openssl_kdf",
  "pal_async",
- "serde",
  "serde_json",
- "sev_guest_device",
  "static_assertions",
- "tdx_guest_device",
  "tee_call",
  "thiserror 2.0.0",
  "time",
@@ -6885,6 +6944,7 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "get_helpers",
+ "get_lower_vtl",
  "get_protocol",
  "getrandom",
  "guest_emulation_transport",
@@ -6908,6 +6968,7 @@ dependencies = [
  "loader",
  "loader_defs",
  "local_clock",
+ "lower_vtl_permissions_guard",
  "mana_driver",
  "mcr_resources",
  "memory_range",
@@ -6922,6 +6983,7 @@ dependencies = [
  "netvsp",
  "nvme_driver",
  "nvme_resources",
+ "openhcl_attestation_protocol",
  "page_pool_alloc",
  "pal",
  "pal_async",
@@ -7919,7 +7981,6 @@ dependencies = [
  "anyhow",
  "futures",
  "guid",
- "hvdef",
  "inspect",
  "mesh",
  "pal_async",
@@ -7928,7 +7989,6 @@ dependencies = [
  "tracelimit",
  "tracing",
  "user_driver",
- "virt",
  "vmbus_channel",
  "vmbus_client",
  "vmbus_core",

@@ -35,7 +35,7 @@
 //! exposed in stable Rust.
 
 // UNSAFETY: Transmutes between function types to erase generics.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use mesh_node::message::MeshPayload;
 use mesh_node::message::SerializeMessage;

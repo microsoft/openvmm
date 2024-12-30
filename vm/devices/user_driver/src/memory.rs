@@ -30,6 +30,9 @@ pub unsafe trait MappedDmaTarget: Send + Sync {
     /// device.
     fn pfns(&self) -> &[u64];
 
+    /// The pfn_bias on confidential platforms (aka vTOM) applied to PFNs in [`Self::pfns()`],
+    fn pfn_bias(&self) -> u64;
+
     /// Returns a view of a subset of the buffer.
     ///
     /// Returns `None` if the default implementation should be used.
@@ -76,6 +79,10 @@ unsafe impl MappedDmaTarget for RestrictedView {
         &pages[start..][..count]
     }
 
+    fn pfn_bias(&self) -> u64 {
+        self.mem.pfn_bias()
+    }
+
     fn view(&self, offset: usize, len: usize) -> Option<MemoryBlock> {
         Some(MemoryBlock::new(RestrictedView::new(
             self.mem.clone(),
@@ -116,6 +123,11 @@ impl MemoryBlock {
         }
     }
 
+    /// Get the base address of the buffer.
+    pub fn base(&self) -> *const u8 {
+        self.base
+    }
+
     /// Gets the length of the buffer in bytes.
     pub fn len(&self) -> usize {
         self.len
@@ -124,6 +136,11 @@ impl MemoryBlock {
     /// Gets the PFNs of the underlying memory.
     pub fn pfns(&self) -> &[u64] {
         self.mem.pfns()
+    }
+
+    /// Gets the pfn_bias of the underlying memory.
+    pub fn pfn_bias(&self) -> u64 {
+        self.mem.pfn_bias()
     }
 
     /// Gets the buffer as an atomic slice.

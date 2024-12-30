@@ -5,7 +5,7 @@
 //! into VM partitions.
 
 // UNSAFETY: Calling unsafe partition memory mapping functions.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use crate::mapping_manager::VaMapper;
 use crate::region_manager::MapParams;

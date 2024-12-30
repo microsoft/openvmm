@@ -7,7 +7,7 @@
 #![cfg(target_os = "linux")]
 #![warn(missing_docs)]
 // UNSAFETY: Calling ioctls.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use hvdef::hypercall::HvInputVtl;
 use hvdef::Vtl;
