@@ -83,7 +83,6 @@ macro_rules! use_win10_prng_apis {
             unsafe { $crate::private::BCryptGenRandom(algorithm, data, len, flags) }
         }
 
-
         /// If a call to BCryptGenRandom is marked as a dllimport, then it may be an indirect call
         /// through __imp_BCryptGenRandom instead.
         // SAFETY: see module level safety justification

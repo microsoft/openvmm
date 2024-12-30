@@ -42,15 +42,15 @@ pub enum VmgsError {
     FileExists = 14,
 }
 
-// SAFETY: We are exporting our own C-compatible API. In this library
-// this function name is unique.
-#[unsafe(no_mangle)]
 /// Read the contents of a `FileId` in a VMGS file
 ///
 /// # Safety
 ///
 /// `file_path` must point to a valid null-terminated utf-8 string.
 /// `in_len` must be the size of `in_buf` in bytes and match the value returned from query_size_vmgs
+// SAFETY: We are exporting our own C-compatible API. In this library
+// this function name is unique.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn read_vmgs(
     file_path: *const c_char,
     file_id: FileId,
@@ -148,15 +148,15 @@ async fn do_read(
     Ok(data)
 }
 
-// SAFETY: We are exporting our own C-compatible API. In this library
-// this function name is unique.
-#[unsafe(no_mangle)]
 /// Write from a data file to a `FileId` in a VMGS file
 ///
 /// # Safety
 ///
 /// `file_path` and `data_path` must point to valid null-terminated utf-8 strings.
 /// `encryption_key` must be null-terminated and nonnull if using encryption
+// SAFETY: We are exporting our own C-compatible API. In this library
+// this function name is unique.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn write_vmgs(
     file_path: *const c_char,
     data_path: *const c_char,
@@ -233,9 +233,6 @@ async fn do_write(
     Ok(())
 }
 
-// SAFETY: We are exporting our own C-compatible API. In this library
-// this function name is unique.
-#[unsafe(no_mangle)]
 /// Create a VMGS file
 ///
 /// If `file_size` is zero, default size of 4MB is used
@@ -246,6 +243,9 @@ async fn do_write(
 /// # Safety
 ///
 /// `path` must point to a valid null-terminated utf-8 string.
+// SAFETY: We are exporting our own C-compatible API. In this library
+// this function name is unique.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn create_vmgs(
     path: *const c_char,
     file_size: u64,
@@ -335,15 +335,15 @@ async fn do_create(
     Ok(())
 }
 
-// SAFETY: We are exporting our own C-compatible API. In this library
-// this function name is unique.
-#[unsafe(no_mangle)]
 /// Get the size of a `FileId` in a VMGS file
 ///
 /// # Safety
 ///
 /// `path` pointer must point to a valid, null-terminated utf-8 string.
 /// `out_size` pointer must be nonnull
+// SAFETY: We are exporting our own C-compatible API. In this library
+// this function name is unique.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn query_size_vmgs(
     path: *const c_char,
     file_id: FileId,
