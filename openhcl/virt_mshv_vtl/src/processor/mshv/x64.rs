@@ -1293,7 +1293,22 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     type Error = UhRunVpError;
 
     fn flush(&mut self) {
-        todo!()
+        self.vp
+            .runner
+            .set_vp_registers(
+                self.vtl,
+                [
+                    (HvX64RegisterName::Rip, self.cache.rip),
+                    (HvX64RegisterName::Rflags, self.cache.rflags.into()),
+                    (
+                        HvX64RegisterName::Rsp,
+                        self.cache.gps[x86emu::CpuState::RSP],
+                    ),
+                ],
+            )
+            .unwrap();
+
+        self.vp.runner.cpu_context_mut().gps = self.cache.gps;
     }
 
     fn vp_index(&self) -> VpIndex {
@@ -1305,11 +1320,11 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn gp(&mut self, reg: usize) -> u64 {
-        todo!();
+        self.cache.gps[reg]
     }
 
     fn set_gp(&mut self, reg: usize, v: u64) {
-        todo!();
+        self.cache.gps[reg] = v;
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
@@ -1322,31 +1337,32 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn rip(&mut self) -> u64 {
-        todo!();
+        self.cache.rip
+
     }
 
     fn set_rip(&mut self, v: u64) {
-        todo!();
+        self.cache.rip = v;
     }
 
     fn segment(&mut self, index: usize) -> SegmentRegister {
-        todo!();
+        self.cache.segs[index]
     }
 
     fn efer(&mut self) -> u64 {
-        todo!();
+        self.cache.efer
     }
 
     fn cr0(&mut self) -> u64 {
-        todo!();
+        self.cache.cr0
     }
 
     fn rflags(&mut self) -> RFlags {
-        todo!();
+        self.cache.rflags
     }
 
     fn set_rflags(&mut self, v: RFlags) {
-        todo!();
+        self.cache.rflags = v;
     }
 
     fn instruction_bytes(&self) -> &[u8] {
