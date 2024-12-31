@@ -50,8 +50,6 @@ use zerocopy::Unalign;
 /// `mesh_channel::channel()`, which uses this type internally.
 pub struct Port {
     inner: Arc<PortInner>,
-    close_on_drop: bool,
-    handler_set: bool,
 }
 
 impl Debug for Port {
@@ -62,12 +60,7 @@ impl Debug for Port {
 
 impl Drop for Port {
     fn drop(&mut self) {
-        if self.handler_set {
-            self.inner.clear_queue(false);
-        }
-        if self.close_on_drop {
-            self.inner.close();
-        }
+        self.inner.close();
     }
 }
 
@@ -103,8 +96,6 @@ impl Port {
                 id,
                 state: Mutex::new(state),
             }),
-            close_on_drop: true,
-            handler_set: false,
         }
     }
 
@@ -113,10 +104,8 @@ impl Port {
     /// If there are any queued incoming messages, or if the port has already
     /// been closed or failed, then the relevant handler methods will be called
     /// directly on this thread.
-    pub fn set_handler<T: HandlePortEvent>(mut self, handler: T) -> PortWithHandler<T> {
-        assert!(!self.handler_set);
+    pub fn set_handler<T: HandlePortEvent>(self, handler: T) -> PortWithHandler<T> {
         self.inner.set_handler(Box::new(handler));
-        self.handler_set = true;
         PortWithHandler {
             raw: self,
             _phantom: PhantomData,
@@ -124,8 +113,8 @@ impl Port {
     }
 
     /// Drop this object without closing the underlying port.
-    fn forget(mut self) {
-        self.close_on_drop = false;
+    fn forget(self) {
+        self.into_inner();
     }
 
     /// If the port is done (the peer port is closed), then creates a new local
@@ -318,6 +307,12 @@ pub struct PortWithHandler<T> {
     _phantom: PhantomData<Arc<Mutex<T>>>,
 }
 
+impl<T> Drop for PortWithHandler<T> {
+    fn drop(&mut self) {
+        self.raw.inner.clear_queue(false);
+    }
+}
+
 impl<T: HandlePortEvent> From<PortWithHandler<T>> for Port {
     fn from(port: PortWithHandler<T>) -> Self {
         port.remove_handler().0
@@ -330,17 +325,47 @@ impl<T: Default + HandlePortEvent> From<Port> for PortWithHandler<T> {
     }
 }
 
+/// Scoped unsafe code with a safe interface.
+mod unsafe_code {
+    // UNSAFETY: needed to destructure objects that have `Drop` implementations.
+    #![allow(unsafe_code)]
+
+    use super::Port;
+    use super::PortInner;
+    use super::PortWithHandler;
+    use std::mem::ManuallyDrop;
+    use std::sync::Arc;
+
+    impl Port {
+        pub(super) fn into_inner(self) -> Arc<PortInner> {
+            let Self { ref inner } = *ManuallyDrop::new(self);
+            // SAFETY: copying from a field that won't be dropped.
+            unsafe { <*const _>::read(inner) }
+        }
+    }
+
+    impl<T> PortWithHandler<T> {
+        pub(super) fn into_port_preserve_handler(self) -> Port {
+            let Self {
+                ref raw,
+                _phantom: _,
+            } = *ManuallyDrop::new(self);
+            // SAFETY: copying from a field that won't be dropped.
+            unsafe { <*const _>::read(raw) }
+        }
+    }
+}
+
 impl<T: HandlePortEvent> PortWithHandler<T> {
     /// Sends a message to the opposite endpoint.
     pub fn send(&self, message: Message) {
         self.raw.send(message)
     }
 
-    pub fn remove_handler(mut self) -> (Port, T) {
-        assert!(self.raw.handler_set);
-        let handler = self.raw.inner.clear_queue(true);
-        self.raw.handler_set = false;
-        (self.raw, *handler.into_any().downcast().unwrap())
+    pub fn remove_handler(self) -> (Port, T) {
+        let port = self.into_port_preserve_handler();
+        let handler = port.inner.clear_queue(true);
+        (port, *handler.into_any().downcast().unwrap())
     }
 
     pub fn with_handler<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
