@@ -411,7 +411,6 @@ impl BackingPrivate for HypervisorBackedX86 {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
-
 }
 
 fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
@@ -705,12 +704,20 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             let tlb_lock_held = message.memory_access_info.gva_gpa_valid()
                 || message.memory_access_info.tlb_locked();
             let cache = self.vp.emulation_cache(self.intercepted_vtl);
-            if let Some(bit) = self.vp.emulate_fast_path(
-                tlb_lock_held,
+            let guest_memory = &self.vp.partition.gm[self.intercepted_vtl];
+            let mut emulation_state = UhEmulationState {
+                vp: &mut *self.vp,
+                interruption_pending,
+                devices: dev,
+                vtl: self.intercepted_vtl,
+                cache,
+            };
+            if let Some(bit) = virt_support_x86emu::emulate::emulate_mnf_write_fast_path(
+                &mut emulation_state,
+                guest_memory,
                 dev,
                 interruption_pending,
-                self.intercepted_vtl,
-                cache
+                tlb_lock_held,
             ) {
                 if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
                     signal_mnf(dev, connection_id);
@@ -1286,7 +1293,6 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             efer: efer.as_u64(),
         }
     }
-
 }
 
 impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX86> {
@@ -1338,7 +1344,6 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
 
     fn rip(&mut self) -> u64 {
         self.cache.rip
-
     }
 
     fn set_rip(&mut self, v: u64) {

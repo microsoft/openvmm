@@ -417,9 +417,9 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             OperationKind::Read,
             alignment,
         )?;
-        let cpl = self.is_user_mode();
+        let user_mode = self.is_user_mode();
         self.cpu
-            .read_memory(gva, data, cpl)
+            .read_memory(gva, data, user_mode)
             .await
             .map_err(|err| Error::MemoryAccess(gva, OperationKind::Read, err))?;
 
@@ -464,7 +464,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         new: &[u8],
     ) -> Result<bool, InternalError<T::Error>> {
         assert_eq!(current.len(), new.len());
-        let cpl = self.is_user_mode();
+        let user_mode = self.is_user_mode();
         let gva = self.compute_and_validate_gva(
             segment,
             offset,
@@ -474,7 +474,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         )?;
         let success = self
             .cpu
-            .compare_and_write_memory(gva, current, new, cpl)
+            .compare_and_write_memory(gva, current, new, user_mode)
             .await
             .map_err(|err| Error::MemoryAccess(gva, OperationKind::Write, err))?;
 
@@ -710,7 +710,6 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             }
         }
         tracing::trace!(
-            code = ?instr.code(),
             cs = ?self.cpu.segment(Register::CS.number()),
             rip = self.cpu.rip(),
             ?bitness,

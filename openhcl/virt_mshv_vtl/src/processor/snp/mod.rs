@@ -1467,7 +1467,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
             x86emu::CpuState::R13 => vmsa.r13(),
             x86emu::CpuState::R14 => vmsa.r14(),
             x86emu::CpuState::R15 => vmsa.r15(),
-            _ => panic!("invalid gp register index")
+            _ => panic!("invalid gp register index"),
         }
     }
 
@@ -1490,7 +1490,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
             x86emu::CpuState::R13 => vmsa.set_r13(v),
             x86emu::CpuState::R14 => vmsa.set_r14(v),
             x86emu::CpuState::R15 => vmsa.set_r15(v),
-            _ => panic!("invalid gp register index")
+            _ => panic!("invalid gp register index"),
         };
     }
 
@@ -1502,7 +1502,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         self.vp
             .runner
             .vmsa_mut(self.vtl)
-            .set_xmm_registers(index, v.into());
+            .set_xmm_registers(index, v);
         Ok(())
     }
 
@@ -1525,7 +1525,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
             x86emu::CpuState::DS => from_seg(hv_seg_from_snp(&vmsa.ds())),
             x86emu::CpuState::FS => from_seg(hv_seg_from_snp(&vmsa.fs())),
             x86emu::CpuState::GS => from_seg(hv_seg_from_snp(&vmsa.gs())),
-            _ => panic!("invalid segment register index")
+            _ => panic!("invalid segment register index"),
         }
     }
 

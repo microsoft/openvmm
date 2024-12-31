@@ -1023,38 +1023,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         Ok(v)
     }
 
-    /// Emulates an instruction due to a single-bit monitor page write
-    #[cfg(guest_arch = "x86_64")]
-    fn emulate_fast_path<D: CpuIo>(
-        &mut self,
-        tlb_lock_held: bool,
-        devices: &D,
-        interruption_pending: bool,
-        vtl: GuestVtl,
-        cache: T::EmulationCache,
-    ) -> Option<u32>
-    where
-        for<'b> UhEmulationState<'b, 'a, D, T>: EmulatorSupport<Error = UhRunVpError>,
-    {
-        let guest_memory = &self.partition.gm[vtl];
-        let mut emulation_state = UhEmulationState {
-            vp: &mut *self,
-            interruption_pending,
-            devices,
-            vtl,
-            cache
-        };
-        let res = virt_support_x86emu::emulate::emulate_mnf_write_fast_path(
-            &mut emulation_state,
-            guest_memory,
-            devices,
-            interruption_pending,
-            tlb_lock_held,
-        );
-        emulation_state.flush();
-        res
-    }
-
     /// Emulates an instruction due to a memory access exit.
     #[cfg(guest_arch = "x86_64")]
     async fn emulate<D: CpuIo>(
@@ -1073,7 +1041,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             interruption_pending,
             devices,
             vtl,
-            cache
+            cache,
         };
         let res =
             virt_support_x86emu::emulate::emulate(&mut emulation_state, guest_memory, devices)
