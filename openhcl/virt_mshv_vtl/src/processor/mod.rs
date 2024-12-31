@@ -188,7 +188,7 @@ mod private {
 
     pub trait BackingPrivate: 'static + Sized + InspectMut + Sized {
         type HclBacking: hcl::ioctl::Backing;
-        type EmulationCache: Default;
+        type EmulationCache;
         type Shared;
 
         fn shared(shared: &BackingShared) -> &Self::Shared;
@@ -1031,6 +1031,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         devices: &D,
         interruption_pending: bool,
         vtl: GuestVtl,
+        cache: T::EmulationCache,
     ) -> Option<u32>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>: EmulatorSupport<Error = UhRunVpError>,
@@ -1041,7 +1042,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             interruption_pending,
             devices,
             vtl,
-            cache: T::EmulationCache::default(),
+            cache
         };
         let res = virt_support_x86emu::emulate::emulate_mnf_write_fast_path(
             &mut emulation_state,
@@ -1061,6 +1062,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         devices: &D,
         interruption_pending: bool,
         vtl: GuestVtl,
+        cache: T::EmulationCache,
     ) -> Result<(), VpHaltReason<UhRunVpError>>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>: EmulatorSupport<Error = UhRunVpError>,
@@ -1071,7 +1073,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             interruption_pending,
             devices,
             vtl,
-            cache: T::EmulationCache::default(),
+            cache
         };
         let res =
             virt_support_x86emu::emulate::emulate(&mut emulation_state, guest_memory, devices)

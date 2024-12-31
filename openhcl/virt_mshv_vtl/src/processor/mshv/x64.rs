@@ -126,7 +126,7 @@ struct ProcessorStatsX86 {
 impl BackingPrivate for HypervisorBackedX86 {
     type HclBacking = MshvX64;
     type Shared = ();
-    type EmulationCache = ();
+    type EmulationCache = x86emu::CpuState;
 
     fn shared(_: &BackingShared) -> &Self::Shared {
         &()
@@ -411,6 +411,7 @@ impl BackingPrivate for HypervisorBackedX86 {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
+
 }
 
 fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
@@ -703,11 +704,13 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         {
             let tlb_lock_held = message.memory_access_info.gva_gpa_valid()
                 || message.memory_access_info.tlb_locked();
+            let cache = self.vp.emulation_cache(self.intercepted_vtl);
             if let Some(bit) = self.vp.emulate_fast_path(
                 tlb_lock_held,
                 dev,
                 interruption_pending,
                 self.intercepted_vtl,
+                cache
             ) {
                 if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
                     signal_mnf(dev, connection_id);
@@ -716,8 +719,10 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             }
         }
 
+        let cache = self.vp.emulation_cache(self.intercepted_vtl);
+
         self.vp
-            .emulate(dev, interruption_pending, self.intercepted_vtl)
+            .emulate(dev, interruption_pending, self.intercepted_vtl, cache)
             .await?;
         Ok(())
     }
@@ -738,8 +743,9 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         let interruption_pending = message.header.execution_state.interruption_pending();
 
         if message.access_info.string_op() || message.access_info.rep_prefix() {
+            let cache = self.vp.emulation_cache(self.intercepted_vtl);
             self.vp
-                .emulate(dev, interruption_pending, self.intercepted_vtl)
+                .emulate(dev, interruption_pending, self.intercepted_vtl, cache)
                 .await
         } else {
             let next_rip = next_rip(&message.header);
@@ -1238,14 +1244,9 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         Ok(())
     }
-}
 
-impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX86> {
-    type Error = UhRunVpError;
-
-    //TODO(babayet2) check w/ Steven, seems like we should keep some of this logic for MSHV
-    /*
-    fn load_registers(&mut self) {
+    ///Eagerly load registers for emulation
+    fn emulation_cache(&mut self, vtl: GuestVtl) -> x86emu::CpuState {
         const NAMES: &[HvX64RegisterName] = &[
             HvX64RegisterName::Rsp,
             HvX64RegisterName::Es,
@@ -1257,20 +1258,19 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             HvX64RegisterName::Efer,
         ];
         let mut values = [FromZeroes::new_zeroed(); NAMES.len()];
-        self.vp
-            .runner
-            .get_vp_registers(self.vtl, NAMES, &mut values)
+        self.runner
+            .get_vp_registers(vtl, NAMES, &mut values)
             .expect("register query should not fail");
 
         let [rsp, es, ds, fs, gs, ss, cr0, efer] = values;
 
-        let mut gps = self.vp.runner.cpu_context().gps;
+        let mut gps = self.runner.cpu_context().gps;
         gps[x86emu::CpuState::RSP] = rsp.as_u64();
 
-        let message = self.vp.runner.exit_message();
+        let message = self.runner.exit_message();
         let header = HvX64InterceptMessageHeader::ref_from_prefix(message.payload()).unwrap();
 
-        self.cache = x86emu::CpuState {
+        x86emu::CpuState {
             gps,
             segs: [
                 from_seg(es.into()),
@@ -1284,8 +1284,13 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             rflags: header.rflags.into(),
             cr0: cr0.as_u64(),
             efer: efer.as_u64(),
-        };
-    }*/
+        }
+    }
+
+}
+
+impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX86> {
+    type Error = UhRunVpError;
 
     fn flush(&mut self) {
         todo!()

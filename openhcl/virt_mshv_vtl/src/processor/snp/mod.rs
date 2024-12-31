@@ -1166,7 +1166,7 @@ impl UhProcessor<'_, SnpBacked> {
             SevExitCode::IOIO => {
                 let io_info = x86defs::snp::SevIoAccessInfo::from(vmsa.exit_info1() as u32);
                 if io_info.string_access() || io_info.rep_access() {
-                    self.emulate(dev, false, entered_from_vtl).await?;
+                    self.emulate(dev, false, entered_from_vtl, ()).await?;
                 } else {
                     let len = if io_info.access_size32() {
                         4
@@ -1264,7 +1264,7 @@ impl UhProcessor<'_, SnpBacked> {
 
                 if emulate {
                     has_intercept = false;
-                    self.emulate(dev, false, entered_from_vtl).await?;
+                    self.emulate(dev, false, entered_from_vtl, ()).await?;
                     &mut self.backing.exit_stats[entered_from_vtl].npf
                 } else {
                     &mut self.backing.exit_stats[entered_from_vtl].npf_spurious
