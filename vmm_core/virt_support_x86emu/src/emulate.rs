@@ -377,6 +377,8 @@ pub async fn emulate<T: EmulatorSupport>(
         break res;
     };
 
+    cpu.support.flush();
+
     // If the alignment check flag is not in sync with the hypervisor because the instruction emulator
     // modifies internally, then the appropriate SMAP enforcement flags need to be passed to the hypervisor
     // during the translation of gvas to gpa.

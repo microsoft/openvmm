@@ -1043,11 +1043,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             vtl,
             cache,
         };
-        let res =
-            virt_support_x86emu::emulate::emulate(&mut emulation_state, guest_memory, devices)
-                .await;
-        emulation_state.flush();
-        res
+        virt_support_x86emu::emulate::emulate(&mut emulation_state, guest_memory, devices).await
     }
 
     /// Emulates an instruction due to a memory access exit.

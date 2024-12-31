@@ -719,6 +719,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                 interruption_pending,
                 tlb_lock_held,
             ) {
+                emulation_state.flush();
                 if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
                     signal_mnf(dev, connection_id);
                 }
