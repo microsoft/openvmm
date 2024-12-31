@@ -1383,6 +1383,7 @@ impl UhProcessor<'_, TdxBacked> {
                         dev,
                         self.backing.interruption_information.valid(),
                         intercepted_vtl,
+                        TdxEmulationCache::default()
                     )
                     .await?;
                 } else {
@@ -1688,6 +1689,7 @@ impl UhProcessor<'_, TdxBacked> {
                         dev,
                         self.backing.interruption_information.valid(),
                         intercepted_vtl,
+                        TdxEmulationCache::default()
                     )
                     .await?;
                 }
