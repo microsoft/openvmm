@@ -54,8 +54,12 @@ impl Default for EpollBackend {
     fn default() -> Self {
         let epfd = EpollFd::new().expect("epoll not functional");
         let wake_event = Event::new();
-        epfd.add(wake_event.as_fd().as_raw_fd(), libc::EPOLLIN, 0)
-            .expect("could not add wake event");
+        epfd.add(
+            wake_event.as_fd().as_raw_fd(),
+            libc::EPOLLIN | libc::EPOLLET,
+            0,
+        )
+        .expect("could not add wake event");
         Self {
             epfd,
             wake_event,
