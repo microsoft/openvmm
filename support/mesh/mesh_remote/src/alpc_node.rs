@@ -25,7 +25,9 @@ use mesh_node::local_node::Port;
 use mesh_node::local_node::RemoteNodeHandle;
 use mesh_node::local_node::SendEvent;
 use mesh_node::resource::OsResource;
+use mesh_node::resource::Resource;
 use mesh_protobuf::buffer::Buffer;
+use mesh_protobuf::Protobuf;
 use ntapi::ntobapi::DIRECTORY_ALL_ACCESS;
 use pal::windows::alpc;
 use pal::windows::alpc::PortSection;
@@ -134,6 +136,12 @@ pub struct Invitation {
     pub address: InvitationAddress,
     /// The Ob directory that contains the mesh's ALPC server ports.
     pub directory: OwnedHandle,
+}
+
+#[derive(Debug, Protobuf)]
+#[mesh(resource = "Resource")]
+struct InitialMessage {
+    user_port: Port,
 }
 
 /// The relative NT path to a server ALPC port within the anonymous directory.
@@ -407,7 +415,7 @@ impl AlpcNode {
             .lock()
             .insert(remote_addr.node, (handle, invitation_done_send));
 
-        let mut init_port = <mesh_channel::Receiver<()>>::from(
+        let init_recv = <mesh_channel::OneshotReceiver<InitialMessage>>::from(
             self.local_node.add_port(local_addr.port, remote_addr),
         );
 
@@ -416,13 +424,14 @@ impl AlpcNode {
         // it's ready.
         self.driver
             .spawn("mesh alpc invitation", async move {
-                match init_port.recv().await {
-                    Ok(_) => {
+                match init_recv.await {
+                    Ok(init_message) => {
                         tracing::trace!(
                             node = ?local_addr.node,
                             remote_node = ?remote_addr.node,
                             "received initial message",
                         );
+                        init_message.user_port.bridge(port);
                     }
                     Err(err) => {
                         tracing::error!(
@@ -431,16 +440,9 @@ impl AlpcNode {
                             error = err.as_error(),
                             "invitation initial message failed",
                         );
+                        drop(port);
                     }
                 }
-                // Either an (empty) initial message was received, indicating
-                // the invitation was accepted, or the initial port failed,
-                // indicating the node connection failed.
-                //
-                // Either way, bridge the port. If init_port has failed, then
-                // this will fail port, which will indicate to the client that
-                // the invite failed.
-                port.bridge(init_port.into());
             })
             .detach();
 
@@ -473,15 +475,14 @@ impl AlpcNode {
             invitation.address.local_addr.node,
             invitation.directory,
         )?;
-        let init_port = node.local_node.add_port(
-            invitation.address.local_addr.port,
-            invitation.address.remote_addr,
-        );
+        let init_port =
+            mesh_channel::OneshotSender::<InitialMessage>::from(node.local_node.add_port(
+                invitation.address.local_addr.port,
+                invitation.address.remote_addr,
+            ));
 
-        // Notify the inviter that this node is ready by sending an empty
-        // message.
-        init_port.send(Default::default());
-        init_port.bridge(port);
+        // Notify the inviter that this node is ready by sending the initial port.
+        init_port.send(InitialMessage { user_port: port });
         Ok(node)
     }
 
