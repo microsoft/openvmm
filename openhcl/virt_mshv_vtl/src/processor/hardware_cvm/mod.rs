@@ -1311,9 +1311,7 @@ pub(crate) fn validate_xsetbv_exit(input: XsetbvExitInput) -> Option<u64> {
     Some(xfem)
 }
 
-impl<T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport
-    for UhEmulationState<'_, '_, T, B>
-{
+impl<T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport for UhEmulationState<'_, '_, T, B> {
     type Error = UhRunVpError;
 
     fn guest_memory(&self) -> &GuestMemory {

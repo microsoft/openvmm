@@ -423,7 +423,7 @@ pub struct TdxBacked {
 #[derive(Default)]
 pub struct TdxEmulationCache {
     pub segs: [Option<SegmentRegister>; 6],
-    pub cr0: Option<u64>
+    pub cr0: Option<u64>,
 }
 
 #[derive(Inspect, Default)]
@@ -1383,7 +1383,7 @@ impl UhProcessor<'_, TdxBacked> {
                         dev,
                         self.backing.interruption_information.valid(),
                         intercepted_vtl,
-                        TdxEmulationCache::default()
+                        TdxEmulationCache::default(),
                     )
                     .await?;
                 } else {
@@ -1689,7 +1689,7 @@ impl UhProcessor<'_, TdxBacked> {
                         dev,
                         self.backing.interruption_information.valid(),
                         intercepted_vtl,
-                        TdxEmulationCache::default()
+                        TdxEmulationCache::default(),
                     )
                     .await?;
                 }
@@ -2148,8 +2148,10 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
             _ => panic!("invalid segment register"),
         };
         let reg = match tdx_segment_index {
-            TdxSegmentReg::Cs => {self.cache.segs[index].get_or_insert_with(|| TdxExit(self.vp.runner.tdx_vp_enter_exit_info()).cs())}
-           _ => self.cache.segs[index].get_or_insert_with(|| self.vp.read_segment(self.vtl, tdx_segment_index))
+            TdxSegmentReg::Cs => self.cache.segs[index]
+                .get_or_insert_with(|| TdxExit(self.vp.runner.tdx_vp_enter_exit_info()).cs()),
+            _ => self.cache.segs[index]
+                .get_or_insert_with(|| self.vp.read_segment(self.vtl, tdx_segment_index)),
         };
         (*reg).into()
     }
@@ -2159,7 +2161,10 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
     }
 
     fn cr0(&mut self) -> u64 {
-        let reg = self.cache.cr0.get_or_insert_with(|| self.vp.backing.cr0.read(&self.vp.runner));
+        let reg = self
+            .cache
+            .cr0
+            .get_or_insert_with(|| self.vp.backing.cr0.read(&self.vp.runner));
         (*reg).into()
     }
 
