@@ -415,16 +415,15 @@ impl AlpcNode {
             .lock()
             .insert(remote_addr.node, (handle, invitation_done_send));
 
-        let init_recv = <mesh_channel::OneshotReceiver<InitialMessage>>::from(
+        let mut init_recv = <mesh_channel::OneshotReceiver<InitialMessage>>::from(
             self.local_node.add_port(local_addr.port, remote_addr),
         );
 
-        // Wait for a message from the invitee before bridging the initial port
-        // with `port` so that we don't send any events to the new node until
-        // it's ready.
+        // Wait for a message from the invitee before sending anything so that
+        // we don't send any events to the new node until it's ready.
         self.driver
             .spawn("mesh alpc invitation", async move {
-                match init_recv.await {
+                match (&mut init_recv).await {
                     Ok(init_message) => {
                         tracing::trace!(
                             node = ?local_addr.node,
@@ -440,7 +439,10 @@ impl AlpcNode {
                             error = err.as_error(),
                             "invitation initial message failed",
                         );
-                        drop(port);
+                        // The port is closed or has failed. Bridge the port
+                        // with the user port to reflect the failure back to the
+                        // caller.
+                        Port::from(init_recv).bridge(port);
                     }
                 }
             })
