@@ -1385,17 +1385,12 @@ impl PortInner {
             }
             match &state.activity {
                 PortActivity::Peered(_) => {}
-                PortActivity::Failed(err) => handler.fail(
-                    &mut PortControl {
-                        peer_and_seq: None,
-                        events: &mut pending_events,
-                    },
-                    err.clone(),
-                ),
-                PortActivity::Done => handler.close(&mut PortControl {
-                    peer_and_seq: None,
-                    events: &mut pending_events,
-                }),
+                PortActivity::Failed(err) => {
+                    handler.fail(&mut PortControl::unpeered(&mut pending_events), err.clone())
+                }
+                PortActivity::Done => {
+                    handler.close(&mut PortControl::unpeered(&mut pending_events))
+                }
                 _ => unreachable!(),
             }
             state.handler = handler;
