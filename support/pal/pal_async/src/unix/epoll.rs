@@ -54,6 +54,9 @@ impl Default for EpollBackend {
     fn default() -> Self {
         let epfd = EpollFd::new().expect("epoll not functional");
         let wake_event = Event::new();
+        // Register for notifications when the wake event is signaled. Use
+        // edge-triggered mode because we can (we immediately consume the event
+        // when it is signaled) and because miri requires it.
         epfd.add(
             wake_event.as_fd().as_raw_fd(),
             libc::EPOLLIN | libc::EPOLLET,
