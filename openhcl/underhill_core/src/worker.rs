@@ -1870,7 +1870,7 @@ async fn new_underhill_vm(
 
         let private_pool_spanwer = private_pool.as_ref().map(|p| p.allocator_spawner());
 
-        let save_restore_supported = env_cfg.nvme_keep_alive;
+        let save_restore_supported = env_cfg.nvme_keep_alive && private_pool_spanwer.is_some();
         let vfio_dma_buffer_spawner = Box::new(
             move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
                 shared_vis_pool_spawner
