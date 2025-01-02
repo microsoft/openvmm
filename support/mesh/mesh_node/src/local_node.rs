@@ -307,6 +307,16 @@ impl Port {
             PendingEvents::send(&peer, seq, PortEvent::Message(message));
         }
     }
+
+    #[cfg(test)]
+    fn fail(self, err: NodeError) {
+        let mut pending_events = PendingEvents::new();
+        {
+            let mut state = self.inner.state.lock();
+            state.fail(&mut pending_events, err);
+        }
+        pending_events.process();
+    }
 }
 
 /// A [`Port`] that has a registered message handler.
@@ -1486,10 +1496,13 @@ impl<'a> OutgoingEvent<'a> {
                 len += size_of::<protocol::ChangePeerData>();
                 EventAndEncoder::Other(event)
             }
+            PortEvent::FailPort(_) => {
+                len += size_of::<protocol::FailPortData>();
+                EventAndEncoder::Other(event)
+            }
             event @ (PortEvent::ClosePort
             | PortEvent::AcknowledgeChangePeer
-            | PortEvent::AcknowledgePort
-            | PortEvent::FailPort(_)) => EventAndEncoder::Other(event),
+            | PortEvent::AcknowledgePort) => EventAndEncoder::Other(event),
         };
         Self {
             port_id,
@@ -2628,5 +2641,19 @@ pub mod tests {
         let mut p2 = p2.change_types::<(), u32>();
         p1.send(1);
         assert_eq!(p2.recv().await.unwrap(), 1);
+    }
+
+    #[async_test]
+    async fn test_fail_port() {
+        #[derive(Debug, Error)]
+        #[error("test failure")]
+        struct ExplicitFailure;
+
+        let (node, node2, _h) = new_two_node_mesh();
+        let (p1, mut p2) = new_remote_port_pair(&node, &node2);
+        let p1 = Port::from(p1);
+        p1.fail(NodeError::local(ExplicitFailure));
+        let err = p2.recv().await.unwrap_err();
+        assert!(matches!(err, RecvError::Failed));
     }
 }
