@@ -267,6 +267,8 @@ impl ErasedVecDeque {
         let align = self.vtable.layout.align();
         let (new_cap, buf) = if self.cap == 0 {
             let element_size = self.vtable.layout.size();
+            // Start with 4 elements, but only if the element size is not too
+            // big (these constants are arbitrary).
             let new_cap = if element_size >= 256 {
                 element_size
             } else {
@@ -278,6 +280,8 @@ impl ErasedVecDeque {
                 unsafe { std::alloc::alloc(Layout::from_size_align_unchecked(new_cap, align)) };
             (new_cap, buf)
         } else {
+            // Double the capacity (geometric growth) to ensure amortized O(1)
+            // push_back.
             let new_cap = self.cap.checked_mul(2).unwrap();
             // SAFETY: `buf` is a valid allocation with the given layout, and
             // `new_cap` is non-zero.
