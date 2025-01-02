@@ -58,7 +58,7 @@ pub trait IoOverlapped: Unpin + Send + Sync {
     /// associated with an IO whose syscall just returned `result`. If this
     /// routine returned `false`, the caller must not deallocate `overlapped`
     /// until `overlapped_io_complete` is called.
-    unsafe fn post_io(&self, result: io::Result<()>, overlapped: &Overlapped) -> bool;
+    unsafe fn post_io(&self, result: &io::Result<()>, overlapped: &Overlapped) -> bool;
 }
 
 /// A file opened for overlapped IO.
@@ -112,6 +112,7 @@ struct IoInner<T> {
 enum IoState {
     None,
     Issued,
+    SyncError(Option<io::Error>),
     Waiting(Waker),
     Dropped(unsafe fn(*mut ())),
 }
@@ -142,8 +143,10 @@ impl<T> Io<T> {
 
         file.inner.pre_io();
         let result = f(handle, buffers, overlapped);
-        if unsafe { file.inner.post_io(result, &self.inner.overlapped) } {
-            *self.inner.state.get_mut() = IoState::None;
+        if unsafe { file.inner.post_io(&result, &self.inner.overlapped) } {
+            *self.inner.state.get_mut() = result
+                .map(|_| IoState::None)
+                .unwrap_or_else(|e| IoState::SyncError(Some(e)));
         } else {
             self.handle = Some(SendSyncRawHandle(handle));
         }
@@ -168,15 +171,22 @@ impl<T> Io<T> {
             match old_state {
                 IoState::None => Poll::Ready(self.try_complete().unwrap()),
                 IoState::Issued | IoState::Waiting(_) => Poll::Pending,
-                IoState::Dropped(_) => unreachable!(),
+                IoState::Dropped(_) | IoState::SyncError(_) => unreachable!(),
             }
         }
     }
 
     fn try_complete(&mut self) -> Option<BufResult<T>> {
-        let (status, len) = self.inner.overlapped.io_status()?;
+        // If an error was returned synchronously the IO status block is not updated, so check for
+        // that before accessing the overlapped structure.
+        let result = if let IoState::SyncError(error) = self.inner.state.get_mut() {
+            Err(error.take().unwrap())
+        } else {
+            let (status, len) = self.inner.overlapped.io_status()?;
+            chk_status(status).map(|_| len)
+        };
+
         let buffers = self.inner.buffers.take().unwrap();
-        let result = chk_status(status).map(|_| len);
         Some((result, buffers))
     }
 }
@@ -247,9 +257,18 @@ impl<T: IoBufMut, U: IoBufMut> Io<(T, U)> {
                     overlapped,
                 ) != 0
                 {
+                    tracing::info!(code, "DeviceIoControl succeeded");
                     Ok(())
                 } else {
-                    Err(io::Error::last_os_error())
+                    let err = io::Error::last_os_error();
+                    tracing::error!(
+                        code,
+                        internal = (*overlapped).Internal,
+                        internal_high = (*overlapped).InternalHigh,
+                        "DeviceIoControl failed: {:?}",
+                        err
+                    );
+                    Err(err)
                 }
             },
         );
@@ -260,7 +279,7 @@ pub(crate) unsafe fn overlapped_io_done(overlapped: *mut OVERLAPPED, wakers: &mu
     let inner = overlapped as *const IoInner<()>;
     let old_state = std::mem::replace(&mut *unsafe { &(*inner).state }.lock(), IoState::None);
     match old_state {
-        IoState::None => unreachable!(),
+        IoState::None | IoState::SyncError(_) => unreachable!(),
         IoState::Issued => {}
         IoState::Waiting(waker) => wakers.push(waker),
         IoState::Dropped(drop_fn) => unsafe { drop_fn(inner as *mut ()) },
@@ -274,7 +293,7 @@ impl<T> Drop for Io<T> {
             let old_state =
                 std::mem::replace(&mut *self.inner.state.lock(), IoState::Dropped(drop_fn));
             match old_state {
-                IoState::None => {
+                IoState::None | IoState::SyncError(_) => {
                     // SAFETY: inner is no longer referenced by the kernel.
                     unsafe { ManuallyDrop::drop(&mut self.inner) };
                 }
