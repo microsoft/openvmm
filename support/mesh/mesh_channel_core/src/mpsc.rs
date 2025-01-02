@@ -830,7 +830,7 @@ impl HandlePortEvent for RemotePortHandler {
         match port {
             None => {
                 // SAFETY: `p` has been written to.
-                unsafe { local.messages.commit_one() };
+                unsafe { p.commit() };
             }
             Some(port) => {
                 local.ports.push(port);

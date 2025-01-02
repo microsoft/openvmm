@@ -98,6 +98,29 @@ impl InPlaceElement<'_> {
     }
 }
 
+/// An element reserved in the queue by [`ErasedVecDeque::reserve_one`].
+pub struct ReservedElement<'a>(&'a mut ErasedVecDeque, usize);
+
+impl ReservedElement<'_> {
+    /// Returns a pointer to the reserved element.
+    pub fn as_ptr(&self) -> *mut () {
+        let Self(ref deque, offset) = *self;
+        // SAFETY: `offset` is a valid offset into `buf`.
+        let ptr = unsafe { deque.buf.add(offset).cast() };
+        ptr.as_ptr()
+    }
+
+    /// Commits the reserved element.
+    ///
+    /// # Safety
+    /// The caller must ensure that the element has been written to the buffer.
+    pub unsafe fn commit(self) {
+        let Self(deque, _) = self;
+        deque.len += deque.vtable.element_len;
+        debug_assert!(deque.len <= deque.cap);
+    }
+}
+
 impl ErasedVecDeque {
     /// Creates a new empty `ErasedVecDeque` with the given element vtable.
     pub fn new(vtable: &'static ElementVtable) -> Self {
@@ -142,23 +165,16 @@ impl ErasedVecDeque {
         InPlaceElement(ptr, PhantomData)
     }
 
-    /// Reserves space for one element and returns a pointer to it.
-    pub fn reserve_one(&mut self) -> InPlaceElement<'_> {
+    /// Reserves space for one element and returns a reference to it.
+    ///
+    /// The caller must write the element to the returned pointer and then call
+    /// [`ReservedElement::commit`] to commit the element.
+    pub fn reserve_one(&mut self) -> ReservedElement<'_> {
         if self.len >= self.cap {
             self.grow();
         }
-        // SAFETY: We just grew the buffer if necessary.
-        unsafe { self.buf_at(self.len) }
-    }
-
-    /// Commits the next element. Used after calling `reserve_one` and writing
-    /// to the buffer.
-    ///
-    /// # Safety
-    /// The caller must ensure that the element has been written to the buffer.
-    pub unsafe fn commit_one(&mut self) {
-        self.len += self.vtable.element_len;
-        debug_assert!(self.len <= self.cap);
+        let offset = self.offset(self.len);
+        ReservedElement(self, offset)
     }
 
     /// Pushes a new element to the back of the queue.
@@ -171,17 +187,15 @@ impl ErasedVecDeque {
     /// queue, the caller must ensure that the queue is not sent/shared across
     /// threads unless the element type is `Send` and `Sync`.
     pub unsafe fn push_back(&mut self, value: *const ()) {
+        let len = self.vtable.layout.size();
         let dst = self.reserve_one();
         // SAFETY: the caller ensures that `value` is a valid owned pointer to the
         // element type.
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                value.cast(),
-                dst.as_ptr().cast::<u8>(),
-                self.vtable.layout.size(),
-            );
-            self.commit_one();
+            std::ptr::copy_nonoverlapping(value.cast(), dst.as_ptr().cast::<u8>(), len);
         }
+        // SAFETY: the value has been written.
+        unsafe { dst.commit() };
     }
 
     /// Pops the front element from the queue and returns a pointer to it.
