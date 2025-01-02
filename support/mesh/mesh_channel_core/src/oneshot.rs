@@ -15,6 +15,7 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
+use std::ptr::NonNull;
 use std::sync::Arc;
 use std::task::ready;
 use std::task::Context;
@@ -428,9 +429,13 @@ type EncodeFn = unsafe fn(BoxedValue) -> Message;
 type DecodeFn = unsafe fn(Message) -> Result<BoxedValue, ChannelError>;
 
 #[derive(Debug)]
-struct BoxedValue(*mut ());
+struct BoxedValue(NonNull<()>);
 
+// SAFETY: `BoxedValue` is `Send` and `Sync` even though the underlying element
+// types may not be. It is the caller's responsibility to ensure that they don't
+// send or share this across threads when it shouldn't be.
 unsafe impl Send for BoxedValue {}
+/// SAFETY: see above.
 unsafe impl Sync for BoxedValue {}
 
 impl BoxedValue {
@@ -438,14 +443,15 @@ impl BoxedValue {
     /// The caller must ensure that the resulting object is not sent or shared
     /// across threads if `T` is not `Send` or `Sync`.
     unsafe fn new<T>(value: Box<T>) -> Self {
-        Self(Box::into_raw(value).cast())
+        Self(NonNull::new(Box::into_raw(value).cast()).unwrap())
     }
 
     /// # Safety
     /// The caller must ensure that `T` is the correct type of the value.
+    #[expect(clippy::unnecessary_box_returns)]
     unsafe fn cast<T>(self) -> Box<T> {
         // SAFETY: the caller ensures that `T` is the correct type of the value.
-        unsafe { Box::from_raw(self.0.cast::<T>()) }
+        unsafe { Box::from_raw(self.0.cast::<T>().as_ptr()) }
     }
 
     /// # Safety
