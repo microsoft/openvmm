@@ -724,13 +724,17 @@ enum QueueAccess<'a> {
 impl Queue {
     fn access(&self) -> QueueAccess<'_> {
         loop {
+            // Check if the queue is remote first to avoid taking the lock.
             if let Some(remote) = self.remote.get() {
                 break QueueAccess::Remote(remote);
             } else {
                 let local = self.local.lock();
-                if !local.remote {
-                    break QueueAccess::Local(local);
+                if local.remote {
+                    // The queue was made remote between our check above and
+                    // taking the lock.
+                    continue;
                 }
+                break QueueAccess::Local(local);
             }
         }
     }
