@@ -59,6 +59,16 @@ pub struct ElementVtable {
 impl ElementVtable {
     /// Creates a new vtable for the given element type.
     pub const fn new<T>() -> Self {
+        /// # Safety
+        /// The caller must ensure that `p` is a valid pointer to a `T`, the type
+        /// that this vtable was created with.
+        unsafe fn drop_fn<T>(p: *mut ()) {
+            // SAFETY: `p` is a valid owned pointer to a `T`.
+            unsafe {
+                drop_in_place(p.cast::<T>());
+            }
+        }
+
         Self {
             layout: Layout::new::<T>(),
             element_len: if size_of::<T>() == 0 {
@@ -68,20 +78,10 @@ impl ElementVtable {
                 size_of::<T>()
             },
             drop: if std::mem::needs_drop::<T>() {
-                Some(Self::drop_fn::<T>)
+                Some(drop_fn::<T>)
             } else {
                 None
             },
-        }
-    }
-
-    /// # Safety
-    /// The caller must ensure that `p` is a valid pointer to a `T`, the type
-    /// that this vtable was created with.
-    unsafe fn drop_fn<T>(p: *mut ()) {
-        // SAFETY: `p` is a valid owned pointer to a `T`.
-        unsafe {
-            drop_in_place(p.cast::<T>());
         }
     }
 }
