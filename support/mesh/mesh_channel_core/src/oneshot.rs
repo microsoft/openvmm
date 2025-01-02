@@ -76,7 +76,13 @@ impl<T> Debug for OneshotSender<T> {
 impl<T> OneshotSender<T> {
     /// Sends `value` to the receiving endpoint of the channel.
     pub fn send(self, value: T) {
-        unsafe { self.0.send(BoxedValue::new(Box::new(value))) }
+        // SAFETY: `value` and the slot are both of type `T`.
+        unsafe {
+            if let Some(value) = self.0.send(BoxedValue::new(Box::new(value))) {
+                // The value wasn't used.
+                value.drop::<T>();
+            }
+        }
     }
 }
 
@@ -98,6 +104,8 @@ impl<T: MeshField> From<Port> for OneshotSender<T> {
 
 impl<T: MeshField> OneshotSender<T> {
     fn into_port(self) -> Port {
+        // SAFETY: `decode_message` is a valid function to decode values of
+        // type `T`.
         unsafe { self.0.into_port(decode_message::<T>) }
     }
 
@@ -109,13 +117,21 @@ impl<T: MeshField> OneshotSender<T> {
     }
 }
 
+/// # Safety
+/// The caller must ensure that `value` is of type `T`.
 unsafe fn encode_message<T: MeshField>(value: BoxedValue) -> Message {
+    // SAFETY: the caller ensures that `value` is of type `T`.
     let value = unsafe { value.cast::<T>() };
     Message::new((value,))
 }
 
+/// # Safety
+/// The caller must ensure that the resulting object is not sent or shared
+/// across threads if `T` is not `Send` or `Sync`.
 unsafe fn decode_message<T: MeshField>(message: Message) -> Result<BoxedValue, ChannelError> {
     let (value,) = message.parse::<(Box<T>,)>()?;
+    // SAFETY: the caller ensures that the resulting object is not sent or
+    // shared across threads if `T` is not `Send` or `Sync`.
     Ok(unsafe { BoxedValue::new(value) })
 }
 
@@ -131,7 +147,10 @@ impl Drop for OneshotSenderCore {
 impl OneshotSenderCore {
     fn into_slot(self) -> Arc<Slot> {
         match *ManuallyDrop::new(self) {
-            Self(ref slot) => unsafe { <*const _>::read(slot) },
+            Self(ref slot) => {
+                // SAFETY: `slot` is not dropped.
+                unsafe { <*const _>::read(slot) }
+            }
         }
     }
 
@@ -155,12 +174,20 @@ impl OneshotSenderCore {
         }
     }
 
-    unsafe fn send(self, value: BoxedValue) {
+    /// # Safety
+    /// The caller must ensure that `value` is of type `T`, the type of this
+    /// slot.
+    #[must_use]
+    unsafe fn send(self, value: BoxedValue) -> Option<BoxedValue> {
         let slot = self.into_slot();
         let mut state = slot.0.lock();
         match std::mem::replace(&mut *state, SlotState::Done) {
             SlotState::ReceiverRemote(port, encode) => {
-                port.send(unsafe { encode(value) });
+                // SAFETY: `encode` has been set to operate on values of type
+                // `T`, and `value` is of type `T`.
+                let value = unsafe { encode(value) };
+                port.send(value);
+                None
             }
             SlotState::Waiting(waker) => {
                 *state = SlotState::Sent(value);
@@ -168,12 +195,16 @@ impl OneshotSenderCore {
                 if let Some(waker) = waker {
                     waker.wake();
                 }
+                None
             }
-            SlotState::Done => {}
+            SlotState::Done => Some(value),
             SlotState::Sent { .. } | SlotState::SenderRemote { .. } => unreachable!(),
         }
     }
 
+    /// # Safety
+    /// The caller must ensure that `decode` is a valid function to decode
+    /// values of type `T`, the type of this slot.
     unsafe fn into_port(self, decode: DecodeFn) -> Port {
         let slot = self.into_slot();
         let mut state = slot.0.lock();
@@ -213,13 +244,17 @@ impl<T> Debug for OneshotReceiver<T> {
 impl<T> OneshotReceiver<T> {
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
         let v = ready!(self.0.poll_recv(cx))?;
+        // SAFETY: The slot is for values of type `T`, so `v` is of type `T`.
         let v = unsafe { v.cast::<T>() };
         Ok(*v).into()
     }
 
     fn into_core(self) -> OneshotReceiverCore {
         match *ManuallyDrop::new(self) {
-            Self(ref core, _) => unsafe { <*const _>::read(core) },
+            Self(ref core, _) => {
+                // SAFETY: `core` is not dropped.
+                unsafe { <*const _>::read(core) }
+            }
         }
     }
 }
@@ -228,7 +263,8 @@ impl<T> Drop for OneshotReceiver<T> {
     fn drop(&mut self) {
         // Drop the value if it exists.
         if let Some(v) = self.0.clear() {
-            let _v = unsafe { v.cast::<T>() };
+            // SAFETY: The slot is for values of type `T`, so `v` is of type `T`.
+            unsafe { v.drop::<T>() };
         }
     }
 }
@@ -259,6 +295,8 @@ impl<T: MeshField> From<Port> for OneshotReceiver<T> {
 
 impl<T: MeshField> OneshotReceiver<T> {
     fn into_port(self) -> Port {
+        // SAFETY: `encode_message` is a valid function to encode values of
+        // type `T`.
         unsafe { self.into_core().into_port(encode_message::<T>) }
     }
 
@@ -333,6 +371,9 @@ impl OneshotReceiverCore {
         Poll::Ready(v)
     }
 
+    /// # Safety
+    /// The caller must ensure that `encode` is a valid function to encode
+    /// values of type `T`, the type of this slot.
     unsafe fn into_port(mut self, encode: EncodeFn) -> Port {
         let existing = self.port.take().map(|port| port.remove_handler().0);
         let Some(slot) = self.slot.take() else {
@@ -351,7 +392,10 @@ impl OneshotReceiverCore {
             }
             SlotState::Sent(value) => {
                 let (send, recv) = Port::new_pair();
-                send.send(unsafe { encode(value) });
+                // SAFETY: `encode` has been set to operate on values of type
+                // `T`, the type of this slot.
+                let value = unsafe { encode(value) };
+                send.send(value);
                 if let Some(existing) = existing {
                     existing.bridge(send);
                 }
@@ -390,12 +434,25 @@ unsafe impl Send for BoxedValue {}
 unsafe impl Sync for BoxedValue {}
 
 impl BoxedValue {
+    /// # Safety
+    /// The caller must ensure that the resulting object is not sent or shared
+    /// across threads if `T` is not `Send` or `Sync`.
     unsafe fn new<T>(value: Box<T>) -> Self {
         Self(Box::into_raw(value).cast())
     }
 
+    /// # Safety
+    /// The caller must ensure that `T` is the correct type of the value.
     unsafe fn cast<T>(self) -> Box<T> {
+        // SAFETY: the caller ensures that `T` is the correct type of the value.
         unsafe { Box::from_raw(self.0.cast::<T>()) }
+    }
+
+    /// # Safety
+    /// The caller must ensure that `T` is the correct type of the value.
+    unsafe fn drop<T>(self) {
+        // SAFETY: the caller ensures that `T` is the correct type of the value.
+        let _ = unsafe { self.cast::<T>() };
     }
 }
 
@@ -440,7 +497,11 @@ impl HandlePortEvent for SlotHandler {
         let mut state = self.slot.0.lock();
         match std::mem::replace(&mut *state, SlotState::Done) {
             SlotState::Waiting(waker) => {
-                let value = unsafe { (self.decode)(message) }.map_err(HandleMessageError::new)?;
+                // SAFETY: the users of the slot will ensure it is not
+                // sent/shared across threads unless the underlying type is
+                // Send/Sync.
+                let r = unsafe { (self.decode)(message) };
+                let value = r.map_err(HandleMessageError::new)?;
                 *state = SlotState::Sent(value);
                 drop(state);
                 if let Some(waker) = waker {
