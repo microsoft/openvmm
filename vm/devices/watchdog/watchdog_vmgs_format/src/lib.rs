@@ -58,7 +58,7 @@ impl WatchdogVmgsFormat {
 /// Errors which may occur as part of [`WatchdogVmgsFormatStore`]
 /// operations.
 #[derive(Debug, Error)]
-#[allow(missing_docs)] // self-explanatory variants
+#[expect(missing_docs)] // self-explanatory variants
 pub enum WatchdogVmgsFormatStoreError {
     #[error("could not access non-volatile store")]
     NonVolatileStoreAccessError(#[source] vmcore::non_volatile_store::NonVolatileStoreError),

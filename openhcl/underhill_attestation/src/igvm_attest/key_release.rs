@@ -15,7 +15,6 @@ use openssl::x509::X509VerifyResult;
 use openssl::x509::X509;
 use thiserror::Error;
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum KeyReleaseError {
     #[error("the response size is too small to parse")]
@@ -30,7 +29,6 @@ pub(crate) enum KeyReleaseError {
     GetWrappedKeyFromAkvJwtBody(#[source] AkvKeyReleaseJwtError),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum AkvKeyReleaseJwtError {
     #[error("invalid JWT format, data: {0}")]
@@ -57,7 +55,6 @@ pub(crate) enum AkvKeyReleaseJwtError {
     KeyHsmBlobToJson(#[source] serde_json::Error),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum JwtSignatureVerificationError {
     #[error("invalid key type {key_type:?}, expected {expected_type:?}")]
@@ -77,7 +74,6 @@ pub(crate) enum JwtSignatureVerificationError {
     UnsupportedSigningAlgorithm(String),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum CertificateChainValidationError {
     #[error("certificate chain is empty")]

@@ -13,7 +13,7 @@ use thiserror::Error;
 use zerocopy::AsBytes;
 use zerocopy::FromZeroes;
 
-#[allow(missing_docs)] // self-explanatory fields
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("failed to open /dev/sev-guest")]

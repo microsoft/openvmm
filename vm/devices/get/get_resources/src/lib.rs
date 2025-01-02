@@ -173,7 +173,7 @@ pub mod ged {
     /// The various errors that can occur during a save or restore
     /// operation for guest VTL2 state.
     #[derive(Debug, Error, MeshPayload)]
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     pub enum SaveRestoreError {
         #[error("an operation is in progress")]
         OperationInProgress,
@@ -185,7 +185,7 @@ pub mod ged {
 
     /// An error that can occur during a VTL2 settings update.
     #[derive(Debug, Error, MeshPayload)]
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     pub enum ModifyVtl2SettingsError {
         #[error("large settings not supported")]
         LargeSettingsNotSupported,
