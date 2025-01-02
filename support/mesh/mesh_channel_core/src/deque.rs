@@ -4,7 +4,7 @@
 //! Implementation of a type-erased vector-based queue.
 
 // UNSAFETY: Needed to erase types to avoid monomorphization overhead.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use core::fmt;
 use std::alloc::Layout;
@@ -166,6 +166,10 @@ impl ErasedVecDeque {
     /// # Safety
     /// The caller must ensure that `value` is a valid owned pointer to the
     /// element type that this queue was created with.
+    ///
+    /// Additionally, once at least one element has been pushed to this
+    /// queue, the caller must ensure that the queue is not sent/shared across
+    /// threads unless the element type is `Send` and `Sync`.
     pub unsafe fn push_back(&mut self, value: *const ()) {
         let dst = self.reserve_one();
         // SAFETY: the caller ensures that `value` is a valid owned pointer to the

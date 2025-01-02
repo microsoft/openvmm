@@ -5,7 +5,7 @@
 //! be used to communicate between mesh nodes.
 
 // UNSAFETY: Needed to erase types to avoid monomorphization overhead.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use crate::deque::ElementVtable;
 use crate::deque::ErasedVecDeque;
@@ -30,6 +30,7 @@ use mesh_node::message::Message;
 use mesh_protobuf::DefaultEncoding;
 use mesh_protobuf::Protobuf;
 use parking_lot::Mutex;
+use parking_lot::MutexGuard;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -87,9 +88,15 @@ impl<T> Sender<T> {
     /// # });
     /// ```
     pub fn send(&self, message: T) {
-        let message = MaybeUninit::new(message);
+        let mut message = MaybeUninit::new(message);
         // SAFETY: the queue is for `T` and `message` is a valid owned `T`.
-        unsafe { self.0.send(message.as_ptr().cast()) }
+        // Additionally, the sender/receiver is only `Send`/`Sync`  if `T` is
+        // `Send`/`Sync`.
+        let sent = unsafe { self.0.send(MessagePtr::new(&mut message)) };
+        if !sent {
+            // SAFETY: `message` was not dropped.
+            unsafe { message.assume_init_drop() };
+        }
     }
 
     /// Returns whether the receiving side of the channel is known to be closed
@@ -103,54 +110,67 @@ impl<T> Sender<T> {
     }
 }
 
+struct MessagePtr(*mut ());
+
+impl MessagePtr {
+    fn new<T>(message: &mut MaybeUninit<T>) -> Self {
+        Self(message.as_mut_ptr().cast())
+    }
+
+    /// # Safety
+    /// The caller must ensure that `self` is a valid owned `T`.
+    unsafe fn read<T>(self) -> T {
+        // SAFETY: The caller guarantees `self` is a valid owned `T`.
+        unsafe { self.0.cast::<T>().read() }
+    }
+}
+
 impl SenderCore {
     /// Sends `message`, taking ownership of it.
     ///
+    /// Returns `true` if the message was sent. If `false`, the caller retains
+    /// ownership of the message and must drop it.
+    ///
     /// # Safety
     /// The caller must ensure that the message is a valid owned `T` for the `T`
-    /// the queue was created with.
-    unsafe fn send(&self, message: *const ()) {
-        loop {
-            if let Some(remote) = self.0.remote.get() {
+    /// the queue was created with. It also must ensure that the queue is not
+    /// sent/shared across threads unless `T` is `Send`/`Sync`.
+    #[must_use]
+    unsafe fn send(&self, message: MessagePtr) -> bool {
+        match self.0.local_or_remote() {
+            Ok(mut local) => {
+                if local.receiver_gone {
+                    return false;
+                }
+                // SAFETY: The caller guarantees `message` is a valid owned `T`,
+                // and that the queue will not be sent/shared across threads
+                // unless `T` is `Send`/`Sync`.
+                unsafe { local.messages.push_back(message.0) };
+                if let Some(waker) = local.waker.take() {
+                    drop(local);
+                    waker.wake();
+                }
+            }
+            Err(remote) => {
                 // SAFETY: The caller guarantees `message` is a valid owned `T`.
                 let message = unsafe { (remote.encode)(message) };
                 remote.port.send(message);
-                break;
-            }
-            let mut local = self.0.local.lock();
-            if !local.remote {
-                if !local.receiver_gone {
-                    // SAFETY: The caller guarantees `message` is a valid owned `T`.
-                    unsafe { local.messages.push_back(message) };
-                    if let Some(waker) = local.waker.take() {
-                        drop(local);
-                        waker.wake();
-                    }
-                }
-                break;
             }
         }
+        true
     }
 
     fn is_closed(&self) -> bool {
-        loop {
-            if let Some(remote) = self.0.remote.get() {
-                return remote.port.is_closed().unwrap_or(true);
-            }
-            let local = self.0.local.lock();
-            if !local.remote {
-                return local.receiver_gone;
-            }
+        match self.0.local_or_remote() {
+            Ok(local) => local.receiver_gone,
+            Err(remote) => remote.port.is_closed().unwrap_or(true),
         }
     }
 
     fn into_queue(self) -> Arc<Queue> {
-        match *ManuallyDrop::new(self) {
-            Self(ref queue) => {
-                // SAFETY: copying from a field that won't be dropped.
-                unsafe { <*const _>::read(queue) }
-            }
-        }
+        let Self(ref queue) = *ManuallyDrop::new(self);
+        // SAFETY: copying from a field that won't be dropped.
+        unsafe { <*const _>::read(queue) }
     }
 
     /// Creates a new queue for sending to `port`.
@@ -189,26 +209,22 @@ impl SenderCore {
             Err(queue) => {
                 // There is a receiver or at least one other sender.
                 let (send, recv) = Port::new_pair();
-                loop {
-                    if let Some(remote) = queue.remote.get() {
+                match queue.local_or_remote() {
+                    Ok(mut local) => {
+                        if !local.receiver_gone {
+                            local.new_handler = new_handler;
+                            local.ports.push(recv);
+                            if let Some(waker) = local.waker.take() {
+                                drop(local);
+                                waker.wake();
+                            }
+                        }
+                    }
+                    Err(remote) => {
                         remote
                             .port
                             .send(Message::new(ChannelPayload::<()>::Port(recv)));
-                        break;
                     }
-                    let mut local = queue.local.lock();
-                    if local.remote {
-                        continue;
-                    }
-                    if !local.receiver_gone {
-                        local.new_handler = new_handler;
-                        local.ports.push(recv);
-                        if let Some(waker) = local.waker.take() {
-                            drop(local);
-                            waker.wake();
-                        }
-                    }
-                    break;
                 }
                 send
             }
@@ -274,9 +290,9 @@ impl<T: MeshField> Sender<T> {
     ///
     /// # Safety
     /// The caller must ensure that `message` is a valid owned `T`.
-    unsafe fn encode_message(message: *const ()) -> Message {
+    unsafe fn encode_message(message: MessagePtr) -> Message {
         // SAFETY: The caller guarantees `message` is a valid owned `T`.
-        unsafe { Message::new(ChannelPayload::Message(message.cast::<T>().read())) }
+        unsafe { Message::new(ChannelPayload::Message(message.read::<T>())) }
     }
 
     fn from_port(port: Port) -> Self {
@@ -380,7 +396,7 @@ impl<T> Receiver<T> {
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
         let mut v = MaybeUninit::<T>::uninit();
         // SAFETY: `v` is a valid uninitialized `T`.
-        let r = unsafe { self.0.try_poll_recv(None, v.as_mut_ptr().cast()) };
+        let r = unsafe { self.0.try_poll_recv(None, MessagePtr::new(&mut v)) };
         match r {
             Poll::Ready(Ok(())) => {
                 // SAFETY: `try_poll_recv` guarantees `v` is now initialized.
@@ -400,7 +416,7 @@ impl<T> Receiver<T> {
     pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
         let mut v = MaybeUninit::<T>::uninit();
         // SAFETY: `v` is a valid uninitialized `T`.
-        let r = unsafe { self.0.try_poll_recv(Some(cx), v.as_mut_ptr().cast()) };
+        let r = unsafe { self.0.try_poll_recv(Some(cx), MessagePtr::new(&mut v)) };
         r.map(|r| {
             r.map(|()| {
                 // SAFETY: `try_poll_recv` guarantees `v` is now initialized.
@@ -447,7 +463,7 @@ impl ReceiverCore {
     unsafe fn try_poll_recv(
         &mut self,
         cx: Option<&mut Context<'_>>,
-        dst: *mut (),
+        dst: MessagePtr,
     ) -> Poll<Result<(), RecvError>> {
         loop {
             debug_assert!(self.queue.0.remote.get().is_none());
@@ -499,7 +515,7 @@ impl ReceiverCore {
             } else {
                 // SAFETY: the caller guarantees `dst` is valid for writing a
                 // `T`.
-                unsafe { local.messages.pop_front(dst) };
+                unsafe { local.messages.pop_front(dst.0) };
                 return Poll::Ready(Ok(()));
             }
         }
@@ -539,7 +555,7 @@ impl ReceiverCore {
         }
         while let Some(message) = local.messages.pop_front_in_place() {
             // SAFETY: `message` is a valid owned `T`.
-            let message = unsafe { encode(message.as_ptr()) };
+            let message = unsafe { encode(MessagePtr(message.as_ptr())) };
             send.send(message);
         }
         local.remote = true;
@@ -692,6 +708,21 @@ struct Queue {
     local: Mutex<LocalQueue>,
 }
 
+impl Queue {
+    fn local_or_remote(&self) -> Result<MutexGuard<'_, LocalQueue>, &RemoteQueueState> {
+        loop {
+            if let Some(remote) = self.remote.get() {
+                break Err(remote);
+            } else {
+                let local = self.local.lock();
+                if !local.remote {
+                    break Ok(local);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 struct LocalQueue {
     messages: ErasedVecDeque,
@@ -729,7 +760,7 @@ struct RemoteQueueState {
     encode: EncodeFn,
 }
 
-type EncodeFn = unsafe fn(*const ()) -> Message;
+type EncodeFn = unsafe fn(MessagePtr) -> Message;
 
 #[derive(Protobuf)]
 #[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
