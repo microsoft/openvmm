@@ -6,7 +6,7 @@
 
 #![cfg(unix)]
 // UNSAFETY: bindgen generated code.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use nix::ioctl_write_ptr_bad;
 use nix::request_code_write;
@@ -16,7 +16,7 @@ use std::os::raw::c_int;
 //
 // bindgen --no-layout-tests --with-derive-default /usr/include/linux/if.h
 #[allow(non_camel_case_types)]
-#[allow(unsafe_op_in_unsafe_fn)]
+#[expect(unsafe_op_in_unsafe_fn)]
 #[allow(dead_code)]
 #[allow(non_upper_case_globals)]
 #[allow(clippy::missing_safety_doc)]
@@ -27,7 +27,7 @@ pub mod gen_if;
 //
 // bindgen --no-layout-tests --with-derive-default /usr/include/linux/if_tun.h
 #[allow(non_camel_case_types)]
-#[allow(unsafe_op_in_unsafe_fn)]
+#[expect(unsafe_op_in_unsafe_fn)]
 #[allow(dead_code)]
 #[allow(non_upper_case_globals)]
 #[allow(clippy::missing_safety_doc)]

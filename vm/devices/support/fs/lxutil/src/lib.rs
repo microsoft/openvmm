@@ -1123,7 +1123,7 @@ impl Default for SetTime {
 
 #[cfg(test)]
 // UNSAFETY: Calls to libc to check and manipulate permissions.
-#[cfg_attr(test, allow(unsafe_code))]
+#[cfg_attr(all(test, unix), expect(unsafe_code))]
 mod tests {
     use super::*;
     use std::collections::HashMap;

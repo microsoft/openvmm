@@ -6,6 +6,7 @@
 use crate::ChannelError;
 use futures_io::AsyncRead;
 use futures_io::AsyncWrite;
+use mesh_node::local_node::HandleMessageError;
 use mesh_node::local_node::HandlePortEvent;
 use mesh_node::local_node::NodeError;
 use mesh_node::local_node::Port;
@@ -140,20 +141,25 @@ impl AsyncRead for ReadPipe {
 }
 
 impl HandlePortEvent for ReadPipeState {
-    fn message(&mut self, control: &mut PortControl<'_>, message: Message) {
-        if self.failed.is_some() {
-            return;
+    fn message(
+        &mut self,
+        control: &mut PortControl<'_>,
+        message: Message,
+    ) -> Result<(), HandleMessageError> {
+        if let Some(err) = &self.failed {
+            return Err(HandleMessageError::new(err.clone()));
         }
         let data = message.serialize().data;
         if data.len() + self.data.len() + self.consumed_bytes as usize > self.quota_bytes as usize {
             self.failed = Some(ReadError::OverQuota);
-            return;
+            return Err(HandleMessageError::new(ReadError::OverQuota));
         }
         self.data.extend(&data);
         self.consumed_messages += 1;
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
+        Ok(())
     }
 
     fn close(&mut self, control: &mut PortControl<'_>) {
@@ -258,26 +264,29 @@ impl AsyncWrite for WritePipe {
 }
 
 impl HandlePortEvent for WritePipeState {
-    fn message(&mut self, control: &mut PortControl<'_>, message: Message) {
-        if self.failed.is_some() {
-            return;
+    fn message(
+        &mut self,
+        control: &mut PortControl<'_>,
+        message: Message,
+    ) -> Result<(), HandleMessageError> {
+        if let Some(err) = &self.failed {
+            return Err(HandleMessageError::new(err.clone()));
         }
-        match message.parse::<QuotaMessage>() {
-            Ok(message) => {
-                if self.remaining_bytes == 0 || self.remaining_messages == 0 {
-                    if let Some(waker) = self.waker.take() {
-                        control.wake(waker);
-                    }
-                }
-                self.remaining_bytes += message.bytes;
-                self.remaining_messages += message.messages;
+        let message = message.parse::<QuotaMessage>().map_err(|err| {
+            let err = Arc::new(ChannelError::from(err));
+            if self.failed.is_none() {
+                self.failed = Some(err.clone());
             }
-            Err(err) => {
-                if self.failed.is_none() {
-                    self.failed = Some(Arc::new(err.into()));
-                }
+            HandleMessageError::new(err)
+        })?;
+        if self.remaining_bytes == 0 || self.remaining_messages == 0 {
+            if let Some(waker) = self.waker.take() {
+                control.wake(waker);
             }
         }
+        self.remaining_bytes += message.bytes;
+        self.remaining_messages += message.messages;
+        Ok(())
     }
 
     fn close(&mut self, control: &mut PortControl<'_>) {

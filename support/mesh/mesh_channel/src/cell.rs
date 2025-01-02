@@ -5,6 +5,7 @@
 //! node.
 
 use super::bidir::Channel;
+use mesh_node::local_node::HandleMessageError;
 use mesh_node::local_node::HandlePortEvent;
 use mesh_node::local_node::NodeError;
 use mesh_node::local_node::Port;
@@ -266,25 +267,21 @@ enum UpdateResponse {
 }
 
 impl<T: MeshField + Sync> HandlePortEvent for State<T> {
-    fn message(&mut self, control: &mut PortControl<'_>, message: Message) {
-        match message.parse() {
-            Ok(UpdateMessage::<T> { id, value }) => {
-                if self.id < id {
-                    self.id = id;
-                    self.value = value;
-                    if let Some(waker) = self.waker.take() {
-                        control.wake(waker);
-                    }
-                    control.respond(Message::new(UpdateResponse::Updated(id)));
-                }
+    fn message(
+        &mut self,
+        control: &mut PortControl<'_>,
+        message: Message,
+    ) -> Result<(), HandleMessageError> {
+        let UpdateMessage::<T> { id, value } = message.parse().map_err(HandleMessageError::new)?;
+        if self.id < id {
+            self.id = id;
+            self.value = value;
+            if let Some(waker) = self.waker.take() {
+                control.wake(waker);
             }
-            Err(err) => {
-                tracing::error!(
-                    error = &err as &dyn std::error::Error,
-                    "message parse error"
-                );
-            }
+            control.respond(Message::new(UpdateResponse::Updated(id)));
         }
+        Ok(())
     }
 
     fn close(&mut self, _control: &mut PortControl<'_>) {}

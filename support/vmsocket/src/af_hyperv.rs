@@ -4,7 +4,7 @@
 //! AF_HYPERV support.
 
 // UNSAFETY: Creating and managing a raw socket.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use crate::VmListener;
 use crate::VmSocket;

@@ -12,7 +12,7 @@
 
 #![warn(missing_docs)]
 // UNSAFETY: Uses transmute to allow for type erasure.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 pub mod kind;
 

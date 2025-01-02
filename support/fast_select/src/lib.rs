@@ -17,7 +17,7 @@
 
 #![warn(missing_docs)]
 // UNSAFETY: Using unchecked raw Arc, Pin, and Waker APIs.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use parking_lot::Mutex;
 use std::future::Future;
