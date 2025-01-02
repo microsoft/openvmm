@@ -32,9 +32,9 @@ use zerocopy::AsBytes;
 
 /// Returns the synic client and message source for use with
 /// [`vmbus_client::VmbusClient`].
-pub fn new_synic_client_and_messsage_source(
-    driver: &(impl Driver + ?Sized),
-) -> anyhow::Result<(impl SynicClient, impl VmbusMessageSource)> {
+pub fn new_synic_client_and_messsage_source<T: Driver + ?Sized>(
+    driver: &T,
+) -> anyhow::Result<(impl SynicClient + use<T>, impl VmbusMessageSource + use<T>)> {
     // Open an HCL vmbus fd for issuing synic requests.
     let hcl_vmbus = Arc::new(HclVmbus::new().context("failed to open hcl_vmbus")?);
     let synic = HclSynic {

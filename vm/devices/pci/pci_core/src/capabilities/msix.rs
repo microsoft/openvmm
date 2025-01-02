@@ -233,7 +233,7 @@ impl MsixEmulator {
         bar: u8,
         count: u16,
         register_msi: &mut dyn RegisterMsi,
-    ) -> (Self, impl PciCapability) {
+    ) -> (Self, impl PciCapability + use<>) {
         let state = MsixState {
             enabled: false,
             vectors: (0..count)
