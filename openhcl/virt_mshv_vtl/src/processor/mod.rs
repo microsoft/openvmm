@@ -985,7 +985,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             // If updated is Synic MSR, then check if its proxy or previous was proxy
             // in either case, we need to update the `proxy_irr_filter`
             let mut irr_filter_update = false;
-            if msr >= hvdef::HV_X64_MSR_SINT0 && msr <= hvdef::HV_X64_MSR_SINT15 {
+            if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
                 if let Some(hv) = self.backing.hv(vtl).as_ref() {
                     let sint_curr =
                         HvSynicSint::from(hv.synic.sint((msr - hvdef::HV_X64_MSR_SINT0) as u8));
@@ -1164,12 +1164,11 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
     #[cfg(guest_arch = "x86_64")]
     fn update_proxy_irr_filter(&mut self, vtl: GuestVtl) {
-        let mut proxy_irr_filter: [u32; 8] = Default::default();
-        let irr_bits = proxy_irr_filter.view_bits_mut::<Lsb0>();
+        let mut irr_bits: BitBox<u8> = BitVec::repeat(false, 256).into_boxed_bitslice();
 
         // Get all not maksed && proxy SINT vectors
-        for sint in 0..NUM_SINTS as u8 {
-            if let Some(hv) = self.backing.hv(vtl).as_ref() {
+        if let Some(hv) = self.backing.hv(vtl).as_ref() {
+            for sint in 0..NUM_SINTS as u8 {
                 let sint_msr = hv.synic.sint(sint);
                 let hv_sint = HvSynicSint::from(sint_msr);
                 if hv_sint.proxy() && !hv_sint.masked() {
@@ -1180,10 +1179,10 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
         // Get all device vectors
         self.partition
-            .get_device_irr_filter_vectors(vtl, &mut proxy_irr_filter);
+            .get_device_irr_filter_vectors(vtl, &mut irr_bits);
 
         // Update final filter in run page
-        self.runner.update_proxy_irr_filter(proxy_irr_filter);
+        self.runner.update_proxy_irr_filter(&irr_bits);
     }
 }
 

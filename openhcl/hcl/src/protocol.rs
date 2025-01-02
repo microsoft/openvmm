@@ -125,8 +125,8 @@ pub struct hcl_run {
     pub context: [u8; 1024],
     pub vtl_ret_actions: [u8; VTL_RETURN_ACTION_SIZE],
     pub proxy_irr: [u32; 8],
-    pub target_vtl: HvInputVtl,
     pub proxy_irr_filter: [u32; 8],
+    pub target_vtl: HvInputVtl,
 }
 
 // The size of hcl_run must be less than or equal to a single 4K page.

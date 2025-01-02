@@ -37,8 +37,6 @@ pub use processor::UhProcessor;
 use anyhow::Context as AnyhowContext;
 use bitfield_struct::bitfield;
 use bitvec::boxed::BitBox;
-#[cfg(guest_arch = "x86_64")]
-use bitvec::prelude::*;
 use bitvec::vec::BitVec;
 use guestmem::GuestMemory;
 use hcl::ioctl::Hcl;
@@ -171,7 +169,7 @@ pub enum RevokeGuestVsmError {
 /// Device IRR filter global for a partition
 #[cfg(guest_arch = "x86_64")]
 struct DeviceIrrFilter {
-    device_irr_filter: BitBox<AtomicU64>,
+    device_irr_filter: BitBox<AtomicU8>,
     proxy_irr_filter_update_vps: BitBox<AtomicU64>,
 }
 
@@ -180,7 +178,7 @@ impl DeviceIrrFilter {
     /// New instance for requested VP count
     fn new(vp_count: u32) -> Self {
         DeviceIrrFilter {
-            device_irr_filter: BitVec::repeat(false, 255).into_boxed_bitslice(),
+            device_irr_filter: BitVec::repeat(false, 256).into_boxed_bitslice(),
             proxy_irr_filter_update_vps: BitVec::repeat(false, vp_count as usize)
                 .into_boxed_bitslice(),
         }
@@ -213,10 +211,9 @@ impl DeviceIrrFilter {
     }
 
     /// Get (OR) all device vector from `device_irr_filter`
-    fn get_device_irr_vectors(&self, irr_vectors: &mut [u32; 8]) {
-        let irr_bits = irr_vectors.view_bits_mut::<Lsb0>();
+    fn get_device_irr_vectors(&self, irr_vectors: &mut BitBox<u8>) {
         for irr in self.device_irr_filter.iter_ones() {
-            irr_bits.set(irr, true);
+            irr_vectors.set(irr, true);
         }
     }
 }
@@ -810,6 +807,12 @@ impl UhPartitionInner {
     /// For requester VP to issue `proxy_irr_filter` update to other VPs
     #[cfg(guest_arch = "x86_64")]
     fn request_proxy_irr_filter_update(&self, vtl: GuestVtl, device_vector: u8, req_vp_index: u32) {
+        tracing::info!(
+            ?vtl,
+            device_vector,
+            req_vp_index,
+            "request_proxy_irr_filter_update"
+        );
         // At a time only one requester VP can issue `proxy_irr_filter` update to other VPs
         let device_irr = self.device_irr_filter.write();
 
@@ -841,15 +844,16 @@ impl UhPartitionInner {
 
         // Perform filter update action (if update is pending)
         if device_irr[vtl].is_vp_proxy_irr_filter_update_set(vp_index) {
+            tracing::info!(?vtl, vp_index, "complete_vp_proxy_filter_update");
             filter_update();
+            // clear pending IRR update for VP
+            device_irr[vtl].clr_vp_proxy_irr_filter_update(vp_index);
         }
-
-        device_irr[vtl].clr_vp_proxy_irr_filter_update(vp_index);
     }
 
     /// Add the current `device_irr_filter` vector to given irr vector
     #[cfg(guest_arch = "x86_64")]
-    fn get_device_irr_filter_vectors(&self, vtl: GuestVtl, irr_vectors: &mut [u32; 8]) {
+    fn get_device_irr_filter_vectors(&self, vtl: GuestVtl, irr_vectors: &mut BitBox<u8>) {
         // `device_irr_filter` might be under update from other VP
         let device_irr = self.device_irr_filter.read();
         device_irr[vtl].get_device_irr_vectors(irr_vectors);
