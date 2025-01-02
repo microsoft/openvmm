@@ -37,24 +37,24 @@ use std::sync::OnceLock;
 /// Creates a new channel for sending messages of type `T`, returning the sender
 /// and receiver ends.
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
+    fn channel_core(vtable: &'static ElementVtable) -> (SenderCore, ReceiverCore) {
+        let mut receiver = ReceiverCore::new(vtable);
+        let sender = receiver.sender();
+        (sender, receiver)
+    }
     let (sender, receiver) = channel_core(const { &ElementVtable::new::<T>() });
     (Sender(sender, PhantomData), Receiver(receiver, PhantomData))
-}
-
-fn channel_core(vtable: &'static ElementVtable) -> (SenderCore, ReceiverCore) {
-    let mut receiver = ReceiverCore::new(vtable);
-    let sender = receiver.sender();
-    (sender, receiver)
 }
 
 /// The sending half of a channel returned by [`channel`].
 ///
 /// The sender can be cloned to send messages from multiple threads or
 /// processes.
+//
+// Note that the `PhantomData` here is necessary to ensure `Send/Sync` traits
+// are only implemented when `T` is `Send`, since the `SenderCore` is always
+// `Send+Sync`. This behavior is verified in the unit tests.
 pub struct Sender<T>(SenderCore, PhantomData<Arc<Mutex<[T]>>>);
-
-#[derive(Debug, Clone)]
-struct SenderCore(Arc<Queue>);
 
 impl<T> Debug for Sender<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -103,8 +103,9 @@ impl<T> Sender<T> {
     /// (or failed).
     ///
     /// This is useful to determine if there is any point in sending more data
-    /// via this port. But even if this returns `false` messages may still fail
-    /// to reach the destination.
+    /// via this port. Note that even if this returns `false` messages may still
+    /// fail to reach the destination, for example if the receiver is closed
+    /// after this method is called but before the message is consumed.
     pub fn is_closed(&self) -> bool {
         self.0.is_closed()
     }
@@ -124,6 +125,9 @@ impl MessagePtr {
         unsafe { self.0.cast::<T>().read() }
     }
 }
+
+#[derive(Debug, Clone)]
+struct SenderCore(Arc<Queue>);
 
 impl SenderCore {
     /// Sends `message`, taking ownership of it.
@@ -317,6 +321,10 @@ impl<T: MeshField> Sender<T> {
 }
 
 /// The receiving half of a channel returned by [`channel`].
+//
+// Note that the `PhantomData` here is necessary to ensure `Send/Sync` traits
+// are only implemented when `T` is `Send`, since the `ReceiverCore` is always
+// `Send+Sync`. This behavior is verified in the unit tests.
 pub struct Receiver<T>(ReceiverCore, PhantomData<Arc<Mutex<[T]>>>);
 
 impl<T> Debug for Receiver<T> {
