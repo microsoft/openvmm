@@ -47,7 +47,7 @@ fn verify_sections_size(
         let name = section.name().unwrap();
         let size = (section.size() / 1024) as i64;
         let expected_size = *expected_sections.get(name).unwrap_or(&0);
-        let diff = (size as i64) - (expected_size as i64);
+        let diff = size - expected_size;
         total_diff += diff.unsigned_abs();
         total_size += size as u64;
 
