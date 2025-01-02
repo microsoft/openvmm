@@ -22,8 +22,6 @@ pub(crate) enum KbkdfError {
 pub(crate) enum Pkcs11RsaAesKeyUnwrapError {
     #[error("undersized wrapped key blob: {0}")]
     UndersizedWrappedKeyBlob(String),
-    #[error("oversized wrapped key blob")]
-    OversizedWrappedKeyBlob,
     #[error("RSA unwrap failed")]
     RsaUnwrap(#[from] RsaOaepError),
     #[error("AES unwrap failed")]
@@ -499,22 +497,13 @@ mod tests {
             "undersized wrapped key blob: expected wrapped AES key blob to be 256 bytes, but found 255 bytes".to_string()
         );
 
-        // undersized rsa key blob
+        // empty rsa key blob
         let wrapped_key_blob = vec![0; 256];
         let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
             "undersized wrapped key blob: wrapped RSA key blob cannot be empty".to_string()
-        );
-
-        // oversized wrapped key blob
-        let wrapped_key_blob = vec![0; 256 + 256 + 1];
-        let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "oversized wrapped key blob".to_string()
         );
     }
 
