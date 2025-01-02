@@ -654,8 +654,7 @@ EOF
                 parameters
                     .clone()
                     .into_iter()
-                    .enumerate()
-                    .map(|(_, param)| match param {
+                    .map(|param| match param {
                         flowey_core::pipeline::internal::Parameter::Bool {
                             name,
                             description,

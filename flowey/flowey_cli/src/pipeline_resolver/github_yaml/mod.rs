@@ -589,8 +589,7 @@ EOF
             inputs: github_yaml_defs::Inputs {
                 inputs: parameters
                     .into_iter()
-                    .enumerate()
-                    .map(|(_, param)| {
+                    .map(|param| {
                         (
                             param.name().to_string(),
                             match param {
