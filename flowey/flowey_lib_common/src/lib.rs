@@ -23,6 +23,7 @@ pub mod copy_to_artifact_dir;
 pub mod download_azcopy;
 pub mod download_cargo_fuzz;
 pub mod download_cargo_nextest;
+pub mod download_gh_artifact;
 pub mod download_gh_cli;
 pub mod download_gh_release;
 pub mod download_mdbook;

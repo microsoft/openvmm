@@ -1009,12 +1009,12 @@ impl IntoPipeline for CheckinGatesCli {
         }
 
         {
-            // emit openvmm_hcl verify-size job
+            // emit openvmm verify-size job
             let job = pipeline
                 .new_job(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                     FlowArch::X86_64,
-                    "verify openvmm_hcl size [x64-linux]",
+                    "verify openvmm binary size [x64-linux]",
                 )
                 .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -1025,8 +1025,8 @@ impl IntoPipeline for CheckinGatesCli {
                         xtask_target: CommonTriple::X86_64_LINUX_GNU,
                         done: ctx.new_done_handle(),
                     },
-                );
-            all_jobs.push(job.finish());
+                ).finish();
+            all_jobs.push(job);
         }
 
         if matches!(config, PipelineConfig::Pr) {
