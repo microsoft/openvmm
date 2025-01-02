@@ -6,7 +6,16 @@ name = "mesh_channel"
 edition = "2021"
 rust-version.workspace = true
 
+[features]
+default = ["newchan_mpsc", "newchan_spsc"]
+newchan = ["dep:mesh_channel_core"]
+# Use the new channel implementation for MPSC channels.
+newchan_mpsc = ["newchan"]
+# Use the new channel implementatino for SPSC channels.
+newchan_spsc = ["newchan"]
+
 [dependencies]
+mesh_channel_core = { workspace = true, optional = true }
 mesh_node.workspace = true
 mesh_protobuf = { workspace = true, features = ["std"] }
 
