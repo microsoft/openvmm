@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Run a pre-built cargo-nextest based VMM tests archive.
-
 use crate::run_cargo_build::common::{CommonArch, CommonTriple};
 use flowey::node::prelude::*;
 
@@ -11,6 +9,7 @@ flowey_request! {
         pub target: CommonTriple,
         pub old_openhcl: ReadVar<PathBuf>,
         pub new_openhcl: ReadVar<PathBuf>,
+        pub done: WriteVar<SideEffect>,
     }
 }
 
@@ -29,12 +28,14 @@ impl SimpleFlowNode for Node {
             target,
             old_openhcl,
             new_openhcl,
+            done,
         } = request;
 
         let xtask = ctx.reqv(|v| crate::build_xtask::Request { target: target.clone(), xtask: v });
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
         ctx.emit_rust_step("binary size comparison", |ctx| {
+            done.claim(ctx);
             let xtask = xtask.claim(ctx);
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
             let old_openhcl = old_openhcl.claim(ctx);
