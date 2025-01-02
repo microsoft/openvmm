@@ -31,7 +31,10 @@ impl SimpleFlowNode for Node {
             done,
         } = request;
 
-        let xtask = ctx.reqv(|v| crate::build_xtask::Request { target: target.clone(), xtask: v });
+        let xtask = ctx.reqv(|v| crate::build_xtask::Request {
+            target: target.clone(),
+            xtask: v,
+        });
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
         ctx.emit_rust_step("binary size comparison", |ctx| {
@@ -64,11 +67,7 @@ impl SimpleFlowNode for Node {
 
                 let sh = xshell::Shell::new()?;
                 sh.change_dir(rt.read(openvmm_repo_path));
-                xshell::cmd!(
-                    sh,
-                    "{xtask} verify-size --old {old_path} --new {new_path}"
-                )
-                .run()?;
+                xshell::cmd!(sh, "{xtask} verify-size --old {old_path} --new {new_path}").run()?;
 
                 Ok(())
             }

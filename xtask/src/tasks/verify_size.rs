@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // Copyright (C) Microsoft Corporation. All rights reserved.
 
 use crate::Xtask;
@@ -5,6 +8,7 @@ use object::read::Object;
 use object::read::ObjectSection;
 use std::collections::HashMap;
 
+/// Runs a size comparison and outputs a diff of two given binaries
 #[derive(Debug, clap::Parser)]
 #[clap(about = "Verify the size of a binary hasn't changed more than allowed.")]
 pub struct VerifySize {
@@ -31,16 +35,18 @@ fn verify_sections_size(
 
     let expected_sections: HashMap<_, _> = original
         .sections()
-        .filter_map(|s| s.name().ok().map(|name| (name.to_string(), (s.size() as i64) / 1024)))
+        .filter_map(|s| {
+            s.name()
+                .ok()
+                .map(|name| (name.to_string(), (s.size() as i64) / 1024))
+        })
         .filter(|(_, size)| *size > 0)
         .collect();
 
     for section in new.sections() {
         let name = section.name().unwrap();
         let size = (section.size() / 1024) as i64;
-        let expected_size = *expected_sections
-            .get(name)
-            .unwrap_or(&0);
+        let expected_size = *expected_sections.get(name).unwrap_or(&0);
         let diff = (size as i64) - (expected_size as i64);
         total_diff += diff.unsigned_abs();
         total_size += size as u64;

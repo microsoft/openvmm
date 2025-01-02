@@ -119,8 +119,7 @@ impl Node {
 
                 for ((repo_owner, repo_name), files) in remaining_download_reqs {
                     for (file, vars) in files {
-                        let file =
-                            persistent_dir.join(format!("{repo_owner}/{repo_name}/{file}"));
+                        let file = persistent_dir.join(format!("{repo_owner}/{repo_name}/{file}"));
                         assert!(file.exists());
                         for var in vars {
                             rt.write(var, &file)
@@ -217,16 +216,16 @@ fn download_all_reqs(
         fs_err::create_dir_all(&out_dir)?;
         sh.change_dir(&out_dir);
 
-            // FUTURE: while the gh cli takes care of doing simultaneous downloads in
-            // the context of a single (repo, tag), we might want to have flowey spawn
-            // multiple processes to saturate the network connection in cases where
-            // multiple (repo, tag) pairs are being pulled at the same time.
-            let patterns = files.keys().flat_map(|k| ["--pattern".into(), k.clone()]);
-            xshell::cmd!(
-                sh,
-                "{gh_cli} run download -R {repo} {patterns...} --skip-existing"
-            )
-            .run()?;
+        // FUTURE: while the gh cli takes care of doing simultaneous downloads in
+        // the context of a single (repo, tag), we might want to have flowey spawn
+        // multiple processes to saturate the network connection in cases where
+        // multiple (repo, tag) pairs are being pulled at the same time.
+        let patterns = files.keys().flat_map(|k| ["--pattern".into(), k.clone()]);
+        xshell::cmd!(
+            sh,
+            "{gh_cli} run download -R {repo} {patterns...} --skip-existing"
+        )
+        .run()?;
     }
 
     Ok(())

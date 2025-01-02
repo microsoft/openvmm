@@ -78,7 +78,7 @@ enum Commands {
     Fuzz(tasks::Fuzz),
     GuestTest(tasks::GuestTest),
     InstallGitHooks(tasks::InstallGitHooks),
-    VerifySize(tasks::VerifySize)
+    VerifySize(tasks::VerifySize),
 }
 
 fn main() {
