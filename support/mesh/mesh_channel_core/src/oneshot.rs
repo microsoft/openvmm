@@ -204,6 +204,12 @@ impl OneshotSenderCore {
 /// A value is received by `poll`ing or `await`ing the channel.
 pub struct OneshotReceiver<T>(OneshotReceiverCore, PhantomData<Arc<Mutex<T>>>);
 
+impl<T> Debug for OneshotReceiver<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.0, f)
+    }
+}
+
 impl<T> OneshotReceiver<T> {
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
         let v = ready!(self.0.poll_recv(cx))?;
@@ -264,6 +270,7 @@ impl<T: MeshField> OneshotReceiver<T> {
     }
 }
 
+#[derive(Debug)]
 struct OneshotReceiverCore {
     slot: Option<Arc<Slot>>,
     port: Option<PortWithHandler<SlotHandler>>,

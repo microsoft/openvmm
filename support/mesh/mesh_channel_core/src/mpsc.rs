@@ -776,7 +776,6 @@ enum ChannelPayload<T> {
     Port(Port),
 }
 
-#[derive(Debug)]
 struct RemotePortHandler {
     queue: Arc<Queue>,
     parse: unsafe fn(Message, *mut ()) -> Result<Option<Port>, ChannelError>,

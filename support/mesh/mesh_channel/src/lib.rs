@@ -19,21 +19,14 @@ pub use error_oldchan::*;
 pub use mpsc::*;
 #[cfg(feature = "newchan_mpsc")]
 pub use mpsc_newchan::*;
+#[cfg(not(feature = "newchan_oneshot"))]
+pub use oneshot::*;
+#[cfg(feature = "newchan_oneshot")]
+pub use oneshot_newchan::*;
 #[cfg(not(feature = "newchan_spsc"))]
 pub use spsc::*;
 #[cfg(feature = "newchan_spsc")]
 pub use spsc_newchan::*;
-
-use bidir::Channel;
-use mesh_node::local_node::Port;
-use mesh_node::local_node::PortField;
-use mesh_node::message::MeshField;
-use mesh_protobuf::DefaultEncoding;
-use std::fmt::Debug;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::Context;
-use std::task::Poll;
 
 #[cfg(feature = "newchan")]
 mod error_newchan {
@@ -341,103 +334,124 @@ mod spsc {
     }
 }
 
-/// The sending half of a channel returned by [`oneshot`].
-pub struct OneshotSender<T>(Channel<(T,), ()>);
+#[cfg(not(feature = "newchan_oneshot"))]
+mod oneshot {
+    use crate::bidir::Channel;
+    use crate::RecvError;
+    use mesh_node::local_node::Port;
+    use mesh_node::message::MeshField;
+    use mesh_protobuf::Protobuf;
+    use std::fmt::Debug;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::Context;
+    use std::task::Poll;
 
-impl<T> Debug for OneshotSender<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(&self.0, f)
+    /// The sending half of a channel returned by [`oneshot`].
+    pub struct OneshotSender<T>(Channel<(T,), ()>);
+
+    impl<T> Debug for OneshotSender<T> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            Debug::fmt(&self.0, f)
+        }
+    }
+
+    impl<T: 'static + MeshField + Send> DefaultEncoding for OneshotSender<T> {
+        type Encoding = PortField;
+    }
+
+    impl<T: 'static + MeshField + Send> From<Port> for OneshotSender<T> {
+        fn from(port: Port) -> Self {
+            Self(port.into())
+        }
+    }
+
+    impl<T: 'static + MeshField + Send> From<OneshotSender<T>> for Port {
+        fn from(v: OneshotSender<T>) -> Self {
+            v.0.into()
+        }
+    }
+
+    impl<T: 'static + Send> OneshotSender<T> {
+        /// Sends `value` to the receiving endpoint of the channel.
+        pub fn send(self, value: T) {
+            self.0.send_and_close((value,));
+        }
+    }
+
+    /// The receiving half of a channel returned by [`oneshot`].
+    ///
+    /// A value is received by `poll`ing or `await`ing the channel.
+    pub struct OneshotReceiver<T>(pub(super) Channel<(), (T,)>);
+
+    impl<T> Debug for OneshotReceiver<T> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            Debug::fmt(&self.0, f)
+        }
+    }
+
+    impl<T: 'static + MeshField + Send> DefaultEncoding for OneshotReceiver<T> {
+        type Encoding = PortField;
+    }
+
+    impl<T: 'static + Send> Future for OneshotReceiver<T> {
+        type Output = Result<T, RecvError>;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let (message,) = std::task::ready!(self.0.poll_recv(cx))?;
+            Poll::Ready(Ok(message))
+        }
+    }
+
+    impl<T: 'static + MeshField + Send> From<Port> for OneshotReceiver<T> {
+        fn from(port: Port) -> Self {
+            Self(port.into())
+        }
+    }
+
+    impl<T: 'static + MeshField + Send> From<OneshotReceiver<T>> for Port {
+        fn from(v: OneshotReceiver<T>) -> Self {
+            v.0.into()
+        }
+    }
+
+    /// Creates a unidirection channel for sending a single value of type `T`.
+    ///
+    /// The channel is automatically closed after the value is sent. Use this
+    /// instead of [`channel`] when only one value ever needs to be sent to avoid
+    /// programming errors where the channel is left open longer than necessary.
+    /// This is also more efficient.
+    ///
+    /// Use [`OneshotSender::send`] and [`OneshotReceiver`] (directly as a future)
+    /// to communicate between the ends of the channel.
+    ///
+    /// `T` must implement [`MeshField`]. Most typically this is done by
+    /// deriving [`MeshPayload`](mesh_node::message::MeshPayload).
+    ///
+    /// Both channel endpoints are initially local to this process, but either or
+    /// both endpoints may be sent to other processes via a cross-process channel
+    /// that has already been established.
+    ///
+    /// ```rust
+    /// # use mesh_channel::*;
+    /// # futures::executor::block_on(async {
+    /// let (send, recv) = oneshot::<u32>();
+    /// send.send(5);
+    /// let n = recv.await.unwrap();
+    /// assert_eq!(n, 5);
+    /// # });
+    /// ```
+    pub fn oneshot<T: 'static + Send>() -> (OneshotSender<T>, OneshotReceiver<T>) {
+        let (left, right) = Channel::new_pair();
+        (OneshotSender(left), OneshotReceiver(right))
     }
 }
 
-impl<T: 'static + MeshField + Send> DefaultEncoding for OneshotSender<T> {
-    type Encoding = PortField;
-}
-
-impl<T: 'static + MeshField + Send> From<Port> for OneshotSender<T> {
-    fn from(port: Port) -> Self {
-        Self(port.into())
-    }
-}
-
-impl<T: 'static + MeshField + Send> From<OneshotSender<T>> for Port {
-    fn from(v: OneshotSender<T>) -> Self {
-        v.0.into()
-    }
-}
-
-impl<T: 'static + Send> OneshotSender<T> {
-    /// Sends `value` to the receiving endpoint of the channel.
-    pub fn send(self, value: T) {
-        self.0.send_and_close((value,));
-    }
-}
-
-/// The receiving half of a channel returned by [`oneshot`].
-///
-/// A value is received by `poll`ing or `await`ing the channel.
-pub struct OneshotReceiver<T>(Channel<(), (T,)>);
-
-impl<T> Debug for OneshotReceiver<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(&self.0, f)
-    }
-}
-
-impl<T: 'static + MeshField + Send> DefaultEncoding for OneshotReceiver<T> {
-    type Encoding = PortField;
-}
-
-impl<T: 'static + Send> Future for OneshotReceiver<T> {
-    type Output = Result<T, RecvError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (message,) = std::task::ready!(self.0.poll_recv(cx))?;
-        Poll::Ready(Ok(message))
-    }
-}
-
-impl<T: 'static + MeshField + Send> From<Port> for OneshotReceiver<T> {
-    fn from(port: Port) -> Self {
-        Self(port.into())
-    }
-}
-
-impl<T: 'static + MeshField + Send> From<OneshotReceiver<T>> for Port {
-    fn from(v: OneshotReceiver<T>) -> Self {
-        v.0.into()
-    }
-}
-
-/// Creates a unidirection channel for sending a single value of type `T`.
-///
-/// The channel is automatically closed after the value is sent. Use this
-/// instead of [`channel`] when only one value ever needs to be sent to avoid
-/// programming errors where the channel is left open longer than necessary.
-/// This is also more efficient.
-///
-/// Use [`OneshotSender::send`] and [`OneshotReceiver`] (directly as a future)
-/// to communicate between the ends of the channel.
-///
-/// `T` must implement [`MeshField`]. Most typically this is done by
-/// deriving [`MeshPayload`](mesh_node::message::MeshPayload).
-///
-/// Both channel endpoints are initially local to this process, but either or
-/// both endpoints may be sent to other processes via a cross-process channel
-/// that has already been established.
-///
-/// ```rust
-/// # use mesh_channel::*;
-/// # futures::executor::block_on(async {
-/// let (send, recv) = oneshot::<u32>();
-/// send.send(5);
-/// let n = recv.await.unwrap();
-/// assert_eq!(n, 5);
-/// # });
-/// ```
-pub fn oneshot<T: 'static + Send>() -> (OneshotSender<T>, OneshotReceiver<T>) {
-    let (left, right) = Channel::new_pair();
-    (OneshotSender(left), OneshotReceiver(right))
+#[cfg(feature = "newchan_oneshot")]
+mod oneshot_newchan {
+    pub use mesh_channel_core::oneshot;
+    pub use mesh_channel_core::OneshotReceiver;
+    pub use mesh_channel_core::OneshotSender;
 }
 
 #[cfg(feature = "newchan_mpsc")]
@@ -691,6 +705,7 @@ mod tests {
         event.wait();
     }
 
+    #[cfg(not(feature = "newchan_oneshot"))]
     #[async_test]
     async fn test_oneshot() {
         let (send, mut recv) = oneshot::<u32>();

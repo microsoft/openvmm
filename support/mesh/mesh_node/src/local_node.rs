@@ -319,10 +319,17 @@ impl Port {
 /// A [`Port`] that has a registered message handler.
 ///
 /// Created by [`Port::set_handler`].
-#[derive(Debug)]
 pub struct PortWithHandler<T> {
     raw: Port,
     _phantom: PhantomData<Arc<Mutex<T>>>,
+}
+
+impl<T> Debug for PortWithHandler<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PortWithHandler")
+            .field("raw", &self.raw)
+            .finish()
+    }
 }
 
 impl<T> Drop for PortWithHandler<T> {
