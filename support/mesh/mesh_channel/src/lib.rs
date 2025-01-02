@@ -96,7 +96,7 @@ impl<T> Debug for Sender<T> {
     }
 }
 
-impl<T: MeshField> DefaultEncoding for Sender<T> {
+impl<T: 'static + MeshField + Send> DefaultEncoding for Sender<T> {
     type Encoding = PortField;
 }
 
@@ -303,17 +303,17 @@ impl<T> Debug for OneshotSender<T> {
     }
 }
 
-impl<T: MeshField> DefaultEncoding for OneshotSender<T> {
+impl<T: 'static + MeshField + Send> DefaultEncoding for OneshotSender<T> {
     type Encoding = PortField;
 }
 
-impl<T: MeshField> From<Port> for OneshotSender<T> {
+impl<T: 'static + MeshField + Send> From<Port> for OneshotSender<T> {
     fn from(port: Port) -> Self {
         Self(port.into())
     }
 }
 
-impl<T: MeshField> From<OneshotSender<T>> for Port {
+impl<T: 'static + MeshField + Send> From<OneshotSender<T>> for Port {
     fn from(v: OneshotSender<T>) -> Self {
         v.0.into()
     }
@@ -337,7 +337,7 @@ impl<T> Debug for OneshotReceiver<T> {
     }
 }
 
-impl<T: MeshField> DefaultEncoding for OneshotReceiver<T> {
+impl<T: 'static + MeshField + Send> DefaultEncoding for OneshotReceiver<T> {
     type Encoding = PortField;
 }
 
@@ -350,13 +350,13 @@ impl<T: 'static + Send> Future for OneshotReceiver<T> {
     }
 }
 
-impl<T: MeshField> From<Port> for OneshotReceiver<T> {
+impl<T: 'static + MeshField + Send> From<Port> for OneshotReceiver<T> {
     fn from(port: Port) -> Self {
         Self(port.into())
     }
 }
 
-impl<T: MeshField> From<OneshotReceiver<T>> for Port {
+impl<T: 'static + MeshField + Send> From<OneshotReceiver<T>> for Port {
     fn from(v: OneshotReceiver<T>) -> Self {
         v.0.into()
     }

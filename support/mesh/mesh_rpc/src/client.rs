@@ -224,7 +224,7 @@ impl CallBuilder<'_> {
     where
         F: FnOnce(T, mesh::OneshotSender<Result<U, Status>>) -> R,
         R: ServiceRpc,
-        U: MeshPayload,
+        U: 'static + MeshPayload + Send,
     {
         let (send, recv) = mesh::oneshot();
 
