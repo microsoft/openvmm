@@ -50,8 +50,6 @@ use zerocopy::Unalign;
 /// `mesh_channel::channel()`, which uses this type internally.
 pub struct Port {
     inner: Arc<PortInner>,
-    close_on_drop: bool,
-    handler_set: bool,
 }
 
 impl Debug for Port {
@@ -62,12 +60,7 @@ impl Debug for Port {
 
 impl Drop for Port {
     fn drop(&mut self) {
-        if self.handler_set {
-            self.inner.clear_queue(false);
-        }
-        if self.close_on_drop {
-            self.inner.close();
-        }
+        self.inner.close();
     }
 }
 
@@ -103,8 +96,6 @@ impl Port {
                 id,
                 state: Mutex::new(state),
             }),
-            close_on_drop: true,
-            handler_set: false,
         }
     }
 
@@ -113,10 +104,8 @@ impl Port {
     /// If there are any queued incoming messages, or if the port has already
     /// been closed or failed, then the relevant handler methods will be called
     /// directly on this thread.
-    pub fn set_handler<T: HandlePortEvent>(mut self, handler: T) -> PortWithHandler<T> {
-        assert!(!self.handler_set);
+    pub fn set_handler<T: HandlePortEvent>(self, handler: T) -> PortWithHandler<T> {
         self.inner.set_handler(Box::new(handler));
-        self.handler_set = true;
         PortWithHandler {
             raw: self,
             _phantom: PhantomData,
@@ -124,8 +113,8 @@ impl Port {
     }
 
     /// Drop this object without closing the underlying port.
-    fn forget(mut self) {
-        self.close_on_drop = false;
+    fn forget(self) {
+        self.into_inner();
     }
 
     /// If the port is done (the peer port is closed), then creates a new local
@@ -307,6 +296,16 @@ impl Port {
             PendingEvents::send(&peer, seq, PortEvent::Message(message));
         }
     }
+
+    #[cfg(test)]
+    fn fail(self, err: NodeError) {
+        let mut pending_events = PendingEvents::new();
+        {
+            let mut state = self.inner.state.lock();
+            state.fail(&mut pending_events, err);
+        }
+        pending_events.process();
+    }
 }
 
 /// A [`Port`] that has a registered message handler.
@@ -316,6 +315,12 @@ impl Port {
 pub struct PortWithHandler<T> {
     raw: Port,
     _phantom: PhantomData<Arc<Mutex<T>>>,
+}
+
+impl<T> Drop for PortWithHandler<T> {
+    fn drop(&mut self) {
+        self.raw.inner.clear_queue(false);
+    }
 }
 
 impl<T: HandlePortEvent> From<PortWithHandler<T>> for Port {
@@ -330,17 +335,47 @@ impl<T: Default + HandlePortEvent> From<Port> for PortWithHandler<T> {
     }
 }
 
+/// Scoped unsafe code with a safe interface.
+mod unsafe_code {
+    // UNSAFETY: needed to destructure objects that have `Drop` implementations.
+    #![allow(unsafe_code)]
+
+    use super::Port;
+    use super::PortInner;
+    use super::PortWithHandler;
+    use std::mem::ManuallyDrop;
+    use std::sync::Arc;
+
+    impl Port {
+        pub(super) fn into_inner(self) -> Arc<PortInner> {
+            let Self { ref inner } = *ManuallyDrop::new(self);
+            // SAFETY: copying from a field that won't be dropped.
+            unsafe { <*const _>::read(inner) }
+        }
+    }
+
+    impl<T> PortWithHandler<T> {
+        pub(super) fn into_port_preserve_handler(self) -> Port {
+            let Self {
+                ref raw,
+                _phantom: _,
+            } = *ManuallyDrop::new(self);
+            // SAFETY: copying from a field that won't be dropped.
+            unsafe { <*const _>::read(raw) }
+        }
+    }
+}
+
 impl<T: HandlePortEvent> PortWithHandler<T> {
     /// Sends a message to the opposite endpoint.
     pub fn send(&self, message: Message) {
         self.raw.send(message)
     }
 
-    pub fn remove_handler(mut self) -> (Port, T) {
-        assert!(self.raw.handler_set);
-        let handler = self.raw.inner.clear_queue(true);
-        self.raw.handler_set = false;
-        (self.raw, *handler.into_any().downcast().unwrap())
+    pub fn remove_handler(self) -> (Port, T) {
+        let port = self.into_port_preserve_handler();
+        let handler = port.inner.clear_queue(true);
+        (port, *handler.into_any().downcast().unwrap())
     }
 
     pub fn with_handler<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
@@ -637,7 +672,11 @@ impl<'a> PortControl<'a> {
 /// [`Port::set_handler`].
 pub trait HandlePortEvent: 'static + Send {
     /// Handles a new message for the port.
-    fn message(&mut self, control: &mut PortControl<'_>, message: Message);
+    fn message(
+        &mut self,
+        control: &mut PortControl<'_>,
+        message: Message,
+    ) -> Result<(), HandleMessageError>;
 
     /// Handles the port closing.
     fn close(&mut self, control: &mut PortControl<'_>);
@@ -650,6 +689,17 @@ pub trait HandlePortEvent: 'static + Send {
     /// This is used when the handler is being released, such as when sending
     /// the port to another node.
     fn drain(&mut self) -> Vec<Message>;
+}
+
+/// Error returned by [`HandlePortEvent::message`] when the message is invalid
+/// or the port should otherwise be failed.
+pub struct HandleMessageError(Box<dyn std::error::Error + Send + Sync>);
+
+impl HandleMessageError {
+    /// Creates a new error.
+    pub fn new<E: Into<Box<dyn std::error::Error + Send + Sync>>>(err: E) -> Self {
+        Self(err.into())
+    }
 }
 
 /// An error that occurred communicating with another node.
@@ -768,8 +818,13 @@ struct QueuingHandler {
 }
 
 impl HandlePortEvent for QueuingHandler {
-    fn message(&mut self, _control: &mut PortControl<'_>, message: Message) {
+    fn message(
+        &mut self,
+        _control: &mut PortControl<'_>,
+        message: Message,
+    ) -> Result<(), HandleMessageError> {
         self.messages.push(message);
+        Ok(())
     }
 
     fn close(&mut self, _control: &mut PortControl<'_>) {}
@@ -1021,6 +1076,8 @@ enum PortError {
     CircularBridge,
     #[error("invalid state for proxy")]
     InvalidStateForProxy,
+    #[error("failed to parse message")]
+    BadMessage(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// The result of a port event operation.
@@ -1058,14 +1115,16 @@ impl PortInnerState {
                     while let Some(port_event) = self.event_queue.pop() {
                         match port_event {
                             PortEvent::Message(message) => {
-                                self.handler.message(
+                                if let Err(err) = self.handler.message(
                                     &mut PortControl::peered(
                                         peer,
                                         &mut self.next_local_seq,
                                         pending_events,
                                     ),
                                     message,
-                                );
+                                ) {
+                                    break 'error PortError::BadMessage(err.0);
+                                }
                             }
                             PortEvent::ClosePort => {
                                 if !self.event_queue.is_empty() {
@@ -1351,12 +1410,22 @@ impl PortInner {
                 events: &mut pending_events,
             };
             for message in messages {
-                handler.message(&mut control, message);
+                if let Err(err) = handler.message(&mut control, message) {
+                    state.fail(
+                        &mut pending_events,
+                        NodeError::local(PortError::BadMessage(err.0)),
+                    );
+                    break;
+                }
             }
             match &state.activity {
                 PortActivity::Peered(_) => {}
-                PortActivity::Failed(err) => handler.fail(&mut control, err.clone()),
-                PortActivity::Done => handler.close(&mut control),
+                PortActivity::Failed(err) => {
+                    handler.fail(&mut PortControl::unpeered(&mut pending_events), err.clone())
+                }
+                PortActivity::Done => {
+                    handler.close(&mut PortControl::unpeered(&mut pending_events))
+                }
                 _ => unreachable!(),
             }
             state.handler = handler;
@@ -1484,10 +1553,13 @@ impl<'a> OutgoingEvent<'a> {
                 len += size_of::<protocol::ChangePeerData>();
                 EventAndEncoder::Other(event)
             }
+            PortEvent::FailPort(_) => {
+                len += size_of::<protocol::FailPortData>();
+                EventAndEncoder::Other(event)
+            }
             event @ (PortEvent::ClosePort
             | PortEvent::AcknowledgeChangePeer
-            | PortEvent::AcknowledgePort
-            | PortEvent::FailPort(_)) => EventAndEncoder::Other(event),
+            | PortEvent::AcknowledgePort) => EventAndEncoder::Other(event),
         };
         Self {
             port_id,
@@ -2098,11 +2170,16 @@ pub mod tests {
     }
 
     impl HandlePortEvent for Queue {
-        fn message(&mut self, control: &mut PortControl<'_>, message: Message) {
+        fn message(
+            &mut self,
+            control: &mut PortControl<'_>,
+            message: Message,
+        ) -> Result<(), HandleMessageError> {
             self.queue.push_back(message);
             if let Some(waker) = self.waker.take() {
                 control.wake(waker);
             }
+            Ok(())
         }
 
         fn close(&mut self, control: &mut PortControl<'_>) {
@@ -2626,5 +2703,19 @@ pub mod tests {
         let mut p2 = p2.change_types::<(), u32>();
         p1.send(1);
         assert_eq!(p2.recv().await.unwrap(), 1);
+    }
+
+    #[async_test]
+    async fn test_fail_port() {
+        #[derive(Debug, Error)]
+        #[error("test failure")]
+        struct ExplicitFailure;
+
+        let (node, node2, _h) = new_two_node_mesh();
+        let (p1, mut p2) = new_remote_port_pair(&node, &node2);
+        let p1 = Port::from(p1);
+        p1.fail(NodeError::local(ExplicitFailure));
+        let err = p2.recv().await.unwrap_err();
+        assert!(matches!(err, RecvError::Failed));
     }
 }

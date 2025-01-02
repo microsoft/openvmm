@@ -6071,9 +6071,9 @@ dependencies = [
 
 [[package]]
 name = "smallbox"
-version = "0.8.2"
+version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d92359f97e6b417da4328a970cf04a044db104fbd57f7d72cb7ff665bb8806af"
+checksum = "43d92e0947c1c04c508c9fd39608a1557226141410fd33b5b314d73fa76508d3"
 
 [[package]]
 name = "smallvec"

@@ -4,7 +4,7 @@
 //! Memory-related abstractions.
 
 // UNSAFETY: Manual pointer manipulation, dealing with mmap, and a signal handler.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 #![allow(clippy::undocumented_unsafe_blocks)]
 
 pub mod alloc;

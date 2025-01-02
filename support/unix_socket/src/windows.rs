@@ -6,7 +6,7 @@
 
 #![cfg(windows)]
 // UNSAFETY: needed to call platform APIs.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use socket2::Socket;
 use std::io;

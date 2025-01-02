@@ -11,7 +11,7 @@
 #![warn(missing_docs)]
 // UNSAFETY: This module uses unsafe code to interact with the io_uring kernel
 // interface.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 mod ioring;
 mod threadpool;

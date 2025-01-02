@@ -6,7 +6,7 @@
 #[cfg(all(windows, target_arch = "x86_64"))]
 // UNSAFETY: Manual memory management to prepare the testing environment and
 // calling WHP APIs.
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 #[allow(clippy::undocumented_unsafe_blocks)]
 mod windows {
     use criterion::criterion_group;

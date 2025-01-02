@@ -12,6 +12,7 @@ use super::lazy::LazyMessage;
 use super::lazy::SerializeFn;
 use super::RecvError;
 use super::TryRecvError;
+use mesh_node::local_node::HandleMessageError;
 use mesh_node::local_node::HandlePortEvent;
 use mesh_node::local_node::NodeError;
 use mesh_node::local_node::Port;
@@ -295,11 +296,16 @@ struct MessageQueue {
 }
 
 impl HandlePortEvent for MessageQueue {
-    fn message(&mut self, control: &mut PortControl<'_>, message: Message) {
+    fn message(
+        &mut self,
+        control: &mut PortControl<'_>,
+        message: Message,
+    ) -> Result<(), HandleMessageError> {
         self.messages.push_back(message);
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
+        Ok(())
     }
 
     fn fail(&mut self, control: &mut PortControl<'_>, err: NodeError) {

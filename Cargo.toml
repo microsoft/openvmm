@@ -499,6 +499,7 @@ thiserror = { version = "2", default-features = false }
 time = "0.3"
 toml_edit = "0.21"
 tracing = "0.1"
+tracing-core = "=0.1.30" # Pin to avoid binary size increase https://github.com/tokio-rs/tracing/issues/3182
 tracing-subscriber = "0.3.16"
 typed-path = "0.7"
 uefi = "0.32"
@@ -520,6 +521,10 @@ xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshel
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
 zerocopy = { version = "0.7.32", features = ["derive"] }
+
+[workspace.metadata.xtask.unused-deps]
+# Pulled in through "tracing", but we need to pin the version
+ignored = ["tracing-core"]
 
 [profile.release]
 panic = 'abort'

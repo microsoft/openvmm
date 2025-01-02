@@ -24,6 +24,8 @@ mod instead_of_builtins {
     }
 
     /// Implementation cribbed from compiler_builtins.
+    // SAFETY: The minimal_rt_build crate ensures that when this code is compiled
+    // there is no libc for this to conflict with.
     #[unsafe(no_mangle)]
     unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
         let delta = (dest as usize).wrapping_sub(src as usize);
@@ -47,6 +49,8 @@ mod instead_of_builtins {
     /// This implementation is cribbed from compiler_builtins. It would be nice to
     /// use those implementation for all the above functions, but those require
     /// nightly as these are not yet stabilized.
+    // SAFETY: The minimal_rt_build crate ensures that when this code is compiled
+    // there is no libc for this to conflict with.
     #[unsafe(no_mangle)]
     unsafe extern "C" fn bcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
         // SAFETY: The caller guarantees that the pointers and length are correct.
