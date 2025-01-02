@@ -12,6 +12,8 @@
 mod deque;
 mod error;
 mod mpsc;
+mod oneshot;
 
 pub use error::*;
 pub use mpsc::*;
+pub use oneshot::*;
