@@ -590,7 +590,7 @@ EOF
                 inputs: parameters
                     .into_iter()
                     .enumerate()
-                    .map(|(_idx, param)| {
+                    .map(|(_, param)| {
                         (
                             param.name().to_string(),
                             match param {
