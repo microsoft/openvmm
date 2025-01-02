@@ -133,25 +133,22 @@ pub fn pkcs11_rsa_aes_key_unwrap(
     unwrapping_rsa_key: &Rsa<Private>,
     wrapped_key_blob: &[u8],
 ) -> Result<Rsa<Private>, Pkcs11RsaAesKeyUnwrapError> {
-    let modulus_size = unwrapping_rsa_key.size();
+    let modulus_size = unwrapping_rsa_key.size() as usize;
 
-    let mut blob_chunks = wrapped_key_blob.chunks_exact(modulus_size as usize);
-    let wrapped_aes_key = blob_chunks.next().ok_or_else(|| {
-        Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedKeyBlob(format!(
-            "expected wrapped AES key blob to be {} bytes, but found {}",
-            modulus_size,
-            blob_chunks.remainder().len()
-        ))
-    })?;
-    let wrapped_rsa_key = blob_chunks.next().ok_or_else(|| {
-        Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedKeyBlob(format!(
-            "expected wrapped RSA key blob to be {} bytes, but found {}",
-            modulus_size,
-            blob_chunks.remainder().len()
-        ))
-    })?;
-    if blob_chunks.next().is_some() || !blob_chunks.remainder().is_empty() {
-        Err(Pkcs11RsaAesKeyUnwrapError::OversizedWrappedKeyBlob)?
+    let (wrapped_aes_key, wrapped_rsa_key) = wrapped_key_blob
+        .split_at_checked(modulus_size)
+        .ok_or_else(|| {
+            Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedKeyBlob(format!(
+                "expected wrapped AES key blob to be {} bytes, but found {} bytes",
+                modulus_size,
+                wrapped_key_blob.len()
+            ))
+        })?;
+
+    if wrapped_rsa_key.is_empty() {
+        return Err(Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedKeyBlob(
+            format!("wrapped RSA key blob cannot be empty",),
+        ));
     }
 
     let unwrapped_aes_key = rsa_oaep_decrypt(
@@ -499,16 +496,16 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
-            "undersized wrapped key blob: expected wrapped AES key blob to be 256 bytes, but found 255".to_string()
+            "undersized wrapped key blob: expected wrapped AES key blob to be 256 bytes, but found 255 bytes".to_string()
         );
 
         // undersized rsa key blob
-        let wrapped_key_blob = vec![0; 256 + 255];
+        let wrapped_key_blob = vec![0; 256];
         let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
-            "undersized wrapped key blob: expected wrapped RSA key blob to be 256 bytes, but found 255".to_string()
+            "undersized wrapped key blob: wrapped RSA key blob cannot be empty".to_string()
         );
 
         // oversized wrapped key blob
