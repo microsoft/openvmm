@@ -137,8 +137,8 @@ impl SenderCore {
     /// sent/shared across threads unless `T` is `Send`/`Sync`.
     #[must_use]
     unsafe fn send(&self, message: MessagePtr) -> bool {
-        match self.0.local_or_remote() {
-            Ok(mut local) => {
+        match self.0.access() {
+            QueueAccess::Local(mut local) => {
                 if local.receiver_gone {
                     return false;
                 }
@@ -151,7 +151,7 @@ impl SenderCore {
                     waker.wake();
                 }
             }
-            Err(remote) => {
+            QueueAccess::Remote(remote) => {
                 // SAFETY: The caller guarantees `message` is a valid owned `T`.
                 let message = unsafe { (remote.encode)(message) };
                 remote.port.send(message);
@@ -161,9 +161,9 @@ impl SenderCore {
     }
 
     fn is_closed(&self) -> bool {
-        match self.0.local_or_remote() {
-            Ok(local) => local.receiver_gone,
-            Err(remote) => remote.port.is_closed().unwrap_or(true),
+        match self.0.access() {
+            QueueAccess::Local(local) => local.receiver_gone,
+            QueueAccess::Remote(remote) => remote.port.is_closed().unwrap_or(true),
         }
     }
 
@@ -209,8 +209,8 @@ impl SenderCore {
             Err(queue) => {
                 // There is a receiver or at least one other sender.
                 let (send, recv) = Port::new_pair();
-                match queue.local_or_remote() {
-                    Ok(mut local) => {
+                match queue.access() {
+                    QueueAccess::Local(mut local) => {
                         if !local.receiver_gone {
                             local.new_handler = new_handler;
                             local.ports.push(recv);
@@ -220,7 +220,7 @@ impl SenderCore {
                             }
                         }
                     }
-                    Err(remote) => {
+                    QueueAccess::Remote(remote) => {
                         remote
                             .port
                             .send(Message::new(ChannelPayload::<()>::Port(recv)));
@@ -708,15 +708,20 @@ struct Queue {
     local: Mutex<LocalQueue>,
 }
 
+enum QueueAccess<'a> {
+    Local(MutexGuard<'a, LocalQueue>),
+    Remote(&'a RemoteQueueState),
+}
+
 impl Queue {
-    fn local_or_remote(&self) -> Result<MutexGuard<'_, LocalQueue>, &RemoteQueueState> {
+    fn access(&self) -> QueueAccess<'_> {
         loop {
             if let Some(remote) = self.remote.get() {
-                break Err(remote);
+                break QueueAccess::Remote(remote);
             } else {
                 let local = self.local.lock();
                 if !local.remote {
-                    break Ok(local);
+                    break QueueAccess::Local(local);
                 }
             }
         }
