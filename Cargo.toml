@@ -522,6 +522,10 @@ xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
 zerocopy = { version = "0.7.32", features = ["derive"] }
 
+[workspace.metadata.xtask.unused-deps]
+# Pulled in through "tracing", but we need to pin the version
+ignored = ["tracing-core"]
+
 [profile.release]
 panic = 'abort'
 debug = true
