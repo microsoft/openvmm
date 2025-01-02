@@ -145,7 +145,7 @@ pub fn pkcs11_rsa_aes_key_unwrap(
 
     if wrapped_rsa_key.is_empty() {
         return Err(Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedKeyBlob(
-            format!("wrapped RSA key blob cannot be empty",),
+            "wrapped RSA key blob cannot be empty".to_string(),
         ));
     }
 
