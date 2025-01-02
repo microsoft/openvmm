@@ -109,17 +109,17 @@ impl<T> Debug for Receiver<T> {
     }
 }
 
-impl<T: MeshField> DefaultEncoding for Receiver<T> {
+impl<T: 'static + MeshField + Send> DefaultEncoding for Receiver<T> {
     type Encoding = PortField;
 }
 
-impl<T: MeshField> From<Port> for Sender<T> {
+impl<T: 'static + MeshField + Send> From<Port> for Sender<T> {
     fn from(port: Port) -> Self {
         Self(port.into())
     }
 }
 
-impl<T: MeshField> From<Sender<T>> for Port {
+impl<T: 'static + MeshField + Send> From<Sender<T>> for Port {
     fn from(v: Sender<T>) -> Self {
         v.0.into()
     }
@@ -179,13 +179,13 @@ impl<T: 'static + Send> Sender<T> {
     }
 }
 
-impl<T: MeshField> From<Port> for Receiver<T> {
+impl<T: 'static + MeshField + Send> From<Port> for Receiver<T> {
     fn from(port: Port) -> Self {
         Self(port.into())
     }
 }
 
-impl<T: MeshField> From<Receiver<T>> for Port {
+impl<T: 'static + MeshField + Send> From<Receiver<T>> for Port {
     fn from(v: Receiver<T>) -> Self {
         v.0.into()
     }
@@ -420,7 +420,10 @@ pub fn mpsc_channel<T: 'static + Send>() -> (MpscSender<T>, MpscReceiver<T>) {
 }
 
 #[derive(Debug, Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
+#[mesh(
+    bound = "T: 'static + MeshField + Send",
+    resource = "mesh_node::resource::Resource"
+)]
 enum MpscMessage<T> {
     Data(T),
     Clone(Channel<(), MpscMessage<T>>),
@@ -428,7 +431,10 @@ enum MpscMessage<T> {
 
 /// Receiver type for [`mpsc_channel()`].
 #[derive(Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
+#[mesh(
+    bound = "T: 'static + MeshField + Send",
+    resource = "mesh_node::resource::Resource"
+)]
 pub struct MpscReceiver<T> {
     receivers: Vec<Channel<(), MpscMessage<T>>>,
 }
@@ -535,7 +541,10 @@ impl<T: 'static + Send> futures_core::stream::Stream for MpscReceiver<T> {
 // process are cheap. When this is encoded for sending to a remote process, only
 // then will the receiver be notified of a new mesh port.
 #[derive(Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
+#[mesh(
+    bound = "T: 'static + MeshField + Send",
+    resource = "mesh_node::resource::Resource"
+)]
 pub struct MpscSender<T>(Arc<MpscSenderInner<T>>);
 
 impl<T> Debug for MpscSender<T> {
@@ -553,7 +562,10 @@ impl<T> Clone for MpscSender<T> {
 
 /// Wrapper that implements Clone.
 #[derive(Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
+#[mesh(
+    bound = "T: 'static + MeshField + Send",
+    resource = "mesh_node::resource::Resource"
+)]
 struct MpscSenderInner<T>(Channel<MpscMessage<T>, ()>);
 
 impl<T: 'static + Send> Clone for MpscSenderInner<T> {

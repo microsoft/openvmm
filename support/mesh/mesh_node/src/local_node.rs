@@ -2216,7 +2216,7 @@ pub mod tests {
         }
     }
 
-    impl<T: MeshField, U: MeshField> Channel<T, U> {
+    impl<T: 'static + MeshField + Send, U: 'static + MeshField + Send> Channel<T, U> {
         fn new_pair() -> (Self, Channel<U, T>) {
             let (left, right) = Port::new_pair();
             (left.into(), right.into())

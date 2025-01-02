@@ -71,7 +71,7 @@ impl From<GenericChannel> for Port {
     }
 }
 
-impl<T: MeshPayload, U: MeshPayload> From<Channel<T, U>> for Port {
+impl<T: 'static + MeshPayload, U: 'static + MeshPayload> From<Channel<T, U>> for Port {
     fn from(channel: Channel<T, U>) -> Self {
         channel
             .change_types::<SerializedMessage, SerializedMessage>()
@@ -80,7 +80,7 @@ impl<T: MeshPayload, U: MeshPayload> From<Channel<T, U>> for Port {
     }
 }
 
-impl<T: MeshPayload, U: MeshPayload> From<Port> for Channel<T, U> {
+impl<T: 'static + MeshPayload, U: 'static + MeshPayload> From<Port> for Channel<T, U> {
     fn from(port: Port) -> Self {
         <Channel<SerializedMessage, SerializedMessage>>::new(GenericChannel::new(port))
             .change_types()
@@ -255,7 +255,7 @@ impl<T: 'static + Send, U: 'static + Send> Channel<T, U> {
     }
 }
 
-impl<T: MeshPayload, U: MeshPayload> Channel<T, U> {
+impl<T: 'static + MeshPayload, U: 'static + MeshPayload> Channel<T, U> {
     /// Changes the message types for the port.
     ///
     /// The old and new types must be serializable since the port's peer is
@@ -265,7 +265,9 @@ impl<T: MeshPayload, U: MeshPayload> Channel<T, U> {
     ///
     /// The caller must therefore ensure that the new message type is compatible
     /// with the message encoding.
-    pub fn change_types<NewT: MeshPayload, NewU: MeshPayload>(self) -> Channel<NewT, NewU> {
+    pub fn change_types<NewT: 'static + MeshPayload, NewU: 'static + MeshPayload>(
+        self,
+    ) -> Channel<NewT, NewU> {
         // Ensure all the types are serializable so that the peer port can
         // convert between them as necessary.
         ensure_serializable::<T>();

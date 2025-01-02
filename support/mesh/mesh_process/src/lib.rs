@@ -84,7 +84,7 @@ static PROCESS_NAME: DebugPtr<String> = DebugPtr::new();
 /// the mesh.
 pub fn try_run_mesh_host<U, Fut, F, T>(base_name: &str, f: F) -> anyhow::Result<()>
 where
-    U: MeshPayload,
+    U: 'static + MeshPayload + Send,
     F: FnOnce(U) -> Fut,
     Fut: Future<Output = anyhow::Result<T>>,
 {
@@ -445,7 +445,7 @@ impl Mesh {
     ///
     /// The initial message will be provided to the closure passed to
     /// [`try_run_mesh_host()`].
-    pub async fn launch_host<T: MeshField>(
+    pub async fn launch_host<T: 'static + MeshField + Send>(
         &self,
         config: ProcessConfig,
         initial_message: T,
