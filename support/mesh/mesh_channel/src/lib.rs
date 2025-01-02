@@ -12,7 +12,9 @@ pub mod rpc;
 
 use bidir::Channel;
 use mesh_node::local_node::Port;
+use mesh_node::local_node::PortField;
 use mesh_node::message::MeshField;
+use mesh_protobuf::DefaultEncoding;
 use mesh_protobuf::Protobuf;
 use std::fmt::Debug;
 use std::future::Future;
@@ -86,8 +88,6 @@ pub enum RecvError {
 }
 
 /// The sending half of a channel returned by [`channel`].
-#[derive(Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 pub struct Sender<T>(Channel<(T,), ()>);
 
 impl<T> Debug for Sender<T> {
@@ -96,15 +96,21 @@ impl<T> Debug for Sender<T> {
     }
 }
 
+impl<T: MeshField> DefaultEncoding for Sender<T> {
+    type Encoding = PortField;
+}
+
 /// The receiving half of a channel returned by [`channel`].
-#[derive(Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 pub struct Receiver<T>(Channel<(), (T,)>);
 
 impl<T> Debug for Receiver<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(&self.0, f)
     }
+}
+
+impl<T: MeshField> DefaultEncoding for Receiver<T> {
+    type Encoding = PortField;
 }
 
 impl<T: MeshField> From<Port> for Sender<T> {
@@ -289,14 +295,16 @@ pub fn channel<T: 'static + Send>() -> (Sender<T>, Receiver<T>) {
 }
 
 /// The sending half of a channel returned by [`oneshot`].
-#[derive(Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 pub struct OneshotSender<T>(Channel<(T,), ()>);
 
 impl<T> Debug for OneshotSender<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(&self.0, f)
     }
+}
+
+impl<T: MeshField> DefaultEncoding for OneshotSender<T> {
+    type Encoding = PortField;
 }
 
 impl<T: MeshField> From<Port> for OneshotSender<T> {
@@ -321,14 +329,16 @@ impl<T: 'static + Send> OneshotSender<T> {
 /// The receiving half of a channel returned by [`oneshot`].
 ///
 /// A value is received by `poll`ing or `await`ing the channel.
-#[derive(Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 pub struct OneshotReceiver<T>(Channel<(), (T,)>);
 
 impl<T> Debug for OneshotReceiver<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(&self.0, f)
     }
+}
+
+impl<T: MeshField> DefaultEncoding for OneshotReceiver<T> {
+    type Encoding = PortField;
 }
 
 impl<T: 'static + Send> Future for OneshotReceiver<T> {
