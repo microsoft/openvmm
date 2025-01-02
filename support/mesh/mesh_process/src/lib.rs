@@ -5,7 +5,7 @@
 //! within it.
 
 // UNSAFETY: Needed to accept a raw Fd/Handle from our spawning process.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use anyhow::Context;
 use base64::Engine;
@@ -16,6 +16,7 @@ use futures::StreamExt;
 use futures_concurrency::future::Race;
 use inspect::Inspect;
 use inspect::SensitivityLevel;
+use mesh::message::MeshField;
 use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -444,7 +445,7 @@ impl Mesh {
     ///
     /// The initial message will be provided to the closure passed to
     /// [`try_run_mesh_host()`].
-    pub async fn launch_host<T: MeshPayload>(
+    pub async fn launch_host<T: MeshField>(
         &self,
         config: ProcessConfig,
         initial_message: T,

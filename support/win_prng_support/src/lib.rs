@@ -6,7 +6,7 @@
 #![cfg(windows)]
 // UNSAFETY: needed to call internal Windows functions and to export unmangled
 // functions.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 #![warn(missing_docs)]
 
 /// Links in crypto stubs to workaround rust stdlib's usage during hashmap

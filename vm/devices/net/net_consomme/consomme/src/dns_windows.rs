@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 // UNSAFETY: Calling Win32 APIs to get DNS server information.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use smoltcp::wire::Ipv4Address;
 use std::alloc::Layout;

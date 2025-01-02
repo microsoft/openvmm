@@ -608,7 +608,7 @@ macro_rules! runnable_workers {
 #[doc(hidden)]
 pub mod private {
     // UNSAFETY: Needed for linkme.
-    #![allow(unsafe_code)]
+    #![expect(unsafe_code)]
 
     use super::RegisteredWorkers;
     use super::WorkerFactory;

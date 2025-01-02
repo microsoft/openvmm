@@ -21,7 +21,7 @@
 
 // UNSAFETY: Implementing the unsafe GuestMemoryAccess trait by calling unsafe
 // low level memory manipulation functions.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use super::manager::MapperId;
 use super::manager::MapperRequest;

@@ -121,7 +121,6 @@ async fn vbs_boot_single_proc(config: PetriVmConfig) -> anyhow::Result<()> {
 }
 
 /// Basic VBS boot test with TPM enabled.
-// TODO: Reenable the linux test after the reboot failure is resolved.
 #[vmm_test(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
     openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
@@ -143,7 +142,7 @@ async fn vbs_boot_with_tpm(config: PetriVmConfig) -> anyhow::Result<()> {
 }
 
 /// Validate we can reboot a VM and reconnect to pipette.
-// TODO: Reenable interesting guests once #523 is fixed.
+// TODO: Reenable interesting guests once #74 is fixed.
 #[vmm_test(
     linux_direct_x64,
     openhcl_linux_direct_x64,
