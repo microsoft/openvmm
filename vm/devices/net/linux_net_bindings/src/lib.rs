@@ -14,9 +14,8 @@ use std::os::raw::c_int;
 
 // Generated using:
 //
-// bindgen --no-layout-tests --with-derive-default /usr/include/linux/if.h
+// bindgen --no-layout-tests --with-derive-default --wrap-unsafe-ops /usr/include/linux/if.h
 #[allow(non_camel_case_types)]
-#[expect(unsafe_op_in_unsafe_fn)]
 #[allow(dead_code)]
 #[allow(non_upper_case_globals)]
 #[allow(clippy::missing_safety_doc)]
@@ -25,9 +24,8 @@ pub mod gen_if;
 
 // Generated using:
 //
-// bindgen --no-layout-tests --with-derive-default /usr/include/linux/if_tun.h
+// bindgen --no-layout-tests --with-derive-default --wrap-unsafe-ops /usr/include/linux/if_tun.h
 #[allow(non_camel_case_types)]
-#[expect(unsafe_op_in_unsafe_fn)]
 #[allow(dead_code)]
 #[allow(non_upper_case_globals)]
 #[allow(clippy::missing_safety_doc)]
