@@ -86,6 +86,10 @@ impl ElementVtable {
     }
 }
 
+/// A reference to a type-erased element in the queue.
+///
+/// This is used instead of a raw pointer to ensure the queue storage is not
+/// reused while the element is still in use.
 pub struct InPlaceElement<'a>(NonNull<()>, PhantomData<&'a mut ErasedVecDeque>);
 
 impl InPlaceElement<'_> {
