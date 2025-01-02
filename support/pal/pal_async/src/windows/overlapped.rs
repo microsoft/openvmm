@@ -144,6 +144,8 @@ impl<T> Io<T> {
         file.inner.pre_io();
         let result = f(handle, buffers, overlapped);
         if unsafe { file.inner.post_io(&result, &self.inner.overlapped) } {
+            // The IO completed synchronously. If an error was returned, store it because the IO
+            // status block is not updated in this case.
             *self.inner.state.get_mut() = result
                 .map(|_| IoState::None)
                 .unwrap_or_else(|e| IoState::SyncError(Some(e)));
@@ -257,18 +259,9 @@ impl<T: IoBufMut, U: IoBufMut> Io<(T, U)> {
                     overlapped,
                 ) != 0
                 {
-                    tracing::info!(code, "DeviceIoControl succeeded");
                     Ok(())
                 } else {
-                    let err = io::Error::last_os_error();
-                    tracing::error!(
-                        code,
-                        internal = (*overlapped).Internal,
-                        internal_high = (*overlapped).InternalHigh,
-                        "DeviceIoControl failed: {:?}",
-                        err
-                    );
-                    Err(err)
+                    Err(io::Error::last_os_error())
                 }
             },
         );
