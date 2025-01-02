@@ -590,7 +590,7 @@ unused_qualifications = "warn"
 
 # Code that needs unsafe should opt-in via a module-scoped allow.
 unsafe_code = "deny"
-unsafe_op_in_unsafe_fn = "warn"
+unsafe_op_in_unsafe_fn = "forbid"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"
