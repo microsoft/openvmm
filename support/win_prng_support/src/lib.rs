@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 //! Support for running in smaller Windows editions such as Win1.
+//!
 //! This crate purposefully overrides symbols normally provided by system DLLs.
 //! In order for this to be safe the definitions are compatible with the originals.
 
