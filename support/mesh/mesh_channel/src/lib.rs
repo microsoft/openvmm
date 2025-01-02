@@ -339,8 +339,9 @@ mod oneshot {
     use crate::bidir::Channel;
     use crate::RecvError;
     use mesh_node::local_node::Port;
+    use mesh_node::local_node::PortField;
     use mesh_node::message::MeshField;
-    use mesh_protobuf::Protobuf;
+    use mesh_protobuf::DefaultEncoding;
     use std::fmt::Debug;
     use std::future::Future;
     use std::pin::Pin;
