@@ -496,6 +496,7 @@ impl HardwareIsolatedBacking for TdxBacked {
         let efer = this.backing.efer[vtl];
         let cr3 = this.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR3);
         let ss = this.read_segment(vtl, TdxSegmentReg::Ss).into();
+        // TODO TDX GUEST VSM: Get rflags from vtl, not implicit intercepted vtl
         let rflags = this.runner.tdx_enter_guest_state().rflags;
 
         TranslationRegisters {
@@ -2009,7 +2010,7 @@ impl UhProcessor<'_, TdxBacked> {
             X86X_MSR_EFER => {
                 self.write_efer(vtl, value)
                     .map_err(|_| MsrError::InvalidAccess)?;
-                self.update_execution_mode(vtl).expect("BUGBUG");
+                self.update_execution_mode(vtl).unwrap();
             }
             x86defs::X86X_MSR_STAR => state.msr_star = value,
             x86defs::X86X_MSR_CSTAR => {
