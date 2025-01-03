@@ -27,7 +27,7 @@ fn verify_sections_size(
 ) -> anyhow::Result<u64> {
     println!(
         "{:20} {:>15} {:>15} {:>16}",
-        "Section", "New Size (KiB)", "Old Size (KiB)", "Difference (KiB)"
+        "Section", "Old Size (KiB)", "New Size (KiB)", "Difference (KiB)"
     );
 
     let mut total_diff: u64 = 0;
@@ -53,7 +53,7 @@ fn verify_sections_size(
 
         // Print any non-zero sections in the newer binary and any sections that differ in size from the original.
         if size != 0 || diff != 0 {
-            println!("{name:20} {size:15} {expected_size:15} {diff:16}");
+            println!("{name:20} {expected_size:15} {size:15} {diff:16}");
         }
     }
 

@@ -67,7 +67,11 @@ impl SimpleFlowNode for Node {
 
                 let sh = xshell::Shell::new()?;
                 sh.change_dir(rt.read(openvmm_repo_path));
-                xshell::cmd!(sh, "{xtask} verify-size --original {old_path} --new {new_path}").run()?;
+                xshell::cmd!(
+                    sh,
+                    "{xtask} verify-size --original {old_path} --new {new_path}"
+                )
+                .run()?;
 
                 Ok(())
             }
