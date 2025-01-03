@@ -8,6 +8,7 @@ mod fmt;
 mod fuzz;
 mod git_hooks;
 mod guest_test;
+mod verify_size;
 
 pub use git_hooks::update_hooks;
 
@@ -17,6 +18,7 @@ pub use self::fuzz::Fuzz;
 pub use self::git_hooks::InstallGitHooks;
 pub use self::git_hooks::RunGitHook;
 pub use self::guest_test::GuestTest;
+pub use self::verify_size::VerifySize;
 
 /// CLI completion functions for variious Xtasks
 pub mod cli_completions {

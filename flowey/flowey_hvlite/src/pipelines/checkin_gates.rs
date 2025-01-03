@@ -631,7 +631,7 @@ impl IntoPipeline for CheckinGatesCli {
 
             let (pub_openhcl_igvm, use_openhcl_igvm) =
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm"));
-            let (pub_openhcl_igvm_extras, _use_openhcl_igvm_extras) =
+            let (pub_openhcl_igvm_extras, use_openhcl_igvm_extras) =
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras"));
             // also build pipette musl on this job, as until we land the
             // refactor that allows building musl without the full openhcl
@@ -713,6 +713,29 @@ impl IntoPipeline for CheckinGatesCli {
                 );
 
             all_jobs.push(job.finish());
+
+            // emit openvmm verify-size job
+            let job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    format!("verify openhcl binary size [{}]", arch_tag),
+                )
+                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                ))
+                .dep_on(
+                    |ctx| flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::LinuxMusl,
+                        },
+                        new_openhcl: ctx.use_artifact(&use_openhcl_igvm_extras),
+                        done: ctx.new_done_handle(),
+                    },
+                )
+                .finish();
+            all_jobs.push(job);
         }
 
         // Emit clippy + unit-test jobs
