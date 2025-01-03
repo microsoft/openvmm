@@ -1427,7 +1427,8 @@ impl LocalApic {
         self.hardware_enabled() && !self.x2apic_enabled()
     }
 
-    fn x2apic_enabled(&self) -> bool {
+    /// X2APIC is enabled on this local APIC
+    pub fn x2apic_enabled(&self) -> bool {
         ApicBase::from(self.apic_base).x2apic()
     }
 
