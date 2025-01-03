@@ -7939,12 +7939,14 @@ dependencies = [
 name = "vmbus_proxy"
 version = "0.0.0"
 dependencies = [
+ "futures",
  "guestmem",
  "mesh",
  "ntapi",
  "pal",
  "pal_async",
  "pal_event",
+ "tracing",
  "vmbus_core",
  "winapi",
  "zerocopy",

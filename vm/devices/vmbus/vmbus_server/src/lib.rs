@@ -39,6 +39,7 @@ use mesh::error::RemoteResultExt;
 use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
+use mesh::Cancel;
 use mesh::RecvError;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -563,7 +564,7 @@ impl VmbusServer {
         &self,
         driver: &(impl pal_async::driver::SpawnDriver + Clone),
         handle: ProxyHandle,
-    ) -> Result<std::os::windows::io::OwnedHandle, std::io::Error> {
+    ) -> Result<(Cancel, std::os::windows::io::OwnedHandle), std::io::Error> {
         proxyintegration::start_proxy(driver, handle, self.control(), &self.control.mem).await
     }
 

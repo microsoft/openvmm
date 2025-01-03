@@ -15,7 +15,9 @@ pal.workspace = true
 pal_event.workspace = true
 pal_async.workspace = true
 
+futures.workspace = true
 ntapi.workspace = true
+tracing.workspace = true
 winapi = { workspace = true, features = ["debug", "winioctl"] }
 zerocopy.workspace = true
 
