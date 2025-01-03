@@ -8,10 +8,8 @@ use crate::error::RemoteError;
 use crate::error::RemoteResultExt;
 use crate::error::RpcError;
 use crate::oneshot;
-use crate::MpscSender;
 use crate::OneshotReceiver;
 use crate::OneshotSender;
-use crate::Sender;
 use mesh_node::message::MeshField;
 use mesh_protobuf::Protobuf;
 use std::future::Future;
@@ -166,14 +164,24 @@ impl<T: 'static + Send, E: 'static + Send> Future for RpcResultReceiver<Result<T
     }
 }
 
-impl<T: 'static + Send> RpcSend for Sender<T> {
+#[cfg(feature = "newchan")]
+impl<T: 'static + Send> RpcSend for mesh_channel_core::Sender<T> {
     type Message = T;
     fn send_rpc(&self, message: T) {
         self.send(message);
     }
 }
 
-impl<T: 'static + Send> RpcSend for MpscSender<T> {
+#[cfg(not(feature = "newchan_spsc"))]
+impl<T: 'static + Send> RpcSend for crate::Sender<T> {
+    type Message = T;
+    fn send_rpc(&self, message: T) {
+        self.send(message);
+    }
+}
+
+#[cfg(not(feature = "newchan_mpsc"))]
+impl<T: 'static + Send> RpcSend for crate::MpscSender<T> {
     type Message = T;
     fn send_rpc(&self, message: T) {
         self.send(message);

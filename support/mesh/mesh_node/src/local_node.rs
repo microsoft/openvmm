@@ -297,6 +297,14 @@ impl Port {
         }
     }
 
+    pub fn is_closed(&self) -> Result<bool, NodeError> {
+        match &self.inner.state.lock().activity {
+            PortActivity::Done => Ok(true),
+            PortActivity::Failed(err) => Err(err.clone()),
+            _ => Ok(false),
+        }
+    }
+
     #[cfg(test)]
     fn fail(self, err: NodeError) {
         let mut pending_events = PendingEvents::new();
@@ -370,6 +378,10 @@ impl<T: HandlePortEvent> PortWithHandler<T> {
     /// Sends a message to the opposite endpoint.
     pub fn send(&self, message: Message) {
         self.raw.send(message)
+    }
+
+    pub fn is_closed(&self) -> Result<bool, NodeError> {
+        self.raw.is_closed()
     }
 
     pub fn remove_handler(self) -> (Port, T) {
@@ -672,6 +684,9 @@ impl<'a> PortControl<'a> {
 /// [`Port::set_handler`].
 pub trait HandlePortEvent: 'static + Send {
     /// Handles a new message for the port.
+    ///
+    /// If an error is returned, the port will be failed (and the caller will
+    /// call the `fail` method).
     fn message(
         &mut self,
         control: &mut PortControl<'_>,
