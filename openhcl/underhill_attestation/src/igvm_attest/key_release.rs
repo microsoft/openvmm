@@ -210,6 +210,7 @@ impl AkvKeyReleaseJwtHelper {
         // Base64URL(Header).Base64URL(Body).Base64URL(Signature)
         // Header and Body are JSON payloads
 
+        // Utf8Error is ignored below but will be used in `string_from_utf8_preserve_invalid_bytes`
         let utf8 = std::str::from_utf8(data).map_err(|_| {
             AkvKeyReleaseJwtError::NonUtf8JwtData(string_from_utf8_preserve_invalid_bytes(data))
         })?;
