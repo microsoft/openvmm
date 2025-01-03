@@ -822,11 +822,13 @@ impl BackingPrivate for TdxBacked {
 
     fn poll_apic(
         this: &mut UhProcessor<'_, Self>,
-        _vtl: GuestVtl,
+        vtl: GuestVtl,
         scan_irr: bool,
     ) -> Result<(), UhRunVpError> {
-        // TODO TDX Figure out why we need to poll the VTL0 apic twice to boot.
-        let vtl = GuestVtl::Vtl0;
+        // TODO TDX Figure out why we can't poll VTL1 without things breaking.
+        if vtl == GuestVtl::Vtl1 {
+            return Ok(());
+        }
         if !this.try_poll_apic(vtl, scan_irr)? {
             tracing::info!("disabling APIC offload due to auto EOI");
             let page = zerocopy::transmute_mut!(this.runner.tdx_apic_page_mut());
