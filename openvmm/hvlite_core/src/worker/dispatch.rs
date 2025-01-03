@@ -507,7 +507,7 @@ struct LoadedVmInner {
     vmbus_server: Option<VmbusServerHandle>,
     vtl2_vmbus_server: Option<VmbusServerHandle>,
     #[cfg(windows)]
-    _vmbus_handle: Option<std::os::windows::io::OwnedHandle>,
+    _vmbus_proxy: Option<vmbus_server::ProxyIntegration>,
     #[cfg(windows)]
     _kernel_vmnics: Vec<vmswitch::kernel::KernelVmNic>,
     memory_cfg: MemoryConfig,
@@ -1609,7 +1609,7 @@ impl InitializedVm {
         let mut scsi_devices = Vec::new();
         let mut vtl0_hvsock_relay = None;
         #[cfg(windows)]
-        let mut vmbus_handle = None;
+        let mut vmbus_proxy = None;
         #[cfg(windows)]
         let mut kernel_vmnics = Vec::new();
         let mut vpci_serial: Option<virtio_serial::SerialIo> = None;
@@ -1685,7 +1685,7 @@ impl InitializedVm {
             // Start the vmbus kernel proxy if it's in use.
             #[cfg(windows)]
             if let Some(proxy_handle) = vmbus_cfg.vmbusproxy_handle {
-                vmbus_handle = Some(
+                vmbus_proxy = Some(
                     vmbus
                         .start_kernel_proxy(&vmbus_driver, proxy_handle)
                         .await
@@ -1810,7 +1810,10 @@ impl InitializedVm {
                     "nic",
                     nic_config.mac_address.into(),
                     &nic_config.instance_id,
-                    vmbus_handle.as_ref().context("missing vmbusproxy handle")?,
+                    vmbus_proxy
+                        .as_ref()
+                        .context("missing vmbusproxy handle")?
+                        .handle(),
                 )
                 .context("failed to create a kernel vmnic")?;
 
@@ -2211,7 +2214,7 @@ impl InitializedVm {
                 vtl2_framebuffer_gpa_base,
                 virtio_serial: virtio_serial_dup,
                 #[cfg(windows)]
-                _vmbus_handle: vmbus_handle,
+                _vmbus_proxy: vmbus_proxy,
                 #[cfg(windows)]
                 _kernel_vmnics: kernel_vmnics,
                 vmbus_devices,

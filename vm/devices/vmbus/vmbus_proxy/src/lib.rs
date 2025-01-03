@@ -6,6 +6,7 @@
 #![expect(unsafe_code)]
 #![allow(clippy::undocumented_unsafe_blocks)]
 
+use futures::poll;
 use guestmem::GuestMemory;
 use mesh::MeshPayload;
 use ntapi::ntioapi::NtOpenFile;
@@ -20,9 +21,12 @@ use std::ffi::c_void;
 use std::mem::zeroed;
 use std::os::windows::prelude::*;
 use std::ptr::null_mut;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use vmbusioctl::VMBUS_CHANNEL_OFFER;
 use vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use winapi::shared::ntdef::OBJECT_ATTRIBUTES;
+use winapi::shared::winerror::ERROR_CANCELLED;
 use winapi::um::ioapiset::DeviceIoControl;
 use winapi::um::winnt::GENERIC_ALL;
 use winapi::um::winnt::SYNCHRONIZE;
@@ -255,6 +259,7 @@ pub struct VmbusProxy {
     // NOTE: This must come after `file` so that it is not released until `file`
     // is closed.
     guest_memory: Option<GuestMemory>,
+    cancelled: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -298,7 +303,13 @@ impl VmbusProxy {
         Ok(Self {
             file: OverlappedFile::new(driver, handle.0)?,
             guest_memory: None,
+            cancelled: AtomicBool::new(false),
         })
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.file.cancel();
     }
 
     pub fn handle(&self) -> BorrowedHandle<'_> {
@@ -310,8 +321,31 @@ impl VmbusProxy {
         In: IoBufMut,
         Out: IoBufMut,
     {
+        // Don't issue new IO if the cancel() method has been called.
+        if self.cancelled.load(Ordering::Acquire) {
+            tracing::trace!("ioctl cancelled before issued");
+            return Err(std::io::Error::from_raw_os_error(ERROR_CANCELLED as i32));
+        }
+
         // SAFETY: guaranteed by caller.
-        let (r, (_, output)) = unsafe { self.file.ioctl(code, input, output).await };
+        let mut ioctl = unsafe { self.file.ioctl(code, input, output) };
+        let (r, (_, output)) = match poll!(&mut ioctl) {
+            std::task::Poll::Ready(result) => result,
+            std::task::Poll::Pending => {
+                // Cancellation may have happened after the check above but before the IO was
+                // issued, in which case it was not actually cancelled. Cancel it again now just in
+                // case.
+                if self.cancelled.load(Ordering::Acquire) {
+                    tracing::trace!("ioctl cancelled during issue");
+                    ioctl.cancel();
+                }
+
+                // Even when cancelled, we must wait to complete the IO so buffers aren't released
+                // while still in use.
+                ioctl.await
+            }
+        };
+
         r?;
         Ok(output)
     }

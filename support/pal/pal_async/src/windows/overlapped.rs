@@ -86,6 +86,14 @@ impl OverlappedFile {
     pub fn get(&self) -> &File {
         &self.file
     }
+
+    /// Cancels all IO for this file.
+    pub fn cancel(&self) {
+        // SAFETY: File handle is owned by self.
+        unsafe {
+            CancelIoEx(self.file.as_raw_handle(), null_mut());
+        }
+    }
 }
 
 #[derive(Debug)]

@@ -43,6 +43,8 @@ use mesh::RecvError;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_event::Event;
+#[cfg(windows)]
+pub use proxyintegration::ProxyIntegration;
 use ring::PAGE_SIZE;
 use std::collections::HashMap;
 use std::future::Future;
@@ -563,8 +565,8 @@ impl VmbusServer {
         &self,
         driver: &(impl pal_async::driver::SpawnDriver + Clone),
         handle: ProxyHandle,
-    ) -> Result<std::os::windows::io::OwnedHandle, std::io::Error> {
-        proxyintegration::start_proxy(driver, handle, self.control(), &self.control.mem).await
+    ) -> std::io::Result<ProxyIntegration> {
+        ProxyIntegration::start(driver, handle, self.control(), &self.control.mem).await
     }
 
     /// Returns an object that can be used to offer channels.
