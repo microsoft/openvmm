@@ -42,27 +42,45 @@ use vmbus_proxy::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use vmbus_proxy::ProxyAction;
 use vmbus_proxy::VmbusProxy;
 use vmcore::interrupt::Interrupt;
+use winapi::shared::winerror::ERROR_CANCELLED;
 use zerocopy::AsBytes;
 
-pub(crate) async fn start_proxy(
-    driver: &(impl SpawnDriver + Clone),
-    handle: ProxyHandle,
-    server: Arc<VmbusServerControl>,
-    mem: &GuestMemory,
-) -> io::Result<(Cancel, OwnedHandle)> {
-    let mut proxy = VmbusProxy::new(driver, handle)?;
-    let handle = proxy.handle().try_clone_to_owned()?;
-    proxy.set_memory(mem).await?;
+pub struct ProxyIntegration {
+    cancel: Cancel,
+    handle: OwnedHandle,
+}
 
-    let (cancel_ctx, cancel) = CancelContext::new().with_cancel();
-    driver
-        .spawn(
-            "vmbus_proxy",
-            proxy_thread(driver.clone(), proxy, server, cancel_ctx),
-        )
-        .detach();
+impl ProxyIntegration {
+    /// Cancels the vmbus proxy.
+    pub fn cancel(&mut self) {
+        self.cancel.cancel();
+    }
 
-    Ok((cancel, handle))
+    /// Returns the handle to the vmbus proxy driver.
+    pub fn handle(&self) -> &OwnedHandle {
+        &self.handle
+    }
+
+    pub(crate) async fn start(
+        driver: &(impl SpawnDriver + Clone),
+        handle: ProxyHandle,
+        server: Arc<VmbusServerControl>,
+        mem: &GuestMemory,
+    ) -> io::Result<Self> {
+        let mut proxy = VmbusProxy::new(driver, handle)?;
+        let handle = proxy.handle().try_clone_to_owned()?;
+        proxy.set_memory(mem).await?;
+
+        let (cancel_ctx, cancel) = CancelContext::new().with_cancel();
+        driver
+            .spawn(
+                "vmbus_proxy",
+                proxy_thread(driver.clone(), proxy, server, cancel_ctx),
+            )
+            .detach();
+
+        Ok(Self { cancel, handle })
+    }
 }
 
 struct Channel {
@@ -350,16 +368,22 @@ impl ProxyTask {
                     if !gpadls.is_empty() {
                         tracing::warn!(proxy_id, "closed while some gpadls are still registered");
                         for gpadl_id in gpadls {
-                            self.proxy
-                                .delete_gpadl(proxy_id, gpadl_id.0)
-                                .await
-                                .expect("delete gpadl failed");
+                            if let Err(e) = self.proxy.delete_gpadl(proxy_id, gpadl_id.0).await {
+                                if e.raw_os_error() == Some(ERROR_CANCELLED as i32) {
+                                    // No further IOs will succeed if one was cancelled. This can
+                                    // happen here if we're in the process of shutting down.
+                                    tracing::debug!("gpadl delete cancelled");
+                                    break;
+                                }
+
+                                tracing::error!(error = ?e, "failed to delete gpadl");
+                            }
                         }
                     }
                 }
 
                 // We cannot release the channel with the driver here because it may be in the wrong
-                // state.
+                // state. We must wait for the driver to revoke it first.
             }
         }
     }

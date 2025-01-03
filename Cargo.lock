@@ -8110,6 +8110,7 @@ dependencies = [
  "vmbus_proxy",
  "vmbus_ring",
  "vmcore",
+ "winapi",
  "zerocopy",
  "zerocopy_helpers",
 ]
