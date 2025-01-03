@@ -543,11 +543,12 @@ impl IoOverlapped for OverlappedIo {
 
     unsafe fn post_io(
         &self,
-        result: io::Result<()>,
+        result: &io::Result<()>,
         _overlapped: &pal::windows::Overlapped,
     ) -> bool {
         // The IO result will arrive on the thread pool only if the IO returned pending.
         let sync = result
+            .as_ref()
             .map(|_| true)
             .unwrap_or_else(|err| err.raw_os_error() != Some(ERROR_IO_PENDING as i32));
 

@@ -82,7 +82,7 @@ impl Worker for VncWorker<vmsocket::VmListener> {
     }
 }
 
-impl<T: Listener + MeshField> VncWorker<T> {
+impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
     fn new_inner(params: VncParameters<T>) -> anyhow::Result<Self> {
         Ok(Self {
             listener: params.listener,

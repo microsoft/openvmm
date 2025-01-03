@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 // UNSAFETY: Transmuting to implement from_bytes.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use std::borrow;
 use std::fmt::Write;

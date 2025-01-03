@@ -12,7 +12,9 @@ pub mod rpc;
 
 use bidir::Channel;
 use mesh_node::local_node::Port;
+use mesh_node::local_node::PortField;
 use mesh_node::message::MeshField;
+use mesh_protobuf::DefaultEncoding;
 use mesh_protobuf::Protobuf;
 use std::fmt::Debug;
 use std::future::Future;
@@ -86,8 +88,6 @@ pub enum RecvError {
 }
 
 /// The sending half of a channel returned by [`channel`].
-#[derive(Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 pub struct Sender<T>(Channel<(T,), ()>);
 
 impl<T> Debug for Sender<T> {
@@ -96,9 +96,11 @@ impl<T> Debug for Sender<T> {
     }
 }
 
+impl<T: 'static + MeshField + Send> DefaultEncoding for Sender<T> {
+    type Encoding = PortField;
+}
+
 /// The receiving half of a channel returned by [`channel`].
-#[derive(Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 pub struct Receiver<T>(Channel<(), (T,)>);
 
 impl<T> Debug for Receiver<T> {
@@ -107,13 +109,17 @@ impl<T> Debug for Receiver<T> {
     }
 }
 
-impl<T: MeshField> From<Port> for Sender<T> {
+impl<T: 'static + MeshField + Send> DefaultEncoding for Receiver<T> {
+    type Encoding = PortField;
+}
+
+impl<T: 'static + MeshField + Send> From<Port> for Sender<T> {
     fn from(port: Port) -> Self {
         Self(port.into())
     }
 }
 
-impl<T: MeshField> From<Sender<T>> for Port {
+impl<T: 'static + MeshField + Send> From<Sender<T>> for Port {
     fn from(v: Sender<T>) -> Self {
         v.0.into()
     }
@@ -173,13 +179,13 @@ impl<T: 'static + Send> Sender<T> {
     }
 }
 
-impl<T: MeshField> From<Port> for Receiver<T> {
+impl<T: 'static + MeshField + Send> From<Port> for Receiver<T> {
     fn from(port: Port) -> Self {
         Self(port.into())
     }
 }
 
-impl<T: MeshField> From<Receiver<T>> for Port {
+impl<T: 'static + MeshField + Send> From<Receiver<T>> for Port {
     fn from(v: Receiver<T>) -> Self {
         v.0.into()
     }
@@ -289,8 +295,6 @@ pub fn channel<T: 'static + Send>() -> (Sender<T>, Receiver<T>) {
 }
 
 /// The sending half of a channel returned by [`oneshot`].
-#[derive(Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 pub struct OneshotSender<T>(Channel<(T,), ()>);
 
 impl<T> Debug for OneshotSender<T> {
@@ -299,13 +303,17 @@ impl<T> Debug for OneshotSender<T> {
     }
 }
 
-impl<T: MeshField> From<Port> for OneshotSender<T> {
+impl<T: 'static + MeshField + Send> DefaultEncoding for OneshotSender<T> {
+    type Encoding = PortField;
+}
+
+impl<T: 'static + MeshField + Send> From<Port> for OneshotSender<T> {
     fn from(port: Port) -> Self {
         Self(port.into())
     }
 }
 
-impl<T: MeshField> From<OneshotSender<T>> for Port {
+impl<T: 'static + MeshField + Send> From<OneshotSender<T>> for Port {
     fn from(v: OneshotSender<T>) -> Self {
         v.0.into()
     }
@@ -321,14 +329,16 @@ impl<T: 'static + Send> OneshotSender<T> {
 /// The receiving half of a channel returned by [`oneshot`].
 ///
 /// A value is received by `poll`ing or `await`ing the channel.
-#[derive(Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 pub struct OneshotReceiver<T>(Channel<(), (T,)>);
 
 impl<T> Debug for OneshotReceiver<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(&self.0, f)
     }
+}
+
+impl<T: 'static + MeshField + Send> DefaultEncoding for OneshotReceiver<T> {
+    type Encoding = PortField;
 }
 
 impl<T: 'static + Send> Future for OneshotReceiver<T> {
@@ -340,13 +350,13 @@ impl<T: 'static + Send> Future for OneshotReceiver<T> {
     }
 }
 
-impl<T: MeshField> From<Port> for OneshotReceiver<T> {
+impl<T: 'static + MeshField + Send> From<Port> for OneshotReceiver<T> {
     fn from(port: Port) -> Self {
         Self(port.into())
     }
 }
 
-impl<T: MeshField> From<OneshotReceiver<T>> for Port {
+impl<T: 'static + MeshField + Send> From<OneshotReceiver<T>> for Port {
     fn from(v: OneshotReceiver<T>) -> Self {
         v.0.into()
     }
@@ -410,7 +420,10 @@ pub fn mpsc_channel<T: 'static + Send>() -> (MpscSender<T>, MpscReceiver<T>) {
 }
 
 #[derive(Debug, Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
+#[mesh(
+    bound = "T: 'static + MeshField + Send",
+    resource = "mesh_node::resource::Resource"
+)]
 enum MpscMessage<T> {
     Data(T),
     Clone(Channel<(), MpscMessage<T>>),
@@ -418,7 +431,10 @@ enum MpscMessage<T> {
 
 /// Receiver type for [`mpsc_channel()`].
 #[derive(Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
+#[mesh(
+    bound = "T: 'static + MeshField + Send",
+    resource = "mesh_node::resource::Resource"
+)]
 pub struct MpscReceiver<T> {
     receivers: Vec<Channel<(), MpscMessage<T>>>,
 }
@@ -525,7 +541,10 @@ impl<T: 'static + Send> futures_core::stream::Stream for MpscReceiver<T> {
 // process are cheap. When this is encoded for sending to a remote process, only
 // then will the receiver be notified of a new mesh port.
 #[derive(Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
+#[mesh(
+    bound = "T: 'static + MeshField + Send",
+    resource = "mesh_node::resource::Resource"
+)]
 pub struct MpscSender<T>(Arc<MpscSenderInner<T>>);
 
 impl<T> Debug for MpscSender<T> {
@@ -543,7 +562,10 @@ impl<T> Clone for MpscSender<T> {
 
 /// Wrapper that implements Clone.
 #[derive(Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
+#[mesh(
+    bound = "T: 'static + MeshField + Send",
+    resource = "mesh_node::resource::Resource"
+)]
 struct MpscSenderInner<T>(Channel<MpscMessage<T>, ()>);
 
 impl<T: 'static + Send> Clone for MpscSenderInner<T> {

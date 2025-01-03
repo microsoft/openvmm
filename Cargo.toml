@@ -27,6 +27,7 @@ members = [
   "support/ucs2/fuzz",
   "vm/devices/chipset/fuzz",
   "vm/devices/firmware/firmware_uefi/fuzz",
+  "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
   "vm/devices/storage/scsi_buffers/fuzz",
   "vm/vmcore/guestmem/fuzz",
@@ -381,7 +382,6 @@ awaitgroup = "0.7"
 base64 = "0.21.7"
 base64-serde = "0.7"
 bitfield-struct = "0.7"
-bitflags = "1.3"
 bitvec = { version = "1.1", default-features = false }
 blocking = "1.2"
 caps = "0.5"
@@ -499,6 +499,7 @@ thiserror = { version = "2", default-features = false }
 time = "0.3"
 toml_edit = "0.21"
 tracing = "0.1"
+tracing-core = "=0.1.30" # Pin to avoid binary size increase https://github.com/tokio-rs/tracing/issues/3182
 tracing-subscriber = "0.3.16"
 typed-path = "0.7"
 uefi = "0.32"
@@ -520,6 +521,10 @@ xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshel
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
 zerocopy = { version = "0.7.32", features = ["derive"] }
+
+[workspace.metadata.xtask.unused-deps]
+# Pulled in through "tracing", but we need to pin the version
+ignored = ["tracing-core"]
 
 [profile.release]
 panic = 'abort'
@@ -590,7 +595,7 @@ unused_qualifications = "warn"
 
 # Code that needs unsafe should opt-in via a module-scoped allow.
 unsafe_code = "deny"
-unsafe_op_in_unsafe_fn = "warn"
+unsafe_op_in_unsafe_fn = "forbid"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"
@@ -654,8 +659,6 @@ bool_assert_comparison = "allow"
 # This lint suggests collapsing Box::new(Foo::default()) into Box::default(). We often
 # prefer to specify types completely for local code clarity's sake.
 box_default = "allow"
-# Needed for bitflags 1.x compatibility. Remove when we update to bitflags 2.x
-bad_bit_mask = "allow"
 # Besides the misleading name (this lint also triggers on arrays), we believe that it
 # doesn't provide value. If a developer gets their type wrong they'll notice and fix it.
 # Sometimes you do want a list of a single range.

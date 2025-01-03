@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use bitfield_struct::bitfield;
-use bitflags::bitflags;
 use inspect::Inspect;
 use open_enum::open_enum;
 use zerocopy::AsBytes;
@@ -16,19 +15,25 @@ mod packed_nums {
 }
 
 // status register flags
-bitflags! {
-    #[derive(Inspect)]
-    #[inspect(debug)]
-    pub struct Status: u8 {
-        const ERR =  0b0000_0001; // Error occurred on last transaction (see error reg for details)
-        const HIT =  0b0000_0010; // Set once per rotation (we don't support it)
-        const CORR =  0b0000_0100; // Correctable read error was hit (we don't support it)
-        const DRQ =  0b0000_1000; // Drive wants to exchange data with host
-        const DSC =  0b0001_0000; // Heads are positioned over desired cylinder
-        const DF =  0b0010_0000; // Drive fault - major hardware error (we don't support it)
-        const DRDY = 0b0100_0000; // Drive is ready for next command
-        const BSY =  0b1000_0000; // Host cannot access any IDE registers at this time
-    }
+#[derive(Inspect)]
+#[bitfield(u8)]
+pub struct Status {
+    /// Error occurred on last transaction (see error reg for details)
+    pub err: bool,
+    /// Set once per rotation (we don't support it)
+    pub hit: bool,
+    /// Correctable read error was hit (we don't support it)
+    pub corr: bool,
+    /// Drive wants to exchange data with host
+    pub drq: bool,
+    /// Heads are positioned over desired cylinder
+    pub dsc: bool,
+    /// Drive fault - major hardware error (we don't support it)
+    pub df: bool,
+    /// Drive is ready for next command
+    pub drdy: bool,
+    /// Host cannot access any IDE registers at this time
+    pub bsy: bool,
 }
 
 // ide commands
@@ -85,26 +90,26 @@ open_enum! {
 }
 
 // errors
-bitflags! {
-    #[repr(C)]
-    #[derive(Inspect, AsBytes, FromBytes, FromZeroes)]
-    pub struct ErrorReg: u8 {
-        const ERR_NONE = 0x00;
-        const ERR_AMNF_ILI_DEFAULT = 0x01; // no address mark or illegal length indication, register default values
-        const ERR_TK0NF_EOM = 0x02; // track 0 not found or end of media detected
-        const ERR_UNKNOWN_COMMAND = 0x04; // Command aborted
-        const ERR_MCR = 0x08; // media change request
-        const ERR_BAD_LOCATION = 0x10; // IDNF, ID mark not found
-        const ERR_MEDIA_CHANGED = 0x20; // mc, media changed
-        const ERR_UNC = 0x40; // uncorrectable data
-        const ERR_BAD_SECTOR = 0x80; // bbk, bad block
-    }
-}
-
-impl From<u8> for ErrorReg {
-    fn from(v: u8) -> Self {
-        Self::from_bits(v).unwrap()
-    }
+#[derive(Inspect)]
+#[bitfield(u8)]
+#[derive(AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
+pub struct ErrorReg {
+    /// no address mark or illegal length indication, register default values
+    pub amnf_ili_default: bool,
+    /// track 0 not found or end of media detected
+    pub tk0nf_eom: bool,
+    /// Command aborted
+    pub unknown_command: bool,
+    /// media change request
+    pub mcr: bool,
+    /// IDNF, ID mark not found
+    pub bad_location: bool,
+    /// mc, media changed
+    pub media_changed: bool,
+    /// uncorrectable data
+    pub unc: bool,
+    /// bbk, bad block
+    pub bad_sector: bool,
 }
 
 pub const MAX_SECTORS_MULT_TRANSFER_DEFAULT: u16 = 128;
@@ -226,31 +231,61 @@ open_enum! {
     }
 }
 
-bitflags! {
-    #[derive(Default, Inspect)]
-    #[inspect(debug)]
-    pub struct BusMasterCommandReg: u32 {
-        const START = 0x01;
-        const WRITE = 0x08;
-    }
+#[derive(Inspect)]
+#[bitfield(u32)]
+pub struct BusMasterCommandReg {
+    pub start: bool,
+    #[bits(2)]
+    reserved: u32,
+    pub write: bool,
+    #[bits(28)]
+    reserved2: u32,
+}
 
-    #[derive(Default, Inspect)]
-    #[inspect(debug)]
-    pub struct BusMasterStatusReg: u32 {
-        const ACTIVE = 0x01;
-        const DMA_ERROR = 0x02;
-        const INTERRUPT = 0x04;
-        const SETTABLE = 0x60; // Don't know what these bits mean, but they can be set by the guest.
+impl BusMasterCommandReg {
+    pub fn from_bits_truncate(bits: u32) -> Self {
+        Self::from_bits(bits).with_reserved(0).with_reserved2(0)
     }
 }
 
-bitflags! {
-    #[derive(Inspect)]
-    #[inspect(debug)]
-    pub struct DeviceControlReg: u8 {
-        const HIGH_ORDER_BYTE = 0x80;   // HOB
-        const RESET = 0x4;              // SRST
-        const INTERRUPT_MASK = 0x2;     // nIEN
+#[derive(Inspect)]
+#[bitfield(u32)]
+pub struct BusMasterStatusReg {
+    pub active: bool,
+    pub dma_error: bool,
+    pub interrupt: bool,
+    #[bits(2)]
+    reserved: u32,
+    /// Don't know what these bits mean, but they can be set by the guest.
+    #[bits(2)]
+    pub settable: u32,
+    #[bits(25)]
+    reserved2: u32,
+}
+
+impl BusMasterStatusReg {
+    pub fn from_bits_truncate(bits: u32) -> Self {
+        Self::from_bits(bits).with_reserved(0).with_reserved2(0)
+    }
+}
+
+#[derive(Inspect)]
+#[bitfield(u8)]
+pub struct DeviceControlReg {
+    reserved: bool,
+    /// nIEN
+    pub interrupt_mask: bool,
+    /// SRST
+    pub reset: bool,
+    #[bits(4)]
+    reserved2: u8,
+    /// HOB
+    pub high_order_byte: bool,
+}
+
+impl DeviceControlReg {
+    pub fn from_bits_truncate(bits: u8) -> Self {
+        Self::from_bits(bits).with_reserved(false).with_reserved2(0)
     }
 }
 

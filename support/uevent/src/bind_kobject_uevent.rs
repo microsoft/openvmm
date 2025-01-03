@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 // UNSAFETY: Calling SockAddr::try_init.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use socket2::SockAddr;
 use socket2::Socket;

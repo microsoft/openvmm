@@ -240,7 +240,7 @@ impl VmService {
         r: anyhow::Result<F>,
     ) where
         F: 'static + Future<Output = anyhow::Result<R>> + Send,
-        R: MeshPayload,
+        R: 'static + MeshPayload + Send,
     {
         match r {
             Ok(fut) => {

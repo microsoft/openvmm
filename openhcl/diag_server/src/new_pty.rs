@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 // UNSAFETY: Calling openpty.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use std::fs::File;
 use std::io;

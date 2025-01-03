@@ -24,7 +24,7 @@ use std::task::Poll;
 /// via the `Sender<R>`.
 #[derive(Debug, Protobuf)]
 #[mesh(
-    bound = "I: MeshField, R: MeshField",
+    bound = "I: 'static + MeshField + Send, R: 'static + MeshField + Send",
     resource = "mesh_node::resource::Resource"
 )]
 pub struct Rpc<I, R>(pub I, pub OneshotSender<R>);

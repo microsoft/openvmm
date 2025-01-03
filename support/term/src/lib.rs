@@ -5,7 +5,7 @@
 
 #![warn(missing_docs)]
 // UNSAFETY: Win32 and libc function calls to manipulate terminal state.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 /// Enables VT and UTF-8 output.
 #[cfg(windows)]
