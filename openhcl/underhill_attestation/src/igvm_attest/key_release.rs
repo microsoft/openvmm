@@ -33,12 +33,14 @@ pub(crate) enum KeyReleaseError {
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum AkvKeyReleaseJwtError {
+    #[error("JWT data is not valid UTF-8: {0}")]
+    NonUtf8JwtData(String),
     #[error("invalid JWT format, data: {0}")]
     InvalidJwtFormat(String),
-    #[error("invalid JWT header format, data: {0}")]
-    InvalidJwtHeaderFormat(String),
-    #[error("invalid JWT body format, data: {0}")]
-    InvalidJwtBodyFormat(String),
+    #[error("JWT header is not valid UTF-8: {0}")]
+    NonUtf8JwtHeader(String),
+    #[error("JWT body is not valid UTF-8: {0}")]
+    NonUtf8JwtBody(String),
     #[error("failed to decode JWT header in base64 url format")]
     DecodeBase64UrlJwtHeader(#[source] base64::DecodeError),
     #[error("failed to decode JWT body in base64 url format")]
@@ -174,7 +176,14 @@ impl AkvKeyReleaseJwtHelper {
         // Header and Body are JSON payloads
 
         let utf8 = std::str::from_utf8(data).map_err(|_| {
-            AkvKeyReleaseJwtError::InvalidJwtFormat(String::from_utf8_lossy(data).to_string())
+            AkvKeyReleaseJwtError::NonUtf8JwtData(
+                data.iter()
+                    .map(|byte| match std::str::from_utf8(&[*byte]) {
+                        Ok(utf8_char) => utf8_char.to_string(),
+                        Err(_) => format!("\\x{:X}", byte),
+                    })
+                    .collect::<String>(),
+            )
         })?;
 
         let [header, body, signature]: [&str; 3] = utf8
@@ -197,8 +206,14 @@ impl AkvKeyReleaseJwtHelper {
             .decode(header)
             .map_err(AkvKeyReleaseJwtError::DecodeBase64UrlJwtHeader)?;
         let header = std::str::from_utf8(&header).map_err(|_| {
-            AkvKeyReleaseJwtError::InvalidJwtHeaderFormat(
-                String::from_utf8_lossy(&header).to_string(),
+            AkvKeyReleaseJwtError::NonUtf8JwtHeader(
+                header
+                    .iter()
+                    .map(|byte| match std::str::from_utf8(&[*byte]) {
+                        Ok(utf8_char) => utf8_char.to_string(),
+                        Err(_) => format!("\\x{:X}", byte),
+                    })
+                    .collect::<String>(),
             )
         })?;
         let header: akv::AkvKeyReleaseJwtHeader =
@@ -208,7 +223,14 @@ impl AkvKeyReleaseJwtHelper {
             .decode(body)
             .map_err(AkvKeyReleaseJwtError::DecodeBase64UrlJwtBody)?;
         let body = std::str::from_utf8(&body).map_err(|_| {
-            AkvKeyReleaseJwtError::InvalidJwtBodyFormat(String::from_utf8_lossy(&body).to_string())
+            AkvKeyReleaseJwtError::NonUtf8JwtBody(
+                body.iter()
+                    .map(|byte| match std::str::from_utf8(&[*byte]) {
+                        Ok(utf8_char) => utf8_char.to_string(),
+                        Err(_) => format!("\\x{:X}", byte),
+                    })
+                    .collect::<String>(),
+            )
         })?;
         let body: akv::AkvKeyReleaseJwtBody =
             serde_json::from_str(&body).map_err(AkvKeyReleaseJwtError::JwtBodyToJson)?;
@@ -634,6 +656,58 @@ mod tests {
         assert_eq!(
             response.unwrap_err().to_string(),
             KeyReleaseError::ResponseSizeTooSmall.to_string()
+        );
+    }
+
+    #[test]
+    fn fail_to_parse_non_utf8_jwt_segments() {
+        // entire data is not valid UTF-8
+        let mut data = "Some utf8 data ".as_bytes().to_vec();
+        data.push(0x91);
+        data.push(0x92);
+        data.extend(" with some non-utf8 data".as_bytes());
+        data.push(0x93);
+
+        let data_result = AkvKeyReleaseJwtHelper::from(&data);
+        assert!(data_result.is_err());
+        assert_eq!(
+            data_result.err().unwrap().to_string(),
+            "JWT data is not valid UTF-8: Some utf8 data \\x91\\x92 with some non-utf8 data\\x93"
+                .to_string()
+        );
+
+        // valid components
+        let private_key = openssl::rsa::Rsa::generate(2048).unwrap();
+        let (header, body, signature) =
+            generate_base64_encoded_jwt_components(&PKey::from_rsa(private_key).unwrap());
+
+        // header is not valid UTF-8
+        let mut invalid_header = "header".as_bytes().to_vec();
+        invalid_header.push(0x91);
+        let invalid_header =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&invalid_header);
+
+        let data = format!("{}.{}.{}", invalid_header, body, signature);
+
+        let header_result = AkvKeyReleaseJwtHelper::from(data.as_bytes());
+        assert!(header_result.is_err());
+        assert_eq!(
+            header_result.err().unwrap().to_string(),
+            "JWT header is not valid UTF-8: header\\x91".to_string()
+        );
+
+        // body is not valid UTF-8
+        let mut invalid_body = "body".as_bytes().to_vec();
+        invalid_body.push(0x91);
+        let invalid_body = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&invalid_body);
+
+        let data = format!("{}.{}.{}", header, invalid_body, signature);
+
+        let body_result = AkvKeyReleaseJwtHelper::from(data.as_bytes());
+        assert!(body_result.is_err());
+        assert_eq!(
+            body_result.err().unwrap().to_string(),
+            "JWT body is not valid UTF-8: body\\x91".to_string()
         );
     }
 }
