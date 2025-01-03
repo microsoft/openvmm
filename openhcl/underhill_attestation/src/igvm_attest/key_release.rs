@@ -168,15 +168,39 @@ pub fn parse_response(
     Ok(wrapped_key)
 }
 
+/// Convert a potentially non UTF-8 byte array into a string with non UTF-8 characters represented
+/// as hexadecimal escape sequences.
 fn string_from_utf8_preserve_invalid_bytes<T: AsRef<[u8]>>(bytes: T) -> String {
-    bytes
-        .as_ref()
-        .iter()
-        .map(|byte| match std::str::from_utf8(&[*byte]) {
-            Ok(utf8_char) => utf8_char.to_string(),
-            Err(_) => format!("\\x{:X}", byte),
-        })
-        .collect::<String>()
+    match std::str::from_utf8(bytes.as_ref()) {
+        Ok(utf8_str) => return utf8_str.to_string(),
+        Err(err) => {
+            let valid_up_to = err.valid_up_to();
+            let (valid, invalid) = bytes.as_ref().split_at(valid_up_to);
+            let valid = String::from_utf8_lossy(valid).to_string();
+
+            if let Some(invalid_bytes) = err.error_len() {
+                if let Some(raw_invalid_bytes) = &invalid.get(..invalid_bytes) {
+                    let raw_invalid_bytes = raw_invalid_bytes
+                        .iter()
+                        .map(|byte| format!("\\x{:X}", byte))
+                        .collect::<String>();
+                    return format!(
+                        "{valid}{raw_invalid_bytes}{}",
+                        string_from_utf8_preserve_invalid_bytes(&invalid[invalid_bytes..])
+                    );
+                } else {
+                    // `invalid` must necessarily contain at least `invalid_bytes` bytes but to avoid
+                    // unchecked accesses in a helper function, we handle this case and return the
+                    // valid part of the string early
+                    return valid;
+                }
+            } else {
+                // Utf8Error::error_len() returns None when the end of the input is reached unexpectedly
+                // In this case, we will return the valid part of the string early
+                return valid;
+            }
+        }
+    }
 }
 
 impl AkvKeyReleaseJwtHelper {
@@ -438,6 +462,69 @@ mod tests {
         let base64_signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&signature);
 
         (base64_header, base64_body, base64_signature)
+    }
+
+    #[test]
+    fn generate_string_from_non_utf8_bytes() {
+        // valid UTF-8 strings
+        let data = "Some utf8 data".as_bytes();
+        let result = string_from_utf8_preserve_invalid_bytes(data);
+        assert_eq!(result, "Some utf8 data");
+
+        let data = "Some utf8 data 😊".as_bytes();
+        let result = string_from_utf8_preserve_invalid_bytes(data);
+        assert_eq!(result, "Some utf8 data 😊");
+
+        let data = "😊".as_bytes();
+        let result = string_from_utf8_preserve_invalid_bytes(data);
+        assert_eq!(result, "😊");
+
+        // valid and invalid UTF-8 strings
+        let mut data = "Some utf8 data ".as_bytes().to_vec();
+        data.push(0x91);
+        data.push(0x92);
+        data.extend(" with some non-utf8 data".as_bytes());
+        data.push(0x93);
+        assert_eq!(
+            string_from_utf8_preserve_invalid_bytes(data),
+            "Some utf8 data \\x91\\x92 with some non-utf8 data\\x93"
+        );
+
+        let mut data = vec![0x91];
+        data.extend("😊".as_bytes());
+        let result = string_from_utf8_preserve_invalid_bytes(data);
+        assert_eq!(result, "\\x91😊");
+
+        let mut data = "😊".as_bytes().to_vec();
+        data.push(0x91);
+        let result = string_from_utf8_preserve_invalid_bytes(data);
+        assert_eq!(result, "😊\\x91");
+
+        let mut data = "Some utf8 data 😊".as_bytes().to_vec();
+        data.push(0x91);
+        data.push(0x92);
+        data.extend(" with some non-utf8 data".as_bytes());
+        data.push(0x93);
+        assert_eq!(
+            string_from_utf8_preserve_invalid_bytes(data),
+            "Some utf8 data 😊\\x91\\x92 with some non-utf8 data\\x93"
+        );
+
+        // invalid UTF-8 strings
+        let data = vec![0x91, 0x92, 0x93];
+        let result = string_from_utf8_preserve_invalid_bytes(data);
+        assert_eq!(result, "\\x91\\x92\\x93");
+
+        // UTF-16 string
+        let data = "UTF-16 encoded"
+            .encode_utf16()
+            .collect::<Vec<u16>>()
+            .iter()
+            .map(|character| character.to_ne_bytes())
+            .flatten()
+            .collect::<Vec<u8>>();
+        let result = string_from_utf8_preserve_invalid_bytes(data);
+        assert_eq!(result, "U\0T\0F\0-\01\06\0 \0e\0n\0c\0o\0d\0e\0d\0");
     }
 
     #[test]
