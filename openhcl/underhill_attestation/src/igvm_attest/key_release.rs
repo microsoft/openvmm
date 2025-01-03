@@ -180,7 +180,7 @@ fn string_from_utf8_preserve_invalid_bytes<T: AsRef<[u8]>>(bytes: T) -> String {
             let valid = String::from_utf8_lossy(valid).to_string();
 
             if let Some(invalid_bytes) = err.error_len() {
-                if let Some(raw_invalid_bytes) = &invalid.get(..invalid_bytes) {
+                if let Some(raw_invalid_bytes) = invalid.get(..invalid_bytes) {
                     let raw_invalid_bytes =
                         raw_invalid_bytes
                             .iter()
