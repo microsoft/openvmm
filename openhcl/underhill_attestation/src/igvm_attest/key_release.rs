@@ -15,6 +15,8 @@ use openssl::x509::X509VerifyResult;
 use openssl::x509::X509;
 use thiserror::Error;
 
+use std::fmt::Write;
+
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum KeyReleaseError {
@@ -172,7 +174,7 @@ pub fn parse_response(
 /// as hexadecimal escape sequences.
 fn string_from_utf8_preserve_invalid_bytes<T: AsRef<[u8]>>(bytes: T) -> String {
     match std::str::from_utf8(bytes.as_ref()) {
-        Ok(utf8_str) => return utf8_str.to_string(),
+        Ok(utf8_str) => utf8_str.to_string(),
         Err(err) => {
             let valid_up_to = err.valid_up_to();
             let (valid, invalid) = bytes.as_ref().split_at(valid_up_to);
@@ -180,24 +182,27 @@ fn string_from_utf8_preserve_invalid_bytes<T: AsRef<[u8]>>(bytes: T) -> String {
 
             if let Some(invalid_bytes) = err.error_len() {
                 if let Some(raw_invalid_bytes) = &invalid.get(..invalid_bytes) {
-                    let raw_invalid_bytes = raw_invalid_bytes
-                        .iter()
-                        .map(|byte| format!("\\x{:X}", byte))
-                        .collect::<String>();
-                    return format!(
+                    let raw_invalid_bytes =
+                        raw_invalid_bytes
+                            .iter()
+                            .fold(String::new(), |mut hex_string, byte| {
+                                let _ = write!(hex_string, "\\x{byte:02X}");
+                                hex_string
+                            });
+                    format!(
                         "{valid}{raw_invalid_bytes}{}",
                         string_from_utf8_preserve_invalid_bytes(&invalid[invalid_bytes..])
-                    );
+                    )
                 } else {
                     // `invalid` must necessarily contain at least `invalid_bytes` bytes but to avoid
                     // unchecked accesses in a helper function, we handle this case and return the
                     // valid part of the string early
-                    return valid;
+                    valid
                 }
             } else {
                 // Utf8Error::error_len() returns None when the end of the input is reached unexpectedly
                 // In this case, we will return the valid part of the string early
-                return valid;
+                valid
             }
         }
     }
@@ -521,11 +526,10 @@ mod tests {
             .encode_utf16()
             .collect::<Vec<u16>>()
             .iter()
-            .map(|character| character.to_ne_bytes())
-            .flatten()
+            .flat_map(|character| character.to_ne_bytes())
             .collect::<Vec<u8>>();
         let result = string_from_utf8_preserve_invalid_bytes(data);
-        assert_eq!(result, "U\0T\0F\0-\01\06\0 \0e\0n\0c\0o\0d\0e\0d\0");
+        assert_eq!(result, "U\0T\0F\0-\x001\x006\0 \0e\0n\0c\0o\0d\0e\0d\0");
     }
 
     #[test]
