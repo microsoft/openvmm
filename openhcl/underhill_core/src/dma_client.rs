@@ -26,40 +26,56 @@ impl DmaClient {
     pub fn map_dma_ranges(
         &self,
         ranges: &[MemoryRange],
+        options: Option<&DmaMapOptions>
     ) -> Result<DmaTransactionHandler, DmaError> {
         let manager = self.manager.upgrade().ok_or(DmaError::InitializationFailed)?;
         let mut dma_transactions = Vec::new();
+        let force_bounce_buffer = options.map_or(false, |opts| opts.force_bounce_buffer);
 
         let threshold = manager.get_client_threshold(self).ok_or(DmaError::InitializationFailed)?;
 
         for range in ranges {
-            let (dma_addr, is_pinned, is_bounce_buffer) = if range.size <= threshold {
-                match self.pin_memory(range) {
-                    Ok(pinned_addr) => (pinned_addr, true, false),
-                    Err(_) => {
-                        let bounce_addr = manager.allocate_bounce_buffer(range.size)?;
-                        (bounce_addr, false, true)
-                    }
-                }
-            } else {
-                let bounce_addr = manager.allocate_bounce_buffer(range.size)?;
-                (bounce_addr, false, true)
-            };
+            let use_bounce_buffer = force_bounce_buffer || range_size > threshold || !self.can_pin(range);
 
-            dma_transactions.push(DmaTransaction {
-                original_addr: range.start,
-                dma_addr,
-                size: range.size,
-                is_pinned,
-                is_bounce_buffer,
-                is_physical: !is_bounce_buffer,
-                is_prepinned: manager.is_pinned(range),
-            });
+
+            if use_bounce_buffer {
+                // Allocate a bounce buffer for this range
+                let bounce_buffer_addr = self
+                    .dma_manager
+                    .allocate_bounce_buffer(range_size)
+                    .map_err(|_| DmaError::BounceBufferFailed)?;
+
+                    dma_transactions.push(DmaTransaction {
+                    original_addr: range.start_addr(),
+                    dma_addr: bounce_buffer_addr,
+                    size: range_size,
+                    is_pinned: false,
+                    is_bounce_buffer: true,
+                    is_physical: false,
+                    is_prepinned: false,
+                });
+
+                self.copy_to_bounce_buffer(range, bounce_buffer_addr)?;
+            } else {
+                // Use direct pinning
+                let dma_addr = self
+                    .dma_manager
+                    .pin_memory(range)
+                    .map_err(|_| DmaError::PinFailed)?;
+
+                    dma_transactions.push(DmaTransaction {
+                    original_addr: range.start_addr(),
+                    dma_addr,
+                    size: range_size,
+                    is_pinned: true,
+                    is_bounce_buffer: false,
+                    is_physical: true,
+                    is_prepinned: false,
+                });
+            }
         }
 
-        Ok(DmaTransactionHandler {
-            transactions: dma_transactions,
-        })
+        Ok(DmaTransactionHandler { transactions })
     }
 
     pub fn unmap_dma_ranges(&self, dma_transactions: &[DmaTransaction]) -> Result<(), DmaError> {

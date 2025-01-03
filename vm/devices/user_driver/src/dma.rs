@@ -8,6 +8,11 @@ pub enum DmaError {
     BounceBufferFailed,
 }
 
+#[derive(Debug, Clone)]
+pub struct DmaMapOptions {
+    pub force_bounce_buffer: bool, // Always use bounce buffers, even if pinning succeeds
+}
+
 // Structure encapsulating the result of a DMA mapping operation
 pub struct DmaTransactionHandler {
     pub transactions: Vec<DmaTransaction>,
@@ -26,6 +31,6 @@ pub struct DmaTransaction {
 
 // Trait for the DMA interface
 pub trait DmaInterface {
-    fn map_dma_ranges(&self, ranges: &[MemoryRange]) -> Result<DmaTransactionHandler, DmaError>;
+    fn map_dma_ranges(&self, ranges: &[MemoryRange], options: Option<&DmaMapOptions>,) -> Result<DmaTransactionHandler, DmaError>;
     fn unmap_dma_ranges(&self, dma_transactions: &[DmaTransaction]) -> Result<(), DmaError>;
 }
