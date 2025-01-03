@@ -132,7 +132,7 @@ unsafe fn encode_message<T: 'static + MeshField + Send>(message: MessagePtr) -> 
 }
 
 #[derive(Debug, Clone)]
-struct SenderCore(Arc<Queue>);
+struct SenderCore(ManuallyDrop<Arc<Queue>>);
 
 impl SenderCore {
     /// Sends `message`.
@@ -184,19 +184,19 @@ impl SenderCore {
     fn into_queue(self) -> Arc<Queue> {
         let Self(ref queue) = *ManuallyDrop::new(self);
         // SAFETY: copying from a field that won't be dropped.
-        unsafe { <*const _>::read(queue) }
+        unsafe { <*const _>::read(&**queue) }
     }
 
     /// Creates a new queue with element type `T` for sending to `port`.
     fn from_port<T: 'static + MeshField + Send>(port: Port) -> Self {
         fn from_port(port: Port, vtable: &'static ElementVtable, encode: EncodeFn) -> SenderCore {
-            SenderCore(Arc::new(Queue {
+            SenderCore(ManuallyDrop::new(Arc::new(Queue {
                 local: Mutex::new(LocalQueue {
                     remote: true,
                     ..LocalQueue::new(vtable)
                 }),
                 remote: OnceLock::from(RemoteQueueState { port, encode }),
-            }))
+            })))
         }
 
         from_port(
@@ -253,13 +253,17 @@ impl SenderCore {
 
 impl Drop for SenderCore {
     fn drop(&mut self) {
-        if self.0.remote.get().is_some() {
-            return;
-        }
-        let mut local = self.0.local.lock();
-        // TODO: keep a sender count to avoid needing to wake.
-        let waker = local.waker.take();
-        drop(local);
+        // SAFETY: the queue won't be referenced after this.
+        let queue = unsafe { ManuallyDrop::take(&mut self.0) };
+        let waker = if queue.remote.get().is_some() {
+            None
+        } else {
+            let mut local = queue.local.lock();
+            // TODO: keep a sender count to avoid needing to wake.
+            local.waker.take()
+        };
+        // Drop the queue so that the receiver will see the sender is gone.
+        drop(queue);
         if let Some(waker) = waker {
             waker.wake();
         }
@@ -520,7 +524,7 @@ impl ReceiverCore {
 
     fn sender(&mut self) -> SenderCore {
         self.terminated = false;
-        SenderCore(self.queue.0.clone())
+        SenderCore(ManuallyDrop::new(self.queue.0.clone()))
     }
 
     /// Converts this receiver into a port.
