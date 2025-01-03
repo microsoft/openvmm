@@ -176,8 +176,7 @@ fn string_from_utf8_preserve_invalid_bytes<T: AsRef<[u8]>>(bytes: T) -> String {
     match std::str::from_utf8(bytes.as_ref()) {
         Ok(utf8_str) => utf8_str.to_string(),
         Err(err) => {
-            let valid_up_to = err.valid_up_to();
-            let (valid, invalid) = bytes.as_ref().split_at(valid_up_to);
+            let (valid, invalid) = bytes.as_ref().split_at(err.valid_up_to());
             let valid = String::from_utf8_lossy(valid).to_string();
 
             if let Some(invalid_bytes) = err.error_len() {
