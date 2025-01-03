@@ -166,6 +166,58 @@ pub enum RevokeGuestVsmError {
     Vtl1AlreadyEnabled,
 }
 
+/// Device IRR filter global for a partition
+#[cfg(guest_arch = "x86_64")]
+struct DeviceIrrFilter {
+    device_irr_filter: BitBox<AtomicU8>,
+    proxy_irr_filter_update_vps: BitBox<AtomicU64>,
+}
+
+#[cfg(guest_arch = "x86_64")]
+impl DeviceIrrFilter {
+    /// New instance for requested VP count
+    fn new(vp_count: u32) -> Self {
+        DeviceIrrFilter {
+            device_irr_filter: BitVec::repeat(false, 256).into_boxed_bitslice(),
+            proxy_irr_filter_update_vps: BitVec::repeat(false, vp_count as usize)
+                .into_boxed_bitslice(),
+        }
+    }
+
+    /// Check if the `proxy_irr_filter` update is pending/requested
+    fn is_vp_proxy_irr_filter_update_set(&self, vp_index: u32) -> bool {
+        self.proxy_irr_filter_update_vps[vp_index as usize]
+    }
+
+    /// Mark the completion for `proxy_irr_filter` update for VP
+    fn clr_vp_proxy_irr_filter_update(&self, vp_index: u32) {
+        self.proxy_irr_filter_update_vps
+            .set_aliased(vp_index as usize, false);
+    }
+
+    /// add vector to `device_irr_filter`
+    fn add_device_vector(&self, vector: u8) {
+        self.device_irr_filter.set_aliased(vector as usize, true);
+    }
+
+    /// Set `proxy_irr_filter_update_vps` for all vps, exclusing requester
+    fn set_vps_proxy_irr_filter_update(&self, req_vp_index: u32) {
+        for vp_index in self.proxy_irr_filter_update_vps.iter_zeros() {
+            if vp_index == req_vp_index as usize {
+                continue;
+            }
+            self.proxy_irr_filter_update_vps.set_aliased(vp_index, true);
+        }
+    }
+
+    /// Get (OR) all device vector from `device_irr_filter`
+    fn get_device_irr_vectors(&self, irr_vectors: &mut BitBox<u8>) {
+        for irr in self.device_irr_filter.iter_ones() {
+            irr_vectors.set(irr, true);
+        }
+    }
+}
+
 /// Underhill partition.
 #[derive(Inspect)]
 pub struct UhPartition {
@@ -223,6 +275,9 @@ struct UhPartitionInner {
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
     backing_shared: BackingShared,
+    #[inspect(skip)]
+    #[cfg(guest_arch = "x86_64")]
+    device_irr_filter: RwLock<VtlArray<DeviceIrrFilter, 2>>,
 }
 
 #[derive(Inspect)]
@@ -747,6 +802,61 @@ impl virt::X86Partition for UhPartition {
 impl UhPartitionInner {
     fn vp(&self, index: VpIndex) -> Option<&'_ UhVpInner> {
         self.vps.get(index.index() as usize)
+    }
+
+    /// For requester VP to issue `proxy_irr_filter` update to other VPs
+    #[cfg(guest_arch = "x86_64")]
+    fn request_proxy_irr_filter_update(&self, vtl: GuestVtl, device_vector: u8, req_vp_index: u32) {
+        tracing::info!(
+            ?vtl,
+            device_vector,
+            req_vp_index,
+            "request_proxy_irr_filter_update"
+        );
+        // At a time only one requester VP can issue `proxy_irr_filter` update to other VPs
+        let device_irr = self.device_irr_filter.write();
+
+        // Add device vector to `device_irr_filter`
+        device_irr[vtl].add_device_vector(device_vector);
+
+        // Update `proxy_irr_filter_update_vps` bitmap for all VPs
+        // excluding the requester VP (requester itself take care of updating its filter)
+        device_irr[vtl].set_vps_proxy_irr_filter_update(req_vp_index);
+
+        // Wake all the VPs, once the VP wakeup, it will query if `proxy_irr_filter`
+        // update is pending, and then will update filter (with SINT + device_irr)
+        for vp in self.vps.iter() {
+            if vp.cpu_index != req_vp_index {
+                vp.wake_vtl2();
+            }
+        }
+    }
+
+    /// Invoke provided callback tp perfom update and
+    /// Clear `proxy_irr_filter` udpate for given VP[vtl]
+    #[cfg(guest_arch = "x86_64")]
+    fn complete_vp_proxy_filter_update<F>(&self, vtl: GuestVtl, vp_index: u32, mut filter_update: F)
+    where
+        F: FnMut(),
+    {
+        // `device_irr_filter` might be under update from other VP
+        let device_irr = self.device_irr_filter.read();
+
+        // Perform filter update action (if update is pending)
+        if device_irr[vtl].is_vp_proxy_irr_filter_update_set(vp_index) {
+            tracing::info!(?vtl, vp_index, "complete_vp_proxy_filter_update");
+            filter_update();
+            // clear pending IRR update for VP
+            device_irr[vtl].clr_vp_proxy_irr_filter_update(vp_index);
+        }
+    }
+
+    /// Add the current `device_irr_filter` vector to given irr vector
+    #[cfg(guest_arch = "x86_64")]
+    fn get_device_irr_filter_vectors(&self, vtl: GuestVtl, irr_vectors: &mut BitBox<u8>) {
+        // `device_irr_filter` might be under update from other VP
+        let device_irr = self.device_irr_filter.read();
+        device_irr[vtl].get_device_irr_vectors(irr_vectors);
     }
 
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
@@ -1582,6 +1692,8 @@ impl<'a> UhProtoPartition<'a> {
         let cvm_state = None;
 
         let enter_modes = EnterModes::default();
+        #[cfg(guest_arch = "x86_64")]
+        let vps_count = vps.len() as u32;
 
         let partition = Arc::new(UhPartitionInner {
             hcl,
@@ -1609,6 +1721,8 @@ impl<'a> UhProtoPartition<'a> {
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
             backing_shared: BackingShared::new(isolation, BackingSharedParams { cvm_state })?,
+            #[cfg(guest_arch = "x86_64")]
+            device_irr_filter: RwLock::new(VtlArray::from_fn(|_| DeviceIrrFilter::new(vps_count))),
         });
 
         if cfg!(guest_arch = "x86_64") {

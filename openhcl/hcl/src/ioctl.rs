@@ -25,6 +25,7 @@ use crate::protocol::HCL_VMSA_GUEST_VSM_PAGE_OFFSET;
 use crate::protocol::HCL_VMSA_PAGE_OFFSET;
 use crate::protocol::MSHV_APIC_PAGE_OFFSET;
 use crate::GuestVtl;
+use bitvec::prelude::*;
 use hvdef::hypercall::AssertVirtualInterrupt;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvGpaRange;
@@ -1854,7 +1855,22 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
                     *r = irr.swap(0, Ordering::Relaxed);
                 }
             }
+
+            // `proxy_irr`received from host is untrusted, only allow vectors that L2 expects
+            for (f, v) in self.run.as_ref().proxy_irr_filter.iter().zip(r.iter_mut()) {
+                *v &= *f;
+            }
             Some(r)
+        }
+    }
+
+    /// Update the `proxy_irr_filter` in run page
+    pub fn update_proxy_irr_filter(&mut self, irr_filter: &BitBox<u8>) {
+        // SAFETY: `proxy_irr_filter` is only updated by current processor (and only in user mode for now)
+        let proxy_irr_filter = unsafe { &mut *addr_of_mut!((*self.run.as_ptr()).proxy_irr_filter) };
+        for irr_bit in irr_filter.iter_ones() {
+            tracing::info!(irr_bit, "update_proxy_irr_filter");
+            proxy_irr_filter[irr_bit >> 5] = 1 << (irr_bit & 0x1F);
         }
     }
 
