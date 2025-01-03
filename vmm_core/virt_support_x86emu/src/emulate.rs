@@ -16,7 +16,9 @@ use virt::io::CpuIo;
 use virt::VpHaltReason;
 use vm_topology::processor::VpIndex;
 use x86defs::Exception;
-use x86emu::CpuState;
+use x86defs::RFlags;
+use x86defs::SegmentRegister;
+use x86emu::RegisterIndex;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 
@@ -31,17 +33,41 @@ pub trait EmulatorSupport {
     /// The processor vendor.
     fn vendor(&self) -> x86defs::cpuid::Vendor;
 
-    /// The initial CPU state.
-    fn state(&mut self) -> Result<CpuState, Self::Error>;
+    /// Read a GP
+    fn gp(&mut self, index: usize) -> u64;
 
-    /// Sets the CPU state.
-    fn set_state(&mut self, state: CpuState) -> Result<(), Self::Error>;
+    /// Set a GP as signed
+    fn set_gp(&mut self, reg: usize, v: u64);
+
+    /// Read the instruction pointer
+    fn rip(&mut self) -> u64;
+
+    /// Set the instruction pointer
+    fn set_rip(&mut self, v: u64);
+
+    /// Read a segment register
+    fn segment(&mut self, index: usize) -> SegmentRegister;
+
+    /// Read the efer
+    fn efer(&mut self) -> u64;
+
+    /// Read cr0
+    fn cr0(&mut self) -> u64;
+
+    /// Read rflags
+    fn rflags(&mut self) -> RFlags;
+
+    /// Set rflags
+    fn set_rflags(&mut self, v: RFlags);
 
     /// Gets the value of an XMM* register.
-    fn get_xmm(&mut self, reg: usize) -> Result<u128, Self::Error>;
+    fn xmm(&mut self, reg: usize) -> u128;
 
     /// Sets the value of an XMM* register.
     fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error>;
+
+    /// Flush registers in the emulation cache to the backing
+    fn flush(&mut self);
 
     /// The instruction bytes, if available.
     fn instruction_bytes(&self) -> &[u8];
@@ -246,7 +272,6 @@ pub async fn emulate<T: EmulatorSupport>(
     gm: &GuestMemory,
     dev: &impl CpuIo,
 ) -> Result<(), VpHaltReason<T::Error>> {
-    let mut state = support.state().map_err(VpHaltReason::Hypervisor)?;
     let vendor = support.vendor();
 
     let mut bytes = [0; 16];
@@ -260,7 +285,6 @@ pub async fn emulate<T: EmulatorSupport>(
 
     tracing::trace!(
         ?instruction_bytes,
-        ?state,
         physical_address = support.physical_address(),
         "emulating"
     );
@@ -284,12 +308,12 @@ pub async fn emulate<T: EmulatorSupport>(
         ));
     }
 
-    let initial_alignment_check = state.rflags.alignment_check();
+    let initial_alignment_check = support.rflags().alignment_check();
 
     let mut cpu = EmulatorCpu::new(gm, dev, support);
     let result = loop {
         let instruction_bytes = &bytes[..valid_bytes];
-        let mut emu = x86emu::Emulator::new(&mut cpu, &mut state, vendor, instruction_bytes);
+        let mut emu = x86emu::Emulator::new(&mut cpu, vendor, instruction_bytes);
         let res = emu.run().await;
 
         if let Err(e) = &res {
@@ -353,6 +377,8 @@ pub async fn emulate<T: EmulatorSupport>(
         break res;
     };
 
+    cpu.support.flush();
+
     // If the alignment check flag is not in sync with the hypervisor because the instruction emulator
     // modifies internally, then the appropriate SMAP enforcement flags need to be passed to the hypervisor
     // during the translation of gvas to gpa.
@@ -365,11 +391,10 @@ pub async fn emulate<T: EmulatorSupport>(
     // or local descriptor table (LDT) to load a segment descriptor; accesses to the interrupt
     // descriptor table (IDT) when delivering an interrupt or exception; and accesses to the task-state
     // segment (TSS) as part of a task switch or change of CPL."
-    assert_eq!(initial_alignment_check, state.rflags.alignment_check());
-
-    cpu.support
-        .set_state(state)
-        .map_err(VpHaltReason::Hypervisor)?;
+    assert_eq!(
+        initial_alignment_check,
+        cpu.support.rflags().alignment_check()
+    );
 
     let instruction_bytes = &bytes[..valid_bytes];
     if let Err(e) = result {
@@ -777,10 +802,81 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         Ok(())
     }
 
-    fn get_xmm(&mut self, reg: usize) -> Result<u128, Self::Error> {
-        self.support.get_xmm(reg).map_err(Error::Hypervisor)
+    fn gp(&mut self, reg: RegisterIndex) -> u64 {
+        let extended_register = self.support.gp(reg.extended_index);
+
+        (match reg.size {
+            1 => ((extended_register >> reg.shift) as u8).into(),
+            2 => (extended_register as u16).into(),
+            4 => (extended_register as u32).into(),
+            8 => extended_register,
+            _ => panic!("invalid gp register size"),
+        }) as u64
     }
 
+    fn gp_sign_extend(&mut self, reg: RegisterIndex) -> i64 {
+        let extended_register = self.support.gp(reg.extended_index);
+        match reg.size {
+            1 => ((extended_register << reg.shift) as i8).into(),
+            2 => (extended_register as i16).into(),
+            4 => (extended_register as i32).into(),
+            8 => extended_register as i64,
+            _ => panic!("invalid gp register size"),
+        }
+    }
+
+    fn set_gp(&mut self, reg: RegisterIndex, v: u64) {
+        let register_value = self.gp(reg);
+
+        let out: u64 = match reg.size {
+            1 => {
+                let mask = (!0xff) << reg.shift;
+                (register_value & mask) | (((v as u8) as u64) << reg.shift)
+            }
+            2 => (register_value & !0xffff) | (v as u16) as u64,
+            // N.B. setting a 32-bit register zero extends the result to the 64-bit
+            //      register. This is different from 16-bit and 8-bit registers.
+            4 => (v as u32) as u64,
+            8 => v,
+            _ => panic!("invalid gp register size"),
+        };
+        self.support.set_gp(reg.extended_index, out);
+    }
+
+    fn rip(&mut self) -> u64 {
+        self.support.rip()
+    }
+
+    fn set_rip(&mut self, v: u64) {
+        self.support.set_rip(v);
+    }
+
+    fn segment(&mut self, index: usize) -> SegmentRegister {
+        self.support.segment(index)
+    }
+
+    fn efer(&mut self) -> u64 {
+        self.support.efer()
+    }
+
+    fn cr0(&mut self) -> u64 {
+        self.support.cr0()
+    }
+
+    fn rflags(&mut self) -> RFlags {
+        self.support.rflags()
+    }
+
+    fn set_rflags(&mut self, v: RFlags) {
+        self.support.set_rflags(v);
+    }
+
+    /// Gets the value of an XMM* register.
+    fn xmm(&mut self, reg: usize) -> u128 {
+        self.support.xmm(reg)
+    }
+
+    /// Sets the value of an XMM* register.
     fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
         self.support.set_xmm(reg, value).map_err(Error::Hypervisor)
     }
@@ -931,15 +1027,25 @@ fn vtl_access_event(
 /// a monitor page GPA.
 ///
 /// Returns the bit number being set within the monitor page.
-pub fn emulate_mnf_write_fast_path(
-    instruction_bytes: &[u8],
-    state: &mut CpuState,
+pub fn emulate_mnf_write_fast_path<T: EmulatorSupport>(
+    support: &mut T,
+    gm: &GuestMemory,
+    dev: &impl CpuIo,
     interruption_pending: bool,
     tlb_lock_held: bool,
 ) -> Option<u32> {
+    let mut cpu = EmulatorCpu::new(gm, dev, support);
+    let instruction_bytes = cpu.support.instruction_bytes();
     if interruption_pending || !tlb_lock_held || instruction_bytes.is_empty() {
         return None;
     }
-
-    x86emu::fast_path::emulate_fast_path_set_bit(instruction_bytes, state)
+    let mut bytes = [0; 16];
+    let valid_bytes;
+    {
+        let instruction_bytes = cpu.support.instruction_bytes();
+        valid_bytes = instruction_bytes.len();
+        bytes[..valid_bytes].copy_from_slice(instruction_bytes);
+    }
+    let instruction_bytes = &bytes[..valid_bytes];
+    x86emu::fast_path::emulate_fast_path_set_bit(instruction_bytes, &mut cpu)
 }
