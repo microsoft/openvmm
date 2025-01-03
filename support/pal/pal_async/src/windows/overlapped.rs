@@ -89,6 +89,7 @@ impl OverlappedFile {
 
     /// Cancels all IO for this file.
     pub fn cancel(&self) {
+        /// SAFETY: File handle is owned by self.
         unsafe {
             CancelIoEx(self.file.as_raw_handle(), null_mut());
         }
