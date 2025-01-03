@@ -172,39 +172,43 @@ pub fn parse_response(
 
 /// Convert a potentially non UTF-8 byte array into a string with non UTF-8 characters represented
 /// as hexadecimal escape sequences.
-fn string_from_utf8_preserve_invalid_bytes(bytes: &[u8]) -> String {
-    match std::str::from_utf8(bytes) {
-        Ok(utf8_str) => utf8_str.to_string(),
-        Err(err) => {
-            let (valid, invalid) = bytes.as_ref().split_at(err.valid_up_to());
-            let valid = String::from_utf8_lossy(valid).to_string();
+fn string_from_utf8_preserve_invalid_bytes(mut bytes: &[u8]) -> String {
+    let mut accumulator = String::new();
 
-            if let Some(invalid_bytes) = err.error_len() {
-                if let Some(raw_invalid_bytes) = invalid.get(..invalid_bytes) {
-                    let raw_invalid_bytes =
-                        raw_invalid_bytes
-                            .iter()
-                            .fold(String::new(), |mut hex_string, byte| {
-                                let _ = write!(hex_string, "\\x{byte:02X}");
-                                hex_string
-                            });
-                    format!(
-                        "{valid}{raw_invalid_bytes}{}",
-                        string_from_utf8_preserve_invalid_bytes(&invalid[invalid_bytes..])
-                    )
+    // This loop will only iterate for each valid and invalid UTF-8 pair, so iterating for the length
+    // of bytes is more than enough
+    for _ in 0..bytes.len() {
+        match std::str::from_utf8(bytes) {
+            Ok(utf8_str) => {
+                accumulator.push_str(utf8_str);
+                break;
+            }
+            Err(err) => {
+                let (valid, invalid) = bytes.split_at(err.valid_up_to());
+
+                // Unwrap is unreachable here because the bytes are guaranteed to be valid UTF-8
+                accumulator.push_str(std::str::from_utf8(valid).unwrap());
+
+                if let Some(invalid_byte_length) = err.error_len() {
+                    for byte in &invalid[..invalid_byte_length] {
+                        let _ = write!(accumulator, "\\x{byte:02X}");
+                    }
+
+                    bytes = &invalid[invalid_byte_length..];
                 } else {
-                    // `invalid` must necessarily contain at least `invalid_bytes` bytes but to avoid
-                    // unchecked accesses in a helper function, we handle this case and return the
-                    // valid part of the string early
-                    valid
+                    // In the event that the error length cannot be found (e.g.: unexpected end of input)
+                    // just capture the remaining bytes as hex escape sequences
+                    for byte in invalid {
+                        let _ = write!(accumulator, "\\x{byte:02X}");
+                    }
+
+                    break;
                 }
-            } else {
-                // Utf8Error::error_len() returns None when the end of the input is reached unexpectedly
-                // In this case, we will return the valid part of the string early
-                valid
             }
         }
     }
+
+    accumulator
 }
 
 impl AkvKeyReleaseJwtHelper {
@@ -216,7 +220,9 @@ impl AkvKeyReleaseJwtHelper {
 
         // Utf8Error is ignored below but will be used in `string_from_utf8_preserve_invalid_bytes`
         let utf8 = std::str::from_utf8(data).map_err(|_| {
-            AkvKeyReleaseJwtError::NonUtf8JwtData(string_from_utf8_preserve_invalid_bytes(data))
+            AkvKeyReleaseJwtError::NonUtf8JwtData(string_from_utf8_preserve_invalid_bytes(
+                data.to_owned().as_mut(),
+            ))
         })?;
 
         let [header, body, signature]: [&str; 3] = utf8
@@ -240,7 +246,7 @@ impl AkvKeyReleaseJwtHelper {
             .map_err(AkvKeyReleaseJwtError::DecodeBase64UrlJwtHeader)?;
         let header = std::str::from_utf8(&header).map_err(|_| {
             AkvKeyReleaseJwtError::NonUtf8JwtHeader(string_from_utf8_preserve_invalid_bytes(
-                header.as_slice(),
+                header.clone().as_mut_slice(),
             ))
         })?;
         let header: akv::AkvKeyReleaseJwtHeader =
@@ -251,7 +257,7 @@ impl AkvKeyReleaseJwtHelper {
             .map_err(AkvKeyReleaseJwtError::DecodeBase64UrlJwtBody)?;
         let body = std::str::from_utf8(&body).map_err(|_| {
             AkvKeyReleaseJwtError::NonUtf8JwtBody(string_from_utf8_preserve_invalid_bytes(
-                body.as_slice(),
+                body.clone().as_mut_slice(),
             ))
         })?;
         let body: akv::AkvKeyReleaseJwtBody =
