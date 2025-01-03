@@ -229,29 +229,22 @@ impl<T> Debug for OneshotReceiver<T> {
 
 impl<T> OneshotReceiver<T> {
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
-        let v = ready!(self.0.poll_recv(cx))?;
-        // SAFETY: The slot is for values of type `T`, so `v` is of type `T`.
-        let v = unsafe { v.cast::<T>() };
+        // SAFETY: the slot is of type `T`.
+        let v = unsafe { ready!(self.0.poll_recv(cx))? };
         Ok(*v).into()
     }
 
     fn into_core(self) -> OneshotReceiverCore {
-        match *ManuallyDrop::new(self) {
-            Self(ref core, _) => {
-                // SAFETY: `core` is not dropped.
-                unsafe { <*const _>::read(core) }
-            }
-        }
+        let Self(ref core, _) = *ManuallyDrop::new(self);
+        // SAFETY: `core` is not dropped.
+        unsafe { <*const _>::read(core) }
     }
 }
 
 impl<T> Drop for OneshotReceiver<T> {
     fn drop(&mut self) {
-        // Drop the value if it exists.
-        if let Some(v) = self.0.clear() {
-            // SAFETY: The slot is for values of type `T`, so `v` is of type `T`.
-            unsafe { v.drop::<T>() };
-        }
+        // SAFETY: the slot is of type `T`.
+        unsafe { self.0.clear::<T>() };
     }
 }
 
@@ -287,60 +280,75 @@ struct OneshotReceiverCore {
 }
 
 impl OneshotReceiverCore {
-    #[must_use]
-    fn clear(&mut self) -> Option<BoxedValue> {
-        let slot = self.slot.take()?;
-        let v = if let SlotState::Sent(value) =
-            std::mem::replace(&mut *slot.0.lock(), SlotState::Done)
-        {
-            Some(value)
-        } else {
-            None
-        };
-        v
+    // # Safety
+    // The caller must ensure that the slot is of type `T`.
+    unsafe fn clear<T>(&mut self) {
+        fn clear(this: &mut OneshotReceiverCore) -> Option<BoxedValue> {
+            let slot = this.slot.take()?;
+            let v = if let SlotState::Sent(value) =
+                std::mem::replace(&mut *slot.0.lock(), SlotState::Done)
+            {
+                Some(value)
+            } else {
+                None
+            };
+            v
+        }
+        if let Some(v) = clear(self) {
+            // SAFETY: the value is of type `T`.
+            unsafe { v.drop::<T>() };
+        }
     }
 
-    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<BoxedValue, RecvError>> {
-        let Some(slot) = &self.slot else {
-            return Poll::Ready(Err(RecvError::Closed));
-        };
-        let v = loop {
-            let mut state = slot.0.lock();
-            break match std::mem::replace(&mut *state, SlotState::Done) {
-                SlotState::SenderRemote(port, decode) => {
-                    *state = SlotState::Waiting(None);
-                    drop(state);
-                    assert!(self.port.is_none());
-                    self.port = Some(port.set_handler(SlotHandler {
-                        slot: slot.clone(),
-                        decode,
-                    }));
-                    continue;
-                }
-                SlotState::Waiting(mut waker) => {
-                    if let Some(waker) = &mut waker {
-                        waker.clone_from(cx.waker());
-                    } else {
-                        waker = Some(cx.waker().clone());
-                    }
-                    *state = SlotState::Waiting(waker);
-                    return Poll::Pending;
-                }
-                SlotState::Sent(data) => Ok(data),
-                SlotState::Done => {
-                    let err = self.port.as_ref().map_or(RecvError::Closed, |port| {
-                        port.is_closed()
-                            .map(|_| RecvError::Closed)
-                            .unwrap_or_else(|err| RecvError::Error(err.into()))
-                    });
-                    Err(err)
-                }
-                SlotState::ReceiverRemote { .. } => {
-                    unreachable!()
-                }
+    // # Safety
+    // The caller must ensure that `T` is slot's type.
+    unsafe fn poll_recv<T>(&mut self, cx: &mut Context<'_>) -> Poll<Result<Box<T>, RecvError>> {
+        fn poll_recv(
+            this: &mut OneshotReceiverCore,
+            cx: &mut Context<'_>,
+        ) -> Poll<Result<BoxedValue, RecvError>> {
+            let Some(slot) = &this.slot else {
+                return Poll::Ready(Err(RecvError::Closed));
             };
-        };
-        Poll::Ready(v)
+            let v = loop {
+                let mut state = slot.0.lock();
+                break match std::mem::replace(&mut *state, SlotState::Done) {
+                    SlotState::SenderRemote(port, decode) => {
+                        *state = SlotState::Waiting(None);
+                        drop(state);
+                        assert!(this.port.is_none());
+                        this.port = Some(port.set_handler(SlotHandler {
+                            slot: slot.clone(),
+                            decode,
+                        }));
+                        continue;
+                    }
+                    SlotState::Waiting(mut waker) => {
+                        if let Some(waker) = &mut waker {
+                            waker.clone_from(cx.waker());
+                        } else {
+                            waker = Some(cx.waker().clone());
+                        }
+                        *state = SlotState::Waiting(waker);
+                        return Poll::Pending;
+                    }
+                    SlotState::Sent(data) => Ok(data),
+                    SlotState::Done => {
+                        let err = this.port.as_ref().map_or(RecvError::Closed, |port| {
+                            port.is_closed()
+                                .map(|_| RecvError::Closed)
+                                .unwrap_or_else(|err| RecvError::Error(err.into()))
+                        });
+                        Err(err)
+                    }
+                    SlotState::ReceiverRemote { .. } => {
+                        unreachable!()
+                    }
+                };
+            };
+            Poll::Ready(v)
+        }
+        poll_recv(self, cx).map(|r| r.map(|v| unsafe { v.cast::<T>() }))
     }
 
     /// # Safety

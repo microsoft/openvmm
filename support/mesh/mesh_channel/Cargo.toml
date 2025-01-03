@@ -7,8 +7,8 @@ edition = "2021"
 rust-version.workspace = true
 
 [features]
-#default = ["newchan_mpsc", "newchan_spsc"]
-default = ["newchan_oneshot"]
+default = ["newchan_mpsc", "newchan_spsc", "newchan_oneshot"]
+#default = ["newchan_oneshot"]
 newchan = ["dep:mesh_channel_core"]
 # Use the new channel implementation for MPSC channels.
 newchan_mpsc = ["newchan"]
