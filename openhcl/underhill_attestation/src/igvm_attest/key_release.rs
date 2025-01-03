@@ -168,6 +168,17 @@ pub fn parse_response(
     Ok(wrapped_key)
 }
 
+fn string_from_utf8_preserve_invalid_bytes<T: AsRef<[u8]>>(bytes: T) -> String {
+    bytes
+        .as_ref()
+        .iter()
+        .map(|byte| match std::str::from_utf8(&[*byte]) {
+            Ok(utf8_char) => utf8_char.to_string(),
+            Err(_) => format!("\\x{:X}", byte),
+        })
+        .collect::<String>()
+}
+
 impl AkvKeyReleaseJwtHelper {
     /// Parse the given JWT
     fn from(data: &[u8]) -> Result<Self, AkvKeyReleaseJwtError> {
@@ -176,14 +187,7 @@ impl AkvKeyReleaseJwtHelper {
         // Header and Body are JSON payloads
 
         let utf8 = std::str::from_utf8(data).map_err(|_| {
-            AkvKeyReleaseJwtError::NonUtf8JwtData(
-                data.iter()
-                    .map(|byte| match std::str::from_utf8(&[*byte]) {
-                        Ok(utf8_char) => utf8_char.to_string(),
-                        Err(_) => format!("\\x{:X}", byte),
-                    })
-                    .collect::<String>(),
-            )
+            AkvKeyReleaseJwtError::NonUtf8JwtData(string_from_utf8_preserve_invalid_bytes(data))
         })?;
 
         let [header, body, signature]: [&str; 3] = utf8
@@ -206,15 +210,9 @@ impl AkvKeyReleaseJwtHelper {
             .decode(header)
             .map_err(AkvKeyReleaseJwtError::DecodeBase64UrlJwtHeader)?;
         let header = std::str::from_utf8(&header).map_err(|_| {
-            AkvKeyReleaseJwtError::NonUtf8JwtHeader(
-                header
-                    .iter()
-                    .map(|byte| match std::str::from_utf8(&[*byte]) {
-                        Ok(utf8_char) => utf8_char.to_string(),
-                        Err(_) => format!("\\x{:X}", byte),
-                    })
-                    .collect::<String>(),
-            )
+            AkvKeyReleaseJwtError::NonUtf8JwtHeader(string_from_utf8_preserve_invalid_bytes(
+                &header,
+            ))
         })?;
         let header: akv::AkvKeyReleaseJwtHeader =
             serde_json::from_str(header).map_err(AkvKeyReleaseJwtError::JwtHeaderToJson)?;
@@ -223,14 +221,7 @@ impl AkvKeyReleaseJwtHelper {
             .decode(body)
             .map_err(AkvKeyReleaseJwtError::DecodeBase64UrlJwtBody)?;
         let body = std::str::from_utf8(&body).map_err(|_| {
-            AkvKeyReleaseJwtError::NonUtf8JwtBody(
-                body.iter()
-                    .map(|byte| match std::str::from_utf8(&[*byte]) {
-                        Ok(utf8_char) => utf8_char.to_string(),
-                        Err(_) => format!("\\x{:X}", byte),
-                    })
-                    .collect::<String>(),
-            )
+            AkvKeyReleaseJwtError::NonUtf8JwtBody(string_from_utf8_preserve_invalid_bytes(&body))
         })?;
         let body: akv::AkvKeyReleaseJwtBody =
             serde_json::from_str(body).map_err(AkvKeyReleaseJwtError::JwtBodyToJson)?;
