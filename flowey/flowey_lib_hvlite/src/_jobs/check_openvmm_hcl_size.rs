@@ -3,11 +3,11 @@
 
 use crate::run_cargo_build::common::{CommonArch, CommonTriple};
 use flowey::node::prelude::*;
+use flowey_lib_common::download_gh_artifact;
 
 flowey_request! {
     pub struct Request {
         pub target: CommonTriple,
-        pub old_openhcl: ReadVar<PathBuf>,
         pub new_openhcl: ReadVar<PathBuf>,
         pub done: WriteVar<SideEffect>,
     }
@@ -21,12 +21,12 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::build_xtask::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
+        ctx.import::<download_gh_artifact::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
             target,
-            old_openhcl,
             new_openhcl,
             done,
         } = request;
@@ -37,11 +37,24 @@ impl SimpleFlowNode for Node {
         });
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
+        let file_name = match target.common_arch().unwrap() {
+            CommonArch::X86_64 => "x64-openhcl-igvm-extras",
+            CommonArch::Aarch64 => "aarch64-openhcl-igvm-extras",
+        };
+
+        let merge_head_artifact = ctx.reqv(|old_openhcl| download_gh_artifact::Request {
+            repo_owner: "microsoft".into(),
+            repo_name: "openvmm".into(),
+            file_name: file_name.into(),
+            path: old_openhcl,
+            run_id: "12438300136".into(),
+        });
+
         ctx.emit_rust_step("binary size comparison", |ctx| {
             done.claim(ctx);
             let xtask = xtask.claim(ctx);
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
-            let old_openhcl = old_openhcl.claim(ctx);
+            let old_openhcl = merge_head_artifact.claim(ctx);
             let new_openhcl = new_openhcl.claim(ctx);
 
             move |rt| {

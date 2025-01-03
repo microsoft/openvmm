@@ -730,7 +730,6 @@ impl IntoPipeline for CheckinGatesCli {
                             arch,
                             platform: CommonPlatform::LinuxMusl,
                         },
-                        old_openhcl: ctx.use_artifact(&use_openhcl_igvm_extras),
                         new_openhcl: ctx.use_artifact(&use_openhcl_igvm_extras),
                         done: ctx.new_done_handle(),
                     },
