@@ -47,21 +47,21 @@ use thiserror::Error;
 /// # });
 /// ```
 pub fn oneshot<T>() -> (OneshotSender<T>, OneshotReceiver<T>) {
+    fn oneshot_core() -> (OneshotSenderCore, OneshotReceiverCore) {
+        let slot = Arc::new(Slot(Mutex::new(SlotState::Waiting(None))));
+        (
+            OneshotSenderCore(slot.clone()),
+            OneshotReceiverCore {
+                slot: Some(slot),
+                port: None,
+            },
+        )
+    }
+
     let (sender, receiver) = oneshot_core();
     (
         OneshotSender(sender, PhantomData),
         OneshotReceiver(receiver, PhantomData),
-    )
-}
-
-fn oneshot_core() -> (OneshotSenderCore, OneshotReceiverCore) {
-    let slot = Arc::new(Slot(Mutex::new(SlotState::Waiting(None))));
-    (
-        OneshotSenderCore(slot.clone()),
-        OneshotReceiverCore {
-            slot: Some(slot),
-            port: None,
-        },
     )
 }
 
@@ -77,13 +77,8 @@ impl<T> Debug for OneshotSender<T> {
 impl<T> OneshotSender<T> {
     /// Sends `value` to the receiving endpoint of the channel.
     pub fn send(self, value: T) {
-        // SAFETY: `value` and the slot are both of type `T`.
-        unsafe {
-            if let Some(value) = self.0.send(BoxedValue::new(Box::new(value))) {
-                // The value wasn't used.
-                value.drop::<T>();
-            }
-        }
+        // SAFETY: the slot is of type `T`.
+        unsafe { self.0.send(value) }
     }
 }
 
@@ -93,28 +88,14 @@ impl<T: MeshField> DefaultEncoding for OneshotSender<T> {
 
 impl<T: MeshField> From<OneshotSender<T>> for Port {
     fn from(sender: OneshotSender<T>) -> Self {
-        sender.into_port()
+        // SAFETY: the slot is of type `T`.
+        unsafe { sender.0.into_port::<T>() }
     }
 }
 
 impl<T: MeshField> From<Port> for OneshotSender<T> {
     fn from(port: Port) -> Self {
-        Self::from_port(port)
-    }
-}
-
-impl<T: MeshField> OneshotSender<T> {
-    fn into_port(self) -> Port {
-        // SAFETY: `decode_message` is a valid function to decode values of
-        // type `T`.
-        unsafe { self.0.into_port(decode_message::<T>) }
-    }
-
-    fn from_port(port: Port) -> Self {
-        Self(
-            OneshotSenderCore::from_port(port, encode_message::<T>),
-            PhantomData,
-        )
+        Self(OneshotSenderCore::from_port::<T>(port), PhantomData)
     }
 }
 
@@ -126,14 +107,9 @@ unsafe fn encode_message<T: MeshField>(value: BoxedValue) -> Message {
     Message::new((value,))
 }
 
-/// # Safety
-/// The caller must ensure that the resulting object is not sent or shared
-/// across threads if `T` is not `Send` or `Sync`.
-unsafe fn decode_message<T: MeshField>(message: Message) -> Result<BoxedValue, ChannelError> {
+fn decode_message<T: MeshField>(message: Message) -> Result<BoxedValue, ChannelError> {
     let (value,) = message.parse::<(Box<T>,)>()?;
-    // SAFETY: the caller ensures that the resulting object is not sent or
-    // shared across threads if `T` is not `Send` or `Sync`.
-    Ok(unsafe { BoxedValue::new(value) })
+    Ok(BoxedValue::new(value))
 }
 
 #[derive(Debug)]
@@ -176,58 +152,67 @@ impl OneshotSenderCore {
     }
 
     /// # Safety
-    /// The caller must ensure that `value` is of type `T`, the type of this
-    /// slot.
-    #[must_use]
-    unsafe fn send(self, value: BoxedValue) -> Option<BoxedValue> {
-        let slot = self.into_slot();
-        let mut state = slot.0.lock();
-        match std::mem::replace(&mut *state, SlotState::Done) {
-            SlotState::ReceiverRemote(port, encode) => {
-                // SAFETY: `encode` has been set to operate on values of type
-                // `T`, and `value` is of type `T`.
-                let value = unsafe { encode(value) };
-                port.send(value);
-                None
-            }
-            SlotState::Waiting(waker) => {
-                *state = SlotState::Sent(value);
-                drop(state);
-                if let Some(waker) = waker {
-                    waker.wake();
+    /// The caller must ensure that the slot is of type `T`.
+    unsafe fn send<T>(self, value: T) {
+        fn send(this: OneshotSenderCore, value: BoxedValue) -> Option<BoxedValue> {
+            let slot = this.into_slot();
+            let mut state = slot.0.lock();
+            match std::mem::replace(&mut *state, SlotState::Done) {
+                SlotState::ReceiverRemote(port, encode) => {
+                    // SAFETY: `encode` has been set to operate on values of type
+                    // `T`, and `value` is of type `T`.
+                    let value = unsafe { encode(value) };
+                    port.send(value);
+                    None
                 }
-                None
+                SlotState::Waiting(waker) => {
+                    *state = SlotState::Sent(value);
+                    drop(state);
+                    if let Some(waker) = waker {
+                        waker.wake();
+                    }
+                    None
+                }
+                SlotState::Done => Some(value),
+                SlotState::Sent { .. } | SlotState::SenderRemote { .. } => unreachable!(),
             }
-            SlotState::Done => Some(value),
-            SlotState::Sent { .. } | SlotState::SenderRemote { .. } => unreachable!(),
+        }
+        if let Some(value) = send(self, BoxedValue::new(Box::new(value))) {
+            // SAFETY: the value is of type `T`, and it has not been dropped.
+            unsafe { value.drop::<T>() };
         }
     }
 
     /// # Safety
-    /// The caller must ensure that `decode` is a valid function to decode
-    /// values of type `T`, the type of this slot.
-    unsafe fn into_port(self, decode: DecodeFn) -> Port {
-        let slot = self.into_slot();
-        let mut state = slot.0.lock();
-        match std::mem::replace(&mut *state, SlotState::Done) {
-            SlotState::Waiting(waker) => {
-                let (send, recv) = Port::new_pair();
-                *state = SlotState::SenderRemote(recv, decode);
-                drop(state);
-                if let Some(waker) = waker {
-                    waker.wake();
+    /// The caller must ensure that the slot is of type `T`.
+    unsafe fn into_port<T: MeshField>(self) -> Port {
+        fn into_port(this: OneshotSenderCore, decode: DecodeFn) -> Port {
+            let slot = this.into_slot();
+            let mut state = slot.0.lock();
+            match std::mem::replace(&mut *state, SlotState::Done) {
+                SlotState::Waiting(waker) => {
+                    let (send, recv) = Port::new_pair();
+                    *state = SlotState::SenderRemote(recv, decode);
+                    drop(state);
+                    if let Some(waker) = waker {
+                        waker.wake();
+                    }
+                    send
                 }
-                send
+                SlotState::ReceiverRemote(port, _) => port,
+                SlotState::Done => Port::new_pair().0,
+                SlotState::Sent(_) | SlotState::SenderRemote { .. } => unreachable!(),
             }
-            SlotState::ReceiverRemote(port, _) => port,
-            SlotState::Done => Port::new_pair().0,
-            SlotState::Sent(_) | SlotState::SenderRemote { .. } => unreachable!(),
         }
+        into_port(self, decode_message::<T>)
     }
 
-    fn from_port(port: Port, encode: EncodeFn) -> Self {
-        let slot = Arc::new(Slot(Mutex::new(SlotState::ReceiverRemote(port, encode))));
-        Self(slot)
+    fn from_port<T: MeshField>(port: Port) -> Self {
+        fn from_port(port: Port, encode: EncodeFn) -> OneshotSenderCore {
+            let slot = Arc::new(Slot(Mutex::new(SlotState::ReceiverRemote(port, encode))));
+            OneshotSenderCore(slot)
+        }
+        from_port(port, encode_message::<T>)
     }
 }
 
@@ -284,28 +269,14 @@ impl<T: MeshField> DefaultEncoding for OneshotReceiver<T> {
 
 impl<T: MeshField> From<OneshotReceiver<T>> for Port {
     fn from(receiver: OneshotReceiver<T>) -> Self {
-        receiver.into_port()
+        // SAFETY: the slot is of type `T`.
+        unsafe { receiver.into_core().into_port::<T>() }
     }
 }
 
 impl<T: MeshField> From<Port> for OneshotReceiver<T> {
     fn from(port: Port) -> Self {
-        Self::from_port(port)
-    }
-}
-
-impl<T: MeshField> OneshotReceiver<T> {
-    fn into_port(self) -> Port {
-        // SAFETY: `encode_message` is a valid function to encode values of
-        // type `T`.
-        unsafe { self.into_core().into_port(encode_message::<T>) }
-    }
-
-    fn from_port(port: Port) -> Self {
-        Self(
-            OneshotReceiverCore::from_port(port, decode_message::<T>),
-            PhantomData,
-        )
+        Self(OneshotReceiverCore::from_port::<T>(port), PhantomData)
     }
 }
 
@@ -375,44 +346,50 @@ impl OneshotReceiverCore {
     /// # Safety
     /// The caller must ensure that `encode` is a valid function to encode
     /// values of type `T`, the type of this slot.
-    unsafe fn into_port(mut self, encode: EncodeFn) -> Port {
-        let existing = self.port.take().map(|port| port.remove_handler().0);
-        let Some(slot) = self.slot.take() else {
-            return existing.unwrap_or_else(|| Port::new_pair().0);
-        };
-        let mut state = slot.0.lock();
-        match std::mem::replace(&mut *state, SlotState::Done) {
-            SlotState::SenderRemote(port, _) => {
-                assert!(existing.is_none());
-                port
-            }
-            SlotState::Waiting(_) => {
-                let (send, recv) = Port::new_pair();
-                *state = SlotState::ReceiverRemote(recv, encode);
-                send
-            }
-            SlotState::Sent(value) => {
-                let (send, recv) = Port::new_pair();
-                // SAFETY: `encode` has been set to operate on values of type
-                // `T`, the type of this slot.
-                let value = unsafe { encode(value) };
-                send.send(value);
-                if let Some(existing) = existing {
-                    existing.bridge(send);
+    unsafe fn into_port<T: MeshField>(self) -> Port {
+        fn into_port(mut this: OneshotReceiverCore, encode: EncodeFn) -> Port {
+            let existing = this.port.take().map(|port| port.remove_handler().0);
+            let Some(slot) = this.slot.take() else {
+                return existing.unwrap_or_else(|| Port::new_pair().0);
+            };
+            let mut state = slot.0.lock();
+            match std::mem::replace(&mut *state, SlotState::Done) {
+                SlotState::SenderRemote(port, _) => {
+                    assert!(existing.is_none());
+                    port
                 }
-                recv
+                SlotState::Waiting(_) => {
+                    let (send, recv) = Port::new_pair();
+                    *state = SlotState::ReceiverRemote(recv, encode);
+                    send
+                }
+                SlotState::Sent(value) => {
+                    let (send, recv) = Port::new_pair();
+                    // SAFETY: `encode` has been set to operate on values of type
+                    // `T`, the type of this slot.
+                    let value = unsafe { encode(value) };
+                    send.send(value);
+                    if let Some(existing) = existing {
+                        existing.bridge(send);
+                    }
+                    recv
+                }
+                SlotState::Done => existing.unwrap_or_else(|| Port::new_pair().0),
+                SlotState::ReceiverRemote { .. } => unreachable!(),
             }
-            SlotState::Done => existing.unwrap_or_else(|| Port::new_pair().0),
-            SlotState::ReceiverRemote { .. } => unreachable!(),
         }
+        into_port(self, encode_message::<T>)
     }
 
-    fn from_port(port: Port, decode: DecodeFn) -> Self {
-        let slot = Arc::new(Slot(Mutex::new(SlotState::SenderRemote(port, decode))));
-        Self {
-            slot: Some(slot),
-            port: None,
+    fn from_port<T: MeshField>(port: Port) -> Self {
+        fn from_port(port: Port, decode: DecodeFn) -> OneshotReceiverCore {
+            let slot = Arc::new(Slot(Mutex::new(SlotState::SenderRemote(port, decode))));
+            OneshotReceiverCore {
+                slot: Some(slot),
+                port: None,
+            }
         }
+        from_port(port, decode_message::<T>)
     }
 }
 
@@ -439,15 +416,13 @@ unsafe impl Send for BoxedValue {}
 unsafe impl Sync for BoxedValue {}
 
 impl BoxedValue {
-    /// # Safety
-    /// The caller must ensure that the resulting object is not sent or shared
-    /// across threads if `T` is not `Send` or `Sync`.
-    unsafe fn new<T>(value: Box<T>) -> Self {
+    fn new<T>(value: Box<T>) -> Self {
         Self(NonNull::new(Box::into_raw(value).cast()).unwrap())
     }
 
     /// # Safety
-    /// The caller must ensure that `T` is the correct type of the value.
+    /// The caller must ensure that `T` is the correct type of the value, and that
+    /// the value has not been sent across threads unless `T` is `Send`.
     #[expect(clippy::unnecessary_box_returns)]
     unsafe fn cast<T>(self) -> Box<T> {
         // SAFETY: the caller ensures that `T` is the correct type of the value.
@@ -455,7 +430,8 @@ impl BoxedValue {
     }
 
     /// # Safety
-    /// The caller must ensure that `T` is the correct type of the value.
+    /// The caller must ensure that `T` is the correct type of the value and that
+    /// the value has not been sent across threads unless `T` is `Send`.
     unsafe fn drop<T>(self) {
         // SAFETY: the caller ensures that `T` is the correct type of the value.
         let _ = unsafe { self.cast::<T>() };
