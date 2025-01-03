@@ -311,7 +311,7 @@ pub struct GedChannel<T: RingMem = GpadlRingMem> {
     #[inspect(with = "Option::is_some")]
     vtl0_start_report: Option<Result<(), Vtl0StartError>>,
     #[inspect(with = "Option::is_some")]
-    modify: Option<Rpc<Result<(), ModifyVtl2SettingsError>>>,
+    modify: Option<Rpc<(), Result<(), ModifyVtl2SettingsError>>>,
     // TODO: allow unused temporarily as a follow up change will use it to
     // implement AK cert renewal.
     #[inspect(skip)]
