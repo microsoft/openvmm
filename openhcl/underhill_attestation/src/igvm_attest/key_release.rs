@@ -172,8 +172,8 @@ pub fn parse_response(
 
 /// Convert a potentially non UTF-8 byte array into a string with non UTF-8 characters represented
 /// as hexadecimal escape sequences.
-fn string_from_utf8_preserve_invalid_bytes<T: AsRef<[u8]>>(bytes: T) -> String {
-    match std::str::from_utf8(bytes.as_ref()) {
+fn string_from_utf8_preserve_invalid_bytes(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
         Ok(utf8_str) => utf8_str.to_string(),
         Err(err) => {
             let (valid, invalid) = bytes.as_ref().split_at(err.valid_up_to());
@@ -240,7 +240,7 @@ impl AkvKeyReleaseJwtHelper {
             .map_err(AkvKeyReleaseJwtError::DecodeBase64UrlJwtHeader)?;
         let header = std::str::from_utf8(&header).map_err(|_| {
             AkvKeyReleaseJwtError::NonUtf8JwtHeader(string_from_utf8_preserve_invalid_bytes(
-                &header,
+                header.as_slice(),
             ))
         })?;
         let header: akv::AkvKeyReleaseJwtHeader =
@@ -250,7 +250,9 @@ impl AkvKeyReleaseJwtHelper {
             .decode(body)
             .map_err(AkvKeyReleaseJwtError::DecodeBase64UrlJwtBody)?;
         let body = std::str::from_utf8(&body).map_err(|_| {
-            AkvKeyReleaseJwtError::NonUtf8JwtBody(string_from_utf8_preserve_invalid_bytes(&body))
+            AkvKeyReleaseJwtError::NonUtf8JwtBody(string_from_utf8_preserve_invalid_bytes(
+                body.as_slice(),
+            ))
         })?;
         let body: akv::AkvKeyReleaseJwtBody =
             serde_json::from_str(body).map_err(AkvKeyReleaseJwtError::JwtBodyToJson)?;
@@ -491,18 +493,18 @@ mod tests {
         data.extend(" with some non-utf8 data".as_bytes());
         data.push(0x93);
         assert_eq!(
-            string_from_utf8_preserve_invalid_bytes(data),
+            string_from_utf8_preserve_invalid_bytes(data.as_slice()),
             "Some utf8 data \\x91\\x92 with some non-utf8 data\\x93"
         );
 
         let mut data = vec![0x91];
         data.extend("😊".as_bytes());
-        let result = string_from_utf8_preserve_invalid_bytes(data);
+        let result = string_from_utf8_preserve_invalid_bytes(data.as_slice());
         assert_eq!(result, "\\x91😊");
 
         let mut data = "😊".as_bytes().to_vec();
         data.push(0x91);
-        let result = string_from_utf8_preserve_invalid_bytes(data);
+        let result = string_from_utf8_preserve_invalid_bytes(data.as_slice());
         assert_eq!(result, "😊\\x91");
 
         let mut data = "Some utf8 data 😊".as_bytes().to_vec();
@@ -511,13 +513,13 @@ mod tests {
         data.extend(" with some non-utf8 data".as_bytes());
         data.push(0x93);
         assert_eq!(
-            string_from_utf8_preserve_invalid_bytes(data),
+            string_from_utf8_preserve_invalid_bytes(data.as_slice()),
             "Some utf8 data 😊\\x91\\x92 with some non-utf8 data\\x93"
         );
 
         // invalid UTF-8 strings
         let data = vec![0x91, 0x92, 0x93];
-        let result = string_from_utf8_preserve_invalid_bytes(data);
+        let result = string_from_utf8_preserve_invalid_bytes(data.as_slice());
         assert_eq!(result, "\\x91\\x92\\x93");
 
         // UTF-16 string
@@ -527,7 +529,7 @@ mod tests {
             .iter()
             .flat_map(|character| character.to_ne_bytes())
             .collect::<Vec<u8>>();
-        let result = string_from_utf8_preserve_invalid_bytes(data);
+        let result = string_from_utf8_preserve_invalid_bytes(data.as_slice());
         assert_eq!(result, "U\0T\0F\0-\x001\x006\0 \0e\0n\0c\0o\0d\0e\0d\0");
     }
 
