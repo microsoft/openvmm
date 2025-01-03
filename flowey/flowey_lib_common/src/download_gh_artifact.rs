@@ -67,7 +67,7 @@ impl FlowNode for Node {
         ctx.req(crate::use_gh_cli::Request::WithAuth(
             crate::use_gh_cli::GhCliAuth::AuthToken(gh_token),
         ));
-        let gh_cli = ctx.reqv(|v| crate::use_gh_cli::Request::Get(v));
+        let gh_cli = ctx.reqv(crate::use_gh_cli::Request::Get);
 
         match ctx.persistent_dir() {
             Some(dir) => Self::with_local_cache(ctx, dir, download_reqs, gh_cli),
@@ -231,11 +231,7 @@ fn download_all_reqs(
         // multiple processes to saturate the network connection in cases where
         // multiple (repo, tag) pairs are being pulled at the same time.
         let patterns = files.keys().flat_map(|k| ["--pattern".into(), k.clone()]);
-        xshell::cmd!(
-            sh,
-            "{gh_cli} run download {run_id} -R {repo} {patterns...} --skip-existing"
-        )
-        .run()?;
+        xshell::cmd!(sh, "{gh_cli} run download {run_id} -R {repo} {patterns...}").run()?;
     }
 
     Ok(())
