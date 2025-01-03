@@ -670,6 +670,20 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         self.partition.caps.vendor
     }
 
+    fn gp(&mut self, _: usize) -> u64 { todo!() }
+    fn set_gp(&mut self, _: usize, _: u64) { todo!() }
+    fn rip(&mut self) -> u64 { todo!() }
+    fn set_rip(&mut self, _: u64) { todo!() }
+    fn segment(&mut self, _: usize) -> x86defs::SegmentRegister { todo!() }
+    fn efer(&mut self) -> u64 { todo!() }
+    fn cr0(&mut self) -> u64 { todo!() }
+    fn rflags(&mut self) -> x86defs::RFlags { todo!() }
+    fn set_rflags(&mut self, _: x86defs::RFlags) { todo!() }
+    fn xmm(&mut self, _: usize) -> u128 { todo!() }
+    fn set_xmm(&mut self, _: usize, _: u128) -> Result<(), Self::Error> { todo!() }
+    fn flush(&mut self) { todo!() }
+
+    /*
     fn state(&mut self) -> Result<x86emu::CpuState, Self::Error> {
         let regs = self.processor.vcpufd.get_regs()?;
         let gps = [
@@ -780,6 +794,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         set_registers_64!(self.processor.vcpufd, arr_reg_name_value)?;
         Ok(())
     }
+    */
 
     fn instruction_bytes(&self) -> &[u8] {
         match HvMessageType(self.message.header.message_type) {
@@ -883,6 +898,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         self.processor.vcpufd.set_reg(reg).unwrap();
     }
 
+    /*
     fn get_xmm(&mut self, reg: usize) -> Result<u128, Self::Error> {
         assert!(reg < 16);
         let name = HvX64RegisterName(HvX64RegisterName::Xmm0.0 + reg as u32);
@@ -909,6 +925,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         self.processor.vcpufd.set_reg(&[reg])?;
         Ok(())
     }
+    */
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
         self.partition

@@ -10,6 +10,7 @@ use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use virt::io::CpuIo;
 use virt::VpIndex;
+use x86defs::RFlags;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
@@ -58,13 +59,18 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
         self.vp.vp.partition.caps.vendor
     }
 
-    fn state(&mut self) -> Result<x86emu::CpuState, Self::Error> {
-        self.vp.emulator_state()
-    }
-
-    fn set_state(&mut self, state: x86emu::CpuState) -> Result<(), Self::Error> {
-        self.vp.set_emulator_state(&state)
-    }
+    fn gp(&mut self, _: usize) -> u64 { todo!() }
+    fn set_gp(&mut self, _: usize, _: u64) { todo!() }
+    fn rip(&mut self) -> u64 { todo!() }
+    fn set_rip(&mut self, _: u64) { todo!() }
+    fn segment(&mut self, _: usize) -> x86defs::SegmentRegister { todo!() }
+    fn efer(&mut self) -> u64 { todo!() }
+    fn cr0(&mut self) -> u64 { todo!() }
+    fn rflags(&mut self) -> RFlags { todo!() }
+    fn set_rflags(&mut self, _: RFlags) { todo!() }
+    fn xmm(&mut self, _: usize) -> u128 { todo!() }
+    fn set_xmm(&mut self, _: usize, _: u128) -> Result<(), Self::Error> { todo!() }
+    fn flush(&mut self) { todo!() }
 
     /// Check if the given gpa is accessible by the current VTL.
     fn check_vtl_access(
@@ -185,6 +191,7 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
         }
     }
 
+    /*
     fn get_xmm(&mut self, reg: usize) -> Result<u128, Self::Error> {
         assert!(reg < 16);
         let reg = whp::abi::WHV_REGISTER_NAME(whp::abi::WHvX64RegisterXmm0.0 + reg as u32);
@@ -206,6 +213,7 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
             .map_err(WhpRunVpError::EmulationState)?;
         Ok(())
     }
+    */
 
     fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
         self.vp

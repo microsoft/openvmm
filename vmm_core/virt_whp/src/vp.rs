@@ -575,6 +575,7 @@ mod x86 {
     use crate::vtl2;
     use crate::Hv1State;
     use crate::WhpProcessor;
+    use crate::emu::WhpEmulationState;
     use hvdef::hypercall::InitialVpContextX64;
     use hvdef::HvCacheType;
     use hvdef::HvInterceptAccessType;
@@ -909,15 +910,18 @@ mod x86 {
                     == self.vp.partition.monitor_page.gpa()
                     && access.AccessInfo.AccessType() == whp::abi::WHvMemoryAccessWrite
                 {
-                    let mut state = self.emulator_state().map_err(VpHaltReason::Hypervisor)?;
+                    let guest_memory = &self.vp.partition.gm;
+                    let interruption_pending = exit.vp_context.ExecutionState.InterruptionPending();
+                    let gva_valid = access.AccessInfo.GvaValid();
+                    let access = &WhpVpRefEmulation::MemoryAccessContext(access);
+                    let mut state = emu::WhpEmulationState::new(access, self, &exit, dev);
                     if let Some(bit) = virt_support_x86emu::emulate::emulate_mnf_write_fast_path(
-                        &access.InstructionBytes[..access.InstructionByteCount as usize],
                         &mut state,
-                        exit.vp_context.ExecutionState.InterruptionPending(),
-                        access.AccessInfo.GvaValid(),
+                        guest_memory,
+                        dev,
+                        interruption_pending,
+                        gva_valid
                     ) {
-                        self.set_emulator_state(&state)
-                            .map_err(VpHaltReason::Hypervisor)?;
                         if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
                             self.signal_mnf(dev, connection_id);
                         }
