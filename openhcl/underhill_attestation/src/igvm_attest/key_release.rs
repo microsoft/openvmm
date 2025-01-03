@@ -172,19 +172,18 @@ pub fn parse_response(
 
 /// Convert a potentially non UTF-8 byte array into a string with non UTF-8 characters represented
 /// as hexadecimal escape sequences.
-fn string_from_utf8_preserve_invalid_bytes(mut bytes: &[u8]) -> String {
+fn string_from_utf8_preserve_invalid_bytes(bytes: &[u8]) -> String {
     let mut accumulator = String::new();
 
-    // This loop will only iterate for each valid and invalid UTF-8 pair, so iterating for the length
-    // of bytes is more than enough
-    for _ in 0..bytes.len() {
-        match std::str::from_utf8(bytes) {
+    let mut index = 0;
+    while index < bytes.len() {
+        match std::str::from_utf8(&bytes[index..]) {
             Ok(utf8_str) => {
                 accumulator.push_str(utf8_str);
                 break;
             }
             Err(err) => {
-                let (valid, invalid) = bytes.split_at(err.valid_up_to());
+                let (valid, invalid) = bytes[index..].split_at(err.valid_up_to());
 
                 // Unwrap is unreachable here because the bytes are guaranteed to be valid UTF-8
                 accumulator.push_str(std::str::from_utf8(valid).unwrap());
@@ -193,8 +192,8 @@ fn string_from_utf8_preserve_invalid_bytes(mut bytes: &[u8]) -> String {
                     for byte in &invalid[..invalid_byte_length] {
                         let _ = write!(accumulator, "\\x{byte:02X}");
                     }
-
-                    bytes = &invalid[invalid_byte_length..];
+                    // Move index past processed bytes
+                    index += err.valid_up_to() + invalid_byte_length;
                 } else {
                     // In the event that the error length cannot be found (e.g.: unexpected end of input)
                     // just capture the remaining bytes as hex escape sequences
@@ -220,9 +219,7 @@ impl AkvKeyReleaseJwtHelper {
 
         // Utf8Error is ignored below but will be used in `string_from_utf8_preserve_invalid_bytes`
         let utf8 = std::str::from_utf8(data).map_err(|_| {
-            AkvKeyReleaseJwtError::NonUtf8JwtData(string_from_utf8_preserve_invalid_bytes(
-                data.to_owned().as_mut(),
-            ))
+            AkvKeyReleaseJwtError::NonUtf8JwtData(string_from_utf8_preserve_invalid_bytes(data))
         })?;
 
         let [header, body, signature]: [&str; 3] = utf8
@@ -246,7 +243,7 @@ impl AkvKeyReleaseJwtHelper {
             .map_err(AkvKeyReleaseJwtError::DecodeBase64UrlJwtHeader)?;
         let header = std::str::from_utf8(&header).map_err(|_| {
             AkvKeyReleaseJwtError::NonUtf8JwtHeader(string_from_utf8_preserve_invalid_bytes(
-                header.clone().as_mut_slice(),
+                header.as_slice(),
             ))
         })?;
         let header: akv::AkvKeyReleaseJwtHeader =
@@ -257,7 +254,7 @@ impl AkvKeyReleaseJwtHelper {
             .map_err(AkvKeyReleaseJwtError::DecodeBase64UrlJwtBody)?;
         let body = std::str::from_utf8(&body).map_err(|_| {
             AkvKeyReleaseJwtError::NonUtf8JwtBody(string_from_utf8_preserve_invalid_bytes(
-                body.clone().as_mut_slice(),
+                body.as_slice(),
             ))
         })?;
         let body: akv::AkvKeyReleaseJwtBody =
