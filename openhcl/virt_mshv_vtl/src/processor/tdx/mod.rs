@@ -825,11 +825,9 @@ impl BackingPrivate for TdxBacked {
         vtl: GuestVtl,
         scan_irr: bool,
     ) -> Result<(), UhRunVpError> {
-        // TODO TDX Figure out why we can't poll VTL1 without things breaking.
-        if vtl == GuestVtl::Vtl1 {
-            return Ok(());
-        }
         if !this.try_poll_apic(vtl, scan_irr)? {
+            // We only offload VTL 0 today.
+            assert_eq!(vtl, GuestVtl::Vtl0);
             tracing::info!("disabling APIC offload due to auto EOI");
             let page = zerocopy::transmute_mut!(this.runner.tdx_apic_page_mut());
             let (irr, isr) = pull_apic_offload(page);
@@ -887,22 +885,26 @@ impl UhProcessor<'_, TdxBacked> {
     fn try_poll_apic(&mut self, vtl: GuestVtl, scan_irr: bool) -> Result<bool, UhRunVpError> {
         // Check for interrupt requests from the host.
         let mut update_rvi = false;
-        if let Some(irr) = self.runner.proxy_irr() {
-            // TODO TDX: filter proxy IRRs.
-            if self.backing.cvm.lapics[vtl].lapic.can_offload_irr() {
-                // Put the proxied IRR directly on the APIC page to avoid going
-                // through the local APIC.
+        // TODO TDX GUEST VSM supporting VTL 1 proxy irrs requires kernel changes
+        if vtl == GuestVtl::Vtl0 {
+            if let Some(irr) = self.runner.proxy_irr() {
+                // TODO TDX: filter proxy IRRs.
+                if self.backing.cvm.lapics[vtl].lapic.can_offload_irr() {
+                    // Put the proxied IRR directly on the APIC page to avoid going
+                    // through the local APIC.
 
-                // OR in and update RVI.
-                let page: &mut ApicPage = zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut());
-                for (page_irr, irr) in page.irr.iter_mut().zip(irr) {
-                    page_irr.value |= irr;
+                    // OR in and update RVI.
+                    let page: &mut ApicPage =
+                        zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut());
+                    for (page_irr, irr) in page.irr.iter_mut().zip(irr) {
+                        page_irr.value |= irr;
+                    }
+                    update_rvi = true;
+                } else {
+                    self.backing.cvm.lapics[vtl]
+                        .lapic
+                        .request_fixed_interrupts(irr);
                 }
-                update_rvi = true;
-            } else {
-                self.backing.cvm.lapics[vtl]
-                    .lapic
-                    .request_fixed_interrupts(irr);
             }
         }
 
@@ -979,57 +981,60 @@ impl UhProcessor<'_, TdxBacked> {
             self.backing.processor_controls[vtl] = new_processor_controls;
         }
 
-        let r: Result<(), OffloadNotSupported> = self.backing.cvm.lapics[vtl]
-            .lapic
-            .push_to_offload(|irr, isr, tmr| {
-                let apic_page: &mut ApicPage =
-                    zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut());
+        // Offloading is only done with VTL 0 today.
+        if vtl == GuestVtl::Vtl0 {
+            let r: Result<(), OffloadNotSupported> = self.backing.cvm.lapics[vtl]
+                .lapic
+                .push_to_offload(|irr, isr, tmr| {
+                    let apic_page: &mut ApicPage =
+                        zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut());
 
-                for (((irr, page_irr), isr), page_isr) in irr
-                    .iter()
-                    .zip(&mut apic_page.irr)
-                    .zip(isr)
-                    .zip(&mut apic_page.isr)
-                {
-                    page_irr.value |= *irr;
-                    page_isr.value |= *isr;
-                }
-
-                // Update SVI and RVI.
-                let svi = top_vector(&apic_page.isr);
-                self.runner.tdx_enter_guest_state_mut().svi = svi;
-                update_rvi = true;
-
-                // Ensure the EOI exit bitmap is up to date.
-                let fields = [
-                    VmcsField::VMX_VMCS_EOI_EXIT_0,
-                    VmcsField::VMX_VMCS_EOI_EXIT_1,
-                    VmcsField::VMX_VMCS_EOI_EXIT_2,
-                    VmcsField::VMX_VMCS_EOI_EXIT_3,
-                ];
-                for ((&field, eoi_exit), tmr) in fields
-                    .iter()
-                    .zip(&mut self.backing.eoi_exit_bitmap)
-                    .zip(tmr.chunks_exact(2))
-                {
-                    let tmr = tmr[0] as u64 | ((tmr[1] as u64) << 32);
-                    if *eoi_exit != tmr {
-                        self.runner.write_vmcs64(vtl, field, !0, tmr);
-                        *eoi_exit = tmr;
+                    for (((irr, page_irr), isr), page_isr) in irr
+                        .iter()
+                        .zip(&mut apic_page.irr)
+                        .zip(isr)
+                        .zip(&mut apic_page.isr)
+                    {
+                        page_irr.value |= *irr;
+                        page_isr.value |= *isr;
                     }
-                }
-            });
 
-        if let Err(OffloadNotSupported) = r {
-            // APIC needs offloading to be disabled to support auto-EOI. The caller
-            // will disable offload and try again.
-            return Ok(false);
-        }
+                    // Update SVI and RVI.
+                    let svi = top_vector(&apic_page.isr);
+                    self.runner.tdx_enter_guest_state_mut().svi = svi;
+                    update_rvi = true;
 
-        if update_rvi {
-            let page: &mut ApicPage = zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut());
-            let rvi = top_vector(&page.irr);
-            self.runner.tdx_enter_guest_state_mut().rvi = rvi;
+                    // Ensure the EOI exit bitmap is up to date.
+                    let fields = [
+                        VmcsField::VMX_VMCS_EOI_EXIT_0,
+                        VmcsField::VMX_VMCS_EOI_EXIT_1,
+                        VmcsField::VMX_VMCS_EOI_EXIT_2,
+                        VmcsField::VMX_VMCS_EOI_EXIT_3,
+                    ];
+                    for ((&field, eoi_exit), tmr) in fields
+                        .iter()
+                        .zip(&mut self.backing.eoi_exit_bitmap)
+                        .zip(tmr.chunks_exact(2))
+                    {
+                        let tmr = tmr[0] as u64 | ((tmr[1] as u64) << 32);
+                        if *eoi_exit != tmr {
+                            self.runner.write_vmcs64(vtl, field, !0, tmr);
+                            *eoi_exit = tmr;
+                        }
+                    }
+                });
+
+            if let Err(OffloadNotSupported) = r {
+                // APIC needs offloading to be disabled to support auto-EOI. The caller
+                // will disable offload and try again.
+                return Ok(false);
+            }
+
+            if update_rvi {
+                let page: &mut ApicPage = zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut());
+                let rvi = top_vector(&page.irr);
+                self.runner.tdx_enter_guest_state_mut().rvi = rvi;
+            }
         }
 
         // If there is a pending interrupt, clear the halted and idle state.
