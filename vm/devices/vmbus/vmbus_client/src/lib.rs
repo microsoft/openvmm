@@ -383,7 +383,7 @@ enum ChannelState {
     /// The channel has been offered to the client.
     Offered,
     /// The channel has requested the server to be opened.
-    Opening(mesh::OneshotSender<bool>),
+    Opening(Rpc<(), bool>),
     /// The channel has been successfully opened.
     Opened,
 }
@@ -402,7 +402,7 @@ struct Channel {
     offer: protocol::OfferChannel,
     response_send: mesh::Sender<ChannelResponse>,
     state: ChannelState,
-    modify_response_send: Option<mesh::OneshotSender<i32>>,
+    modify_response_send: Option<Rpc<(), i32>>,
 }
 
 impl std::fmt::Debug for Channel {
@@ -491,7 +491,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
                 FeatureFlags::new()
             };
 
-            let request = &rpc.0;
+            let request = rpc.input();
 
             tracing::debug!(version = ?version, ?feature_flags, "VmBus client connecting");
             let target_info = protocol::TargetInfo::new(SINT, VTL, feature_flags);
@@ -552,7 +552,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             return;
         }
 
-        let message = protocol::ModifyConnection::from(request.0);
+        let message = protocol::ModifyConnection::from(*request.input());
         self.modify_request = Some(request);
         self.inner.send(&message);
     }
@@ -781,7 +781,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             unreachable!("validated above");
         };
 
-        sender.send(gpadl_created)
+        sender.complete(gpadl_created)
     }
 
     fn handle_open_result(&mut self, result: protocol::OpenResult) {
@@ -811,7 +811,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             return;
         };
 
-        rpc.send(channel_opened);
+        rpc.complete(channel_opened);
     }
 
     fn handle_gpadl_torndown(&mut self, request: protocol::GpadlTorndown) {
@@ -893,7 +893,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             return;
         };
 
-        sender.send(response.status);
+        sender.complete(response.status);
     }
 
     fn handle_tl_connect_result(&mut self, response: protocol::TlConnectResult) {
@@ -981,7 +981,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
         }
 
         tracing::info!(channel_id = channel_id.0, "opening channel on host");
-        let request = &rpc.0;
+        let request = rpc.input();
         let open_data = &request.open_data;
 
         let open_channel = protocol::OpenChannel {
@@ -1014,15 +1014,16 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             self.inner.send(&open_channel);
         }
 
-        self.inner.channels.get_mut(&channel_id).unwrap().state = ChannelState::Opening(rpc.1);
+        self.inner.channels.get_mut(&channel_id).unwrap().state =
+            ChannelState::Opening(rpc.split().1);
     }
 
     fn handle_gpadl(&mut self, channel_id: ChannelId, rpc: Rpc<GpadlRequest, bool>) {
-        let request = &rpc.0;
+        let (request, rpc) = rpc.split();
         if self
             .inner
             .gpadls
-            .insert((channel_id, request.id), GpadlState::Offered(rpc.1))
+            .insert((channel_id, request.id), GpadlState::Offered(rpc))
             .is_some()
         {
             panic!(
@@ -1129,12 +1130,12 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             panic!("duplicate channel modify request {channel_id:?}");
         }
 
-        channel.modify_response_send = Some(rpc.1);
-        let request = &rpc.0;
+        let (request, response) = rpc.split();
+        channel.modify_response_send = Some(response);
         let payload = match request {
             ModifyRequest::TargetVp { target_vp } => protocol::ModifyChannel {
                 channel_id,
-                target_vp: *target_vp,
+                target_vp,
             },
         };
 
@@ -1311,7 +1312,7 @@ impl<T: VmbusMessageSource> Inspect for ClientTask<T> {
 #[derive(Debug)]
 enum GpadlState {
     /// GpadlHeader has been sent to the host.
-    Offered(mesh::OneshotSender<bool>),
+    Offered(Rpc<(), bool>),
     /// Host has responded with GpadlCreated.
     Created,
     /// GpadlTeardown message has been sent to the host.
@@ -1795,8 +1796,8 @@ mod tests {
         let (server, mut client, _) = test_init();
         let channel = server.get_channel(&mut client).await;
 
-        let (send, recv) = mesh::oneshot();
-        channel.request_send.send(ChannelRequest::Open(Rpc(
+        let recv = channel.request_send.call(
+            ChannelRequest::Open,
             OpenRequest {
                 open_data: OpenData {
                     target_vp: 0,
@@ -1808,8 +1809,7 @@ mod tests {
                 },
                 flags: OpenChannelFlags::new(),
             },
-            send,
-        )));
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -1846,8 +1846,8 @@ mod tests {
         let (server, mut client, _) = test_init();
         let channel = server.get_channel(&mut client).await;
 
-        let (send, recv) = mesh::oneshot();
-        channel.request_send.send(ChannelRequest::Open(Rpc(
+        let recv = channel.request_send.call(
+            ChannelRequest::Open,
             OpenRequest {
                 open_data: OpenData {
                     target_vp: 0,
@@ -1859,8 +1859,7 @@ mod tests {
                 },
                 flags: OpenChannelFlags::new(),
             },
-            send,
-        )));
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -1899,11 +1898,10 @@ mod tests {
 
         // N.B. A real server requires the channel to be open before sending this, but the test
         //      server doesn't care.
-        let (send, recv) = mesh::oneshot();
-        channel.request_send.send(ChannelRequest::Modify(Rpc(
+        let recv = channel.request_send.call(
+            ChannelRequest::Modify,
             ModifyRequest::TargetVp { target_vp: 1 },
-            send,
-        )));
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -2016,15 +2014,14 @@ mod tests {
     async fn test_gpadl_success() {
         let (server, mut client, _) = test_init();
         let mut channel = server.get_channel(&mut client).await;
-        let (send, recv) = mesh::oneshot();
-        channel.request_send.send(ChannelRequest::Gpadl(Rpc(
+        let recv = channel.request_send.call(
+            ChannelRequest::Gpadl,
             GpadlRequest {
                 id: GpadlId(1),
                 count: 1,
                 buf: vec![5],
             },
-            send,
-        )));
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -2079,15 +2076,14 @@ mod tests {
     async fn test_gpadl_fail() {
         let (server, mut client, _) = test_init();
         let channel = server.get_channel(&mut client).await;
-        let (send, recv) = mesh::oneshot();
-        channel.request_send.send(ChannelRequest::Gpadl(Rpc(
+        let recv = channel.request_send.call(
+            ChannelRequest::Gpadl,
             GpadlRequest {
                 id: GpadlId(1),
                 count: 1,
                 buf: vec![7],
             },
-            send,
-        )));
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -2121,15 +2117,14 @@ mod tests {
         let mut channel = server.get_channel(&mut client).await;
         let channel_id = ChannelId(0);
         let gpadl_id = GpadlId(1);
-        let (send, recv) = mesh::oneshot();
-        channel.request_send.send(ChannelRequest::Gpadl(Rpc(
+        let recv = channel.request_send.call(
+            ChannelRequest::Gpadl,
             GpadlRequest {
                 id: gpadl_id,
                 count: 1,
                 buf: vec![3],
             },
-            send,
-        )));
+        );
 
         assert_eq!(
             server.next().unwrap(),

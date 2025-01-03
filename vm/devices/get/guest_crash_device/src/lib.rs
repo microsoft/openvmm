@@ -16,9 +16,8 @@ use get_protocol::crash::CRASHDUMP_GUID;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
-use mesh::error::RemoteResult;
-use mesh::error::RemoteResultExt;
 use mesh::rpc::FailableRpc;
+use mesh::rpc::PendingFailableRpc;
 use mesh::rpc::RpcSend;
 use std::fs::File;
 use std::io::Seek;
@@ -93,7 +92,7 @@ enum ProtocolState {
 
 enum DumpState {
     OpeningFile {
-        recv: mesh::OneshotReceiver<RemoteResult<File>>,
+        recv: PendingFailableRpc<File>,
     },
     Writing {
         file: File,
@@ -227,7 +226,7 @@ impl GuestCrashDevice {
                         }
                         crash::MessageType::REQUEST_NIX_DUMP_START_V1 => {
                             let (send, recv) = mesh::oneshot();
-                            let recv = self.request_dump.call(|x| x, recv);
+                            let recv = self.request_dump.call_failable(|x| x, recv);
                             channel.state = ProtocolState::DumpRequested {
                                 activity_id: header.activity_id,
                                 done: send,
@@ -245,7 +244,7 @@ impl GuestCrashDevice {
                     let DumpState::OpeningFile { recv } = state else {
                         unreachable!()
                     };
-                    let status = match recv.await.flatten() {
+                    let status = match recv.await {
                         Ok(file) => {
                             *state = DumpState::Writing {
                                 file,
