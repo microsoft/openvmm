@@ -1554,15 +1554,11 @@ impl UhProcessor<'_, TdxBacked> {
                         .cpuid
                         .guest_result(CpuidFunction(leaf), subleaf, &guest_state);
 
-                tracing::trace!(leaf, subleaf, "cpuid");
-
                 let [eax, ebx, ecx, edx] = self.partition.cpuid.lock().result(
                     leaf,
                     subleaf,
                     &[result.eax, result.ebx, result.ecx, result.edx],
                 );
-
-                tracing::trace!(eax, ebx, ecx, edx, "cpuid result");
 
                 let enter_state = self.runner.tdx_enter_guest_state_mut();
                 enter_state.set_rax(eax.into());
