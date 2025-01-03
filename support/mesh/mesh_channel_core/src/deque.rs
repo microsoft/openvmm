@@ -214,23 +214,6 @@ impl ErasedVecDeque {
         Some(InPlaceElement(ptr, PhantomData))
     }
 
-    /// Pops the front element from the queue and writes it to `dst`.
-    ///
-    /// # Safety
-    /// The caller must ensure that `dst` is valid for writing the element.
-    pub unsafe fn pop_front(&mut self, dst: *mut ()) {
-        let src = self.pop_front_in_place().unwrap();
-        // SAFETY: the caller ensures that `dst` is valid for writing the
-        // element.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                src.as_ptr().cast::<u8>(),
-                dst.cast(),
-                self.vtable.layout.size(),
-            );
-        }
-    }
-
     /// Clears the queue of elements.
     pub fn clear(&mut self) {
         let mut i = 0;
@@ -338,12 +321,14 @@ mod tests {
                 }
             }
             for _ in 0..3 {
-                // SAFETY: providing valid pointers for writing the element, which is
-                // then guaranteed to be initialized.
+                // SAFETY: casting to the correct type and reading the value.
                 let result = unsafe {
-                    let mut result = MaybeUninit::<String>::uninit();
-                    deque.pop_front(result.as_mut_ptr().cast());
-                    result.assume_init()
+                    deque
+                        .pop_front_in_place()
+                        .unwrap()
+                        .as_ptr()
+                        .cast::<String>()
+                        .read()
                 };
                 assert_eq!(&result, "foo");
             }
@@ -363,13 +348,8 @@ mod tests {
                 }
             }
             for _ in 0..3 {
-                // SAFETY: providing valid pointers for writing the element, which is
-                // then guaranteed to be initialized.
-                unsafe {
-                    let mut result = MaybeUninit::<()>::uninit();
-                    deque.pop_front(result.as_mut_ptr().cast());
-                    result.assume_init()
-                };
+                // SAFETY: the values are of type `()`.
+                unsafe { deque.pop_front_in_place().unwrap().as_ptr().read() };
             }
         }
         drop(deque);

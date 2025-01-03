@@ -33,6 +33,7 @@ use parking_lot::Mutex;
 use parking_lot::MutexGuard;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::task::ready;
 
 /// Creates a new channel for sending messages of type `T`, returning the sender
 /// and receiver ends.
@@ -88,15 +89,10 @@ impl<T> Sender<T> {
     /// # });
     /// ```
     pub fn send(&self, message: T) {
-        let mut message = MaybeUninit::new(message);
         // SAFETY: the queue is for `T` and `message` is a valid owned `T`.
-        // Additionally, the sender/receiver is only `Send`/`Sync`  if `T` is
+        // Additionally, the sender/receiver is only `Send`/`Sync` if `T` is
         // `Send`/`Sync`.
-        let sent = unsafe { self.0.send(MessagePtr::new(&mut message)) };
-        if !sent {
-            // SAFETY: `message` was not dropped.
-            unsafe { message.assume_init_drop() };
-        }
+        unsafe { self.0.send(message) }
     }
 
     /// Returns whether the receiving side of the channel is known to be closed
@@ -126,42 +122,56 @@ impl MessagePtr {
     }
 }
 
+/// Encodes `ChannelPayload::Message(message)` into a [`Message`].
+///
+/// # Safety
+/// The caller must ensure that `message` is a valid owned `T`.
+unsafe fn encode_message<T: MeshField>(message: MessagePtr) -> Message {
+    // SAFETY: The caller guarantees `message` is a valid owned `T`.
+    unsafe { Message::new(ChannelPayload::Message(message.read::<T>())) }
+}
+
 #[derive(Debug, Clone)]
 struct SenderCore(Arc<Queue>);
 
 impl SenderCore {
-    /// Sends `message`, taking ownership of it.
-    ///
-    /// Returns `true` if the message was sent. If `false`, the caller retains
-    /// ownership of the message and must drop it.
+    /// Sends `message`.
     ///
     /// # Safety
     /// The caller must ensure that the message is a valid owned `T` for the `T`
     /// the queue was created with. It also must ensure that the queue is not
     /// sent/shared across threads unless `T` is `Send`/`Sync`.
-    #[must_use]
-    unsafe fn send(&self, message: MessagePtr) -> bool {
-        match self.0.access() {
-            QueueAccess::Local(mut local) => {
-                if local.receiver_gone {
-                    return false;
+    unsafe fn send<T>(&self, message: T) {
+        fn send(queue: &Queue, message: MessagePtr) -> bool {
+            match queue.access() {
+                QueueAccess::Local(mut local) => {
+                    if local.receiver_gone {
+                        return false;
+                    }
+                    // SAFETY: The caller guarantees `message` is a valid owned `T`,
+                    // and that the queue will not be sent/shared across threads
+                    // unless `T` is `Send`/`Sync`.
+                    unsafe { local.messages.push_back(message.0) };
+                    if let Some(waker) = local.waker.take() {
+                        drop(local);
+                        waker.wake();
+                    }
                 }
-                // SAFETY: The caller guarantees `message` is a valid owned `T`,
-                // and that the queue will not be sent/shared across threads
-                // unless `T` is `Send`/`Sync`.
-                unsafe { local.messages.push_back(message.0) };
-                if let Some(waker) = local.waker.take() {
-                    drop(local);
-                    waker.wake();
+                QueueAccess::Remote(remote) => {
+                    // SAFETY: The caller guarantees `message` is a valid owned `T`.
+                    let message = unsafe { (remote.encode)(message) };
+                    remote.port.send(message);
                 }
             }
-            QueueAccess::Remote(remote) => {
-                // SAFETY: The caller guarantees `message` is a valid owned `T`.
-                let message = unsafe { (remote.encode)(message) };
-                remote.port.send(message);
-            }
+            true
         }
-        true
+
+        let mut message = MaybeUninit::new(message);
+        let sent = send(&self.0, MessagePtr::new(&mut message));
+        if !sent {
+            // SAFETY: `message` was not dropped.
+            unsafe { message.assume_init_drop() };
+        }
     }
 
     fn is_closed(&self) -> bool {
@@ -177,62 +187,67 @@ impl SenderCore {
         unsafe { <*const _>::read(queue) }
     }
 
-    /// Creates a new queue for sending to `port`.
-    ///
-    /// # Safety
-    /// The caller must ensure that both `vtable` and `encode` are for a queue
-    /// with the same type.
-    unsafe fn from_port(port: Port, vtable: &'static ElementVtable, encode: EncodeFn) -> Self {
-        let queue = Arc::new(Queue {
-            local: Mutex::new(LocalQueue {
-                remote: true,
-                ..LocalQueue::new(vtable)
-            }),
-            remote: OnceLock::from(RemoteQueueState { port, encode }),
-        });
-        Self(queue)
+    /// Creates a new queue with element type `T` for sending to `port`.
+    fn from_port<T: MeshField>(port: Port) -> Self {
+        fn from_port(port: Port, vtable: &'static ElementVtable, encode: EncodeFn) -> SenderCore {
+            SenderCore(Arc::new(Queue {
+                local: Mutex::new(LocalQueue {
+                    remote: true,
+                    ..LocalQueue::new(vtable)
+                }),
+                remote: OnceLock::from(RemoteQueueState { port, encode }),
+            }))
+        }
+
+        from_port(
+            port,
+            const { &ElementVtable::new::<T>() },
+            encode_message::<T>,
+        )
     }
 
     /// Converts this sender into a port.
     ///
     /// # Safety
-    /// The caller must ensure that `new_handler` is for a queue with the same
-    /// element type as this sender.
-    unsafe fn into_port(self, new_handler: NewHandlerFn) -> Port {
-        match Arc::try_unwrap(self.into_queue()) {
-            Ok(mut queue) => {
-                if let Some(remote) = queue.remote.into_inner() {
-                    // This is the unique owner of the port.
-                    remote.port
-                } else {
-                    assert!(queue.local.get_mut().receiver_gone);
-                    let (send, _recv) = Port::new_pair();
+    /// The caller must ensure that the queue has element type `T`.
+    unsafe fn into_port<T: MeshField>(self) -> Port {
+        fn into_port(this: SenderCore, new_handler: NewHandlerFn) -> Port {
+            match Arc::try_unwrap(this.into_queue()) {
+                Ok(mut queue) => {
+                    if let Some(remote) = queue.remote.into_inner() {
+                        // This is the unique owner of the port.
+                        remote.port
+                    } else {
+                        assert!(queue.local.get_mut().receiver_gone);
+                        let (send, _recv) = Port::new_pair();
+                        send
+                    }
+                }
+                Err(queue) => {
+                    // There is a receiver or at least one other sender.
+                    let (send, recv) = Port::new_pair();
+                    match queue.access() {
+                        QueueAccess::Local(mut local) => {
+                            if !local.receiver_gone {
+                                local.new_handler = new_handler;
+                                local.ports.push(recv);
+                                if let Some(waker) = local.waker.take() {
+                                    drop(local);
+                                    waker.wake();
+                                }
+                            }
+                        }
+                        QueueAccess::Remote(remote) => {
+                            remote
+                                .port
+                                .send(Message::new(ChannelPayload::<()>::Port(recv)));
+                        }
+                    }
                     send
                 }
             }
-            Err(queue) => {
-                // There is a receiver or at least one other sender.
-                let (send, recv) = Port::new_pair();
-                match queue.access() {
-                    QueueAccess::Local(mut local) => {
-                        if !local.receiver_gone {
-                            local.new_handler = new_handler;
-                            local.ports.push(recv);
-                            if let Some(waker) = local.waker.take() {
-                                drop(local);
-                                waker.wake();
-                            }
-                        }
-                    }
-                    QueueAccess::Remote(remote) => {
-                        remote
-                            .port
-                            .send(Message::new(ChannelPayload::<()>::Port(recv)));
-                    }
-                }
-                send
-            }
         }
+        into_port(self, RemotePortHandler::new::<T>)
     }
 }
 
@@ -257,13 +272,14 @@ impl<T: MeshField> DefaultEncoding for Sender<T> {
 
 impl<T: MeshField> From<Port> for Sender<T> {
     fn from(port: Port) -> Self {
-        Self::from_port(port)
+        Self(SenderCore::from_port::<T>(port), PhantomData)
     }
 }
 
 impl<T: MeshField> From<Sender<T>> for Port {
     fn from(sender: Sender<T>) -> Self {
-        sender.into_port()
+        // SAFETY: the queue has element type `T`.
+        unsafe { sender.0.into_port::<T>() }
     }
 }
 
@@ -285,38 +301,9 @@ impl<T: MeshField> Sender<T> {
     /// assert_eq!(outer_recv.try_recv().unwrap(), 2);
     /// ```
     pub fn bridge(self, receiver: Receiver<T>) {
-        let sender = self.into_port();
-        let receiver = receiver.into_port();
+        let sender = Port::from(self);
+        let receiver = Port::from(receiver);
         sender.bridge(receiver);
-    }
-
-    /// Encodes `ChannelPayload::Message(message)` into a [`Message`].
-    ///
-    /// # Safety
-    /// The caller must ensure that `message` is a valid owned `T`.
-    unsafe fn encode_message(message: MessagePtr) -> Message {
-        // SAFETY: The caller guarantees `message` is a valid owned `T`.
-        unsafe { Message::new(ChannelPayload::Message(message.read::<T>())) }
-    }
-
-    fn from_port(port: Port) -> Self {
-        Self(
-            // SAFETY: the vtable and encode function are for a queue with type
-            // `T`.
-            unsafe {
-                SenderCore::from_port(
-                    port,
-                    const { &ElementVtable::new::<T>() },
-                    Self::encode_message,
-                )
-            },
-            PhantomData,
-        )
-    }
-
-    fn into_port(self) -> Port {
-        // SAFETY: the new handler function is for a queue with type `T`.
-        unsafe { self.0.into_port(RemotePortHandler::new::<T>) }
     }
 }
 
@@ -402,14 +389,10 @@ impl<T> Receiver<T> {
     /// assert!(matches!(recv.try_recv().unwrap_err(), TryRecvError::Closed));
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        let mut v = MaybeUninit::<T>::uninit();
-        // SAFETY: `v` is a valid uninitialized `T`.
-        let r = unsafe { self.0.try_poll_recv(None, MessagePtr::new(&mut v)) };
+        // SAFETY: the queue type is `T`.
+        let r = unsafe { self.0.try_poll_recv::<T>(None) };
         match r {
-            Poll::Ready(Ok(())) => {
-                // SAFETY: `try_poll_recv` guarantees `v` is now initialized.
-                Ok(unsafe { v.assume_init() })
-            }
+            Poll::Ready(Ok(v)) => Ok(v),
             Poll::Ready(Err(RecvError::Closed)) => Err(TryRecvError::Closed),
             Poll::Ready(Err(RecvError::Error(e))) => Err(TryRecvError::Error(e)),
             Poll::Pending => Err(TryRecvError::Empty),
@@ -422,15 +405,8 @@ impl<T> Receiver<T> {
     /// channel is closed or failed, fails. Otherwise, registers the current task to wake
     /// when a message is available or the channel is closed or fails.
     pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
-        let mut v = MaybeUninit::<T>::uninit();
-        // SAFETY: `v` is a valid uninitialized `T`.
-        let r = unsafe { self.0.try_poll_recv(Some(cx), MessagePtr::new(&mut v)) };
-        r.map(|r| {
-            r.map(|()| {
-                // SAFETY: `try_poll_recv` guarantees `v` is now initialized.
-                unsafe { v.assume_init() }
-            })
-        })
+        // SAFETY: the queue type is `T`.
+        unsafe { self.0.try_poll_recv(Some(cx)) }
     }
 
     /// Creates a new sender for sending data to this receiver.
@@ -467,66 +443,75 @@ impl ReceiverCore {
     // Polls for a message.
     //
     // # Safety
-    // `dst` must be be valid for writing a `T`, the element type of the queue.
-    unsafe fn try_poll_recv(
+    // The queue must have element type `T`.
+    unsafe fn try_poll_recv<T>(
         &mut self,
         cx: Option<&mut Context<'_>>,
-        dst: MessagePtr,
-    ) -> Poll<Result<(), RecvError>> {
-        loop {
-            debug_assert!(self.queue.0.remote.get().is_none());
-            let mut local = self.queue.0.local.lock();
-            if local.remove_closed {
-                local.remove_closed = false;
-                drop(local);
-                if let Err(err) = self.ports.remove_closed() {
-                    // Propagate the error to the caller only if there
-                    // are no more senders. Otherwise, the caller might
-                    // stop receiving messages from the remaining
-                    // senders.
-                    let local = self.queue.0.local.lock();
-                    if local.messages.is_empty() && local.ports.is_empty() && self.is_closed() {
-                        self.terminated = true;
-                        return Poll::Ready(Err(RecvError::Error(err)));
+    ) -> Poll<Result<T, RecvError>> {
+        fn try_poll_recv<'a>(
+            this: &'a mut ReceiverCore,
+            cx: Option<&mut Context<'_>>,
+        ) -> Poll<Result<MutexGuard<'a, LocalQueue>, RecvError>> {
+            loop {
+                debug_assert!(this.queue.0.remote.get().is_none());
+                let mut local = this.queue.0.local.lock();
+                if local.remove_closed {
+                    local.remove_closed = false;
+                    drop(local);
+                    if let Err(err) = this.ports.remove_closed() {
+                        // Propagate the error to the caller only if there
+                        // are no more senders. Otherwise, the caller might
+                        // stop receiving messages from the remaining
+                        // senders.
+                        let local = this.queue.0.local.lock();
+                        if local.messages.is_empty() && local.ports.is_empty() && this.is_closed() {
+                            this.terminated = true;
+                            return Poll::Ready(Err(RecvError::Error(err)));
+                        } else {
+                            trace_channel_error(&err);
+                        }
+                    }
+                } else if !local.ports.is_empty() {
+                    let new_handler = local.new_handler;
+                    let ports = std::mem::take(&mut local.ports);
+                    drop(local);
+                    this.ports.0.extend(ports.into_iter().map(|port| {
+                        // SAFETY: `new_handler` has been set to a function whose
+                        // element type matches the queue's element type.
+                        let handler = unsafe { new_handler(this.queue.0.clone()) };
+                        port.set_handler(handler)
+                    }));
+                    continue;
+                } else if local.messages.is_empty() {
+                    if let Some(cx) = cx {
+                        if !local
+                            .waker
+                            .as_ref()
+                            .map_or(false, |waker| waker.will_wake(cx.waker()))
+                            && !this.is_closed()
+                        {
+                            local.waker = Some(cx.waker().clone());
+                        }
+                    }
+                    if this.is_closed() {
+                        this.terminated = true;
+                        return Poll::Ready(Err(RecvError::Closed));
                     } else {
-                        trace_channel_error(&err);
+                        return Poll::Pending;
                     }
-                }
-            } else if !local.ports.is_empty() {
-                let new_handler = local.new_handler;
-                let ports = std::mem::take(&mut local.ports);
-                drop(local);
-                self.ports.0.extend(ports.into_iter().map(|port| {
-                    // SAFETY: `new_handler` has been set to a function whose
-                    // element type matches the queue's element type.
-                    let handler = unsafe { new_handler(self.queue.0.clone()) };
-                    port.set_handler(handler)
-                }));
-                continue;
-            } else if local.messages.is_empty() {
-                if let Some(cx) = cx {
-                    if !local
-                        .waker
-                        .as_ref()
-                        .map_or(false, |waker| waker.will_wake(cx.waker()))
-                        && !self.is_closed()
-                    {
-                        local.waker = Some(cx.waker().clone());
-                    }
-                }
-                if self.is_closed() {
-                    self.terminated = true;
-                    return Poll::Ready(Err(RecvError::Closed));
                 } else {
-                    return Poll::Pending;
+                    return Poll::Ready(Ok(local));
                 }
-            } else {
-                // SAFETY: the caller guarantees `dst` is valid for writing a
-                // `T`.
-                unsafe { local.messages.pop_front(dst.0) };
-                return Poll::Ready(Ok(()));
             }
         }
+
+        ready!(try_poll_recv(self, cx))
+            .map(|mut local| {
+                let message = local.messages.pop_front_in_place().unwrap();
+                // SAFETY: `message` is a valid owned `T`.
+                unsafe { message.as_ptr().cast::<T>().read() }
+            })
+            .into()
     }
 
     fn is_closed(&self) -> bool {
@@ -541,65 +526,70 @@ impl ReceiverCore {
     /// Converts this receiver into a port.
     ///
     /// # Safety
-    /// The caller must ensure that `encode` is for `T`, the element type of
-    /// this receiver.
-    unsafe fn into_port(mut self, encode: EncodeFn) -> Port {
-        let ports = self.ports.into_ports();
-        if ports.len() == 1 {
-            if let Some(queue) = Arc::get_mut(&mut self.queue.0) {
-                let local = queue.local.get_mut();
-                if local.messages.is_empty() && local.ports.is_empty() {
-                    return ports.into_iter().next().unwrap();
+    /// The caller must ensure that the queue has element type `T`.
+    unsafe fn into_port<T: MeshField>(self) -> Port {
+        fn into_port(mut this: ReceiverCore, encode: EncodeFn) -> Port {
+            let ports = this.ports.into_ports();
+            if ports.len() == 1 {
+                if let Some(queue) = Arc::get_mut(&mut this.queue.0) {
+                    let local = queue.local.get_mut();
+                    if local.messages.is_empty() && local.ports.is_empty() {
+                        return ports.into_iter().next().unwrap();
+                    }
                 }
             }
-        }
-        let (send, recv) = Port::new_pair();
-        for port in ports {
-            send.send(Message::new(ChannelPayload::<()>::Port(port)));
-        }
-        let mut local = self.queue.0.local.lock();
-        for port in local.ports.drain(..) {
-            send.send(Message::new(ChannelPayload::<()>::Port(port)));
-        }
-        while let Some(message) = local.messages.pop_front_in_place() {
-            // SAFETY: `message` is a valid owned `T`.
-            let message = unsafe { encode(MessagePtr(message.as_ptr())) };
-            send.send(message);
-        }
-        local.remote = true;
-        self.queue
-            .0
-            .remote
-            .set(RemoteQueueState { port: send, encode })
-            .ok()
-            .unwrap();
+            let (send, recv) = Port::new_pair();
+            for port in ports {
+                send.send(Message::new(ChannelPayload::<()>::Port(port)));
+            }
+            let mut local = this.queue.0.local.lock();
+            for port in local.ports.drain(..) {
+                send.send(Message::new(ChannelPayload::<()>::Port(port)));
+            }
+            while let Some(message) = local.messages.pop_front_in_place() {
+                // SAFETY: `message` is a valid owned `T`.
+                let message = unsafe { encode(MessagePtr(message.as_ptr())) };
+                send.send(message);
+            }
+            local.remote = true;
+            this.queue
+                .0
+                .remote
+                .set(RemoteQueueState { port: send, encode })
+                .ok()
+                .unwrap();
 
-        recv
+            recv
+        }
+        into_port(self, encode_message::<T>)
     }
 
-    /// Creates a new queue for receiving from `port`.
-    ///
-    /// # Safety
-    /// The caller must ensure that `vtable` and `new_handler` are for a
-    /// consistent queue element type.
-    unsafe fn from_port(
-        port: Port,
-        vtable: &'static ElementVtable,
-        new_handler: NewHandlerFn,
-    ) -> Self {
-        let queue = Arc::new(Queue {
-            local: Mutex::new(LocalQueue {
-                ports: vec![port],
-                new_handler,
-                ..LocalQueue::new(vtable)
-            }),
-            remote: OnceLock::new(),
-        });
-        Self {
-            queue: ReceiverQueue(queue),
-            ports: PortHandlerList::new(),
-            terminated: false,
+    /// Creates a new queue with element type `T` for receiving from `port`.
+    fn from_port<T: MeshField>(port: Port) -> Self {
+        fn from_port(
+            port: Port,
+            vtable: &'static ElementVtable,
+            new_handler: NewHandlerFn,
+        ) -> ReceiverCore {
+            let queue = Arc::new(Queue {
+                local: Mutex::new(LocalQueue {
+                    ports: vec![port],
+                    new_handler,
+                    ..LocalQueue::new(vtable)
+                }),
+                remote: OnceLock::new(),
+            });
+            ReceiverCore {
+                queue: ReceiverQueue(queue),
+                ports: PortHandlerList::new(),
+                terminated: false,
+            }
         }
+        from_port(
+            port,
+            const { &ElementVtable::new::<T>() },
+            RemotePortHandler::new::<T>,
+        )
     }
 }
 
@@ -671,13 +661,14 @@ impl<T: MeshField> DefaultEncoding for Receiver<T> {
 
 impl<T: MeshField> From<Port> for Receiver<T> {
     fn from(port: Port) -> Self {
-        Self::from_port(port)
+        Self(ReceiverCore::from_port::<T>(port), PhantomData)
     }
 }
 
 impl<T: MeshField> From<Receiver<T>> for Port {
     fn from(receiver: Receiver<T>) -> Self {
-        receiver.into_port()
+        // SAFETY: the queue has element type `T`.
+        unsafe { receiver.0.into_port::<T>() }
     }
 }
 
@@ -687,26 +678,6 @@ impl<T: MeshField> Receiver<T> {
     /// See [`Sender::bridge`] for more details.
     pub fn bridge(self, sender: Sender<T>) {
         sender.bridge(self)
-    }
-
-    fn into_port(self) -> Port {
-        // SAFETY: the encode function is for `T`.
-        unsafe { self.0.into_port(Sender::<T>::encode_message) }
-    }
-
-    fn from_port(port: Port) -> Self {
-        Self(
-            // SAFETY: the vtable and new handler function are for a queue with
-            // type `T`.
-            unsafe {
-                ReceiverCore::from_port(
-                    port,
-                    const { &ElementVtable::new::<T>() },
-                    RemotePortHandler::new::<T>,
-                )
-            },
-            PhantomData,
-        )
     }
 }
 
