@@ -46,6 +46,7 @@ use mesh_protobuf::DefaultEncoding;
 use mesh_protobuf::Protobuf;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
+use std::marker::PhantomPinned;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::task::ready;
@@ -392,7 +393,7 @@ impl<T> Receiver<T> {
     /// # });
     /// ```
     pub fn recv(&mut self) -> Recv<'_, T> {
-        Recv(self)
+        Recv(self, PhantomPinned)
     }
 
     /// Consumes and returns the next message, if there is one.
@@ -437,13 +438,17 @@ impl<T> Receiver<T> {
 }
 
 /// The future returned by [`Receiver::recv`].
-pub struct Recv<'a, T>(&'a mut Receiver<T>);
+//
+// Force `!Unpin` to allow for future optimizations.
+pub struct Recv<'a, T>(&'a mut Receiver<T>, PhantomPinned);
 
 impl<T> Future for Recv<'_, T> {
     type Output = Result<T, RecvError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.get_mut().0.poll_recv(cx)
+        // SAFETY: there are no actual pinning invariants.
+        let this = unsafe { self.get_unchecked_mut() };
+        this.0.poll_recv(cx)
     }
 }
 
