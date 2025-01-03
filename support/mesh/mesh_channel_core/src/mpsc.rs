@@ -126,7 +126,7 @@ impl MessagePtr {
 ///
 /// # Safety
 /// The caller must ensure that `message` is a valid owned `T`.
-unsafe fn encode_message<T: MeshField>(message: MessagePtr) -> Message {
+unsafe fn encode_message<T: 'static + MeshField + Send>(message: MessagePtr) -> Message {
     // SAFETY: The caller guarantees `message` is a valid owned `T`.
     unsafe { Message::new(ChannelPayload::Message(message.read::<T>())) }
 }
@@ -188,7 +188,7 @@ impl SenderCore {
     }
 
     /// Creates a new queue with element type `T` for sending to `port`.
-    fn from_port<T: MeshField>(port: Port) -> Self {
+    fn from_port<T: 'static + MeshField + Send>(port: Port) -> Self {
         fn from_port(port: Port, vtable: &'static ElementVtable, encode: EncodeFn) -> SenderCore {
             SenderCore(Arc::new(Queue {
                 local: Mutex::new(LocalQueue {
@@ -210,7 +210,7 @@ impl SenderCore {
     ///
     /// # Safety
     /// The caller must ensure that the queue has element type `T`.
-    unsafe fn into_port<T: MeshField>(self) -> Port {
+    unsafe fn into_port<T: 'static + MeshField + Send>(self) -> Port {
         fn into_port(this: SenderCore, new_handler: NewHandlerFn) -> Port {
             match Arc::try_unwrap(this.into_queue()) {
                 Ok(mut queue) => {
@@ -266,24 +266,24 @@ impl Drop for SenderCore {
     }
 }
 
-impl<T: MeshField> DefaultEncoding for Sender<T> {
+impl<T: 'static + MeshField + Send> DefaultEncoding for Sender<T> {
     type Encoding = PortField;
 }
 
-impl<T: MeshField> From<Port> for Sender<T> {
+impl<T: 'static + MeshField + Send> From<Port> for Sender<T> {
     fn from(port: Port) -> Self {
         Self(SenderCore::from_port::<T>(port), PhantomData)
     }
 }
 
-impl<T: MeshField> From<Sender<T>> for Port {
+impl<T: 'static + MeshField + Send> From<Sender<T>> for Port {
     fn from(sender: Sender<T>) -> Self {
         // SAFETY: the queue has element type `T`.
         unsafe { sender.0.into_port::<T>() }
     }
 }
 
-impl<T: MeshField> Sender<T> {
+impl<T: 'static + MeshField + Send> Sender<T> {
     /// Bridges this and `recv` together, consuming both `self` and `recv`. This
     /// makes it so that anything sent to `recv` will be directly sent to this
     /// channel's peer receiver, without a separate relay step. This includes
@@ -527,7 +527,7 @@ impl ReceiverCore {
     ///
     /// # Safety
     /// The caller must ensure that the queue has element type `T`.
-    unsafe fn into_port<T: MeshField>(self) -> Port {
+    unsafe fn into_port<T: 'static + MeshField + Send>(self) -> Port {
         fn into_port(mut this: ReceiverCore, encode: EncodeFn) -> Port {
             let ports = this.ports.into_ports();
             if ports.len() == 1 {
@@ -565,7 +565,7 @@ impl ReceiverCore {
     }
 
     /// Creates a new queue with element type `T` for receiving from `port`.
-    fn from_port<T: MeshField>(port: Port) -> Self {
+    fn from_port<T: 'static + MeshField + Send>(port: Port) -> Self {
         fn from_port(
             port: Port,
             vtable: &'static ElementVtable,
@@ -655,24 +655,24 @@ impl PortHandlerList {
     }
 }
 
-impl<T: MeshField> DefaultEncoding for Receiver<T> {
+impl<T: 'static + MeshField + Send> DefaultEncoding for Receiver<T> {
     type Encoding = PortField;
 }
 
-impl<T: MeshField> From<Port> for Receiver<T> {
+impl<T: 'static + MeshField + Send> From<Port> for Receiver<T> {
     fn from(port: Port) -> Self {
         Self(ReceiverCore::from_port::<T>(port), PhantomData)
     }
 }
 
-impl<T: MeshField> From<Receiver<T>> for Port {
+impl<T: 'static + MeshField + Send> From<Receiver<T>> for Port {
     fn from(receiver: Receiver<T>) -> Self {
         // SAFETY: the queue has element type `T`.
         unsafe { receiver.0.into_port::<T>() }
     }
 }
 
-impl<T: MeshField> Receiver<T> {
+impl<T: 'static + MeshField + Send> Receiver<T> {
     /// Bridges this and `sender` together, consuming both `self` and `sender`.
     ///
     /// See [`Sender::bridge`] for more details.
@@ -768,7 +768,7 @@ impl RemotePortHandler {
     ///
     /// # Safety
     /// The caller must ensure that `queue` has element type `T`.
-    unsafe fn new<T: MeshField>(queue: Arc<Queue>) -> Self {
+    unsafe fn new<T: 'static + MeshField + Send>(queue: Arc<Queue>) -> Self {
         Self {
             queue,
             parse: Self::parse::<T>,
@@ -779,7 +779,7 @@ impl RemotePortHandler {
     ///
     /// # Safety
     /// The caller must ensure that `p` is valid for writing a `T`.
-    unsafe fn parse<T: MeshField>(
+    unsafe fn parse<T: 'static + MeshField + Send>(
         message: Message,
         p: *mut (),
     ) -> Result<Option<Port>, ChannelError> {
