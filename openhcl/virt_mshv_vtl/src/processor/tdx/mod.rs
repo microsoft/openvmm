@@ -856,7 +856,7 @@ impl UhProcessor<'_, TdxBacked> {
         // Check for interrupt requests from the host.
         let mut update_rvi = false;
         if let Some(irr) = self.runner.proxy_irr() {
-            // TODO TDX: filter proxy IRRs.
+            // N.B proxy IRRs received are filtered
             if self.backing.cvm.lapics[GuestVtl::Vtl0]
                 .lapic
                 .can_offload_irr()
