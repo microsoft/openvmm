@@ -217,7 +217,7 @@ impl AkvKeyReleaseJwtHelper {
             )
         })?;
         let header: akv::AkvKeyReleaseJwtHeader =
-            serde_json::from_str(&header).map_err(AkvKeyReleaseJwtError::JwtHeaderToJson)?;
+            serde_json::from_str(header).map_err(AkvKeyReleaseJwtError::JwtHeaderToJson)?;
 
         let body = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(body)
@@ -233,7 +233,7 @@ impl AkvKeyReleaseJwtHelper {
             )
         })?;
         let body: akv::AkvKeyReleaseJwtBody =
-            serde_json::from_str(&body).map_err(AkvKeyReleaseJwtError::JwtBodyToJson)?;
+            serde_json::from_str(body).map_err(AkvKeyReleaseJwtError::JwtBodyToJson)?;
 
         Ok(Self {
             jwt: AkvKeyReleaseJwt {
