@@ -112,7 +112,8 @@ use x86defs::X64_EFER_LME;
 use x86defs::X64_EFER_NXE;
 use x86defs::X64_EFER_SVME;
 use x86defs::X86X_MSR_EFER;
-use x86emu::CpuState;
+use x86emu::Gp;
+use x86emu::Segment;
 
 #[derive(Debug)]
 struct TdxExit<'a>(&'a tdx_tdg_vp_enter_exit_info);
@@ -2241,14 +2242,14 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         self.vp.partition.caps.vendor
     }
 
-    fn gp(&mut self, reg: usize) -> u64 {
+    fn gp(&mut self, reg: Gp) -> u64 {
         let enter_state = self.vp.runner.tdx_enter_guest_state();
-        enter_state.gps[reg]
+        enter_state.gps[reg as usize]
     }
 
-    fn set_gp(&mut self, reg: usize, v: u64) {
+    fn set_gp(&mut self, reg: Gp, v: u64) {
         let enter_state = self.vp.runner.tdx_enter_guest_state_mut();
-        enter_state.gps[reg] = v;
+        enter_state.gps[reg as usize] = v;
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
@@ -2270,20 +2271,19 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         enter_state.rip = v;
     }
 
-    fn segment(&mut self, index: usize) -> x86defs::SegmentRegister {
+    fn segment(&mut self, index: Segment) -> x86defs::SegmentRegister {
         let tdx_segment_index = match index {
-            CpuState::CS => TdxSegmentReg::Cs,
-            CpuState::ES => TdxSegmentReg::Es,
-            CpuState::SS => TdxSegmentReg::Ss,
-            CpuState::DS => TdxSegmentReg::Ds,
-            CpuState::FS => TdxSegmentReg::Fs,
-            CpuState::GS => TdxSegmentReg::Gs,
-            _ => panic!("invalid segment register"),
+            Segment::CS => TdxSegmentReg::Cs,
+            Segment::ES => TdxSegmentReg::Es,
+            Segment::SS => TdxSegmentReg::Ss,
+            Segment::DS => TdxSegmentReg::Ds,
+            Segment::FS => TdxSegmentReg::Fs,
+            Segment::GS => TdxSegmentReg::Gs,
         };
         let reg = match tdx_segment_index {
-            TdxSegmentReg::Cs => self.cache.segs[index]
+            TdxSegmentReg::Cs => self.cache.segs[index as usize]
                 .get_or_insert_with(|| TdxExit(self.vp.runner.tdx_vp_enter_exit_info()).cs()),
-            _ => self.cache.segs[index]
+            _ => self.cache.segs[index as usize]
                 .get_or_insert_with(|| self.vp.read_segment(self.vtl, tdx_segment_index)),
         };
         (*reg).into()

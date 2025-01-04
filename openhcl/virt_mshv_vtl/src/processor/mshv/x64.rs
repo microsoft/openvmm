@@ -1273,7 +1273,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         let [rsp, es, ds, fs, gs, ss, cr0, efer] = values;
 
         let mut gps = self.runner.cpu_context().gps;
-        gps[x86emu::CpuState::RSP] = rsp.as_u64();
+        gps[x86emu::Gp::RSP as usize] = rsp.as_u64();
 
         let message = self.runner.exit_message();
         let header = HvX64InterceptMessageHeader::ref_from_prefix(message.payload()).unwrap();
@@ -1309,7 +1309,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
                     (HvX64RegisterName::Rflags, self.cache.rflags.into()),
                     (
                         HvX64RegisterName::Rsp,
-                        self.cache.gps[x86emu::CpuState::RSP],
+                        self.cache.gps[x86emu::Gp::RSP as usize],
                     ),
                 ],
             )
@@ -1326,12 +1326,12 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         self.vp.partition.caps.vendor
     }
 
-    fn gp(&mut self, reg: usize) -> u64 {
-        self.cache.gps[reg]
+    fn gp(&mut self, reg: x86emu::Gp) -> u64 {
+        self.cache.gps[reg as usize]
     }
 
-    fn set_gp(&mut self, reg: usize, v: u64) {
-        self.cache.gps[reg] = v;
+    fn set_gp(&mut self, reg: x86emu::Gp, v: u64) {
+        self.cache.gps[reg as usize] = v;
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
@@ -1351,8 +1351,8 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         self.cache.rip = v;
     }
 
-    fn segment(&mut self, index: usize) -> SegmentRegister {
-        self.cache.segs[index]
+    fn segment(&mut self, index: x86emu::Segment) -> SegmentRegister {
+        self.cache.segs[index as usize]
     }
 
     fn efer(&mut self) -> u64 {

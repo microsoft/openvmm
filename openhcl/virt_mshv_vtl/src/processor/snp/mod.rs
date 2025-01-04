@@ -1448,49 +1448,47 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         self.vp.partition.caps.vendor
     }
 
-    fn gp(&mut self, reg: usize) -> u64 {
+    fn gp(&mut self, reg: x86emu::Gp) -> u64 {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         match reg {
-            x86emu::CpuState::RAX => vmsa.rax(),
-            x86emu::CpuState::RCX => vmsa.rcx(),
-            x86emu::CpuState::RDX => vmsa.rdx(),
-            x86emu::CpuState::RBX => vmsa.rbx(),
-            x86emu::CpuState::RSP => vmsa.rsp(),
-            x86emu::CpuState::RBP => vmsa.rbp(),
-            x86emu::CpuState::RSI => vmsa.rsi(),
-            x86emu::CpuState::RDI => vmsa.rdi(),
-            x86emu::CpuState::R8 => vmsa.r8(),
-            x86emu::CpuState::R9 => vmsa.r9(),
-            x86emu::CpuState::R10 => vmsa.r10(),
-            x86emu::CpuState::R11 => vmsa.r11(),
-            x86emu::CpuState::R12 => vmsa.r12(),
-            x86emu::CpuState::R13 => vmsa.r13(),
-            x86emu::CpuState::R14 => vmsa.r14(),
-            x86emu::CpuState::R15 => vmsa.r15(),
-            _ => panic!("invalid gp register index"),
+            x86emu::Gp::RAX => vmsa.rax(),
+            x86emu::Gp::RCX => vmsa.rcx(),
+            x86emu::Gp::RDX => vmsa.rdx(),
+            x86emu::Gp::RBX => vmsa.rbx(),
+            x86emu::Gp::RSP => vmsa.rsp(),
+            x86emu::Gp::RBP => vmsa.rbp(),
+            x86emu::Gp::RSI => vmsa.rsi(),
+            x86emu::Gp::RDI => vmsa.rdi(),
+            x86emu::Gp::R8 => vmsa.r8(),
+            x86emu::Gp::R9 => vmsa.r9(),
+            x86emu::Gp::R10 => vmsa.r10(),
+            x86emu::Gp::R11 => vmsa.r11(),
+            x86emu::Gp::R12 => vmsa.r12(),
+            x86emu::Gp::R13 => vmsa.r13(),
+            x86emu::Gp::R14 => vmsa.r14(),
+            x86emu::Gp::R15 => vmsa.r15(),
         }
     }
 
-    fn set_gp(&mut self, reg: usize, v: u64) {
+    fn set_gp(&mut self, reg: x86emu::Gp, v: u64) {
         let mut vmsa = self.vp.runner.vmsa_mut(self.vtl);
         match reg {
-            x86emu::CpuState::RAX => vmsa.set_rax(v),
-            x86emu::CpuState::RCX => vmsa.set_rcx(v),
-            x86emu::CpuState::RDX => vmsa.set_rdx(v),
-            x86emu::CpuState::RBX => vmsa.set_rbx(v),
-            x86emu::CpuState::RSP => vmsa.set_rsp(v),
-            x86emu::CpuState::RBP => vmsa.set_rbp(v),
-            x86emu::CpuState::RSI => vmsa.set_rsi(v),
-            x86emu::CpuState::RDI => vmsa.set_rdi(v),
-            x86emu::CpuState::R8 => vmsa.set_r8(v),
-            x86emu::CpuState::R9 => vmsa.set_r9(v),
-            x86emu::CpuState::R10 => vmsa.set_r10(v),
-            x86emu::CpuState::R11 => vmsa.set_r11(v),
-            x86emu::CpuState::R12 => vmsa.set_r12(v),
-            x86emu::CpuState::R13 => vmsa.set_r13(v),
-            x86emu::CpuState::R14 => vmsa.set_r14(v),
-            x86emu::CpuState::R15 => vmsa.set_r15(v),
-            _ => panic!("invalid gp register index"),
+            x86emu::Gp::RAX => vmsa.set_rax(v),
+            x86emu::Gp::RCX => vmsa.set_rcx(v),
+            x86emu::Gp::RDX => vmsa.set_rdx(v),
+            x86emu::Gp::RBX => vmsa.set_rbx(v),
+            x86emu::Gp::RSP => vmsa.set_rsp(v),
+            x86emu::Gp::RBP => vmsa.set_rbp(v),
+            x86emu::Gp::RSI => vmsa.set_rsi(v),
+            x86emu::Gp::RDI => vmsa.set_rdi(v),
+            x86emu::Gp::R8 => vmsa.set_r8(v),
+            x86emu::Gp::R9 => vmsa.set_r9(v),
+            x86emu::Gp::R10 => vmsa.set_r10(v),
+            x86emu::Gp::R11 => vmsa.set_r11(v),
+            x86emu::Gp::R12 => vmsa.set_r12(v),
+            x86emu::Gp::R13 => vmsa.set_r13(v),
+            x86emu::Gp::R14 => vmsa.set_r14(v),
+            x86emu::Gp::R15 => vmsa.set_r15(v),
         };
     }
 
@@ -1516,16 +1514,15 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         vmsa.set_rip(v);
     }
 
-    fn segment(&mut self, index: usize) -> SegmentRegister {
+    fn segment(&mut self, index: x86emu::Segment) -> SegmentRegister {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         match index {
-            x86emu::CpuState::ES => from_seg(hv_seg_from_snp(&vmsa.es())),
-            x86emu::CpuState::CS => from_seg(hv_seg_from_snp(&vmsa.cs())),
-            x86emu::CpuState::SS => from_seg(hv_seg_from_snp(&vmsa.ss())),
-            x86emu::CpuState::DS => from_seg(hv_seg_from_snp(&vmsa.ds())),
-            x86emu::CpuState::FS => from_seg(hv_seg_from_snp(&vmsa.fs())),
-            x86emu::CpuState::GS => from_seg(hv_seg_from_snp(&vmsa.gs())),
-            _ => panic!("invalid segment register index"),
+            x86emu::Segment::ES => from_seg(hv_seg_from_snp(&vmsa.es())),
+            x86emu::Segment::CS => from_seg(hv_seg_from_snp(&vmsa.cs())),
+            x86emu::Segment::SS => from_seg(hv_seg_from_snp(&vmsa.ss())),
+            x86emu::Segment::DS => from_seg(hv_seg_from_snp(&vmsa.ds())),
+            x86emu::Segment::FS => from_seg(hv_seg_from_snp(&vmsa.fs())),
+            x86emu::Segment::GS => from_seg(hv_seg_from_snp(&vmsa.gs())),
         }
     }
 

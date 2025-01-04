@@ -6,6 +6,9 @@
 use crate::registers::bitness;
 use crate::registers::Bitness;
 use crate::registers::RegisterIndex;
+use crate::registers::Gp;
+use crate::registers::GpSize;
+use crate::registers::Segment;
 use crate::Cpu;
 use iced_x86::Code;
 use iced_x86::Decoder;
@@ -67,25 +70,55 @@ impl EmulatorRegister for u128 {
 
 impl Into<RegisterIndex> for Register {
     fn into(self) -> RegisterIndex {
-        let size = self.size();
-        let shift = match size {
+        let size = match self.size() {
             1 => {
                 if self >= Register::SPL || self < Register::AH {
-                    0
+                    GpSize::BYTE(0)
                 } else {
-                    8
+                    GpSize::BYTE(8)
                 }
             }
-            2 => 0,
-            4 => 0,
-            8 => 0,
+            2 => GpSize::WORD,
+            4 => GpSize::DWORD,
+            8 => GpSize::QWORD,
             _ => panic!("invalid gp register size"),
         };
-        let extended_index = self.full_register().number();
+        let extended_index = match self.full_register(){
+            Register::RAX => Gp::RAX,
+            Register::RCX => Gp::RCX,
+            Register::RDX => Gp::RDX,
+            Register::RBX => Gp::RBX,
+            Register::RSP => Gp::RSP,
+            Register::RBP => Gp::RBP,
+            Register::RSI => Gp::RSI,
+            Register::RDI => Gp::RDI,
+            Register::R8  => Gp::R8,
+            Register::R9  => Gp::R9,
+            Register::R10 => Gp::R10,
+            Register::R11 => Gp::R11,
+            Register::R12 => Gp::R12,
+            Register::R13 => Gp::R13,
+            Register::R14 => Gp::R14,
+            Register::R15 => Gp::R15,
+            _ => panic!("invalid gp register index")
+        };
         RegisterIndex {
             extended_index,
             size,
-            shift,
+        }
+    }
+}
+
+impl Into<Segment> for Register {
+    fn into(self) -> Segment {
+        match self {
+            Register::ES => Segment::ES,
+            Register::CS => Segment::CS,
+            Register::SS => Segment::SS,
+            Register::DS => Segment::DS,
+            Register::FS => Segment::FS,
+            Register::GS => Segment::GS,
+            _ => panic!("invalid segment register index")
         }
     }
 }
@@ -181,7 +214,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         let rip = self.cpu.rip().wrapping_add(offset);
         let cr0 = self.cpu.cr0();
         let efer = self.cpu.efer();
-        let cs = self.cpu.segment(Register::CS.number());
+        let cs = self.cpu.segment(Segment::CS);
 
         match bitness(cr0, efer, cs) {
             Bitness::Bit64 => Some(rip),
@@ -201,7 +234,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     /// Gets the current privilege level
     fn current_privilege_level(&mut self) -> u8 {
         self.cpu
-            .segment(Register::SS.number())
+            .segment(Segment::SS)
             .attributes
             .descriptor_privilege_level()
     }
@@ -230,19 +263,19 @@ impl<'a, T: Cpu> Emulator<'a, T> {
 
         let cr0 = self.cpu.cr0();
         let efer = self.cpu.efer();
-        let cs = self.cpu.segment(Register::CS.number());
+        let cs = self.cpu.segment(Segment::CS);
 
         let base = match bitness(cr0, efer, cs) {
             Bitness::Bit64 => {
                 if segment == Register::FS || segment == Register::GS {
-                    self.cpu.segment(segment.number()).base
+                    self.cpu.segment(segment.into()).base
                 } else {
                     0
                 }
             }
             Bitness::Bit32 | Bitness::Bit16 => {
                 self.verify_segment_access(segment, op, offset, len)?;
-                self.cpu.segment(segment.number()).base
+                self.cpu.segment(segment.into()).base
             }
         };
 
@@ -265,12 +298,12 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         // All of these conditions are ignored for 64-bit mode, this method should not be called.
         let cr0 = self.cpu.cr0();
         let efer = self.cpu.efer();
-        let cs = self.cpu.segment(Register::CS.number());
+        let cs = self.cpu.segment(Segment::CS);
         let bitness = bitness(cr0, efer, cs);
         assert_ne!(bitness, Bitness::Bit64);
 
         let segment_index = segment.number();
-        let segment = self.cpu.segment(segment.number());
+        let segment = self.cpu.segment(segment.into());
 
         // Since we're not in long mode, offset can be at most u32::MAX, and same goes for len. So this
         // can't overflow.
@@ -690,7 +723,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     pub async fn run(&mut self) -> Result<(), Box<Error<T::Error>>> {
         let cr0 = self.cpu.cr0();
         let efer = self.cpu.efer();
-        let cs = self.cpu.segment(Register::CS.number());
+        let cs = self.cpu.segment(Segment::CS);
         let bitness = bitness(cr0, efer, cs);
         let mut decoder = Decoder::new(bitness.into(), self.bytes, self.decoder_options);
         decoder.set_ip(self.cpu.rip());
@@ -710,7 +743,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             }
         }
         tracing::trace!(
-            cs = ?self.cpu.segment(Register::CS.number()),
+            cs = ?self.cpu.segment(Segment::CS),
             rip = self.cpu.rip(),
             ?bitness,
             "Emulating instruction",

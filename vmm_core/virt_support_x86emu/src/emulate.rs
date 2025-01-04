@@ -19,6 +19,9 @@ use x86defs::Exception;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
 use x86emu::RegisterIndex;
+use x86emu::Gp;
+use x86emu::GpSize;
+use x86emu::Segment;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 
@@ -34,10 +37,10 @@ pub trait EmulatorSupport {
     fn vendor(&self) -> x86defs::cpuid::Vendor;
 
     /// Read a GP
-    fn gp(&mut self, index: usize) -> u64;
+    fn gp(&mut self, index: Gp) -> u64;
 
-    /// Set a GP as signed
-    fn set_gp(&mut self, reg: usize, v: u64);
+    /// Set a GP
+    fn set_gp(&mut self, reg: Gp, v: u64);
 
     /// Read the instruction pointer
     fn rip(&mut self) -> u64;
@@ -46,7 +49,7 @@ pub trait EmulatorSupport {
     fn set_rip(&mut self, v: u64);
 
     /// Read a segment register
-    fn segment(&mut self, index: usize) -> SegmentRegister;
+    fn segment(&mut self, index: Segment) -> SegmentRegister;
 
     /// Read the efer
     fn efer(&mut self) -> u64;
@@ -806,22 +809,20 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         let extended_register = self.support.gp(reg.extended_index);
 
         (match reg.size {
-            1 => ((extended_register >> reg.shift) as u8).into(),
-            2 => (extended_register as u16).into(),
-            4 => (extended_register as u32).into(),
-            8 => extended_register,
-            _ => panic!("invalid gp register size"),
+            GpSize::BYTE(shift) => ((extended_register >> shift) as u8).into(),
+            GpSize::WORD => (extended_register as u16).into(),
+            GpSize::DWORD => (extended_register as u32).into(),
+            GpSize::QWORD => extended_register,
         }) as u64
     }
 
     fn gp_sign_extend(&mut self, reg: RegisterIndex) -> i64 {
         let extended_register = self.support.gp(reg.extended_index);
         match reg.size {
-            1 => ((extended_register << reg.shift) as i8).into(),
-            2 => (extended_register as i16).into(),
-            4 => (extended_register as i32).into(),
-            8 => extended_register as i64,
-            _ => panic!("invalid gp register size"),
+            GpSize::BYTE(shift) => ((extended_register << shift) as i8).into(),
+            GpSize::WORD => (extended_register as i16).into(),
+            GpSize::DWORD => (extended_register as i32).into(),
+            GpSize::QWORD => extended_register as i64,
         }
     }
 
@@ -829,16 +830,15 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         let register_value = self.gp(reg);
 
         let out: u64 = match reg.size {
-            1 => {
-                let mask = (!0xff) << reg.shift;
-                (register_value & mask) | (((v as u8) as u64) << reg.shift)
+            GpSize::BYTE(shift) => {
+                let mask = (!0xff) << shift;
+                (register_value & mask) | (((v as u8) as u64) << shift)
             }
-            2 => (register_value & !0xffff) | (v as u16) as u64,
+            GpSize::WORD => (register_value & !0xffff) | (v as u16) as u64,
             // N.B. setting a 32-bit register zero extends the result to the 64-bit
             //      register. This is different from 16-bit and 8-bit registers.
-            4 => (v as u32) as u64,
-            8 => v,
-            _ => panic!("invalid gp register size"),
+            GpSize::DWORD => (v as u32) as u64,
+            GpSize::QWORD => v,
         };
         self.support.set_gp(reg.extended_index, out);
     }
@@ -851,7 +851,7 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         self.support.set_rip(v);
     }
 
-    fn segment(&mut self, index: usize) -> SegmentRegister {
+    fn segment(&mut self, index: Segment) -> SegmentRegister {
         self.support.segment(index)
     }
 

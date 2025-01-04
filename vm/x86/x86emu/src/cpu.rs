@@ -4,6 +4,7 @@
 //! Trait for asynchronous callouts from the emulator to the VM.
 
 use crate::registers::RegisterIndex;
+use crate::registers::Segment;
 use std::future::Future;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
@@ -66,7 +67,7 @@ pub trait Cpu {
     fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error>;
     fn rip(&mut self) -> u64;
     fn set_rip(&mut self, v: u64);
-    fn segment(&mut self, index: usize) -> SegmentRegister;
+    fn segment(&mut self, index: Segment) -> SegmentRegister;
     fn efer(&mut self) -> u64;
     fn cr0(&mut self) -> u64;
     fn rflags(&mut self) -> RFlags;
@@ -148,7 +149,7 @@ impl<T: Cpu + ?Sized> Cpu for &mut T {
         (*self).set_rip(v);
     }
 
-    fn segment(&mut self, index: usize) -> SegmentRegister {
+    fn segment(&mut self, index: Segment) -> SegmentRegister {
         (*self).segment(index)
     }
 

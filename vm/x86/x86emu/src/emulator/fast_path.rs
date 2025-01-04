@@ -8,9 +8,9 @@ use crate::emulator::arith::ArithOp;
 use crate::emulator::arith::OrOp;
 use crate::registers::bitness;
 use crate::registers::Bitness;
+use crate::registers::Segment;
 use crate::Cpu;
 use iced_x86::OpKind;
-use iced_x86::Register;
 
 const PAGE_SIZE: u32 = 4096;
 
@@ -35,7 +35,7 @@ pub fn emulate_fast_path_set_bit<T: Cpu>(instruction_bytes: &[u8], cpu: &mut T) 
         return None;
     }
 
-    let bitness = bitness(cpu.cr0(), cpu.efer(), cpu.segment(Register::CS.number()));
+    let bitness = bitness(cpu.cr0(), cpu.efer(), cpu.segment(Segment::CS));
     let mut decoder = iced_x86::Decoder::new(bitness.into(), instruction_bytes, 0);
     decoder.set_ip(cpu.rip());
 
@@ -94,7 +94,7 @@ pub fn emulate_fast_path_set_bit<T: Cpu>(instruction_bytes: &[u8], cpu: &mut T) 
         }
     };
 
-    let seg = cpu.segment(instr.memory_segment().number());
+    let seg = cpu.segment(instr.memory_segment().into());
     let offset = page_offset(address.wrapping_add(seg.base));
 
     // Ensure the access doesn't straddle a page boundary.
