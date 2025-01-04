@@ -4767,6 +4767,7 @@ name = "page_pool_alloc"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "cvm_tracing",
  "hcl",
  "hvdef",
  "inspect",
@@ -7477,6 +7478,7 @@ dependencies = [
  "bitvec",
  "build_rs_guest_arch",
  "cfg-if",
+ "cvm_tracing",
  "fs-err",
  "guestmem",
  "hcl",
