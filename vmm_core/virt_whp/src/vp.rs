@@ -570,12 +570,12 @@ impl<'a> WhpProcessor<'a> {
 mod x86 {
     use super::WhpRunVpError;
     use crate::emu;
+    use crate::emu::WhpEmulationState;
     use crate::emu::WhpVpRefEmulation;
     use crate::memory::x86::GpaBackingType;
     use crate::vtl2;
     use crate::Hv1State;
     use crate::WhpProcessor;
-    use crate::emu::WhpEmulationState;
     use hvdef::hypercall::InitialVpContextX64;
     use hvdef::HvCacheType;
     use hvdef::HvInterceptAccessType;
@@ -920,7 +920,7 @@ mod x86 {
                         guest_memory,
                         dev,
                         interruption_pending,
-                        gva_valid
+                        gva_valid,
                     ) {
                         if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
                             self.signal_mnf(dev, connection_id);

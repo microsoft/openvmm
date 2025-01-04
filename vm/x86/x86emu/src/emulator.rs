@@ -5,9 +5,9 @@
 
 use crate::registers::bitness;
 use crate::registers::Bitness;
-use crate::registers::RegisterIndex;
 use crate::registers::Gp;
 use crate::registers::GpSize;
+use crate::registers::RegisterIndex;
 use crate::registers::Segment;
 use crate::Cpu;
 use iced_x86::Code;
@@ -83,7 +83,7 @@ impl Into<RegisterIndex> for Register {
             8 => GpSize::QWORD,
             _ => panic!("invalid gp register size"),
         };
-        let extended_index = match self.full_register(){
+        let extended_index = match self.full_register() {
             Register::RAX => Gp::RAX,
             Register::RCX => Gp::RCX,
             Register::RDX => Gp::RDX,
@@ -92,15 +92,15 @@ impl Into<RegisterIndex> for Register {
             Register::RBP => Gp::RBP,
             Register::RSI => Gp::RSI,
             Register::RDI => Gp::RDI,
-            Register::R8  => Gp::R8,
-            Register::R9  => Gp::R9,
+            Register::R8 => Gp::R8,
+            Register::R9 => Gp::R9,
             Register::R10 => Gp::R10,
             Register::R11 => Gp::R11,
             Register::R12 => Gp::R12,
             Register::R13 => Gp::R13,
             Register::R14 => Gp::R14,
             Register::R15 => Gp::R15,
-            _ => panic!("invalid gp register index")
+            _ => panic!("invalid gp register index"),
         };
         RegisterIndex {
             extended_index,
@@ -118,7 +118,7 @@ impl Into<Segment> for Register {
             Register::DS => Segment::DS,
             Register::FS => Segment::FS,
             Register::GS => Segment::GS,
-            _ => panic!("invalid segment register index")
+            _ => panic!("invalid segment register index"),
         }
     }
 }

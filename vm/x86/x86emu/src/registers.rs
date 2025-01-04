@@ -24,7 +24,7 @@ pub enum Gp {
     R12 = 12,
     R13 = 13,
     R14 = 14,
-    R15 = 15
+    R15 = 15,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -33,7 +33,7 @@ pub enum GpSize {
     BYTE(usize),
     WORD,
     DWORD,
-    QWORD
+    QWORD,
 }
 
 #[repr(usize)]
@@ -44,7 +44,7 @@ pub enum Segment {
     SS = 2,
     DS = 3,
     FS = 4,
-    GS = 5
+    GS = 5,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -52,7 +52,7 @@ pub struct RegisterIndex {
     /// Index of the full register size. E.g. this would be the index of RAX for the register EAX.
     pub extended_index: Gp,
     /// The size of the register, including a shift for 8-bit registers
-    pub size: GpSize
+    pub size: GpSize,
 }
 
 //TODO(babayet2) this should be killed after each emulator implementation defines its own cache

@@ -10,13 +10,13 @@ use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use virt::io::CpuIo;
 use virt::VpIndex;
-use x86defs::RFlags;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::emulate::TranslateMode;
 use virt_support_x86emu::translate::TranslationRegisters;
+use x86defs::RFlags;
 use x86defs::SegmentRegister;
 
 pub(crate) enum WhpVpRefEmulation<'a> {
@@ -59,18 +59,42 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
         self.vp.vp.partition.caps.vendor
     }
 
-    fn gp(&mut self, _: usize) -> u64 { todo!() }
-    fn set_gp(&mut self, _: usize, _: u64) { todo!() }
-    fn rip(&mut self) -> u64 { todo!() }
-    fn set_rip(&mut self, _: u64) { todo!() }
-    fn segment(&mut self, _: usize) -> x86defs::SegmentRegister { todo!() }
-    fn efer(&mut self) -> u64 { todo!() }
-    fn cr0(&mut self) -> u64 { todo!() }
-    fn rflags(&mut self) -> RFlags { todo!() }
-    fn set_rflags(&mut self, _: RFlags) { todo!() }
-    fn xmm(&mut self, _: usize) -> u128 { todo!() }
-    fn set_xmm(&mut self, _: usize, _: u128) -> Result<(), Self::Error> { todo!() }
-    fn flush(&mut self) { todo!() }
+    fn gp(&mut self, _: usize) -> u64 {
+        todo!()
+    }
+    fn set_gp(&mut self, _: usize, _: u64) {
+        todo!()
+    }
+    fn rip(&mut self) -> u64 {
+        todo!()
+    }
+    fn set_rip(&mut self, _: u64) {
+        todo!()
+    }
+    fn segment(&mut self, _: usize) -> x86defs::SegmentRegister {
+        todo!()
+    }
+    fn efer(&mut self) -> u64 {
+        todo!()
+    }
+    fn cr0(&mut self) -> u64 {
+        todo!()
+    }
+    fn rflags(&mut self) -> RFlags {
+        todo!()
+    }
+    fn set_rflags(&mut self, _: RFlags) {
+        todo!()
+    }
+    fn xmm(&mut self, _: usize) -> u128 {
+        todo!()
+    }
+    fn set_xmm(&mut self, _: usize, _: u128) -> Result<(), Self::Error> {
+        todo!()
+    }
+    fn flush(&mut self) {
+        todo!()
+    }
 
     /// Check if the given gpa is accessible by the current VTL.
     fn check_vtl_access(

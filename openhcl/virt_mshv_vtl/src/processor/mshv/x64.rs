@@ -133,7 +133,7 @@ pub struct MshvEmulationCache {
     cr0: u64,
     efer: u64,
     rip: u64,
-    rflags: RFlags
+    rflags: RFlags,
 }
 
 impl BackingPrivate for HypervisorBackedX86 {
@@ -1298,7 +1298,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             cr0: cr0.as_u64(),
             efer: efer.as_u64(),
             rip: header.rip,
-            rflags: header.rflags.into()
+            rflags: header.rflags.into(),
         }
     }
 }
@@ -1314,10 +1314,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
                 [
                     (HvX64RegisterName::Rip, self.cache.rip),
                     (HvX64RegisterName::Rflags, self.cache.rflags.into()),
-                    (
-                        HvX64RegisterName::Rsp,
-                        self.cache.rsp
-                    ),
+                    (HvX64RegisterName::Rsp, self.cache.rsp),
                 ],
             )
             .unwrap();
@@ -1334,14 +1331,14 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     fn gp(&mut self, reg: x86emu::Gp) -> u64 {
         match reg {
             x86emu::Gp::RSP => self.cache.rsp,
-            _ => self.vp.runner.cpu_context().gps[reg as usize]
+            _ => self.vp.runner.cpu_context().gps[reg as usize],
         }
     }
 
     fn set_gp(&mut self, reg: x86emu::Gp, v: u64) {
         match reg {
             x86emu::Gp::RSP => self.cache.rsp = v,
-            _ => self.vp.runner.cpu_context_mut().gps[reg as usize] = v
+            _ => self.vp.runner.cpu_context_mut().gps[reg as usize] = v,
         };
     }
 
@@ -1366,7 +1363,8 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         match index {
             x86emu::Segment::CS => {
                 let message = self.vp.runner.exit_message();
-                let header = HvX64InterceptMessageHeader::ref_from_prefix(message.payload()).unwrap();
+                let header =
+                    HvX64InterceptMessageHeader::ref_from_prefix(message.payload()).unwrap();
                 from_seg(header.cs_segment)
             }
             x86emu::Segment::ES => self.cache.es,
