@@ -496,15 +496,6 @@ impl HardwareIsolatedBacking for TdxBacked {
         &shared.cvm
     }
 
-    fn switch_vtl_state(
-        _this: &mut UhProcessor<'_, Self>,
-        _source_vtl: GuestVtl,
-        _target_vtl: GuestVtl,
-    ) {
-        // TODO TDX GUEST VSM
-        todo!()
-    }
-
     fn translation_registers(
         &self,
         this: &UhProcessor<'_, Self>,
@@ -879,6 +870,11 @@ impl BackingPrivate for TdxBacked {
         }
     }
 
+    fn switch_vtl(_this: &mut UhProcessor<'_, Self>, _source_vtl: GuestVtl, _target_vtl: GuestVtl) {
+        // TODO TDX GUEST VSM
+        todo!()
+    }
+
     fn handle_cross_vtl_interrupts(
         this: &mut UhProcessor<'_, Self>,
         _dev: &impl CpuIo,
@@ -901,10 +897,6 @@ impl BackingPrivate for TdxBacked {
 
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         self.untrusted_synic.as_mut()
-    }
-
-    fn set_exit_vtl(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
-        this.backing.cvm_state_mut().exit_vtl = vtl;
     }
 }
 

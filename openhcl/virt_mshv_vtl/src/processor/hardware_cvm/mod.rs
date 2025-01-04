@@ -14,7 +14,7 @@ use crate::validate_vtl_gpa_flags;
 use crate::GuestVsmState;
 use crate::GuestVsmVtl1State;
 use crate::GuestVtl;
-use crate::StartEnableVtlVp;
+use crate::VpStartEnableVtl;
 use crate::WakeReason;
 use guestmem::GuestMemory;
 use hv1_emulator::RequestInterrupt;
@@ -780,8 +780,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
     fn vtl_call(&mut self) {
         tracing::trace!("handling vtl call");
 
-        B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl1);
-        self.vp.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
+        B::switch_vtl(self.vp, self.intercepted_vtl, GuestVtl::Vtl1);
 
         self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
             .set_return_reason(HvVtlEntryReason::VTL_CALL)
@@ -814,11 +813,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
             hv.set_vina_asserted(false).unwrap();
         }
 
-        B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
-        self.vp.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl0;
-
-        // TODO CVM GUEST_VSM:
-        // - rewind interrupts
+        B::switch_vtl(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
 
         if !fast {
             let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
@@ -960,8 +955,6 @@ impl<T, B: HardwareIsolatedBacking>
             return Err(HvError::VtlAlreadyEnabled);
         }
 
-        // TODO GUEST_VSM: construct APIC (including overlays, vp assist page) for VTL 1
-
         // Register the VMSA with the hypervisor
         let hv_vp_context = match self.vp.partition.isolation {
             virt::IsolationType::None | virt::IsolationType::Vbs => unreachable!(),
@@ -979,7 +972,7 @@ impl<T, B: HardwareIsolatedBacking>
                 hv_vp_context
             }
             virt::IsolationType::Tdx => {
-                // TODO GUEST VSM
+                // TODO TDX GUEST VSM
                 hvdef::hypercall::InitialVpContextX64::new_zeroed()
             }
         };
@@ -996,13 +989,13 @@ impl<T, B: HardwareIsolatedBacking>
 
         *vtl1_enabled = true;
 
-        let enable_vp_vtl_state = StartEnableVtlVp {
+        let enable_vp_vtl_state = VpStartEnableVtl {
             is_start: false,
             context: *vp_context,
         };
 
         let target_vp = &self.vp.partition.vps[vp_index as usize];
-        *target_vp.hv_start_enable_vtl_vp[vtl].lock() = Some(Box::new(*vp_context));
+        *target_vp.hv_start_enable_vtl_vp[vtl].lock() = Some(Box::new(enable_vp_vtl_state));
         target_vp.wake(vtl, WakeReason::HV_START_ENABLE_VP_VTL);
 
         tracing::debug!(vp_index, "enabled vtl 1 on vp");
@@ -1193,8 +1186,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         if self.backing.cvm_state_mut().exit_vtl == GuestVtl::Vtl0 {
             // Check for VTL preemption - which ignores RFLAGS.IF
             if is_interrupt_pending(self, GuestVtl::Vtl1, false) {
-                B::switch_vtl_state(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
-                self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
+                B::switch_vtl(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
                 self.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
                     .set_return_reason(HvVtlEntryReason::INTERRUPT)
                     .map_err(UhRunVpError::VpAssistPage)?;

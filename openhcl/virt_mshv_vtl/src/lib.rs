@@ -600,15 +600,16 @@ struct UhVpInner {
     hcvm_vtl1_enabled: Mutex<bool>,
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
-    hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<StartEnableVtlVp>>>, 2>,
+    hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<VpStartEnableVtl>>>, 2>,
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
 }
 
 #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
 #[derive(Debug, Inspect)]
-pub struct StartEnableVtlVp {
+/// State for handling StartVp/EnableVpVtl hypercalls.
+pub struct VpStartEnableVtl {
     is_start: bool,
-    #[inspect(skip)] // TODO
+    #[inspect(skip)]
     context: hvdef::hypercall::InitialVpContextX64,
 }
 
