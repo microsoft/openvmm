@@ -708,6 +708,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         tracing::trace!(msg = %format_args!("{:x?}", message), "mmio");
 
         let interruption_pending = message.header.execution_state.interruption_pending();
+        let cache = self.vp.emulation_cache(self.intercepted_vtl);
 
         // Fast path for monitor page writes.
         if Some(message.guest_physical_address & !(HV_PAGE_SIZE - 1))
@@ -716,7 +717,6 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         {
             let tlb_lock_held = message.memory_access_info.gva_gpa_valid()
                 || message.memory_access_info.tlb_locked();
-            let cache = self.vp.emulation_cache(self.intercepted_vtl);
             let guest_memory = &self.vp.partition.gm[self.intercepted_vtl];
             let mut emulation_state = UhEmulationState {
                 vp: &mut *self.vp,
@@ -739,8 +739,6 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                 return Ok(());
             }
         }
-
-        let cache = self.vp.emulation_cache(self.intercepted_vtl);
 
         self.vp
             .emulate(dev, interruption_pending, self.intercepted_vtl, cache)
@@ -1267,6 +1265,8 @@ impl UhProcessor<'_, HypervisorBackedX86> {
     }
 
     ///Eagerly load registers for emulation
+    ///Typically we load expensive registers lazily, however some registers will always be used,
+    ///and the underlying ioctl supports batching multiple register retrievals into a single call
     fn emulation_cache(&mut self, vtl: GuestVtl) -> MshvEmulationCache {
         const NAMES: &[HvX64RegisterName] = &[
             HvX64RegisterName::Rsp,
