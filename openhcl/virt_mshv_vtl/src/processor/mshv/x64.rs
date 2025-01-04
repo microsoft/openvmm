@@ -123,10 +123,23 @@ struct ProcessorStatsX86 {
     exception_intercept: Counter,
 }
 
+pub struct MshvEmulationCache {
+    rsp: u64,
+    es: SegmentRegister,
+    ds: SegmentRegister,
+    fs: SegmentRegister,
+    gs: SegmentRegister,
+    ss: SegmentRegister,
+    cr0: u64,
+    efer: u64,
+    rip: u64,
+    rflags: RFlags
+}
+
 impl BackingPrivate for HypervisorBackedX86 {
     type HclBacking = MshvX64;
     type Shared = ();
-    type EmulationCache = x86emu::CpuState;
+    type EmulationCache = MshvEmulationCache;
 
     fn shared(_: &BackingShared) -> &Self::Shared {
         &()
@@ -1254,7 +1267,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
     }
 
     ///Eagerly load registers for emulation
-    fn emulation_cache(&mut self, vtl: GuestVtl) -> x86emu::CpuState {
+    fn emulation_cache(&mut self, vtl: GuestVtl) -> MshvEmulationCache {
         const NAMES: &[HvX64RegisterName] = &[
             HvX64RegisterName::Rsp,
             HvX64RegisterName::Es,
@@ -1272,26 +1285,20 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         let [rsp, es, ds, fs, gs, ss, cr0, efer] = values;
 
-        let mut gps = self.runner.cpu_context().gps;
-        gps[x86emu::Gp::RSP as usize] = rsp.as_u64();
-
         let message = self.runner.exit_message();
         let header = HvX64InterceptMessageHeader::ref_from_prefix(message.payload()).unwrap();
 
-        x86emu::CpuState {
-            gps,
-            segs: [
-                from_seg(es.into()),
-                from_seg(header.cs_segment),
-                from_seg(ss.into()),
-                from_seg(ds.into()),
-                from_seg(fs.into()),
-                from_seg(gs.into()),
-            ],
-            rip: header.rip,
-            rflags: header.rflags.into(),
+        MshvEmulationCache {
+            rsp: rsp.as_u64(),
+            es: from_seg(es.into()),
+            ds: from_seg(ds.into()),
+            fs: from_seg(fs.into()),
+            gs: from_seg(gs.into()),
+            ss: from_seg(ss.into()),
             cr0: cr0.as_u64(),
             efer: efer.as_u64(),
+            rip: header.rip,
+            rflags: header.rflags.into()
         }
     }
 }
@@ -1309,13 +1316,11 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
                     (HvX64RegisterName::Rflags, self.cache.rflags.into()),
                     (
                         HvX64RegisterName::Rsp,
-                        self.cache.gps[x86emu::Gp::RSP as usize],
+                        self.cache.rsp
                     ),
                 ],
             )
             .unwrap();
-
-        self.vp.runner.cpu_context_mut().gps = self.cache.gps;
     }
 
     fn vp_index(&self) -> VpIndex {
@@ -1327,11 +1332,17 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn gp(&mut self, reg: x86emu::Gp) -> u64 {
-        self.cache.gps[reg as usize]
+        match reg {
+            x86emu::Gp::RSP => self.cache.rsp,
+            _ => self.vp.runner.cpu_context().gps[reg as usize]
+        }
     }
 
     fn set_gp(&mut self, reg: x86emu::Gp, v: u64) {
-        self.cache.gps[reg as usize] = v;
+        match reg {
+            x86emu::Gp::RSP => self.cache.rsp = v,
+            _ => self.vp.runner.cpu_context_mut().gps[reg as usize] = v
+        };
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
@@ -1352,7 +1363,18 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn segment(&mut self, index: x86emu::Segment) -> SegmentRegister {
-        self.cache.segs[index as usize]
+        match index {
+            x86emu::Segment::CS => {
+                let message = self.vp.runner.exit_message();
+                let header = HvX64InterceptMessageHeader::ref_from_prefix(message.payload()).unwrap();
+                from_seg(header.cs_segment)
+            }
+            x86emu::Segment::ES => self.cache.es,
+            x86emu::Segment::SS => self.cache.ss,
+            x86emu::Segment::DS => self.cache.ds,
+            x86emu::Segment::FS => self.cache.fs,
+            x86emu::Segment::GS => self.cache.gs,
+        }
     }
 
     fn efer(&mut self) -> u64 {
