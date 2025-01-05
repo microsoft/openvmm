@@ -82,18 +82,18 @@ impl<T> OneshotSender<T> {
     }
 }
 
-impl<T: MeshField> DefaultEncoding for OneshotSender<T> {
+impl<T: 'static + MeshField + Send> DefaultEncoding for OneshotSender<T> {
     type Encoding = PortField;
 }
 
-impl<T: MeshField> From<OneshotSender<T>> for Port {
+impl<T: 'static + MeshField + Send> From<OneshotSender<T>> for Port {
     fn from(sender: OneshotSender<T>) -> Self {
         // SAFETY: the slot is of type `T`.
         unsafe { sender.0.into_port::<T>() }
     }
 }
 
-impl<T: MeshField> From<Port> for OneshotSender<T> {
+impl<T: 'static + MeshField + Send> From<Port> for OneshotSender<T> {
     fn from(port: Port) -> Self {
         Self(OneshotSenderCore::from_port::<T>(port), PhantomData)
     }
@@ -101,13 +101,13 @@ impl<T: MeshField> From<Port> for OneshotSender<T> {
 
 /// # Safety
 /// The caller must ensure that `value` is of type `T`.
-unsafe fn encode_message<T: MeshField>(value: BoxedValue) -> Message {
+unsafe fn encode_message<T: 'static + MeshField + Send>(value: BoxedValue) -> Message {
     // SAFETY: the caller ensures that `value` is of type `T`.
     let value = unsafe { value.cast::<T>() };
     Message::new((value,))
 }
 
-fn decode_message<T: MeshField>(message: Message) -> Result<BoxedValue, ChannelError> {
+fn decode_message<T: 'static + MeshField + Send>(message: Message) -> Result<BoxedValue, ChannelError> {
     let (value,) = message.parse::<(Box<T>,)>()?;
     Ok(BoxedValue::new(value))
 }
@@ -185,7 +185,7 @@ impl OneshotSenderCore {
 
     /// # Safety
     /// The caller must ensure that the slot is of type `T`.
-    unsafe fn into_port<T: MeshField>(self) -> Port {
+    unsafe fn into_port<T: 'static + MeshField + Send>(self) -> Port {
         fn into_port(this: OneshotSenderCore, decode: DecodeFn) -> Port {
             let slot = this.into_slot();
             let mut state = slot.0.lock();
@@ -207,7 +207,7 @@ impl OneshotSenderCore {
         into_port(self, decode_message::<T>)
     }
 
-    fn from_port<T: MeshField>(port: Port) -> Self {
+    fn from_port<T: 'static + MeshField + Send>(port: Port) -> Self {
         fn from_port(port: Port, encode: EncodeFn) -> OneshotSenderCore {
             let slot = Arc::new(Slot(Mutex::new(SlotState::ReceiverRemote(port, encode))));
             OneshotSenderCore(slot)
@@ -256,18 +256,18 @@ impl<T> Future for OneshotReceiver<T> {
     }
 }
 
-impl<T: MeshField> DefaultEncoding for OneshotReceiver<T> {
+impl<T: 'static + MeshField + Send> DefaultEncoding for OneshotReceiver<T> {
     type Encoding = PortField;
 }
 
-impl<T: MeshField> From<OneshotReceiver<T>> for Port {
+impl<T: 'static + MeshField + Send> From<OneshotReceiver<T>> for Port {
     fn from(receiver: OneshotReceiver<T>) -> Self {
         // SAFETY: the slot is of type `T`.
         unsafe { receiver.into_core().into_port::<T>() }
     }
 }
 
-impl<T: MeshField> From<Port> for OneshotReceiver<T> {
+impl<T: 'static + MeshField + Send> From<Port> for OneshotReceiver<T> {
     fn from(port: Port) -> Self {
         Self(OneshotReceiverCore::from_port::<T>(port), PhantomData)
     }
@@ -354,7 +354,7 @@ impl OneshotReceiverCore {
     /// # Safety
     /// The caller must ensure that `encode` is a valid function to encode
     /// values of type `T`, the type of this slot.
-    unsafe fn into_port<T: MeshField>(self) -> Port {
+    unsafe fn into_port<T: 'static + MeshField + Send>(self) -> Port {
         fn into_port(mut this: OneshotReceiverCore, encode: EncodeFn) -> Port {
             let existing = this.port.take().map(|port| port.remove_handler().0);
             let Some(slot) = this.slot.take() else {
@@ -389,7 +389,7 @@ impl OneshotReceiverCore {
         into_port(self, encode_message::<T>)
     }
 
-    fn from_port<T: MeshField>(port: Port) -> Self {
+    fn from_port<T: 'static + MeshField + Send>(port: Port) -> Self {
         fn from_port(port: Port, decode: DecodeFn) -> OneshotReceiverCore {
             let slot = Arc::new(Slot(Mutex::new(SlotState::SenderRemote(port, decode))));
             OneshotReceiverCore {
