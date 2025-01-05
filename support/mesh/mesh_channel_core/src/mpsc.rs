@@ -6,7 +6,7 @@
 //!
 //! The main design requirements of this channel are:
 //! * It roughly follows the semantics of the Rust standard library's
-//!  `std::sync::mpsc` channel, but with async support.
+//!   `std::sync::mpsc` channel, but with async support.
 //! * It is efficient enough for single process use that it can be used as a
 //!   general purpose channel.
 //! * It leverages `mesh_node` ports and `mesh_protobuf` serialization to allow
