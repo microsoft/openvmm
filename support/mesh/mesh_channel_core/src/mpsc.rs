@@ -1,8 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Implementation of a multi-producer, single-consumer (MPSC) channel that can
-//! be used to communicate between mesh nodes.
+//! Implementation of an async multi-producer, single-consumer (MPSC) channel
+//! that can be used to communicate between mesh nodes.
+//!
+//! The main design requirements of this channel are:
+//! * It roughly follows the semantics of the Rust standard library's
+//!  `std::sync::mpsc` channel, but with async support.
+//! * It is efficient enough for single process use that it can be used as a
+//!   general purpose channel.
+//! * It leverages `mesh_node` ports and `mesh_protobuf` serialization to allow
+//!   communication between mesh nodes, which can be on different processes or
+//!   machines.
+//! * Its contribution to binary size is minimal.
+//!
+//! To achieve the binary size goal, this implementation avoids generics where
+//! practical. This has the tradeoff of requiring a fair amount of unsafe code,
+//! but this makes it practical to use this channel in space-constrained
+//! environments.
 
 // UNSAFETY: Needed to erase types to avoid monomorphization overhead.
 #![expect(unsafe_code)]
