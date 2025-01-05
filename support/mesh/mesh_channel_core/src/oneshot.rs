@@ -107,7 +107,9 @@ unsafe fn encode_message<T: 'static + MeshField + Send>(value: BoxedValue) -> Me
     Message::new((value,))
 }
 
-fn decode_message<T: 'static + MeshField + Send>(message: Message) -> Result<BoxedValue, ChannelError> {
+fn decode_message<T: 'static + MeshField + Send>(
+    message: Message,
+) -> Result<BoxedValue, ChannelError> {
     let (value,) = message.parse::<(Box<T>,)>()?;
     Ok(BoxedValue::new(value))
 }
@@ -348,7 +350,12 @@ impl OneshotReceiverCore {
             };
             Poll::Ready(v)
         }
-        poll_recv(self, cx).map(|r| r.map(|v| unsafe { v.cast::<T>() }))
+        ready!(poll_recv(self, cx))
+            .map(|v| {
+                // SAFETY: the slot is of type `T`.
+                unsafe { v.cast::<T>() }
+            })
+            .into()
     }
 
     /// # Safety
