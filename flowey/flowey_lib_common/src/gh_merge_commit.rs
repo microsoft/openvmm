@@ -25,7 +25,7 @@ impl SimpleFlowNode for Node {
 
         ctx.emit_rust_step("get merge commit", |ctx| {
             let repo_path = openvmm_repo_path.claim(ctx);
-            let merge_commit = merge_commit.claim(ctx);
+            let _merge_commit = merge_commit.claim(ctx);
 
             |rt| {
                 let repo_path = rt.read(repo_path);
@@ -34,13 +34,10 @@ impl SimpleFlowNode for Node {
 
                 // TODO: Make this work for non-main PRs
                 xshell::cmd!(sh, "git fetch origin main").run()?;
-                let output = xshell::cmd!(sh, "git merge-base HEAD origin/main").output();
-
-                if let Ok(commit) = output {
-                    rt.write(merge_commit, &format!("{:?}", commit));
-                } else {
-                    anyhow::bail!("Failed to get merge commit: {:?}", output);
-                }
+                let output = xshell::cmd!(sh, "git merge-base HEAD origin/main")
+                    .ignore_status()
+                    .read_stderr()?;
+                println!("{}", output);
 
                 Ok(())
             }
