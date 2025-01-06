@@ -23,6 +23,7 @@ use crate::UhProcessor;
 use crate::WakeReason;
 use hcl::ioctl::tdx::Tdx;
 use hcl::ioctl::ProcessorRunner;
+use hcl::protocol::hcl_intr_offload_flags;
 use hcl::protocol::tdx_tdg_vp_enter_exit_info;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
@@ -810,23 +811,13 @@ impl UhProcessor<'_, TdxBacked> {
     /// Returns `Ok(false)` if the APIC offload needs to be disabled and the
     /// poll retried.
     fn try_poll_apic(&mut self, scan_irr: bool) -> Result<bool, UhRunVpError> {
-        // Check for interrupt requests from the host.
-        let mut update_rvi = false;
+        // Check for interrupt requests from the host and kernel IPI offload.
+        // TODO TDX: filter proxy IRRs by setting the `proxy_irr_blocked` field of the run page
         if let Some(irr) = self.runner.proxy_irr() {
-            // TODO TDX: filter proxy IRRs.
-            if self.backing.lapic.lapic.can_offload_irr() {
-                // Put the proxied IRR directly on the APIC page to avoid going
-                // through the local APIC.
-
-                // OR in and update RVI.
-                let page: &mut ApicPage = zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut());
-                for (page_irr, irr) in page.irr.iter_mut().zip(irr) {
-                    page_irr.value |= irr;
-                }
-                update_rvi = true;
-            } else {
-                self.backing.lapic.lapic.request_fixed_interrupts(irr);
-            }
+            // We can't put the interrupts directly on the APIC page because we might need
+            // to clear the tmr state. This can happen if a vector was previously used for a level
+            // triggered interrupt, and is now being used for an edge-triggered interrupt.
+            self.backing.lapic.lapic.request_fixed_interrupts(irr);
         }
 
         let ApicWork {
@@ -887,6 +878,7 @@ impl UhProcessor<'_, TdxBacked> {
             self.backing.processor_controls = new_processor_controls;
         }
 
+        let mut update_rvi = false;
         let r: Result<(), OffloadNotSupported> =
             self.backing.lapic.lapic.push_to_offload(|irr, isr, tmr| {
                 let apic_page: &mut ApicPage =
@@ -914,15 +906,22 @@ impl UhProcessor<'_, TdxBacked> {
                     VmcsField::VMX_VMCS_EOI_EXIT_2,
                     VmcsField::VMX_VMCS_EOI_EXIT_3,
                 ];
-                for ((&field, eoi_exit), tmr) in fields
+                for ((&field, eoi_exit), (i, tmr)) in fields
                     .iter()
                     .zip(&mut self.backing.eoi_exit_bitmap)
-                    .zip(tmr.chunks_exact(2))
+                    .zip(tmr.chunks_exact(2).enumerate())
                 {
                     let tmr = tmr[0] as u64 | ((tmr[1] as u64) << 32);
                     if *eoi_exit != tmr {
                         self.runner.write_vmcs64(GuestVtl::Vtl0, field, !0, tmr);
                         *eoi_exit = tmr;
+                        // The kernel driver supports some common APIC functionality (ICR writes,
+                        // interrupt injection). When the kernel driver handles an interrupt, it
+                        // must know if that interrupt was previously level-triggered. Otherwise,
+                        // the EOI will be incorrectly treated as level-triggered. We keep a copy
+                        // of the tmr in the kernel so it knows when this scenario occurs.
+                        self.runner.proxy_irr_exit_mut()[i * 2] = tmr as u32;
+                        self.runner.proxy_irr_exit_mut()[i * 2 + 1] = (tmr >> 32) as u32;
                     }
                 }
             });
@@ -1175,12 +1174,37 @@ impl UhProcessor<'_, TdxBacked> {
         self.unlock_tlb_lock(Vtl::Vtl2);
         let tlb_halt = self.should_halt_for_tlb_unlock(GuestVtl::Vtl0);
 
-        self.runner.set_halted(
-            self.backing.lapic.halted
-                || self.backing.lapic.idle
-                || self.backing.lapic.startup_suspend
-                || tlb_halt,
-        );
+        // If we are halted in the kernel due to hlt or idle, and we receive an interrupt
+        // we'd like to unhalt, inject the interrupt, and resume vtl0 without returning to
+        // user-mode. To enable this, the kernel must know why are are halted
+
+        // If we aren't waiting for SIPI, then we must be either Running, Halted, or Idle. All
+        // three states are known to and handled correctly by the kernel.
+        let kernel_known_state = !self.backing.lapic.startup_suspend;
+        let halted_other = tlb_halt || !kernel_known_state;
+        let halted_hlt = self.backing.lapic.halted;
+        let halted_idle = self.backing.lapic.idle;
+
+        self.runner
+            .set_halted(halted_other || halted_hlt || halted_idle);
+
+        // Turn on kernel interrupt handling if possible
+        let offload_enabled = next_vtl == GuestVtl::Vtl0
+            && self
+                .backing
+                .secondary_processor_controls
+                .virtual_interrupt_delivery()
+            && self.backing.lapic.lapic.can_offload_irr();
+        let x2apic_enabled = self.backing.lapic.lapic.x2apic_enabled();
+
+        let offload_flags = hcl_intr_offload_flags::new()
+            .with_offload_intr_inject(offload_enabled)
+            .with_offload_x2apic(offload_enabled && x2apic_enabled)
+            .with_halted_other(halted_other)
+            .with_halted_hlt(halted_hlt)
+            .with_halted_idle(halted_idle);
+
+        *self.runner.offload_flags_mut() = offload_flags;
 
         // TODO GUEST_VSM: Probably need to set this to 2 occasionally
         self.runner.tdx_vp_entry_flags_mut().set_vm_index(1);
@@ -1189,6 +1213,14 @@ impl UhProcessor<'_, TdxBacked> {
             .runner
             .run()
             .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?;
+
+        // Kernel offload may have set or cleared the halt/idle states
+        if offload_enabled && kernel_known_state {
+            let offload_flags = self.runner.offload_flags_mut();
+
+            self.backing.lapic.halted = offload_flags.halted_hlt();
+            self.backing.lapic.idle = offload_flags.halted_idle();
+        }
 
         *self.runner.tdx_vp_entry_flags_mut() = TdxVmFlags::new();
 
