@@ -30,6 +30,7 @@ members = [
   "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
   "vm/devices/storage/scsi_buffers/fuzz",
+  "vm/devices/storage/storvsp/fuzz",
   "vm/vmcore/guestmem/fuzz",
   "vm/x86/x86emu/fuzz",
   # in-guest test bins
@@ -41,7 +42,6 @@ members = [
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
   "hyperv/tools/hypestv",
-  "vm/devices/storage/storvsp/fuzz",
 ]
 exclude = [
   "xsync",

@@ -7,7 +7,6 @@ use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
 use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
-use libfuzzer_sys::fuzz_target;
 use pal_async::DefaultPool;
 use scsi_defs::Cdb10;
 use scsi_defs::ScsiOp;
@@ -23,14 +22,16 @@ use vmbus_async::queue::Queue;
 use vmbus_channel::connected_async_channels;
 use vmbus_ring::OutgoingPacketType;
 use vmbus_ring::PAGE_SIZE;
+use xtask_fuzz::fuzz_target;
 use zerocopy::AsBytes;
 use zerocopy::FromZeroes;
 
 #[derive(Arbitrary)]
-pub enum StovspFuzzAction {
+pub enum StorvspFuzzAction {
     SendDataPacket,
     SendReadWritePacket,
     SendRawPacket,
+    ReadCompletion
 }
 
 #[derive(Arbitrary)]
@@ -108,7 +109,7 @@ async fn send_arbitrary_readwrite_packet(
     let cdb = Cdb10 {
         operation_code: *(u.choose(&scsiop_choices)?),
         logical_block: block.into(),
-        transfer_blocks: ((byte_len / 512) as u16).try_into()?,
+        transfer_blocks: ((byte_len / 512) as u16).into(),
         ..FromZeroes::new_zeroed()
     };
 
@@ -130,7 +131,7 @@ async fn send_arbitrary_readwrite_packet(
         guest,
         &[packet.as_bytes(), scsi_req.as_bytes()],
         gpa,
-        byte_len.try_into()?,
+        byte_len,
         transaction_id,
     )
     .await
@@ -169,16 +170,16 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> Result<(), anyhow::Error> {
         }
 
         while !u.is_empty() {
-            let action = u.arbitrary::<StovspFuzzAction>()?;
+            let action = u.arbitrary::<StorvspFuzzAction>()?;
             match action {
-                StovspFuzzAction::SendDataPacket => {
+                StorvspFuzzAction::SendDataPacket => {
                     let packet = u.arbitrary::<protocol::Packet>()?;
                     let _ = guest.send_data_packet_sync(&[packet.as_bytes()]).await;
                 }
-                StovspFuzzAction::SendReadWritePacket => {
+                StorvspFuzzAction::SendReadWritePacket => {
                     send_arbitrary_readwrite_packet(u, &mut guest).await?;
                 }
-                StovspFuzzAction::SendRawPacket => {
+                StorvspFuzzAction::SendRawPacket => {
                     let packet_type = u.arbitrary()?;
                     match packet_type {
                         FuzzOutgoingPacketType::AnyOutgoingPacket => {
@@ -209,6 +210,15 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> Result<(), anyhow::Error> {
                             .await?
                         }
                     }
+                }
+                StorvspFuzzAction::ReadCompletion => {
+                    // Read completion(s) from the storvsp -> guest queue. This shouldn't
+                    // evoke any specific storvsp behavior, but is important to eventually
+                    // allow forward progress of various code paths.
+                    //
+                    // Ignore the result, since vmbus returns error if the queue is empty,
+                    // but that's fine for the fuzzer ...
+                    let _ = guest.queue.split().0.try_read();
                 }
             }
         }
