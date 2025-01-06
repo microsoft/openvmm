@@ -374,4 +374,58 @@ mod tests {
         let found_key_protector_by_id = read_key_protector_by_id(&mut vmgs).await.unwrap();
         assert_eq!(found_key_protector_by_id.id_guid, bios_guid);
     }
+
+    #[async_test]
+    async fn read_security_profile_from_vmgs() {
+        let disk = new_test_file();
+
+        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
+        let found_security_profile = read_security_profile(&mut vmgs).await.unwrap();
+
+        // When no security profile exists, a zeroed security profile will be written to the VMGS
+        assert_eq!(
+            found_security_profile.agent_data,
+            SecurityProfile::new_zeroed().agent_data
+        );
+
+        // Write a security profile to the VMGS
+        let security_profile = SecurityProfile {
+            agent_data: [5; AGENT_DATA_MAX_SIZE],
+        };
+        vmgs.write_file(FileId::ATTEST, security_profile.as_bytes())
+            .await
+            .unwrap();
+        let found_security_profile = read_security_profile(&mut vmgs).await.unwrap();
+        assert_eq!(
+            found_security_profile.agent_data,
+            security_profile.agent_data
+        );
+
+        // Write a security profile larger than the maximum size to the VMGS
+        let oversized_security_profile = [6u8; AGENT_DATA_MAX_SIZE + 1];
+        vmgs.write_file(FileId::ATTEST, oversized_security_profile.as_bytes())
+            .await
+            .unwrap();
+        let found_security_profile_result = read_security_profile(&mut vmgs).await;
+        assert!(found_security_profile_result.is_err());
+        assert_eq!(
+            found_security_profile_result.unwrap_err().to_string(),
+            "ATTEST valid bytes 2049 larger than the maximum size 2048"
+        );
+
+        // Write a security profile smaller than the maximum size to the VMGS and observe that it is padded with zeros
+        let undersized_security_profile = [7u8; AGENT_DATA_MAX_SIZE - 10];
+        vmgs.write_file(FileId::ATTEST, undersized_security_profile.as_bytes())
+            .await
+            .unwrap();
+        let found_security_profile = read_security_profile(&mut vmgs).await.unwrap();
+        assert_eq!(
+            found_security_profile.agent_data[..AGENT_DATA_MAX_SIZE - 10],
+            undersized_security_profile[..]
+        );
+        assert_eq!(
+            found_security_profile.agent_data[AGENT_DATA_MAX_SIZE - 10..],
+            [0; 10]
+        );
+    }
 }
