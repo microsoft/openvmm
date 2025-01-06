@@ -129,6 +129,9 @@ fn decode_message<T: 'static + MeshField + Send>(
 }
 
 #[derive(Debug)]
+struct Slot(Mutex<SlotState>);
+
+#[derive(Debug)]
 struct OneshotSenderCore(Arc<Slot>);
 
 impl Drop for OneshotSenderCore {
@@ -470,17 +473,14 @@ impl BoxedValue {
     }
 }
 
-#[derive(Debug)]
-struct Slot(Mutex<SlotState>);
+#[derive(Debug, Error)]
+#[error("unexpected oneshot message")]
+struct UnexpectedMessage;
 
 struct SlotHandler {
     slot: Arc<Slot>,
     decode: DecodeFn,
 }
-
-#[derive(Debug, Error)]
-#[error("unexpected oneshot message")]
-struct UnexpectedMessage;
 
 impl SlotHandler {
     fn close_or_fail(&mut self, control: &mut mesh_node::local_node::PortControl<'_>, fail: bool) {
