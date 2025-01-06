@@ -39,7 +39,7 @@ impl SimpleFlowNode for Node {
                 if let Ok(commit) = output {
                     rt.write(merge_commit, &commit);
                 } else {
-                    anyhow::bail!("Failed to get action id");
+                    anyhow::bail!("Failed to get merge commit: {:?}", output);
                 }
 
                 Ok(())
