@@ -138,7 +138,7 @@ impl MessagePtr {
     }
 }
 
-/// Encodes `ChannelPayload::Message(message)` into a [`Message`].
+/// Sends a `ChannelPayload::Message(message)` to a port.
 ///
 /// # Safety
 /// The caller must ensure that `message` is a valid owned `T`.
@@ -205,13 +205,13 @@ impl SenderCore {
 
     /// Creates a new queue with element type `T` for sending to `port`.
     fn from_port<T: MeshField>(port: Port) -> Self {
-        fn from_port(port: Port, vtable: &'static ElementVtable, encode: SendFn) -> SenderCore {
+        fn from_port(port: Port, vtable: &'static ElementVtable, send: SendFn) -> SenderCore {
             SenderCore(ManuallyDrop::new(Arc::new(Queue {
                 local: Mutex::new(LocalQueue {
                     remote: true,
                     ..LocalQueue::new(vtable)
                 }),
-                remote: OnceLock::from(RemoteQueueState { port, send: encode }),
+                remote: OnceLock::from(RemoteQueueState { port, send }),
             })))
         }
 

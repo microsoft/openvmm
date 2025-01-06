@@ -355,16 +355,12 @@ impl<'a> Message<'a> {
     ///
     /// If the message is already serialized, then this is a cheap operation.
     pub fn serialize(self) -> (Cow<'a, [u8]>, Vec<Resource>) {
-        match self.0 {
-            MessageInner::Owned(OwnedMessage(OwnedMessageInner::Serialized(m))) => {
-                (Cow::Owned(m.data), m.resources)
-            }
-            MessageInner::View(data, resources) => (Cow::Borrowed(data), resources),
-            m => {
-                let m = SerializedMessage::from_message(Self(m));
-                (Cow::Owned(m.data), m.resources)
-            }
-        }
+        let m = match self.0 {
+            MessageInner::View(data, resources) => return (Cow::Borrowed(data), resources),
+            MessageInner::Owned(OwnedMessage(OwnedMessageInner::Serialized(m))) => m,
+            m => SerializedMessage::from_message(Self(m)),
+        };
+        (Cow::Owned(m.data), m.resources)
     }
 
     fn into_data_and_resources(self) -> (Cow<'a, [u8]>, Vec<Option<Resource>>) {

@@ -228,8 +228,8 @@ impl OneshotSenderCore {
     }
 
     fn from_port<T: MeshField>(port: Port) -> Self {
-        fn from_port(port: Port, encode: SendFn) -> OneshotSenderCore {
-            let slot = Arc::new(Slot(Mutex::new(SlotState::ReceiverRemote(port, encode))));
+        fn from_port(port: Port, send: SendFn) -> OneshotSenderCore {
+            let slot = Arc::new(Slot(Mutex::new(SlotState::ReceiverRemote(port, send))));
             OneshotSenderCore(slot)
         }
         from_port(port, send_message::<T>)
