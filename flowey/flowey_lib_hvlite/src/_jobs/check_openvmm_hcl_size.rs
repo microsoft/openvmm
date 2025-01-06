@@ -3,7 +3,7 @@
 
 use crate::run_cargo_build::common::{CommonArch, CommonTriple};
 use flowey::node::prelude::*;
-use flowey_lib_common::download_gh_artifact;
+use flowey_lib_common::{download_gh_artifact, gh_merge_commit, gh_workflow_id};
 
 flowey_request! {
     pub struct Request {
@@ -22,6 +22,8 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_xtask::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<download_gh_artifact::Node>();
+        ctx.import::<gh_merge_commit::Node>();
+        ctx.import::<gh_workflow_id::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -42,12 +44,22 @@ impl SimpleFlowNode for Node {
             CommonArch::Aarch64 => "aarch64-openhcl-igvm-extras",
         };
 
+        let merge_commit = ctx.reqv(|v| gh_merge_commit::Request {
+            merge_commit: v,
+            openvmm_repo_path: openvmm_repo_path.clone(),
+        });
+
+        let merge_run_id = ctx.reqv(|v| gh_workflow_id::Request {
+            github_commit_hash: merge_commit,
+            gh_workflow_id: v,
+        });
+
         let merge_head_artifact = ctx.reqv(|old_openhcl| download_gh_artifact::Request {
             repo_owner: "microsoft".into(),
             repo_name: "openvmm".into(),
             file_name: file_name.into(),
             path: old_openhcl,
-            run_id: "12438300136".into(),
+            run_id: merge_run_id,
         });
 
         ctx.emit_rust_step("binary size comparison", |ctx| {
