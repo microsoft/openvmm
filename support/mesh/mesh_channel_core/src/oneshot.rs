@@ -80,6 +80,10 @@ pub fn oneshot<T>() -> (OneshotSender<T>, OneshotReceiver<T>) {
 }
 
 /// The sending half of a channel returned by [`oneshot`].
+//
+// Note that the `PhantomData` here is necessary to ensure `Send/Sync` traits
+// are only implemented when `T` is `Send`, since the `OneshotSenderCore` is
+// always `Send+Sync`. This behavior is verified in the unit tests.
 pub struct OneshotSender<T>(OneshotSenderCore, PhantomData<Arc<Mutex<T>>>);
 
 impl<T> Debug for OneshotSender<T> {
@@ -235,6 +239,10 @@ impl OneshotSenderCore {
 /// The receiving half of a channel returned by [`oneshot`].
 ///
 /// A value is received by `poll`ing or `await`ing the channel.
+//
+// Note that the `PhantomData` here is necessary to ensure `Send/Sync` traits
+// are only implemented when `T` is `Send`, since the `OneshotReceiverCore` is
+// always `Send+Sync`. This behavior is verified in the unit tests.
 pub struct OneshotReceiver<T>(
     ManuallyDrop<OneshotReceiverCore>,
     PhantomData<Arc<Mutex<T>>>,
