@@ -202,9 +202,9 @@ impl OwnedMessage {
     ///
     /// If the message was constructed with `new<T>`, then the round trip
     /// serialization/deserialization is skipped.
-    pub fn parse<T: 'static>(self) -> Result<T, mesh_protobuf::Error>
+    pub fn parse<T>(self) -> Result<T, mesh_protobuf::Error>
     where
-        T: DefaultEncoding,
+        T: 'static + DefaultEncoding,
         T::Encoding: for<'a> MessageDecode<'a, T, Resource>,
     {
         Message::from(self).parse()
@@ -317,6 +317,10 @@ impl<'a> Message<'a> {
     /// Note that `message` need not be `Send`.
     ///
     /// This should be used via the [`stack_message!`] macro.
+    ///
+    /// # Safety
+    /// The caller must ensure that `message` is initialized. It will be uninitialized
+    /// when the message is dropped.
     pub(crate) unsafe fn new_stack<T: 'a + DefaultEncoding>(message: &'a mut MaybeUninit<T>) -> Self
     where
         T::Encoding: MessageEncode<T, Resource>,
@@ -372,9 +376,9 @@ impl<'a> Message<'a> {
     ///
     /// If the message was constructed with `new<T>`, then the round trip
     /// serialization/deserialization is skipped.
-    pub fn parse<T: 'static>(mut self) -> Result<T, mesh_protobuf::Error>
+    pub fn parse<T>(mut self) -> Result<T, mesh_protobuf::Error>
     where
-        T: DefaultEncoding,
+        T: 'static + DefaultEncoding,
         T::Encoding: for<'b> MessageDecode<'b, T, Resource>,
     {
         if let MessageInner::Owned(m) = self.0 {
@@ -441,8 +445,10 @@ impl MessageEncode<Message<'_>, Resource> for MessageEncoder {
 /// in place on the stack.
 macro_rules! stack_message {
     ($v:expr) => {
+        // UNSAFETY: required to call unsafe function.
         #[expect(unsafe_code)]
         {
+            // SAFETY: The value is initialized and never used again.
             unsafe { $crate::message::Message::new_stack(&mut ::core::mem::MaybeUninit::new($v)) }
         }
     };
@@ -485,6 +491,7 @@ impl DynMessageVtable {
             ptr: *mut (),
             sizer: MessageSizer<'_>,
         ) {
+            // SAFETY: The value is owned and the vtable type matches.
             let v = unsafe { &mut *ptr.cast::<T>() };
             E::compute_message_size(v, sizer);
         }
@@ -493,11 +500,13 @@ impl DynMessageVtable {
             ptr: *mut (),
             writer: MessageWriter<'_, '_, Resource>,
         ) {
+            // SAFETY: The value is owned and the vtable type matches.
             let v = unsafe { ptr.cast::<T>().read() };
             E::write_message(v, writer);
         }
 
         unsafe fn drop<T>(ptr: *mut ()) {
+            // SAFETY: The value is owned and the vtable type matches.
             unsafe { ptr.cast::<T>().drop_in_place() };
         }
 

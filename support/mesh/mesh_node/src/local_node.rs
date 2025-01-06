@@ -1173,7 +1173,7 @@ impl PortInnerState {
                                         &mut self.next_local_seq,
                                         pending_events,
                                     ),
-                                    message.into(),
+                                    message,
                                 ) {
                                     break 'error PortError::BadMessage(err.0);
                                 }
