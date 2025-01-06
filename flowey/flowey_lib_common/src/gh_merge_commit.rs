@@ -34,6 +34,7 @@ impl SimpleFlowNode for Node {
 
                 // TODO: Make this work for non-main PRs
                 xshell::cmd!(sh, "git fetch origin main").run()?;
+                xshell::cmd!(sh, "git status").run()?;
                 xshell::cmd!(sh, "git merge-base HEAD origin/main")
                     .ignore_status()
                     .run()?;
