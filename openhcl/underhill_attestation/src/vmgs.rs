@@ -392,6 +392,23 @@ mod tests {
         // `key_protector_by_id` should now hold `new_guid`
         let found_key_protector_by_id = read_key_protector_by_id(&mut vmgs).await.unwrap();
         assert_eq!(found_key_protector_by_id.id_guid, bios_guid);
+
+        // read a key protector by id from the VMGS file that is undersized
+        // ported and pad fields are expected to be zeroed
+        let mut undersized_key_protector_by_id = key_protector_by_id.as_bytes();
+        undersized_key_protector_by_id =
+            &undersized_key_protector_by_id[..undersized_key_protector_by_id.len() - 1];
+        vmgs.write_file(FileId::VM_UNIQUE_ID, &undersized_key_protector_by_id)
+            .await
+            .unwrap();
+
+        let found_key_protector_by_id = read_key_protector_by_id(&mut vmgs).await.unwrap();
+        assert_eq!(
+            found_key_protector_by_id.id_guid,
+            key_protector_by_id.id_guid
+        );
+        assert_eq!(found_key_protector_by_id.ported, 0);
+        assert_eq!(found_key_protector_by_id.pad, [0, 0, 0]);
     }
 
     #[async_test]
