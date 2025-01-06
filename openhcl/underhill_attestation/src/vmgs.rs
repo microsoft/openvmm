@@ -265,4 +265,113 @@ pub async fn read_guest_secret_key(vmgs: &mut Vmgs) -> Result<GuestSecretKey, Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use disk_backend::Disk;
+    use disklayer_ram::ram_disk;
+    use openhcl_attestation_protocol::vmgs::DekKp;
+    use openhcl_attestation_protocol::vmgs::GspKp;
+    use openhcl_attestation_protocol::vmgs::KeyProtector;
+    use openhcl_attestation_protocol::vmgs::KeyProtectorById;
+    use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
+    use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
+    use openhcl_attestation_protocol::vmgs::NUMBER_KP;
+    use pal_async::async_test;
+
+    const ONE_MEGA_BYTE: u64 = 1024 * 1024;
+
+    fn new_test_file() -> Disk {
+        ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
+    }
+
+    fn new_key_protector() -> KeyProtector {
+        // Ingress and egress KPs are assumed to be the only two KPs, therefore `NUMBER_KP` should be 2
+        assert_eq!(NUMBER_KP, 2);
+
+        let ingress_dek = DekKp {
+            dek_buffer: [1; DEK_BUFFER_SIZE],
+        };
+        let egress_dek = DekKp {
+            dek_buffer: [2; DEK_BUFFER_SIZE],
+        };
+        let ingress_gsp = GspKp {
+            gsp_length: GSP_BUFFER_SIZE as u32,
+            gsp_buffer: [3; GSP_BUFFER_SIZE],
+        };
+        let egress_gsp = GspKp {
+            gsp_length: GSP_BUFFER_SIZE as u32,
+            gsp_buffer: [4; GSP_BUFFER_SIZE],
+        };
+        KeyProtector {
+            dek: [ingress_dek, egress_dek],
+            gsp: [ingress_gsp, egress_gsp],
+            active_kp: u32::MAX,
+        }
+    }
+
+    #[async_test]
+    async fn write_read_vmgs_key_protector() {
+        let disk = new_test_file();
+
+        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
+        let key_protector = new_key_protector();
+        write_key_protector(&key_protector, &mut vmgs)
+            .await
+            .unwrap();
+
+        let key_protector = read_key_protector(&mut vmgs, 0).await.unwrap();
+
+        assert!(key_protector.dek[0].dek_buffer.iter().all(|&x| x == 1));
+        assert!(key_protector.dek[1].dek_buffer.iter().all(|&x| x == 2));
+
+        assert_eq!(key_protector.gsp[0].gsp_length, GSP_BUFFER_SIZE as u32);
+        assert!(key_protector.gsp[0].gsp_buffer.iter().all(|&x| x == 3));
+
+        assert_eq!(key_protector.gsp[1].gsp_length, GSP_BUFFER_SIZE as u32);
+        assert!(key_protector.gsp[1].gsp_buffer.iter().all(|&x| x == 4));
+
+        assert_eq!(key_protector.active_kp, u32::MAX);
+    }
+
+    #[async_test]
+    async fn write_vmgs_key_protector_by_id() {
+        let kp_guid = Guid::new_random();
+
+        let disk = new_test_file();
+
+        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
+        let mut key_protector_by_id = KeyProtectorById {
+            id_guid: kp_guid,
+            ported: 1,
+            pad: [0; 3],
+        };
+
+        // try to read the `key_protector_by_id` from the VMGS file which doesn't have a `key_protector_by_id` entry
+        let found_key_protector_by_id_result = read_key_protector_by_id(&mut vmgs).await;
+        assert!(found_key_protector_by_id_result.is_err());
+        assert_eq!(
+            found_key_protector_by_id_result.unwrap_err().to_string(),
+            "entry does not exist, file id: VM_UNIQUE_ID"
+        );
+
+        // populate the VMGS file with `key_protector_by_id`
+        write_key_protector_by_id(&mut key_protector_by_id, &mut vmgs, true, kp_guid)
+            .await
+            .unwrap();
+
+        // without using force, write the same `kp_guid` to the VMGS file and find that nothing changes
+        write_key_protector_by_id(&mut key_protector_by_id, &mut vmgs, false, kp_guid)
+            .await
+            .unwrap();
+        // `key_protector_by_id` should still hold `kp_guid`
+        let found_key_protector_by_id = read_key_protector_by_id(&mut vmgs).await.unwrap();
+        assert_eq!(found_key_protector_by_id.id_guid, kp_guid);
+
+        // without using force, write a new `Guid` to the VMGS file and find that the `key_protector_by_id` is updated
+        let bios_guid = Guid::new_random();
+        write_key_protector_by_id(&mut key_protector_by_id, &mut vmgs, false, bios_guid)
+            .await
+            .unwrap();
+        // `key_protector_by_id` should now hold `new_guid`
+        let found_key_protector_by_id = read_key_protector_by_id(&mut vmgs).await.unwrap();
+        assert_eq!(found_key_protector_by_id.id_guid, bios_guid);
+    }
 }
