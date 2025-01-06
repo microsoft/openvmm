@@ -68,17 +68,14 @@ pub fn oneshot<T>() -> (OneshotSender<T>, OneshotReceiver<T>) {
         let slot = Arc::new(Slot(Mutex::new(SlotState::Waiting(None))));
         (
             OneshotSenderCore(slot.clone()),
-            OneshotReceiverCore {
-                slot: Some(slot),
-                port: None,
-            },
+            OneshotReceiverCore { slot, port: None },
         )
     }
 
     let (sender, receiver) = oneshot_core();
     (
         OneshotSender(sender, PhantomData),
-        OneshotReceiver(receiver, PhantomData),
+        OneshotReceiver(ManuallyDrop::new(receiver), PhantomData),
     )
 }
 
@@ -142,12 +139,9 @@ impl Drop for OneshotSenderCore {
 
 impl OneshotSenderCore {
     fn into_slot(self) -> Arc<Slot> {
-        match *ManuallyDrop::new(self) {
-            Self(ref slot) => {
-                // SAFETY: `slot` is not dropped.
-                unsafe { <*const _>::read(slot) }
-            }
-        }
+        let Self(ref slot) = *ManuallyDrop::new(self);
+        // SAFETY: `slot` is not dropped.
+        unsafe { <*const _>::read(slot) }
     }
 
     fn close(&self) {
@@ -163,10 +157,10 @@ impl OneshotSenderCore {
                 *state = SlotState::Sent(v);
             }
             SlotState::Done => {}
-            SlotState::SenderRemote { .. } => unreachable!(),
             SlotState::ReceiverRemote(port, _) => {
                 drop(port);
             }
+            SlotState::SenderRemote { .. } => unreachable!(),
         }
     }
 
@@ -238,7 +232,10 @@ impl OneshotSenderCore {
 /// The receiving half of a channel returned by [`oneshot`].
 ///
 /// A value is received by `poll`ing or `await`ing the channel.
-pub struct OneshotReceiver<T>(OneshotReceiverCore, PhantomData<Arc<Mutex<T>>>);
+pub struct OneshotReceiver<T>(
+    ManuallyDrop<OneshotReceiverCore>,
+    PhantomData<Arc<Mutex<T>>>,
+);
 
 impl<T> Debug for OneshotReceiver<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -256,14 +253,16 @@ impl<T> OneshotReceiver<T> {
     fn into_core(self) -> OneshotReceiverCore {
         let Self(ref core, _) = *ManuallyDrop::new(self);
         // SAFETY: `core` is not dropped.
-        unsafe { <*const _>::read(core) }
+        unsafe { <*const _>::read(&**core) }
     }
 }
 
 impl<T> Drop for OneshotReceiver<T> {
     fn drop(&mut self) {
+        // SAFETY: the core is not dropped and will never be used again.
+        let core = unsafe { ManuallyDrop::take(&mut self.0) };
         // SAFETY: the slot is of type `T`.
-        unsafe { self.0.clear::<T>() };
+        unsafe { core.drop::<T>() };
     }
 }
 
@@ -288,22 +287,31 @@ impl<T: 'static + MeshField + Send> From<OneshotReceiver<T>> for Port {
 
 impl<T: 'static + MeshField + Send> From<Port> for OneshotReceiver<T> {
     fn from(port: Port) -> Self {
-        Self(OneshotReceiverCore::from_port::<T>(port), PhantomData)
+        Self(
+            ManuallyDrop::new(OneshotReceiverCore::from_port::<T>(port)),
+            PhantomData,
+        )
     }
 }
 
 #[derive(Debug)]
 struct OneshotReceiverCore {
-    slot: Option<Arc<Slot>>,
+    slot: Arc<Slot>,
     port: Option<PortWithHandler<SlotHandler>>,
 }
 
 impl OneshotReceiverCore {
-    // # Safety
-    // The caller must ensure that the slot is of type `T`.
-    unsafe fn clear<T>(&mut self) {
-        fn clear(this: &mut OneshotReceiverCore) -> Option<BoxedValue> {
-            let slot = this.slot.take()?;
+    /// Drops the receiver.
+    ///
+    /// This must be called to ensure the value is dropped if it has been
+    /// received.
+    ///
+    /// # Safety
+    /// The caller must ensure that the slot is of type `T`.
+    unsafe fn drop<T>(self) {
+        fn clear(this: OneshotReceiverCore) -> Option<BoxedValue> {
+            let OneshotReceiverCore { slot, port } = this;
+            drop(port);
             let v = if let SlotState::Sent(value) =
                 std::mem::replace(&mut *slot.0.lock(), SlotState::Done)
             {
@@ -326,18 +334,15 @@ impl OneshotReceiverCore {
             this: &mut OneshotReceiverCore,
             cx: &mut Context<'_>,
         ) -> Poll<Result<BoxedValue, RecvError>> {
-            let Some(slot) = &this.slot else {
-                return Poll::Ready(Err(RecvError::Closed));
-            };
             let v = loop {
-                let mut state = slot.0.lock();
+                let mut state = this.slot.0.lock();
                 break match std::mem::replace(&mut *state, SlotState::Done) {
                     SlotState::SenderRemote(port, decode) => {
                         *state = SlotState::Waiting(None);
                         drop(state);
                         assert!(this.port.is_none());
                         this.port = Some(port.set_handler(SlotHandler {
-                            slot: slot.clone(),
+                            slot: this.slot.clone(),
                             decode,
                         }));
                         continue;
@@ -379,22 +384,20 @@ impl OneshotReceiverCore {
     /// The caller must ensure that `encode` is a valid function to encode
     /// values of type `T`, the type of this slot.
     unsafe fn into_port<T: 'static + MeshField + Send>(self) -> Port {
-        fn into_port(mut this: OneshotReceiverCore, encode: EncodeFn) -> Port {
-            let existing = this.port.take().map(|port| port.remove_handler().0);
-            let Some(slot) = this.slot.take() else {
-                return existing.unwrap_or_else(|| Port::new_pair().0);
-            };
+        fn into_port(this: OneshotReceiverCore, encode: EncodeFn) -> Port {
+            let OneshotReceiverCore { slot, port } = this;
+            let existing = port.map(|port| port.remove_handler().0);
             let mut state = slot.0.lock();
             match std::mem::replace(&mut *state, SlotState::Done) {
                 SlotState::SenderRemote(port, _) => {
                     assert!(existing.is_none());
                     port
                 }
-                SlotState::Waiting(_) => {
+                SlotState::Waiting(_) => existing.unwrap_or_else(|| {
                     let (send, recv) = Port::new_pair();
                     *state = SlotState::ReceiverRemote(recv, encode);
                     send
-                }
+                }),
                 SlotState::Sent(value) => {
                     let (send, recv) = Port::new_pair();
                     // SAFETY: `encode` has been set to operate on values of type
@@ -416,10 +419,7 @@ impl OneshotReceiverCore {
     fn from_port<T: 'static + MeshField + Send>(port: Port) -> Self {
         fn from_port(port: Port, decode: DecodeFn) -> OneshotReceiverCore {
             let slot = Arc::new(Slot(Mutex::new(SlotState::SenderRemote(port, decode))));
-            OneshotReceiverCore {
-                slot: Some(slot),
-                port: None,
-            }
+            OneshotReceiverCore { slot, port: None }
         }
         from_port(port, decode_message::<T>)
     }
@@ -558,9 +558,11 @@ mod tests {
     use crate::OneshotSender;
     use crate::RecvError;
     use futures::executor::block_on;
+    use futures::FutureExt;
     use mesh_node::local_node::Port;
     use mesh_node::message::Message;
     use std::cell::Cell;
+    use std::future::poll_fn;
     use test_with_tracing::test;
 
     // Ensure `Send` and `Sync` are implemented correctly.
@@ -594,6 +596,42 @@ mod tests {
     fn test_oneshot_convert_receiver_port() {
         block_on(async {
             let (sender, receiver) = oneshot::<String>();
+            let receiver = OneshotReceiver::<String>::from(Port::from(receiver));
+            sender.send(String::from("foo"));
+            assert_eq!(receiver.await.unwrap(), "foo");
+        })
+    }
+
+    #[test]
+    fn test_oneshot_convert_receiver_port_after_send() {
+        block_on(async {
+            let (sender, receiver) = oneshot::<String>();
+            sender.send(String::from("foo"));
+            let receiver = OneshotReceiver::<String>::from(Port::from(receiver));
+            assert_eq!(receiver.await.unwrap(), "foo");
+        })
+    }
+
+    #[test]
+    fn test_oneshot_convert_both() {
+        block_on(async {
+            let (sender, receiver) = oneshot::<String>();
+            let sender = OneshotSender::<String>::from(Port::from(sender));
+            let receiver = OneshotReceiver::<String>::from(Port::from(receiver));
+            sender.send(String::from("foo"));
+            assert_eq!(receiver.await.unwrap(), "foo");
+        })
+    }
+
+    #[test]
+    fn test_oneshot_convert_both_poll_first() {
+        block_on(async {
+            let (sender, mut receiver) = oneshot::<String>();
+            let sender = OneshotSender::<String>::from(Port::from(sender));
+            // Ensure the receiver has seen the sender's port before converting.
+            assert!(poll_fn(|cx| receiver.poll_recv(cx))
+                .now_or_never()
+                .is_none());
             let receiver = OneshotReceiver::<String>::from(Port::from(receiver));
             sender.send(String::from("foo"));
             assert_eq!(receiver.await.unwrap(), "foo");
