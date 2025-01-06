@@ -5,6 +5,7 @@ use std::fs::File;
 use std::path::Path;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Targets;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::writer::EitherWriter;
 use tracing_subscriber::fmt::writer::Tee;
 use tracing_subscriber::fmt::MakeWriter;
@@ -32,6 +33,7 @@ pub(crate) fn try_init_tracing(
         .with_ansi(false) // avoid polluting logs with escape sequences
         .log_internal_errors(true)
         .with_writer(PetriWriter::new(log_file))
+        .with_span_events(FmtSpan::FULL)
         .with_max_level(LevelFilter::TRACE)
         .finish()
         .with(targets)
