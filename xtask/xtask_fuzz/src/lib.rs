@@ -40,6 +40,7 @@ pub fn init_tracing_if_repro() {
                 .compact()
                 .log_internal_errors(true)
                 .with_max_level(LevelFilter::TRACE)
+                .with_span_events(FmtSpan::FULL)
                 .finish()
                 .with(targets)
                 .init();
@@ -59,6 +60,7 @@ macro_rules! fuzz_eprintln {
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use libfuzzer_sys::fuzz_target;
+use tracing_subscriber::fmt::format::FmtSpan;
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 #[macro_export]
