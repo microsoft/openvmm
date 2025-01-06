@@ -22,6 +22,7 @@ pub fn init_tracing_if_repro() {
     use std::sync::Once;
     use tracing_subscriber::filter::LevelFilter;
     use tracing_subscriber::filter::Targets;
+    use tracing_subscriber::fmt::format::FmtSpan;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
@@ -60,7 +61,6 @@ macro_rules! fuzz_eprintln {
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use libfuzzer_sys::fuzz_target;
-use tracing_subscriber::fmt::format::FmtSpan;
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 #[macro_export]
