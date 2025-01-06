@@ -486,4 +486,62 @@ mod tests {
             "HW_KEY_PROTECTOR valid bytes 105, expected 104"
         );
     }
+
+    #[async_test]
+    async fn read_guest_secret_key_from_vmgs() {
+        let disk = new_test_file();
+
+        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
+
+        // When no guest secret key exists, an error should be returned
+        let found_guest_secret_key_result = read_guest_secret_key(&mut vmgs).await;
+        assert!(found_guest_secret_key_result.is_err());
+        assert_eq!(
+            found_guest_secret_key_result.unwrap_err().to_string(),
+            "entry does not exist, file id: GUEST_SECRET_KEY"
+        );
+
+        // Write a guest secret key to the VMGS
+        let guest_secret_key = GuestSecretKey {
+            guest_secret_key: [9; GUEST_SECRET_KEY_MAX_SIZE],
+        };
+        vmgs.write_file(FileId::GUEST_SECRET_KEY, guest_secret_key.as_bytes())
+            .await
+            .unwrap();
+        let found_guest_secret_key = read_guest_secret_key(&mut vmgs).await.unwrap();
+        assert_eq!(
+            found_guest_secret_key.guest_secret_key,
+            guest_secret_key.guest_secret_key
+        );
+
+        // Write a guest secret key larger than the maximum size to the VMGS
+        let oversized_guest_secret_key = [10u8; GUEST_SECRET_KEY_MAX_SIZE + 1];
+        vmgs.write_file(FileId::GUEST_SECRET_KEY, &oversized_guest_secret_key)
+            .await
+            .unwrap();
+        let found_guest_secret_key_result = read_guest_secret_key(&mut vmgs).await;
+        assert!(found_guest_secret_key_result.is_err());
+        assert_eq!(
+            found_guest_secret_key_result.unwrap_err().to_string(),
+            "GUEST_SECRET_KEY valid bytes 2049 larger than the maximum size 2048"
+        );
+
+        // Write a guest secret smaller than the maximum size to the VMGS and observe that it is padded with zeros
+        let undersized_guest_secret_key = [7u8; GUEST_SECRET_KEY_MAX_SIZE - 10];
+        vmgs.write_file(
+            FileId::GUEST_SECRET_KEY,
+            undersized_guest_secret_key.as_bytes(),
+        )
+        .await
+        .unwrap();
+        let found_guest_secret_key = read_guest_secret_key(&mut vmgs).await.unwrap();
+        assert_eq!(
+            found_guest_secret_key.guest_secret_key[..AGENT_DATA_MAX_SIZE - 10],
+            undersized_guest_secret_key[..]
+        );
+        assert_eq!(
+            found_guest_secret_key.guest_secret_key[AGENT_DATA_MAX_SIZE - 10..],
+            [0; 10]
+        );
+    }
 }
