@@ -706,7 +706,7 @@ mod tests {
         event.wait();
     }
 
-    #[cfg(not(feature = "newchan_oneshot"))]
+    #[cfg(not(feature = "newchan_oneshot"))] // This test reaches into the implementation.
     #[async_test]
     async fn test_oneshot() {
         let (send, mut recv) = oneshot::<u32>();
