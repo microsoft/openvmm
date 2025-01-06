@@ -603,7 +603,7 @@ impl PetriVmConfigSetupCore<'_> {
         let openhcl_show_spans = if let Ok(x) = std::env::var("OPENVMM_SHOW_SPANS") {
             format!("OPENVMM_SHOW_SPANS={x}")
         } else {
-            "OPENVMM_SHOW_SPANS=1".to_owned()
+            "OPENVMM_SHOW_SPANS=full".to_owned()
         };
 
         Ok(match (self.arch, &self.firmware) {
