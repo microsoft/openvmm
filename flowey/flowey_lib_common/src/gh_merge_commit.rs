@@ -22,7 +22,7 @@ impl SimpleFlowNode for Node {
         let head_ref = ctx.get_gh_context_var(GhContextVar::GITHUB__HEAD_REF);
 
         ctx.emit_rust_step("get merge commit", |ctx| {
-            let _merge_commit = merge_commit.claim(ctx);
+            let merge_commit = merge_commit.claim(ctx);
             let head_ref = head_ref.claim(ctx);
 
             |rt| {
@@ -30,7 +30,8 @@ impl SimpleFlowNode for Node {
                 let head_ref = rt.read(head_ref);
 
                 // TODO: Make this work for non-main PRs
-                xshell::cmd!(sh, "git merge-base {head_ref} origin/main").run()?;
+                let commit = xshell::cmd!(sh, "git merge-base {head_ref} origin/main").read()?;
+                rt.write(merge_commit, &commit);
 
                 Ok(())
             }
