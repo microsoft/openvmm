@@ -34,10 +34,10 @@ impl SimpleFlowNode for Node {
 
                 // TODO: Make this work for non-main PRs
                 xshell::cmd!(sh, "git fetch origin main").run()?;
-                let output = xshell::cmd!(sh, "git merge-base HEAD origin/main").read();
+                let output = xshell::cmd!(sh, "git merge-base HEAD origin/main").output();
 
                 if let Ok(commit) = output {
-                    rt.write(merge_commit, &commit);
+                    rt.write(merge_commit, &format!("{:?}", commit));
                 } else {
                     anyhow::bail!("Failed to get merge commit: {:?}", output);
                 }
