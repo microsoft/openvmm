@@ -1447,8 +1447,11 @@ jobs:
     - name: setup gh cli
       run: flowey e 12 flowey_lib_common::use_gh_cli 0
       shell: bash
+    - run: ${{ github.head_ref }}
+      shell: flowey v 12 'flowey_lib_common::gh_merge_commit:0:flowey_lib_common/src/gh_merge_commit.rs:22:28' --update-from-file {0} --is-raw-string
+      name: 🌼 Read from 'github.head_ref'
     - name: get merge commit
-      run: flowey e 12 flowey_lib_common::gh_merge_commit 0
+      run: flowey e 12 flowey_lib_common::gh_merge_commit 1
       shell: bash
     - name: get action id
       run: flowey e 12 flowey_lib_common::gh_workflow_id 0
@@ -2239,8 +2242,11 @@ jobs:
     - name: setup gh cli
       run: flowey e 14 flowey_lib_common::use_gh_cli 0
       shell: bash
+    - run: ${{ github.head_ref }}
+      shell: flowey v 14 'flowey_lib_common::gh_merge_commit:0:flowey_lib_common/src/gh_merge_commit.rs:22:28' --update-from-file {0} --is-raw-string
+      name: 🌼 Read from 'github.head_ref'
     - name: get merge commit
-      run: flowey e 14 flowey_lib_common::gh_merge_commit 0
+      run: flowey e 14 flowey_lib_common::gh_merge_commit 1
       shell: bash
     - name: get action id
       run: flowey e 14 flowey_lib_common::gh_workflow_id 0

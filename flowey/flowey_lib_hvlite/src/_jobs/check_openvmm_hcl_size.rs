@@ -44,10 +44,7 @@ impl SimpleFlowNode for Node {
             CommonArch::Aarch64 => "aarch64-openhcl-igvm-extras",
         };
 
-        let merge_commit = ctx.reqv(|v| gh_merge_commit::Request {
-            merge_commit: v,
-            openvmm_repo_path: openvmm_repo_path.clone(),
-        });
+        let merge_commit = ctx.reqv(|v| gh_merge_commit::Request { merge_commit: v });
 
         let merge_run_id = ctx.reqv(|v| gh_workflow_id::Request {
             github_commit_hash: merge_commit,

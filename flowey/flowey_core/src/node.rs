@@ -1793,6 +1793,9 @@ pub mod steps {
 
             /// `github.token`
             pub const GITHUB__TOKEN: GhContextVar = GhContextVar::new_secret("github.token");
+
+            /// `github.head_ref`
+            pub const GITHUB__HEAD_REF: GhContextVar = GhContextVar::new("github.head_ref");
         }
 
         impl GhContextVar {
