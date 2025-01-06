@@ -195,7 +195,7 @@ pub fn init_tracing(spawn: impl Spawn, tracer: RemoteTracer) -> anyhow::Result<(
     {
         "close" => fmt::format::FmtSpan::CLOSE,
         "1" | "true" => fmt::format::FmtSpan::NEW | fmt::format::FmtSpan::CLOSE,
-        "" => fmt::format::FmtSpan::NONE,
+        "0" | "false" | "" => fmt::format::FmtSpan::NONE,
         x => anyhow::bail!("invalid OPENVMM_SHOW_SPANS value: {x}"),
     };
 

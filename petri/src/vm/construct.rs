@@ -593,13 +593,18 @@ impl PetriVmConfigSetupCore<'_> {
     }
 
     fn load_firmware(&self) -> anyhow::Result<LoadMode> {
-        // Forward OPENVMM_LOG to OpenHCL if it's set.
+        // Forward OPENVMM_LOG and OPENVMM_SHOW_SPANS to OpenHCL if they're set.
         let openhcl_tracing =
             if let Ok(x) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
                 format!("OPENVMM_LOG={x}")
             } else {
                 "OPENVMM_LOG=debug".to_owned()
             };
+        let openhcl_show_spans = if let Ok(x) = std::env::var("OPENVMM_SHOW_SPANS") {
+            format!("OPENVMM_SHOW_SPANS={x}")
+        } else {
+            "OPENVMM_SHOW_SPANS=1".to_owned()
+        };
 
         Ok(match (self.arch, &self.firmware) {
             (MachineArch::X86_64, Firmware::LinuxDirect { .. }) => {
@@ -681,7 +686,8 @@ impl PetriVmConfigSetupCore<'_> {
                 MachineArch::X86_64,
                 Firmware::OpenhclLinuxDirect { .. } | Firmware::OpenhclUefi { .. },
             ) => {
-                let mut cmdline = format!("panic=-1 reboot=triple {openhcl_tracing}");
+                let mut cmdline =
+                    format!("panic=-1 reboot=triple {openhcl_tracing} {openhcl_show_spans}");
 
                 let (igvm_artifact, isolated) = match self.firmware {
                     Firmware::OpenhclLinuxDirect { .. } => {
