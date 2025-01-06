@@ -33,5 +33,9 @@ thiserror.workspace = true
 time = { workspace = true, features = ["macros"] }
 zerocopy.workspace = true
 
+[target.'cfg(target_os = "linux")'.dev_dependencies]
+disklayer_ram = { path = "../../vm/devices/storage/disklayer_ram" }
+disk_backend = { path = "../../vm/devices/storage/disk_backend" }
+
 [lints]
 workspace = true

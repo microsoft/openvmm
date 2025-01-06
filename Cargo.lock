@@ -6872,6 +6872,8 @@ dependencies = [
  "base64 0.21.7",
  "base64-serde",
  "cvm_tracing",
+ "disk_backend",
+ "disklayer_ram",
  "getrandom",
  "guest_emulation_transport",
  "guid",
