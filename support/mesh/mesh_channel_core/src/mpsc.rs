@@ -877,8 +877,9 @@ mod tests {
     use futures::StreamExt;
     use futures_core::FusedStream;
     use mesh_node::local_node::Port;
+    use mesh_protobuf::Protobuf;
     use std::cell::Cell;
-    use std::rc::Rc;
+    use std::marker::PhantomData;
     use test_with_tracing::test;
 
     // Ensure `Send` and `Sync` are implemented correctly.
@@ -972,11 +973,14 @@ mod tests {
     #[test]
     fn test_no_send() {
         block_on(async {
-            let (sender, receiver) = channel::<Rc<String>>();
-            let mut receiver = Receiver::<Rc<String>>::from(Port::from(receiver));
-            sender.send(Rc::new(String::from("test")));
+            #[derive(Protobuf)]
+            struct NoSend(String, PhantomData<*mut ()>);
+
+            let (sender, receiver) = channel::<NoSend>();
+            let mut receiver = Receiver::<NoSend>::from(Port::from(receiver));
+            sender.send(NoSend(String::from("test"), PhantomData));
             assert_eq!(
-                receiver.next().await.as_ref().map(|v| v.as_str()),
+                receiver.next().await.as_ref().map(|v| v.0.as_str()),
                 Some("test")
             );
         })

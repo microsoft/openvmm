@@ -1531,17 +1531,17 @@ impl<'a, T, R, E: FieldDecode<'a, T, R>> FieldDecode<'a, Box<T>, R> for BoxEncod
 ///
 /// Messages and fields are handled as if they are not reference counted, except
 /// that they are never encoded in packed format.
-pub struct RcEncoding<E>(E);
+pub struct ArcEncoding<E>(E);
 
-impl<E: DescribeField<T>, T> DescribeField<T> for RcEncoding<E> {
+impl<E: DescribeField<T>, T> DescribeField<T> for ArcEncoding<E> {
     const FIELD_TYPE: FieldType<'static> = E::FIELD_TYPE;
 }
 
-impl<E: DescribeMessage<T>, T> DescribeMessage<T> for RcEncoding<E> {
+impl<E: DescribeMessage<T>, T> DescribeMessage<T> for ArcEncoding<E> {
     const DESCRIPTION: MessageDescription<'static> = E::DESCRIPTION;
 }
 
-impl<T: Clone, R, E: MessageEncode<T, R>> MessageEncode<Arc<T>, R> for RcEncoding<E> {
+impl<T: Clone, R, E: MessageEncode<T, R>> MessageEncode<Arc<T>, R> for ArcEncoding<E> {
     fn write_message(item: Arc<T>, writer: MessageWriter<'_, '_, R>) {
         E::write_message(
             Arc::try_unwrap(item)
@@ -1556,7 +1556,7 @@ impl<T: Clone, R, E: MessageEncode<T, R>> MessageEncode<Arc<T>, R> for RcEncodin
     }
 }
 
-impl<'a, T: Clone, R, E: MessageDecode<'a, T, R>> MessageDecode<'a, Arc<T>, R> for RcEncoding<E> {
+impl<'a, T: Clone, R, E: MessageDecode<'a, T, R>> MessageDecode<'a, Arc<T>, R> for ArcEncoding<E> {
     fn read_message(
         item: &mut InplaceOption<'_, Arc<T>>,
         reader: MessageReader<'a, '_, R>,
@@ -1565,7 +1565,7 @@ impl<'a, T: Clone, R, E: MessageDecode<'a, T, R>> MessageDecode<'a, Arc<T>, R> f
     }
 }
 
-impl<T: Clone, R, E: FieldEncode<T, R>> FieldEncode<Arc<T>, R> for RcEncoding<E> {
+impl<T: Clone, R, E: FieldEncode<T, R>> FieldEncode<Arc<T>, R> for ArcEncoding<E> {
     fn write_field(item: Arc<T>, writer: FieldWriter<'_, '_, R>) {
         E::write_field(
             Arc::try_unwrap(item)
@@ -1584,7 +1584,7 @@ impl<T: Clone, R, E: FieldEncode<T, R>> FieldEncode<Arc<T>, R> for RcEncoding<E>
     }
 }
 
-impl<'a, T: Clone, R, E: FieldDecode<'a, T, R>> FieldDecode<'a, Arc<T>, R> for RcEncoding<E> {
+impl<'a, T: Clone, R, E: FieldDecode<'a, T, R>> FieldDecode<'a, Arc<T>, R> for ArcEncoding<E> {
     fn read_field(
         item: &mut InplaceOption<'_, Arc<T>>,
         reader: FieldReader<'a, '_, R>,
@@ -1601,7 +1601,7 @@ impl<'a, T: Clone, R, E: FieldDecode<'a, T, R>> FieldDecode<'a, Arc<T>, R> for R
     }
 }
 
-impl<T: Clone, R, E: MessageEncode<T, R>> MessageEncode<Rc<T>, R> for RcEncoding<E> {
+impl<T: Clone, R, E: MessageEncode<T, R>> MessageEncode<Rc<T>, R> for ArcEncoding<E> {
     fn write_message(item: Rc<T>, writer: MessageWriter<'_, '_, R>) {
         E::write_message(
             Rc::try_unwrap(item)
@@ -1613,51 +1613,6 @@ impl<T: Clone, R, E: MessageEncode<T, R>> MessageEncode<Rc<T>, R> for RcEncoding
 
     fn compute_message_size(item: &mut Rc<T>, sizer: MessageSizer<'_>) {
         E::compute_message_size(Rc::make_mut(item), sizer)
-    }
-}
-
-impl<'a, T: Clone, R, E: MessageDecode<'a, T, R>> MessageDecode<'a, Rc<T>, R> for RcEncoding<E> {
-    fn read_message(
-        item: &mut InplaceOption<'_, Rc<T>>,
-        reader: MessageReader<'a, '_, R>,
-    ) -> Result<()> {
-        item.update_rc(|item| E::read_message(item, reader))
-    }
-}
-
-impl<T: Clone, R, E: FieldEncode<T, R>> FieldEncode<Rc<T>, R> for RcEncoding<E> {
-    fn write_field(item: Rc<T>, writer: FieldWriter<'_, '_, R>) {
-        E::write_field(
-            Rc::try_unwrap(item)
-                .ok()
-                .expect("compute_field_size ensured single instance"),
-            writer,
-        )
-    }
-
-    fn compute_field_size(item: &mut Rc<T>, sizer: FieldSizer<'_>) {
-        E::compute_field_size(Rc::make_mut(item), sizer)
-    }
-
-    fn wrap_in_sequence() -> bool {
-        E::wrap_in_sequence()
-    }
-}
-
-impl<'a, T: Clone, R, E: FieldDecode<'a, T, R>> FieldDecode<'a, Rc<T>, R> for RcEncoding<E> {
-    fn read_field(
-        item: &mut InplaceOption<'_, Rc<T>>,
-        reader: FieldReader<'a, '_, R>,
-    ) -> Result<()> {
-        item.update_rc(|item| E::read_field(item, reader))
-    }
-
-    fn default_field(item: &mut InplaceOption<'_, Rc<T>>) -> Result<()> {
-        item.update_rc(|item| E::default_field(item))
-    }
-
-    fn wrap_in_sequence() -> bool {
-        E::wrap_in_sequence()
     }
 }
 
@@ -1752,11 +1707,11 @@ impl<T: DefaultEncoding> DefaultEncoding for Box<T> {
 }
 
 impl<T: DefaultEncoding + Clone> DefaultEncoding for Arc<T> {
-    type Encoding = RcEncoding<T::Encoding>;
+    type Encoding = ArcEncoding<T::Encoding>;
 }
 
 impl<T: DefaultEncoding + Clone> DefaultEncoding for Rc<T> {
-    type Encoding = RcEncoding<T::Encoding>;
+    type Encoding = ArcEncoding<T::Encoding>;
 }
 
 // Derive an encoding for `Result`.

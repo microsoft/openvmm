@@ -4,7 +4,6 @@
 //! Provides an `Option`-like type for constructing values in place.
 
 use alloc::boxed::Box;
-use alloc::rc::Rc;
 use alloc::sync::Arc;
 use core::mem::MaybeUninit;
 
@@ -208,44 +207,6 @@ impl<T: Clone> InplaceOption<'_, Arc<T>> {
             // SAFETY: T has the same layout as MaybeUninit<T>, and the value is
             // known to be initialized.
             let a = unsafe { Arc::from_raw(Arc::into_raw(arced).cast::<T>()) };
-            self.set(a);
-        }
-        r
-    }
-}
-
-impl<T: Clone> InplaceOption<'_, Rc<T>> {
-    /// Updates a reference counted value in place.
-    ///
-    /// N.B. This will allocate space for a value if one is not already present,
-    ///      which is wasteful if `f` does not actually initialize the value.
-    pub fn update_rc<F, R>(&mut self, f: F) -> R
-    where
-        F: FnOnce(&mut InplaceOption<'_, T>) -> R,
-    {
-        let mut arced;
-        let mut inplace;
-
-        if let Some(mut a) = self.take() {
-            // Ensure there is only a single reference.
-            Rc::make_mut(&mut a);
-            // SAFETY: MaybeUninit<T> has the same layout as T.
-            arced = unsafe { Arc::from_raw(Rc::into_raw(a).cast::<MaybeUninit<T>>()) };
-            // SAFETY: the value is known to be initialized.
-            unsafe {
-                inplace = InplaceOption::new_init_unchecked(Arc::get_mut(&mut arced).unwrap())
-            };
-        } else {
-            arced = Arc::new(MaybeUninit::uninit());
-            inplace = InplaceOption::uninit(Arc::get_mut(&mut arced).unwrap());
-        }
-
-        let r = f(&mut inplace);
-        if inplace.forget() {
-            drop(inplace);
-            // SAFETY: T has the same layout as MaybeUninit<T>, and the value is
-            // known to be initialized.
-            let a = unsafe { Rc::from_raw(Arc::into_raw(arced).cast::<T>()) };
             self.set(a);
         }
         r
