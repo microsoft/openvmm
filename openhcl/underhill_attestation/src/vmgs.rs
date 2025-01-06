@@ -269,10 +269,15 @@ mod tests {
     use disklayer_ram::ram_disk;
     use openhcl_attestation_protocol::vmgs::DekKp;
     use openhcl_attestation_protocol::vmgs::GspKp;
+    use openhcl_attestation_protocol::vmgs::HardwareKeyProtectorHeader;
     use openhcl_attestation_protocol::vmgs::KeyProtector;
     use openhcl_attestation_protocol::vmgs::KeyProtectorById;
+    use openhcl_attestation_protocol::vmgs::AES_CBC_IV_LENGTH;
+    use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
     use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
     use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
+    use openhcl_attestation_protocol::vmgs::HMAC_SHA_256_KEY_LENGTH;
+    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
     use openhcl_attestation_protocol::vmgs::NUMBER_KP;
     use pal_async::async_test;
 
@@ -280,6 +285,20 @@ mod tests {
 
     fn new_test_file() -> Disk {
         ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
+    }
+
+    fn new_hardware_key_protector() -> HardwareKeyProtector {
+        let header = HardwareKeyProtectorHeader::new(1, HW_KEY_PROTECTOR_SIZE as u32, 2);
+        let iv = [3; AES_CBC_IV_LENGTH];
+        let ciphertext = [4; AES_GCM_KEY_LENGTH];
+        let hmac = [5; HMAC_SHA_256_KEY_LENGTH];
+
+        HardwareKeyProtector {
+            header,
+            iv,
+            ciphertext,
+            hmac,
+        }
     }
 
     fn new_key_protector() -> KeyProtector {
@@ -426,6 +445,45 @@ mod tests {
         assert_eq!(
             found_security_profile.agent_data[AGENT_DATA_MAX_SIZE - 10..],
             [0; 10]
+        );
+    }
+
+    #[async_test]
+    async fn write_read_hardware_key_protector() {
+        let disk = new_test_file();
+
+        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
+        let hardware_key_protector = new_hardware_key_protector();
+        write_hardware_key_protector(&hardware_key_protector, &mut vmgs)
+            .await
+            .unwrap();
+
+        let found_hardware_key_protector = read_hardware_key_protector(&mut vmgs).await.unwrap();
+
+        assert_eq!(
+            found_hardware_key_protector.header.as_bytes(),
+            hardware_key_protector.header.as_bytes()
+        );
+        assert_eq!(found_hardware_key_protector.iv, hardware_key_protector.iv);
+        assert_eq!(
+            found_hardware_key_protector.ciphertext,
+            hardware_key_protector.ciphertext
+        );
+        assert_eq!(
+            found_hardware_key_protector.hmac,
+            hardware_key_protector.hmac
+        );
+
+        // Write and then fail to read a hardware key protector larger than the expected size to the VMGS
+        let oversized_hardware_key_protector = [8u8; HW_KEY_PROTECTOR_SIZE + 1];
+        vmgs.write_file(FileId::HW_KEY_PROTECTOR, &oversized_hardware_key_protector)
+            .await
+            .unwrap();
+        let found_hardware_key_protector_result = read_hardware_key_protector(&mut vmgs).await;
+        assert!(found_hardware_key_protector_result.is_err());
+        assert_eq!(
+            found_hardware_key_protector_result.unwrap_err().to_string(),
+            "HW_KEY_PROTECTOR valid bytes 105, expected 104"
         );
     }
 }
