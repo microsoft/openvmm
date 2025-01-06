@@ -319,8 +319,8 @@ impl<'a> Message<'a> {
     /// This should be used via the [`stack_message!`] macro.
     ///
     /// # Safety
-    /// The caller must ensure that `message` is initialized. It will be uninitialized
-    /// when the message is dropped.
+    /// The caller must ensure that `message` is initialized. It will be dropped
+    /// in place when the message is dropped, so it must not be used again.
     pub(crate) unsafe fn new_stack<T: 'a + DefaultEncoding>(message: &'a mut MaybeUninit<T>) -> Self
     where
         T::Encoding: MessageEncode<T, Resource>,
