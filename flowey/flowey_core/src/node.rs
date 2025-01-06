@@ -1796,7 +1796,8 @@ pub mod steps {
 
             /// Head ref of a pull request - this is different from `github.head_ref`, which
             /// is something like `/pull/ID/merge`. This gives `/pull/ID/head`
-            pub const GITHUB__HEAD_REF: GhContextVar = GhContextVar::new("github.event.pull_request.head.ref");
+            pub const GITHUB__HEAD_REF: GhContextVar =
+                GhContextVar::new("github.event.pull_request.head.ref");
         }
 
         impl GhContextVar {
