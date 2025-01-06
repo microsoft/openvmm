@@ -29,7 +29,7 @@ pub fn init() {
             .log_internal_errors(true)
             .with_test_writer()
             .with_max_level(LevelFilter::TRACE)
-            .with_span_events(FmtSpan::FULL)
+            .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
             .finish()
             .with(targets)
             .init();

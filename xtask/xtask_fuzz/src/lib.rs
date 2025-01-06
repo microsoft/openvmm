@@ -41,7 +41,7 @@ pub fn init_tracing_if_repro() {
                 .compact()
                 .log_internal_errors(true)
                 .with_max_level(LevelFilter::TRACE)
-                .with_span_events(FmtSpan::FULL)
+                .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
                 .finish()
                 .with(targets)
                 .init();

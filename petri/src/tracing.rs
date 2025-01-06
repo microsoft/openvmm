@@ -33,7 +33,7 @@ pub(crate) fn try_init_tracing(
         .with_ansi(false) // avoid polluting logs with escape sequences
         .log_internal_errors(true)
         .with_writer(PetriWriter::new(log_file))
-        .with_span_events(FmtSpan::FULL)
+        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
         .with_max_level(LevelFilter::TRACE)
         .finish()
         .with(targets)

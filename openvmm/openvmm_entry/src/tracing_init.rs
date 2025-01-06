@@ -54,7 +54,7 @@ pub fn enable_tracing() -> anyhow::Result<()> {
         .with_ansi(is_terminal);
     let fmt_layer = tracing_subscriber::fmt::layer()
         .event_format(format)
-        .with_span_events(FmtSpan::FULL)
+        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
         .fmt_fields(tracing_helpers::formatter::FieldFormatter)
         .log_internal_errors(true)
         .with_writer(writer);
