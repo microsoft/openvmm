@@ -879,7 +879,7 @@ impl BackingPrivate for TdxBacked {
 impl UhProcessor<'_, TdxBacked> {
     /// Returns `Ok(false)` if the APIC offload needs to be disabled and the
     /// poll retried.
-    fn try_poll_apic(&mut self, scan_irr: bool) -> Result<bool, UhRunVpError> {
+    fn try_poll_apic(&mut self, vtl: GuestVtl, scan_irr: bool) -> Result<bool, UhRunVpError> {
         // Check for interrupt requests from the host and kernel IPI offload.
         // TODO TDX GUEST VSM supporting VTL 1 proxy irrs requires kernel changes
         if vtl == GuestVtl::Vtl0 {
@@ -971,7 +971,7 @@ impl UhProcessor<'_, TdxBacked> {
         // Offloading is only done with VTL 0 today.
         if vtl == GuestVtl::Vtl0 {
             let mut update_rvi = false;
-            let r: Result<(), OffloadNotSupported> = self.backing.cvm.lapics[GuestVtl::Vtl0]
+            let r: Result<(), OffloadNotSupported> = self.backing.cvm.lapics[vtl]
                 .lapic
                 .push_to_offload(|irr, isr, tmr| {
                     let apic_page: &mut ApicPage =
@@ -1006,7 +1006,7 @@ impl UhProcessor<'_, TdxBacked> {
                     {
                         let tmr = tmr[0] as u64 | ((tmr[1] as u64) << 32);
                         if *eoi_exit != tmr {
-                            self.runner.write_vmcs64(GuestVtl::Vtl0, field, !0, tmr);
+                            self.runner.write_vmcs64(vtl, field, !0, tmr);
                             *eoi_exit = tmr;
                             // The kernel driver supports some common APIC functionality (ICR writes,
                             // interrupt injection). When the kernel driver handles an interrupt, it
@@ -1297,8 +1297,7 @@ impl UhProcessor<'_, TdxBacked> {
 
         // Turn on kernel interrupt handling if possible
         let offload_enabled = next_vtl == GuestVtl::Vtl0
-            && self
-                .backing
+            && self.backing.vtls[next_vtl]
                 .secondary_processor_controls
                 .virtual_interrupt_delivery()
             && self.backing.cvm.lapics[next_vtl].lapic.can_offload_irr();
@@ -1322,11 +1321,14 @@ impl UhProcessor<'_, TdxBacked> {
             .run()
             .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?;
 
+        let entered_from_vtl = next_vtl;
+        *self.runner.tdx_vp_entry_flags_mut() = TdxVmFlags::new();
+
         // Kernel offload may have set or cleared the halt/idle states
         if offload_enabled && kernel_known_state {
             let offload_flags = self.runner.offload_flags_mut();
 
-            self.backing.cvm.lapics[GuestVtl::Vtl0].activity =
+            self.backing.cvm.lapics[entered_from_vtl].activity =
                 match (offload_flags.halted_hlt(), offload_flags.halted_idle()) {
                     (false, false) => MpState::Running,
                     (true, false) => MpState::Halted,
@@ -1340,13 +1342,9 @@ impl UhProcessor<'_, TdxBacked> {
                 };
         }
 
-        *self.runner.tdx_vp_entry_flags_mut() = TdxVmFlags::new();
-
         if !has_intercept {
             return Ok(());
         }
-
-        let entered_from_vtl = next_vtl;
 
         let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
 
