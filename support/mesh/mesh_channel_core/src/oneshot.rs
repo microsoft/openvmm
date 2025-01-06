@@ -43,7 +43,7 @@ use thiserror::Error;
 /// Creates a unidirection channel for sending a single value of type `T`.
 ///
 /// The channel is automatically closed after the value is sent. Use this
-/// instead of [`channel`] when only one value ever needs to be sent to avoid
+/// instead of [`channel`][] when only one value ever needs to be sent to avoid
 /// programming errors where the channel is left open longer than necessary.
 /// This is also more efficient.
 ///
@@ -63,6 +63,8 @@ use thiserror::Error;
 /// assert_eq!(n, 5);
 /// # });
 /// ```
+///
+/// [`channel`]: crate::mpsc::channel
 pub fn oneshot<T>() -> (OneshotSender<T>, OneshotReceiver<T>) {
     fn oneshot_core() -> (OneshotSenderCore, OneshotReceiverCore) {
         let slot = Arc::new(Slot(Mutex::new(SlotState::Waiting(None))));
