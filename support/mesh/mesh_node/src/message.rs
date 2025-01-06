@@ -11,43 +11,54 @@ use crate::resource::SerializedMessage;
 use mesh_protobuf;
 use mesh_protobuf::encoding::SerializedMessageEncoder;
 use mesh_protobuf::inplace;
-use mesh_protobuf::protobuf::Encoder;
+use mesh_protobuf::inplace_none;
+use mesh_protobuf::protobuf::decode_with;
 use mesh_protobuf::protobuf::MessageSizer;
 use mesh_protobuf::protobuf::MessageWriter;
+use mesh_protobuf::DefaultEncoding;
+use mesh_protobuf::MessageDecode;
 use mesh_protobuf::MessageEncode;
 use std::any::Any;
 use std::any::TypeId;
+use std::borrow::Cow;
 use std::fmt;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 
-/// A message for sending over a channel.
+/// A message on a port.
+///
+/// The message has a static lifetime and is `Send`, so it is appropriate for
+/// storing and using across threads.
+///
+/// See [`Message`] for a version that can reference data with non-static
+/// lifetime.
 #[derive(Default)]
-pub struct Message(MessageInner);
+pub struct OwnedMessage(OwnedMessageInner);
 
-enum MessageInner {
+enum OwnedMessageInner {
     Unserialized(Box<dyn DynSerializeMessage>),
     Serialized(SerializedMessage),
 }
 
-impl Debug for Message {
+impl Debug for OwnedMessage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad("Message")
+        f.pad("OwnedMessage")
     }
 }
 
-impl Default for MessageInner {
+impl Default for OwnedMessageInner {
     fn default() -> Self {
         Self::Serialized(Default::default())
     }
 }
 
-impl Message {
+impl OwnedMessage {
     /// Serializes the message and returns it.
     pub fn serialize(self) -> SerializedMessage {
         match self.0 {
-            MessageInner::Unserialized(_) => SerializedMessage::from_message(self),
-            MessageInner::Serialized(message) => message,
+            OwnedMessageInner::Unserialized(_) => SerializedMessage::from_message(self),
+            OwnedMessageInner::Serialized(message) => message,
         }
     }
 }
@@ -56,11 +67,9 @@ impl Message {
 ///
 /// This does not include scalar types such as `u32`, which are encoded as
 /// non-message types.
-pub trait MeshPayload:
-    mesh_protobuf::DefaultEncoding<Encoding = <Self as MeshPayload>::Encoding> + Sized
-{
+pub trait MeshPayload: DefaultEncoding<Encoding = <Self as MeshPayload>::Encoding> + Sized {
     type Encoding: MessageEncode<Self, Resource>
-        + for<'a> mesh_protobuf::MessageDecode<'a, Self, Resource>
+        + for<'a> MessageDecode<'a, Self, Resource>
         + mesh_protobuf::FieldEncode<Self, Resource>
         + for<'a> mesh_protobuf::FieldDecode<'a, Self, Resource>
         + Send
@@ -69,9 +78,9 @@ pub trait MeshPayload:
 
 impl<T> MeshPayload for T
 where
-    T: mesh_protobuf::DefaultEncoding,
+    T: DefaultEncoding + Any + Send + 'static,
     T::Encoding: MessageEncode<T, Resource>
-        + for<'a> mesh_protobuf::MessageDecode<'a, T, Resource>
+        + for<'a> MessageDecode<'a, T, Resource>
         + mesh_protobuf::FieldEncode<T, Resource>
         + for<'a> mesh_protobuf::FieldDecode<'a, T, Resource>
         + Send
@@ -82,9 +91,7 @@ where
 
 /// Trait for types that can be a field in a mesh message, including both scalar
 /// types and types that implement [`MeshPayload`].
-pub trait MeshField:
-    mesh_protobuf::DefaultEncoding<Encoding = <Self as MeshField>::Encoding> + Sized
-{
+pub trait MeshField: DefaultEncoding<Encoding = <Self as MeshField>::Encoding> + Sized {
     type Encoding: mesh_protobuf::FieldEncode<Self, Resource>
         + for<'a> mesh_protobuf::FieldDecode<'a, Self, Resource>
         + Send
@@ -93,7 +100,7 @@ pub trait MeshField:
 
 impl<T> MeshField for T
 where
-    T: mesh_protobuf::DefaultEncoding,
+    T: DefaultEncoding,
     T::Encoding: mesh_protobuf::FieldEncode<T, Resource>
         + for<'a> mesh_protobuf::FieldDecode<'a, T, Resource>
         + Send
@@ -104,7 +111,7 @@ where
 
 /// Trait implemented by concrete messages that can be extracted or serialized
 /// into [`SerializedMessage`].
-pub trait SerializeMessage: 'static + Send {
+pub trait SerializeMessage: 'static {
     /// The underlying concrete message type.
     type Concrete: Any;
 
@@ -138,7 +145,7 @@ unsafe trait DynSerializeMessage: Send {
 }
 
 // SAFETY: extract_or_serialize satisfies implementation requirements.
-unsafe impl<T: SerializeMessage> DynSerializeMessage for T {
+unsafe impl<T: SerializeMessage + Send> DynSerializeMessage for T {
     fn compute_message_size(&mut self, sizer: MessageSizer<'_>) {
         self.compute_message_size(sizer)
     }
@@ -162,11 +169,6 @@ unsafe impl<T: SerializeMessage> DynSerializeMessage for T {
     }
 }
 
-fn serialize_dyn_message(message: Box<dyn DynSerializeMessage>) -> SerializedMessage {
-    let (data, resources) = Encoder::<_, MessageEncoder, _>::with_encoding(message).encode();
-    SerializedMessage { data, resources }
-}
-
 impl<T: 'static + MeshPayload + Send> SerializeMessage for T {
     type Concrete = Self;
 
@@ -183,46 +185,57 @@ impl<T: 'static + MeshPayload + Send> SerializeMessage for T {
     }
 }
 
-impl Message {
+impl OwnedMessage {
     /// Creates a new message wrapping `data`, which will be lazily serialized
     /// when needed.
     #[inline]
-    pub fn new<T: SerializeMessage>(data: T) -> Self {
-        Self(MessageInner::Unserialized(Box::new(data)))
+    pub fn new<T: SerializeMessage + Send>(data: T) -> Self {
+        Self(OwnedMessageInner::Unserialized(Box::new(data)))
     }
 
     /// Creates a new message from already-serialized data in `s`.
     pub fn serialized(s: SerializedMessage) -> Self {
-        Self(MessageInner::Serialized(s))
+        Self(OwnedMessageInner::Serialized(s))
     }
 
     /// Parses the message into a value of type `T`.
     ///
     /// If the message was constructed with `new<T>`, then the round trip
     /// serialization/deserialization is skipped.
-    pub fn parse<T: 'static + MeshPayload>(self) -> Result<T, mesh_protobuf::Error> {
-        self.try_parse().or_else(|m| m.into_message())
+    pub fn parse<T: 'static>(self) -> Result<T, mesh_protobuf::Error>
+    where
+        T: DefaultEncoding,
+        T::Encoding: for<'a> MessageDecode<'a, T, Resource>,
+    {
+        Message::from(self).parse()
     }
 
-    pub fn try_parse<T: 'static>(self) -> Result<T, SerializedMessage> {
+    /// Tries to unwrap the message into a value of type `T`.
+    ///
+    /// If the message was not created with [`OwnedMessage::new<T>`], then this
+    /// returns `Err(self)`.
+    //
+    // FUTURE: remove this optimization once nothing depends on it for
+    // functionality or performance.
+    pub fn try_unwrap<T: 'static>(self) -> Result<T, Self> {
         match self.0 {
-            MessageInner::Unserialized(m) => {
+            OwnedMessageInner::Unserialized(m) => {
                 let mut message = MaybeUninit::<T>::uninit();
                 // SAFETY: calling with appropriately sized and aligned buffer
                 // for writing T.
                 unsafe {
                     match m.extract(TypeId::of::<T>(), message.as_mut_ptr().cast()) {
                         Ok(()) => Ok(message.assume_init()),
-                        Err(message) => Err(serialize_dyn_message(message)),
+                        Err(message) => Err(Self(OwnedMessageInner::Unserialized(message))),
                     }
                 }
             }
-            MessageInner::Serialized(m) => Err(m),
+            OwnedMessageInner::Serialized(_) => Err(self),
         }
     }
 }
 
-impl mesh_protobuf::DefaultEncoding for Message {
+impl DefaultEncoding for OwnedMessage {
     type Encoding = mesh_protobuf::encoding::MessageEncoding<MessageEncoder>;
 }
 
@@ -238,36 +251,267 @@ impl MessageEncode<Box<dyn DynSerializeMessage>, Resource> for MessageEncoder {
     }
 }
 
-impl MessageEncode<Message, Resource> for MessageEncoder {
-    fn write_message(item: Message, writer: MessageWriter<'_, '_, Resource>) {
+impl MessageEncode<OwnedMessage, Resource> for MessageEncoder {
+    fn write_message(item: OwnedMessage, writer: MessageWriter<'_, '_, Resource>) {
         match item.0 {
-            MessageInner::Unserialized(message) => Self::write_message(message, writer),
-            MessageInner::Serialized(message) => {
+            OwnedMessageInner::Unserialized(message) => Self::write_message(message, writer),
+            OwnedMessageInner::Serialized(message) => {
                 SerializedMessageEncoder::write_message(message, writer)
             }
         }
     }
 
-    fn compute_message_size(item: &mut Message, sizer: MessageSizer<'_>) {
+    fn compute_message_size(item: &mut OwnedMessage, sizer: MessageSizer<'_>) {
         match &mut item.0 {
-            MessageInner::Unserialized(message) => Self::compute_message_size(message, sizer),
-            MessageInner::Serialized(message) => {
+            OwnedMessageInner::Unserialized(message) => Self::compute_message_size(message, sizer),
+            OwnedMessageInner::Serialized(message) => {
                 SerializedMessageEncoder::compute_message_size(message, sizer)
             }
         }
     }
 }
 
-impl mesh_protobuf::MessageDecode<'_, Message, Resource> for MessageEncoder {
+impl MessageDecode<'_, OwnedMessage, Resource> for MessageEncoder {
     fn read_message(
-        item: &mut inplace::InplaceOption<'_, Message>,
+        item: &mut inplace::InplaceOption<'_, OwnedMessage>,
         reader: mesh_protobuf::protobuf::MessageReader<'_, '_, Resource>,
     ) -> mesh_protobuf::Result<()> {
-        let message = item.take().map(Message::serialize);
+        let message = item.take().map(OwnedMessage::serialize);
         inplace!(message);
         SerializedMessageEncoder::read_message(&mut message, reader)?;
-        item.set(Message::serialized(message.take().unwrap()));
+        item.set(OwnedMessage(OwnedMessageInner::Serialized(
+            message.take().unwrap(),
+        )));
         Ok(())
+    }
+}
+
+/// A message on a port.
+///
+/// The message may reference data with non-static lifetime, and it may not be
+/// [`Send`]. See [`OwnedMessage`] for a version that is [`Send`].
+pub struct Message<'a>(MessageInner<'a>);
+
+impl Debug for Message<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad("Message")
+    }
+}
+
+enum MessageInner<'a> {
+    Owned(OwnedMessage),
+    Stack(StackMessage<'a>),
+    View(&'a [u8], Vec<Resource>),
+}
+
+impl<'a> Message<'a> {
+    /// Returns a new instance wrapping `message`. The message will be boxed and
+    /// will be lazily serialized when needed.
+    pub fn new<T: SerializeMessage + Send>(message: T) -> Self {
+        OwnedMessage::new(message).into()
+    }
+
+    /// Returns a new instance that logically owns the contents of `message`,
+    /// while keeping the storage for `message` in place.
+    ///
+    /// Note that `message` need not be `Send`.
+    ///
+    /// This should be used via the [`stack_message!`] macro.
+    pub(crate) unsafe fn new_stack<T: 'a + DefaultEncoding>(message: &'a mut MaybeUninit<T>) -> Self
+    where
+        T::Encoding: MessageEncode<T, Resource>,
+    {
+        Message(MessageInner::Stack(StackMessage(
+            message.as_mut_ptr().cast(),
+            DynMessageVtable::stack::<T, T::Encoding>(),
+            PhantomData,
+        )))
+    }
+
+    /// Returns an instance for a serialized message with `data` and
+    /// `resources`.
+    pub fn serialized(data: &'a [u8], resources: Vec<Resource>) -> Self {
+        Self(MessageInner::View(data, resources))
+    }
+
+    /// Converts the message into an [`OwnedMessage`].
+    ///
+    /// If the message was created with [`Message::new`] or
+    /// [`OwnedMessage::from`], then this operation is cheap. Otherwise, this
+    /// operation will serialize the message and allocate a new buffer.
+    pub fn into_owned(self) -> OwnedMessage {
+        let m = match self.0 {
+            MessageInner::Owned(m) => return m,
+            MessageInner::Stack(_) => SerializedMessage::from_message(self),
+            MessageInner::View(v, vec) => SerializedMessage {
+                data: v.into(),
+                resources: vec,
+            },
+        };
+        OwnedMessage(OwnedMessageInner::Serialized(m))
+    }
+
+    /// Serializes the message and returns it.
+    ///
+    /// If the message is already serialized, then this is a cheap operation.
+    pub fn serialize(self) -> (Cow<'a, [u8]>, Vec<Resource>) {
+        match self.0 {
+            MessageInner::Owned(OwnedMessage(OwnedMessageInner::Serialized(m))) => {
+                (Cow::Owned(m.data), m.resources)
+            }
+            MessageInner::View(data, resources) => (Cow::Borrowed(data), resources),
+            m => {
+                let m = SerializedMessage::from_message(Self(m));
+                (Cow::Owned(m.data), m.resources)
+            }
+        }
+    }
+
+    fn into_data_and_resources(self) -> (Cow<'a, [u8]>, Vec<Option<Resource>>) {
+        let (d, r) = self.serialize();
+        (d, r.into_iter().map(Some).collect::<Vec<_>>())
+    }
+
+    /// Parses the message into a value of type `T`.
+    ///
+    /// If the message was constructed with `new<T>`, then the round trip
+    /// serialization/deserialization is skipped.
+    pub fn parse<T: 'static>(mut self) -> Result<T, mesh_protobuf::Error>
+    where
+        T: DefaultEncoding,
+        T::Encoding: for<'b> MessageDecode<'b, T, Resource>,
+    {
+        if let MessageInner::Owned(m) = self.0 {
+            match m.try_unwrap() {
+                Ok(m) => return Ok(m),
+                Err(m) => {
+                    self = Self(MessageInner::Owned(m));
+                }
+            }
+        }
+        self.parse_non_static()
+    }
+
+    /// Parses the message into a value of type `T`.
+    ///
+    /// When `T` has static lifetime, prefer [`Message::parse`] instead, since
+    /// it can recover a `T` passed to [`Message::new`] without round-trip
+    /// serialization.
+    pub fn parse_non_static<T>(self) -> Result<T, mesh_protobuf::Error>
+    where
+        T: DefaultEncoding,
+        T::Encoding: for<'b> MessageDecode<'b, T, Resource>,
+    {
+        let (data, mut resources) = self.into_data_and_resources();
+        inplace_none!(message: T);
+        decode_with::<T::Encoding, _, _>(&mut message, &data, &mut resources)?;
+        Ok(message.take().expect("should be constructed"))
+    }
+}
+
+impl From<OwnedMessage> for Message<'_> {
+    fn from(m: OwnedMessage) -> Self {
+        Self(MessageInner::Owned(m))
+    }
+}
+
+impl DefaultEncoding for Message<'_> {
+    type Encoding = mesh_protobuf::encoding::MessageEncoding<MessageEncoder>;
+}
+
+impl MessageEncode<Message<'_>, Resource> for MessageEncoder {
+    fn write_message(item: Message<'_>, mut writer: MessageWriter<'_, '_, Resource>) {
+        match item.0 {
+            MessageInner::Owned(m) => Self::write_message(m, writer),
+            MessageInner::Stack(m) => m.write_message(writer),
+            MessageInner::View(data, resources) => {
+                writer.raw_message(data, resources);
+            }
+        }
+    }
+
+    fn compute_message_size(item: &mut Message<'_>, mut sizer: MessageSizer<'_>) {
+        match &mut item.0 {
+            MessageInner::Owned(m) => Self::compute_message_size(m, sizer),
+            MessageInner::Stack(m) => m.compute_message_size(sizer),
+            MessageInner::View(data, resources) => {
+                sizer.raw_message(data.len(), resources.len() as u32);
+            }
+        }
+    }
+}
+
+/// Returns a [`Message`] that takes ownership of a value but leaves the value
+/// in place on the stack.
+macro_rules! stack_message {
+    ($v:expr) => {
+        #[expect(unsafe_code)]
+        {
+            unsafe { $crate::message::Message::new_stack(&mut ::core::mem::MaybeUninit::new($v)) }
+        }
+    };
+}
+pub(crate) use stack_message;
+
+/// A message whose storage is on the stack.
+struct StackMessage<'a>(*mut (), &'static DynMessageVtable, PhantomData<&'a mut ()>);
+
+impl Drop for StackMessage<'_> {
+    fn drop(&mut self) {
+        // SAFETY: The value is owned.
+        unsafe { (self.1.drop)(self.0) }
+    }
+}
+
+impl StackMessage<'_> {
+    fn compute_message_size(&mut self, sizer: MessageSizer<'_>) {
+        // SAFETY: The value is owned and the vtable type matches.
+        unsafe { (self.1.compute_message_size)(self.0, sizer) }
+    }
+
+    fn write_message(self, writer: MessageWriter<'_, '_, Resource>) {
+        let Self(ptr, vtable, _) = self;
+        std::mem::forget(self);
+        // SAFETY: The value is owned and the vtable type matches.
+        unsafe { (vtable.write_message)(ptr, writer) }
+    }
+}
+
+struct DynMessageVtable {
+    compute_message_size: unsafe fn(*mut (), MessageSizer<'_>),
+    write_message: unsafe fn(*mut (), MessageWriter<'_, '_, Resource>),
+    drop: unsafe fn(*mut ()),
+}
+
+impl DynMessageVtable {
+    const fn stack<T, E: MessageEncode<T, Resource>>() -> &'static Self {
+        unsafe fn compute_message_size<T, E: MessageEncode<T, Resource>>(
+            ptr: *mut (),
+            sizer: MessageSizer<'_>,
+        ) {
+            let v = unsafe { &mut *ptr.cast::<T>() };
+            E::compute_message_size(v, sizer);
+        }
+
+        unsafe fn write_message<T, E: MessageEncode<T, Resource>>(
+            ptr: *mut (),
+            writer: MessageWriter<'_, '_, Resource>,
+        ) {
+            let v = unsafe { ptr.cast::<T>().read() };
+            E::write_message(v, writer);
+        }
+
+        unsafe fn drop<T>(ptr: *mut ()) {
+            unsafe { ptr.cast::<T>().drop_in_place() };
+        }
+
+        const {
+            &Self {
+                compute_message_size: compute_message_size::<T, E>,
+                write_message: write_message::<T, E>,
+                drop: drop::<T>,
+            }
+        }
     }
 }
 
