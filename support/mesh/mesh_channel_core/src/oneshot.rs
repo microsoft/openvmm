@@ -1,3 +1,20 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Implementation of a channel for sending a single value, usable across mesh
+//! nodes.
+//!
+//! The implementation intends to be:
+//!
+//! * Efficient enough for general-purpose single-process use.
+//! * Possible for use across mesh processes, using `mesh_protobuf` to serialize
+//!   the message and `mesh_node` to send it.
+//! * Small in binary size.
+//!
+//! To achieve the binary size goal, the implementation avoids monomorphism.
+//! This comes at a cost of using `unsafe` code internally.
+
+// UNSAFETY: needed to avoid monomorphization.
 #![allow(unsafe_code)]
 
 use crate::ChannelError;
