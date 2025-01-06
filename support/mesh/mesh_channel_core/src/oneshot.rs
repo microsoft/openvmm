@@ -279,6 +279,8 @@ impl<T> Drop for OneshotReceiver<T> {
     }
 }
 
+// FUTURE: consider implementing `IntoFuture` instead so that the `!Unpin`
+// future object can publish a stack pointer for the sender to write into.
 impl<T> Future for OneshotReceiver<T> {
     type Output = Result<T, RecvError>;
 
@@ -310,6 +312,10 @@ impl<T: 'static + MeshField + Send> From<Port> for OneshotReceiver<T> {
 #[derive(Debug)]
 struct OneshotReceiverCore {
     slot: Arc<Slot>,
+    // FUTURE: move this into the allocation. This may require rethinking how
+    // the allocation's lifetime is tracked, since just moving this into `Slot`
+    // would create a circular reference that is hard/expensive to remove in
+    // `drop`.
     port: Option<PortWithHandler<SlotHandler>>,
 }
 
@@ -325,6 +331,10 @@ impl OneshotReceiverCore {
         fn clear(this: OneshotReceiverCore) -> Option<BoxedValue> {
             let OneshotReceiverCore { slot, port } = this;
             drop(port);
+            // FUTURE: remember in `poll_recv` that this is not necessary to
+            // avoid taking the lock here. A naive implementation would require
+            // extra storage in `OneshotReceiverCore` to remember this, which is
+            // probably undesirable.
             let v = if let SlotState::Sent(value) =
                 std::mem::replace(&mut *slot.0.lock(), SlotState::Done)
             {
