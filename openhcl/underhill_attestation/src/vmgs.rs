@@ -261,3 +261,8 @@ pub async fn read_guest_secret_key(vmgs: &mut Vmgs) -> Result<GuestSecretKey, Re
         Err(vmgs_err) => Err(ReadFromVmgsError::ReadFromVmgs { file_id, vmgs_err }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+}
