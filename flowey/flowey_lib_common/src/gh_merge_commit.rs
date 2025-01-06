@@ -5,6 +5,7 @@ use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Request {
+        pub repo_path: ReadVar<PathBuf>,
         pub merge_commit: WriteVar<String>,
     }
 }
@@ -17,17 +18,24 @@ impl SimpleFlowNode for Node {
     fn imports(_ctx: &mut ImportCtx<'_>) {}
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let Request { merge_commit } = request;
+        let Request {
+            repo_path,
+            merge_commit,
+        } = request;
 
         let head_ref = ctx.get_gh_context_var(GhContextVar::GITHUB__HEAD_REF);
 
         ctx.emit_rust_step("get merge commit", |ctx| {
             let merge_commit = merge_commit.claim(ctx);
             let head_ref = head_ref.claim(ctx);
+            let repo_path = repo_path.claim(ctx);
 
             |rt| {
                 let sh = xshell::Shell::new()?;
+                let repo_path = rt.read(repo_path);
                 let head_ref = rt.read(head_ref);
+
+                sh.change_dir(repo_path);
 
                 // TODO: Make this work for non-main PRs
                 let commit = xshell::cmd!(sh, "git merge-base {head_ref} origin/main").read()?;
