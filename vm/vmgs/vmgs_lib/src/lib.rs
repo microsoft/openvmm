@@ -48,6 +48,7 @@ pub enum VmgsError {
 ///
 /// `file_path` must point to a valid null-terminated utf-8 string.
 /// `in_len` must be the size of `in_buf` in bytes and match the value returned from query_size_vmgs
+// SAFETY: In this library this function name is unique.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn read_vmgs(
     file_path: *const c_char,
@@ -152,6 +153,7 @@ async fn do_read(
 ///
 /// `file_path` and `data_path` must point to valid null-terminated utf-8 strings.
 /// `encryption_key` must be null-terminated and nonnull if using encryption
+// SAFETY: In this library this function name is unique.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn write_vmgs(
     file_path: *const c_char,
@@ -239,6 +241,7 @@ async fn do_write(
 /// # Safety
 ///
 /// `path` must point to a valid null-terminated utf-8 string.
+// SAFETY: In this library this function name is unique.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn create_vmgs(
     path: *const c_char,
@@ -335,6 +338,7 @@ async fn do_create(
 ///
 /// `path` pointer must point to a valid, null-terminated utf-8 string.
 /// `out_size` pointer must be nonnull
+// SAFETY: In this library this function name is unique.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn query_size_vmgs(
     path: *const c_char,

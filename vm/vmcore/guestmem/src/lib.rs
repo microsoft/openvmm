@@ -946,8 +946,13 @@ impl GuestMemory {
     /// `debug_name` is used to specify which guest memory is being accessed in
     /// error messages.
     pub fn new(debug_name: impl Into<Arc<str>>, imp: impl GuestMemoryAccess) -> Self {
-        // Install signal handlers on unix.
-        sparse_mmap::initialize_try_copy();
+        // Install signal handlers on unix if a mapping is present.
+        //
+        // Skip this on miri even when there is a mapping, since the mapping may
+        // never be accessed by the code under test.
+        if imp.mapping().is_some() && !cfg!(miri) {
+            sparse_mmap::initialize_try_copy();
+        }
 
         let regions = vec![MemoryRegion::new(&imp)];
         Self {

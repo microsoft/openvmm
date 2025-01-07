@@ -4,6 +4,7 @@
 use anyhow::anyhow;
 use anyhow::Context as _;
 use std::io::IsTerminal;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::format::Format;
 use tracing_subscriber::fmt::time::uptime;
 
@@ -53,6 +54,7 @@ pub fn enable_tracing() -> anyhow::Result<()> {
         .with_ansi(is_terminal);
     let fmt_layer = tracing_subscriber::fmt::layer()
         .event_format(format)
+        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
         .fmt_fields(tracing_helpers::formatter::FieldFormatter)
         .log_internal_errors(true)
         .with_writer(writer);

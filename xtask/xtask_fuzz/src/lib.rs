@@ -22,6 +22,7 @@ pub fn init_tracing_if_repro() {
     use std::sync::Once;
     use tracing_subscriber::filter::LevelFilter;
     use tracing_subscriber::filter::Targets;
+    use tracing_subscriber::fmt::format::FmtSpan;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
@@ -40,6 +41,7 @@ pub fn init_tracing_if_repro() {
                 .compact()
                 .log_internal_errors(true)
                 .with_max_level(LevelFilter::TRACE)
+                .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
                 .finish()
                 .with(targets)
                 .init();

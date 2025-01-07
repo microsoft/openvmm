@@ -5,6 +5,7 @@
 //! node.
 
 use super::bidir::Channel;
+use mesh_node::local_node::HandleMessageError;
 use mesh_node::local_node::HandlePortEvent;
 use mesh_node::local_node::NodeError;
 use mesh_node::local_node::Port;
@@ -26,8 +27,8 @@ use std::task::Waker;
 ///
 /// Created by [`cell()`].
 #[derive(Debug, Clone, Protobuf)]
-#[mesh(bound = "T: MeshField", resource = "Resource")]
-pub struct Cell<T: MeshField + Sync + Clone>(EncodeAs<Inner<T>, EncodedCell<T>>);
+#[mesh(bound = "T: MeshField + Send", resource = "Resource")]
+pub struct Cell<T: 'static + MeshField + Send + Sync + Clone>(EncodeAs<Inner<T>, EncodedCell<T>>);
 
 #[derive(Debug)]
 struct Inner<T> {
@@ -59,7 +60,7 @@ pub struct CellUpdater<T> {
     ports: Vec<(u64, Channel)>,
 }
 
-impl<T: Clone + MeshField + Sync> CellUpdater<T> {
+impl<T: 'static + Clone + MeshField + Sync + Send> CellUpdater<T> {
     /// Creates a new cell updater with no associated cells.
     pub fn new(value: T) -> Self {
         Self {
@@ -179,13 +180,13 @@ impl<T: Clone + MeshField + Sync> CellUpdater<T> {
 /// block_on(updater.set(6));
 /// assert_eq!(cell.get(), 6);
 /// ```
-pub fn cell<T: MeshField + Sync + Clone>(value: T) -> (CellUpdater<T>, Cell<T>) {
+pub fn cell<T: 'static + MeshField + Send + Sync + Clone>(value: T) -> (CellUpdater<T>, Cell<T>) {
     let mut updater = CellUpdater::new(value);
     let cell = updater.cell();
     (updater, cell)
 }
 
-impl<T: MeshField + Sync + Clone> Clone for Inner<T> {
+impl<T: 'static + MeshField + Send + Sync + Clone> Clone for Inner<T> {
     fn clone(&self) -> Self {
         let (left, right) = Port::new_pair();
         // Hold the lock for the whole operation to ensure the new port message
@@ -202,7 +203,7 @@ impl<T: MeshField + Sync + Clone> Clone for Inner<T> {
     }
 }
 
-impl<T: MeshField + Sync + Clone> Cell<T> {
+impl<T: 'static + MeshField + Send + Sync + Clone> Cell<T> {
     /// Gets a clone of the cell's current value.
     pub fn get(&self) -> T
     where
@@ -265,26 +266,22 @@ enum UpdateResponse {
     NewPort(u64, Port),
 }
 
-impl<T: MeshField + Sync> HandlePortEvent for State<T> {
-    fn message(&mut self, control: &mut PortControl<'_>, message: Message) {
-        match message.parse() {
-            Ok(UpdateMessage::<T> { id, value }) => {
-                if self.id < id {
-                    self.id = id;
-                    self.value = value;
-                    if let Some(waker) = self.waker.take() {
-                        control.wake(waker);
-                    }
-                    control.respond(Message::new(UpdateResponse::Updated(id)));
-                }
+impl<T: 'static + MeshField + Send + Sync> HandlePortEvent for State<T> {
+    fn message(
+        &mut self,
+        control: &mut PortControl<'_>,
+        message: Message,
+    ) -> Result<(), HandleMessageError> {
+        let UpdateMessage::<T> { id, value } = message.parse().map_err(HandleMessageError::new)?;
+        if self.id < id {
+            self.id = id;
+            self.value = value;
+            if let Some(waker) = self.waker.take() {
+                control.wake(waker);
             }
-            Err(err) => {
-                tracing::error!(
-                    error = &err as &dyn std::error::Error,
-                    "message parse error"
-                );
-            }
+            control.respond(Message::new(UpdateResponse::Updated(id)));
         }
+        Ok(())
     }
 
     fn close(&mut self, _control: &mut PortControl<'_>) {}
@@ -296,7 +293,7 @@ impl<T: MeshField + Sync> HandlePortEvent for State<T> {
     }
 }
 
-impl<T: MeshField + Sync> Inner<T> {
+impl<T: 'static + MeshField + Send + Sync> Inner<T> {
     fn from_parts(id: u64, value: T, port: Port) -> Self {
         let state = State {
             id,
@@ -315,14 +312,14 @@ impl<T: MeshField + Sync> Inner<T> {
     }
 }
 
-impl<T: MeshField + Sync + Clone> From<Inner<T>> for EncodedCell<T> {
+impl<T: 'static + MeshField + Send + Sync + Clone> From<Inner<T>> for EncodedCell<T> {
     fn from(cell: Inner<T>) -> Self {
         let (id, value, port) = cell.into_parts();
         Self { id, value, port }
     }
 }
 
-impl<T: MeshField + Sync + Clone> From<EncodedCell<T>> for Inner<T> {
+impl<T: 'static + MeshField + Send + Sync + Clone> From<EncodedCell<T>> for Inner<T> {
     fn from(encoded: EncodedCell<T>) -> Self {
         Inner::from_parts(encoded.id, encoded.value, encoded.port)
     }

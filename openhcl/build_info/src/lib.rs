@@ -60,9 +60,13 @@ impl BuildInfo {
 // a debugger. With a debugger, the non-mangled name is easier
 // to use.
 
-// UNSAFETY: link_section and export_name are considered unsafe.
+// UNSAFETY: link_section and export_name are unsafe.
 #[expect(unsafe_code)]
+// SAFETY: The build_info section is custom and carries no safety requirements.
 #[unsafe(link_section = ".build_info")]
+// SAFETY: The name "BUILD_INFO" is only declared here in OpenHCL and shouldn't
+// collide with any other symbols. It is a special symbol intended for
+// post-mortem debugging, and no runtime functionality should depend on it.
 #[unsafe(export_name = "BUILD_INFO")]
 static BUILD_INFO: BuildInfo = BuildInfo::new();
 

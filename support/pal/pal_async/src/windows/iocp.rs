@@ -564,9 +564,10 @@ impl OverlappedIoDriver for Arc<IocpDriver> {
 impl IoOverlapped for OverlappedIo {
     fn pre_io(&self) {}
 
-    unsafe fn post_io(&self, result: io::Result<()>, _overlapped: &Overlapped) -> bool {
+    unsafe fn post_io(&self, result: &io::Result<()>, _overlapped: &Overlapped) -> bool {
         // The IO result will arrive on the completion port only if the IO returned pending.
         result
+            .as_ref()
             .map(|_| true)
             .unwrap_or_else(|err| err.raw_os_error() != Some(ERROR_IO_PENDING as i32))
     }

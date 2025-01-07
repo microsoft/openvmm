@@ -33,6 +33,8 @@ macro_rules! openssl_crypto_only {
         /// # Safety
         ///
         /// The caller must call as documented for `OPENSSL_init_ssl`.
+        // SAFETY: We are purposefully overriding this symbol and we have made
+        // sure the definition is compatible with the original.
         #[unsafe(no_mangle)]
         unsafe extern "C" fn OPENSSL_init_ssl(
             opts: u64,

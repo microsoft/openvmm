@@ -112,7 +112,7 @@ static SERIALIZED_MESSAGE_SERIALIZE: SerializeFn<SerializedMessage> =
     SerializeFn(static_ref::StaticRef::new(&DynEncoder::<
         SerializedMessageEncoder,
     >(PhantomData)));
-pub fn ensure_serializable<T: MeshPayload>() -> (SerializeFn<T>, DeserializeFn<T>) {
+pub fn ensure_serializable<T: 'static + MeshPayload>() -> (SerializeFn<T>, DeserializeFn<T>) {
     let id = TypeId::of::<T>();
     if id == TypeId::of::<SerializedMessage>() {
         (
