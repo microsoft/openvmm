@@ -296,7 +296,7 @@ impl<T: RingMem> DataPacket<'_, T> {
         let len = reader.len() / 8;
         let mut buf = zeroed_gpn_list(len);
         reader.read(buf.as_bytes_mut())?;
-        return Ok(MultiPagedRangeBuf::new(self.external_data.0 as usize, buf)?);
+        Ok(MultiPagedRangeBuf::new(self.external_data.0 as usize, buf)?)
     }
 
     /// Reads the transfer buffer ID from the packet, or None if this is not a transfer packet.
