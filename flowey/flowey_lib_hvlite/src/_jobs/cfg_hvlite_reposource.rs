@@ -40,7 +40,7 @@ impl SimpleFlowNode for Node {
             repo_id: "hvlite".into(),
             repo_src: hvlite_repo_source,
             allow_persist_credentials: false,
-            depth: Some(1),           // shallow fetch
+            depth: Some(0),
             pre_run_deps: Vec::new(), // no special auth required
         });
 
