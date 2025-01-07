@@ -46,11 +46,25 @@ impl SimpleFlowNode for Node {
                     sh,
                     "gh run list --commit {commit} -w '[flowey] OpenVMM CI' -s 'completed' -L 1 --json databaseId --jq '.[].databaseId'"
                 )
-                .env("GITHUB_TOKEN", gh_token)
+                .env("GITHUB_TOKEN", gh_token.clone())
                 .read()
             };
 
-            let action_id = get_action_id(github_commit_hash);
+            let mut github_commit_hash = github_commit_hash.clone();
+            let mut action_id = get_action_id(github_commit_hash.clone());
+            let mut loop_count = 0;
+
+            // CI may not have finished the build for the merge base, so loop through commits
+            // until we find a finished build or fail after 5 attempts
+            while let Err(ref e) = action_id {
+                if loop_count > 4 {
+                    anyhow::bail!("Failed to get action id after 5 attempts: {}", e);
+                }
+
+                github_commit_hash = xshell::cmd!(sh, "git rev-parse {github_commit_hash}^").read()?;
+                action_id = get_action_id(github_commit_hash.clone());
+                loop_count += 1;
+            }
 
             if let Ok(id) = action_id {
                 print!("Got action id: {}", id);
