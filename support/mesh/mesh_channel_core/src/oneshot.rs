@@ -535,7 +535,14 @@ impl HandlePortEvent for SlotHandler {
                 // sent/shared across threads unless the underlying type is
                 // Send/Sync.
                 let r = unsafe { (self.decode)(message) };
-                let value = r.map_err(HandleMessageError::new)?;
+                let value = match r {
+                    Ok(v) => v,
+                    Err(err) => {
+                        // Restore the waker for the subsequent call to `fail`.
+                        *state = SlotState::Waiting(waker);
+                        return Err(HandleMessageError::new(err));
+                    }
+                };
                 *state = SlotState::Sent(value);
                 drop(state);
                 if let Some(waker) = waker {
@@ -578,6 +585,7 @@ mod tests {
     use crate::OneshotSender;
     use crate::RecvError;
     use futures::executor::block_on;
+    use futures::task::SpawnExt;
     use futures::FutureExt;
     use mesh_node::local_node::Port;
     use mesh_node::message::Message;
@@ -660,9 +668,15 @@ mod tests {
 
     #[test]
     fn test_oneshot_message_corruption() {
-        block_on(async {
+        let mut pool = futures::executor::LocalPool::new();
+        let spawner = pool.spawner();
+        pool.run_until(async {
             let (sender, receiver) = oneshot();
             let receiver = OneshotReceiver::<i32>::from(Port::from(receiver));
+            // Spawn the receiver future and let it run so that we verify the
+            // waker gets called.
+            let receiver = spawner.spawn_with_handle(receiver).unwrap();
+            futures::pending!();
             sender.send("text".to_owned());
             let RecvError::Error(err) = receiver.await.unwrap_err() else {
                 panic!()
