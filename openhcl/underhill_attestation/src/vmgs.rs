@@ -450,7 +450,7 @@ mod tests {
         let undersized_key_protector_by_id = key_protector_by_id.as_bytes();
         let undersized_key_protector_by_id =
             &undersized_key_protector_by_id[..undersized_key_protector_by_id.len() - 1];
-        vmgs.write_file(FileId::VM_UNIQUE_ID, &undersized_key_protector_by_id)
+        vmgs.write_file(FileId::VM_UNIQUE_ID, undersized_key_protector_by_id)
             .await
             .unwrap();
 
