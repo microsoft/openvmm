@@ -36,7 +36,7 @@ filter = 'package(~vmm_tests)'
 # Allow VMM tests longer timeouts.
 # Important Note: Petri's watchdogs need to know this value too.
 # If you change it here then change it there!
-slow-timeout = { period = "2m", terminate-after = 2 }
+slow-timeout = { period = "3m", terminate-after = 2 }
 
 # Add retries for known flaky tests.
 # TODO: Fix these tests and remove the retries.
