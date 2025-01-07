@@ -280,7 +280,8 @@ impl<T: RingMem> DataPacket<'_, T> {
         let len = reader.len() / 8;
         let mut buf = zeroed_gpn_list(len);
         reader.read(buf.as_bytes_mut())?;
-        Ok(MultiPagedRangeBuf::new(self.external_data.0 as usize, buf).unwrap())
+        MultiPagedRangeBuf::new(self.external_data.0 as usize, buf)
+            .map_err(|_| AccessError::OutOfRange(0, 0))
     }
 
     /// Reads the transfer buffer ID from the packet, or None if this is not a transfer packet.
@@ -796,6 +797,57 @@ mod tests {
                         assert_eq!(p.gpns(), q.gpns());
                     }
                     Ok(())
+                }
+                _ => Err("should be data"),
+            })
+            .unwrap()
+            .unwrap();
+    }
+
+    #[async_test]
+    async fn test_gpa_direct_empty_external_data() {
+        use guestmem::ranges::PagedRange;
+
+        let (mut host_queue, mut guest_queue) = connected_queues(16384);
+
+        let gpa1: Vec<u64> = vec![];
+        let gpas = vec![PagedRange::new(0, 0, &gpa1).unwrap()];
+
+        let payload: &[u8] = &[0xf; 24];
+        guest_queue
+            .split()
+            .1
+            .write(OutgoingPacket {
+                transaction_id: 0,
+                packet_type: OutgoingPacketType::GpaDirect(&gpas),
+                payload: &[payload],
+            })
+            .await
+            .unwrap();
+        host_queue
+            .split()
+            .0
+            .read_batch()
+            .await
+            .unwrap()
+            .packets()
+            .next()
+            .map(|p| match p.unwrap() {
+                IncomingPacket::Data(data) => {
+                    // Check the payload
+                    let mut in_payload = [0_u8; 24];
+                    assert_eq!(payload.len(), data.reader().len());
+                    data.reader().read(&mut in_payload).unwrap();
+                    assert_eq!(in_payload, payload);
+
+                    // Check the external ranges
+                    assert_eq!(data.external_range_count(), 1);
+                    let external_data_result = data.read_external_ranges();
+                    assert_eq!(data.read_external_ranges().is_err(), true);
+                    match external_data_result {
+                        Err(AccessError::OutOfRange(0, 0)) => Ok(()),
+                        _ => Err("should be out of range"),
+                    }
                 }
                 _ => Err("should be data"),
             })
