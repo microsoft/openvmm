@@ -288,6 +288,12 @@ mod tests {
         ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
     }
 
+    async fn new_formatted_vmgs() -> Vmgs {
+        let disk = new_test_file();
+
+        Vmgs::format_new(disk).await.unwrap()
+    }
+
     fn new_hardware_key_protector() -> HardwareKeyProtector {
         let header = HardwareKeyProtectorHeader::new(1, HW_KEY_PROTECTOR_SIZE as u32, 2);
         let iv = [3; AES_CBC_IV_LENGTH];
@@ -329,9 +335,7 @@ mod tests {
 
     #[async_test]
     async fn write_read_vmgs_key_protector() {
-        let disk = new_test_file();
-
-        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
+        let mut vmgs = new_formatted_vmgs().await;
         let key_protector = new_key_protector();
         write_key_protector(&key_protector, &mut vmgs)
             .await
@@ -404,9 +408,7 @@ mod tests {
     async fn write_vmgs_key_protector_by_id() {
         let kp_guid = Guid::new_random();
 
-        let disk = new_test_file();
-
-        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
+        let mut vmgs = new_formatted_vmgs().await;
         let mut key_protector_by_id = KeyProtectorById {
             id_guid: kp_guid,
             ported: 1,
@@ -463,9 +465,7 @@ mod tests {
 
     #[async_test]
     async fn read_security_profile_from_vmgs() {
-        let disk = new_test_file();
-
-        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
+        let mut vmgs = new_formatted_vmgs().await;
         let found_security_profile = read_security_profile(&mut vmgs).await.unwrap();
 
         // When no security profile exists, a zeroed security profile will be written to the VMGS
@@ -517,9 +517,7 @@ mod tests {
 
     #[async_test]
     async fn write_read_hardware_key_protector() {
-        let disk = new_test_file();
-
-        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
+        let mut vmgs = new_formatted_vmgs().await;
         let hardware_key_protector = new_hardware_key_protector();
         write_hardware_key_protector(&hardware_key_protector, &mut vmgs)
             .await
@@ -556,9 +554,7 @@ mod tests {
 
     #[async_test]
     async fn read_guest_secret_key_from_vmgs() {
-        let disk = new_test_file();
-
-        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
+        let mut vmgs = new_formatted_vmgs().await;
 
         // When no guest secret key exists, an error should be returned
         let found_guest_secret_key_result = read_guest_secret_key(&mut vmgs).await;
