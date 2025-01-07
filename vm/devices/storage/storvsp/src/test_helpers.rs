@@ -43,7 +43,7 @@ pub struct TestWorker {
 }
 
 impl TestWorker {
-    pub async fn teardown(self) -> Result<(), WorkerError> {
+    pub(crate) async fn teardown(self) -> Result<(), WorkerError> {
         self.task.await
     }
 

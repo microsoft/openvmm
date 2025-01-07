@@ -27,11 +27,10 @@ use zerocopy::AsBytes;
 use zerocopy::FromZeroes;
 
 #[derive(Arbitrary)]
-pub enum StorvspFuzzAction {
-    SendDataPacket,
+enum StorvspFuzzAction {
     SendReadWritePacket,
-    SendRawPacket,
-    ReadCompletion
+    SendRawPacket(FuzzOutgoingPacketType),
+    ReadCompletion,
 }
 
 #[derive(Arbitrary)]
@@ -61,9 +60,7 @@ async fn send_gpa_direct_packet(
     let start_page: u64 = gpa_start / PAGE_SIZE as u64;
     let end_page = start_page
         .checked_add(byte_len.try_into()?)
-        .and_then(|v| v.checked_add(PAGE_SIZE as u64))
-        .and_then(|v| v.checked_sub(1))
-        .and_then(|v| v.checked_div(PAGE_SIZE as u64))
+        .map(|v| v.div_ceil(PAGE_SIZE as u64))
         .ok_or(arbitrary::Error::IncorrectFormat)?;
 
     let gpns: Vec<u64> = (start_page..end_page).collect();
@@ -126,7 +123,6 @@ async fn send_arbitrary_readwrite_packet(
 
     scsi_req.payload[0..10].copy_from_slice(cdb.as_bytes());
 
-    // send the gpa packet
     send_gpa_direct_packet(
         guest,
         &[packet.as_bytes(), scsi_req.as_bytes()],
@@ -172,15 +168,10 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> Result<(), anyhow::Error> {
         while !u.is_empty() {
             let action = u.arbitrary::<StorvspFuzzAction>()?;
             match action {
-                StorvspFuzzAction::SendDataPacket => {
-                    let packet = u.arbitrary::<protocol::Packet>()?;
-                    let _ = guest.send_data_packet_sync(&[packet.as_bytes()]).await;
-                }
                 StorvspFuzzAction::SendReadWritePacket => {
                     send_arbitrary_readwrite_packet(u, &mut guest).await?;
                 }
-                StorvspFuzzAction::SendRawPacket => {
-                    let packet_type = u.arbitrary()?;
+                StorvspFuzzAction::SendRawPacket(packet_type) => {
                     match packet_type {
                         FuzzOutgoingPacketType::AnyOutgoingPacket => {
                             let packet_types = [
@@ -188,10 +179,13 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> Result<(), anyhow::Error> {
                                 OutgoingPacketType::InBandWithCompletion,
                                 OutgoingPacketType::Completion,
                             ];
+                            let payload = u.arbitrary::<protocol::Packet>()?;
+                            // TODO: [use-arbitrary-input] (send a byte blob of arbitrary length rather
+                            // than a fixed-size arbitrary packet)
                             let packet = OutgoingPacket {
                                 transaction_id: u.arbitrary()?,
                                 packet_type: *u.choose(&packet_types)?,
-                                payload: &[&[0u8; 0]], // TODO: [use-arbitrary-input]
+                                payload: &[payload.as_bytes()], // TODO: [use-arbitrary-input]
                             };
 
                             guest.queue.split().1.write(packet).await?;

@@ -6,10 +6,18 @@
 #[cfg(feature = "ioperf")]
 pub mod ioperf;
 
+#[cfg(feature = "fuzz_helpers")]
 pub mod protocol;
+#[cfg(feature = "fuzz_helpers")]
+pub mod test_helpers;
+
+#[cfg(not(feature = "fuzz_helpers"))]
+mod protocol;
+#[cfg(not(feature = "fuzz_helpers"))]
+mod test_helpers;
+
 pub mod resolver;
 mod save_restore;
-pub mod test_helpers;
 
 use crate::ring::gparange::GpnList;
 use crate::ring::gparange::MultiPagedRangeBuf;
@@ -274,7 +282,7 @@ impl Future for ScsiRequest {
 }
 
 #[derive(Debug, Error)]
-pub enum WorkerError {
+enum WorkerError {
     #[error("packet error")]
     PacketError(#[source] PacketError),
     #[error("queue error")]
@@ -284,7 +292,7 @@ pub enum WorkerError {
 }
 
 #[derive(Debug, Error)]
-pub enum PacketError {
+enum PacketError {
     #[error("Not transactional")]
     NotTransactional,
     #[error("Unrecognized operation {0:?}")]
@@ -1544,7 +1552,7 @@ impl ScsiControllerDisk {
     }
 }
 
-pub struct ScsiControllerState {
+struct ScsiControllerState {
     disks: RwLock<HashMap<ScsiPath, ScsiControllerDisk>>,
     rescan_notification_source: Mutex<Vec<futures::channel::mpsc::Sender<()>>>,
 }
