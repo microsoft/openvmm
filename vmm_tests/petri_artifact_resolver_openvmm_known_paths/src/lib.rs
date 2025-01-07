@@ -470,7 +470,7 @@ pub enum MissingCommand<'a> {
         description: &'a str,
         xflowey_args: &'a [&'a str],
     },
-    /// A `ci/restore.sh` invocation.
+    /// A `xflowey restore-packages` invocation.
     Restore { description: &'a str },
     /// A custom command.
     Custom { description: &'a str, cmd: &'a str },
@@ -499,7 +499,7 @@ impl MissingCommand<'_> {
                     args.join(" ")
                 ),
             MissingCommand::Restore { description } => {
-                anyhow::bail!("Failed to find {}. Run ci/restore.sh.", description)
+                anyhow::bail!("Failed to find {}. Run `cargo xflowey restore-packages`.", description)
             }
             MissingCommand::Custom { description, cmd } => {
                 anyhow::bail!(
