@@ -414,12 +414,14 @@ impl MshvProcessor<'_> {
         devices: &impl CpuIo,
         interruption_pending: bool,
     ) -> Result<(), VpHaltReason<MshvRunVpError>> {
+        let cache = self.emulation_cache();
         let mut support = MshvEmulationState {
             partition: self.partition,
             processor: self.inner,
             vp_index: self.vpindex,
             message,
             interruption_pending,
+            cache
         };
         virt_support_x86emu::emulate::emulate(&mut support, &self.partition.gm, devices).await
     }
@@ -649,6 +651,37 @@ impl MshvProcessor<'_> {
                 .request_sint_notifications(self.vpindex, nonempty_sints);
         }
     }
+
+    fn emulation_cache(&self) -> x86emu::CpuState {
+        let regs = self.inner.vcpufd.get_regs().unwrap();
+        let gps = [
+            regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
+            regs.r8, regs.r9, regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
+        ];
+        let rip = regs.rip;
+        let rflags = regs.rflags;
+
+        let sregs = self.inner.vcpufd.get_sregs().unwrap();
+        let segs = [
+            x86emu_sreg_from_mshv_sreg(sregs.es),
+            x86emu_sreg_from_mshv_sreg(sregs.cs),
+            x86emu_sreg_from_mshv_sreg(sregs.ss),
+            x86emu_sreg_from_mshv_sreg(sregs.ds),
+            x86emu_sreg_from_mshv_sreg(sregs.fs),
+            x86emu_sreg_from_mshv_sreg(sregs.gs),
+        ];
+        let cr0 = sregs.cr0;
+        let efer = sregs.efer;
+
+        x86emu::CpuState {
+            gps,
+            segs,
+            rip,
+            rflags: rflags.into(),
+            cr0,
+            efer,
+        }
+    }
 }
 
 struct MshvEmulationState<'a> {
@@ -657,6 +690,7 @@ struct MshvEmulationState<'a> {
     vp_index: VpIndex,
     message: &'a hv_message,
     interruption_pending: bool,
+    cache: x86emu::CpuState
 }
 
 impl EmulatorSupport for MshvEmulationState<'_> {
@@ -670,155 +704,147 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         self.partition.caps.vendor
     }
 
-    fn gp(&mut self, _: usize) -> u64 {
-        todo!()
+    fn gp(&mut self, reg: x86emu::Gp) -> u64 {
+        self.cache.gps[reg as usize]
     }
-    fn set_gp(&mut self, _: usize, _: u64) {
-        todo!()
+
+    fn set_gp(&mut self, reg: x86emu::Gp, v: u64) {
+        self.cache.gps[reg as usize] = v;
     }
+
     fn rip(&mut self) -> u64 {
-        todo!()
+        self.cache.rip
     }
-    fn set_rip(&mut self, _: u64) {
-        todo!()
+
+    fn set_rip(&mut self, v: u64) {
+        self.cache.rip = v;
     }
-    fn segment(&mut self, _: usize) -> x86defs::SegmentRegister {
-        todo!()
+
+    fn segment(&mut self, reg: x86emu::Segment) -> x86defs::SegmentRegister {
+        self.cache.segs[reg as usize]
     }
+
     fn efer(&mut self) -> u64 {
-        todo!()
+        self.cache.efer
     }
+
     fn cr0(&mut self) -> u64 {
-        todo!()
+        self.cache.cr0
     }
+
     fn rflags(&mut self) -> x86defs::RFlags {
-        todo!()
+        self.cache.rflags
     }
-    fn set_rflags(&mut self, _: x86defs::RFlags) {
-        todo!()
+
+    fn set_rflags(&mut self, v: x86defs::RFlags) {
+        self.cache.rflags = v;
     }
-    fn xmm(&mut self, _: usize) -> u128 {
-        todo!()
+
+    fn xmm(&mut self, reg: usize) -> u128 {
+        assert!(reg < 16);
+        let name = HvX64RegisterName(HvX64RegisterName::Xmm0.0 + reg as u32);
+        // SAFETY: `HvRegisterAssoc` and `hv_register_assoc` have the same layout.
+        let reg = unsafe {
+            std::mem::transmute::<HvRegisterAssoc, hv_register_assoc>(HvRegisterAssoc::from((
+                name, 0u128,
+            )))
+        };
+        let _ = self.processor.vcpufd.get_reg(&mut [reg]);
+        // SAFETY: Accessing the u128 field of this union is always safe.
+        hvu128_to_u128(unsafe { &reg.value.reg128 })
     }
-    fn set_xmm(&mut self, _: usize, _: u128) -> Result<(), Self::Error> {
-        todo!()
+
+    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
+        assert!(reg < 16);
+        let name = HvX64RegisterName(HvX64RegisterName::Xmm0.0 + reg as u32);
+        // SAFETY: `HvRegisterAssoc` and `hv_register_assoc` have the same layout.
+        let reg = unsafe {
+            std::mem::transmute::<HvRegisterAssoc, hv_register_assoc>(HvRegisterAssoc::from((
+                name, value,
+            )))
+        };
+        let _ = self.processor.vcpufd.set_reg(&[reg])?;
+        Ok(())
     }
+
     fn flush(&mut self) {
-        todo!()
-    }
-
-    /*
-    fn state(&mut self) -> Result<x86emu::CpuState, Self::Error> {
-        let regs = self.processor.vcpufd.get_regs()?;
-        let gps = [
-            regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
-            regs.r8, regs.r9, regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
-        ];
-        let rip = regs.rip;
-        let rflags = regs.rflags;
-
-        let sregs = self.processor.vcpufd.get_sregs()?;
-        let segs = [
-            x86emu_sreg_from_mshv_sreg(sregs.es),
-            x86emu_sreg_from_mshv_sreg(sregs.cs),
-            x86emu_sreg_from_mshv_sreg(sregs.ss),
-            x86emu_sreg_from_mshv_sreg(sregs.ds),
-            x86emu_sreg_from_mshv_sreg(sregs.fs),
-            x86emu_sreg_from_mshv_sreg(sregs.gs),
-        ];
-        let cr0 = sregs.cr0;
-        let efer = sregs.efer;
-
-        Ok(x86emu::CpuState {
-            gps,
-            segs,
-            rip,
-            rflags: rflags.into(),
-            cr0,
-            efer,
-        })
-    }
-
-    fn set_state(&mut self, state: x86emu::CpuState) -> Result<(), Self::Error> {
         let arr_reg_name_value = [
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_RIP,
-                state.rip,
+                self.cache.rip,
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_RFLAGS,
-                state.rflags.into(),
+                self.cache.rflags.into(),
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_RAX,
-                state.gps[0],
+                self.cache.gps[0],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_RCX,
-                state.gps[1],
+                self.cache.gps[1],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_RDX,
-                state.gps[2],
+                self.cache.gps[2],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_RBX,
-                state.gps[3],
+                self.cache.gps[3],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_RSP,
-                state.gps[4],
+                self.cache.gps[4],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_RBP,
-                state.gps[5],
+                self.cache.gps[5],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_RSI,
-                state.gps[6],
+                self.cache.gps[6],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_RDI,
-                state.gps[7],
+                self.cache.gps[7],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_R8,
-                state.gps[8],
+                self.cache.gps[8],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_R9,
-                state.gps[9],
+                self.cache.gps[9],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_R10,
-                state.gps[10],
+                self.cache.gps[10],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_R11,
-                state.gps[11],
+                self.cache.gps[11],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_R12,
-                state.gps[12],
+                self.cache.gps[12],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_R13,
-                state.gps[13],
+                self.cache.gps[13],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_R14,
-                state.gps[14],
+                self.cache.gps[14],
             ),
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_R15,
-                state.gps[15],
+                self.cache.gps[15],
             ),
         ];
 
-        set_registers_64!(self.processor.vcpufd, arr_reg_name_value)?;
-        Ok(())
+        let _ = set_registers_64!(self.processor.vcpufd, arr_reg_name_value);
     }
-    */
 
     fn instruction_bytes(&self) -> &[u8] {
         match HvMessageType(self.message.header.message_type) {
@@ -921,35 +947,6 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         };
         self.processor.vcpufd.set_reg(reg).unwrap();
     }
-
-    /*
-    fn get_xmm(&mut self, reg: usize) -> Result<u128, Self::Error> {
-        assert!(reg < 16);
-        let name = HvX64RegisterName(HvX64RegisterName::Xmm0.0 + reg as u32);
-        // SAFETY: `HvRegisterAssoc` and `hv_register_assoc` have the same layout.
-        let reg = unsafe {
-            std::mem::transmute::<HvRegisterAssoc, hv_register_assoc>(HvRegisterAssoc::from((
-                name, 0u128,
-            )))
-        };
-        self.processor.vcpufd.get_reg(&mut [reg])?;
-        // SAFETY: Accessing the u128 field of this union is always safe.
-        Ok(hvu128_to_u128(unsafe { &reg.value.reg128 }))
-    }
-
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
-        assert!(reg < 16);
-        let name = HvX64RegisterName(HvX64RegisterName::Xmm0.0 + reg as u32);
-        // SAFETY: `HvRegisterAssoc` and `hv_register_assoc` have the same layout.
-        let reg = unsafe {
-            std::mem::transmute::<HvRegisterAssoc, hv_register_assoc>(HvRegisterAssoc::from((
-                name, value,
-            )))
-        };
-        self.processor.vcpufd.set_reg(&[reg])?;
-        Ok(())
-    }
-    */
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
         self.partition

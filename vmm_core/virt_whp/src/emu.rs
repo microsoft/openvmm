@@ -29,6 +29,7 @@ pub(crate) struct WhpEmulationState<'a, 'b, T: CpuIo> {
     vp: &'a mut WhpProcessor<'b>,
     interruption_pending: bool,
     dev: &'a T,
+    cache: x86emu::CpuState
 }
 
 impl<'a, 'b, T: CpuIo> WhpEmulationState<'a, 'b, T> {
@@ -39,11 +40,13 @@ impl<'a, 'b, T: CpuIo> WhpEmulationState<'a, 'b, T> {
         dev: &'a T,
     ) -> Self {
         let interruption_pending = exit.vp_context.ExecutionState.InterruptionPending();
+        let cache = vp.emulator_state();
         Self {
             access,
             vp,
             interruption_pending,
             dev,
+            cache: cache.expect("emulation cannot proceed without reading guest register state")
         }
     }
 }
@@ -59,41 +62,65 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
         self.vp.vp.partition.caps.vendor
     }
 
-    fn gp(&mut self, _: usize) -> u64 {
-        todo!()
+    fn gp(&mut self, reg: x86emu::Gp) -> u64 {
+        self.cache.gps[reg as usize]
     }
-    fn set_gp(&mut self, _: usize, _: u64) {
-        todo!()
+
+    fn set_gp(&mut self, reg: x86emu::Gp, v: u64) {
+        self.cache.gps[reg as usize] = v;
     }
+
     fn rip(&mut self) -> u64 {
-        todo!()
+        self.cache.rip
     }
-    fn set_rip(&mut self, _: u64) {
-        todo!()
+
+    fn set_rip(&mut self, v: u64) {
+        self.cache.rip = v;
     }
-    fn segment(&mut self, _: usize) -> x86defs::SegmentRegister {
-        todo!()
+
+    fn segment(&mut self, reg: x86emu::Segment) -> SegmentRegister {
+        self.cache.segs[reg as usize]
     }
+
     fn efer(&mut self) -> u64 {
-        todo!()
+        self.cache.efer
     }
+
     fn cr0(&mut self) -> u64 {
-        todo!()
+        self.cache.cr0
     }
+
     fn rflags(&mut self) -> RFlags {
-        todo!()
+        self.cache.rflags
     }
-    fn set_rflags(&mut self, _: RFlags) {
-        todo!()
+
+    fn set_rflags(&mut self, v: RFlags) {
+        self.cache.rflags = v;
     }
-    fn xmm(&mut self, _: usize) -> u128 {
-        todo!()
+
+    fn xmm(&mut self, reg: usize) -> u128 {
+        assert!(reg < 16);
+        let reg = whp::abi::WHV_REGISTER_NAME(whp::abi::WHvX64RegisterXmm0.0 + reg as u32);
+        let mut value = [Default::default()];
+        let _ = self.vp
+            .current_whp()
+            .get_registers(&[reg], &mut value);
+        value[0].0.into()
     }
-    fn set_xmm(&mut self, _: usize, _: u128) -> Result<(), Self::Error> {
-        todo!()
+
+    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
+        assert!(reg < 16);
+        let reg = whp::abi::WHV_REGISTER_NAME(whp::abi::WHvX64RegisterXmm0.0 + reg as u32);
+        let value = [whp::abi::WHV_REGISTER_VALUE(value.into())];
+        self.vp
+            .current_whp()
+            .set_registers(&[reg], &value)
+            .map_err(WhpRunVpError::EmulationState)?;
+        Ok(())
     }
+
     fn flush(&mut self) {
-        todo!()
+        let _ = self.vp.set_emulator_state(&self.cache);
     }
 
     /// Check if the given gpa is accessible by the current VTL.
@@ -214,30 +241,6 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
             .expect("set registers should not fail");
         }
     }
-
-    /*
-    fn get_xmm(&mut self, reg: usize) -> Result<u128, Self::Error> {
-        assert!(reg < 16);
-        let reg = whp::abi::WHV_REGISTER_NAME(whp::abi::WHvX64RegisterXmm0.0 + reg as u32);
-        let mut value = [Default::default()];
-        self.vp
-            .current_whp()
-            .get_registers(&[reg], &mut value)
-            .map_err(WhpRunVpError::EmulationState)?;
-        Ok(value[0].0.into())
-    }
-
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
-        assert!(reg < 16);
-        let reg = whp::abi::WHV_REGISTER_NAME(whp::abi::WHvX64RegisterXmm0.0 + reg as u32);
-        let value = [whp::abi::WHV_REGISTER_VALUE(value.into())];
-        self.vp
-            .current_whp()
-            .set_registers(&[reg], &value)
-            .map_err(WhpRunVpError::EmulationState)?;
-        Ok(())
-    }
-    */
 
     fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
         self.vp
