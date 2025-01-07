@@ -50,6 +50,7 @@ impl SimpleFlowNode for Node {
         });
 
         let merge_run_id = ctx.reqv(|v| gh_workflow_id::Request {
+            repo_path: openvmm_repo_path.clone(),
             github_commit_hash: merge_commit,
             gh_workflow_id: v,
         });

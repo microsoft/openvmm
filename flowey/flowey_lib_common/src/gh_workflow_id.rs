@@ -6,6 +6,7 @@ use flowey::node::prelude::*;
 flowey_request! {
     pub struct Request {
         pub github_commit_hash: ReadVar<String>,
+        pub repo_path: ReadVar<PathBuf>,
         pub gh_workflow_id: WriteVar<String>,
     }
 }
@@ -19,6 +20,7 @@ impl SimpleFlowNode for Node {
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
+            repo_path,
             github_commit_hash,
             gh_workflow_id,
         } = request;
@@ -29,11 +31,15 @@ impl SimpleFlowNode for Node {
             let gh_workflow_id = gh_workflow_id.claim(ctx);
             let github_commit_hash = github_commit_hash.claim(ctx);
             let gh_token = gh_token.claim(ctx);
+            let repo_path = repo_path.claim(ctx);
 
             |rt| {
                 let github_commit_hash = rt.read(github_commit_hash);
             let sh = xshell::Shell::new()?;
             let gh_token = rt.read(gh_token);
+            let repo_path = rt.read(repo_path);
+
+            sh.change_dir(repo_path);
             // Fetches the CI build workflow id for a given commit hash
             let get_action_id = |commit: String| {
             xshell::cmd!(

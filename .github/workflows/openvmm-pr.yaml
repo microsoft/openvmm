@@ -2033,7 +2033,7 @@ jobs:
       run: flowey e 13 flowey_lib_common::use_gh_cli 0
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 13 'flowey_lib_common::gh_workflow_id:0:flowey_lib_common/src/gh_workflow_id.rs:26:28' --is-secret --update-from-file {0} --is-raw-string
+      shell: flowey v 13 'flowey_lib_common::gh_workflow_id:0:flowey_lib_common/src/gh_workflow_id.rs:28:28' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - run: ${{ github.event.pull_request.head.ref }}
       shell: flowey v 13 'flowey_lib_common::gh_merge_commit:0:flowey_lib_common/src/gh_merge_commit.rs:26:28' --update-from-file {0} --is-raw-string
