@@ -363,7 +363,7 @@ mod tests {
             pad: [0; 3],
         };
 
-        // try to read the `key_protector_by_id` from the VMGS file which doesn't have a `key_protector_by_id` entry
+        // Try to read the `key_protector_by_id` from the VMGS file which doesn't have a `key_protector_by_id` entry
         let found_key_protector_by_id_result = read_key_protector_by_id(&mut vmgs).await;
         assert!(found_key_protector_by_id_result.is_err());
         assert_eq!(
@@ -371,12 +371,12 @@ mod tests {
             "entry does not exist, file id: VM_UNIQUE_ID"
         );
 
-        // populate the VMGS file with `key_protector_by_id`
+        // Populate the VMGS file with `key_protector_by_id`
         write_key_protector_by_id(&mut key_protector_by_id, &mut vmgs, true, kp_guid)
             .await
             .unwrap();
 
-        // without using force, write the same `kp_guid` to the VMGS file and find that nothing changes
+        // Without using force, write the same `kp_guid` to the VMGS file and find that nothing changes
         write_key_protector_by_id(&mut key_protector_by_id, &mut vmgs, false, kp_guid)
             .await
             .unwrap();
@@ -384,7 +384,7 @@ mod tests {
         let found_key_protector_by_id = read_key_protector_by_id(&mut vmgs).await.unwrap();
         assert_eq!(found_key_protector_by_id.id_guid, kp_guid);
 
-        // without using force, write a new `Guid` to the VMGS file and find that the `key_protector_by_id` is updated
+        // Without using force, write a new `Guid` to the VMGS file and find that the `key_protector_by_id` is updated
         let bios_guid = Guid::new_random();
         write_key_protector_by_id(&mut key_protector_by_id, &mut vmgs, false, bios_guid)
             .await
@@ -393,7 +393,7 @@ mod tests {
         let found_key_protector_by_id = read_key_protector_by_id(&mut vmgs).await.unwrap();
         assert_eq!(found_key_protector_by_id.id_guid, bios_guid);
 
-        // read a key protector by id from the VMGS file that is undersized
+        // Read a key protector by id from the VMGS file that is undersized
         // ported and pad fields are expected to be zeroed
         let mut undersized_key_protector_by_id = key_protector_by_id.as_bytes();
         undersized_key_protector_by_id =
