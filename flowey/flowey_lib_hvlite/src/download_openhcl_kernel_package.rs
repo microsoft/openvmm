@@ -118,7 +118,7 @@ impl FlowNode for Node {
                     path: v,
                 });
 
-            ctx.emit_rust_step(format!("unpack {file_name}"), |ctx| {
+            ctx.emit_rust_step(format!("unpack kernel package"), |ctx| {
                 let extract_zip_deps = extract_zip_deps.clone().claim(ctx);
                 let out_vars = out_vars.claim(ctx);
                 let kernel_package_tar_gz = kernel_package_tar_gz.claim(ctx);
