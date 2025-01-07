@@ -82,13 +82,12 @@ impl SimpleFlowNode for Node {
                 let old_openhcl = rt.read(old_openhcl);
                 let new_openhcl = rt.read(new_openhcl);
 
-                xshell::cmd!(sh, "find {old_openhcl}").run()?;
                 xshell::cmd!(sh, "find {new_openhcl}").run()?;
 
                 let arch = target.common_arch().unwrap();
 
                 let old_path = match arch {
-                    CommonArch::X86_64 => old_openhcl.join("openhcl/openhcl"),
+                    CommonArch::X86_64 => old_openhcl.join("x64-openhcl-igvm-extras/openhcl"),
                     CommonArch::Aarch64 => old_openhcl.join("openhcl-aarch64/openhcl"),
                 };
 
