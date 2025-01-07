@@ -94,9 +94,7 @@ impl SimpleFlowNode for Node {
                 };
 
                 let new_path = match arch {
-                    CommonArch::X86_64 => {
-                        new_openhcl.join("x64-openhcl-igvm-extras/openhcl/openhcl")
-                    }
+                    CommonArch::X86_64 => new_openhcl.join("openhcl/openhcl"),
                     CommonArch::Aarch64 => new_openhcl.join("openhcl-aarch64/openhcl"),
                 };
 
