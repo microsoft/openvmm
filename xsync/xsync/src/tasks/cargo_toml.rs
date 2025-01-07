@@ -51,8 +51,9 @@ impl Cmd for CargoToml {
 
         // parse the Cargo.toml to sync with
         let base_cargo_toml = fs_err::read_to_string(ctx.base_workspace.join("Cargo.toml"))?;
-        let base_cargo_toml =
-            cargo_toml::Manifest::<()>::from_slice_with_metadata(base_cargo_toml.as_bytes())?;
+        let base_cargo_toml = cargo_toml::Manifest::<cargo_toml::Value>::from_slice_with_metadata(
+            base_cargo_toml.as_bytes(),
+        )?;
 
         //
         // handle simple inherited Cargo.toml fields
