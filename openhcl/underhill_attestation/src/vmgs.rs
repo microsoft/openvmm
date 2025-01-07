@@ -278,6 +278,7 @@ mod tests {
     use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
     use openhcl_attestation_protocol::vmgs::HMAC_SHA_256_KEY_LENGTH;
     use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
+    use openhcl_attestation_protocol::vmgs::KEY_PROTECTOR_SIZE;
     use openhcl_attestation_protocol::vmgs::NUMBER_KP;
     use pal_async::async_test;
 
@@ -336,7 +337,9 @@ mod tests {
             .await
             .unwrap();
 
-        let key_protector = read_key_protector(&mut vmgs, 0).await.unwrap();
+        let key_protector = read_key_protector(&mut vmgs, KEY_PROTECTOR_SIZE)
+            .await
+            .unwrap();
 
         assert!(key_protector.dek[0].dek_buffer.iter().all(|&x| x == 1));
         assert!(key_protector.dek[1].dek_buffer.iter().all(|&x| x == 2));
@@ -348,6 +351,53 @@ mod tests {
         assert!(key_protector.gsp[1].gsp_buffer.iter().all(|&x| x == 4));
 
         assert_eq!(key_protector.active_kp, u32::MAX);
+
+        // Read an undersized key protector
+        let key_protector_bytes = key_protector.as_bytes();
+        vmgs.write_file(
+            FileId::KEY_PROTECTOR,
+            &key_protector_bytes[..key_protector_bytes.len() - 1],
+        )
+        .await
+        .unwrap();
+        let found_key_protector_result =
+            read_key_protector(&mut vmgs, key_protector_bytes.len()).await;
+        assert!(found_key_protector_result.is_err());
+        assert_eq!(
+            found_key_protector_result.unwrap_err().to_string(),
+            "KEY_PROTECTOR valid bytes 2059 smaller than the minimal size 2060"
+        );
+
+        // Read an oversized key protector
+        vmgs.write_file(FileId::KEY_PROTECTOR, &[1; KEY_PROTECTOR_SIZE + 1])
+            .await
+            .unwrap();
+        let found_key_protector_result = read_key_protector(&mut vmgs, KEY_PROTECTOR_SIZE).await;
+        assert!(found_key_protector_result.is_err());
+        assert_eq!(
+            found_key_protector_result.unwrap_err().to_string(),
+            "KEY_PROTECTOR valid bytes 2061 larger than the maximum size 2060"
+        );
+
+        // Read a key protector that is equal to the `dek_minimal_size` and smaller than the `KEY_PROTECTOR_SIZE`
+        // so that padding is added
+        vmgs.write_file(
+            FileId::KEY_PROTECTOR,
+            &key_protector_bytes[..(key_protector_bytes.len() - 10)],
+        )
+        .await
+        .unwrap();
+        let found_key_protector = read_key_protector(&mut vmgs, key_protector_bytes.len() - 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            found_key_protector.as_bytes()[..(key_protector_bytes.len() - 10)],
+            key_protector_bytes[..(key_protector_bytes.len() - 10)]
+        );
+        assert_eq!(
+            found_key_protector.as_bytes()[key_protector_bytes.len() - 10..],
+            [0; 10]
+        );
     }
 
     #[async_test]
@@ -395,8 +445,8 @@ mod tests {
 
         // Read a key protector by id from the VMGS file that is undersized
         // ported and pad fields are expected to be zeroed
-        let mut undersized_key_protector_by_id = key_protector_by_id.as_bytes();
-        undersized_key_protector_by_id =
+        let undersized_key_protector_by_id = key_protector_by_id.as_bytes();
+        let undersized_key_protector_by_id =
             &undersized_key_protector_by_id[..undersized_key_protector_by_id.len() - 1];
         vmgs.write_file(FileId::VM_UNIQUE_ID, &undersized_key_protector_by_id)
             .await
