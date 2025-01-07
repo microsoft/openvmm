@@ -708,7 +708,6 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         tracing::trace!(msg = %format_args!("{:x?}", message), "mmio");
 
         let interruption_pending = message.header.execution_state.interruption_pending();
-        let cache = self.vp.emulation_cache(self.intercepted_vtl);
 
         // Fast path for monitor page writes.
         if Some(message.guest_physical_address & !(HV_PAGE_SIZE - 1))
@@ -718,6 +717,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             let tlb_lock_held = message.memory_access_info.gva_gpa_valid()
                 || message.memory_access_info.tlb_locked();
             let guest_memory = &self.vp.partition.gm[self.intercepted_vtl];
+            let cache = self.vp.emulation_cache(self.intercepted_vtl);
             let mut emulation_state = UhEmulationState {
                 vp: &mut *self.vp,
                 interruption_pending,
@@ -740,6 +740,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             }
         }
 
+        let cache = self.vp.emulation_cache(self.intercepted_vtl);
         self.vp
             .emulate(dev, interruption_pending, self.intercepted_vtl, cache)
             .await?;
@@ -1336,10 +1337,10 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn set_gp(&mut self, reg: x86emu::Gp, v: u64) {
-        match reg {
-            x86emu::Gp::RSP => self.cache.rsp = v,
-            _ => self.vp.runner.cpu_context_mut().gps[reg as usize] = v,
-        };
+        if reg == x86emu::Gp::RSP {
+             self.cache.rsp = v;
+        }
+        self.vp.runner.cpu_context_mut().gps[reg as usize] = v;
     }
 
     fn xmm(&mut self, index: usize) -> u128 {

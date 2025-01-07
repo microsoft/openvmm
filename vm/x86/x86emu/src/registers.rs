@@ -7,7 +7,7 @@ use x86defs::RFlags;
 use x86defs::SegmentRegister;
 
 #[repr(usize)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Gp {
     RAX = 0,
     RCX = 1,

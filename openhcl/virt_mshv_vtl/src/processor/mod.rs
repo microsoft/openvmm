@@ -1033,7 +1033,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     ) -> Result<(), VpHaltReason<UhRunVpError>>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>:
-            virt_support_x86emu::EmulatorSupport<Error = UhRunVpError>,
+            virt_support_x86emu::emulate::EmulatorSupport<Error = UhRunVpError>,
     {
         let guest_memory = &self.partition.gm[vtl];
         let mut emulation_state = UhEmulationState {
