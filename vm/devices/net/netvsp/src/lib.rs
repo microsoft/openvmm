@@ -76,6 +76,7 @@ use task_control::StopTask;
 use task_control::TaskControl;
 use thiserror::Error;
 use vmbus_async::queue;
+use vmbus_async::queue::ExternalDataError;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::Queue;
 use vmbus_channel::bus::OfferParams;
@@ -1856,6 +1857,8 @@ enum PacketError {
     UnknownType(u32),
     #[error("Access")]
     Access(#[from] AccessError),
+    #[error("ExternalData")]
+    ExternalData(#[from] ExternalDataError),
     #[error("InvalidSendBufferIndex")]
     InvalidSendBufferIndex,
 }
@@ -2011,7 +2014,9 @@ fn parse_packet<'a, T: RingMem>(
     Ok(Packet {
         data,
         transaction_id: packet.transaction_id(),
-        external_data: packet.read_external_ranges().map_err(PacketError::Access)?,
+        external_data: packet
+            .read_external_ranges()
+            .map_err(PacketError::ExternalData)?,
         send_buffer_suballocation,
     })
 }

@@ -653,11 +653,10 @@ impl<'a> TestNicChannel<'a> {
                         let external_ranges = if let Some(id) = data.transfer_buffer_id() {
                             assert_eq!(id, 0);
 
-                            data.read_transfer_ranges(recv_buf.iter())
+                            data.read_transfer_ranges(recv_buf.iter()).unwrap()
                         } else {
-                            data.read_external_ranges()
-                        }
-                        .unwrap();
+                            data.read_external_ranges().unwrap()
+                        };
                         let mut direct_reader =
                             PagedRanges::new(external_ranges.iter()).reader(&mem);
 
