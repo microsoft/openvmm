@@ -56,6 +56,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -246,6 +247,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
@@ -449,6 +451,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -810,6 +813,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -1234,6 +1238,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -1864,6 +1869,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -2658,6 +2664,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
@@ -2983,6 +2990,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -3356,6 +3364,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -3727,6 +3736,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target aarch64-pc-windows-msvc --profile flowey-ci
@@ -4007,6 +4017,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -5660,6 +5671,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -5871,6 +5883,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
@@ -6061,6 +6074,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -6262,6 +6276,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
@@ -6562,6 +6577,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
@@ -6857,6 +6873,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
@@ -7160,6 +7177,7 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
