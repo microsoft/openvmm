@@ -714,28 +714,30 @@ impl IntoPipeline for CheckinGatesCli {
 
             all_jobs.push(job.finish());
 
-            // emit openvmm verify-size job
-            let job = pipeline
-                .new_job(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                    FlowArch::X86_64,
-                    format!("verify openhcl binary size [{}]", arch_tag),
-                )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::Request {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxMusl,
+            if arch == CommonArch::X86_64 {
+                // emit openvmm verify-size job
+                let job = pipeline
+                    .new_job(
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                        FlowArch::X86_64,
+                        format!("verify openhcl binary size [{}]", arch_tag),
+                    )
+                    .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    ))
+                    .dep_on(
+                        |ctx| flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::Request {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxMusl,
+                            },
+                            new_openhcl: ctx.use_artifact(&use_openhcl_igvm_extras),
+                            done: ctx.new_done_handle(),
                         },
-                        new_openhcl: ctx.use_artifact(&use_openhcl_igvm_extras),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .finish();
-            all_jobs.push(job);
+                    )
+                    .finish();
+                all_jobs.push(job);
+            }
         }
 
         // Emit clippy + unit-test jobs
