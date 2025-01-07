@@ -341,7 +341,7 @@ impl<'a> Message<'a> {
     /// Converts the message into an [`OwnedMessage`].
     ///
     /// If the message was created with [`Message::new`] or
-    /// [`OwnedMessage::from`], then this operation is cheap. Otherwise, this
+    /// [`From<OwnedMessage>`], then this operation is cheap. Otherwise, this
     /// operation will serialize the message and allocate a new buffer.
     pub fn into_owned(self) -> OwnedMessage {
         let m = match self.0 {
