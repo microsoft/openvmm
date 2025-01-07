@@ -1063,3 +1063,96 @@ async fn persist_all_key_protectors(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use disk_backend::Disk;
+    use disklayer_ram::ram_disk;
+    use openhcl_attestation_protocol::vmgs::DekKp;
+    use openhcl_attestation_protocol::vmgs::GspKp;
+    use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
+    use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
+    use openhcl_attestation_protocol::vmgs::NUMBER_KP;
+    use pal_async::async_test;
+
+    const ONE_MEGA_BYTE: u64 = 1024 * 1024;
+
+    fn new_test_file() -> Disk {
+        ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
+    }
+
+    async fn new_formatted_vmgs() -> Vmgs {
+        let disk = new_test_file();
+
+        Vmgs::format_new(disk).await.unwrap()
+    }
+
+    fn new_key_protector() -> KeyProtector {
+        // Ingress and egress KPs are assumed to be the only two KPs, therefore `NUMBER_KP` should be 2
+        assert_eq!(NUMBER_KP, 2);
+
+        let ingress_dek = DekKp {
+            dek_buffer: [1; DEK_BUFFER_SIZE],
+        };
+        let egress_dek = DekKp {
+            dek_buffer: [2; DEK_BUFFER_SIZE],
+        };
+        let ingress_gsp = GspKp {
+            gsp_length: GSP_BUFFER_SIZE as u32,
+            gsp_buffer: [3; GSP_BUFFER_SIZE],
+        };
+        let egress_gsp = GspKp {
+            gsp_length: GSP_BUFFER_SIZE as u32,
+            gsp_buffer: [4; GSP_BUFFER_SIZE],
+        };
+        KeyProtector {
+            dek: [ingress_dek, egress_dek],
+            gsp: [ingress_gsp, egress_gsp],
+            active_kp: u32::MAX,
+        }
+    }
+
+    fn new_key_protector_by_id(id_guid: Option<Guid>) -> KeyProtectorById {
+        let id_guid = id_guid.unwrap_or_else(|| Guid::new_random());
+
+        let key_protector_by_id = openhcl_attestation_protocol::vmgs::KeyProtectorById {
+            id_guid,
+            ported: 1,
+            pad: [0; 3],
+        };
+
+        KeyProtectorById {
+            inner: key_protector_by_id,
+            found_id: false,
+        }
+    }
+
+    #[async_test]
+    async fn unlock_vmgs() {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None);
+
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: false,
+            use_hardware_unlock: false,
+        };
+
+        let bios_guid = Guid::new_random();
+
+        unlock_vmgs_data_store(
+            &mut vmgs,
+            true,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            None,
+            key_protector_settings,
+            bios_guid,
+        )
+        .await
+        .unwrap();
+    }
+}
