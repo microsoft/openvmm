@@ -23,19 +23,24 @@ impl SimpleFlowNode for Node {
             gh_workflow_id,
         } = request;
 
+        let gh_token = ctx.get_gh_context_var(GhContextVar::GITHUB__TOKEN);
+
         ctx.emit_rust_step("get action id", |ctx| {
             let gh_workflow_id = gh_workflow_id.claim(ctx);
             let github_commit_hash = github_commit_hash.claim(ctx);
+            let gh_token = gh_token.claim(ctx);
 
             |rt| {
                 let github_commit_hash = rt.read(github_commit_hash);
             let sh = xshell::Shell::new()?;
+            let gh_token = rt.read(gh_token);
             // Fetches the CI build workflow id for a given commit hash
             let get_action_id = |commit: String| {
             xshell::cmd!(
                     sh,
                     "gh run list --commit {commit} -w '[flowey] OpenVMM CI' -s 'completed' -L 1 --json databaseId --jq '.[].databaseId'"
                 )
+                .env("GITHUB_TOKEN", gh_token)
                 .read()
             };
 

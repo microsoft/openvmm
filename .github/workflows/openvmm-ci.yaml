@@ -2386,6 +2386,9 @@ jobs:
     - name: setup gh cli
       run: flowey e 14 flowey_lib_common::use_gh_cli 0
       shell: bash
+    - run: ${{ github.token }}
+      shell: flowey v 14 'flowey_lib_common::gh_workflow_id:0:flowey_lib_common/src/gh_workflow_id.rs:26:28' --is-secret --update-from-file {0} --is-raw-string
+      name: 🌼 Read from 'github.token'
     - run: ${{ github.event.pull_request.head.ref }}
       shell: flowey v 14 'flowey_lib_common::gh_merge_commit:0:flowey_lib_common/src/gh_merge_commit.rs:26:28' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.event.pull_request.head.ref'
@@ -2396,7 +2399,7 @@ jobs:
       run: flowey e 14 flowey_lib_common::gh_merge_commit 2
       shell: bash
     - name: get action id
-      run: flowey e 14 flowey_lib_common::gh_workflow_id 0
+      run: flowey e 14 flowey_lib_common::gh_workflow_id 1
       shell: bash
     - name: download artifacts from github actions run
       run: flowey e 14 flowey_lib_common::download_gh_artifact 1
