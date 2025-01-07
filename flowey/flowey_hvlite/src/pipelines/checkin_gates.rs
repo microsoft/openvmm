@@ -629,9 +629,9 @@ impl IntoPipeline for CheckinGatesCli {
                 OpenvmmHclBuildProfile::Debug
             };
 
-            let (pub_openhcl_igvm, use_openhcl_igvm) =
+            let (pub_openhcl_igvm_dev, use_openhcl_igvm_dev) =
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm"));
-            let (pub_openhcl_igvm_extras, use_openhcl_igvm_extras) =
+            let (pub_openhcl_igvm_extras_dev, _use_openhcl_igvm_extras_dev) =
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras"));
             // also build pipette musl on this job, as until we land the
             // refactor that allows building musl without the full openhcl
@@ -644,7 +644,7 @@ impl IntoPipeline for CheckinGatesCli {
             match arch {
                 CommonArch::X86_64 => {
                     vmm_tests_artifacts_windows_x86.use_openhcl_igvm_files =
-                        Some(use_openhcl_igvm.clone());
+                        Some(use_openhcl_igvm_dev.clone());
                     vmm_tests_artifacts_windows_x86.use_pipette_linux_musl =
                         Some(use_pipette_linux_musl.clone());
                     vmm_tests_artifacts_linux_x86.use_pipette_linux_musl =
@@ -652,7 +652,7 @@ impl IntoPipeline for CheckinGatesCli {
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_windows_aarch64.use_openhcl_igvm_files =
-                        Some(use_openhcl_igvm.clone());
+                        Some(use_openhcl_igvm_dev.clone());
                     vmm_tests_artifacts_windows_aarch64.use_pipette_linux_musl =
                         Some(use_pipette_linux_musl.clone());
                 }
@@ -685,6 +685,7 @@ impl IntoPipeline for CheckinGatesCli {
                 .dep_on(|ctx| {
                     flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
                         igvm_files: igvm_recipes
+                            .clone()
                             .into_iter()
                             .map(|recipe| OpenhclIgvmBuildParams {
                                 profile: openvmm_hcl_profile,
@@ -694,9 +695,9 @@ impl IntoPipeline for CheckinGatesCli {
                                 ))),
                             })
                             .collect(),
-                        artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
+                        artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm_dev),
                         artifact_dir_openhcl_igvm_extras: ctx
-                            .publish_artifact(pub_openhcl_igvm_extras),
+                            .publish_artifact(pub_openhcl_igvm_extras_dev),
                         done: ctx.new_done_handle(),
                     }
                 })
@@ -714,7 +715,43 @@ impl IntoPipeline for CheckinGatesCli {
 
             all_jobs.push(job.finish());
 
-            if arch == CommonArch::X86_64 {
+            if arch == CommonArch::X86_64 && !release {
+                let (pub_openhcl_igvm_release, _use_openhcl_igvm_release) =
+                    pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-release"));
+                let (pub_openhcl_igvm_extras_release, use_openhcl_igvm_extras_release) =
+                    pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras-release"));
+
+                // Do an underhill-ship build for binary size comparison
+                let job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    format!("build openhcl [{arch_tag}-linux] release"),
+                )
+                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                ))
+                .dep_on(|ctx| {
+                    flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
+                        igvm_files: igvm_recipes
+                            .into_iter()
+                            .map(|recipe| OpenhclIgvmBuildParams {
+                                profile: OpenvmmHclBuildProfile::OpenvmmHclShip,
+                                recipe,
+                                custom_target: Some(CommonTriple::Custom(openhcl_musl_target(
+                                    arch,
+                                ))),
+                            })
+                            .collect(),
+                        artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm_release),
+                        artifact_dir_openhcl_igvm_extras: ctx
+                            .publish_artifact(pub_openhcl_igvm_extras_release),
+                        done: ctx.new_done_handle(),
+                    }
+                });
+
+                all_jobs.push(job.finish());
+
                 // emit openvmm verify-size job
                 let job = pipeline
                     .new_job(
@@ -731,7 +768,7 @@ impl IntoPipeline for CheckinGatesCli {
                                 arch,
                                 platform: CommonPlatform::LinuxMusl,
                             },
-                            new_openhcl: ctx.use_artifact(&use_openhcl_igvm_extras),
+                            new_openhcl: ctx.use_artifact(&use_openhcl_igvm_extras_release),
                             done: ctx.new_done_handle(),
                         },
                     )
