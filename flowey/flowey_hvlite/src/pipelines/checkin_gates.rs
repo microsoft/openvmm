@@ -772,9 +772,6 @@ impl IntoPipeline for CheckinGatesCli {
                             done: ctx.new_done_handle(),
                         },
                     )
-                    .gh_grant_permissions::<flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::Node>(
-                        [(GhPermission::PullRequests, GhPermissionValue::Write)],
-                    )
                     .finish();
                 all_jobs.push(job);
             }
