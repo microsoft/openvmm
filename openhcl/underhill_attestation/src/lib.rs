@@ -1069,6 +1069,8 @@ mod tests {
     use super::*;
     use disk_backend::Disk;
     use disklayer_ram::ram_disk;
+    use get_protocol::GspExtendedStatusFlags;
+    use get_protocol::GSP_CLEARTEXT_MAX;
     use openhcl_attestation_protocol::vmgs::DekKp;
     use openhcl_attestation_protocol::vmgs::GspKp;
     use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
@@ -1154,5 +1156,36 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[async_test]
+    async fn get_derived_keys_using_id() {
+        let bios_guid = Guid::new_random();
+
+        let gsp_response_by_id = GuestStateProtectionById {
+            seed: guest_emulation_transport::api::GspCleartextContent {
+                length: GSP_CLEARTEXT_MAX as u32,
+                buffer: [1; GSP_CLEARTEXT_MAX as usize * 2],
+            },
+            extended_status_flags: GspExtendedStatusFlags::from_bits(0),
+        };
+
+        // When the key protector by id inner `id_guid` is all zeroes, the derived ingress and egress keys
+        // should be identical.
+        let mut key_protector_by_id = new_key_protector_by_id(Some(Guid::new_zeroed()));
+        let derived_keys =
+            get_derived_keys_by_id(&mut key_protector_by_id, bios_guid, gsp_response_by_id)
+                .unwrap();
+
+        assert_eq!(derived_keys.ingress, derived_keys.egress);
+
+        // When the key protector by id inner `id_guid` is not all zeroes, the derived ingress and egress keys
+        // should be different.
+        let mut key_protector_by_id = new_key_protector_by_id(None);
+        let derived_keys =
+            get_derived_keys_by_id(&mut key_protector_by_id, bios_guid, gsp_response_by_id)
+                .unwrap();
+
+        assert_ne!(derived_keys.ingress, derived_keys.egress);
     }
 }
