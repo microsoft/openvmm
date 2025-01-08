@@ -865,10 +865,7 @@ impl PipelineJobCtx<'_> {
             .insert(self.job_idx);
 
         crate::node::thin_air_read_runtime_var(
-            self.pipeline.parameters[param.idx]
-                .parameter
-                .name()
-                .to_string(),
+            self.pipeline.parameters[param.idx].parameter.name(),
             false,
         )
     }
