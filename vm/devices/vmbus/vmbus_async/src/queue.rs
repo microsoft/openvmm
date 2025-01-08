@@ -101,20 +101,21 @@ pub enum TryWriteError {
     Queue(#[source] Error),
 }
 
-/// An error returned by `read_external_data`
+/// An error returned by `read_external_ranges`
 #[derive(Debug, Error)]
 pub enum ExternalDataError {
     /// The packet is corrupted in some way (e.g. it does not specify a reasonable set of GPA ranges).
-    #[error("packet contains invalid data")]
-    PacketCorrupt(#[from] vmbus_ring::gparange::Error),
+    #[error("invalid gpa ranges")]
+    GpaRange(#[source] vmbus_ring::gparange::Error),
 
     /// The packet specifies memory that this vmbus cannot read, for some reason.
-    #[error("cannot access specified guest memory")]
-    GuestAccessError(#[from] AccessError),
+    #[error("access error")]
+    Access(#[source] AccessError),
 
-    /// The packet specifies a buffer id when it should not.
-    #[error("packet contains invalid buffer id contents")]
-    InvalidBufferId,
+    /// Caller used `read_external_ranges` when the packet contains a buffer id,
+    /// and the caller should have called `read_transfer_ranges`
+    #[error("external data should have been read by calling read_transfer_ranges")]
+    WrongExternalDataType,
 }
 
 /// An incoming packet batch reader.
@@ -287,16 +288,16 @@ impl<T: RingMem> DataPacket<'_, T> {
     /// Reads the GPA direct range descriptors from the packet.
     pub fn read_external_ranges(&self) -> Result<MultiPagedRangeBuf<GpnList>, ExternalDataError> {
         if self.buffer_id.is_some() {
-            return Err(ExternalDataError::InvalidBufferId);
+            return Err(ExternalDataError::WrongExternalDataType);
         } else if self.external_data.0 == 0 {
-            return Ok(MultiPagedRangeBuf::new(0, GpnList::new())?);
+            return Ok(MultiPagedRangeBuf::empty());
         }
 
         let mut reader = self.external_data.1.reader(self.ring);
         let len = reader.len() / 8;
         let mut buf = zeroed_gpn_list(len);
-        reader.read(buf.as_bytes_mut())?;
-        Ok(MultiPagedRangeBuf::new(self.external_data.0 as usize, buf)?)
+        reader.read(buf.as_bytes_mut()).map_err(ExternalDataError::Access)?;
+        Ok(MultiPagedRangeBuf::new(self.external_data.0 as usize, buf).map_err(ExternalDataError::GpaRange)?)
     }
 
     /// Reads the transfer buffer ID from the packet, or None if this is not a transfer packet.
@@ -314,7 +315,7 @@ impl<T: RingMem> DataPacket<'_, T> {
         I: Iterator<Item = PagedRange<'a>>,
     {
         if self.external_data.0 == 0 {
-            return Ok(MultiPagedRangeBuf::new(0, GpnList::new()).unwrap());
+            return Ok(MultiPagedRangeBuf::empty());
         }
 
         let buf: MultiPagedRangeBuf<GpnList> = transfer_buf.collect();

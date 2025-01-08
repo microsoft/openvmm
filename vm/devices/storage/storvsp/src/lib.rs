@@ -67,6 +67,7 @@ use vmbus_async::queue;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
 use vmbus_async::queue::Queue;
+use vmbus_async::queue::ExternalDataError;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::bus::OpenRequest;
@@ -294,9 +295,9 @@ enum PacketError {
     #[error("Invalid data transfer length")]
     InvalidDataTransferLength,
     #[error("Access error: {0}")]
-    Access(AccessError),
+    Access(#[source] AccessError),
     #[error("Range error")]
-    Range,
+    Range(#[source] ExternalDataError),
 }
 
 #[derive(Debug, Default, Clone)]
@@ -393,7 +394,7 @@ fn parse_packet<T: RingMem>(
 
                 let buf = packet
                     .read_external_ranges()
-                    .map_err(|_| PacketError::Range)?;
+                    .map_err(PacketError::Range)?;
 
                 full_request.external_data = Range::new(buf, &full_request.request)
                     .ok_or(PacketError::InvalidDataTransferLength)?;

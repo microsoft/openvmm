@@ -1312,8 +1312,8 @@ impl Nic {
             .clone();
         driver.retarget_vp(open_request.open_data.target_vp);
 
-        let raw = gpadl_channel(&driver, &self.resources, open_request, channel_idx)?;
-        let mut queue = Queue::new(raw)?;
+        let raw = gpadl_channel(&driver, &self.resources, open_request, channel_idx).map_err(OpenError::Ring)?;
+        let mut queue = Queue::new(raw).map_err(OpenError::Queue)?;
         let guest_os_id = self.adapter.get_guest_os_id.as_ref().map(|f| f());
         let can_use_ring_size_opt = can_use_ring_opt(&mut queue, guest_os_id);
         let worker = Worker {
@@ -1396,7 +1396,7 @@ enum NetRestoreError {
     #[error("send/receive buffer invalid gpadl ID")]
     UnknownGpadlId(#[from] UnknownGpadlId),
     #[error("failed to restore channels")]
-    Channel(#[from] ChannelRestoreError),
+    Channel(#[source] ChannelRestoreError),
     #[error(transparent)]
     ReceiveBuffer(#[from] BufferError),
     #[error(transparent)]
@@ -1437,7 +1437,7 @@ impl Nic {
             //      state (vmbus believes the channel is open/active). There
             //      are a number of failure paths after this point because this
             //      call also restores vmbus device state, like the GPADL map.
-            let requests = control.restore(&open).await?;
+            let requests = control.restore(&open).await.map_err(NetRestoreError::Channel)?;
 
             match state.primary {
                 saved_state::Primary::Version => {
@@ -1587,7 +1587,7 @@ impl Nic {
                 }
             }
         } else {
-            control.restore(&[false]).await?;
+            control.restore(&[false]).await.map_err(NetRestoreError::Channel)?;
         }
         Ok(())
     }
@@ -1790,21 +1790,19 @@ impl Nic {
 #[derive(Debug, Error)]
 enum WorkerError {
     #[error("packet error")]
-    Packet(#[from] PacketError),
+    Packet(#[source] PacketError),
     #[error("unexpected packet order: {0}")]
-    UnexpectedPacketOrder(#[from] PacketOrderError),
-    #[error("invalid gpadl id")]
-    InvalidGpadlId(#[from] UnknownGpadlId),
+    UnexpectedPacketOrder(#[source] PacketOrderError),
     #[error("unknown rndis message type: {0}")]
     UnknownRndisMessageType(u32),
     #[error("memory access error")]
-    Access(#[from] AccessError),
+    Access(#[source] AccessError),
     #[error("rndis message too small")]
     RndisMessageTooSmall,
     #[error("unsupported rndis behavior")]
     UnsupportedRndisBehavior,
     #[error("vmbus queue error")]
-    Queue(#[from] queue::Error),
+    Queue(#[source] queue::Error),
     #[error("too many control messages")]
     TooManyControlMessages,
     #[error("invalid rndis packet completion")]
@@ -1846,9 +1844,9 @@ impl From<task_control::Cancelled> for WorkerError {
 #[derive(Debug, Error)]
 enum OpenError {
     #[error("error establishing ring buffer")]
-    Ring(#[from] vmbus_channel::gpadl_ring::Error),
+    Ring(#[source] vmbus_channel::gpadl_ring::Error),
     #[error("error establishing vmbus queue")]
-    Queue(#[from] queue::Error),
+    Queue(#[source] queue::Error),
 }
 
 #[derive(Debug, Error)]
@@ -1856,9 +1854,9 @@ enum PacketError {
     #[error("UnknownType {0}")]
     UnknownType(u32),
     #[error("Access")]
-    Access(#[from] AccessError),
+    Access(#[source] AccessError),
     #[error("ExternalData")]
-    ExternalData(#[from] ExternalDataError),
+    ExternalData(#[source] ExternalDataError),
     #[error("InvalidSendBufferIndex")]
     InvalidSendBufferIndex,
 }
@@ -2326,9 +2324,9 @@ impl<T: RingMem> NetChannel<T> {
                                 n.tcp_header_offset() - metadata.l2_len as u16
                             } else if n.is_ipv4() {
                                 let mut reader = data.clone().reader(mem);
-                                reader.skip(metadata.l2_len as usize)?;
+                                reader.skip(metadata.l2_len as usize).map_err(WorkerError::Access)?;
                                 let mut b = 0;
-                                reader.read(std::slice::from_mut(&mut b))?;
+                                reader.read(std::slice::from_mut(&mut b)).map_err(WorkerError::Access)?;
                                 (b as u16 >> 4) * 4
                             } else {
                                 // Hope there are no extensions.
@@ -2356,9 +2354,9 @@ impl<T: RingMem> NetChannel<T> {
                         metadata.l4_len = {
                             let mut reader = data.clone().reader(mem);
                             reader
-                                .skip(metadata.l2_len as usize + metadata.l3_len as usize + 12)?;
+                                .skip(metadata.l2_len as usize + metadata.l3_len as usize + 12).map_err(WorkerError::Access)?;
                             let mut b = 0;
-                            reader.read(std::slice::from_mut(&mut b))?;
+                            reader.read(std::slice::from_mut(&mut b)).map_err(WorkerError::Access)?;
                             (b >> 4) * 4
                         };
                         metadata.max_tcp_segment_size = n.mss() as u16;
@@ -2833,7 +2831,7 @@ impl<T: RingMem> NetChannel<T> {
         }) {
             Ok(()) => None,
             Err(queue::TryWriteError::Full(n)) => Some(n),
-            Err(queue::TryWriteError::Queue(err)) => return Err(err.into()),
+            Err(queue::TryWriteError::Queue(err)) => return Err(WorkerError::Queue(err)),
         };
         Ok(pending_send_size)
     }
@@ -2883,8 +2881,8 @@ impl<T: RingMem> NetChannel<T> {
                     size_of::<rndisprot::IndicateStatus>() as u32
                 },
             },
-        )?;
-        writer.write(payload)?;
+        ).map_err(WorkerError::Access)?;
+        writer.write(payload).map_err(WorkerError::Access)?;
         self.send_rndis_control_message(buffers, id, message_length)?;
         Ok(())
     }
@@ -2904,7 +2902,7 @@ impl<T: RingMem> NetChannel<T> {
             || (primary.pending_offload_change && primary.rndis_state == RndisState::Operational)
         {
             // Ensure the ring buffer has enough room to successfully complete control message handling.
-            if !self.queue.split().1.can_write(MIN_CONTROL_RING_SIZE)? {
+            if !self.queue.split().1.can_write(MIN_CONTROL_RING_SIZE).map_err(WorkerError::Queue)? {
                 self.pending_send_size = MIN_CONTROL_RING_SIZE;
                 break;
             }
@@ -4360,9 +4358,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
     ) -> Result<Option<Packet<'a>>, WorkerError> {
         let (mut read, _) = self.queue.split();
         let packet = match read.try_read() {
-            Ok(packet) => parse_packet(&packet, send_buffer, version)?,
+            Ok(packet) => parse_packet(&packet, send_buffer, version).map_err(WorkerError::Packet)?,
             Err(queue::TryReadError::Empty) => return Ok(None),
-            Err(queue::TryReadError::Queue(err)) => return Err(err.into()),
+            Err(queue::TryReadError::Queue(err)) => return Err(WorkerError::Queue(err)),
         };
 
         tracing::trace!(target: "netvsp/vmbus", data = ?packet.data, "incoming vmbus packet");
@@ -4375,8 +4373,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
         version: Option<Version>,
     ) -> Result<Packet<'a>, WorkerError> {
         let (mut read, _) = self.queue.split();
-        let mut packet_ref = read.read().await?;
-        let packet = parse_packet(&packet_ref, send_buffer, version)?;
+        let mut packet_ref = read.read().await.map_err(WorkerError::Queue)?;
+        let packet = parse_packet(&packet_ref, send_buffer, version).map_err(WorkerError::Packet)?;
         if matches!(packet.data, PacketData::RndisPacket(_)) {
             // In WorkerState::Init if an rndis packet is received, assume it is MESSAGE_TYPE_INITIALIZE_MSG
             tracing::trace!(target: "netvsp/vmbus", "detected rndis initialization message");
@@ -4432,7 +4430,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 .split()
                 .1
                 .wait_ready(ring::PacketSize::completion(protocol::PACKET_SIZE_V61))
-                .await?;
+                .await.map_err(WorkerError::Queue)?;
 
             let packet = self
                 .next_packet(None, initializing.as_ref().map(|x| x.version))
@@ -4640,7 +4638,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 if num_channels_opened == primary.requested_num_queues as usize {
                     let (_, mut send) = self.queue.split();
                     stop.until_stopped(send.wait_ready(MIN_STATE_CHANGE_RING_SIZE))
-                        .await??;
+                        .await?.map_err(WorkerError::Queue)?;
                     self.guest_send_indirection_table(buffers.version, num_channels_opened as u32);
                     primary.tx_spread_sent = true;
                 }
@@ -4648,7 +4646,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
             if let PendingLinkAction::Active(up) = primary.pending_link_action {
                 let (_, mut send) = self.queue.split();
                 stop.until_stopped(send.wait_ready(MIN_STATE_CHANGE_RING_SIZE))
-                    .await??;
+                    .await?.map_err(WorkerError::Queue)?;
                 if let Some(id) = primary.free_control_buffers.pop() {
                     let connect = if primary.guest_link_up != up {
                         primary.pending_link_action = PendingLinkAction::Default;
@@ -4699,7 +4697,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 | PrimaryChannelGuestVfState::DataPathSynthetic => {
                     let (_, mut send) = self.queue.split();
                     stop.until_stopped(send.wait_ready(MIN_STATE_CHANGE_RING_SIZE))
-                        .await??;
+                        .await?.map_err(WorkerError::Queue)?;
                     if let Some(message) = self.handle_state_change(primary, buffers).await? {
                         return Ok(message);
                     }
@@ -4715,7 +4713,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
             // backend drop packets.
             let ring_full = {
                 let (_, mut send) = self.queue.split();
-                !send.can_write(ring_spare_capacity)?
+                !send.can_write(ring_spare_capacity).map_err(WorkerError::Queue)?
             };
 
             let did_some_work = (!ring_full
@@ -5205,7 +5203,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 self.pending_send_size = n;
                 false
             }
-            Err(queue::TryWriteError::Queue(err)) => return Err(err.into()),
+            Err(queue::TryWriteError::Queue(err)) => return Err(WorkerError::Queue(err)),
         };
         Ok(sent)
     }
