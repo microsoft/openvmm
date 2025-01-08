@@ -296,8 +296,11 @@ impl<T: RingMem> DataPacket<'_, T> {
         let mut reader = self.external_data.1.reader(self.ring);
         let len = reader.len() / 8;
         let mut buf = zeroed_gpn_list(len);
-        reader.read(buf.as_bytes_mut()).map_err(ExternalDataError::Access)?;
-        Ok(MultiPagedRangeBuf::new(self.external_data.0 as usize, buf).map_err(ExternalDataError::GpaRange)?)
+        reader
+            .read(buf.as_bytes_mut())
+            .map_err(ExternalDataError::Access)?;
+        MultiPagedRangeBuf::new(self.external_data.0 as usize, buf)
+            .map_err(ExternalDataError::GpaRange)
     }
 
     /// Reads the transfer buffer ID from the packet, or None if this is not a transfer packet.
@@ -861,7 +864,7 @@ mod tests {
                     let external_data_result = data.read_external_ranges();
                     assert_eq!(data.read_external_ranges().is_err(), true);
                     match external_data_result {
-                        Err(ExternalDataError::PacketCorrupt(_)) => Ok(()),
+                        Err(ExternalDataError::GpaRange(_)) => Ok(()),
                         _ => Err("should be out of range"),
                     }
                 }

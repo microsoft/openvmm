@@ -64,10 +64,10 @@ use thiserror::Error;
 use tracing_helpers::ErrorValueExt;
 use unicycle::FuturesUnordered;
 use vmbus_async::queue;
+use vmbus_async::queue::ExternalDataError;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
 use vmbus_async::queue::Queue;
-use vmbus_async::queue::ExternalDataError;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::bus::OpenRequest;
@@ -392,9 +392,7 @@ fn parse_packet<T: RingMem>(
                 let request_buf = &mut full_request.request.as_bytes_mut()[..request_size];
                 reader.read(request_buf).map_err(PacketError::Access)?;
 
-                let buf = packet
-                    .read_external_ranges()
-                    .map_err(PacketError::Range)?;
+                let buf = packet.read_external_ranges().map_err(PacketError::Range)?;
 
                 full_request.external_data = Range::new(buf, &full_request.request)
                     .ok_or(PacketError::InvalidDataTransferLength)?;
