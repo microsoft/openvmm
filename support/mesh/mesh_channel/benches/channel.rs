@@ -12,32 +12,32 @@ use mesh_node::local_node::Port;
 fn bench_channel(c: &mut Criterion) {
     c.bench_function("channel_rt", |b| {
         b.to_async(FuturesExecutor).iter_batched(
-            || mesh_channel::channel::<u64>(),
+            mesh_channel::channel::<u64>,
             |(send, mut recv)| async move {
                 send.send(20);
                 recv.recv().await.unwrap();
             },
-            criterion::BatchSize::LargeInput,
+            criterion::BatchSize::SmallInput,
         );
     })
     .bench_function("channel_rt_large", |b| {
         b.to_async(FuturesExecutor).iter_batched(
-            || mesh_channel::channel::<[u8; 1000]>(),
+            mesh_channel::channel::<[u8; 1000]>,
             |(send, mut recv)| async move {
                 send.send([20; 1000]);
                 recv.recv().await.unwrap();
             },
-            criterion::BatchSize::LargeInput,
+            criterion::BatchSize::SmallInput,
         );
     })
     .bench_function("channel_rt_large_boxed", |b| {
         b.to_async(FuturesExecutor).iter_batched(
-            || mesh_channel::channel::<Box<[u8; 1000]>>(),
+            mesh_channel::channel::<Box<[u8; 1000]>>,
             |(send, mut recv)| async move {
                 send.send(Box::new([20; 1000]));
                 recv.recv().await.unwrap();
             },
-            criterion::BatchSize::LargeInput,
+            criterion::BatchSize::SmallInput,
         );
     })
     .bench_function("channel_rt_through_ports", |b| {
@@ -51,7 +51,7 @@ fn bench_channel(c: &mut Criterion) {
                 send.send(20);
                 recv.recv().await.unwrap();
             },
-            criterion::BatchSize::LargeInput,
+            criterion::BatchSize::SmallInput,
         );
     })
     .bench_function("channel_rt_through_ports_force_serialize", |b| {
@@ -65,7 +65,7 @@ fn bench_channel(c: &mut Criterion) {
                 send.send(20);
                 recv.recv().await.unwrap();
             },
-            criterion::BatchSize::LargeInput,
+            criterion::BatchSize::SmallInput,
         );
     })
     .bench_function("channel_and_rt", |b| {
@@ -77,12 +77,12 @@ fn bench_channel(c: &mut Criterion) {
     });
     c.bench_function("oneshot_rt", |b| {
         b.to_async(FuturesExecutor).iter_batched(
-            || mesh_channel::oneshot::<u64>(),
+            mesh_channel::oneshot::<u64>,
             |(send, recv)| async move {
                 send.send(20);
                 recv.await.unwrap();
             },
-            criterion::BatchSize::LargeInput,
+            criterion::BatchSize::SmallInput,
         );
     })
     .bench_function("oneshot_rt_through_ports", |b| {
@@ -96,7 +96,7 @@ fn bench_channel(c: &mut Criterion) {
                 send.send(20);
                 recv.await.unwrap();
             },
-            criterion::BatchSize::LargeInput,
+            criterion::BatchSize::SmallInput,
         );
     })
     .bench_function("oneshot_rt_through_ports_force_serialize", |b| {
@@ -110,7 +110,7 @@ fn bench_channel(c: &mut Criterion) {
                 send.send(20);
                 recv.await.unwrap();
             },
-            criterion::BatchSize::LargeInput,
+            criterion::BatchSize::SmallInput,
         );
     })
     .bench_function("oneshot_and_rt", |b| {
@@ -121,7 +121,7 @@ fn bench_channel(c: &mut Criterion) {
                 send.send(20);
                 recv.await.unwrap();
             },
-            criterion::BatchSize::LargeInput,
+            criterion::BatchSize::SmallInput,
         );
     });
 }
