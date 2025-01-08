@@ -1187,5 +1187,25 @@ mod tests {
                 .unwrap();
 
         assert_ne!(derived_keys.ingress, derived_keys.egress);
+
+        // When the `gsp_response_by_id` seed length is 0, deriving a key will fail.
+        let gsp_response_by_id_with_0_length_seed = GuestStateProtectionById {
+            seed: guest_emulation_transport::api::GspCleartextContent {
+                length: 0,
+                buffer: [1; GSP_CLEARTEXT_MAX as usize * 2],
+            },
+            extended_status_flags: GspExtendedStatusFlags::from_bits(0),
+        };
+
+        let derived_keys_response = get_derived_keys_by_id(
+            &mut key_protector_by_id,
+            bios_guid,
+            gsp_response_by_id_with_0_length_seed,
+        );
+        assert!(derived_keys_response.is_err());
+        assert_eq!(
+            derived_keys_response.unwrap_err().to_string(),
+            "failed to derive an egress key based on current vm bios guid".to_string()
+        );
     }
 }
