@@ -44,7 +44,7 @@ fn verify_sections_size(
 
     let all_sections: HashSet<_> = all_original_sections
         .into_iter()
-        .chain(all_new_sections.into_iter())
+        .chain(all_new_sections)
         .collect();
 
     for section in all_sections {
