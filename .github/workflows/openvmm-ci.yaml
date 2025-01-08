@@ -56,7 +56,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -168,7 +167,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
       name: checkout repo hvlite
@@ -247,7 +246,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
@@ -315,7 +313,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
       name: checkout repo hvlite
@@ -451,7 +449,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -576,7 +573,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
       name: checkout repo hvlite
@@ -813,7 +810,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -940,7 +936,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar5 }}
       name: checkout repo hvlite
@@ -1238,7 +1234,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -1357,7 +1352,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
       name: checkout repo hvlite
@@ -1654,7 +1649,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -1773,7 +1767,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
       name: checkout repo hvlite
@@ -2242,7 +2236,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
@@ -2317,7 +2310,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
       name: checkout repo hvlite
@@ -2568,7 +2561,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -2684,7 +2676,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
       name: checkout repo hvlite
@@ -2942,7 +2934,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -3017,7 +3008,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
       name: checkout repo hvlite
@@ -3314,7 +3305,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target aarch64-pc-windows-msvc --profile flowey-ci
@@ -3424,7 +3414,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
       name: checkout repo hvlite
@@ -3705,7 +3695,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar5 }}
       name: checkout repo hvlite
@@ -4064,7 +4054,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar5 }}
       name: checkout repo hvlite
@@ -4313,7 +4303,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -4381,7 +4370,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
       name: checkout repo hvlite
@@ -4643,7 +4632,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar5 }}
       name: checkout repo hvlite
@@ -5000,7 +4989,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar5 }}
       name: checkout repo hvlite
@@ -5249,7 +5238,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -5315,7 +5303,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
       name: checkout repo hvlite
@@ -5461,7 +5449,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
@@ -5527,7 +5514,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
       name: checkout repo hvlite
@@ -5652,7 +5639,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
@@ -5718,7 +5704,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
       name: checkout repo hvlite
@@ -5854,7 +5840,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
@@ -5939,7 +5924,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
       name: checkout repo hvlite
@@ -6155,7 +6140,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
@@ -6268,7 +6252,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
       name: checkout repo hvlite
@@ -6451,7 +6435,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
@@ -6536,7 +6519,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
       name: checkout repo hvlite
@@ -6755,7 +6738,6 @@ jobs:
       shell: bash
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 1
         path: flowey_bootstrap
     - name: Build flowey
       run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
@@ -6868,7 +6850,7 @@ jobs:
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
-        fetch-depth: '0'
+        fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
       name: checkout repo hvlite

@@ -1794,8 +1794,7 @@ pub mod steps {
             /// `github.token`
             pub const GITHUB__TOKEN: GhContextVar = GhContextVar::new_secret("github.token");
 
-            /// Head ref of a pull request - this is different from `github.head_ref`, which
-            /// is something like `/pull/ID/merge`. This gives `/pull/ID/head`
+            /// `github.event.pull_request.head.ref`
             pub const GITHUB__HEAD_REF: GhContextVar =
                 GhContextVar::new("github.event.pull_request.head.ref");
 
