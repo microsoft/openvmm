@@ -191,7 +191,7 @@ pub struct LoadedVmState<T> {
 
 impl LoadedVm {
     /// Start running the VM which will start running VTL0.
-    pub async fn run<T: MeshPayload>(
+    pub async fn run<T: 'static + MeshPayload + Send>(
         mut self,
         threadpool: &AffinitizedThreadpool,
         autostart_vps: bool,

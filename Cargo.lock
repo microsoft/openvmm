@@ -3739,11 +3739,27 @@ dependencies = [
  "futures-concurrency",
  "futures-core",
  "futures-io",
+ "mesh_channel_core",
  "mesh_node",
  "mesh_protobuf",
  "pal_async",
  "pal_event",
  "parking_lot",
+ "test_with_tracing",
+ "thiserror 2.0.0",
+ "tracing",
+]
+
+[[package]]
+name = "mesh_channel_core"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "futures-core",
+ "mesh_node",
+ "mesh_protobuf",
+ "parking_lot",
+ "static_assertions",
  "test_with_tracing",
  "thiserror 2.0.0",
  "tracing",
@@ -7940,12 +7956,14 @@ dependencies = [
 name = "vmbus_proxy"
 version = "0.0.0"
 dependencies = [
+ "futures",
  "guestmem",
  "mesh",
  "ntapi",
  "pal",
  "pal_async",
  "pal_event",
+ "tracing",
  "vmbus_core",
  "winapi",
  "zerocopy",
@@ -8109,6 +8127,7 @@ dependencies = [
  "vmbus_proxy",
  "vmbus_ring",
  "vmcore",
+ "winapi",
  "zerocopy",
  "zerocopy_helpers",
 ]

@@ -113,20 +113,42 @@ pub const R15: usize = 15;
 
 pub const VTL_RETURN_ACTION_SIZE: usize = 256;
 
+/// Kernel IPI offloading flags
+#[bitfield(u8)]
+#[derive(AsBytes, FromBytes, FromZeroes)]
+pub struct hcl_intr_offload_flags {
+    /// Enable the base level of kernel offloading support. Requires vAPIC to be enabled.
+    /// HLT and Idle are accelerated by the kernel. When halted, an interrupt may be injected
+    /// entirely in kernel, bypassing user-space.
+    pub offload_intr_inject: bool,
+    /// Handle the X2 APIC ICR register in kernel
+    pub offload_x2apic: bool,
+    #[bits(3)]
+    reserved: u8,
+    /// Halt, due to other reason. Kernel cannot clear this state.
+    pub halted_other: bool,
+    /// Halt, due to HLT instruction. Kernel can clear this state.
+    pub halted_hlt: bool,
+    /// Halt, due to guest idle. Kernel can clear this state.
+    pub halted_idle: bool,
+}
+
 #[repr(C)]
 pub struct hcl_run {
     pub cancel: u32,
     pub vtl_ret_action_size: u32,
     pub flags: u32,
     pub scan_proxy_irr: u8,
-    pub pad: [u8; 2],
+    pub offload_flags: hcl_intr_offload_flags,
+    pub pad: [u8; 1],
     pub mode: EnterModes,
     pub exit_message: [u8; HV_MESSAGE_SIZE],
     pub context: [u8; 1024],
     pub vtl_ret_actions: [u8; VTL_RETURN_ACTION_SIZE],
     pub proxy_irr: [u32; 8],
-    pub proxy_irr_filter: [u32; 8],
     pub target_vtl: HvInputVtl,
+    pub proxy_irr_blocked: [u32; 8],
+    pub proxy_irr_exit: [u32; 8],
 }
 
 // The size of hcl_run must be less than or equal to a single 4K page.

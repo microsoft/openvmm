@@ -10,7 +10,7 @@ use std::pin::Pin;
 
 /// An input source that receives input over a mesh channel.
 #[derive(MeshPayload)]
-#[mesh(bound = "T: MeshField")]
+#[mesh(bound = "T: 'static + MeshField + Send")]
 pub struct MeshInputSource<T> {
     recv: mesh::Receiver<T>,
     active: mesh::CellUpdater<bool>,
@@ -42,7 +42,7 @@ impl<T: 'static + Send> futures::Stream for MeshInputSource<T> {
 
 /// The sending side of the [`MeshInputSource`].
 #[derive(MeshPayload)]
-#[mesh(bound = "T: MeshField")]
+#[mesh(bound = "T: 'static + MeshField + Send")]
 pub struct MeshInputSink<T> {
     send: mesh::Sender<T>,
     active: mesh::Cell<bool>,

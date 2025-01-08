@@ -20,6 +20,10 @@ pub(crate) enum KbkdfError {
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum Pkcs11RsaAesKeyUnwrapError {
+    #[error("expected wrapped AES key blob to be {0} bytes, but found {1} bytes")]
+    UndersizedWrappedAesKey(usize, usize),
+    #[error("wrapped RSA key blob cannot be empty")]
+    EmptyWrappedRsaKey,
     #[error("RSA unwrap failed")]
     RsaUnwrap(#[from] RsaOaepError),
     #[error("AES unwrap failed")]
@@ -129,9 +133,21 @@ pub fn pkcs11_rsa_aes_key_unwrap(
     unwrapping_rsa_key: &Rsa<Private>,
     wrapped_key_blob: &[u8],
 ) -> Result<Rsa<Private>, Pkcs11RsaAesKeyUnwrapError> {
-    let modulus_size = unwrapping_rsa_key.size();
-    let wrapped_aes_key = &wrapped_key_blob[..modulus_size as usize];
-    let wrapped_rsa_key = &wrapped_key_blob[modulus_size as usize..];
+    let modulus_size = unwrapping_rsa_key.size() as usize;
+
+    let (wrapped_aes_key, wrapped_rsa_key) = wrapped_key_blob
+        .split_at_checked(modulus_size)
+        .ok_or_else(|| {
+            Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedAesKey(
+                modulus_size,
+                wrapped_key_blob.len(),
+            )
+        })?;
+
+    if wrapped_rsa_key.is_empty() {
+        return Err(Pkcs11RsaAesKeyUnwrapError::EmptyWrappedRsaKey);
+    }
+
     let unwrapped_aes_key = rsa_oaep_decrypt(
         unwrapping_rsa_key,
         wrapped_aes_key,
@@ -465,6 +481,29 @@ mod tests {
         assert!(result.is_ok());
         let unwrapped_key = result.unwrap();
         assert_eq!(unwrapped_key, KEY);
+    }
+
+    #[test]
+    fn fail_to_unwrap_pkcs11_rsa_aep_with_undersized_wrapped_key_blob() {
+        let rsa = Rsa::generate(2048).unwrap();
+
+        // undersized aes key blob
+        let wrapped_key_blob = vec![0; 256 - 1];
+        let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "expected wrapped AES key blob to be 256 bytes, but found 255 bytes".to_string()
+        );
+
+        // empty rsa key blob
+        let wrapped_key_blob = vec![0; 256];
+        let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "wrapped RSA key blob cannot be empty".to_string()
+        );
     }
 
     #[test]

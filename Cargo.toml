@@ -105,6 +105,7 @@ local_clock = { path = "support/local_clock" }
 mesh = { path = "support/mesh" }
 mesh_build = { path = "support/mesh/mesh_build" }
 mesh_channel = { path = "support/mesh/mesh_channel" }
+mesh_channel_core = { path = "support/mesh/mesh_channel_core" }
 mesh_derive = { path = "support/mesh/mesh_derive" }
 mesh_node = { path = "support/mesh/mesh_node" }
 mesh_process = { path = "support/mesh/mesh_process" }
@@ -595,7 +596,7 @@ unused_qualifications = "warn"
 
 # Code that needs unsafe should opt-in via a module-scoped allow.
 unsafe_code = "deny"
-unsafe_op_in_unsafe_fn = "warn"
+unsafe_op_in_unsafe_fn = "forbid"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"

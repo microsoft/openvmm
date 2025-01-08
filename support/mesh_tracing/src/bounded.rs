@@ -70,7 +70,7 @@ struct ReceiverState {
     waker: Option<Waker>,
 }
 
-impl<T: MeshField> BoundedReceiver<T> {
+impl<T: 'static + MeshField + Send> BoundedReceiver<T> {
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
         let mut old_waker = None;
         self.port.with_port_and_handler(|port, state| {
@@ -99,7 +99,7 @@ impl<T: MeshField> BoundedReceiver<T> {
     }
 }
 
-impl<T: MeshField> Stream for BoundedReceiver<T> {
+impl<T: 'static + MeshField + Send> Stream for BoundedReceiver<T> {
     type Item = T;
 
     fn poll_next(
@@ -176,7 +176,7 @@ pub enum TrySendError {
     Closed,
 }
 
-impl<T: MeshField> BoundedSender<T> {
+impl<T: 'static + MeshField + Send> BoundedSender<T> {
     fn poll_send(&mut self, cx: &mut Context<'_>, message: &mut Option<T>) -> Poll<()> {
         let mut old_waker = None;
         self.port.with_port_and_handler(|port, state| {

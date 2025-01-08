@@ -42,7 +42,7 @@ use mesh_tracing::Type;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
 use tracing_helpers::formatter::FieldFormatter;
-use tracing_subscriber::fmt;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::format::Format;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -193,9 +193,9 @@ pub fn init_tracing(spawn: impl Spawn, tracer: RemoteTracer) -> anyhow::Result<(
         .as_ref()
         .map_or("", |v| v.as_str())
     {
-        "close" => fmt::format::FmtSpan::CLOSE,
-        "1" | "true" => fmt::format::FmtSpan::NEW | fmt::format::FmtSpan::CLOSE,
-        "" => fmt::format::FmtSpan::NONE,
+        "close" => FmtSpan::CLOSE,
+        "1" | "true" => FmtSpan::NEW | FmtSpan::CLOSE,
+        "0" | "false" | "" => FmtSpan::NONE,
         x => anyhow::bail!("invalid OPENVMM_SHOW_SPANS value: {x}"),
     };
 
@@ -203,7 +203,7 @@ pub fn init_tracing(spawn: impl Spawn, tracer: RemoteTracer) -> anyhow::Result<(
     let json_fmt_layer = json_layer::JsonMeshLayer::new(tracer.trace_writer);
 
     // Output nicely readable events to kmsg (and therefore also serial).
-    let kmsg_layer = fmt::layer()
+    let kmsg_layer = tracing_subscriber::fmt::layer()
         .event_format(
             Format::default()
                 .without_time()

@@ -224,7 +224,7 @@ impl CallBuilder<'_> {
     where
         F: FnOnce(T, mesh::OneshotSender<Result<U, Status>>) -> R,
         R: ServiceRpc,
-        U: MeshPayload,
+        U: 'static + MeshPayload + Send,
     {
         let (send, recv) = mesh::oneshot();
 
@@ -267,11 +267,7 @@ impl<T: 'static + Send> Future for Call<T> {
     ) -> std::task::Poll<Self::Output> {
         match ready!(self.get_mut().0.poll_unpin(cx)) {
             Ok(r) => r,
-            Err(err) => Err(Status {
-                code: Code::Unavailable as i32,
-                message: format!("client shut down: {:#}", err),
-                details: Vec::new(),
-            }),
+            Err(err) => Err(status_from_err(Code::Unavailable, err)),
         }
         .into()
     }
@@ -307,19 +303,18 @@ impl<T: Dial> ClientWorker<T> {
                 }
             };
             if let Err(err) = r {
-                self.waiting.retain_mut(|req| {
-                    if req.wait_ready {
-                        return true;
-                    }
-                    req.rpc
-                        .port
-                        .send(mesh::Message::new(Err::<Vec<u8>, Status>(Status {
-                            code: Code::Unavailable as i32,
-                            message: format!("{:#}", err),
-                            details: Vec::new(),
-                        })));
-                    false
-                });
+                let status = status_from_err(Code::Unavailable, err);
+                self.waiting = self
+                    .waiting
+                    .drain(..)
+                    .filter_map(|req| {
+                        if req.wait_ready {
+                            return Some(req);
+                        }
+                        req.rpc.respond_status(status.clone());
+                        None
+                    })
+                    .collect();
                 self.last_failure = Some(Instant::now());
             }
         }
@@ -384,21 +379,23 @@ impl<T: Dial> ClientWorker<T> {
                 }
                 Event::Timeout(()) => {
                     let now = Deadline::now();
-                    self.waiting.retain_mut(|req| {
-                        if let Some(deadline) = req.deadline {
-                            if *deadline > now {
-                                req.rpc.port.send(mesh::Message::new(Err::<Vec<u8>, Status>(
-                                    Status {
+                    self.waiting = self
+                        .waiting
+                        .drain(..)
+                        .filter_map(|req| {
+                            if let Some(deadline) = req.deadline {
+                                if *deadline <= now {
+                                    req.rpc.respond_status(Status {
                                         code: Code::DeadlineExceeded as i32,
                                         message: "deadline exceeded".to_string(),
                                         details: Vec::new(),
-                                    },
-                                )));
-                                return false;
+                                    });
+                                    return None;
+                                }
                             }
-                        }
-                        false
-                    });
+                            Some(req)
+                        })
+                        .collect();
                 }
                 Event::Connect(r) => {
                     return Some(r);
@@ -492,5 +489,84 @@ fn handle_message(message: ReadResult) -> Result<Vec<u8>, Status> {
             Code::Internal,
             ProtocolError::InvalidMessageType(ty),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Client;
+    use super::Dial;
+    use crate::service::Code;
+    use mesh::CancelContext;
+    use mesh::Deadline;
+    use pal_async::async_test;
+    use pal_async::socket::PolledSocket;
+    use pal_async::DefaultDriver;
+    use std::future::pending;
+    use std::net::TcpStream;
+    use std::time::Duration;
+    use test_with_tracing::test;
+
+    struct NeverDial;
+
+    impl Dial for NeverDial {
+        type Stream = PolledSocket<TcpStream>;
+
+        async fn dial(&mut self) -> std::io::Result<Self::Stream> {
+            pending().await
+        }
+    }
+
+    struct FailDial;
+
+    impl Dial for FailDial {
+        type Stream = PolledSocket<TcpStream>;
+
+        async fn dial(&mut self) -> std::io::Result<Self::Stream> {
+            Err(std::io::ErrorKind::NotConnected.into())
+        }
+    }
+
+    #[async_test]
+    async fn test_failed_connect(driver: DefaultDriver) {
+        let client = Client::new(&driver, FailDial);
+        let err = client
+            .call()
+            .start_raw("service", "method", vec![])
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.code, Code::Unavailable as i32);
+        assert!(err.message.contains("not connected"));
+    }
+
+    #[async_test]
+    async fn test_delayed_connect_never(driver: DefaultDriver) {
+        let client = Client::new(&driver, NeverDial);
+
+        // The request should not fail within the cancel context timeout.
+        CancelContext::new()
+            .with_timeout(Duration::from_millis(250))
+            .until_cancelled(
+                client
+                    .call()
+                    .deadline(Some(Deadline::now() + Duration::from_secs(60)))
+                    .start_raw("service", "method", vec![]),
+            )
+            .await
+            .unwrap_err();
+    }
+
+    #[async_test]
+    async fn test_delayed_connect(driver: DefaultDriver) {
+        let client = Client::new(&driver, NeverDial);
+        let err = client
+            .call()
+            .deadline(Some(Deadline::now() + Duration::from_millis(200)))
+            .start_raw("service", "method", vec![])
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.code, Code::DeadlineExceeded as i32);
     }
 }

@@ -396,7 +396,6 @@ impl BackingPrivate for SnpBacked {
         // TODO SNP GUEST VSM supporting VTL 1 proxy irrs requires kernel changes
         if vtl == GuestVtl::Vtl0 {
             if let Some(irr) = this.runner.proxy_irr() {
-                // N.B proxy IRRs received are filtered
                 this.backing.cvm.lapics[vtl]
                     .lapic
                     .request_fixed_interrupts(irr);

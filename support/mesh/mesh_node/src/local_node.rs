@@ -297,6 +297,14 @@ impl Port {
         }
     }
 
+    pub fn is_closed(&self) -> Result<bool, NodeError> {
+        match &self.inner.state.lock().activity {
+            PortActivity::Done => Ok(true),
+            PortActivity::Failed(err) => Err(err.clone()),
+            _ => Ok(false),
+        }
+    }
+
     #[cfg(test)]
     fn fail(self, err: NodeError) {
         let mut pending_events = PendingEvents::new();
@@ -311,10 +319,17 @@ impl Port {
 /// A [`Port`] that has a registered message handler.
 ///
 /// Created by [`Port::set_handler`].
-#[derive(Debug)]
 pub struct PortWithHandler<T> {
     raw: Port,
     _phantom: PhantomData<Arc<Mutex<T>>>,
+}
+
+impl<T> Debug for PortWithHandler<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PortWithHandler")
+            .field("raw", &self.raw)
+            .finish()
+    }
 }
 
 impl<T> Drop for PortWithHandler<T> {
@@ -370,6 +385,10 @@ impl<T: HandlePortEvent> PortWithHandler<T> {
     /// Sends a message to the opposite endpoint.
     pub fn send(&self, message: Message) {
         self.raw.send(message)
+    }
+
+    pub fn is_closed(&self) -> Result<bool, NodeError> {
+        self.raw.is_closed()
     }
 
     pub fn remove_handler(self) -> (Port, T) {
@@ -672,6 +691,9 @@ impl<'a> PortControl<'a> {
 /// [`Port::set_handler`].
 pub trait HandlePortEvent: 'static + Send {
     /// Handles a new message for the port.
+    ///
+    /// If an error is returned, the port will be failed (and the caller will
+    /// call the `fail` method).
     fn message(
         &mut self,
         control: &mut PortControl<'_>,
@@ -2216,7 +2238,7 @@ pub mod tests {
         }
     }
 
-    impl<T: MeshField, U: MeshField> Channel<T, U> {
+    impl<T: 'static + MeshField + Send, U: 'static + MeshField + Send> Channel<T, U> {
         fn new_pair() -> (Self, Channel<U, T>) {
             let (left, right) = Port::new_pair();
             (left.into(), right.into())

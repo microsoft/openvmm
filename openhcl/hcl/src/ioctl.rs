@@ -18,6 +18,7 @@ use self::deferred::DeferredActions;
 use self::ioctls::*;
 use crate::ioctl::deferred::DeferredAction;
 use crate::protocol;
+use crate::protocol::hcl_intr_offload_flags;
 use crate::protocol::hcl_run;
 use crate::protocol::EnterModes;
 use crate::protocol::HCL_REG_PAGE_OFFSET;
@@ -25,7 +26,8 @@ use crate::protocol::HCL_VMSA_GUEST_VSM_PAGE_OFFSET;
 use crate::protocol::HCL_VMSA_PAGE_OFFSET;
 use crate::protocol::MSHV_APIC_PAGE_OFFSET;
 use crate::GuestVtl;
-use bitvec::prelude::*;
+use bitvec::prelude::BitArray;
+use bitvec::prelude::Lsb0;
 use hvdef::hypercall::AssertVirtualInterrupt;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvGpaRange;
@@ -1590,7 +1592,11 @@ impl HclVp {
         isolation_type: IsolationType,
     ) -> Result<Self, Error> {
         let fd = &hcl.mshv_vtl.file;
-        let run = MappedPage::new(fd, vp as i64).map_err(|e| Error::MmapVp(e, None))?;
+        let run: MappedPage<hcl_run> =
+            MappedPage::new(fd, vp as i64).map_err(|e| Error::MmapVp(e, None))?;
+        // SAFETY: Initializing `proxy_irr_blocked` to block all initially
+        let proxy_irr_blocked = unsafe { &mut *addr_of_mut!((*run.0.as_ptr()).proxy_irr_blocked) };
+        proxy_irr_blocked.fill(0xFFFFFFFF);
 
         let backing = match isolation_type {
             IsolationType::None | IsolationType::Vbs => BackingState::Mshv {
@@ -1836,42 +1842,54 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
     /// Gets the proxied interrupt request bitmap from the hypervisor.
     pub fn proxy_irr(&mut self) -> Option<[u32; 8]> {
         // SAFETY: the `scan_proxy_irr` and `proxy_irr` fields of the run page
-        // are concurrently updated by the kernel, but only on this processor.
+        // are concurrently updated by the kernel on multiple processors. They
+        // are accessed atomically everywhere.
         unsafe {
             let scan_proxy_irr =
                 &*(addr_of!((*self.run.as_ptr()).scan_proxy_irr).cast::<AtomicU8>());
             let proxy_irr = &*(addr_of!((*self.run.as_ptr()).proxy_irr).cast::<[AtomicU32; 8]>());
-            if scan_proxy_irr.load(Ordering::Relaxed) == 0 {
+            if scan_proxy_irr.load(Ordering::Acquire) == 0 {
                 return None;
             }
 
-            scan_proxy_irr.store(0, Ordering::Relaxed);
+            scan_proxy_irr.store(0, Ordering::SeqCst);
             let mut r = [0; 8];
             for (irr, r) in proxy_irr.iter().zip(r.iter_mut()) {
-                // In theory we don't need atomic operations, we just need the
-                // swap to happen in a single instruction. This would require
-                // inline assembly.
                 if irr.load(Ordering::Relaxed) != 0 {
                     *r = irr.swap(0, Ordering::Relaxed);
                 }
-            }
-
-            // `proxy_irr`received from host is untrusted, only allow vectors that L2 expects
-            for (f, v) in self.run.as_ref().proxy_irr_filter.iter().zip(r.iter_mut()) {
-                *v &= *f;
             }
             Some(r)
         }
     }
 
-    /// Update the `proxy_irr_filter` in run page
-    pub fn update_proxy_irr_filter(&mut self, irr_filter: &BitBox<u8>) {
-        // SAFETY: `proxy_irr_filter` is only updated by current processor (and only in user mode for now)
-        let proxy_irr_filter = unsafe { &mut *addr_of_mut!((*self.run.as_ptr()).proxy_irr_filter) };
+    /// Update the `proxy_irr_blocked` in run page
+    pub fn update_proxy_irr_filter(&mut self, irr_filter: &BitArray<[u32; 8], Lsb0>) {
+        // SAFETY: `proxy_irr_blocked` is accessed in both user and kernel, but from current VP
+        // By default block all (i.e. set all), and only allow (unset) given vectors
+        let proxy_irr_blocked =
+            unsafe { &mut *addr_of_mut!((*self.run.as_ptr()).proxy_irr_blocked) };
+        proxy_irr_blocked.fill(0xFFFFFFFF);
+
         for irr_bit in irr_filter.iter_ones() {
-            tracing::info!(irr_bit, "update_proxy_irr_filter");
-            proxy_irr_filter[irr_bit >> 5] = 1 << (irr_bit & 0x1F);
+            tracing::debug!(irr_bit, "update_proxy_irr_filter");
+            proxy_irr_blocked[irr_bit >> 5] &= !(1 << (irr_bit & 0x1F));
         }
+    }
+
+    /// Gets the proxy_irr_exit bitmask. This mask ensures that
+    /// the masked interrupts always exit to user-space, and cannot
+    /// be injected in the kernel. Interrupts matching this condition
+    /// will be left on the proxy_irr field.
+    pub fn proxy_irr_exit_mut(&mut self) -> &mut [u32; 8] {
+        // SAFETY: The `proxy_irr_exit` field of the run page will not be concurrently updated.
+        unsafe { &mut (*self.run.as_ptr()).proxy_irr_exit }
+    }
+
+    /// Gets the current offload_flags from the run page.
+    pub fn offload_flags_mut(&mut self) -> &mut hcl_intr_offload_flags {
+        // SAFETY: The `offload_flags` field of the run page will not be concurrently updated.
+        unsafe { &mut (*self.run.as_ptr()).offload_flags }
     }
 
     /// Runs the VP via the sidecar kernel.
