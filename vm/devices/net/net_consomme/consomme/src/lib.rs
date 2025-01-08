@@ -26,8 +26,8 @@ mod udp;
 mod windows;
 
 use inspect::InspectMut;
-use mesh::rpc::RpcError;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use pal_async::driver::Driver;
 use smoltcp::phy::Checksum;

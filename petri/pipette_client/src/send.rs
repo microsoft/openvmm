@@ -4,8 +4,8 @@
 //! A thin wrapper around a `mesh::Sender<PipetteRequest>` that provides
 //! useful error handling semantics.
 
-use mesh::rpc::RpcError;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh::CancelContext;
 use pipette_protocol::PipetteRequest;
