@@ -41,6 +41,7 @@ impl SimpleFlowNode for Node {
                 sh.change_dir(repo_path);
 
                 // TODO: Make this work for non-main PRs
+                xshell::cmd!(sh, "git fetch origin main").run()?;
                 xshell::cmd!(sh, "git fetch origin pull/{pr_number}/head:{head_ref}").run()?;
                 let commit = xshell::cmd!(sh, "git merge-base {head_ref} origin/main").read()?;
                 rt.write(merge_commit, &commit);
