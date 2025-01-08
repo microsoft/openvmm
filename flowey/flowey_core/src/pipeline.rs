@@ -701,7 +701,7 @@ impl Pipeline {
         default: Option<bool>,
     ) -> UseParameter<bool> {
         let idx = self.parameters.len();
-        let name = Parameter::new_parameter_name(name, kind.clone());
+        let name = new_parameter_name(name, kind.clone());
         self.parameters.push(ParameterMeta {
             parameter: Parameter::Bool {
                 name,
@@ -744,7 +744,7 @@ impl Pipeline {
         possible_values: Option<Vec<i64>>,
     ) -> UseParameter<i64> {
         let idx = self.parameters.len();
-        let name = Parameter::new_parameter_name(name, kind.clone());
+        let name = new_parameter_name(name, kind.clone());
         self.parameters.push(ParameterMeta {
             parameter: Parameter::Num {
                 name,
@@ -790,7 +790,7 @@ impl Pipeline {
         possible_values: Option<Vec<String>>,
     ) -> UseParameter<String> {
         let idx = self.parameters.len();
-        let name = Parameter::new_parameter_name(name, kind.clone());
+        let name = new_parameter_name(name, kind.clone());
         self.parameters.push(ParameterMeta {
             parameter: Parameter::String {
                 name,
@@ -1167,6 +1167,13 @@ pub trait IntoPipeline {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline>;
 }
 
+fn new_parameter_name(name: impl AsRef<str>, kind: ParameterKind) -> String {
+    match kind {
+        ParameterKind::Unstable => format!("__unstable_{}", name.as_ref()),
+        ParameterKind::Stable => name.as_ref().into(),
+    }
+}
+
 /// Structs which should only be used by top-level flowey emitters. If you're a
 /// pipeline author, these are not types you need to care about!
 pub mod internal {
@@ -1352,13 +1359,6 @@ pub mod internal {
                 Parameter::Bool { name, .. } => name,
                 Parameter::String { name, .. } => name,
                 Parameter::Num { name, .. } => name,
-            }
-        }
-
-        pub fn new_parameter_name(name: impl AsRef<str>, kind: ParameterKind) -> String {
-            match kind {
-                ParameterKind::Unstable => format!("__unstable_{}", name.as_ref()),
-                ParameterKind::Stable => name.as_ref().into(),
             }
         }
     }
