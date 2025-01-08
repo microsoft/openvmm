@@ -4,7 +4,7 @@
 //! Implements the `Message` type.
 
 // UNSAFETY: Needed to define, implement, and call the unsafe extract function.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use crate::resource::Resource;
 use crate::resource::SerializedMessage;
@@ -57,7 +57,7 @@ impl Message {
 /// This does not include scalar types such as `u32`, which are encoded as
 /// non-message types.
 pub trait MeshPayload:
-    mesh_protobuf::DefaultEncoding<Encoding = <Self as MeshPayload>::Encoding> + Send + 'static + Sized
+    mesh_protobuf::DefaultEncoding<Encoding = <Self as MeshPayload>::Encoding> + Sized
 {
     type Encoding: MessageEncode<Self, Resource>
         + for<'a> mesh_protobuf::MessageDecode<'a, Self, Resource>
@@ -69,7 +69,7 @@ pub trait MeshPayload:
 
 impl<T> MeshPayload for T
 where
-    T: mesh_protobuf::DefaultEncoding + Any + Send + 'static,
+    T: mesh_protobuf::DefaultEncoding,
     T::Encoding: MessageEncode<T, Resource>
         + for<'a> mesh_protobuf::MessageDecode<'a, T, Resource>
         + mesh_protobuf::FieldEncode<T, Resource>
@@ -83,7 +83,7 @@ where
 /// Trait for types that can be a field in a mesh message, including both scalar
 /// types and types that implement [`MeshPayload`].
 pub trait MeshField:
-    mesh_protobuf::DefaultEncoding<Encoding = <Self as MeshField>::Encoding> + Send + 'static + Sized
+    mesh_protobuf::DefaultEncoding<Encoding = <Self as MeshField>::Encoding> + Sized
 {
     type Encoding: mesh_protobuf::FieldEncode<Self, Resource>
         + for<'a> mesh_protobuf::FieldDecode<'a, Self, Resource>
@@ -93,7 +93,7 @@ pub trait MeshField:
 
 impl<T> MeshField for T
 where
-    T: mesh_protobuf::DefaultEncoding + Any + Send + 'static,
+    T: mesh_protobuf::DefaultEncoding,
     T::Encoding: mesh_protobuf::FieldEncode<T, Resource>
         + for<'a> mesh_protobuf::FieldDecode<'a, T, Resource>
         + Send
@@ -167,7 +167,7 @@ fn serialize_dyn_message(message: Box<dyn DynSerializeMessage>) -> SerializedMes
     SerializedMessage { data, resources }
 }
 
-impl<T: MeshPayload> SerializeMessage for T {
+impl<T: 'static + MeshPayload + Send> SerializeMessage for T {
     type Concrete = Self;
 
     fn compute_message_size(&mut self, sizer: MessageSizer<'_>) {
@@ -200,11 +200,11 @@ impl Message {
     ///
     /// If the message was constructed with `new<T>`, then the round trip
     /// serialization/deserialization is skipped.
-    pub fn parse<T: MeshPayload>(self) -> Result<T, mesh_protobuf::Error> {
+    pub fn parse<T: 'static + MeshPayload>(self) -> Result<T, mesh_protobuf::Error> {
         self.try_parse().or_else(|m| m.into_message())
     }
 
-    pub fn try_parse<T: 'static + Send>(self) -> Result<T, SerializedMessage> {
+    pub fn try_parse<T: 'static>(self) -> Result<T, SerializedMessage> {
         match self.0 {
             MessageInner::Unserialized(m) => {
                 let mut message = MaybeUninit::<T>::uninit();

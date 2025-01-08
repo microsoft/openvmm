@@ -52,7 +52,7 @@ pub trait Worker: 'static + Sized {
     type Parameters: 'static + Send;
 
     /// State used to implement hot restart. Used with [`Worker::restart`].
-    type State: MeshPayload;
+    type State: 'static + MeshPayload + Send;
 
     /// String identifying the Worker. Used when launching workers in separate processes
     /// to specify which workers are supported and which worker to launch.
@@ -79,7 +79,7 @@ pub trait Worker: 'static + Sized {
 
 /// Common requests for workers.
 #[derive(Debug, MeshPayload)]
-#[mesh(bound = "T: MeshPayload")]
+#[mesh(bound = "T: 'static + MeshPayload + Send")]
 pub enum WorkerRpc<T> {
     /// Tear down.
     Stop,
@@ -292,7 +292,7 @@ impl WorkerHost {
     /// start.
     pub fn start_worker<T>(&self, id: WorkerId<T>, params: T) -> anyhow::Result<WorkerHandle>
     where
-        T: MeshPayload,
+        T: 'static + MeshPayload + Send,
     {
         self.start_worker_inner(id.id(), mesh::Message::new(params))
     }
@@ -316,7 +316,7 @@ impl WorkerHost {
     /// start running.
     pub async fn launch_worker<T>(&self, id: WorkerId<T>, params: T) -> anyhow::Result<WorkerHandle>
     where
-        T: MeshPayload,
+        T: 'static + MeshPayload + Send,
     {
         let mut handle = self.start_worker_inner(id.id(), mesh::Message::new(params))?;
         match handle.next().await.context("failed to launch worker")? {
@@ -608,7 +608,7 @@ macro_rules! runnable_workers {
 #[doc(hidden)]
 pub mod private {
     // UNSAFETY: Needed for linkme.
-    #![allow(unsafe_code)]
+    #![expect(unsafe_code)]
 
     use super::RegisteredWorkers;
     use super::WorkerFactory;

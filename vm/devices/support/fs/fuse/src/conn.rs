@@ -3,7 +3,7 @@
 
 #![cfg(target_os = "linux")]
 // UNSAFETY: Calling (u)mount.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use super::Fuse;
 use crate::reply::ReplySender;

@@ -4,7 +4,7 @@
 #![cfg(target_os = "linux")]
 // UNSAFETY: Calling KVM APIs and IOCTLs and dealing with the raw pointers
 // necessary for doing so.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 pub use kvm_bindings::kvm_ioeventfd_flag_nr_datamatch;
 pub use kvm_bindings::kvm_ioeventfd_flag_nr_deassign;

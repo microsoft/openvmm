@@ -5,7 +5,7 @@
 
 // UNSAFETY: Calls to various libc functions to interact with os-level primitives
 // and handling their return values.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use cfg_if::cfg_if;
 

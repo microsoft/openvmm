@@ -35,7 +35,7 @@ socket2.workspace = true
 test_with_tracing.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
-pal_event.workspace = true
+pal_event = { workspace = true, features = ["mesh"] }
 
 [lints]
 workspace = true
