@@ -206,7 +206,9 @@ async fn run_leader(
         if receivers.is_empty() {
             return;
         }
-        let recvs = receivers.iter_mut().map(|(_, recv)| poll_fn(|cx| recv.poll_recv(cx)));
+        let recvs = receivers
+            .iter_mut()
+            .map(|(_, recv)| poll_fn(|cx| recv.poll_recv(cx)));
         let (req, index, _) = futures::select! { // merge semantics
             r = resign_recv.next() => break r,
             r = future::select_all(recvs).fuse() => r,
