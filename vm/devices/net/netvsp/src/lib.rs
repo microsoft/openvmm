@@ -1803,13 +1803,13 @@ enum WorkerError {
     #[error("unknown rndis message type: {0}")]
     UnknownRndisMessageType(u32),
     #[error("memory access error")]
-    Access(#[source] AccessError),
+    Access(#[from] AccessError),
     #[error("rndis message too small")]
     RndisMessageTooSmall,
     #[error("unsupported rndis behavior")]
     UnsupportedRndisBehavior,
     #[error("vmbus queue error")]
-    Queue(#[source] queue::Error),
+    Queue(#[from] queue::Error),
     #[error("too many control messages")]
     TooManyControlMessages,
     #[error("invalid rndis packet completion")]
@@ -2234,7 +2234,7 @@ impl<T: RingMem> NetChannel<T> {
                 control.control_messages_len += reader.len();
                 control.control_messages.push_back(ControlMessage {
                     message_type,
-                    data: reader.read_all().map_err(WorkerError::Access)?.into(),
+                    data: reader.read_all()?.into(),
                 });
 
                 false
@@ -2263,8 +2263,7 @@ impl<T: RingMem> NetChannel<T> {
         let mut data = reader.into_inner();
         let request: rndisprot::Packet = headers
             .reader(mem)
-            .read_plain()
-            .map_err(WorkerError::Access)?;
+            .read_plain()?;
         if request.num_oob_data_elements != 0
             || request.oob_data_length != 0
             || request.oob_data_offset != 0
@@ -2298,7 +2297,7 @@ impl<T: RingMem> NetChannel<T> {
                 .ok_or(WorkerError::RndisMessageTooSmall)?;
             while !ppi.is_empty() {
                 let h: rndisprot::PerPacketInfo =
-                    ppi.reader(mem).read_plain().map_err(WorkerError::Access)?;
+                    ppi.reader(mem).read_plain()?;
                 if h.size == 0 {
                     return Err(WorkerError::RndisMessageTooSmall);
                 }
@@ -2311,7 +2310,7 @@ impl<T: RingMem> NetChannel<T> {
                 match h.typ {
                     rndisprot::PPI_TCP_IP_CHECKSUM => {
                         let n: rndisprot::TxTcpIpChecksumInfo =
-                            d.reader(mem).read_plain().map_err(WorkerError::Access)?;
+                            d.reader(mem).read_plain()?;
 
                         metadata.offload_tcp_checksum =
                             (n.is_ipv4() || n.is_ipv6()) && n.tcp_checksum();
@@ -2332,12 +2331,10 @@ impl<T: RingMem> NetChannel<T> {
                             } else if n.is_ipv4() {
                                 let mut reader = data.clone().reader(mem);
                                 reader
-                                    .skip(metadata.l2_len as usize)
-                                    .map_err(WorkerError::Access)?;
+                                    .skip(metadata.l2_len as usize)?;
                                 let mut b = 0;
                                 reader
-                                    .read(std::slice::from_mut(&mut b))
-                                    .map_err(WorkerError::Access)?;
+                                    .read(std::slice::from_mut(&mut b))?;
                                 (b as u16 >> 4) * 4
                             } else {
                                 // Hope there are no extensions.
@@ -2347,7 +2344,7 @@ impl<T: RingMem> NetChannel<T> {
                     }
                     rndisprot::PPI_LSO => {
                         let n: rndisprot::TcpLsoInfo =
-                            d.reader(mem).read_plain().map_err(WorkerError::Access)?;
+                            d.reader(mem).read_plain()?;
 
                         metadata.offload_tcp_segmentation = true;
                         metadata.offload_tcp_checksum = true;
@@ -2365,12 +2362,10 @@ impl<T: RingMem> NetChannel<T> {
                         metadata.l4_len = {
                             let mut reader = data.clone().reader(mem);
                             reader
-                                .skip(metadata.l2_len as usize + metadata.l3_len as usize + 12)
-                                .map_err(WorkerError::Access)?;
+                                .skip(metadata.l2_len as usize + metadata.l3_len as usize + 12)?;
                             let mut b = 0;
                             reader
-                                .read(std::slice::from_mut(&mut b))
-                                .map_err(WorkerError::Access)?;
+                                .read(std::slice::from_mut(&mut b))?;
                             (b >> 4) * 4
                         };
                         metadata.max_tcp_segment_size = n.mss() as u16;
@@ -2662,7 +2657,7 @@ impl<T: RingMem> NetChannel<T> {
                 }
 
                 let request: rndisprot::InitializeRequest =
-                    reader.read_plain().map_err(WorkerError::Access)?;
+                    reader.read_plain()?;
 
                 tracing::trace!(
                     ?request,
@@ -2689,8 +2684,7 @@ impl<T: RingMem> NetChannel<T> {
                         af_list_offset: 0,
                         af_list_size: 0,
                     },
-                )
-                .map_err(WorkerError::Access)?;
+                )?;
                 self.send_rndis_control_message(buffers, id, message_length)?;
                 if let PrimaryChannelGuestVfState::Available { vfid } = primary.guest_vf_state {
                     if self.guest_vf_is_available(
@@ -2721,7 +2715,7 @@ impl<T: RingMem> NetChannel<T> {
             }
             rndisprot::MESSAGE_TYPE_QUERY_MSG => {
                 let request: rndisprot::QueryRequest =
-                    reader.read_plain().map_err(WorkerError::Access)?;
+                    reader.read_plain()?;
 
                 tracing::trace!(?request, "handling control message MESSAGE_TYPE_QUERY_MSG");
 
@@ -2751,13 +2745,12 @@ impl<T: RingMem> NetChannel<T> {
                         information_buffer_offset: size_of::<rndisprot::QueryComplete>() as u32,
                         information_buffer_length: tx as u32,
                     },
-                )
-                .map_err(WorkerError::Access)?;
+                )?;
                 self.send_rndis_control_message(buffers, id, message_length)?;
             }
             rndisprot::MESSAGE_TYPE_SET_MSG => {
                 let request: rndisprot::SetRequest =
-                    reader.read_plain().map_err(WorkerError::Access)?;
+                    reader.read_plain()?;
 
                 tracing::trace!(?request, "handling control message MESSAGE_TYPE_SET_MSG");
 
@@ -2784,8 +2777,7 @@ impl<T: RingMem> NetChannel<T> {
                         request_id: request.request_id,
                         status,
                     },
-                )
-                .map_err(WorkerError::Access)?;
+                )?;
                 self.send_rndis_control_message(buffers, id, message_length)?;
             }
             rndisprot::MESSAGE_TYPE_RESET_MSG => {
@@ -2796,7 +2788,7 @@ impl<T: RingMem> NetChannel<T> {
             }
             rndisprot::MESSAGE_TYPE_KEEPALIVE_MSG => {
                 let request: rndisprot::KeepaliveRequest =
-                    reader.read_plain().map_err(WorkerError::Access)?;
+                    reader.read_plain()?;
 
                 tracing::trace!(
                     ?request,
@@ -2811,8 +2803,7 @@ impl<T: RingMem> NetChannel<T> {
                         request_id: request.request_id,
                         status: rndisprot::STATUS_SUCCESS,
                     },
-                )
-                .map_err(WorkerError::Access)?;
+                )?;
                 self.send_rndis_control_message(buffers, id, message_length)?;
             }
             rndisprot::MESSAGE_TYPE_SET_EX_MSG => {
@@ -2895,9 +2886,8 @@ impl<T: RingMem> NetChannel<T> {
                     size_of::<rndisprot::IndicateStatus>() as u32
                 },
             },
-        )
-        .map_err(WorkerError::Access)?;
-        writer.write(payload).map_err(WorkerError::Access)?;
+        )?;
+        writer.write(payload)?;
         self.send_rndis_control_message(buffers, id, message_length)?;
         Ok(())
     }
@@ -2921,8 +2911,7 @@ impl<T: RingMem> NetChannel<T> {
                 .queue
                 .split()
                 .1
-                .can_write(MIN_CONTROL_RING_SIZE)
-                .map_err(WorkerError::Queue)?
+                .can_write(MIN_CONTROL_RING_SIZE)?
             {
                 self.pending_send_size = MIN_CONTROL_RING_SIZE;
                 break;
@@ -4454,8 +4443,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 .split()
                 .1
                 .wait_ready(ring::PacketSize::completion(protocol::PACKET_SIZE_V61))
-                .await
-                .map_err(WorkerError::Queue)?;
+                .await?;
 
             let packet = self
                 .next_packet(None, initializing.as_ref().map(|x| x.version))
@@ -4663,8 +4651,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 if num_channels_opened == primary.requested_num_queues as usize {
                     let (_, mut send) = self.queue.split();
                     stop.until_stopped(send.wait_ready(MIN_STATE_CHANGE_RING_SIZE))
-                        .await?
-                        .map_err(WorkerError::Queue)?;
+                        .await??;
                     self.guest_send_indirection_table(buffers.version, num_channels_opened as u32);
                     primary.tx_spread_sent = true;
                 }
@@ -4672,8 +4659,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
             if let PendingLinkAction::Active(up) = primary.pending_link_action {
                 let (_, mut send) = self.queue.split();
                 stop.until_stopped(send.wait_ready(MIN_STATE_CHANGE_RING_SIZE))
-                    .await?
-                    .map_err(WorkerError::Queue)?;
+                    .await??;
                 if let Some(id) = primary.free_control_buffers.pop() {
                     let connect = if primary.guest_link_up != up {
                         primary.pending_link_action = PendingLinkAction::Default;
@@ -4724,8 +4710,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 | PrimaryChannelGuestVfState::DataPathSynthetic => {
                     let (_, mut send) = self.queue.split();
                     stop.until_stopped(send.wait_ready(MIN_STATE_CHANGE_RING_SIZE))
-                        .await?
-                        .map_err(WorkerError::Queue)?;
+                        .await??;
                     if let Some(message) = self.handle_state_change(primary, buffers).await? {
                         return Ok(message);
                     }
@@ -4742,8 +4727,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
             let ring_full = {
                 let (_, mut send) = self.queue.split();
                 !send
-                    .can_write(ring_spare_capacity)
-                    .map_err(WorkerError::Queue)?
+                    .can_write(ring_spare_capacity)?
             };
 
             let did_some_work = (!ring_full
@@ -5196,7 +5180,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         while reader.len() > 0 {
             let mut this_reader = reader.clone();
             let header: rndisprot::MessageHeader =
-                this_reader.read_plain().map_err(WorkerError::Access)?;
+                this_reader.read_plain()?;
             if self.handle_rndis_message(
                 buffers,
                 state,
@@ -5208,8 +5192,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 num_packets += 1;
             }
             reader
-                .skip(header.message_length as usize)
-                .map_err(WorkerError::Access)?;
+                .skip(header.message_length as usize)?;
         }
 
         Ok(num_packets)
