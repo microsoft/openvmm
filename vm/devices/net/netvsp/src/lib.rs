@@ -2261,9 +2261,7 @@ impl<T: RingMem> NetChannel<T> {
             .find(|r| !r.is_empty())
             .ok_or(WorkerError::RndisMessageTooSmall)?;
         let mut data = reader.into_inner();
-        let request: rndisprot::Packet = headers
-            .reader(mem)
-            .read_plain()?;
+        let request: rndisprot::Packet = headers.reader(mem).read_plain()?;
         if request.num_oob_data_elements != 0
             || request.oob_data_length != 0
             || request.oob_data_offset != 0
@@ -2296,8 +2294,7 @@ impl<T: RingMem> NetChannel<T> {
                 )
                 .ok_or(WorkerError::RndisMessageTooSmall)?;
             while !ppi.is_empty() {
-                let h: rndisprot::PerPacketInfo =
-                    ppi.reader(mem).read_plain()?;
+                let h: rndisprot::PerPacketInfo = ppi.reader(mem).read_plain()?;
                 if h.size == 0 {
                     return Err(WorkerError::RndisMessageTooSmall);
                 }
@@ -2309,8 +2306,7 @@ impl<T: RingMem> NetChannel<T> {
                     .ok_or(WorkerError::RndisMessageTooSmall)?;
                 match h.typ {
                     rndisprot::PPI_TCP_IP_CHECKSUM => {
-                        let n: rndisprot::TxTcpIpChecksumInfo =
-                            d.reader(mem).read_plain()?;
+                        let n: rndisprot::TxTcpIpChecksumInfo = d.reader(mem).read_plain()?;
 
                         metadata.offload_tcp_checksum =
                             (n.is_ipv4() || n.is_ipv6()) && n.tcp_checksum();
@@ -2330,11 +2326,9 @@ impl<T: RingMem> NetChannel<T> {
                                 n.tcp_header_offset() - metadata.l2_len as u16
                             } else if n.is_ipv4() {
                                 let mut reader = data.clone().reader(mem);
-                                reader
-                                    .skip(metadata.l2_len as usize)?;
+                                reader.skip(metadata.l2_len as usize)?;
                                 let mut b = 0;
-                                reader
-                                    .read(std::slice::from_mut(&mut b))?;
+                                reader.read(std::slice::from_mut(&mut b))?;
                                 (b as u16 >> 4) * 4
                             } else {
                                 // Hope there are no extensions.
@@ -2343,8 +2337,7 @@ impl<T: RingMem> NetChannel<T> {
                         }
                     }
                     rndisprot::PPI_LSO => {
-                        let n: rndisprot::TcpLsoInfo =
-                            d.reader(mem).read_plain()?;
+                        let n: rndisprot::TcpLsoInfo = d.reader(mem).read_plain()?;
 
                         metadata.offload_tcp_segmentation = true;
                         metadata.offload_tcp_checksum = true;
@@ -2364,8 +2357,7 @@ impl<T: RingMem> NetChannel<T> {
                             reader
                                 .skip(metadata.l2_len as usize + metadata.l3_len as usize + 12)?;
                             let mut b = 0;
-                            reader
-                                .read(std::slice::from_mut(&mut b))?;
+                            reader.read(std::slice::from_mut(&mut b))?;
                             (b >> 4) * 4
                         };
                         metadata.max_tcp_segment_size = n.mss() as u16;
@@ -2656,8 +2648,7 @@ impl<T: RingMem> NetChannel<T> {
                     return Err(WorkerError::InvalidRndisState);
                 }
 
-                let request: rndisprot::InitializeRequest =
-                    reader.read_plain()?;
+                let request: rndisprot::InitializeRequest = reader.read_plain()?;
 
                 tracing::trace!(
                     ?request,
@@ -2714,8 +2705,7 @@ impl<T: RingMem> NetChannel<T> {
                 }
             }
             rndisprot::MESSAGE_TYPE_QUERY_MSG => {
-                let request: rndisprot::QueryRequest =
-                    reader.read_plain()?;
+                let request: rndisprot::QueryRequest = reader.read_plain()?;
 
                 tracing::trace!(?request, "handling control message MESSAGE_TYPE_QUERY_MSG");
 
@@ -2749,8 +2739,7 @@ impl<T: RingMem> NetChannel<T> {
                 self.send_rndis_control_message(buffers, id, message_length)?;
             }
             rndisprot::MESSAGE_TYPE_SET_MSG => {
-                let request: rndisprot::SetRequest =
-                    reader.read_plain()?;
+                let request: rndisprot::SetRequest = reader.read_plain()?;
 
                 tracing::trace!(?request, "handling control message MESSAGE_TYPE_SET_MSG");
 
@@ -2787,8 +2776,7 @@ impl<T: RingMem> NetChannel<T> {
                 return Err(WorkerError::RndisMessageTypeNotImplemented)
             }
             rndisprot::MESSAGE_TYPE_KEEPALIVE_MSG => {
-                let request: rndisprot::KeepaliveRequest =
-                    reader.read_plain()?;
+                let request: rndisprot::KeepaliveRequest = reader.read_plain()?;
 
                 tracing::trace!(
                     ?request,
@@ -2907,12 +2895,7 @@ impl<T: RingMem> NetChannel<T> {
             || (primary.pending_offload_change && primary.rndis_state == RndisState::Operational)
         {
             // Ensure the ring buffer has enough room to successfully complete control message handling.
-            if !self
-                .queue
-                .split()
-                .1
-                .can_write(MIN_CONTROL_RING_SIZE)?
-            {
+            if !self.queue.split().1.can_write(MIN_CONTROL_RING_SIZE)? {
                 self.pending_send_size = MIN_CONTROL_RING_SIZE;
                 break;
             }
@@ -4726,8 +4709,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
             // backend drop packets.
             let ring_full = {
                 let (_, mut send) = self.queue.split();
-                !send
-                    .can_write(ring_spare_capacity)?
+                !send.can_write(ring_spare_capacity)?
             };
 
             let did_some_work = (!ring_full
@@ -5179,8 +5161,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         // message.
         while reader.len() > 0 {
             let mut this_reader = reader.clone();
-            let header: rndisprot::MessageHeader =
-                this_reader.read_plain()?;
+            let header: rndisprot::MessageHeader = this_reader.read_plain()?;
             if self.handle_rndis_message(
                 buffers,
                 state,
@@ -5191,8 +5172,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
             )? {
                 num_packets += 1;
             }
-            reader
-                .skip(header.message_length as usize)?;
+            reader.skip(header.message_length as usize)?;
         }
 
         Ok(num_packets)
