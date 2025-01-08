@@ -82,8 +82,6 @@ impl SimpleFlowNode for Node {
                 let old_openhcl = rt.read(old_openhcl);
                 let new_openhcl = rt.read(new_openhcl);
 
-                xshell::cmd!(sh, "find {new_openhcl}").run()?;
-
                 let arch = target.common_arch().unwrap();
 
                 let old_path = match arch {

@@ -6,7 +6,7 @@
 use crate::Xtask;
 use object::read::Object;
 use object::read::ObjectSection;
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 /// Runs a size comparison and outputs a diff of two given binaries
 #[derive(Debug, clap::Parser)]
@@ -33,27 +33,38 @@ fn verify_sections_size(
     let mut total_diff: u64 = 0;
     let mut total_size: u64 = 0;
 
-    let expected_sections: HashMap<_, _> = original
+    let all_original_sections: Vec<_> = original
         .sections()
-        .filter_map(|s| {
-            s.name()
-                .ok()
-                .map(|name| (name.to_string(), (s.size() as i64) / 1024))
-        })
-        .filter(|(_, size)| *size > 0)
+        .filter_map(|s| s.name().ok().map(|name| name.to_string()))
+        .collect();
+    let all_new_sections: Vec<_> = new
+        .sections()
+        .filter_map(|s| s.name().ok().map(|name| name.to_string()))
         .collect();
 
-    for section in new.sections() {
-        let name = section.name().unwrap();
-        let size = (section.size() / 1024) as i64;
-        let expected_size = *expected_sections.get(name).unwrap_or(&0);
-        let diff = size - expected_size;
-        total_diff += diff.unsigned_abs();
-        total_size += size as u64;
+    let all_sections: HashSet<_> = all_original_sections
+        .into_iter()
+        .chain(all_new_sections.into_iter())
+        .collect();
 
-        // Print any non-zero sections in the newer binary and any sections that differ in size from the original.
-        if size != 0 || diff != 0 {
-            println!("{name:20} {expected_size:15} {size:15} {diff:16}");
+    for section in all_sections {
+        let name = section;
+
+        let new_size = new
+            .section_by_name(name.as_str())
+            .map(|s| s.size() / 1024)
+            .unwrap_or(0);
+        let original_size = original
+            .section_by_name(name.as_str())
+            .map(|s| s.size() / 1024)
+            .unwrap_or(0);
+        let diff = (new_size as i64) - (original_size as i64);
+        total_diff += diff.unsigned_abs();
+        total_size += new_size;
+
+        // Print any sections that have changed in size
+        if new_size != original_size {
+            println!("{name:20} {original_size:15} {new_size:15} {diff:16}");
         }
     }
 
