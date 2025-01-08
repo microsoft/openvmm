@@ -596,6 +596,7 @@ EOF
                                 flowey_core::pipeline::internal::Parameter::Bool {
                                     name: _,
                                     description,
+                                    kind: _,
                                     default,
                                 } => github_yaml_defs::Input {
                                     description: Some(description.clone()),
@@ -606,6 +607,7 @@ EOF
                                 flowey_core::pipeline::internal::Parameter::String {
                                     name: _,
                                     description,
+                                    kind: _,
                                     default,
                                     possible_values: _,
                                 } => github_yaml_defs::Input {
@@ -619,6 +621,7 @@ EOF
                                 flowey_core::pipeline::internal::Parameter::Num {
                                     name: _,
                                     description,
+                                    kind: _,
                                     default,
                                     possible_values: _,
                                 } => github_yaml_defs::Input {

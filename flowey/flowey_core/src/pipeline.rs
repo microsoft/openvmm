@@ -41,6 +41,7 @@ pub mod user_facing {
     pub use super::GhScheduleTriggers;
     pub use super::HostExt;
     pub use super::IntoPipeline;
+    pub use super::ParameterKind;
     pub use super::Pipeline;
     pub use super::PipelineBackendHint;
     pub use super::PipelineJob;
@@ -293,6 +294,16 @@ pub enum GhRunner {
     // See <https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#choosing-github-hosted-runners>
     // for more details.
     RunnerGroup { group: String, labels: Vec<String> },
+}
+
+#[derive(Debug, Clone)]
+pub enum ParameterKind {
+    // The parameter is considered an unstable API, and should not be
+    // taken as a dependency.
+    Unstable,
+    // The parameter is considered a stable API, and can be used by
+    // external pipelines to control behavior of the pipeline.
+    Stable,
 }
 
 #[derive(Clone, Debug)]
@@ -674,6 +685,9 @@ impl Pipeline {
     ///
     /// `description` is an arbitrary string, which will be be shown to users.
     ///
+    /// `kind` is the type of parameter and if it should be treated as a stable
+    /// external API to callers of the pipeline.
+    ///
     /// `default` is the default value for the parameter. If none is provided,
     /// the parameter _must_ be specified in order for the pipeline to run.
     ///
@@ -683,6 +697,7 @@ impl Pipeline {
         &mut self,
         name: impl AsRef<str>,
         description: impl AsRef<str>,
+        kind: ParameterKind,
         default: Option<bool>,
     ) -> UseParameter<bool> {
         let idx = self.parameters.len();
@@ -690,6 +705,7 @@ impl Pipeline {
             parameter: Parameter::Bool {
                 name: name.as_ref().into(),
                 description: description.as_ref().into(),
+                kind,
                 default,
             },
             used_by_jobs: BTreeSet::new(),
@@ -711,6 +727,9 @@ impl Pipeline {
     ///
     /// `description` is an arbitrary string, which will be be shown to users.
     ///
+    /// `kind` is the type of parameter and if it should be treated as a stable
+    /// external API to callers of the pipeline.
+    ///
     /// `default` is the default value for the parameter. If none is provided,
     /// the parameter _must_ be specified in order for the pipeline to run.
     ///
@@ -720,6 +739,7 @@ impl Pipeline {
         &mut self,
         name: impl AsRef<str>,
         description: impl AsRef<str>,
+        kind: ParameterKind,
         default: Option<i64>,
         possible_values: Option<Vec<i64>>,
     ) -> UseParameter<i64> {
@@ -728,6 +748,7 @@ impl Pipeline {
             parameter: Parameter::Num {
                 name: name.as_ref().into(),
                 description: description.as_ref().into(),
+                kind,
                 default,
                 possible_values,
             },
@@ -750,6 +771,9 @@ impl Pipeline {
     ///
     /// `description` is an arbitrary string, which will be be shown to users.
     ///
+    /// `kind` is the type of parameter and if it should be treated as a stable
+    /// external API to callers of the pipeline.
+    ///
     /// `default` is the default value for the parameter. If none is provided,
     /// the parameter _must_ be specified in order for the pipeline to run.
     ///
@@ -761,6 +785,7 @@ impl Pipeline {
         &mut self,
         name: impl AsRef<str>,
         description: impl AsRef<str>,
+        kind: ParameterKind,
         default: Option<impl AsRef<str>>,
         possible_values: Option<Vec<String>>,
     ) -> UseParameter<String> {
@@ -769,6 +794,7 @@ impl Pipeline {
             parameter: Parameter::String {
                 name: name.as_ref().into(),
                 description: description.as_ref().into(),
+                kind,
                 default: default.map(|x| x.as_ref().into()),
                 possible_values,
             },
@@ -855,9 +881,12 @@ impl PipelineJobCtx<'_> {
         &mut self,
         name: impl AsRef<str>,
         description: impl AsRef<str>,
+        kind: ParameterKind,
         default: Option<bool>,
     ) -> ReadVar<bool> {
-        let param = self.pipeline.new_parameter_bool(name, description, default);
+        let param = self
+            .pipeline
+            .new_parameter_bool(name, description, kind, default);
         self.use_parameter(param)
     }
 
@@ -869,12 +898,13 @@ impl PipelineJobCtx<'_> {
         &mut self,
         name: impl AsRef<str>,
         description: impl AsRef<str>,
+        kind: ParameterKind,
         default: Option<i64>,
         possible_values: Option<Vec<i64>>,
     ) -> ReadVar<i64> {
-        let param = self
-            .pipeline
-            .new_parameter_num(name, description, default, possible_values);
+        let param =
+            self.pipeline
+                .new_parameter_num(name, description, kind, default, possible_values);
         self.use_parameter(param)
     }
 
@@ -886,12 +916,13 @@ impl PipelineJobCtx<'_> {
         &mut self,
         name: impl AsRef<str>,
         description: impl AsRef<str>,
+        kind: ParameterKind,
         default: Option<String>,
         possible_values: Option<Vec<String>>,
     ) -> ReadVar<String> {
-        let param = self
-            .pipeline
-            .new_parameter_string(name, description, default, possible_values);
+        let param =
+            self.pipeline
+                .new_parameter_string(name, description, kind, default, possible_values);
         self.use_parameter(param)
     }
 }
@@ -1295,28 +1326,40 @@ pub mod internal {
         Bool {
             name: String,
             description: String,
+            kind: ParameterKind,
             default: Option<bool>,
         },
         String {
             name: String,
             description: String,
             default: Option<String>,
+            kind: ParameterKind,
             possible_values: Option<Vec<String>>,
         },
         Num {
             name: String,
             description: String,
             default: Option<i64>,
+            kind: ParameterKind,
             possible_values: Option<Vec<i64>>,
         },
     }
 
     impl Parameter {
-        pub fn name(&self) -> &str {
+        pub fn name(&self) -> String {
             match self {
-                Parameter::Bool { name, .. } => name,
-                Parameter::String { name, .. } => name,
-                Parameter::Num { name, .. } => name,
+                Parameter::Bool { name, kind, .. } => match kind {
+                    ParameterKind::Unstable => format!("__unstable_{name}"),
+                    ParameterKind::Stable => format!("{name}"),
+                },
+                Parameter::String { name, kind, .. } => match kind {
+                    ParameterKind::Unstable => format!("__unstable_{name}"),
+                    ParameterKind::Stable => format!("{name}"),
+                },
+                Parameter::Num { name, kind, .. } => match kind {
+                    ParameterKind::Unstable => format!("__unstable_{name}"),
+                    ParameterKind::Stable => format!("{name}"),
+                },
             }
         }
     }

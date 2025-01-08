@@ -658,6 +658,7 @@ EOF
                         flowey_core::pipeline::internal::Parameter::Bool {
                             name,
                             description,
+                            kind: _,
                             default,
                         } => schema_ado_yaml::Parameter {
                             name,
@@ -667,6 +668,7 @@ EOF
                         flowey_core::pipeline::internal::Parameter::String {
                             name,
                             description,
+                            kind: _,
                             default,
                             possible_values,
                         } => schema_ado_yaml::Parameter {
@@ -680,6 +682,7 @@ EOF
                         flowey_core::pipeline::internal::Parameter::Num {
                             name,
                             description,
+                            kind: _,
                             default,
                             possible_values,
                         } => schema_ado_yaml::Parameter {
