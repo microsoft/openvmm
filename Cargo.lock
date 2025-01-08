@@ -3734,6 +3734,7 @@ dependencies = [
 name = "mesh_channel"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "futures",
  "futures-concurrency",
  "futures-core",
