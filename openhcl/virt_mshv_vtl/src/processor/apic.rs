@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![cfg(guest_arch = "x86_64")]
+
 use super::LapicState;
 use super::UhRunVpError;
 use hcl::GuestVtl;
