@@ -2413,6 +2413,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pull-requests: write
     needs:
     - job13
     if: github.event.pull_request.draft == false
