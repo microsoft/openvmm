@@ -26,6 +26,7 @@ use mesh_node::local_node::PortField;
 use mesh_node::local_node::PortWithHandler;
 use mesh_node::message::MeshField;
 use mesh_node::message::Message;
+use mesh_node::message::OwnedMessage;
 use mesh_protobuf::DefaultEncoding;
 use parking_lot::Mutex;
 use std::fmt::Debug;
@@ -102,18 +103,18 @@ impl<T> OneshotSender<T> {
     }
 }
 
-impl<T: 'static + MeshField + Send> DefaultEncoding for OneshotSender<T> {
+impl<T: MeshField> DefaultEncoding for OneshotSender<T> {
     type Encoding = PortField;
 }
 
-impl<T: 'static + MeshField + Send> From<OneshotSender<T>> for Port {
+impl<T: MeshField> From<OneshotSender<T>> for Port {
     fn from(sender: OneshotSender<T>) -> Self {
         // SAFETY: the slot is of type `T`.
         unsafe { sender.0.into_port::<T>() }
     }
 }
 
-impl<T: 'static + MeshField + Send> From<Port> for OneshotSender<T> {
+impl<T: MeshField> From<Port> for OneshotSender<T> {
     fn from(port: Port) -> Self {
         Self(OneshotSenderCore::from_port::<T>(port), PhantomData)
     }
@@ -121,16 +122,14 @@ impl<T: 'static + MeshField + Send> From<Port> for OneshotSender<T> {
 
 /// # Safety
 /// The caller must ensure that `value` is of type `T`.
-unsafe fn encode_message<T: 'static + MeshField + Send>(value: BoxedValue) -> Message {
+unsafe fn send_message<T: MeshField>(port: &Port, value: BoxedValue) {
     // SAFETY: the caller ensures that `value` is of type `T`.
     let value = unsafe { value.cast::<T>() };
-    Message::new((value,))
+    port.send_protobuf((value,));
 }
 
-fn decode_message<T: 'static + MeshField + Send>(
-    message: Message,
-) -> Result<BoxedValue, ChannelError> {
-    let (value,) = message.parse::<(Box<T>,)>()?;
+fn decode_message<T: MeshField>(message: Message<'_>) -> Result<BoxedValue, ChannelError> {
+    let (value,) = message.parse_non_static::<(Box<T>,)>()?;
     Ok(BoxedValue::new(value))
 }
 
@@ -180,11 +179,10 @@ impl OneshotSenderCore {
             let slot = this.into_slot();
             let mut state = slot.0.lock();
             match std::mem::replace(&mut *state, SlotState::Done) {
-                SlotState::ReceiverRemote(port, encode) => {
-                    // SAFETY: `encode` has been set to operate on values of type
+                SlotState::ReceiverRemote(port, send) => {
+                    // SAFETY: `send` has been set to operate on values of type
                     // `T`, and `value` is of type `T`.
-                    let value = unsafe { encode(value) };
-                    port.send(value);
+                    unsafe { send(&port, value) };
                     None
                 }
                 SlotState::Waiting(waker) => {
@@ -207,7 +205,7 @@ impl OneshotSenderCore {
 
     /// # Safety
     /// The caller must ensure that the slot is of type `T`.
-    unsafe fn into_port<T: 'static + MeshField + Send>(self) -> Port {
+    unsafe fn into_port<T: MeshField>(self) -> Port {
         fn into_port(this: OneshotSenderCore, decode: DecodeFn) -> Port {
             let slot = this.into_slot();
             let mut state = slot.0.lock();
@@ -229,12 +227,12 @@ impl OneshotSenderCore {
         into_port(self, decode_message::<T>)
     }
 
-    fn from_port<T: 'static + MeshField + Send>(port: Port) -> Self {
-        fn from_port(port: Port, encode: EncodeFn) -> OneshotSenderCore {
-            let slot = Arc::new(Slot(Mutex::new(SlotState::ReceiverRemote(port, encode))));
+    fn from_port<T: MeshField>(port: Port) -> Self {
+        fn from_port(port: Port, send: SendFn) -> OneshotSenderCore {
+            let slot = Arc::new(Slot(Mutex::new(SlotState::ReceiverRemote(port, send))));
             OneshotSenderCore(slot)
         }
-        from_port(port, encode_message::<T>)
+        from_port(port, send_message::<T>)
     }
 }
 
@@ -289,18 +287,18 @@ impl<T> Future for OneshotReceiver<T> {
     }
 }
 
-impl<T: 'static + MeshField + Send> DefaultEncoding for OneshotReceiver<T> {
+impl<T: MeshField> DefaultEncoding for OneshotReceiver<T> {
     type Encoding = PortField;
 }
 
-impl<T: 'static + MeshField + Send> From<OneshotReceiver<T>> for Port {
+impl<T: MeshField> From<OneshotReceiver<T>> for Port {
     fn from(receiver: OneshotReceiver<T>) -> Self {
         // SAFETY: the slot is of type `T`.
         unsafe { receiver.into_core().into_port::<T>() }
     }
 }
 
-impl<T: 'static + MeshField + Send> From<Port> for OneshotReceiver<T> {
+impl<T: MeshField> From<Port> for OneshotReceiver<T> {
     fn from(port: Port) -> Self {
         Self(
             ManuallyDrop::new(OneshotReceiverCore::from_port::<T>(port)),
@@ -406,8 +404,8 @@ impl OneshotReceiverCore {
     /// # Safety
     /// The caller must ensure that `encode` is a valid function to encode
     /// values of type `T`, the type of this slot.
-    unsafe fn into_port<T: 'static + MeshField + Send>(self) -> Port {
-        fn into_port(this: OneshotReceiverCore, encode: EncodeFn) -> Port {
+    unsafe fn into_port<T: MeshField>(self) -> Port {
+        fn into_port(this: OneshotReceiverCore, send: SendFn) -> Port {
             let OneshotReceiverCore { slot, port } = this;
             let existing = port.map(|port| port.remove_handler().0);
             let mut state = slot.0.lock();
@@ -417,18 +415,17 @@ impl OneshotReceiverCore {
                     port
                 }
                 SlotState::Waiting(_) => existing.unwrap_or_else(|| {
-                    let (send, recv) = Port::new_pair();
-                    *state = SlotState::ReceiverRemote(recv, encode);
-                    send
+                    let (sender, recv) = Port::new_pair();
+                    *state = SlotState::ReceiverRemote(recv, send);
+                    sender
                 }),
                 SlotState::Sent(value) => {
-                    let (send, recv) = Port::new_pair();
-                    // SAFETY: `encode` has been set to operate on values of type
+                    let (sender, recv) = Port::new_pair();
+                    // SAFETY: `send` has been set to operate on values of type
                     // `T`, the type of this slot.
-                    let value = unsafe { encode(value) };
-                    send.send(value);
+                    unsafe { send(&sender, value) };
                     if let Some(existing) = existing {
-                        existing.bridge(send);
+                        existing.bridge(sender);
                     }
                     recv
                 }
@@ -436,10 +433,10 @@ impl OneshotReceiverCore {
                 SlotState::ReceiverRemote { .. } => unreachable!(),
             }
         }
-        into_port(self, encode_message::<T>)
+        into_port(self, send_message::<T>)
     }
 
-    fn from_port<T: 'static + MeshField + Send>(port: Port) -> Self {
+    fn from_port<T: MeshField>(port: Port) -> Self {
         fn from_port(port: Port, decode: DecodeFn) -> OneshotReceiverCore {
             let slot = Arc::new(Slot(Mutex::new(SlotState::SenderRemote(port, decode))));
             OneshotReceiverCore { slot, port: None }
@@ -454,11 +451,11 @@ enum SlotState {
     Waiting(Option<Waker>),
     Sent(BoxedValue),
     SenderRemote(Port, DecodeFn),
-    ReceiverRemote(Port, EncodeFn),
+    ReceiverRemote(Port, SendFn),
 }
 
-type EncodeFn = unsafe fn(BoxedValue) -> Message;
-type DecodeFn = unsafe fn(Message) -> Result<BoxedValue, ChannelError>;
+type SendFn = unsafe fn(&Port, BoxedValue);
+type DecodeFn = unsafe fn(Message<'_>) -> Result<BoxedValue, ChannelError>;
 
 #[derive(Debug)]
 struct BoxedValue(NonNull<()>);
@@ -503,7 +500,11 @@ struct SlotHandler {
 }
 
 impl SlotHandler {
-    fn close_or_fail(&mut self, control: &mut mesh_node::local_node::PortControl<'_>, fail: bool) {
+    fn close_or_fail(
+        &mut self,
+        control: &mut mesh_node::local_node::PortControl<'_, '_>,
+        fail: bool,
+    ) {
         let mut state = self.slot.0.lock();
         match std::mem::replace(&mut *state, SlotState::Done) {
             SlotState::Waiting(waker) => {
@@ -525,8 +526,8 @@ impl SlotHandler {
 impl HandlePortEvent for SlotHandler {
     fn message(
         &mut self,
-        control: &mut mesh_node::local_node::PortControl<'_>,
-        message: Message,
+        control: &mut mesh_node::local_node::PortControl<'_, '_>,
+        message: Message<'_>,
     ) -> Result<(), HandleMessageError> {
         let mut state = self.slot.0.lock();
         match std::mem::replace(&mut *state, SlotState::Done) {
@@ -561,19 +562,19 @@ impl HandlePortEvent for SlotHandler {
         Ok(())
     }
 
-    fn close(&mut self, control: &mut mesh_node::local_node::PortControl<'_>) {
+    fn close(&mut self, control: &mut mesh_node::local_node::PortControl<'_, '_>) {
         self.close_or_fail(control, false);
     }
 
     fn fail(
         &mut self,
-        control: &mut mesh_node::local_node::PortControl<'_>,
+        control: &mut mesh_node::local_node::PortControl<'_, '_>,
         _err: mesh_node::local_node::NodeError,
     ) {
         self.close_or_fail(control, true);
     }
 
-    fn drain(&mut self) -> Vec<Message> {
+    fn drain(&mut self) -> Vec<OwnedMessage> {
         Vec::new()
     }
 }
