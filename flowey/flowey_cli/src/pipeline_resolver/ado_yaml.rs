@@ -654,45 +654,48 @@ EOF
                 parameters
                     .clone()
                     .into_iter()
-                    .map(|param| match param {
-                        flowey_core::pipeline::internal::Parameter::Bool {
-                            name,
-                            description,
-                            kind: _,
-                            default,
-                        } => schema_ado_yaml::Parameter {
-                            name,
-                            display_name: description,
-                            ty: schema_ado_yaml::ParameterType::Boolean { default },
-                        },
-                        flowey_core::pipeline::internal::Parameter::String {
-                            name,
-                            description,
-                            kind: _,
-                            default,
-                            possible_values,
-                        } => schema_ado_yaml::Parameter {
-                            name,
-                            display_name: description,
-                            ty: schema_ado_yaml::ParameterType::String {
+                    .map(|param| {
+                        let name = param.name();
+                        match param {
+                            flowey_core::pipeline::internal::Parameter::Bool {
+                                name: _,
+                                description,
+                                kind: _,
                                 default,
-                                values: possible_values,
+                            } => schema_ado_yaml::Parameter {
+                                name,
+                                display_name: description,
+                                ty: schema_ado_yaml::ParameterType::Boolean { default },
                             },
-                        },
-                        flowey_core::pipeline::internal::Parameter::Num {
-                            name,
-                            description,
-                            kind: _,
-                            default,
-                            possible_values,
-                        } => schema_ado_yaml::Parameter {
-                            name,
-                            display_name: description,
-                            ty: schema_ado_yaml::ParameterType::Number {
+                            flowey_core::pipeline::internal::Parameter::String {
+                                name: _,
+                                description,
+                                kind: _,
                                 default,
-                                values: possible_values,
+                                possible_values,
+                            } => schema_ado_yaml::Parameter {
+                                name,
+                                display_name: description,
+                                ty: schema_ado_yaml::ParameterType::String {
+                                    default,
+                                    values: possible_values,
+                                },
                             },
-                        },
+                            flowey_core::pipeline::internal::Parameter::Num {
+                                name: _,
+                                description,
+                                kind: _,
+                                default,
+                                possible_values,
+                            } => schema_ado_yaml::Parameter {
+                                name,
+                                display_name: description,
+                                ty: schema_ado_yaml::ParameterType::Number {
+                                    default,
+                                    values: possible_values,
+                                },
+                            },
+                        }
                     })
                     .collect(),
             )

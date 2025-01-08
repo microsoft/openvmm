@@ -1350,15 +1350,15 @@ pub mod internal {
             match self {
                 Parameter::Bool { name, kind, .. } => match kind {
                     ParameterKind::Unstable => format!("__unstable_{name}"),
-                    ParameterKind::Stable => format!("{name}"),
+                    ParameterKind::Stable => name.to_string(),
                 },
                 Parameter::String { name, kind, .. } => match kind {
                     ParameterKind::Unstable => format!("__unstable_{name}"),
-                    ParameterKind::Stable => format!("{name}"),
+                    ParameterKind::Stable => name.to_string(),
                 },
                 Parameter::Num { name, kind, .. } => match kind {
                     ParameterKind::Unstable => format!("__unstable_{name}"),
-                    ParameterKind::Stable => format!("{name}"),
+                    ParameterKind::Stable => name.to_string(),
                 },
             }
         }
