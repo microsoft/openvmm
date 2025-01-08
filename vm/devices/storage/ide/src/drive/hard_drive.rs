@@ -1310,7 +1310,12 @@ impl HardDrive {
     fn write_media_sectors_complete(&mut self) -> Result<(), IdeError> {
         let command = self.state.command.as_mut().unwrap();
         let sectors_written = command.sectors_before_interrupt;
-        command.sectors_remaining -= sectors_written;
+        if self.state.prd_exhausted {
+            // If no more PRDs, no more to write
+            command.sectors_remaining = 0;
+        } else {
+            command.sectors_remaining -= sectors_written;
+        }
         command.next_lba += sectors_written as u64;
         // Update the registers with the last written LBA.
         self.state

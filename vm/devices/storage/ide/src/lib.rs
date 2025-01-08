@@ -772,6 +772,7 @@ impl Channel {
                 dma.descriptor_idx += 1;
                 if dma.transfer_complete {
                     dma.descriptor_idx = 0;
+                    drive.set_prd_exhausted();
                 }
             }
 
