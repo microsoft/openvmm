@@ -2446,9 +2446,6 @@ jobs:
         EOF
         echo "$AgentTempDirNormal/used_artifacts/x64-openhcl-igvm-extras-release" | flowey v 14 'artifact_use_from_x64-openhcl-igvm-extras-release' --update-from-stdin --is-raw-string
       shell: bash
-    - run: ${{ github.token }}
-      shell: flowey v 14 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:0:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:36:28' --is-secret --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.token'
     - name: install Rust
       run: flowey e 14 flowey_lib_common::install_rust 0
       shell: bash
@@ -2611,11 +2608,8 @@ jobs:
     - name: download artifacts from github actions run
       run: flowey e 14 flowey_lib_common::download_gh_artifact 1
       shell: bash
-    - run: ${{ github.event.pull_request.number }}
-      shell: flowey v 14 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:6:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:68:25' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.event.pull_request.number'
     - name: binary size comparison
-      run: flowey e 14 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 2
+      run: flowey e 14 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 0
       shell: bash
     - name: 'validate cache entry: gh-cli'
       run: flowey e 14 flowey_lib_common::cache 3

@@ -33,8 +33,6 @@ impl SimpleFlowNode for Node {
             done,
         } = request;
 
-        let gh_token = ctx.get_gh_context_var(GhContextVar::GITHUB__TOKEN);
-
         let xtask = ctx.reqv(|v| crate::build_xtask::Request {
             target: target.clone(),
             xtask: v,
@@ -65,16 +63,12 @@ impl SimpleFlowNode for Node {
             run_id: merge_run_id,
         });
 
-        let pr_id = ctx.get_gh_context_var(GhContextVar::GITHUB__PR_NUMBER);
-
         ctx.emit_rust_step("binary size comparison", |ctx| {
             done.claim(ctx);
             let xtask = xtask.claim(ctx);
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
             let old_openhcl = merge_head_artifact.claim(ctx);
             let new_openhcl = new_openhcl.claim(ctx);
-            let pr_id = pr_id.claim(ctx);
-            let gh_token = gh_token.claim(ctx);
 
             move |rt| {
                 let xtask = match rt.read(xtask) {
@@ -87,6 +81,8 @@ impl SimpleFlowNode for Node {
 
                 let old_openhcl = rt.read(old_openhcl);
                 let new_openhcl = rt.read(new_openhcl);
+
+                xshell::cmd!(sh, "find {new_openhcl}").run()?;
 
                 let arch = target.common_arch().unwrap();
 
@@ -102,21 +98,11 @@ impl SimpleFlowNode for Node {
                     CommonArch::Aarch64 => new_openhcl.join("openhcl-aarch64/openhcl"),
                 };
 
-                let output = xshell::cmd!(
+                xshell::cmd!(
                     sh,
                     "{xtask} verify-size --original {old_path} --new {new_path}"
                 )
-                .read()?;
-
-                let output = format!("## Binary size comparison\n\n```\n{}\n```\n", output);
-
-                let pr_id = rt.read(pr_id);
-                let gh_token = rt.read(gh_token);
-
-                xshell::cmd!(sh, "gh pr comment {pr_id} -F -")
-                    .stdin(output)
-                    .env("GITHUB_TOKEN", gh_token)
-                    .run()?;
+                .run()?;
 
                 Ok(())
             }
