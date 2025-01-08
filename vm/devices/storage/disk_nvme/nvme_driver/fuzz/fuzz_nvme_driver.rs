@@ -102,8 +102,7 @@ impl FuzzNvmeDriver {
         self.driver.take().unwrap().shutdown().await;
     }
 
-    /// Generates and executes an arbitrary NvmeDriverAction. Returns either an arbitrary
-    /// error or the executed action. `NvmeDriver` is not intended to be an interface
+    /// Generates and executes an arbitrary NvmeDriverAction. `NvmeDriver` is not intended to be an interface
     /// consumed by anything ther than `NvmeDisk`, yet the fuzzer targets the driver directly.
     /// In addition, the `NvmeDriver` is not at any trust boundary. This is done to allow
     /// for providing arbitrary data in more places. However, you'll notice that many

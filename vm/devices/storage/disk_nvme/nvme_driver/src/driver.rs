@@ -51,7 +51,7 @@ use zerocopy::FromZeroes;
 ///
 /// Further, note that this is an internal interface to be used
 /// only by `NvmeDisk`! Remove any sanitization in `fuzz_nvm_driver.rs`
-/// if this struct us used anywhere else.
+/// if this struct is used anywhere else.
 #[derive(Inspect)]
 pub struct NvmeDriver<T: DeviceBacking> {
     #[inspect(flatten)]
