@@ -4,6 +4,7 @@
 //! This module contains Underhill specific functionality and implementations of require traits
 //! in order to plug into the rest of the common HvLite code.
 
+mod apic;
 pub mod mshv;
 mod nice;
 mod vp_state;
