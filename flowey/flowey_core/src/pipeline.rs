@@ -296,6 +296,7 @@ pub enum GhRunner {
     RunnerGroup { group: String, labels: Vec<String> },
 }
 
+/// Parameter type (unstable / stable).
 #[derive(Debug, Clone)]
 pub enum ParameterKind {
     // The parameter is considered an unstable API, and should not be
@@ -675,13 +676,25 @@ impl Pipeline {
         self
     }
 
+    /// Format a parameter name based on it's kind (stable / unstable).
+    ///
+    /// `name` is the name of the parameter.
+    ///
+    /// `kind` is the type of parameter and if it should be treated as a stable
+    /// external API to callers of the pipeline.
+    fn new_parameter_name(&mut self, name: impl AsRef<str>, kind: ParameterKind) -> String {
+        match kind {
+            ParameterKind::Unstable => format!("__unstable_{}", name.as_ref()),
+            ParameterKind::Stable => name.as_ref().into(),
+        }
+    }
+
     /// Declare a pipeline-level runtime parameter with type `bool`.
     ///
     /// To obtain a [`ReadVar<bool>`] that can be used within a node, use the
     /// [`PipelineJobCtx::use_parameter`] method.
     ///
-    /// `name` is the name of the parameter, which can be used by other
-    /// pipelines at queue time.
+    /// `name` is the name of the parameter.
     ///
     /// `description` is an arbitrary string, which will be be shown to users.
     ///
@@ -701,9 +714,10 @@ impl Pipeline {
         default: Option<bool>,
     ) -> UseParameter<bool> {
         let idx = self.parameters.len();
+        let name = self.new_parameter_name(name, kind.clone());
         self.parameters.push(ParameterMeta {
             parameter: Parameter::Bool {
-                name: name.as_ref().into(),
+                name,
                 description: description.as_ref().into(),
                 kind,
                 default,
@@ -722,8 +736,7 @@ impl Pipeline {
     /// To obtain a [`ReadVar<i64>`] that can be used within a node, use the
     /// [`PipelineJobCtx::use_parameter`] method.
     ///
-    /// `name` is the name of the parameter, which can be used by other
-    /// pipelines at queue time.
+    /// `name` is the name of the parameter.
     ///
     /// `description` is an arbitrary string, which will be be shown to users.
     ///
@@ -744,9 +757,10 @@ impl Pipeline {
         possible_values: Option<Vec<i64>>,
     ) -> UseParameter<i64> {
         let idx = self.parameters.len();
+        let name = self.new_parameter_name(name, kind.clone());
         self.parameters.push(ParameterMeta {
             parameter: Parameter::Num {
-                name: name.as_ref().into(),
+                name,
                 description: description.as_ref().into(),
                 kind,
                 default,
@@ -766,8 +780,7 @@ impl Pipeline {
     /// To obtain a [`ReadVar<String>`] that can be used within a node, use the
     /// [`PipelineJobCtx::use_parameter`] method.
     ///
-    /// `name` is the name of the parameter, which can be used by other
-    /// pipelines at queue time.
+    /// `name` is the name of the parameter.
     ///
     /// `description` is an arbitrary string, which will be be shown to users.
     ///
@@ -790,9 +803,10 @@ impl Pipeline {
         possible_values: Option<Vec<String>>,
     ) -> UseParameter<String> {
         let idx = self.parameters.len();
+        let name = self.new_parameter_name(name, kind.clone());
         self.parameters.push(ParameterMeta {
             parameter: Parameter::String {
-                name: name.as_ref().into(),
+                name,
                 description: description.as_ref().into(),
                 kind,
                 default: default.map(|x| x.as_ref().into()),
@@ -865,7 +879,10 @@ impl PipelineJobCtx<'_> {
             .insert(self.job_idx);
 
         crate::node::thin_air_read_runtime_var(
-            self.pipeline.parameters[param.idx].parameter.name(),
+            self.pipeline.parameters[param.idx]
+                .parameter
+                .name()
+                .to_string(),
             false,
         )
     }
@@ -1343,20 +1360,11 @@ pub mod internal {
     }
 
     impl Parameter {
-        pub fn name(&self) -> String {
+        pub fn name(&self) -> &str {
             match self {
-                Parameter::Bool { name, kind, .. } => match kind {
-                    ParameterKind::Unstable => format!("__unstable_{name}"),
-                    ParameterKind::Stable => name.to_string(),
-                },
-                Parameter::String { name, kind, .. } => match kind {
-                    ParameterKind::Unstable => format!("__unstable_{name}"),
-                    ParameterKind::Stable => name.to_string(),
-                },
-                Parameter::Num { name, kind, .. } => match kind {
-                    ParameterKind::Unstable => format!("__unstable_{name}"),
-                    ParameterKind::Stable => name.to_string(),
-                },
+                Parameter::Bool { name, .. } => name,
+                Parameter::String { name, .. } => name,
+                Parameter::Num { name, .. } => name,
             }
         }
     }
