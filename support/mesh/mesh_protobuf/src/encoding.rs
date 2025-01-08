@@ -41,7 +41,6 @@ use crate::Error;
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -1601,21 +1600,6 @@ impl<'a, T: Clone, R, E: FieldDecode<'a, T, R>> FieldDecode<'a, Arc<T>, R> for A
     }
 }
 
-impl<T: Clone, R, E: MessageEncode<T, R>> MessageEncode<Rc<T>, R> for ArcEncoding<E> {
-    fn write_message(item: Rc<T>, writer: MessageWriter<'_, '_, R>) {
-        E::write_message(
-            Rc::try_unwrap(item)
-                .ok()
-                .expect("compute_message_size ensured single instance"),
-            writer,
-        )
-    }
-
-    fn compute_message_size(item: &mut Rc<T>, sizer: MessageSizer<'_>) {
-        E::compute_message_size(Rc::make_mut(item), sizer)
-    }
-}
-
 macro_rules! default_encodings {
     ($($ty:ty: $mp:ty),* $(,)?) => {
         $(
@@ -1707,10 +1691,6 @@ impl<T: DefaultEncoding> DefaultEncoding for Box<T> {
 }
 
 impl<T: DefaultEncoding + Clone> DefaultEncoding for Arc<T> {
-    type Encoding = ArcEncoding<T::Encoding>;
-}
-
-impl<T: DefaultEncoding + Clone> DefaultEncoding for Rc<T> {
     type Encoding = ArcEncoding<T::Encoding>;
 }
 
