@@ -19,6 +19,8 @@ use futures::StreamExt;
 use guestmem::GuestMemory;
 use mesh::error::RemoteResultExt;
 use mesh::rpc::Rpc;
+use mesh::Cancel;
+use mesh::CancelContext;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
 use pal_event::Event;
@@ -40,23 +42,45 @@ use vmbus_proxy::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use vmbus_proxy::ProxyAction;
 use vmbus_proxy::VmbusProxy;
 use vmcore::interrupt::Interrupt;
+use winapi::shared::winerror::ERROR_CANCELLED;
 use zerocopy::AsBytes;
 
-pub(crate) async fn start_proxy(
-    driver: &(impl SpawnDriver + Clone),
-    handle: ProxyHandle,
-    server: Arc<VmbusServerControl>,
-    mem: &GuestMemory,
-) -> io::Result<OwnedHandle> {
-    let mut proxy = VmbusProxy::new(driver, handle)?;
-    let handle = proxy.handle().try_clone_to_owned()?;
-    proxy.set_memory(mem).await?;
+pub struct ProxyIntegration {
+    cancel: Cancel,
+    handle: OwnedHandle,
+}
 
-    driver
-        .spawn("vmbus_proxy", proxy_thread(driver.clone(), proxy, server))
-        .detach();
+impl ProxyIntegration {
+    /// Cancels the vmbus proxy.
+    pub fn cancel(&mut self) {
+        self.cancel.cancel();
+    }
 
-    Ok(handle)
+    /// Returns the handle to the vmbus proxy driver.
+    pub fn handle(&self) -> &OwnedHandle {
+        &self.handle
+    }
+
+    pub(crate) async fn start(
+        driver: &(impl SpawnDriver + Clone),
+        handle: ProxyHandle,
+        server: Arc<VmbusServerControl>,
+        mem: &GuestMemory,
+    ) -> io::Result<Self> {
+        let mut proxy = VmbusProxy::new(driver, handle)?;
+        let handle = proxy.handle().try_clone_to_owned()?;
+        proxy.set_memory(mem).await?;
+
+        let (cancel_ctx, cancel) = CancelContext::new().with_cancel();
+        driver
+            .spawn(
+                "vmbus_proxy",
+                proxy_thread(driver.clone(), proxy, server, cancel_ctx),
+            )
+            .detach();
+
+        Ok(Self { cancel, handle })
+    }
 }
 
 struct Channel {
@@ -294,6 +318,8 @@ impl ProxyTask {
                 ProxyAction::InterruptPolicy {} => {}
             }
         }
+
+        tracing::debug!("proxy offers finished");
     }
 
     async fn handle_request(&self, proxy_id: u64, request: Option<ChannelRequest>) {
@@ -334,29 +360,30 @@ impl ProxyTask {
                 }
             }
             None => {
-                // Due to a bug in vmbusproxy, this causes bugchecks if
-                // there are any GPADLs still registered. This seems to
-                // happen during teardown.
+                // Due to a bug in some versions of vmbusproxy, this causes bugchecks if there are
+                // any GPADLs still registered. This seems to happen during teardown.
                 let _ = self.proxy.close(proxy_id).await;
                 let gpadls = self.gpadls.lock().remove(&proxy_id);
                 if let Some(gpadls) = gpadls {
                     if !gpadls.is_empty() {
-                        tracing::warn!(proxy_id, "revoke while some gpadls are still registered");
+                        tracing::warn!(proxy_id, "closed while some gpadls are still registered");
                         for gpadl_id in gpadls {
-                            self.proxy
-                                .delete_gpadl(proxy_id, gpadl_id.0)
-                                .await
-                                .expect("delete gpadl failed");
+                            if let Err(e) = self.proxy.delete_gpadl(proxy_id, gpadl_id.0).await {
+                                if e.raw_os_error() == Some(ERROR_CANCELLED as i32) {
+                                    // No further IOs will succeed if one was cancelled. This can
+                                    // happen here if we're in the process of shutting down.
+                                    tracing::debug!("gpadl delete cancelled");
+                                    break;
+                                }
+
+                                tracing::error!(error = ?e, "failed to delete gpadl");
+                            }
                         }
                     }
                 }
 
-                self.proxy
-                    .release(proxy_id)
-                    .await
-                    .expect("channel release failed");
-
-                self.channels.lock().remove(&proxy_id);
+                // We cannot release the channel with the driver here because it may be in the wrong
+                // state. We must wait for the driver to revoke it first.
             }
         }
     }
@@ -386,15 +413,29 @@ impl ProxyTask {
                 })
                 .detach();
         }
+
+        tracing::debug!("proxy channel requests finished");
     }
 }
 
-async fn proxy_thread(spawner: impl Spawn, proxy: VmbusProxy, server: Arc<VmbusServerControl>) {
+async fn proxy_thread(
+    spawner: impl Spawn,
+    proxy: VmbusProxy,
+    server: Arc<VmbusServerControl>,
+    mut cancel: CancelContext,
+) {
     let (send, recv) = mesh::channel();
     let proxy = Arc::new(proxy);
-    let task = Arc::new(ProxyTask::new(server, proxy));
+    let task = Arc::new(ProxyTask::new(server, Arc::clone(&proxy)));
     let offers = task.run_offers(send);
     let requests = task.run_channel_requests(spawner, recv);
-    futures::future::join(offers, requests).await;
+    let cancellation = async {
+        cancel.cancelled().await;
+        tracing::debug!("proxy thread cancelling");
+        proxy.cancel();
+    };
+
+    futures::future::join3(offers, requests, cancellation).await;
+    tracing::debug!("proxy thread finished");
     // BUGBUG: cancel all IO if something goes wrong?
 }

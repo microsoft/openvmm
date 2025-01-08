@@ -42,10 +42,12 @@ use mesh_node::local_node::PortField;
 use mesh_node::local_node::PortWithHandler;
 use mesh_node::message::MeshField;
 use mesh_node::message::Message;
+use mesh_node::message::OwnedMessage;
 use mesh_protobuf::DefaultEncoding;
 use mesh_protobuf::Protobuf;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
+use std::marker::PhantomPinned;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::task::ready;
@@ -137,13 +139,14 @@ impl MessagePtr {
     }
 }
 
-/// Encodes `ChannelPayload::Message(message)` into a [`Message`].
+/// Sends a `ChannelPayload::Message(message)` to a port.
 ///
 /// # Safety
 /// The caller must ensure that `message` is a valid owned `T`.
-unsafe fn encode_message<T: 'static + MeshField + Send>(message: MessagePtr) -> Message {
+unsafe fn send_message<T: MeshField>(port: &Port, message: MessagePtr) {
     // SAFETY: The caller guarantees `message` is a valid owned `T`.
-    unsafe { Message::new(ChannelPayload::Message(message.read::<T>())) }
+    let m = unsafe { ChannelPayload::Message(message.read::<T>()) };
+    port.send_protobuf(m);
 }
 
 #[derive(Debug, Clone)]
@@ -174,8 +177,7 @@ impl SenderCore {
                 }
                 QueueAccess::Remote(remote) => {
                     // SAFETY: The caller guarantees `message` is a valid owned `T`.
-                    let message = unsafe { (remote.encode)(message) };
-                    remote.port.send(message);
+                    unsafe { (remote.send)(&remote.port, message) };
                 }
             }
             true
@@ -203,21 +205,21 @@ impl SenderCore {
     }
 
     /// Creates a new queue with element type `T` for sending to `port`.
-    fn from_port<T: 'static + MeshField + Send>(port: Port) -> Self {
-        fn from_port(port: Port, vtable: &'static ElementVtable, encode: EncodeFn) -> SenderCore {
+    fn from_port<T: MeshField>(port: Port) -> Self {
+        fn from_port(port: Port, vtable: &'static ElementVtable, send: SendFn) -> SenderCore {
             SenderCore(ManuallyDrop::new(Arc::new(Queue {
                 local: Mutex::new(LocalQueue {
                     remote: true,
                     ..LocalQueue::new(vtable)
                 }),
-                remote: OnceLock::from(RemoteQueueState { port, encode }),
+                remote: OnceLock::from(RemoteQueueState { port, send }),
             })))
         }
 
         from_port(
             port,
             const { &ElementVtable::new::<T>() },
-            encode_message::<T>,
+            send_message::<T>,
         )
     }
 
@@ -225,7 +227,7 @@ impl SenderCore {
     ///
     /// # Safety
     /// The caller must ensure that the queue has element type `T`.
-    unsafe fn into_port<T: 'static + MeshField + Send>(self) -> Port {
+    unsafe fn into_port<T: MeshField>(self) -> Port {
         fn into_port(this: SenderCore, new_handler: NewHandlerFn) -> Port {
             match Arc::try_unwrap(this.into_queue()) {
                 Ok(mut queue) => {
@@ -253,9 +255,7 @@ impl SenderCore {
                             }
                         }
                         QueueAccess::Remote(remote) => {
-                            remote
-                                .port
-                                .send(Message::new(ChannelPayload::<()>::Port(recv)));
+                            remote.port.send_protobuf(ChannelPayload::<()>::Port(recv));
                         }
                     }
                     send
@@ -285,24 +285,24 @@ impl Drop for SenderCore {
     }
 }
 
-impl<T: 'static + MeshField + Send> DefaultEncoding for Sender<T> {
+impl<T> DefaultEncoding for Sender<T> {
     type Encoding = PortField;
 }
 
-impl<T: 'static + MeshField + Send> From<Port> for Sender<T> {
+impl<T: MeshField> From<Port> for Sender<T> {
     fn from(port: Port) -> Self {
         Self(SenderCore::from_port::<T>(port), PhantomData)
     }
 }
 
-impl<T: 'static + MeshField + Send> From<Sender<T>> for Port {
+impl<T: MeshField> From<Sender<T>> for Port {
     fn from(sender: Sender<T>) -> Self {
         // SAFETY: the queue has element type `T`.
         unsafe { sender.0.into_port::<T>() }
     }
 }
 
-impl<T: 'static + MeshField + Send> Sender<T> {
+impl<T: MeshField> Sender<T> {
     /// Bridges this and `recv` together, consuming both `self` and `recv`. This
     /// makes it so that anything sent to `recv` will be directly sent to this
     /// channel's peer receiver, without a separate relay step. This includes
@@ -392,7 +392,7 @@ impl<T> Receiver<T> {
     /// # });
     /// ```
     pub fn recv(&mut self) -> Recv<'_, T> {
-        Recv(self)
+        Recv(self, PhantomPinned)
     }
 
     /// Consumes and returns the next message, if there is one.
@@ -437,13 +437,17 @@ impl<T> Receiver<T> {
 }
 
 /// The future returned by [`Receiver::recv`].
-pub struct Recv<'a, T>(&'a mut Receiver<T>);
+//
+// Force `!Unpin` to allow for future optimizations.
+pub struct Recv<'a, T>(&'a mut Receiver<T>, PhantomPinned);
 
 impl<T> Future for Recv<'_, T> {
     type Output = Result<T, RecvError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.get_mut().0.poll_recv(cx)
+        // SAFETY: there are no actual pinning invariants.
+        let this = unsafe { self.get_unchecked_mut() };
+        this.0.poll_recv(cx)
     }
 }
 
@@ -546,8 +550,8 @@ impl ReceiverCore {
     ///
     /// # Safety
     /// The caller must ensure that the queue has element type `T`.
-    unsafe fn into_port<T: 'static + MeshField + Send>(self) -> Port {
-        fn into_port(mut this: ReceiverCore, encode: EncodeFn) -> Port {
+    unsafe fn into_port<T: MeshField>(self) -> Port {
+        fn into_port(mut this: ReceiverCore, send: SendFn) -> Port {
             let ports = this.ports.into_ports();
             if ports.len() == 1 {
                 if let Some(queue) = Arc::get_mut(&mut this.queue.0) {
@@ -557,34 +561,33 @@ impl ReceiverCore {
                     }
                 }
             }
-            let (send, recv) = Port::new_pair();
+            let (sender, recv) = Port::new_pair();
             for port in ports {
-                send.send(Message::new(ChannelPayload::<()>::Port(port)));
+                sender.send_protobuf(ChannelPayload::<()>::Port(port));
             }
             let mut local = this.queue.0.local.lock();
             for port in local.ports.drain(..) {
-                send.send(Message::new(ChannelPayload::<()>::Port(port)));
+                sender.send_protobuf(ChannelPayload::<()>::Port(port));
             }
             while let Some(message) = local.messages.pop_front_in_place() {
                 // SAFETY: `message` is a valid owned `T`.
-                let message = unsafe { encode(MessagePtr(message.as_ptr())) };
-                send.send(message);
+                unsafe { send(&sender, MessagePtr(message.as_ptr())) };
             }
             local.remote = true;
             this.queue
                 .0
                 .remote
-                .set(RemoteQueueState { port: send, encode })
+                .set(RemoteQueueState { port: sender, send })
                 .ok()
                 .unwrap();
 
             recv
         }
-        into_port(self, encode_message::<T>)
+        into_port(self, send_message::<T>)
     }
 
     /// Creates a new queue with element type `T` for receiving from `port`.
-    fn from_port<T: 'static + MeshField + Send>(port: Port) -> Self {
+    fn from_port<T: MeshField>(port: Port) -> Self {
         fn from_port(
             port: Port,
             vtable: &'static ElementVtable,
@@ -674,24 +677,24 @@ impl PortHandlerList {
     }
 }
 
-impl<T: 'static + MeshField + Send> DefaultEncoding for Receiver<T> {
+impl<T: MeshField> DefaultEncoding for Receiver<T> {
     type Encoding = PortField;
 }
 
-impl<T: 'static + MeshField + Send> From<Port> for Receiver<T> {
+impl<T: MeshField> From<Port> for Receiver<T> {
     fn from(port: Port) -> Self {
         Self(ReceiverCore::from_port::<T>(port), PhantomData)
     }
 }
 
-impl<T: 'static + MeshField + Send> From<Receiver<T>> for Port {
+impl<T: MeshField> From<Receiver<T>> for Port {
     fn from(receiver: Receiver<T>) -> Self {
         // SAFETY: the queue has element type `T`.
         unsafe { receiver.0.into_port::<T>() }
     }
 }
 
-impl<T: 'static + MeshField + Send> Receiver<T> {
+impl<T: MeshField> Receiver<T> {
     /// Bridges this and `sender` together, consuming both `self` and `sender`.
     ///
     /// See [`Sender::bridge`] for more details.
@@ -764,21 +767,23 @@ fn missing_handler(_: Arc<Queue>) -> RemotePortHandler {
 #[derive(Debug)]
 struct RemoteQueueState {
     port: Port,
-    encode: EncodeFn,
+    send: SendFn,
 }
 
-type EncodeFn = unsafe fn(MessagePtr) -> Message;
+type SendFn = unsafe fn(&Port, MessagePtr);
 
 #[derive(Protobuf)]
 #[mesh(bound = "T: MeshField", resource = "mesh_node::resource::Resource")]
 enum ChannelPayload<T> {
+    #[mesh(transparent)]
     Message(T),
+    #[mesh(transparent)]
     Port(Port),
 }
 
 struct RemotePortHandler {
     queue: Arc<Queue>,
-    parse: unsafe fn(Message, *mut ()) -> Result<Option<Port>, ChannelError>,
+    parse: unsafe fn(Message<'_>, *mut ()) -> Result<Option<Port>, ChannelError>,
 }
 
 impl RemotePortHandler {
@@ -786,7 +791,7 @@ impl RemotePortHandler {
     ///
     /// # Safety
     /// The caller must ensure that `queue` has element type `T`.
-    unsafe fn new<T: 'static + MeshField + Send>(queue: Arc<Queue>) -> Self {
+    unsafe fn new<T: MeshField>(queue: Arc<Queue>) -> Self {
         Self {
             queue,
             parse: Self::parse::<T>,
@@ -797,11 +802,11 @@ impl RemotePortHandler {
     ///
     /// # Safety
     /// The caller must ensure that `p` is valid for writing a `T`.
-    unsafe fn parse<T: 'static + MeshField + Send>(
-        message: Message,
+    unsafe fn parse<T: MeshField>(
+        message: Message<'_>,
         p: *mut (),
     ) -> Result<Option<Port>, ChannelError> {
-        match message.parse::<ChannelPayload<T>>() {
+        match message.parse_non_static::<ChannelPayload<T>>() {
             Ok(ChannelPayload::Message(message)) => {
                 // SAFETY: The caller guarantees `p` is valid for writing a `T`.
                 unsafe { p.cast::<T>().write(message) };
@@ -816,8 +821,8 @@ impl RemotePortHandler {
 impl HandlePortEvent for RemotePortHandler {
     fn message(
         &mut self,
-        control: &mut mesh_node::local_node::PortControl<'_>,
-        message: Message,
+        control: &mut mesh_node::local_node::PortControl<'_, '_>,
+        message: Message<'_>,
     ) -> Result<(), HandleMessageError> {
         let mut local = self.queue.local.lock();
         assert!(!local.receiver_gone);
@@ -845,7 +850,7 @@ impl HandlePortEvent for RemotePortHandler {
         Ok(())
     }
 
-    fn close(&mut self, control: &mut mesh_node::local_node::PortControl<'_>) {
+    fn close(&mut self, control: &mut mesh_node::local_node::PortControl<'_, '_>) {
         let waker = {
             let mut local = self.queue.local.lock();
             local.remove_closed = true;
@@ -858,13 +863,13 @@ impl HandlePortEvent for RemotePortHandler {
 
     fn fail(
         &mut self,
-        control: &mut mesh_node::local_node::PortControl<'_>,
+        control: &mut mesh_node::local_node::PortControl<'_, '_>,
         _err: mesh_node::local_node::NodeError,
     ) {
         self.close(control);
     }
 
-    fn drain(&mut self) -> Vec<Message> {
+    fn drain(&mut self) -> Vec<OwnedMessage> {
         Vec::new()
     }
 }
@@ -879,7 +884,9 @@ mod tests {
     use futures::StreamExt;
     use futures_core::FusedStream;
     use mesh_node::local_node::Port;
+    use mesh_protobuf::Protobuf;
     use std::cell::Cell;
+    use std::marker::PhantomData;
     use test_with_tracing::test;
 
     // Ensure `Send` and `Sync` are implemented correctly.
@@ -967,6 +974,22 @@ mod tests {
             };
             tracing::info!(error = &err as &dyn std::error::Error, "expected error");
             assert!(receiver.is_terminated());
+        })
+    }
+
+    #[test]
+    fn test_no_send() {
+        block_on(async {
+            #[derive(Protobuf)]
+            struct NoSend(String, PhantomData<*mut ()>);
+
+            let (sender, receiver) = channel::<NoSend>();
+            let mut receiver = Receiver::<NoSend>::from(Port::from(receiver));
+            sender.send(NoSend(String::from("test"), PhantomData));
+            assert_eq!(
+                receiver.next().await.as_ref().map(|v| v.0.as_str()),
+                Some("test")
+            );
         })
     }
 }
