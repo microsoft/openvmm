@@ -1129,7 +1129,7 @@ mod tests {
             }
         }
 
-        return true;
+        true
     }
 
     fn new_key_protector() -> KeyProtector {
@@ -1163,7 +1163,7 @@ mod tests {
         found_id: bool,
     ) -> KeyProtectorById {
         let key_protector_by_id = openhcl_attestation_protocol::vmgs::KeyProtectorById {
-            id_guid: id_guid.unwrap_or_else(|| Guid::new_random()),
+            id_guid: id_guid.unwrap_or_else(Guid::new_random),
             ported: ported.unwrap_or(0),
             pad: [0; 3],
         };
@@ -1483,7 +1483,7 @@ mod tests {
 
         let gsp_response_by_id = GuestStateProtectionById {
             seed: guest_emulation_transport::api::GspCleartextContent {
-                length: GSP_CLEARTEXT_MAX as u32,
+                length: GSP_CLEARTEXT_MAX,
                 buffer: [1; GSP_CLEARTEXT_MAX as usize * 2],
             },
             extended_status_flags: GspExtendedStatusFlags::from_bits(0),
@@ -1530,16 +1530,15 @@ mod tests {
     }
 
     #[async_test]
-    async fn persist_all_key_protectors_pass_through() {
+    async fn pass_through_persist_all_key_protectors() {
         let mut vmgs = new_formatted_vmgs().await;
         let mut key_protector = new_key_protector();
         let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
         let bios_guid = Guid::new_random();
 
         // Copied/cloned bits used for comparison later
-        let active_kp_dek_buffer_clone = key_protector.dek[key_protector.active_kp as usize]
-            .dek_buffer
-            .clone();
+        let active_kp_dek_buffer_clone =
+            key_protector.dek[key_protector.active_kp as usize].dek_buffer;
         let active_kp_copy = key_protector.active_kp;
         let active_kp_gsp_length_copy =
             key_protector.gsp[key_protector.active_kp as usize].gsp_length;
@@ -1590,9 +1589,8 @@ mod tests {
         let bios_guid = Guid::new_random();
 
         // Copied/cloned bits used for comparison later
-        let active_kp_dek_buffer_clone = key_protector.dek[key_protector.active_kp as usize]
-            .dek_buffer
-            .clone();
+        let active_kp_dek_buffer_clone =
+            key_protector.dek[key_protector.active_kp as usize].dek_buffer;
         let active_kp_copy = key_protector.active_kp;
         let active_kp_gsp_length_copy =
             key_protector.gsp[key_protector.active_kp as usize].gsp_length;
