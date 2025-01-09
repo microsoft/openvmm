@@ -1078,6 +1078,7 @@ mod tests {
     use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
     use openhcl_attestation_protocol::vmgs::NUMBER_KP;
     use pal_async::async_test;
+    use vmgs_format::EncryptionAlgorithm;
     use vmgs_format::FileId;
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
@@ -1174,15 +1175,105 @@ mod tests {
     }
 
     #[async_test]
-    async fn unlock_vmgs() {
+    async fn unlock_unencrypted_vmgs_without_derived_keys() {
         let mut vmgs = new_formatted_vmgs().await;
 
         let mut key_protector = new_key_protector();
         let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
 
         let key_protector_settings = KeyProtectorSettings {
-            should_write_kp: true,
+            should_write_kp: false,
             use_gsp_by_id: false,
+            use_hardware_unlock: false,
+        };
+
+        let bios_guid = Guid::new_random();
+
+        unlock_vmgs_data_store(
+            &mut vmgs,
+            false,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            None,
+            key_protector_settings,
+            bios_guid,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            key_protectors_are_empty(&mut vmgs, true, true).await,
+            "No changes should be made to the key protectors"
+        );
+    }
+
+    #[async_test]
+    async fn provision_vmgs_with_derived_keys() {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+
+        let derived_keys = Keys {
+            ingress: [1; AES_GCM_KEY_LENGTH],
+            egress: [2; AES_GCM_KEY_LENGTH],
+        };
+
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: true,
+            use_hardware_unlock: false,
+        };
+
+        let bios_guid = Guid::new_random();
+
+        // Without encryption implies the provision path
+        unlock_vmgs_data_store(
+            &mut vmgs,
+            false,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            Some(derived_keys),
+            key_protector_settings,
+            bios_guid,
+        )
+        .await
+        .unwrap();
+
+        // Since both `should_write_kp` and `use_gsp_by_id` are true, both key protectors should be updated
+        let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
+            .await
+            .unwrap();
+        assert_eq!(found_key_protector.as_bytes(), key_protector.as_bytes());
+
+        let found_key_protector_by_id = vmgs::read_key_protector_by_id(&mut vmgs).await.unwrap();
+        assert_eq!(
+            found_key_protector_by_id.as_bytes(),
+            key_protector_by_id.inner.as_bytes()
+        );
+    }
+
+    #[async_test]
+    async fn unlock_vmgs_with_derived_keys() {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+
+        let ingress = [1; AES_GCM_KEY_LENGTH];
+
+        let derived_keys = Keys {
+            ingress,
+            egress: [2; AES_GCM_KEY_LENGTH],
+        };
+
+        vmgs.add_new_encryption_key(&ingress, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: true,
             use_hardware_unlock: false,
         };
 
@@ -1193,12 +1284,93 @@ mod tests {
             true,
             &mut key_protector,
             &mut key_protector_by_id,
-            None,
+            Some(derived_keys),
             key_protector_settings,
             bios_guid,
         )
         .await
         .unwrap();
+
+        // Since both `should_write_kp` and `use_gsp_by_id` are true, both key protectors should be updated
+        let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
+            .await
+            .unwrap();
+        assert_eq!(found_key_protector.as_bytes(), key_protector.as_bytes());
+
+        let found_key_protector_by_id = vmgs::read_key_protector_by_id(&mut vmgs).await.unwrap();
+        assert_eq!(
+            found_key_protector_by_id.as_bytes(),
+            key_protector_by_id.inner.as_bytes()
+        );
+    }
+
+    #[async_test]
+    async fn unlock_vmgs_with_derived_keys_with_rotation() {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+
+        let additional_key = [2; AES_GCM_KEY_LENGTH];
+        let egress = [3; AES_GCM_KEY_LENGTH];
+
+        let derived_keys = Keys {
+            ingress: [1; AES_GCM_KEY_LENGTH],
+            egress,
+        };
+
+        let additional_key_index = vmgs
+            .add_new_encryption_key(&additional_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(additional_key_index, 0);
+
+        let egress_key_index = vmgs
+            .add_new_encryption_key(&egress, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(egress_key_index, 1);
+
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: true,
+            use_hardware_unlock: false,
+        };
+
+        let bios_guid = Guid::new_random();
+
+        unlock_vmgs_data_store(
+            &mut vmgs,
+            true,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            Some(derived_keys),
+            key_protector_settings,
+            bios_guid,
+        )
+        .await
+        .unwrap();
+
+        // Since both `should_write_kp` and `use_gsp_by_id` are true, both key protectors should be updated
+        let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
+            .await
+            .unwrap();
+        assert_eq!(found_key_protector.as_bytes(), key_protector.as_bytes());
+
+        let found_key_protector_by_id = vmgs::read_key_protector_by_id(&mut vmgs).await.unwrap();
+        assert_eq!(
+            found_key_protector_by_id.as_bytes(),
+            key_protector_by_id.inner.as_bytes()
+        );
+
+        let additional_key_index = vmgs
+            .unlock_with_encryption_key(&additional_key)
+            .await
+            .unwrap();
+        assert_eq!(additional_key_index, 0);
+
+        let egress_key_index = vmgs.unlock_with_encryption_key(&egress).await.unwrap();
+        assert_eq!(egress_key_index, 1);
     }
 
     #[async_test]
