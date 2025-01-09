@@ -1070,7 +1070,7 @@ impl<T, R, E: FieldEncode<T, R>> FieldEncode<Vec<T>, R> for VecField<E> {
         // Other packed sequences may still get a bytes value at runtime, but
         // they also support non-packed encodings and so must be wrapped when
         // they're nested in another sequence.
-        let bytes = E::packed().map_or(false, |p| p.must_pack());
+        let bytes = E::packed().is_some_and(|p| p.must_pack());
         !bytes
     }
 }
@@ -1115,7 +1115,7 @@ impl<'a, T, R, E: FieldDecode<'a, T, R>> FieldDecode<'a, Vec<T>, R> for VecField
         // Other packed sequences may still get a bytes value at runtime, but
         // they also support non-packed encodings and so must be wrapped when
         // they're nested in another sequence.
-        let bytes = E::packed::<Vec<T>>().map_or(false, |p| p.must_pack());
+        let bytes = E::packed::<Vec<T>>().is_some_and(|p| p.must_pack());
         !bytes
     }
 }

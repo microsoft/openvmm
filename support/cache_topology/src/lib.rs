@@ -190,7 +190,7 @@ mod linux {
                         .file_name()
                         .unwrap()
                         .to_str()
-                        .map_or(false, |s| s.starts_with("index"))
+                        .is_some_and(|s| s.starts_with("index"))
                     {
                         continue;
                     }

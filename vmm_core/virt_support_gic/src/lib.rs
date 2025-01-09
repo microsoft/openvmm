@@ -119,7 +119,7 @@ mod gicd {
                 .iter_mut()
                 .zip(&mut state.active)
                 .enumerate()
-                .find(|(_, (&mut p, &mut a))| p & !a != 0)
+                .find(|(_, (p, a))| **p & !**a != 0)
             {
                 let v = 31 - (*p & !*a).leading_zeros();
                 *p &= !(1 << v);

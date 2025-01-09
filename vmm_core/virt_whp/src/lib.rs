@@ -747,7 +747,7 @@ impl virt::Hypervisor for Whp {
         let vtl2 = if config
             .hv_config
             .as_ref()
-            .map_or(false, |cfg| cfg.vtl2.is_some())
+            .is_some_and(|cfg| cfg.vtl2.is_some())
         {
             Some(VtlPartition::new(&config, vendor, Vtl::Vtl2)?)
         } else {
@@ -1137,13 +1137,13 @@ impl VtlPartition {
                 .hv_config
                 .as_ref()
                 .and_then(|hv_config| hv_config.vtl2.as_ref())
-                .map_or(false, |cfg| cfg.vtl2_emulates_apic);
+                .is_some_and(|cfg| cfg.vtl2_emulates_apic);
 
         let user_mode_apic = config.user_mode_apic
             || config
                 .hv_config
                 .as_ref()
-                .map_or(false, |cfg| !cfg.offload_enlightenments);
+                .is_some_and(|cfg| !cfg.offload_enlightenments);
 
         #[cfg(guest_arch = "x86_64")]
         let lapic = if apic_in_vtl2 {
@@ -1450,7 +1450,7 @@ impl VtlPartition {
 impl Hv1State {
     fn reset(&self) {
         match self {
-            Hv1State::Emulated(ref hv) => hv.reset(),
+            Hv1State::Emulated(hv) => hv.reset(),
             Hv1State::Offloaded => {}
             Hv1State::Disabled => {}
         }

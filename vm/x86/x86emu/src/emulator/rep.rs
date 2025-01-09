@@ -91,7 +91,7 @@ fn sized_rsi(op_kind: OpKind) -> Register {
     }
 }
 
-impl<'a, T: Cpu> Emulator<'a, T> {
+impl<T: Cpu> Emulator<'_, T> {
     /// Generic function for handling the optional REP op for instructions.
     fn rep_op(
         &mut self,

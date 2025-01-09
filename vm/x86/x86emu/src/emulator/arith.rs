@@ -9,7 +9,7 @@ use iced_x86::Instruction;
 use iced_x86::Register;
 use x86defs::RFlags;
 
-impl<'a, T: Cpu> Emulator<'a, T> {
+impl<T: Cpu> Emulator<'_, T> {
     // <op> rm instructions
     pub(super) async fn unary_arith<Op: UnaryArithOp>(
         &mut self,

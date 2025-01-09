@@ -541,7 +541,7 @@ pub(crate) async fn handle_vtl2_config_rpc(
     }
 }
 
-pub async fn disk_from_disk_type<'a>(
+pub async fn disk_from_disk_type(
     disk_type: Resource<DiskHandleKind>,
     read_only: bool,
     resolver: &ResourceResolver,

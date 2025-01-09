@@ -110,7 +110,7 @@ impl State {
             if !entry
                 .waker
                 .as_ref()
-                .map_or(false, |old| old.will_wake(cx.waker()))
+                .is_some_and(|old| old.will_wake(cx.waker()))
             {
                 entry.waker = Some(cx.waker().clone());
             }

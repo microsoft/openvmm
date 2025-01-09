@@ -101,7 +101,7 @@ fn choose_terminal_apps(app: Option<&Path>) -> Vec<App<'_>> {
 
     let mut apps = Vec::new();
 
-    let env_set = |key| std::env::var_os(key).map_or(false, |x| !x.is_empty());
+    let env_set = |key| std::env::var_os(key).is_some_and(|x| !x.is_empty());
 
     // If we're running in tmux, use tmux.
     if env_set("TMUX") {

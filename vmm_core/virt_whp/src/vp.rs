@@ -269,7 +269,7 @@ impl<'a> WhpProcessor<'a> {
                 // Ensure the waker is set.
                 if !last_waker
                     .as_ref()
-                    .map_or(false, |waker| cx.waker().will_wake(waker))
+                    .is_some_and(|waker| cx.waker().will_wake(waker))
                 {
                     last_waker = Some(cx.waker().clone());
                     self.inner.waker.write().clone_from(&last_waker);
@@ -604,7 +604,7 @@ mod x86 {
     // to the bottom of what's going on here.
     const MYSTERY_MSRS: &[u32] = &[0x88, 0x89, 0x8a, 0x116, 0x118, 0x119, 0x11a, 0x11b, 0x11e];
 
-    impl<'a> WhpProcessor<'a> {
+    impl WhpProcessor<'_> {
         pub(super) async fn handle_exit(
             &mut self,
             dev: &impl CpuIo,
@@ -804,12 +804,12 @@ mod x86 {
             if self.intercept_state().is_some()
                 && self.state.active_vtl == Vtl::Vtl0
                 && !dev.is_mmio(access.Gpa)
-                && !self
+                && self
                     .state
                     .vtls
                     .lapic(self.state.active_vtl)
                     .and_then(|lapic| lapic.apic.base_address())
-                    .map_or(false, |base| access.Gpa & !0xfff == base)
+                    .is_none_or(|base| access.Gpa & !0xfff != base)
             {
                 let access_type = match access.AccessInfo.AccessType() {
                     whp::abi::WHvMemoryAccessRead => HvInterceptAccessType::READ,

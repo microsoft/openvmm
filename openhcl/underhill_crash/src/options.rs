@@ -62,7 +62,7 @@ impl Options {
         );
 
         let verbose_var = std::env::var("UNDERHILL_CRASH_VERBOSE").unwrap_or_default();
-        let verbose = verbose_var == "1" || verbose_var.to_ascii_lowercase() == "true";
+        let verbose = verbose_var == "1" || verbose_var.eq_ignore_ascii_case("true");
 
         Self {
             pid,

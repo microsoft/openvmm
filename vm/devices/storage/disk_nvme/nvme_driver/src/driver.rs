@@ -428,7 +428,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .per_cpu
             .iter()
             .enumerate()
-            .filter(|&(cpu, c)| c.get().map_or(false, |c| c.cpu != cpu as u32))
+            .filter(|&(cpu, c)| c.get().is_some_and(|c| c.cpu != cpu as u32))
             .count()
     }
 
