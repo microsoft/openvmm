@@ -158,10 +158,7 @@ impl<T: SerialIo + Unpin> IoDetacher<T> {
 
 impl<T: SerialIo + Unpin> SerialIo for DetachableIo<T> {
     fn is_connected(&self) -> bool {
-        self.inner
-            .lock()
-            .as_ref()
-            .is_some_and(|s| s.is_connected())
+        self.inner.lock().as_ref().is_some_and(|s| s.is_connected())
     }
 
     fn poll_connect(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
