@@ -1071,12 +1071,14 @@ mod tests {
     use disklayer_ram::ram_disk;
     use get_protocol::GspExtendedStatusFlags;
     use get_protocol::GSP_CLEARTEXT_MAX;
+    use key_protector::AES_WRAPPED_AES_KEY_LENGTH;
     use openhcl_attestation_protocol::vmgs::DekKp;
     use openhcl_attestation_protocol::vmgs::GspKp;
     use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
     use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
     use openhcl_attestation_protocol::vmgs::NUMBER_KP;
     use pal_async::async_test;
+    use vmgs_format::FileId;
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 
@@ -1087,7 +1089,46 @@ mod tests {
     async fn new_formatted_vmgs() -> Vmgs {
         let disk = new_test_file();
 
-        Vmgs::format_new(disk).await.unwrap()
+        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
+
+        assert!(
+            key_protectors_are_empty(&mut vmgs, true, true).await,
+            "Newly formatted VMGS should have empty key protectors"
+        );
+
+        vmgs
+    }
+
+    async fn key_protectors_are_empty(
+        vmgs: &mut Vmgs,
+        check_key_protector: bool,
+        check_key_protector_by_id: bool,
+    ) -> bool {
+        if check_key_protector {
+            let key_protector = vmgs::read_key_protector(vmgs, AES_WRAPPED_AES_KEY_LENGTH)
+                .await
+                .unwrap();
+
+            if !key_protector.as_bytes().iter().all(|&b| b == 0) {
+                return false;
+            }
+        }
+
+        if check_key_protector_by_id {
+            if !vmgs::read_key_protector_by_id(vmgs)
+                .await
+                .is_err_and(|err| {
+                    matches!(
+                        err,
+                        vmgs::ReadFromVmgsError::EntryNotFound(FileId::VM_UNIQUE_ID)
+                    )
+                })
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     fn new_key_protector() -> KeyProtector {
@@ -1115,18 +1156,20 @@ mod tests {
         }
     }
 
-    fn new_key_protector_by_id(id_guid: Option<Guid>) -> KeyProtectorById {
-        let id_guid = id_guid.unwrap_or_else(|| Guid::new_random());
-
+    fn new_key_protector_by_id(
+        id_guid: Option<Guid>,
+        ported: Option<u8>,
+        found_id: bool,
+    ) -> KeyProtectorById {
         let key_protector_by_id = openhcl_attestation_protocol::vmgs::KeyProtectorById {
-            id_guid,
-            ported: 1,
+            id_guid: id_guid.unwrap_or_else(|| Guid::new_random()),
+            ported: ported.unwrap_or(0),
             pad: [0; 3],
         };
 
         KeyProtectorById {
             inner: key_protector_by_id,
-            found_id: false,
+            found_id,
         }
     }
 
@@ -1135,7 +1178,7 @@ mod tests {
         let mut vmgs = new_formatted_vmgs().await;
 
         let mut key_protector = new_key_protector();
-        let mut key_protector_by_id = new_key_protector_by_id(None);
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
 
         let key_protector_settings = KeyProtectorSettings {
             should_write_kp: true,
@@ -1172,7 +1215,8 @@ mod tests {
 
         // When the key protector by id inner `id_guid` is all zeroes, the derived ingress and egress keys
         // should be identical.
-        let mut key_protector_by_id = new_key_protector_by_id(Some(Guid::new_zeroed()));
+        let mut key_protector_by_id =
+            new_key_protector_by_id(Some(Guid::new_zeroed()), None, false);
         let derived_keys =
             get_derived_keys_by_id(&mut key_protector_by_id, bios_guid, gsp_response_by_id)
                 .unwrap();
@@ -1181,7 +1225,7 @@ mod tests {
 
         // When the key protector by id inner `id_guid` is not all zeroes, the derived ingress and egress keys
         // should be different.
-        let mut key_protector_by_id = new_key_protector_by_id(None);
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
         let derived_keys =
             get_derived_keys_by_id(&mut key_protector_by_id, bios_guid, gsp_response_by_id)
                 .unwrap();
@@ -1210,15 +1254,187 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_persist_all_key_protectors() {
+    async fn persist_all_key_protectors_pass_through() {
         let mut vmgs = new_formatted_vmgs().await;
         let mut key_protector = new_key_protector();
-        let mut key_protector_by_id = new_key_protector_by_id(None);
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
         let bios_guid = Guid::new_random();
+
+        // Copied/cloned bits used for comparison later
+        let active_kp_dek_buffer_clone = key_protector.dek[key_protector.active_kp as usize]
+            .dek_buffer
+            .clone();
+        let active_kp_copy = key_protector.active_kp;
+        let active_kp_gsp_length_copy =
+            key_protector.gsp[key_protector.active_kp as usize].gsp_length;
+
+        assert!(
+            key_protectors_are_empty(&mut vmgs, true, true).await,
+            "Newly formatted VMGS should have empty key protectors"
+        );
+
+        // When all key protector settings are true, no actions will be taken on the key protectors or VMGS
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: true,
+            use_hardware_unlock: true,
+        };
+        persist_all_key_protectors(
+            &mut vmgs,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            bios_guid,
+            key_protector_settings,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            key_protectors_are_empty(&mut vmgs, true, true).await,
+            "No changes should be made to the key protectors"
+        );
+
+        // The key protector should remain unchanged
+        assert_eq!(active_kp_copy, key_protector.active_kp);
+        assert_eq!(
+            active_kp_dek_buffer_clone,
+            key_protector.dek[key_protector.active_kp as usize].dek_buffer
+        );
+        assert_eq!(
+            active_kp_gsp_length_copy,
+            key_protector.gsp[key_protector.active_kp as usize].gsp_length
+        );
+    }
+
+    #[async_test]
+    async fn persist_all_key_protectors_write_key_protector_by_id() {
+        let mut vmgs = new_formatted_vmgs().await;
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+        let bios_guid = Guid::new_random();
+
+        // Copied/cloned bits used for comparison later
+        let active_kp_dek_buffer_clone = key_protector.dek[key_protector.active_kp as usize]
+            .dek_buffer
+            .clone();
+        let active_kp_copy = key_protector.active_kp;
+        let active_kp_gsp_length_copy =
+            key_protector.gsp[key_protector.active_kp as usize].gsp_length;
+
+        assert!(
+            key_protectors_are_empty(&mut vmgs, true, true).await,
+            "Newly formatted VMGS should have empty key protectors"
+        );
+
+        // When `use_gsp_by_id` is true and `should_write_kp` is false, the key protector by id should be written to the VMGS
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: false,
+            use_gsp_by_id: true,
+            use_hardware_unlock: false,
+        };
+        persist_all_key_protectors(
+            &mut vmgs,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            bios_guid,
+            key_protector_settings,
+        )
+        .await
+        .unwrap();
+
+        // The previously empty VMGS now holds the key protector by id but not the key protector
+        assert!(
+            key_protectors_are_empty(&mut vmgs, true, false).await,
+            "Key protector should be empty"
+        );
+
+        let found_key_protector_by_id = vmgs::read_key_protector_by_id(&mut vmgs).await.unwrap();
+        assert_eq!(
+            found_key_protector_by_id.id_guid,
+            key_protector_by_id.inner.id_guid
+        );
+        assert_eq!(
+            found_key_protector_by_id.ported,
+            key_protector_by_id.inner.ported
+        );
+        // The key protector should remain unchanged
+        assert_eq!(active_kp_copy, key_protector.active_kp);
+        assert_eq!(
+            active_kp_dek_buffer_clone,
+            key_protector.dek[key_protector.active_kp as usize].dek_buffer
+        );
+        assert_eq!(
+            active_kp_gsp_length_copy,
+            key_protector.gsp[key_protector.active_kp as usize].gsp_length
+        );
+    }
+
+    #[async_test]
+    async fn persist_all_key_protectors_remove_ingress_kp() {
+        let mut vmgs = new_formatted_vmgs().await;
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+        let bios_guid = Guid::new_random();
+
+        // Copied active KP for later use
+        let active_kp_copy = key_protector.active_kp;
+
+        // When `use_gsp_by_id` is false, `should_write_kp` is true, and `use_hardware_unlock` is false, the active key protector's
+        // active kp's dek should be zeroed, the active kp's gsp length should be set to 0, and the active kp should be incremented
         let key_protector_settings = KeyProtectorSettings {
             should_write_kp: true,
             use_gsp_by_id: false,
             use_hardware_unlock: false,
+        };
+        persist_all_key_protectors(
+            &mut vmgs,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            bios_guid,
+            key_protector_settings,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            key_protectors_are_empty(&mut vmgs, false, true).await,
+            "Only the key protector should be non-empty"
+        );
+
+        // The previously empty VMGS's key protector should now be overwritten
+        let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
+            .await
+            .unwrap();
+
+        assert!(found_key_protector.dek[active_kp_copy as usize]
+            .dek_buffer
+            .iter()
+            .all(|&b| b == 0),);
+        assert_eq!(
+            found_key_protector.gsp[active_kp_copy as usize].gsp_length,
+            0
+        );
+        assert_eq!(found_key_protector.active_kp, active_kp_copy + 1);
+    }
+
+    #[async_test]
+    async fn persist_all_key_protectors_mark_key_protector_by_id_as_not_in_use() {
+        let mut vmgs = new_formatted_vmgs().await;
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, true);
+        let bios_guid = Guid::new_random();
+
+        assert!(
+            key_protectors_are_empty(&mut vmgs, true, true).await,
+            "Newly formatted VMGS should have empty key protectors"
+        );
+
+        // When `use_gsp_by_id` is false, `should_write_kp` is true, `use_hardware_unlock` is true, and
+        // the key protector by id is found and not ported, the key protector by id should be marked as ported
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: false,
+            use_hardware_unlock: true,
         };
 
         persist_all_key_protectors(
@@ -1230,6 +1446,19 @@ mod tests {
         )
         .await
         .unwrap();
+
+        assert!(
+            key_protectors_are_empty(&mut vmgs, true, false).await,
+            "Only the key protector by id should be non-empty"
+        );
+
+        // The previously empty VMGS's key protector by id should now be overwritten
+        let found_key_protector_by_id = vmgs::read_key_protector_by_id(&mut vmgs).await.unwrap();
+        assert_eq!(found_key_protector_by_id.ported, 1);
+        assert_eq!(
+            found_key_protector_by_id.id_guid,
+            key_protector_by_id.inner.id_guid
+        );
     }
 
     #[should_panic(expected = "attempt to add with overflow")]
@@ -1239,7 +1468,7 @@ mod tests {
         let mut key_protector = new_key_protector();
         // Set the active KP to u32::MAX to observe overflow behavior
         key_protector.active_kp = u32::MAX;
-        let mut key_protector_by_id = new_key_protector_by_id(None);
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
         let bios_guid = Guid::new_random();
         let key_protector_settings = KeyProtectorSettings {
             should_write_kp: true,
