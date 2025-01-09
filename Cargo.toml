@@ -591,12 +591,17 @@ rust-2024-compatibility = { level = "warn", priority = -1 }
 edition_2024_expr_fragment_specifier = "allow"
 impl_trait_overcaptures = "allow"
 deprecated-safe-2024 = "allow"
+tail-expr-drop-order = "allow"
+if-let-rescope = "allow"
 
 unused_qualifications = "warn"
 
 # Code that needs unsafe should opt-in via a module-scoped allow.
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "forbid"
+
+# TODO: Needed for xshell compatibility, fixed in v0.2.7
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(trick_rust_analyzer_into_highlighting_interpolated_bits)'] }
 
 [workspace.lints.clippy]
 dbg_macro = "warn"

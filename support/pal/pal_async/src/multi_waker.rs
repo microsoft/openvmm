@@ -29,7 +29,7 @@ impl<const N: usize> Inner<N> {
     /// Sets the waker for index `i`.
     fn set(&self, i: usize, waker: &Waker) {
         let mut wakers = self.wakers.lock();
-        if !wakers[i].as_ref().map_or(false, |old| old.will_wake(waker)) {
+        if !wakers[i].as_ref().is_some_and(|old| old.will_wake(waker)) {
             let _old = wakers[i].replace(waker.clone());
             drop(wakers);
         }

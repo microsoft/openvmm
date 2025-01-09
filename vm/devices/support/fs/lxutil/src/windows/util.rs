@@ -373,7 +373,7 @@ pub fn dos_to_nt_path(
     let path = if root.is_none() {
         // Windows has legacy behavior where specifying just a drive letter will return the last path on that drive
         // from the current cmd.exe instance. This is likely not the intended behavior and is generally not safe.
-        if path.as_os_str().len() == 2 && path.to_str().map_or(false, |s| s.ends_with(':')) {
+        if path.as_os_str().len() == 2 && path.to_str().is_some_and(|s| s.ends_with(':')) {
             windows::dos_to_nt_path(path.join("\\"))?
         } else {
             windows::dos_to_nt_path(path)?

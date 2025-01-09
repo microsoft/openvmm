@@ -772,7 +772,7 @@ impl<'p> Processor for HvfProcessor<'p> {
 
                 if !last_waker
                     .as_ref()
-                    .map_or(false, |waker| cx.waker().will_wake(waker))
+                    .is_some_and(|waker| cx.waker().will_wake(waker))
                 {
                     last_waker = Some(cx.waker().clone());
                     self.inner.waker.write().clone_from(&last_waker);

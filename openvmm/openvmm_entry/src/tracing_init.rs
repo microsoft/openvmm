@@ -37,7 +37,7 @@ pub fn enable_tracing() -> anyhow::Result<()> {
             .add_directive(base.parse().unwrap())
     };
 
-    if legacy_openvmm_env("OPENVMM_DISABLE_TRACING_RATELIMITS").map_or(false, |v| !v.is_empty()) {
+    if legacy_openvmm_env("OPENVMM_DISABLE_TRACING_RATELIMITS").is_ok_and(|v| !v.is_empty()) {
         tracelimit::disable_rate_limiting(true);
     }
 

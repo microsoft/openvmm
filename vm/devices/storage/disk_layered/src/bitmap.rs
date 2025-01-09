@@ -28,7 +28,7 @@ impl Bitmap {
             .filter_map(move |bits| {
                 let start = n;
                 n += bits.len();
-                if bits.first().map_or(false, |&x| !x) {
+                if bits.first().is_some_and(|&x| !x) {
                     Some(SectorBitmapRange {
                         bits,
                         start_sector: sector + start as u64,

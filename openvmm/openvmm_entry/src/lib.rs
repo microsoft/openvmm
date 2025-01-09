@@ -1329,9 +1329,9 @@ fn cleanup_socket(path: &Path) {
     #[cfg(windows)]
     let is_socket = pal::windows::fs::is_unix_socket(path).unwrap_or(false);
     #[cfg(not(windows))]
-    let is_socket = path.metadata().map_or(false, |meta| {
-        std::os::unix::fs::FileTypeExt::is_socket(&meta.file_type())
-    });
+    let is_socket = path
+        .metadata()
+        .is_ok_and(|meta| std::os::unix::fs::FileTypeExt::is_socket(&meta.file_type()));
 
     if is_socket {
         let _ = std::fs::remove_file(path);

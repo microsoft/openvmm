@@ -572,7 +572,7 @@ impl<'a> SidecarVp<'a> {
             match &mut *vp {
                 VpState::Stopped => unreachable!(),
                 VpState::Running(waker) => {
-                    if !waker.as_ref().map_or(false, |w| cx.waker().will_wake(w)) {
+                    if !waker.as_ref().is_some_and(|w| cx.waker().will_wake(w)) {
                         *waker = Some(cx.waker().clone());
                     }
                     Poll::Pending

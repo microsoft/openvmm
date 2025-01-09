@@ -161,7 +161,7 @@ impl<T: SerialIo + Unpin> SerialIo for DetachableIo<T> {
         self.inner
             .lock()
             .as_ref()
-            .map_or(false, |s| s.is_connected())
+            .is_some_and(|s| s.is_connected())
     }
 
     fn poll_connect(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {

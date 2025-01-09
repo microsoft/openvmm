@@ -185,7 +185,7 @@ impl GetTracingBackend {
 
 /// Enables tracing output to the tracing task and to stderr.
 pub fn init_tracing(spawn: impl Spawn, tracer: RemoteTracer) -> anyhow::Result<()> {
-    if legacy_openvmm_env("OPENVMM_DISABLE_TRACING_RATELIMITS").map_or(false, |v| !v.is_empty()) {
+    if legacy_openvmm_env("OPENVMM_DISABLE_TRACING_RATELIMITS").is_some_and(|v| !v.is_empty()) {
         tracelimit::disable_rate_limiting(true);
     }
 
