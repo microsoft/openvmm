@@ -840,27 +840,26 @@ pub struct NodeCtx<'a> {
 
 #[derive(Serialize, Deserialize)]
 pub struct Head {
-    pub r#ref: String
+    pub r#ref: String,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct GhContextVarReaderEventPullRequest {
-    pub head: Head
+    pub head: Head,
 }
 
-pub struct GhContextVarReaderEvent{}
+pub struct GhContextVarReaderEvent {}
 impl GhContextVarReaderEvent {
-    pub fn pull_request(&mut self, context: &mut NodeCtx<'_>) -> ReadVar<Option<GhContextVarReaderEventPullRequest>> {
+    pub fn pull_request(
+        &mut self,
+        context: &mut NodeCtx<'_>,
+    ) -> ReadVar<Option<GhContextVarReaderEventPullRequest>> {
         let var_name = "github.event.pull_request".to_string();
         let (var, write_var) = context.new_var();
         let write_var = write_var.claim(&mut StepCtx {
             backend: context.backend.clone(),
         });
-        let gh_to_rust = vec![(
-            var_name.clone(),
-            write_var.backing_var,
-            write_var.is_secret,
-        )];
+        let gh_to_rust = vec![(var_name.clone(), write_var.backing_var, write_var.is_secret)];
 
         context.backend.borrow_mut().on_emit_gh_step(
             &format!("🌼 read {}", var_name),
@@ -902,7 +901,7 @@ impl GhContextVarReader {
         var
     }
     pub fn event(&self) -> GhContextVarReaderEvent {
-        GhContextVarReaderEvent{}
+        GhContextVarReaderEvent {}
     }
 }
 
@@ -1127,7 +1126,7 @@ impl NodeCtx<'_> {
     #[track_caller]
     #[must_use]
     pub fn get_gh_context_var(&mut self) -> GhContextVarReader {
-        GhContextVarReader{}
+        GhContextVarReader {}
     }
 
     /// Emit a GitHub Actions action step.
