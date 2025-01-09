@@ -1374,6 +1374,58 @@ mod tests {
     }
 
     #[async_test]
+    async fn fail_to_unlock_vmgs_with_new_ingress_key() {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+
+        let derived_keys = Keys {
+            ingress: [1; AES_GCM_KEY_LENGTH],
+            egress: [2; AES_GCM_KEY_LENGTH],
+        };
+
+        let additional_key = [3; AES_GCM_KEY_LENGTH];
+        let yet_another_key = [4; AES_GCM_KEY_LENGTH];
+
+        let additional_key_index = vmgs
+            .add_new_encryption_key(&additional_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(additional_key_index, 0);
+
+        let yet_another_key_index = vmgs
+            .add_new_encryption_key(&yet_another_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(yet_another_key_index, 1);
+
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: true,
+            use_hardware_unlock: false,
+        };
+
+        let bios_guid = Guid::new_random();
+
+        let unlock_result = unlock_vmgs_data_store(
+            &mut vmgs,
+            true,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            Some(derived_keys),
+            key_protector_settings,
+            bios_guid,
+        )
+        .await;
+        assert!(unlock_result.is_err());
+        assert_eq!(
+            unlock_result.unwrap_err().to_string(),
+            "failed to unlock vmgs with the new ingress key".to_string()
+        );
+    }
+
+    #[async_test]
     async fn get_derived_keys_using_id() {
         let bios_guid = Guid::new_random();
 
