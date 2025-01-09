@@ -33,6 +33,7 @@ use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::bus::OpenRequest;
+use vmbus_channel::bus::OpenResult;
 use vmbus_channel::gpadl::GpadlId;
 use vmbus_proxy::vmbusioctl::VMBUS_CHANNEL_ENUMERATE_DEVICE_INTERFACE;
 use vmbus_proxy::vmbusioctl::VMBUS_CHANNEL_NAMED_PIPE_MODE;
@@ -84,6 +85,7 @@ impl ProxyIntegration {
 
 struct Channel {
     server_request_send: Option<mesh::Sender<ChannelServerRequest>>,
+    incoming_event: Event,
     worker_result: Option<mesh::OneshotReceiver<()>>,
 }
 
@@ -104,7 +106,11 @@ impl ProxyTask {
         }
     }
 
-    async fn handle_open(&self, proxy_id: u64, open_request: &OpenRequest) -> anyhow::Result<()> {
+    async fn handle_open(
+        &self,
+        proxy_id: u64,
+        open_request: &OpenRequest,
+    ) -> anyhow::Result<Event> {
         let event = open_request
             .interrupt
             .event()
@@ -136,13 +142,10 @@ impl ProxyTask {
             })
             .unwrap();
 
-        self.channels
-            .lock()
-            .get_mut(&proxy_id)
-            .unwrap()
-            .worker_result = Some(recv);
-
-        Ok(())
+        let mut channels = self.channels.lock();
+        let channel = channels.get_mut(&proxy_id).unwrap();
+        channel.worker_result = Some(recv);
+        Ok(channel.incoming_event.clone())
     }
 
     async fn handle_close(&self, proxy_id: u64) {
@@ -241,7 +244,6 @@ impl ProxyTask {
             OfferRequest::Offer,
             OfferInfo {
                 params: offer.into(),
-                event: Interrupt::from_event(incoming_event),
                 request_send,
                 server_request_recv,
             },
@@ -266,6 +268,7 @@ impl ProxyTask {
             id,
             Channel {
                 server_request_send,
+                incoming_event,
                 worker_result: None,
             },
         );
@@ -327,7 +330,9 @@ impl ProxyTask {
                     ChannelRequest::Open(rpc) => {
                         rpc.handle(|open_request| async move {
                             let result = self.handle_open(proxy_id, &open_request).await;
-                            result.is_ok()
+                            result.ok().map(|event| OpenResult {
+                                guest_to_host_interrupt: Interrupt::from_event(event),
+                            })
                         })
                         .await
                     }

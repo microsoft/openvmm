@@ -45,6 +45,7 @@ use vmbus_channel::bus::OfferInput;
 use vmbus_channel::bus::OfferResources;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::bus::OpenRequest;
+use vmbus_channel::bus::OpenResult;
 use vmbus_channel::bus::ParentBus;
 use vmbus_channel::channel::offer_channel;
 use vmbus_channel::channel::ChannelHandle;
@@ -74,7 +75,7 @@ use zerocopy::FromZeroes;
 const VMNIC_CHANNEL_TYPE_GUID: Guid = Guid::from_static_str("f8615163-df3e-46c5-913f-f2d2f965ed0e");
 
 enum ChannelResponse {
-    Open(bool),
+    Open(Option<OpenResult>),
     Close,
     Gpadl(bool),
     // TeardownGpadl(GpadlId),
@@ -432,21 +433,18 @@ impl TestNicDevice {
             .await
             .expect("open successful");
 
-        if let ChannelResponse::Open(response) = open_response {
-            assert_eq!(response, true);
-        } else {
+        let ChannelResponse::Open(Some(result)) = open_response else {
             panic!("Unexpected return value");
-        }
+        };
 
         let mem = self.mock_vmbus.memory.clone();
-        let guest_to_host_interrupt = self.offer_input.event.clone();
         TestNicChannel::new(
             self,
             &mem,
             gpadl_map,
             ring_gpadl_id,
             host_to_guest_event,
-            guest_to_host_interrupt,
+            result.guest_to_host_interrupt,
         )
     }
 
@@ -478,7 +476,7 @@ impl TestNicDevice {
         next_avail_guest_page: usize,
         next_avail_gpadl_id: u32,
         host_to_guest_interrupt: Interrupt,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<Interrupt>> {
         // Restore the previous memory settings
         assert_eq!(self.next_avail_gpadl_id, 1);
         self.next_avail_gpadl_id = next_avail_gpadl_id;
@@ -497,6 +495,7 @@ impl TestNicDevice {
             })
             .collect::<Vec<(GpadlId, MultiPagedRangeBuf<Vec<u64>>)>>();
 
+        let mut guest_to_host_interrupt = None;
         mesh::CancelContext::new()
             .with_timeout(Duration::from_millis(1000))
             .until_cancelled(async {
@@ -519,7 +518,8 @@ impl TestNicDevice {
                                             accepted: true,
                                         }
                                     }).collect::<Vec<vmbus_channel::bus::RestoredGpadl>>();
-                                    rpc.handle_sync(|_open| {
+                                    rpc.handle_sync(|open| {
+                                        guest_to_host_interrupt = open.map(|open| open.guest_to_host_interrupt);
                                         Ok(vmbus_channel::bus::RestoreResult {
                                             open_request: Some(OpenRequest {
                                                 open_data: OpenData {
@@ -545,7 +545,9 @@ impl TestNicDevice {
                 }
             })
             .await
-            .unwrap()
+            .unwrap()?;
+
+        Ok(guest_to_host_interrupt)
     }
 }
 
@@ -976,7 +978,6 @@ impl<'a> TestNicChannel<'a> {
         buffer: SavedStateBlob,
     ) -> anyhow::Result<TestNicChannel<'_>> {
         let mem = self.nic.mock_vmbus.memory.clone();
-        let guest_to_host_interrupt = nic.offer_input.event.clone();
         let host_to_guest_interrupt = {
             let event = self.host_to_guest_event.clone();
             Interrupt::from_fn(move || event.signal())
@@ -986,27 +987,27 @@ impl<'a> TestNicChannel<'a> {
         let channel_id = self.channel_id;
         let next_avail_guest_page = self.nic.next_avail_guest_page;
         let next_avail_gpadl_id = self.nic.next_avail_gpadl_id;
-        let restored_channel = TestNicChannel::new(
-            nic,
-            &mem,
-            gpadl_map.clone(),
-            channel_id,
-            self.host_to_guest_event,
-            guest_to_host_interrupt,
-        );
 
-        restored_channel
-            .nic
+        let guest_to_host_interrupt = nic
             .restore(
                 buffer,
-                gpadl_map,
+                gpadl_map.clone(),
                 channel_id,
                 next_avail_guest_page,
                 next_avail_gpadl_id,
                 host_to_guest_interrupt,
             )
-            .await?;
-        Ok(restored_channel)
+            .await?
+            .expect("should be open");
+
+        Ok(TestNicChannel::new(
+            nic,
+            &mem,
+            gpadl_map,
+            channel_id,
+            self.host_to_guest_event,
+            guest_to_host_interrupt,
+        ))
     }
 }
 

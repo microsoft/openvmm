@@ -22,8 +22,6 @@ use vmcore::interrupt::Interrupt;
 pub struct OfferInput {
     /// Parameters describing the offer.
     pub params: OfferParams,
-    /// The event to signal when the guest needs attention.
-    pub event: Interrupt,
     /// A mesh channel to send channel-related requests to.
     pub request_send: mesh::Sender<ChannelRequest>,
     /// A mesh channel to receive channel-related requests to.
@@ -80,7 +78,7 @@ impl OfferResources {
 #[derive(Debug, MeshPayload)]
 pub enum ChannelRequest {
     /// Open the channel.
-    Open(Rpc<OpenRequest, bool>),
+    Open(Rpc<OpenRequest, Option<OpenResult>>),
     /// Close the channel.
     Close(Rpc<(), ()>),
     /// Create a new GPADL.
@@ -89,6 +87,14 @@ pub enum ChannelRequest {
     TeardownGpadl(Rpc<GpadlId, ()>),
     /// Modify the channel's target VP.
     Modify(Rpc<ModifyRequest, i32>),
+}
+
+/// The successful result of an open request.
+#[derive(Debug, MeshPayload)]
+pub struct OpenResult {
+    /// The interrupt object vmbus should signal when the guest signals the
+    /// host.
+    pub guest_to_host_interrupt: Interrupt,
 }
 
 /// GPADL information from the guest.
@@ -117,8 +123,8 @@ pub enum ModifyRequest {
 pub enum ChannelServerRequest {
     /// A request to restore the channel.
     ///
-    /// The input parameter is whether the channel was saved open.
-    Restore(FailableRpc<bool, RestoreResult>),
+    /// The input parameter provides the open result if the channel was saved open.
+    Restore(FailableRpc<Option<OpenResult>, RestoreResult>),
     /// A request to revoke the channel.
     ///
     /// A channel can also be revoked by dropping it. This request is only necessary if you need to
