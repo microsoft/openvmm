@@ -200,9 +200,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
         let parameters_used: Vec<_> = parameters_used
             .into_iter()
             .map(|param_idx| ResolvedJobUseParameter {
-                flowey_var: flowey_core::pipeline::internal::consistent_param_runtime_var_name(
-                    param_idx,
-                ),
+                flowey_var: parameters[param_idx].name().to_string(),
                 pipeline_param_idx: param_idx,
             })
             .collect();
