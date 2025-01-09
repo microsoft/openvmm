@@ -838,6 +838,74 @@ pub struct NodeCtx<'a> {
     backend: Rc<RefCell<&'a mut dyn NodeCtxBackend>>,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct Head {
+    pub r#ref: String
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct GhContextVarReaderEventPullRequest {
+    pub head: Head
+}
+
+pub struct GhContextVarReaderEvent{}
+impl GhContextVarReaderEvent {
+    pub fn pull_request(&mut self, context: &mut NodeCtx<'_>) -> ReadVar<Option<GhContextVarReaderEventPullRequest>> {
+        let var_name = "github.event.pull_request".to_string();
+        let (var, write_var) = context.new_var();
+        let write_var = write_var.claim(&mut StepCtx {
+            backend: context.backend.clone(),
+        });
+        let gh_to_rust = vec![(
+            var_name.clone(),
+            write_var.backing_var,
+            write_var.is_secret,
+        )];
+
+        context.backend.borrow_mut().on_emit_gh_step(
+            &format!("🌼 read {}", var_name),
+            "",
+            BTreeMap::new(),
+            None,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            gh_to_rust,
+            Vec::new(),
+        );
+        var
+    }
+}
+
+pub struct GhContextVarReader {}
+impl GhContextVarReader {
+    pub fn global(&self, context: &mut NodeCtx<'_>, gh_var: GhContextVar) -> ReadVar<String> {
+        let (var, write_var) = context.new_maybe_secret_var(gh_var.is_secret(), "");
+        let write_var = write_var.claim(&mut StepCtx {
+            backend: context.backend.clone(),
+        });
+        let gh_to_rust = vec![(
+            gh_var.as_raw_var_name(),
+            write_var.backing_var,
+            write_var.is_secret,
+        )];
+
+        context.backend.borrow_mut().on_emit_gh_step(
+            &format!("🌼 read {}", gh_var.as_raw_var_name()),
+            "",
+            BTreeMap::new(),
+            None,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            gh_to_rust,
+            Vec::new(),
+        );
+        var
+    }
+    pub fn event(&self) -> GhContextVarReaderEvent {
+        GhContextVarReaderEvent{}
+    }
+}
+
 impl NodeCtx<'_> {
     /// Emit a Rust-based step.
     ///
@@ -1058,28 +1126,8 @@ impl NodeCtx<'_> {
     /// Load a GitHub context variable into a flowey [`ReadVar`].
     #[track_caller]
     #[must_use]
-    pub fn get_gh_context_var(&mut self, gh_var: GhContextVar) -> ReadVar<String> {
-        let (var, write_var) = self.new_maybe_secret_var(gh_var.is_secret(), "");
-        let write_var = write_var.claim(&mut StepCtx {
-            backend: self.backend.clone(),
-        });
-        let gh_to_rust = vec![(
-            gh_var.as_raw_var_name(),
-            write_var.backing_var,
-            write_var.is_secret,
-        )];
-
-        self.backend.borrow_mut().on_emit_gh_step(
-            &format!("🌼 read {}", gh_var.as_raw_var_name()),
-            "",
-            BTreeMap::new(),
-            None,
-            BTreeMap::new(),
-            BTreeMap::new(),
-            gh_to_rust,
-            Vec::new(),
-        );
-        var
+    pub fn get_gh_context_var(&mut self) -> GhContextVarReader {
+        GhContextVarReader{}
     }
 
     /// Emit a GitHub Actions action step.

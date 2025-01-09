@@ -34,9 +34,9 @@ impl SimpleFlowNode for Node {
             return Ok(());
         }
 
-        let client_id = ctx.get_gh_context_var(client_id);
-        let tenant_id = ctx.get_gh_context_var(tenant_id);
-        let subscription_id = ctx.get_gh_context_var(subscription_id);
+        let client_id = ctx.get_gh_context_var().global(ctx, client_id);
+        let tenant_id = ctx.get_gh_context_var().global(ctx, tenant_id);
+        let subscription_id = ctx.get_gh_context_var().global(ctx, subscription_id);
         let (open_id_connect, write_open_id_connect) = ctx.new_secret_var();
 
         ctx.emit_rust_step("Create OpenIDConnect Credentials", |ctx| {
