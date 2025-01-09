@@ -74,10 +74,10 @@ impl<T: AsyncRun<S>, S> PollReady for StopTaskInner<'_, T, S> {
         if !shared.calls.is_empty() || shared.stop {
             return Poll::Ready(());
         }
-        if !shared
+        if shared
             .inner_waker
             .as_ref()
-            .is_some_and(|waker| cx.waker().will_wake(waker))
+            .is_none_or(|waker| !cx.waker().will_wake(waker))
         {
             shared.inner_waker = Some(cx.waker().clone());
         }
