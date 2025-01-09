@@ -583,9 +583,8 @@ impl<T: VmbusMessageSource> ClientTask<T> {
         // The client only supports protocol versions which use the newer message format.
         // The host will not send a TlConnectRequestResult message on success, so a response to this
         // message is not guaranteed.
-        let request = rpc.0;
+        let message = protocol::TlConnectRequest2::from(*rpc.input());
         self.hvsock_tracker.add_request(rpc);
-        let message = protocol::TlConnectRequest2::from(request);
         self.inner.send(&message);
     }
 
