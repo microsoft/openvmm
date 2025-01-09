@@ -93,7 +93,7 @@ mod tests {
             silo_id: Guid::new_random(),
         };
 
-        tracker.add_request(Rpc(request, mesh::oneshot().0));
+        tracker.add_request(Rpc::detached(request));
         assert_eq!(1, tracker.pending_requests.len());
 
         // Endpoint ID mismatch.
@@ -135,7 +135,7 @@ mod tests {
             silo_id: Guid::new_random(),
         };
 
-        tracker.add_request(Rpc(request, mesh::oneshot().0));
+        tracker.add_request(Rpc::detached(request));
         assert_eq!(1, tracker.pending_requests.len());
 
         // Endpoint ID mismatch.
@@ -157,7 +157,7 @@ mod tests {
         // Match.
         let offer = create_offer(request.service_id, request.endpoint_id, true, false);
         let found = tracker.check_offer(&offer).unwrap();
-        assert_eq!(found.input(), request);
+        assert_eq!(*found.input(), request);
         assert_eq!(0, tracker.pending_requests.len());
 
         // It no longer exists.
