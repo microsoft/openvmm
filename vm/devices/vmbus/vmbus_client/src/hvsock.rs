@@ -36,7 +36,8 @@ impl HvsockRequestTracker {
             return None;
         }
         if let Some(index) = self.pending_requests.iter().position(|request| {
-            request.0.service_id == result.service_id && request.0.endpoint_id == result.endpoint_id
+            request.input().service_id == result.service_id
+                && request.input().endpoint_id == result.endpoint_id
         }) {
             let rpc = self.pending_requests.swap_remove(index);
             Some(rpc)
@@ -61,14 +62,15 @@ impl HvsockRequestTracker {
         // Since silo_id isn't part of the result message, it doesn't need to be checked here
         // either.
         let Some(index) = self.pending_requests.iter().position(|request| {
-            request.0.service_id == offer.interface_id && request.0.endpoint_id == offer.instance_id
+            request.input().service_id == offer.interface_id
+                && request.input().endpoint_id == offer.instance_id
         }) else {
             tracing::warn!(?offer, "Channel offer for unknown hvsock request");
             return None;
         };
 
         let rpc = self.pending_requests.swap_remove(index);
-        tracing::debug!(request = ?rpc.0, "channel offer matches hvsocket request");
+        tracing::debug!(request = ?rpc.input(), "channel offer matches hvsocket request");
         Some(rpc)
     }
 }
@@ -91,7 +93,7 @@ mod tests {
             silo_id: Guid::new_random(),
         };
 
-        tracker.add_request(Rpc(request, mesh::oneshot().0));
+        tracker.add_request(Rpc::detached(request));
         assert_eq!(1, tracker.pending_requests.len());
 
         // Endpoint ID mismatch.
@@ -133,7 +135,7 @@ mod tests {
             silo_id: Guid::new_random(),
         };
 
-        tracker.add_request(Rpc(request, mesh::oneshot().0));
+        tracker.add_request(Rpc::detached(request));
         assert_eq!(1, tracker.pending_requests.len());
 
         // Endpoint ID mismatch.
@@ -155,7 +157,7 @@ mod tests {
         // Match.
         let offer = create_offer(request.service_id, request.endpoint_id, true, false);
         let found = tracker.check_offer(&offer).unwrap();
-        assert_eq!(found.0, request);
+        assert_eq!(*found.input(), request);
         assert_eq!(0, tracker.pending_requests.len());
 
         // It no longer exists.
