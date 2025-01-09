@@ -17,8 +17,7 @@ use anyhow::Context;
 use futures::stream::SelectAll;
 use futures::StreamExt;
 use guestmem::GuestMemory;
-use mesh::error::RemoteResultExt;
-use mesh::rpc::Rpc;
+use mesh::rpc::RpcSend;
 use mesh::Cancel;
 use mesh::CancelContext;
 use pal_async::driver::SpawnDriver;
@@ -238,18 +237,17 @@ impl ProxyTask {
         };
         let (request_send, request_recv) = mesh::channel();
         let (server_request_send, server_request_recv) = mesh::channel();
-        let (send, recv) = mesh::oneshot();
-        self.server.send.send(OfferRequest::Offer(
+        let recv = self.server.send.call_failable(
+            OfferRequest::Offer,
             OfferInfo {
                 params: offer.into(),
                 event: Interrupt::from_event(incoming_event),
                 request_send,
                 server_request_recv,
             },
-            send,
-        ));
+        );
 
-        let (request_recv, server_request_send) = match recv.await.flatten() {
+        let (request_recv, server_request_send) = match recv.await {
             Ok(()) => (Some(request_recv), Some(server_request_send)),
             Err(err) => {
                 // Currently there is no way to propagate this failure.
@@ -356,7 +354,7 @@ impl ProxyTask {
                     }
                     // Modifying the target VP is handle by the server, there is nothing the proxy
                     // driver needs to do.
-                    ChannelRequest::Modify(Rpc(_, response)) => response.send(0),
+                    ChannelRequest::Modify(rpc) => rpc.complete(0),
                 }
             }
             None => {

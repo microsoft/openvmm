@@ -22,8 +22,8 @@ use hvdef::hypercall::HvGuestOsId;
 use hvdef::hypercall::HvGuestOsMicrosoft;
 use hvdef::hypercall::HvGuestOsMicrosoftIds;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh::RecvError;
 use net_backend::null::NullEndpoint;
 use net_backend::DisconnectableEndpoint;
 use net_backend::Endpoint;
@@ -393,12 +393,8 @@ impl TestNicDevice {
         req: impl FnOnce(Rpc<I, R>) -> ChannelRequest,
         input: I,
         f: impl 'static + Send + FnOnce(R) -> ChannelResponse,
-    ) -> Result<ChannelResponse, RecvError> {
-        let (response, recv) = mesh::oneshot();
-        self.offer_input
-            .request_send
-            .send((req)(Rpc(input, response)));
-        recv.await.map(f)
+    ) -> Result<ChannelResponse, RpcError> {
+        self.offer_input.request_send.call(req, input).await.map(f)
     }
 
     async fn connect_vmbus_channel(&mut self) -> TestNicChannel<'_> {
@@ -1089,9 +1085,7 @@ impl TestVirtualFunctionState {
     pub async fn set_ready(&self, is_ready: bool) {
         let ready_callback = self.oneshot_ready_callback.lock().take();
         if let Some(ready_callback) = ready_callback {
-            let (result_send, result_recv) = mesh::oneshot();
-            ready_callback.send(Rpc(is_ready, result_send));
-            result_recv.await.unwrap();
+            ready_callback.call(|x| x, is_ready).await.unwrap();
         }
         *self.is_ready.0.lock() = Some(is_ready);
         self.is_ready.1.notify(usize::MAX);

@@ -6,6 +6,7 @@ use hvlite_defs::rpc::PulseSaveRestoreError;
 use hvlite_defs::rpc::VmRpc;
 use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_defs::worker::VM_WORKER;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerHandle;
 use mesh_worker::WorkerHost;
@@ -42,7 +43,7 @@ impl Worker {
         ))
     }
 
-    pub(crate) async fn resume(&self) -> Result<bool, mesh::RecvError> {
+    pub(crate) async fn resume(&self) -> Result<bool, RpcError> {
         self.rpc.call(VmRpc::Resume, ()).await
     }
 
@@ -51,10 +52,8 @@ impl Worker {
         Ok(())
     }
 
-    pub(crate) async fn pulse_save_restore(
-        &self,
-    ) -> Result<Result<(), PulseSaveRestoreError>, mesh::RecvError> {
-        self.rpc.call(VmRpc::PulseSaveRestore, ()).await
+    pub(crate) async fn pulse_save_restore(&self) -> Result<(), RpcError<PulseSaveRestoreError>> {
+        self.rpc.call_failable(VmRpc::PulseSaveRestore, ()).await
     }
 
     pub(crate) async fn restart_openhcl(

@@ -3,12 +3,10 @@
 
 //! Remotable errors.
 
-use crate::RecvError;
 use mesh_protobuf::EncodeAs;
 use mesh_protobuf::Protobuf;
 use std::fmt;
 use std::fmt::Display;
-use thiserror::Error;
 
 /// An error that can be remoted across a mesh channel.
 ///
@@ -115,34 +113,3 @@ impl std::error::Error for DecodedError {
 
 /// Alias for a [`Result`] with a [`RemoteError`] error.
 pub type RemoteResult<T> = Result<T, RemoteError>;
-
-/// An error from an RPC call, via
-/// [`RpcSend::call_failable`](super::rpc::RpcSend::call_failable).
-#[derive(Debug, Error)]
-pub enum RpcError<E = RemoteError> {
-    #[error(transparent)]
-    Call(E),
-    #[error(transparent)]
-    Channel(RecvError),
-}
-
-/// Extension trait to [`Result`] for folding `Result<Result<T, E>, RecvError>`
-/// to `RpcError`.
-pub trait RemoteResultExt {
-    type Flattened;
-
-    /// Flattens the result into `RpcError`.
-    fn flatten(self) -> Self::Flattened;
-}
-
-impl<T, E> RemoteResultExt for Result<Result<T, E>, RecvError> {
-    type Flattened = Result<T, RpcError<E>>;
-
-    fn flatten(self) -> Self::Flattened {
-        match self {
-            Ok(Ok(t)) => Ok(t),
-            Ok(Err(e)) => Err(RpcError::Call(e)),
-            Err(e) => Err(RpcError::Channel(e)),
-        }
-    }
-}

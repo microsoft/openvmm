@@ -628,9 +628,7 @@ impl RegionHandle {
 impl Drop for RegionHandle {
     fn drop(&mut self) {
         if let Some(id) = self.id {
-            let (send, _recv) = mesh::oneshot();
-            self.req_send
-                .send(RegionRequest::RemoveRegion(Rpc(id, send)));
+            let _recv = self.req_send.call(RegionRequest::RemoveRegion, id);
             // Don't wait for the response.
         }
     }
