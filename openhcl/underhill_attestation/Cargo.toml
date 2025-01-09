@@ -37,6 +37,7 @@ zerocopy.workspace = true
 disklayer_ram.workspace = true
 disk_backend.workspace = true
 get_protocol.workspace = true
+vmgs_format.workspace = true
 
 [lints]
 workspace = true
