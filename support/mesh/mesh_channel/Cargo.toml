@@ -28,11 +28,17 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+criterion = { workspace = true, features = ["rayon", "cargo_bench_support", "async", "async_futures"] }
 futures.workspace = true
 futures-concurrency.workspace = true
+
 pal_async.workspace = true
 pal_event.workspace = true
 test_with_tracing.workspace = true
+
+[[bench]]
+name = "channel"
+harness = false
 
 [lints]
 workspace = true

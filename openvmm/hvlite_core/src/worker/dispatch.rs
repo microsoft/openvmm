@@ -59,7 +59,6 @@ use memory_range::MemoryRange;
 use mesh::error::RemoteError;
 use mesh::payload::message::ProtobufMessage;
 use mesh::payload::Protobuf;
-use mesh::rpc::Rpc;
 use mesh::MeshPayload;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
@@ -507,7 +506,7 @@ struct LoadedVmInner {
     vmbus_server: Option<VmbusServerHandle>,
     vtl2_vmbus_server: Option<VmbusServerHandle>,
     #[cfg(windows)]
-    _vmbus_handle: Option<std::os::windows::io::OwnedHandle>,
+    _vmbus_proxy: Option<vmbus_server::ProxyIntegration>,
     #[cfg(windows)]
     _kernel_vmnics: Vec<vmswitch::kernel::KernelVmNic>,
     memory_cfg: MemoryConfig,
@@ -1609,7 +1608,7 @@ impl InitializedVm {
         let mut scsi_devices = Vec::new();
         let mut vtl0_hvsock_relay = None;
         #[cfg(windows)]
-        let mut vmbus_handle = None;
+        let mut vmbus_proxy = None;
         #[cfg(windows)]
         let mut kernel_vmnics = Vec::new();
         let mut vpci_serial: Option<virtio_serial::SerialIo> = None;
@@ -1685,7 +1684,7 @@ impl InitializedVm {
             // Start the vmbus kernel proxy if it's in use.
             #[cfg(windows)]
             if let Some(proxy_handle) = vmbus_cfg.vmbusproxy_handle {
-                vmbus_handle = Some(
+                vmbus_proxy = Some(
                     vmbus
                         .start_kernel_proxy(&vmbus_driver, proxy_handle)
                         .await
@@ -1810,7 +1809,10 @@ impl InitializedVm {
                     "nic",
                     nic_config.mac_address.into(),
                     &nic_config.instance_id,
-                    vmbus_handle.as_ref().context("missing vmbusproxy handle")?,
+                    vmbus_proxy
+                        .as_ref()
+                        .context("missing vmbusproxy handle")?
+                        .handle(),
                 )
                 .context("failed to create a kernel vmnic")?;
 
@@ -2211,7 +2213,7 @@ impl InitializedVm {
                 vtl2_framebuffer_gpa_base,
                 virtio_serial: virtio_serial_dup,
                 #[cfg(windows)]
-                _vmbus_handle: vmbus_handle,
+                _vmbus_proxy: vmbus_proxy,
                 #[cfg(windows)]
                 _kernel_vmnics: kernel_vmnics,
                 vmbus_devices,
@@ -2474,7 +2476,7 @@ impl LoadedVm {
     pub async fn run(
         mut self,
         driver: &impl Spawn,
-        mut rpc: mesh::Receiver<VmRpc>,
+        mut rpc_recv: mesh::Receiver<VmRpc>,
         mut worker_rpc: mesh::Receiver<WorkerRpc<RestartState>>,
     ) {
         enum Event {
@@ -2505,7 +2507,7 @@ impl LoadedVm {
 
         loop {
             let event: Event = {
-                let a = rpc.recv().map(Event::VmRpc);
+                let a = rpc_recv.recv().map(Event::VmRpc);
                 let b = worker_rpc.recv().map(Event::WorkerRpc);
                 (a, b).race().await
             };
@@ -2514,7 +2516,7 @@ impl LoadedVm {
                 Event::WorkerRpc(Err(_)) => break,
                 Event::WorkerRpc(Ok(message)) => match message {
                     WorkerRpc::Stop => break,
-                    WorkerRpc::Restart(response) => {
+                    WorkerRpc::Restart(rpc) => {
                         let mut stopped = false;
                         // First run the non-destructive operations.
                         let r = async {
@@ -2529,8 +2531,8 @@ impl LoadedVm {
                         .await;
                         match r {
                             Ok((shared_memory, saved_state)) => {
-                                response.send(Ok(self
-                                    .serialize(rpc, shared_memory, saved_state)
+                                rpc.complete(Ok(self
+                                    .serialize(rpc_recv, shared_memory, saved_state)
                                     .await));
 
                                 return;
@@ -2539,7 +2541,7 @@ impl LoadedVm {
                                 if stopped {
                                     self.state_units.start().await;
                                 }
-                                response.send(Err(RemoteError::new(err)));
+                                rpc.complete(Err(RemoteError::new(err)));
                             }
                         }
                     }
@@ -2615,16 +2617,17 @@ impl LoadedVm {
                         })
                         .await
                     }
-                    VmRpc::ConnectHvsock(Rpc((mut ctx, service_id, vtl), response)) => {
+                    VmRpc::ConnectHvsock(rpc) => {
+                        let ((mut ctx, service_id, vtl), response) = rpc.split();
                         if let Some(relay) = self.hvsock_relay(vtl) {
                             let fut = relay.connect(&mut ctx, service_id);
                             driver
                                 .spawn("vmrpc-hvsock-connect", async move {
-                                    response.send(fut.await.map_err(RemoteError::new))
+                                    response.complete(fut.await.map_err(RemoteError::new))
                                 })
                                 .detach();
                         } else {
-                            response.send(Err(RemoteError::new(anyhow::anyhow!(
+                            response.complete(Err(RemoteError::new(anyhow::anyhow!(
                                 "hvsock is not available"
                             ))));
                         }

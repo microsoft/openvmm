@@ -261,10 +261,8 @@ mod spsc {
         /// assert!(matches!(recv.recv().await.unwrap_err(), RecvError::Closed));
         /// # });
         /// ```
-        pub fn recv(&mut self) -> impl Future<Output = Result<T, RecvError>> + Unpin + '_ {
-            // This is implemented manually instead of using an async fn to allow
-            // the result to be Unpin, which is more flexible for callers.
-            core::future::poll_fn(|cx| self.poll_recv(cx))
+        pub async fn recv(&mut self) -> Result<T, RecvError> {
+            core::future::poll_fn(|cx| self.poll_recv(cx)).await
         }
 
         /// Polls for the next message.

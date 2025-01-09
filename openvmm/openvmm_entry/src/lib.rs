@@ -73,9 +73,9 @@ use inspect::InspectionBuilder;
 use io::Read;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh::CancelContext;
-use mesh::RecvError;
 use mesh_worker::launch_local_worker;
 use mesh_worker::WorkerEvent;
 use mesh_worker::WorkerHandle;
@@ -2092,7 +2092,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         })
         .unwrap();
 
-    let mut state_change_task = None::<Task<Result<StateChange, RecvError>>>;
+    let mut state_change_task = None::<Task<Result<StateChange, RpcError>>>;
     let mut pulse_save_restore_interval: Option<Duration> = None;
     let mut pending_shutdown = None;
 
@@ -2113,8 +2113,8 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         PulseSaveRestore,
         Worker(WorkerEvent),
         VncWorker(WorkerEvent),
-        StateChange(Result<StateChange, RecvError>),
-        ShutdownResult(Result<hyperv_ic_resources::shutdown::ShutdownResult, RecvError>),
+        StateChange(Result<StateChange, RpcError>),
+        ShutdownResult(Result<hyperv_ic_resources::shutdown::ShutdownResult, RpcError>),
     }
 
     let mut console_command_recv = console_command_recv
@@ -2360,7 +2360,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         fn state_change<U: 'static + Send>(
             driver: impl Spawn,
             vm_rpc: &mesh::Sender<VmRpc>,
-            state_change_task: &mut Option<Task<Result<StateChange, RecvError>>>,
+            state_change_task: &mut Option<Task<Result<StateChange, RpcError>>>,
             f: impl FnOnce(Rpc<(), U>) -> VmRpc,
             g: impl FnOnce(U) -> StateChange + 'static + Send,
         ) {

@@ -14,6 +14,7 @@ use core::ops::Index;
 use core::ops::IndexMut;
 use hvdef::Vtl;
 use inspect::Inspect;
+use inspect::InspectMut;
 
 // TODO: Enforce N <= 3 on the type when stable
 /// An array indexable by [`Vtl`].
@@ -110,6 +111,26 @@ where
 {
     fn inspect(&self, req: inspect::Request<'_>) {
         inspect::iter_by_index(&self.data).inspect(req)
+    }
+}
+
+impl<T, const N: usize> InspectMut for VtlArray<T, N>
+where
+    T: InspectMut,
+{
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        let mut resp = req.respond();
+        for (i, data) in self.data.iter_mut().enumerate() {
+            resp.field_mut(
+                match i {
+                    0 => "0",
+                    1 => "1",
+                    2 => "2",
+                    _ => unreachable!(),
+                },
+                data,
+            );
+        }
     }
 }
 

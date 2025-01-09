@@ -19,6 +19,7 @@ use ide_resources::IdeControllerConfig;
 use ide_resources::IdeDeviceConfig;
 use ide_resources::IdePath;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh::CancelContext;
 use nvme_resources::NamespaceDefinition;
@@ -61,7 +62,7 @@ use vm_resource::ResourceResolver;
 #[derive(Error, Debug)]
 enum Error<'a> {
     #[error("RPC error")]
-    Rpc(#[source] mesh::RecvError),
+    Rpc(#[source] RpcError),
     #[error("cannot add/remove storage controllers at runtime")]
     StorageCannotAddRemoveControllerAtRuntime,
     #[error("Striping devices don't support runtime change")]

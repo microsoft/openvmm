@@ -48,6 +48,17 @@ pub(crate) struct GenericRpc {
     pub port: Port, // TODO: transparent mesh::OneshotSender<std::result::Result<Vec<u8>, Status>>,
 }
 
+impl GenericRpc {
+    pub(crate) fn respond_status(self, status: Status) {
+        let sender =
+            mesh::OneshotSender::<std::result::Result<std::convert::Infallible, Status>>::from(
+                self.port,
+            );
+
+        sender.send(Err(status));
+    }
+}
+
 /// A generic RPC value, using borrows instead of owning types.
 #[derive(mesh::MeshPayload)]
 struct GenericRpcView<'a> {

@@ -77,7 +77,9 @@ impl UhProcessor<'_, TdxBacked> {
         // bother to worry about it.
 
         // Check first to see whether a full flush is required.
-        let flush_entire_required = if self.backing.flush_state[target_vtl].flush_entire_counter
+        let flush_entire_required = if self.backing.vtls[target_vtl]
+            .flush_state
+            .flush_entire_counter
             != partition_flush_state.s.flush_entire_counter
         {
             true
@@ -87,13 +89,13 @@ impl UhProcessor<'_, TdxBacked> {
             !Self::try_flush_list(
                 target_vtl,
                 &partition_flush_state,
-                &mut self.backing.flush_state[target_vtl].gva_list_count,
+                &mut self.backing.vtls[target_vtl].flush_state.gva_list_count,
                 &mut self.runner,
                 &self.backing.flush_page,
             )
         };
 
-        let self_flush_state = &mut self.backing.flush_state[target_vtl];
+        let self_flush_state = &mut self.backing.vtls[target_vtl].flush_state;
 
         // If a flush entire is required, then complete the flush and update the
         // flush counters to indicate that a complete flush has been accomplished.

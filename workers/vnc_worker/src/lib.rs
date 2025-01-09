@@ -116,7 +116,7 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
                 state: self.state,
             };
 
-            let response = loop {
+            let rpc = loop {
                 let r = futures::select! { // merge semantics
                     r = rpc_recv.recv().fuse() => r,
                     r = server.process(&driver).fuse() => break r.map(|_| None)?,
@@ -130,7 +130,7 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
                     Err(_) => break None,
                 }
             };
-            if let Some(response) = response {
+            if let Some(rpc) = rpc {
                 let (view, input) = match server.state {
                     State::Listening { view, input } => (view, input),
                     State::Connected { task, abort, .. } => {
@@ -144,7 +144,7 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
                     framebuffer: view.0.access(),
                     input_send: input.send,
                 };
-                response.send(Ok(state));
+                rpc.complete(Ok(state));
             }
             Ok(())
         })

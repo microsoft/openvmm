@@ -11,8 +11,8 @@ use futures::StreamExt;
 use futures_concurrency::stream::Merge;
 use inspect::Inspect;
 use mesh::error::RemoteError;
-use mesh::error::RemoteResult;
-use mesh::error::RemoteResultExt;
+use mesh::rpc::FailableRpc;
+use mesh::rpc::RpcSend;
 use mesh::MeshPayload;
 use std::fmt;
 use std::marker::PhantomData;
@@ -85,7 +85,7 @@ pub enum WorkerRpc<T> {
     Stop,
     /// Tear down and send the state necessary to restart on the provided
     /// channel.
-    Restart(mesh::OneshotSender<RemoteResult<T>>),
+    Restart(FailableRpc<(), T>),
     /// Inspect the worker.
     Inspect(inspect::Deferred),
 }
@@ -93,10 +93,10 @@ pub enum WorkerRpc<T> {
 #[derive(Debug, MeshPayload)]
 enum LaunchType {
     New {
-        parameters: mesh::Message,
+        parameters: mesh::OwnedMessage,
     },
     Restart {
-        send: mesh::Sender<WorkerRpc<mesh::Message>>,
+        send: mesh::Sender<WorkerRpc<mesh::OwnedMessage>>,
         events: mesh::Receiver<WorkerEvent>,
     },
 }
@@ -156,7 +156,7 @@ impl WorkerHostRunner {
 #[derive(Debug, MeshPayload)]
 pub struct WorkerHandle {
     name: String,
-    send: mesh::Sender<WorkerRpc<mesh::Message>>,
+    send: mesh::Sender<WorkerRpc<mesh::OwnedMessage>>,
     events: mesh::Receiver<WorkerEvent>,
 }
 
@@ -294,13 +294,13 @@ impl WorkerHost {
     where
         T: 'static + MeshPayload + Send,
     {
-        self.start_worker_inner(id.id(), mesh::Message::new(params))
+        self.start_worker_inner(id.id(), mesh::OwnedMessage::new(params))
     }
 
     fn start_worker_inner(
         &self,
         id: &str,
-        parameters: mesh::Message,
+        parameters: mesh::OwnedMessage,
     ) -> anyhow::Result<WorkerHandle> {
         let (events_send, events_recv) = mesh::channel();
         let (rpc_send, rpc_recv) = mesh::channel();
@@ -318,7 +318,7 @@ impl WorkerHost {
     where
         T: 'static + MeshPayload + Send,
     {
-        let mut handle = self.start_worker_inner(id.id(), mesh::Message::new(params))?;
+        let mut handle = self.start_worker_inner(id.id(), mesh::OwnedMessage::new(params))?;
         match handle.next().await.context("failed to launch worker")? {
             WorkerEvent::Started => Ok(handle),
             WorkerEvent::Failed(err) => Err(err).context("failed to launch worker")?,
@@ -331,7 +331,7 @@ impl WorkerHost {
     fn launch_worker_internal(
         &self,
         id: &str,
-        rpc_recv: mesh::Receiver<WorkerRpc<mesh::Message>>,
+        rpc_recv: mesh::Receiver<WorkerRpc<mesh::OwnedMessage>>,
         events_send: mesh::Sender<WorkerEvent>,
         launch_type: LaunchType,
     ) {
@@ -411,7 +411,7 @@ pub trait WorkerFactory: 'static + Send + Sync {
 
 #[derive(Debug, MeshPayload)]
 struct WorkerLaunchRequest {
-    rpc: mesh::Receiver<WorkerRpc<mesh::Message>>,
+    rpc: mesh::Receiver<WorkerRpc<mesh::OwnedMessage>>,
     events: mesh::Sender<WorkerEvent>,
     launch_type: LaunchType,
 }
@@ -446,9 +446,8 @@ impl WorkerLaunchRequest {
                 }
             }
             LaunchType::Restart { send, events } => {
-                let (state_send, state_recv) = mesh::oneshot();
-                send.send(WorkerRpc::Restart(state_send));
-                let state = match block_on(state_recv).flatten() {
+                let state_recv = send.call_failable(WorkerRpc::Restart, ());
+                let state = match block_on(state_recv) {
                     Ok(state) => state,
                     Err(err) => {
                         self.events
@@ -509,8 +508,8 @@ impl WorkerBuilder {
 
 #[doc(hidden)]
 pub enum BuildRequest {
-    New(mesh::Message),
-    Restart(mesh::Message),
+    New(mesh::OwnedMessage),
+    Restart(mesh::OwnedMessage),
 }
 
 struct BuilderInner<T: Worker>(PhantomData<fn() -> T>);
@@ -520,11 +519,17 @@ trait WorkerBuildAndRun: Send {
 }
 
 trait Run {
-    fn run(self: Box<Self>, recv: mesh::Receiver<WorkerRpc<mesh::Message>>) -> anyhow::Result<()>;
+    fn run(
+        self: Box<Self>,
+        recv: mesh::Receiver<WorkerRpc<mesh::OwnedMessage>>,
+    ) -> anyhow::Result<()>;
 }
 
 impl<T: Worker> Run for T {
-    fn run(self: Box<Self>, recv: mesh::Receiver<WorkerRpc<mesh::Message>>) -> anyhow::Result<()> {
+    fn run(
+        self: Box<Self>,
+        recv: mesh::Receiver<WorkerRpc<mesh::OwnedMessage>>,
+    ) -> anyhow::Result<()> {
         // Unerase the type of the worker state.
         let recv = mesh::local_node::Port::from(recv).into();
         Worker::run(*self, recv)
@@ -763,8 +768,8 @@ mod tests {
                 while let Ok(req) = recv.recv().await {
                     match req {
                         WorkerRpc::Stop => break,
-                        WorkerRpc::Restart(state_send) => {
-                            state_send.send(Ok(TestWorkerState { value: self.value }));
+                        WorkerRpc::Restart(rpc) => {
+                            rpc.complete(Ok(TestWorkerState { value: self.value }));
                             break;
                         }
                         WorkerRpc::Inspect(_deferred) => (),
@@ -795,8 +800,8 @@ mod tests {
                 while let Ok(req) = recv.recv().await {
                     match req {
                         WorkerRpc::Stop => break,
-                        WorkerRpc::Restart(state_send) => {
-                            state_send.send(Ok(()));
+                        WorkerRpc::Restart(rpc) => {
+                            rpc.complete(Ok(()));
                             break;
                         }
                         WorkerRpc::Inspect(_deferred) => (),

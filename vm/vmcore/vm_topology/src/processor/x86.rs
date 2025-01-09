@@ -168,8 +168,8 @@ impl TopologyBuilder<X86Topology> {
                 let eax = CacheParametersEax::from(eax);
                 if eax.cache_level() == 1 {
                     found_topology = true;
-                    vps_per_socket = eax.cores_per_socket_minus_one() + 1;
                     threads_per_core = eax.threads_sharing_cache_minus_one() + 1;
+                    vps_per_socket = (eax.cores_per_socket_minus_one() + 1) * threads_per_core;
                     break;
                 }
             }

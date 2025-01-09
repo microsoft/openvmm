@@ -95,14 +95,9 @@ impl GenericRpc {
                 message: format!("unknown method {}", self.method),
                 details: Vec::new(),
             },
-            ServiceRpcError::InvalidInput(error) => Status {
-                code: Code::InvalidArgument.into(),
-                message: format!("{:#}", anyhow::Error::from(error)),
-                details: Vec::new(),
-            },
+            ServiceRpcError::InvalidInput(error) => status_from_err(Code::InvalidArgument, error),
         };
-        let send = mesh::OneshotSender::<Result<Vec<u8>, Status>>::from(self.port);
-        send.send(Err(status));
+        self.respond_status(status);
     }
 }
 
@@ -229,11 +224,9 @@ impl Server {
                                 match r {
                                     Ok(Ok(payload)) => Response::Payload(payload),
                                     Ok(Err(status)) => Response::Status(status),
-                                    Err(err) => Response::Status(Status {
-                                        code: Code::Internal.into(),
-                                        message: format!("{:#}", anyhow::Error::from(err)),
-                                        details: Vec::new(),
-                                    }),
+                                    Err(err) => {
+                                        Response::Status(status_from_err(Code::Internal, err))
+                                    }
                                 },
                             )
                         });
@@ -293,6 +286,7 @@ fn handle_message(message: ReadResult) -> Result<Request, Status> {
 #[cfg(feature = "grpc")]
 mod grpc {
     use super::Server;
+    use crate::rpc::status_from_err;
     use crate::service::Code;
     use crate::service::GenericRpc;
     use crate::service::Status;
@@ -608,13 +602,9 @@ mod grpc {
 
             service.send((ctx, rpc));
 
-            Ok(recv.await.unwrap_or_else(|err| {
-                Err(Status {
-                    code: Code::Internal.into(),
-                    message: format!("{:#}", anyhow::Error::from(err)),
-                    details: Vec::new(),
-                })
-            }))
+            Ok(recv
+                .await
+                .unwrap_or_else(|err| Err(status_from_err(Code::Internal, err))))
         }
     }
 }

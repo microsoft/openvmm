@@ -104,7 +104,8 @@ impl Offer {
         let mut open_done = None;
         while let Ok(request) = request_recv.recv().await {
             match request {
-                ChannelRequest::Open(Rpc(open_request, response_send)) => {
+                ChannelRequest::Open(rpc) => {
+                    let (open_request, response_send) = rpc.split();
                     let done = Arc::new(AtomicBool::new(false));
                     send.send(OpenMessage {
                         open_request,
@@ -113,7 +114,8 @@ impl Offer {
                     });
                     open_done = Some(done);
                 }
-                ChannelRequest::Close(Rpc((), _response_send)) => {
+                ChannelRequest::Close(rpc) => {
+                    let _response_send = rpc; // TODO: figure out if we should really just drop this here.
                     open_done
                         .take()
                         .expect("channel must be open")
@@ -137,11 +139,12 @@ impl Offer {
                         }
                     })
                 }
-                ChannelRequest::TeardownGpadl(Rpc(id, response_send)) => {
+                ChannelRequest::TeardownGpadl(rpc) => {
+                    let (id, response_send) = rpc.split();
                     if let Some(f) = gpadls.remove(
                         id,
                         Box::new(move || {
-                            response_send.send(());
+                            response_send.complete(());
                         }),
                     ) {
                         f();
@@ -217,18 +220,18 @@ struct OpenMessage {
     response: OpenResponse,
 }
 
-struct OpenResponse(Option<mesh::OneshotSender<bool>>);
+struct OpenResponse(Option<Rpc<(), bool>>);
 
 impl OpenResponse {
     fn respond(mut self, open: bool) {
-        self.0.take().unwrap().send(open)
+        self.0.take().unwrap().complete(open)
     }
 }
 
 impl Drop for OpenResponse {
     fn drop(&mut self) {
-        if let Some(send) = self.0.take() {
-            send.send(false);
+        if let Some(rpc) = self.0.take() {
+            rpc.complete(false);
         }
     }
 }

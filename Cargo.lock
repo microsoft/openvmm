@@ -3734,6 +3734,7 @@ dependencies = [
 name = "mesh_channel"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "futures",
  "futures-concurrency",
  "futures-core",
@@ -7959,12 +7960,14 @@ dependencies = [
 name = "vmbus_proxy"
 version = "0.0.0"
 dependencies = [
+ "futures",
  "guestmem",
  "mesh",
  "ntapi",
  "pal",
  "pal_async",
  "pal_event",
+ "tracing",
  "vmbus_core",
  "winapi",
  "zerocopy",
@@ -7986,12 +7989,12 @@ dependencies = [
  "parking_lot",
  "tracelimit",
  "tracing",
+ "unicycle",
  "vmbus_channel",
  "vmbus_client",
  "vmbus_core",
  "vmbus_server",
  "vmcore",
- "zerocopy",
 ]
 
 [[package]]
@@ -8128,6 +8131,7 @@ dependencies = [
  "vmbus_proxy",
  "vmbus_ring",
  "vmcore",
+ "winapi",
  "zerocopy",
  "zerocopy_helpers",
 ]
