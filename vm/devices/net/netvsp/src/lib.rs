@@ -2824,7 +2824,7 @@ impl<T: RingMem> NetChannel<T> {
         }) {
             Ok(()) => None,
             Err(queue::TryWriteError::Full(n)) => Some(n),
-            Err(queue::TryWriteError::Queue(err)) => return Err(WorkerError::Queue(err)),
+            Err(queue::TryWriteError::Queue(err)) => return Err(err.into()),
         };
         Ok(pending_send_size)
     }
@@ -4355,7 +4355,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 parse_packet(&packet, send_buffer, version).map_err(WorkerError::Packet)?
             }
             Err(queue::TryReadError::Empty) => return Ok(None),
-            Err(queue::TryReadError::Queue(err)) => return Err(WorkerError::Queue(err)),
+            Err(queue::TryReadError::Queue(err)) => return Err(err.into()),
         };
 
         tracing::trace!(target: "netvsp/vmbus", data = ?packet.data, "incoming vmbus packet");
@@ -4368,7 +4368,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         version: Option<Version>,
     ) -> Result<Packet<'a>, WorkerError> {
         let (mut read, _) = self.queue.split();
-        let mut packet_ref = read.read().await.map_err(WorkerError::Queue)?;
+        let mut packet_ref = read.read().await?;
         let packet =
             parse_packet(&packet_ref, send_buffer, version).map_err(WorkerError::Packet)?;
         if matches!(packet.data, PacketData::RndisPacket(_)) {
@@ -5196,7 +5196,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 self.pending_send_size = n;
                 false
             }
-            Err(queue::TryWriteError::Queue(err)) => return Err(WorkerError::Queue(err)),
+            Err(queue::TryWriteError::Queue(err)) => return Err(err.into()),
         };
         Ok(sent)
     }
