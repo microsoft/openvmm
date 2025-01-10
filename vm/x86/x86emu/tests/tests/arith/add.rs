@@ -40,7 +40,7 @@ fn add_regvalue_to_memory() {
                 cpu.mem_val = right;
             },
         );
-
+        assert_eq!(cpu.gp(Gp::RAX.into()), result);
         assert_eq!(cpu.rflags() & RFLAGS_ARITH_MASK, rflags.into());
     }
 }

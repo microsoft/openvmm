@@ -11,13 +11,11 @@ use x86defs::SegmentAttributes;
 use x86defs::SegmentRegister;
 use x86emu::Cpu;
 use x86emu::RegisterIndex;
-use x86emu::Gp;
-use x86emu::GpSize;
 use x86emu::Segment;
 use x86emu::Emulator;
 use x86emu::Error;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Copy)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CpuState {
     /// GP registers, in the canonical order (as defined by `RAX`, etc.).
@@ -106,17 +104,14 @@ pub fn run_lockable_test<T: TestRegister>(
         // Move the rip back by the size of the lock prefix.
         let rip = locked_cpu.rip();
         locked_cpu.set_rip(rip-1);
-        //TODO FIX
-        /*
         assert_eq!(
-            unlocked_state, locked_state,
+            unlocked_cpu.state(), locked_cpu.state(),
             "lock success state should match unlocked state"
         );
         assert_eq!(
             unlocked_cpu, locked_cpu,
             "lock success cpu should match unlocked cpu"
         );
-        */
 
         let mut init_cpu = SingleCellCpu::new(0.into());
 
@@ -142,29 +137,27 @@ pub fn run_lockable_test<T: TestRegister>(
             lock_failure_cpu.invert_after_read = false;
             lock_failure_cpu.invert_mem_val();
 
-            //TODO fix
-            /*
             if behavior == LockTestBehavior::Succeed {
-                lock_failure_cpu.set_rip(lock_failure_cpu.rip() - 1);
-                assert_eq!(
-                    lock_failure_state, unlocked_state,
-                    "lock failure state should match unlocked state"
-                );
+                let lock_failure_rip = lock_failure_cpu.rip();
+                lock_failure_cpu.set_rip(lock_failure_rip - 1);
                 assert_eq!(
                     lock_failure_cpu, unlocked_cpu,
                     "lock failure cpu should match unlocked cpu"
                 );
-            } else {
                 assert_eq!(
-                    lock_failure_state, init_state,
-                    "lock failure state should match init state"
+                    lock_failure_cpu.state(), unlocked_cpu.state(),
+                    "lock failure state should match unlocked state"
                 );
+            } else {
                 assert_eq!(
                     lock_failure_cpu, init_cpu,
                     "lock failure cpu should match init cpu"
                 );
+                assert_eq!(
+                    lock_failure_cpu.state(), init_cpu.state(),
+                    "lock failure state should match init state"
+                );
             }
-            */
         };
         test_lock_failure(true);
         if behavior == LockTestBehavior::FailImplicitLock {
@@ -212,14 +205,11 @@ fn run_test_core<T: TestCpu>(
         "Produced RFLAGS values differed across different starting RFLAGS values."
     );
 
-//TODO(fix)
-/*
-    one_state.rflags = zero_state.rflags;
+    one_cpu.set_rflags(zero_cpu.rflags());
     assert_eq!(
-        zero_state, one_state,
+        zero_cpu.state(), one_cpu.state(),
         "Behavior differed across different starting RFLAGS values."
     );
-*/
     Ok(zero_cpu)
 }
 
@@ -233,6 +223,7 @@ fn run_one_test<T: TestCpu>(
     // Unset trap, we want to run to completion always.
     init_rflags.set_trap(false);
     let mut cpu = T::new(init_rflags);
+    set_state(&mut cpu);
     let starting_rflags = cpu.rflags();
 
     let mut assembler = CodeAssembler::new(64).unwrap();
@@ -291,7 +282,7 @@ pub enum TestCpuError {
     BadLength,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct SingleCellCpu<T: TestRegister> {
     pub valid_gva: u64,
     pub mem_val: T,
@@ -440,7 +431,7 @@ impl<T: TestRegister> Cpu for SingleCellCpu<T> {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct MultipleCellCpu {
     pub valid_gva: u64,
     pub mem_val: Vec<u8>,
@@ -565,7 +556,7 @@ impl Cpu for MultipleCellCpu {
         self.state.rflags = v
     }
 
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, _reg: usize, _value: u128) -> Result<(), Self::Error> {
         todo!()
     }
 
@@ -619,7 +610,7 @@ impl Cpu for MultipleCellCpu {
 
 trait TestCpu: Debug + PartialEq<Self> + Cpu {
     fn new(rflags: RFlags) -> Self;
-    fn state(self) -> CpuState;
+    fn state(&self) -> CpuState;
 }
 
 impl<T: TestRegister> TestCpu for SingleCellCpu<T> {
@@ -649,10 +640,23 @@ impl<T: TestRegister> TestCpu for SingleCellCpu<T> {
     }
 
 }
-    fn state(self) -> CpuState {
+    fn state(&self) -> CpuState {
         self.state
     }
 }
+
+/// ignore register state when comparing CPUs
+impl<T: TestRegister> PartialEq for SingleCellCpu<T> {
+    fn eq(&self, other: &Self) -> bool {
+       self.valid_gva == other.valid_gva &&
+            self.mem_val == other.mem_val &&
+            self.valid_io_port == other.valid_io_port &&
+            self.io_val == other.io_val &&
+            self.xmm == other.xmm &&
+            self.invert_after_read == other.invert_after_read
+    }
+}
+
 impl TestCpu for MultipleCellCpu {
     fn new(rflags: RFlags) -> Self {
         let seg = SegmentRegister {
@@ -679,8 +683,20 @@ impl TestCpu for MultipleCellCpu {
             state
         }
 }
-    fn state(self) -> CpuState {
+    fn state(&self) -> CpuState {
         self.state
+    }
+}
+
+/// ignore register state when comparing CPUs
+impl PartialEq for MultipleCellCpu {
+    fn eq(&self, other: &Self) -> bool {
+       self.valid_gva == other.valid_gva &&
+            self.mem_val == other.mem_val &&
+            self.valid_io_port == other.valid_io_port &&
+            self.io_val == other.io_val &&
+            self.read_mem_offset == other.read_mem_offset &&
+            self.write_mem_offset == other.write_mem_offset
     }
 }
 
