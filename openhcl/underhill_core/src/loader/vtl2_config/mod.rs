@@ -14,8 +14,10 @@ use bootloader_fdt_parser::ParsedBootDtInfo;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use loader_defs::paravisor::ParavisorMeasuredVtl2Config;
+use loader_defs::paravisor::PARAVISOR_CONFIG_MADT_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_CONFIG_PPTT_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_CONFIG_SLIT_PAGE_INDEX;
+use loader_defs::paravisor::PARAVISOR_CONFIG_SRAT_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_SIZE_PAGES;
@@ -31,6 +33,8 @@ use zerocopy::AsBytes;
 #[derive(Debug, Inspect)]
 pub struct RuntimeParameters {
     parsed_openhcl_boot: ParsedBootDtInfo,
+    madt: Option<Vec<u8>>,
+    srat: Option<Vec<u8>>,
     slit: Option<Vec<u8>>,
     pptt: Option<Vec<u8>>,
     cvm_cpuid_info: Option<Vec<u8>>,
@@ -62,6 +66,16 @@ impl RuntimeParameters {
     /// The VM's ACPI PPTT table provided by the host.
     pub fn pptt(&self) -> Option<&[u8]> {
         self.pptt.as_deref()
+    }
+
+    /// The VM's ACPI SRAT table provided by the host.
+    pub fn srat(&self) -> Option<&[u8]> {
+        self.srat.as_deref()
+    }
+
+    /// The VM's ACPI MADT table provided by the host.
+    pub fn madt(&self) -> Option<&[u8]> {
+        self.madt.as_deref()
     }
 
     /// The hardware supplied cpuid information for a CVM.
@@ -184,46 +198,28 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
 
     // For the various ACPI tables, read the header to see how big the table
     // is, then read the exact table.
-
-    let slit = {
+    let table = |index| {
         let table_header: acpi_spec::Header = mapping
-            .read_plain((PARAVISOR_CONFIG_SLIT_PAGE_INDEX * HV_PAGE_SIZE) as usize)
-            .context("failed to read slit header")?;
-        tracing::trace!(?table_header, "Read SLIT ACPI header");
+            .read_plain((index * HV_PAGE_SIZE) as usize)
+            .context("failed to read table header")?;
+        tracing::trace!(?table_header, "Read ACPI header");
 
-        if table_header.length.get() == 0 {
+        let table = if table_header.length.get() == 0 {
             None
         } else {
-            let mut slit: Vec<u8> = vec![0; table_header.length.get() as usize];
+            let mut table: Vec<u8> = vec![0; table_header.length.get() as usize];
             mapping
-                .read_at(
-                    (PARAVISOR_CONFIG_SLIT_PAGE_INDEX * HV_PAGE_SIZE) as usize,
-                    slit.as_mut_slice(),
-                )
-                .context("failed to read slit")?;
-            Some(slit)
-        }
+                .read_at((index * HV_PAGE_SIZE) as usize, table.as_mut_slice())
+                .context("failed to read table")?;
+            Some(table)
+        };
+        anyhow::Ok(table)
     };
 
-    let pptt = {
-        let table_header: acpi_spec::Header = mapping
-            .read_plain((PARAVISOR_CONFIG_PPTT_PAGE_INDEX * HV_PAGE_SIZE) as usize)
-            .context("failed to read pptt header")?;
-        tracing::trace!(?table_header, "Read PPTT ACPI header");
-
-        if table_header.length.get() == 0 {
-            None
-        } else {
-            let mut pptt: Vec<u8> = vec![0; table_header.length.get() as usize];
-            mapping
-                .read_at(
-                    (PARAVISOR_CONFIG_PPTT_PAGE_INDEX * HV_PAGE_SIZE) as usize,
-                    pptt.as_mut_slice(),
-                )
-                .context("failed to read pptt")?;
-            Some(pptt)
-        }
-    };
+    let slit = table(PARAVISOR_CONFIG_SLIT_PAGE_INDEX)?;
+    let pptt = table(PARAVISOR_CONFIG_PPTT_PAGE_INDEX)?;
+    let madt = table(PARAVISOR_CONFIG_MADT_PAGE_INDEX)?;
+    let srat = table(PARAVISOR_CONFIG_SRAT_PAGE_INDEX)?;
 
     // Read SNP specific information from the reserved region.
     let (cvm_cpuid_info, snp_secrets) = {
@@ -281,6 +277,8 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         parsed_openhcl_boot,
         slit,
         pptt,
+        madt,
+        srat,
         cvm_cpuid_info,
         snp_secrets,
     };

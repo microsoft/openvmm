@@ -623,6 +623,24 @@ where
     )?;
     importer.import_parameter(pptt_parameter_area, 0, IgvmParameterType::Pptt)?;
 
+    // Madt
+    let madt_page_base = config_region_page_base + PARAVISOR_CONFIG_MADT_PAGE_INDEX;
+    let madt_parameter_area = importer.create_parameter_area(
+        madt_page_base,
+        PARAVISOR_CONFIG_MADT_SIZE_PAGES as u32,
+        "underhill-madt",
+    )?;
+    importer.import_parameter(madt_parameter_area, 0, IgvmParameterType::Madt)?;
+
+    // Srat
+    let srat_page_base = config_region_page_base + PARAVISOR_CONFIG_SRAT_PAGE_INDEX;
+    let srat_parameter_area = importer.create_parameter_area(
+        srat_page_base,
+        PARAVISOR_CONFIG_SRAT_SIZE_PAGES as u32,
+        "underhill-srat",
+    )?;
+    importer.import_parameter(srat_parameter_area, 0, IgvmParameterType::Srat)?;
+
     // device tree
     let dt_page_base = config_region_page_base + PARAVISOR_CONFIG_DEVICE_TREE_PAGE_INDEX;
     let dt_parameter_area = importer.create_parameter_area(
@@ -1272,6 +1290,24 @@ where
         "underhill-pptt",
     )?;
     importer.import_parameter(pptt_parameter_area, 0, IgvmParameterType::Pptt)?;
+
+    // Madt
+    let madt_page_base = config_region_page_base + PARAVISOR_CONFIG_MADT_PAGE_INDEX;
+    let madt_parameter_area = importer.create_parameter_area(
+        madt_page_base,
+        PARAVISOR_CONFIG_MADT_SIZE_PAGES as u32,
+        "underhill-madt",
+    )?;
+    importer.import_parameter(madt_parameter_area, 0, IgvmParameterType::Madt)?;
+
+    // Srat
+    let srat_page_base = config_region_page_base + PARAVISOR_CONFIG_SRAT_PAGE_INDEX;
+    let srat_parameter_area = importer.create_parameter_area(
+        srat_page_base,
+        PARAVISOR_CONFIG_SRAT_SIZE_PAGES as u32,
+        "underhill-srat",
+    )?;
+    importer.import_parameter(srat_parameter_area, 0, IgvmParameterType::Srat)?;
 
     // device tree
     let dt_page_base = config_region_page_base + PARAVISOR_CONFIG_DEVICE_TREE_PAGE_INDEX;

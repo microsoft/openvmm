@@ -428,14 +428,38 @@ pub fn write_uefi_config(
         acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
     };
 
-    // Build the ACPI tables as specified.
-    let madt = acpi_builder.build_madt();
-    let srat = acpi_builder.build_srat();
+    let (mut madt, mut srat);
+    if !isolated {
+        // The host has ACPI table specializations. Use the host-provided SRAT
+        // and MADT as well.
+        //
+        // FUTURE: merge these with any guest topology modifications, or at
+        // least validate that no such modifications are present.
+        tracing::info!("using host-provided srat and madt");
+        madt = igvm_parameters.madt();
+        srat = igvm_parameters.srat();
+    } else {
+        tracing::info!("using generated srat and madt");
+        madt = None;
+        srat = None;
+    }
+
+    // Build the ACPI tables as necessary.
+    let mut madt_buf = Vec::new();
+    let madt = *madt.get_or_insert_with(|| {
+        madt_buf = acpi_builder.build_madt();
+        &madt_buf
+    });
+    let mut srat_buf = Vec::new();
+    let srat = *srat.get_or_insert_with(|| {
+        srat_buf = acpi_builder.build_srat();
+        &srat_buf
+    });
 
     // - Data that comes from the IGVM parameters
     {
-        cfg.add_raw(config::BlobStructureType::Madt, &madt)
-            .add_raw(config::BlobStructureType::Srat, &srat)
+        cfg.add_raw(config::BlobStructureType::Madt, madt)
+            .add_raw(config::BlobStructureType::Srat, srat)
             .add_raw(
                 config::BlobStructureType::MemoryMap,
                 vtl0_memory_map
