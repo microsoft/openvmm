@@ -21,11 +21,11 @@ fn neg_memory() {
     ];
 
     for (left, result, rflags) in variations {
-        let (state, cpu) = run_lockable_test::<u64>(
+        let mut cpu = run_lockable_test::<u64>(
             RFLAGS_ARITH_MASK,
             LockTestBehavior::Fail,
             |asm| asm.neg(dword_ptr(0x100)),
-            |_state, cpu| {
+            |cpu| {
                 cpu.valid_gva = 0x100;
                 cpu.mem_val = left;
             },

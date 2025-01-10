@@ -29,7 +29,7 @@ pub enum Gp {
 
 #[derive(Debug, Copy, Clone)]
 pub enum GpSize {
-    ///8-bit registers have a shift value, depending on if we're capturing the high/low bits
+    /// 8-bit registers have a shift value, depending on if we're capturing the high/low bits
     BYTE(usize),
     WORD,
     DWORD,
@@ -53,6 +53,51 @@ pub struct RegisterIndex {
     pub extended_index: Gp,
     /// The size of the register, including a shift for 8-bit registers
     pub size: GpSize,
+}
+
+impl RegisterIndex {
+    /// Converts the internal emulator representation of a register into a u64
+    /// e.g. for AL, this consumes the value of RAX and outputs the low 8 bits
+    pub fn apply_sizing(&self, v: u64) -> u64 {
+        match self.size {
+            GpSize::BYTE(shift) => ((v >> shift) as u8).into(),
+            GpSize::WORD => (v as u16).into(),
+            GpSize::DWORD => (v as u32).into(),
+            GpSize::QWORD => v,
+        }
+    }
+
+    pub fn apply_sizing_signed(&self, v: u64) -> i64 {
+        match self.size {
+            GpSize::BYTE(shift) => ((v >> shift) as i8).into(),
+            GpSize::WORD => (v as i16).into(),
+            GpSize::DWORD => (v as i32).into(),
+            GpSize::QWORD => v as i64,
+        }
+    }
+
+    pub fn apply_update(&self, extended_register: u64, v: u64) -> u64 {
+        match self.size {
+            GpSize::BYTE(shift) => {
+                let mask = (!0xff) << shift;
+                (extended_register & mask) | (((v as u8) as u64) << shift)
+            }
+            GpSize::WORD => (extended_register & !0xffff) | (v as u16) as u64,
+            // N.B. setting a 32-bit register zero extends the result to the 64-bit
+            //      register. This is different from 16-bit and 8-bit registers.
+            GpSize::DWORD => (v as u32) as u64,
+            GpSize::QWORD => v,
+        }
+    }
+}
+
+impl Into<RegisterIndex> for Gp {
+    fn into(self) -> RegisterIndex{
+        RegisterIndex {
+            extended_index: self,
+            size: GpSize::QWORD
+        }
+    }
 }
 
 //TODO(babayet2) this should be killed after each emulator implementation defines its own cache

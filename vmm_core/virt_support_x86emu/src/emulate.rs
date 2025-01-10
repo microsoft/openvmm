@@ -807,40 +807,18 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
 
     fn gp(&mut self, reg: RegisterIndex) -> u64 {
         let extended_register = self.support.gp(reg.extended_index);
-
-        (match reg.size {
-            GpSize::BYTE(shift) => ((extended_register >> shift) as u8).into(),
-            GpSize::WORD => (extended_register as u16).into(),
-            GpSize::DWORD => (extended_register as u32).into(),
-            GpSize::QWORD => extended_register,
-        }) as u64
+        reg.apply_sizing(extended_register)
     }
 
     fn gp_sign_extend(&mut self, reg: RegisterIndex) -> i64 {
         let extended_register = self.support.gp(reg.extended_index);
-        match reg.size {
-            GpSize::BYTE(shift) => ((extended_register << shift) as i8).into(),
-            GpSize::WORD => (extended_register as i16).into(),
-            GpSize::DWORD => (extended_register as i32).into(),
-            GpSize::QWORD => extended_register as i64,
-        }
+        reg.apply_sizing_signed(extended_register)
     }
 
     fn set_gp(&mut self, reg: RegisterIndex, v: u64) {
         let register_value = self.gp(reg);
-
-        let out: u64 = match reg.size {
-            GpSize::BYTE(shift) => {
-                let mask = (!0xff) << shift;
-                (register_value & mask) | (((v as u8) as u64) << shift)
-            }
-            GpSize::WORD => (register_value & !0xffff) | (v as u16) as u64,
-            // N.B. setting a 32-bit register zero extends the result to the 64-bit
-            //      register. This is different from 16-bit and 8-bit registers.
-            GpSize::DWORD => (v as u32) as u64,
-            GpSize::QWORD => v,
-        };
-        self.support.set_gp(reg.extended_index, out);
+        updated_register_value = reg.apply_update(register_value, v);
+        self.support.set_gp(reg.extended_index, updated_register_value);
     }
 
     fn rip(&mut self) -> u64 {
