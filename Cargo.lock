@@ -2147,6 +2147,7 @@ dependencies = [
  "anyhow",
  "arbitrary",
  "disklayer_ram",
+ "futures",
  "guestmem",
  "libfuzzer-sys",
  "pal_async",

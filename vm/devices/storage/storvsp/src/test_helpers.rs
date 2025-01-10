@@ -47,6 +47,13 @@ impl TestWorker {
         self.task.await
     }
 
+    /// Like `teardown`, but ignore the result. Nice for the fuzzer,
+    /// so that the `storvsp` crate doesn't need to expose `WorkerError`
+    /// as pub.
+    pub async fn teardown_ignore(self) {
+        let _ = self.task.await;
+    }
+
     pub fn start<T: ring::RingMem + 'static + Sync>(
         controller: ScsiController,
         spawner: impl Spawn,
