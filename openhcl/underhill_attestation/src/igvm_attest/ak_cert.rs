@@ -13,7 +13,7 @@ use zerocopy::FromBytes;
 #[derive(Debug, Error)]
 pub enum AkCertError {
     #[error("AK cert response is too small to parse. Expected at least {expected} bytes but found {found}")]
-    SizeTooSmall { found: usize, expected: usize },
+    SizeTooSmall { size: usize, expected_size: usize },
     #[error(
         "AK cert response size {specified_size} specified in the header is larger then the actual size {size}"
     )]
@@ -32,8 +32,8 @@ pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
 
     let Some(header) = IgvmAttestAkCertResponseHeader::read_from_prefix(response) else {
         Err(AkCertError::SizeTooSmall {
-            found: response.len(),
-            expected: HEADER_SIZE,
+            size: response.len(),
+            expected_size: HEADER_SIZE,
         })?
     };
 
