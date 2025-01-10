@@ -1605,6 +1605,7 @@ macro_rules! hexbincount {
 
 /// Wrapper around `T` that implements [`Inspect`] by writing a value with
 /// [`ValueFlags::hex`].
+#[derive(Clone, Copy)]
 pub struct AsHex<T>(pub T);
 
 hexbincount!(AsHex, into_hex, u8, u16, u32, u64, usize);

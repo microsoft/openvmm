@@ -938,10 +938,9 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             }
 
             #[cfg(guest_arch = "x86_64")]
-            if wake_reasons.update_proxy_irr_filter()
-                && self.partition.isolation.is_hardware_isolated()
-            {
+            if wake_reasons.update_proxy_irr_filter() {
                 // update `proxy_irr_blocked` filter
+                debug_assert!(self.partition.isolation.is_hardware_isolated());
                 self.update_proxy_irr_filter(vtl);
             }
         }
@@ -976,11 +975,11 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg(guest_arch = "x86_64")]
     fn write_msr(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
         if msr & 0xf0000000 == 0x40000000 {
-            // If updated is Synic MSR, then check if its proxy or previous was proxy
-            // in either case, we need to update the `proxy_irr_blocked`
-            let mut irr_filter_update = false;
-            if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
-                if let Some(hv) = self.backing.hv(vtl).as_ref() {
+            if let Some(hv) = self.backing.hv_mut(vtl).as_mut() {
+                // If updated is Synic MSR, then check if its proxy or previous was proxy
+                // in either case, we need to update the `proxy_irr_blocked`
+                let mut irr_filter_update = false;
+                if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
                     let sint_curr =
                         HvSynicSint::from(hv.synic.sint((msr - hvdef::HV_X64_MSR_SINT0) as u8));
                     let sint_new = HvSynicSint::from(value);
@@ -988,11 +987,9 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                         irr_filter_update = true;
                     }
                 }
-            }
-            if let Some(hv) = self.backing.hv_mut(vtl).as_mut() {
                 let r = hv.msr_write(msr, value);
                 if !matches!(r, Err(MsrError::Unknown)) {
-                    // SINT updated, check if proxy filter update was required
+                    // Check if proxy filter update was required (in case of SINT writes)
                     if irr_filter_update {
                         self.update_proxy_irr_filter(vtl);
                     }
@@ -1175,7 +1172,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         self.partition.get_device_vectors(vtl, &mut irr_bits);
 
         // Update `proxy_irr_blocked` filter in run page
-        self.runner.update_proxy_irr_filter(&irr_bits);
+        self.runner.update_proxy_irr_filter(&irr_bits.into_inner());
     }
 }
 

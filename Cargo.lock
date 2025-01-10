@@ -2593,7 +2593,6 @@ name = "hcl"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct",
- "bitvec",
  "build_rs_guest_arch",
  "fs-err",
  "getrandom",

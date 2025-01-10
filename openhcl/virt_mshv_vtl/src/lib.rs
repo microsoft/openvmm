@@ -226,9 +226,9 @@ struct UhPartitionInner {
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
     backing_shared: BackingShared,
-    #[inspect(skip)]
     #[cfg(guest_arch = "x86_64")]
     // N.B For now, only one device vector table i.e. for VTL0 only
+    #[inspect(with = "|x| inspect::iter_by_index(x.read().into_inner().map(inspect::AsHex))")]
     device_vector_table: RwLock<IrrBitmap>,
 }
 

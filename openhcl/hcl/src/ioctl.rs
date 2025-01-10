@@ -26,8 +26,6 @@ use crate::protocol::HCL_VMSA_GUEST_VSM_PAGE_OFFSET;
 use crate::protocol::HCL_VMSA_PAGE_OFFSET;
 use crate::protocol::MSHV_APIC_PAGE_OFFSET;
 use crate::GuestVtl;
-use bitvec::prelude::BitArray;
-use bitvec::prelude::Lsb0;
 use hvdef::hypercall::AssertVirtualInterrupt;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvGpaRange;
@@ -1594,7 +1592,8 @@ impl HclVp {
         let fd = &hcl.mshv_vtl.file;
         let run: MappedPage<hcl_run> =
             MappedPage::new(fd, vp as i64).map_err(|e| Error::MmapVp(e, None))?;
-        // SAFETY: Initializing `proxy_irr_blocked` to block all initially
+        // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
+        // so we know we have exclusive access. Initializing to block all vectors by default
         let proxy_irr_blocked = unsafe { &mut *addr_of_mut!((*run.0.as_ptr()).proxy_irr_blocked) };
         proxy_irr_blocked.fill(0xFFFFFFFF);
 
@@ -1864,16 +1863,17 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
     }
 
     /// Update the `proxy_irr_blocked` in run page
-    pub fn update_proxy_irr_filter(&mut self, irr_filter: &BitArray<[u32; 8], Lsb0>) {
-        // SAFETY: `proxy_irr_blocked` is accessed in both user and kernel, but from current VP
-        // By default block all (i.e. set all), and only allow (unset) given vectors
-        let proxy_irr_blocked =
-            unsafe { &mut *addr_of_mut!((*self.run.as_ptr()).proxy_irr_blocked) };
-        proxy_irr_blocked.fill(0xFFFFFFFF);
+    pub fn update_proxy_irr_filter(&mut self, irr_filter: &[u32; 8]) {
+        // SAFETY: `proxy_irr_blocked` is accessed by current VP only, but could
+        // be concurrently accessed by kernel too, hence accessing as Atomic
+        let proxy_irr_blocked = unsafe {
+            &mut *(addr_of_mut!((*self.run.as_ptr()).proxy_irr_blocked).cast::<[AtomicU32; 8]>())
+        };
 
-        for irr_bit in irr_filter.iter_ones() {
-            tracing::debug!(irr_bit, "update_proxy_irr_filter");
-            proxy_irr_blocked[irr_bit >> 5] &= !(1 << (irr_bit & 0x1F));
+        // By default block all (i.e. set all), and only allow (unset) given vectors
+        for (filter, irr) in proxy_irr_blocked.iter_mut().zip(irr_filter.iter()) {
+            filter.store(0xFFFFFFFF & (!irr), Ordering::Relaxed);
+            tracing::debug!(irr, "update_proxy_irr_filter");
         }
     }
 
