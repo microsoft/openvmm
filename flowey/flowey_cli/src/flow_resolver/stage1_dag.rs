@@ -599,7 +599,7 @@ pub(crate) enum Step {
         >,
     },
     GitHubYaml {
-        gh_to_rust: Vec<(String, String, bool)>,
+        gh_to_rust: Vec<(String, String, bool, bool)>,
         rust_to_gh: Vec<(String, String, bool)>,
         label: String,
         step_id: String,
@@ -779,9 +779,9 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
         uses: &str,
         with: BTreeMap<String, ClaimedGhParam>,
         condvar: Option<String>,
-        outputs: BTreeMap<String, Vec<(String, bool)>>,
+        outputs: BTreeMap<String, Vec<(String, bool, bool)>>,
         permissions: BTreeMap<GhPermission, GhPermissionValue>,
-        mut gh_to_rust: Vec<(String, String, bool)>,
+        mut gh_to_rust: Vec<(String, String, bool, bool)>,
         mut rust_to_gh: Vec<(String, String, bool)>,
     ) {
         let mut fresh_yaml_var = || {
@@ -815,7 +815,7 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
         for (name, output_vars) in outputs {
             for output in output_vars {
                 let gh_context_var_name = format!("steps.{step_id}.outputs.{name}");
-                gh_to_rust.push((gh_context_var_name, output.0, output.1));
+                gh_to_rust.push((gh_context_var_name, output.0, output.1, output.2));
             }
         }
 

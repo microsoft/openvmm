@@ -195,6 +195,7 @@ pub enum VarClaimed {}
 pub struct WriteVar<T: Serialize + DeserializeOwned, C = VarNotClaimed> {
     backing_var: String,
     is_secret: bool,
+    is_object: bool,
 
     #[serde(skip)]
     _kind: core::marker::PhantomData<(T, C)>,
@@ -210,12 +211,14 @@ impl<T: Serialize + DeserializeOwned> WriteVar<T, VarNotClaimed> {
         let Self {
             backing_var,
             is_secret,
+            is_object,
             _kind,
         } = self;
 
         WriteVar {
             backing_var,
             is_secret,
+            is_object,
             _kind: std::marker::PhantomData,
         }
     }
@@ -226,6 +229,7 @@ impl<T: Serialize + DeserializeOwned> WriteVar<T, VarNotClaimed> {
         ReadVar {
             backing_var: ReadVarBacking::RuntimeVar(self.backing_var.clone()),
             is_secret: self.is_secret,
+            is_object: self.is_object,
             _kind: std::marker::PhantomData,
         }
     }
@@ -359,6 +363,7 @@ pub struct ReadVar<T: Serialize + DeserializeOwned, C = VarNotClaimed> {
     #[serde(bound = "")] // work around serde/issues/1296
     backing_var: ReadVarBacking<T>,
     is_secret: bool,
+    is_object: bool,
     #[serde(skip)]
     _kind: std::marker::PhantomData<C>,
 }
@@ -373,6 +378,7 @@ impl<T: Serialize + DeserializeOwned, C> Clone for ReadVar<T, C> {
         ReadVar {
             backing_var: self.backing_var.clone(),
             is_secret: self.is_secret,
+            is_object: self.is_object,
             _kind: std::marker::PhantomData,
         }
     }
@@ -405,12 +411,14 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
         let Self {
             backing_var,
             is_secret,
+            is_object,
             _kind,
         } = self;
 
         ReadVar {
             backing_var,
             is_secret,
+            is_object,
             _kind: std::marker::PhantomData,
         }
     }
@@ -432,6 +440,7 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
                 ReadVarBacking::InlineSideEffect => ReadVarBacking::InlineSideEffect,
             },
             is_secret: self.is_secret,
+            is_object: self.is_object,
             _kind: std::marker::PhantomData,
         }
     }
@@ -446,7 +455,7 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
         U: Serialize + DeserializeOwned + 'static,
         F: FnOnce(T) -> U + 'static,
     {
-        let (read_from, write_into) = ctx.new_maybe_secret_var(self.is_secret, "");
+        let (read_from, write_into) = ctx.new_maybe_secret_var(self.is_secret, false, "");
         self.write_into(ctx, write_into, f);
         read_from
     }
@@ -482,7 +491,7 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
         U: Serialize + DeserializeOwned + 'static,
     {
         let (read_from, write_into) =
-            ctx.new_maybe_secret_var(self.is_secret || other.is_secret, "");
+            ctx.new_maybe_secret_var(self.is_secret || other.is_secret, false, "");
         let this = self.clone();
         ctx.emit_rust_step("🌼 Zip Vars", move |ctx| {
             let this = this.claim(ctx);
@@ -511,6 +520,7 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
         ReadVar {
             backing_var: ReadVarBacking::Inline(val),
             is_secret: false,
+            is_object: false,
             _kind: std::marker::PhantomData,
         }
     }
@@ -537,7 +547,8 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
     where
         T: 'static,
     {
-        let (read_from, write_into) = ctx.new_maybe_secret_var(vec.iter().any(|v| v.is_secret), "");
+        let (read_from, write_into) =
+            ctx.new_maybe_secret_var(vec.iter().any(|v| v.is_secret), false, "");
         ctx.emit_rust_step("🌼 Transpose Vec<ReadVar<T>>", move |ctx| {
             let vec = vec.claim(ctx);
             let write_into = write_into.claim(ctx);
@@ -570,13 +581,18 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
 /// and should only be used by code implementing flow / pipeline resolution
 /// logic.
 #[must_use]
-pub fn thin_air_read_runtime_var<T>(backing_var: String, is_secret: bool) -> ReadVar<T>
+pub fn thin_air_read_runtime_var<T>(
+    backing_var: String,
+    is_secret: bool,
+    is_object: bool,
+) -> ReadVar<T>
 where
     T: Serialize + DeserializeOwned,
 {
     ReadVar {
         backing_var: ReadVarBacking::RuntimeVar(backing_var),
         is_secret,
+        is_object,
         _kind: std::marker::PhantomData,
     }
 }
@@ -587,13 +603,18 @@ where
 /// and should only be used by code implementing flow / pipeline resolution
 /// logic.
 #[must_use]
-pub fn thin_air_write_runtime_var<T>(backing_var: String, is_secret: bool) -> WriteVar<T>
+pub fn thin_air_write_runtime_var<T>(
+    backing_var: String,
+    is_secret: bool,
+    is_object: bool,
+) -> WriteVar<T>
 where
     T: Serialize + DeserializeOwned,
 {
     WriteVar {
         backing_var,
         is_secret,
+        is_object,
         _kind: std::marker::PhantomData,
     }
 }
@@ -685,9 +706,9 @@ pub trait NodeCtxBackend {
         uses: &str,
         with: BTreeMap<String, ClaimedGhParam>,
         condvar: Option<String>,
-        outputs: BTreeMap<String, Vec<(String, bool)>>,
+        outputs: BTreeMap<String, Vec<(String, bool, bool)>>,
         permissions: BTreeMap<GhPermission, GhPermissionValue>,
-        gh_to_rust: Vec<(String, String, bool)>,
+        gh_to_rust: Vec<(String, String, bool, bool)>,
         rust_to_gh: Vec<(String, String, bool)>,
     );
 
@@ -860,7 +881,12 @@ impl GhContextVarReaderEvent {
         let write_var = write_var.claim(&mut StepCtx {
             backend: context.backend.clone(),
         });
-        let gh_to_rust = vec![(var_name.clone(), write_var.backing_var, write_var.is_secret)];
+        let gh_to_rust = vec![(
+            var_name.clone(),
+            write_var.backing_var,
+            write_var.is_secret,
+            true,
+        )];
 
         context.backend.borrow_mut().on_emit_gh_step(
             &format!("🌼 read {}", var_name),
@@ -879,7 +905,7 @@ impl GhContextVarReaderEvent {
 pub struct GhContextVarReader {}
 impl GhContextVarReader {
     pub fn global(&self, context: &mut NodeCtx<'_>, gh_var: GhContextVar) -> ReadVar<String> {
-        let (var, write_var) = context.new_maybe_secret_var(gh_var.is_secret(), "");
+        let (var, write_var) = context.new_maybe_secret_var(gh_var.is_secret(), false, "");
         let write_var = write_var.claim(&mut StepCtx {
             backend: context.backend.clone(),
         });
@@ -887,6 +913,7 @@ impl GhContextVarReader {
             gh_var.as_raw_var_name(),
             write_var.backing_var,
             write_var.is_secret,
+            false,
         )];
 
         context.backend.borrow_mut().on_emit_gh_step(
@@ -917,7 +944,7 @@ impl NodeCtx<'_> {
         F: for<'a> FnOnce(&'a mut StepCtx<'_>) -> G,
         G: for<'a> FnOnce(&'a mut RustRuntimeServices<'_>) -> anyhow::Result<()> + 'static,
     {
-        let (read, write) = self.new_maybe_secret_var(false, "auto_se");
+        let (read, write) = self.new_maybe_secret_var(false, false, "auto_se");
 
         let ctx = &mut StepCtx {
             backend: self.backend.clone(),
@@ -984,7 +1011,7 @@ impl NodeCtx<'_> {
     #[track_caller]
     #[must_use]
     pub fn get_ado_variable(&mut self, ado_var: AdoRuntimeVar) -> ReadVar<String> {
-        let (var, write_var) = self.new_maybe_secret_var(ado_var.is_secret(), "");
+        let (var, write_var) = self.new_maybe_secret_var(ado_var.is_secret(), false, "");
         self.emit_ado_step(format!("🌼 read {}", ado_var.as_raw_var_name()), |ctx| {
             let write_var = write_var.claim(ctx);
             |rt| {
@@ -1195,7 +1222,7 @@ impl NodeCtx<'_> {
                             let var = var.claim(&mut StepCtx {
                                 backend: self.backend.clone(),
                             });
-                            (var.backing_var, var.is_secret)
+                            (var.backing_var, var.is_secret, var.is_object)
                         })
                         .collect(),
                 )
@@ -1310,7 +1337,7 @@ impl NodeCtx<'_> {
     where
         T: Serialize + DeserializeOwned,
     {
-        self.new_maybe_secret_var(false, "")
+        self.new_maybe_secret_var(false, false, "")
     }
 
     /// Allocate a new secret flowey Var, returning two handles: one for reading
@@ -1323,7 +1350,7 @@ impl NodeCtx<'_> {
     where
         T: Serialize + DeserializeOwned,
     {
-        self.new_maybe_secret_var(true, "")
+        self.new_maybe_secret_var(true, false, "")
     }
 
     #[track_caller]
@@ -1331,6 +1358,7 @@ impl NodeCtx<'_> {
     fn new_maybe_secret_var<T>(
         &self,
         is_secret: bool,
+        is_object: bool,
         prefix: &'static str,
     ) -> (ReadVar<T>, WriteVar<T>)
     where
@@ -1369,11 +1397,13 @@ impl NodeCtx<'_> {
             ReadVar {
                 backing_var: ReadVarBacking::RuntimeVar(backing_var.clone()),
                 is_secret,
+                is_object,
                 _kind: std::marker::PhantomData,
             },
             WriteVar {
                 backing_var,
                 is_secret,
+                is_object,
                 _kind: std::marker::PhantomData,
             },
         )
@@ -1392,7 +1422,7 @@ impl NodeCtx<'_> {
     #[track_caller]
     #[must_use]
     pub fn new_post_job_side_effect(&self) -> (ReadVar<SideEffect>, WriteVar<SideEffect>) {
-        self.new_maybe_secret_var(false, "post_job")
+        self.new_maybe_secret_var(false, false, "post_job")
     }
 
     /// Return a flowey Var pointing to a **node-specific** directory which
@@ -1415,6 +1445,7 @@ impl NodeCtx<'_> {
                 self.backend.borrow_mut().persistent_dir_path_var()?,
             ),
             is_secret: false,
+            is_object: false,
             _kind: std::marker::PhantomData,
         };
 
@@ -1799,7 +1830,8 @@ pub mod steps {
             /// Finish building the step, emitting it to the backend and returning a side-effect.
             #[track_caller]
             pub fn finish(self, ctx: &mut NodeCtx<'_>) -> ReadVar<SideEffect> {
-                let (side_effect, claim_side_effect) = ctx.new_maybe_secret_var(false, "auto_se");
+                let (side_effect, claim_side_effect) =
+                    ctx.new_maybe_secret_var(false, false, "auto_se");
                 ctx.backend
                     .borrow_mut()
                     .on_claimed_runtime_var(&claim_side_effect.backing_var, false);

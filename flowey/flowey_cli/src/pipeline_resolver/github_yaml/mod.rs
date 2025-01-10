@@ -871,10 +871,14 @@ fn resolve_flow_as_github_yaml_steps(
                     output_steps.push(step);
                 }
 
-                for (gh_var, rust_var, is_secret) in gh_to_rust {
+                for (gh_var, rust_var, is_secret, is_object) in gh_to_rust {
                     // flowey considers all GitHub vars to be typed as raw strings
                     let write_rust_var = var_db_cmd(&rust_var, is_secret, Some("{0}"), true, None);
-                    let cmd = format!(r#"${{{{ {gh_var} }}}}"#);
+                    let cmd = if is_object {
+                        format!(r#"${{{{ fromJSON({gh_var}) }}}}"#)
+                    } else {
+                        format!(r#"${{{{ {gh_var} }}}}"#)
+                    };
 
                     let mut map = serde_yaml::Mapping::new();
                     map.insert("run".into(), serde_yaml::Value::String(cmd));

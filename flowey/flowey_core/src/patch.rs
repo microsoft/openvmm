@@ -86,6 +86,7 @@ where
         let req = f(crate::node::thin_air_write_runtime_var(
             backing_var.clone(),
             false,
+            false,
         ));
 
         self.backend.on_patch_event(PatchEvent::InjectSideEffect {
