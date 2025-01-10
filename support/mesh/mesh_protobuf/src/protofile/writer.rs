@@ -80,7 +80,7 @@ impl<'a> DescriptorWriter<'a> {
                 let mut n = 0;
                 while descriptors
                     .peek()
-                    .map_or(false, |d| d.package == first.package)
+                    .is_some_and(|d| d.package == first.package)
                 {
                     let desc = descriptors.next().unwrap();
                     desc.message.collect_imports(&mut writer, &mut imports)?;
@@ -376,7 +376,7 @@ impl FieldDescriptor<'_> {
             .collect::<Vec<_>>();
         let fields = fields
             .iter()
-            .map(|(&ty, number, name)| FieldDescriptor::new("", ty, name.as_ref(), *number))
+            .map(|&(ty, number, ref name)| FieldDescriptor::new("", *ty, name.as_ref(), number))
             .collect::<Vec<_>>();
         MessageDescriptor::new(&self.name.to_upper_camel_case(), "", &fields, &[], &[]).fmt(w)?;
         Ok(())

@@ -10,7 +10,7 @@ use x86defs::RFlags;
 
 const LSB_MASK: u64 = 0x1;
 
-impl<'a, T: Cpu> Emulator<'a, T> {
+impl<T: Cpu> Emulator<'_, T> {
     // shr/shl/sal/rol/ror/rcl/rcr rm, 1/imm/cl
     pub(super) async fn shift_sign_unextended<Op: ShiftingOp>(
         &mut self,

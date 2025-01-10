@@ -117,7 +117,7 @@ impl ParamsBuilder {
         // Data is allocated by the openssl allocator, so assumed in a memory stable realm.
         // It's important the data does not move from the time we create the "output" slice and the
         // moment it's read by the EVP_KDF_CTX_set_params functions.
-        for (name, ref mut p) in &mut params.fixed {
+        for (name, p) in &mut params.fixed {
             use Param::*;
             // SAFETY: Name is guaranteed to be a valid C string, and the bufs are only constructed by alloc_slice_inner,
             // which makes sure they are valid and have correct lengths.

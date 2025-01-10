@@ -151,7 +151,7 @@ impl Options {
 
         fn parse_bool(value: Option<&OsString>) -> bool {
             value
-                .map(|v| v.to_ascii_lowercase() == "true" || v == "1")
+                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
                 .unwrap_or_default()
         }
 

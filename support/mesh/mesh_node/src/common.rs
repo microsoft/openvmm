@@ -74,7 +74,7 @@ mod debug {
 
         pub fn next(&self) -> Option<Uuid> {
             CHECK_ONCE.call_once(|| {
-                if std::env::var_os("__MESH_UNSAFE_DEBUG_IDS__").map_or(false, |x| !x.is_empty()) {
+                if std::env::var_os("__MESH_UNSAFE_DEBUG_IDS__").is_some_and(|x| !x.is_empty()) {
                     tracing::error!("using unsafe debugging mesh IDs--this mesh could be compromised by external callers");
                     USE_LINEAR_IDS.store(true, Ordering::Relaxed);
                 }

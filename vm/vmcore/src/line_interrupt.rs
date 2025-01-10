@@ -459,7 +459,7 @@ pub mod test_helpers {
         }
 
         pub fn is_high(&self, vector: u32) -> bool {
-            self.state.lock().get(&vector).map_or(false, |s| s.is_high)
+            self.state.lock().get(&vector).is_some_and(|s| s.is_high)
         }
 
         pub fn poll_high(&self, cx: &mut Context<'_>, vector: u32) -> Poll<()> {
