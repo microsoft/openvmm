@@ -171,7 +171,8 @@ pub trait ParentBus: Send + Sync {
     /// time.
     fn clone_bus(&self) -> Box<dyn ParentBus>;
 
-    /// Returns whether [`OfferInput::event`] needs to be backed by an OS event.
+    /// Returns whether [`OpenResult::guest_to_host_interrupt`] needs to be
+    /// backed by an OS event.
     ///
     /// TODO: Remove this and just return the appropriate notify type directly
     /// once subchannel creation and enable are separated.
