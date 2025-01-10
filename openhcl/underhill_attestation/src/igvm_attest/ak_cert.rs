@@ -37,8 +37,6 @@ pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
         })?
     };
 
-    println!("header: {:x?}", header);
-
     let size = header.data_size as usize;
     if size > response.len() {
         Err(AkCertError::SizeMismatch {
