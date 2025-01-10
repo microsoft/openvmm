@@ -840,7 +840,8 @@ pub struct NodeCtx<'a> {
 
 #[derive(Serialize, Deserialize)]
 pub struct Head {
-    pub r#ref: String,
+    #[serde(rename = "ref")]
+    pub head_ref: String,
 }
 
 #[derive(Serialize, Deserialize)]
