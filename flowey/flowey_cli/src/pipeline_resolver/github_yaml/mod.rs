@@ -882,7 +882,7 @@ fn resolve_flow_as_github_yaml_steps(
                     // flowey considers all GitHub vars to be typed as raw strings
                     let write_rust_var = var_db_cmd(&rust_var, is_secret, Some("{0}"), true, None);
                     let cmd = if is_object {
-                        format!(r#"echo '${{{{ fromJSON{gh_var} }}}}'"#)
+                        format!(r#"echo '${{{{ fromJSON({gh_var}) }}}}'"#)
                     } else {
                         format!(r#"${{{{ {gh_var} }}}}"#)
                     };
