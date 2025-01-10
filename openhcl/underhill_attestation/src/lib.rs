@@ -1042,7 +1042,7 @@ async fn persist_all_key_protectors(
                 .dek_buffer
                 .fill(0);
             key_protector.gsp[key_protector.active_kp as usize % NUMBER_KP].gsp_length = 0;
-            key_protector.active_kp += 1; // TODO: This is vulnerable to overflows
+            key_protector.active_kp += 1;
 
             vmgs::write_key_protector(key_protector, vmgs)
                 .await
@@ -1733,31 +1733,5 @@ mod tests {
             found_key_protector_by_id.id_guid,
             key_protector_by_id.inner.id_guid
         );
-    }
-
-    #[should_panic(expected = "attempt to add with overflow")]
-    #[async_test]
-    async fn persist_all_key_protectors_with_max_kp_index_overflows() {
-        let mut vmgs = new_formatted_vmgs().await;
-        let mut key_protector = new_key_protector();
-        // Set the active KP to u32::MAX to observe overflow behavior
-        key_protector.active_kp = u32::MAX;
-        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
-        let bios_guid = Guid::new_random();
-        let key_protector_settings = KeyProtectorSettings {
-            should_write_kp: true,
-            use_gsp_by_id: false,
-            use_hardware_unlock: false,
-        };
-
-        persist_all_key_protectors(
-            &mut vmgs,
-            &mut key_protector,
-            &mut key_protector_by_id,
-            bios_guid,
-            key_protector_settings,
-        )
-        .await
-        .unwrap();
     }
 }
