@@ -3239,8 +3239,14 @@ struct FallbackMmioDevice {
 
 impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> chipset_device::io::IoResult {
-        data.fill(!0);
-        if let Some(partition) = self.partition.upgrade() {
+        let Some(partition) = self.partition.upgrade() else {
+            return chipset_device::io::IoResult::Ok;
+        };
+
+        if cfg!(guest_arch = "aarch64") {
+            partition.host_mmio_read(addr, data);
+        } else {
+            data.fill(!0);
             if self.mmio_ranges.iter().any(|range| {
                 range.contains_addr(addr) && range.contains_addr(addr + data.len() as u64 - 1)
             }) {
@@ -3252,7 +3258,13 @@ impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
     }
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> chipset_device::io::IoResult {
-        if let Some(partition) = self.partition.upgrade() {
+        let Some(partition) = self.partition.upgrade() else {
+            return chipset_device::io::IoResult::Ok;
+        };
+
+        if cfg!(guest_arch = "aarch64") {
+            partition.host_mmio_write(addr, data);
+        } else {
             if self.mmio_ranges.iter().any(|range| {
                 range.contains_addr(addr) && range.contains_addr(addr + data.len() as u64 - 1)
             }) {
