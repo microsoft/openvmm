@@ -10,6 +10,8 @@ use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationV
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestHashType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestReportType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_REQUEST_ERROR_CODE_BIT;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_REQUEST_RETRY_ON_FAILURE_BIT;
 use tee_call::TeeType;
 use thiserror::Error;
 use zerocopy::AsBytes;
@@ -197,6 +199,7 @@ fn create_request(
     let report_size = size_of::<IgvmAttestRequest>() + runtime_claims.len();
     let user_data_size = size_of::<IgvmAttestRequestData>() + runtime_claims.len();
     let mut request = IgvmAttestRequest::new_zeroed();
+    let request_capability_map = IGVM_REQUEST_ERROR_CODE_BIT | IGVM_REQUEST_RETRY_ON_FAILURE_BIT;
 
     request.header = IgvmAttestRequestHeader::new(report_size as u32, request_type, 0);
 
@@ -207,6 +210,7 @@ fn create_request(
         report_type.to_external_type(),
         hash_type,
         runtime_claims.len() as u32,
+        request_capability_map,
     );
 
     Ok([request.as_bytes(), runtime_claims].concat())

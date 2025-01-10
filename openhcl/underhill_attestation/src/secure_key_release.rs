@@ -10,6 +10,7 @@ use crate::IgvmAttestRequestHelper;
 use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use openhcl_attestation_protocol::igvm_attest::get::KEY_RELEASE_RESPONSE_BUFFER_SIZE;
 use openhcl_attestation_protocol::igvm_attest::get::WRAPPED_KEY_RESPONSE_BUFFER_SIZE;
 use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
@@ -51,6 +52,13 @@ pub(crate) enum RequestVmgsEncryptionKeysError {
     ParseIgvmAttestKeyReleaseResponse(#[source] igvm_attest::key_release::KeyReleaseError),
     #[error("PKCS11 RSA AES key unwrap failed")]
     Pkcs11RsaAesKeyUnwrap(#[source] crypto::Pkcs11RsaAesKeyUnwrapError),
+    #[error("IgvmAttest request({request_type}) failed")]
+    IgvmAttest {
+        request_type: IgvmAttestRequestType,
+        error_code: u32,
+        http_status_code: u32,
+        retry_signal: bool,
+    },
 }
 
 /// The return values of [`make_igvm_attest_requests`].
@@ -172,22 +180,55 @@ pub async fn request_vmgs_encryption_keys(
                     "Failed to get VMGS key-encryption due to invalid key format"
                 )
             }
-            Err(e) if i == (max_retry - 1) => {
-                tracing::error!(
-                    CVM_ALLOWED,
-                    error = &e as &dyn std::error::Error,
-                    "VMGS key-encryption failed due to error, max number of attempts reached"
-                );
-                Err(e)?
-            }
-            Err(e) => {
-                tracing::error!(
-                    CVM_ALLOWED,
-                    retry = i,
-                    error = &e as &dyn std::error::Error,
-                    "VMGS key-encryption key request failed due to error",
-                )
-            }
+            Err(e) => match e {
+                RequestVmgsEncryptionKeysError::IgvmAttest {
+                    request_type,
+                    error_code,
+                    http_status_code,
+                    retry_signal,
+                } if retry_signal && i < (max_retry - 1) => {
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        igvm_request_type = request_type.0,
+                        igvm_error_code = error_code,
+                        igvm_http_status_code = http_status_code,
+                        error = &e as &dyn std::error::Error,
+                        "VMGS key-encryption failed due to igvm attest retryable error, will retry"
+                    )
+                }
+                RequestVmgsEncryptionKeysError::IgvmAttest {
+                    request_type,
+                    error_code,
+                    http_status_code,
+                    retry_signal: _,
+                } => {
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        igvm_request_type = request_type.0,
+                        igvm_error_code = error_code,
+                        igvm_http_status_code = http_status_code,
+                        error = &e as &dyn std::error::Error,
+                        "VMGS key-encryption failed due to igvm attest error, will not retry"
+                    );
+                    Err(e)?
+                }
+                _ if i == (max_retry - 1) => {
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        error = &e as &dyn std::error::Error,
+                        "VMGS key-encryption failed due to error, max number of attempts reached"
+                    );
+                    Err(e)?
+                }
+                _ => {
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        retry = i,
+                        error = &e as &dyn std::error::Error,
+                        "VMGS key-encryption key request failed due to error",
+                    )
+                }
+            },
         }
 
         // Stall on retries
@@ -242,9 +283,7 @@ async fn make_igvm_attest_requests(
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
 ) -> Result<WrappedKeyVmgsEncryptionKeys, RequestVmgsEncryptionKeysError> {
     // Attempt to get wrapped DiskEncryptionSettings key
-    igvm_attest_request_helper.set_request_type(
-        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
-    );
+    igvm_attest_request_helper.set_request_type(IgvmAttestRequestType::WRAPPED_KEY_REQUEST);
     let request = igvm_attest_request_helper
         .create_request(attestation_report)
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestWrappedKeyRequest)?;
@@ -290,9 +329,7 @@ async fn make_igvm_attest_requests(
         Err(e) => Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(e))?,
     };
 
-    igvm_attest_request_helper.set_request_type(
-        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType::KEY_RELEASE_REQUEST,
-    );
+    igvm_attest_request_helper.set_request_type(IgvmAttestRequestType::KEY_RELEASE_REQUEST);
     let request = igvm_attest_request_helper
         .create_request(attestation_report)
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestKeyReleaseRequest)?;
@@ -320,6 +357,16 @@ async fn make_igvm_attest_requests(
                 wrapped_des_key: None,
             })
         }
+        Err(igvm_attest::key_release::KeyReleaseError::IgvmAttestation {
+            error_code,
+            http_status_code,
+            retry_signal,
+        }) => Err(RequestVmgsEncryptionKeysError::IgvmAttest {
+            request_type: IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+            error_code,
+            http_status_code,
+            retry_signal,
+        }),
         Err(e) => Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(e))?,
     }
 }

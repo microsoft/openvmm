@@ -134,7 +134,10 @@ impl IgvmAttestRequestHeader {
     }
 }
 
-const IGVM_ATTEST_VERSION_CURRENT: u32 = 1;
+const IGVM_ATTEST_VERSION_CURRENT: u32 = 2;
+
+pub const IGVM_REQUEST_ERROR_CODE_BIT: u32 = 1 << 0;
+pub const IGVM_REQUEST_RETRY_ON_FAILURE_BIT: u32 = 1 << 1;
 
 /// Unmeasured user data, used for host attestation requests (C-style struct)
 #[repr(C)]
@@ -150,6 +153,10 @@ pub struct IgvmAttestRequestData {
     pub report_data_hash_type: IgvmAttestHashType,
     /// Size of the appended raw runtime claims
     pub variable_data_size: u32,
+    // Bitmap of additional request attributes.
+    // [0] IGVM_REQUEST_ERROR_CODE_BIT: Requesting IGVM Agent Error code
+    // [1] IGVM_REQUEST_RETRY_ON_FAILURE_BIT: Retry preference
+    pub capability_bitmap: u32,
 }
 
 impl IgvmAttestRequestData {
@@ -159,6 +166,7 @@ impl IgvmAttestRequestData {
         report_type: IgvmAttestReportType,
         report_data_hash_type: IgvmAttestHashType,
         variable_data_size: u32,
+        capability_bitmap: u32,
     ) -> Self {
         Self {
             data_size,
@@ -166,8 +174,28 @@ impl IgvmAttestRequestData {
             report_type,
             report_data_hash_type,
             variable_data_size,
+            capability_bitmap,
         }
     }
+}
+
+pub const IGVM_SIGNAL_RETRY_RCOMMENDED_BIT: u32 = 1 << 0;
+
+/// The response header for `IGVM_RESULT_INFO` (C-style struct)
+///
+/// reSearch query: `IGVM_RESULT_INFO`
+#[repr(C)]
+#[derive(Default, Debug, AsBytes, FromBytes, FromZeroes)]
+pub struct IgvmResultInfo {
+    /// ErrorCode propogated from IgvmAgent
+    pub igvmagent_error_code: u32,
+    /// HttpStatusCode propogated from IgvmAgent that enhances the ErrorCode
+    pub igvmagent_http_status_code: u32,
+    /// An uint32 bitmap indicates a signal to requestor
+    /// [0] IGVM_SIGNAL_RETRY_RCOMMENDED_BIT: Retry recommendation
+    pub igvmagent_signal: u32,
+    /// Reserved
+    pub reserved: [u32; 3],
 }
 
 /// The response header for `KEY_RELEASE_REQUEST` (C-style struct)
@@ -180,6 +208,8 @@ pub struct IgvmAttestKeyReleaseResponseHeader {
     pub data_size: u32,
     /// Version
     pub version: u32,
+    /// IgvmResultInfo that contains RPC result and retry recommendation
+    pub result_info: IgvmResultInfo,
 }
 
 /// The response header for `WRAPPED_KEY_REQUEST` (C-style struct)
@@ -193,6 +223,8 @@ pub struct IgvmAttestWrappedKeyResponseHeader {
     pub data_size: u32,
     /// Version
     pub version: u32,
+    /// IgvmResultInfo that contains RPC result and retry recommendation
+    pub result_info: IgvmResultInfo,
 }
 
 /// The response header for `AK_CERT_REQUEST` (C-style struct)
@@ -205,6 +237,8 @@ pub struct IgvmAttestAkCertResponseHeader {
     pub data_size: u32,
     /// Version
     pub version: u32,
+    /// IgvmResultInfo that contains RPC result and retry recommendation
+    pub result_info: IgvmResultInfo,
 }
 
 /// Definition of the runt-time claims, which will be appended to the

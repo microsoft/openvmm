@@ -833,6 +833,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 let header = IgvmAttestAkCertResponseHeader {
                     data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>()) as u32,
                     version: AK_CERT_RESPONSE_HEADER_VERSION,
+                    result_info: IgvmResultInfo::default(),
                 };
                 let payload = [header.as_bytes(), &data].concat();
 

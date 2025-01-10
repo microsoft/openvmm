@@ -7,6 +7,8 @@
 
 use base64::Engine;
 use openhcl_attestation_protocol::igvm_attest::akv;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmResultInfo;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_SIGNAL_RETRY_RCOMMENDED_BIT;
 use openssl::hash::MessageDigest;
 use openssl::pkey::PKey;
 use openssl::rsa::Padding;
@@ -16,6 +18,7 @@ use openssl::x509::X509;
 use thiserror::Error;
 
 use std::fmt::Write;
+use zerocopy::FromBytes;
 
 #[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
@@ -30,6 +33,12 @@ pub(crate) enum KeyReleaseError {
     VerifyAkvJwtSignatureFailed,
     #[error("failed to get wrapped key from AKV JWT body")]
     GetWrappedKeyFromAkvJwtBody(#[source] AkvKeyReleaseJwtError),
+    #[error("igvm attest failed ({error_code}-{http_status_code}), retry recommendation ({retry_signal})")]
+    IgvmAttestation {
+        error_code: u32,
+        http_status_code: u32,
+        retry_signal: bool,
+    },
 }
 
 #[allow(missing_docs)] // self-explanatory fields
@@ -131,12 +140,30 @@ pub fn parse_response(
         openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader,
     >();
 
+    const RESULT_INFO_SIZE: usize = size_of::<IgvmResultInfo>();
+
     let wrapped_key_size = rsa_modulus_size + rsa_modulus_size + AES_IC_SIZE;
     let wrapped_key_base64_url_size = wrapped_key_size / 3 * 4;
     let minimum_response_size =
         CIPHER_TEXT_KEY.len() + wrapped_key_base64_url_size - 1 + HEADER_SIZE;
 
-    if response.is_empty() || response.len() < minimum_response_size {
+    if response.is_empty() || response.len() < HEADER_SIZE {
+        Err(KeyReleaseError::ResponseSizeTooSmall)?
+    }
+
+    // Extract result info from response header
+    let result_info =
+        IgvmResultInfo::ref_from_prefix(&response[HEADER_SIZE - RESULT_INFO_SIZE..]).unwrap();
+
+    if 0 != result_info.igvmagent_error_code {
+        Err(KeyReleaseError::IgvmAttestation {
+            error_code: result_info.igvmagent_error_code,
+            http_status_code: result_info.igvmagent_http_status_code,
+            retry_signal: 0 != (result_info.igvmagent_signal & IGVM_SIGNAL_RETRY_RCOMMENDED_BIT),
+        })?
+    }
+
+    if response.len() < minimum_response_size {
         Err(KeyReleaseError::ResponseSizeTooSmall)?
     }
 
