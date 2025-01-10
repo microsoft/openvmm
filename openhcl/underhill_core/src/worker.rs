@@ -2491,15 +2491,19 @@ async fn new_underhill_vm(
         // If VTOM is present (CVM scenario), accesses to physical device and PCI config space may
         // occur below or above vTOM, but only within MMIO regions. Forward both to the host.
         let vtom = vtom.unwrap_or(0);
-        let mut untrusted_mmio_ranges: Vec<_> = mem_layout.mmio().to_vec();
-        if vtom > 0 {
-            untrusted_mmio_ranges.extend(
-                mem_layout
-                    .mmio()
-                    .iter()
-                    .map(|range| MemoryRange::new((range.start() + vtom)..(range.end() + vtom))),
-            );
-        }
+        let untrusted_mmio_ranges =
+            if cfg!(guest_arch = "aarch64") && vtom == 0 {
+                // By default on aarch64 send all MMIO accesses to the host.
+                None
+            } else {
+                let mut untrusted_mmio_ranges: Vec<_> = mem_layout.mmio().to_vec();
+                if vtom > 0 {
+                    untrusted_mmio_ranges.extend(mem_layout.mmio().iter().map(|range| {
+                        MemoryRange::new((range.start() + vtom)..(range.end() + vtom))
+                    }));
+                }
+                Some(untrusted_mmio_ranges)
+            };
 
         Arc::new(CloseableMutex::new(FallbackMmioDevice {
             partition: Arc::downgrade(&partition),
@@ -3234,7 +3238,7 @@ impl chipset::pm::PmTimerAssist for UnderhillPmTimerAssist {
 // MmioIntercept traits.
 struct FallbackMmioDevice {
     partition: std::sync::Weak<UhPartition>,
-    mmio_ranges: Vec<MemoryRange>,
+    mmio_ranges: Option<Vec<MemoryRange>>,
 }
 
 impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
@@ -3243,15 +3247,15 @@ impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
             return chipset_device::io::IoResult::Ok;
         };
 
-        if cfg!(guest_arch = "aarch64") {
-            partition.host_mmio_read(addr, data);
-        } else {
+        if let Some(mmio_ranges) = &self.mmio_ranges {
             data.fill(!0);
-            if self.mmio_ranges.iter().any(|range| {
+            if mmio_ranges.iter().any(|range| {
                 range.contains_addr(addr) && range.contains_addr(addr + data.len() as u64 - 1)
             }) {
                 partition.host_mmio_read(addr, data);
             }
+        } else {
+            partition.host_mmio_read(addr, data);
         }
 
         chipset_device::io::IoResult::Ok
@@ -3262,14 +3266,14 @@ impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
             return chipset_device::io::IoResult::Ok;
         };
 
-        if cfg!(guest_arch = "aarch64") {
-            partition.host_mmio_write(addr, data);
-        } else {
-            if self.mmio_ranges.iter().any(|range| {
+        if let Some(mmio_ranges) = &self.mmio_ranges {
+            if mmio_ranges.iter().any(|range| {
                 range.contains_addr(addr) && range.contains_addr(addr + data.len() as u64 - 1)
             }) {
                 partition.host_mmio_write(addr, data);
             }
+        } else {
+            partition.host_mmio_write(addr, data);
         }
 
         chipset_device::io::IoResult::Ok
