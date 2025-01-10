@@ -74,7 +74,7 @@ impl VirtioFsDevice {
         };
 
         // Copy the tag into the config space (truncate it for now if too long).
-        let length = std::cmp::min(tag.as_bytes().len(), config.tag.len());
+        let length = std::cmp::min(tag.len(), config.tag.len());
         config.tag[..length].copy_from_slice(&tag.as_bytes()[..length]);
 
         Self {

@@ -152,13 +152,13 @@ impl GetTracingBackend {
             )
                 .merge();
 
-            let flush_response = loop {
+            let flush_rpc = loop {
                 let trace_type = streams.next().await.unwrap();
                 match trace_type {
                     Event::Trace(data) => {
                         write.send(&data).await.ok();
                     }
-                    Event::Flush(Rpc((), response)) => break Some(response),
+                    Event::Flush(rpc) => break Some(rpc),
                     Event::Done => break None,
                 }
             };
@@ -174,8 +174,8 @@ impl GetTracingBackend {
             // Wait for the host to read everything.
             write.wait_empty().await.ok();
 
-            if let Some(resp) = flush_response {
-                resp.send(());
+            if let Some(rpc) = flush_rpc {
+                rpc.complete(());
             } else {
                 break;
             }
@@ -185,7 +185,7 @@ impl GetTracingBackend {
 
 /// Enables tracing output to the tracing task and to stderr.
 pub fn init_tracing(spawn: impl Spawn, tracer: RemoteTracer) -> anyhow::Result<()> {
-    if legacy_openvmm_env("OPENVMM_DISABLE_TRACING_RATELIMITS").map_or(false, |v| !v.is_empty()) {
+    if legacy_openvmm_env("OPENVMM_DISABLE_TRACING_RATELIMITS").is_ok_and(|v| !v.is_empty()) {
         tracelimit::disable_rate_limiting(true);
     }
 

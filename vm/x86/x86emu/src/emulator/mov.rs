@@ -10,7 +10,7 @@ use iced_x86::Instruction;
 use iced_x86::OpKind;
 use iced_x86::Register;
 
-impl<'a, T: Cpu> Emulator<'a, T> {
+impl<T: Cpu> Emulator<'_, T> {
     pub(super) async fn mov(&mut self, instr: &Instruction) -> Result<(), InternalError<T::Error>> {
         let value = self.op_value(instr, 1).await?;
         self.write_op_0(instr, value).await?;

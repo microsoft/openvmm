@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+mod hvsock;
 mod saved_state;
 
 pub use self::saved_state::SavedState;
@@ -19,6 +20,7 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::future::Future;
 use std::sync::Arc;
 use thiserror::Error;
 use vmbus_async::async_dgram::AsyncRecv;
@@ -35,7 +37,6 @@ use vmbus_core::protocol::Message;
 use vmbus_core::protocol::OpenChannelFlags;
 use vmbus_core::protocol::Version;
 use vmbus_core::HvsockConnectRequest;
-use vmbus_core::HvsockConnectResult;
 use vmbus_core::MonitorPageGpas;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::TaggedStream;
@@ -70,7 +71,7 @@ pub trait VmbusMessageSource: AsyncRecv + Send {
 
 pub struct VmbusClient {
     task_send: mesh::Sender<TaskRequest>,
-    client_request_send: mesh::Sender<ClientRequest>,
+    access: VmbusClientAccess,
     _thread: Task<()>,
 }
 
@@ -82,6 +83,11 @@ pub enum ConnectError {
     NoSupportedVersions,
     #[error("failed to connect to the server: {0:?}")]
     FailedToConnect(ConnectionState),
+}
+
+#[derive(Clone)]
+pub struct VmbusClientAccess {
+    client_request_send: Arc<mesh::Sender<ClientRequest>>,
 }
 
 impl VmbusClient {
@@ -112,12 +118,15 @@ impl VmbusClient {
             client_request_recv,
             state: ClientState::Disconnected,
             modify_request: None,
+            hvsock_tracker: hvsock::HvsockRequestTracker::new(),
         };
 
         let thread = spawner.spawn("vmbus client", async move { task.run().await });
 
         Self {
-            client_request_send,
+            access: VmbusClientAccess {
+                client_request_send: Arc::new(client_request_send),
+            },
             task_send,
             _thread: thread,
         }
@@ -136,7 +145,8 @@ impl VmbusClient {
             client_id,
         };
 
-        self.client_request_send
+        self.access
+            .client_request_send
             .call(ClientRequest::InitiateContact, request)
             .await
             .unwrap()
@@ -146,29 +156,23 @@ impl VmbusClient {
     /// which the client can forward received offers to.
     pub async fn request_offers(&mut self) -> Vec<OfferInfo> {
         let (send, recv) = mesh::channel();
-        self.client_request_send
+        self.access
+            .client_request_send
             .send(ClientRequest::RequestOffers(send));
         recv.collect().await
     }
 
     /// Send the Unload message to the server.
     pub async fn unload(&mut self) {
-        self.client_request_send
+        self.access
+            .client_request_send
             .call(ClientRequest::Unload, ())
             .await
             .unwrap();
     }
 
-    pub async fn modify(&mut self, request: ModifyConnectionRequest) -> ConnectionState {
-        self.client_request_send
-            .call(ClientRequest::Modify, request)
-            .await
-            .expect("Failed to send modify request")
-    }
-
-    pub fn connect_hvsock(&mut self, request: HvsockConnectRequest) {
-        self.client_request_send
-            .send(ClientRequest::HvsockConnect(request));
+    pub fn access(&self) -> &VmbusClientAccess {
+        &self.access
     }
 
     pub fn start(&mut self) {
@@ -203,6 +207,24 @@ impl VmbusClient {
 impl Inspect for VmbusClient {
     fn inspect(&self, req: inspect::Request<'_>) {
         self.task_send.send(TaskRequest::Inspect(req.defer()));
+    }
+}
+
+impl VmbusClientAccess {
+    pub async fn modify(&self, request: ModifyConnectionRequest) -> ConnectionState {
+        self.client_request_send
+            .call(ClientRequest::Modify, request)
+            .await
+            .expect("Failed to send modify request")
+    }
+
+    pub fn connect_hvsock(
+        &self,
+        request: HvsockConnectRequest,
+    ) -> impl Future<Output = Option<OfferInfo>> {
+        self.client_request_send
+            .call(ClientRequest::HvsockConnect, request)
+            .map(|r| r.ok().flatten())
     }
 }
 
@@ -269,7 +291,6 @@ pub struct OfferInfo {
 pub enum ClientNotification {
     Offer(OfferInfo),
     Revoke(ChannelId),
-    HvsockConnectResult(HvsockConnectResult),
 }
 
 #[derive(Debug)]
@@ -278,7 +299,7 @@ enum ClientRequest {
     RequestOffers(mesh::Sender<OfferInfo>),
     Unload(Rpc<(), ()>),
     Modify(Rpc<ModifyConnectionRequest, ConnectionState>),
-    HvsockConnect(HvsockConnectRequest),
+    HvsockConnect(Rpc<HvsockConnectRequest, Option<OfferInfo>>),
 }
 
 impl std::fmt::Display for ClientRequest {
@@ -383,7 +404,7 @@ enum ChannelState {
     /// The channel has been offered to the client.
     Offered,
     /// The channel has requested the server to be opened.
-    Opening(mesh::OneshotSender<bool>),
+    Opening(Rpc<(), bool>),
     /// The channel has been successfully opened.
     Opened,
 }
@@ -402,7 +423,7 @@ struct Channel {
     offer: protocol::OfferChannel,
     response_send: mesh::Sender<ChannelResponse>,
     state: ChannelState,
-    modify_response_send: Option<mesh::OneshotSender<i32>>,
+    modify_response_send: Option<Rpc<(), i32>>,
 }
 
 impl std::fmt::Debug for Channel {
@@ -470,6 +491,7 @@ impl Channel {
 struct ClientTask<T: VmbusMessageSource> {
     inner: ClientTaskInner,
     state: ClientState,
+    hvsock_tracker: hvsock::HvsockRequestTracker,
     running: bool,
     modify_request: Option<Rpc<ModifyConnectionRequest, ConnectionState>>,
     msg_source: T,
@@ -491,7 +513,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
                 FeatureFlags::new()
             };
 
-            let request = &rpc.0;
+            let request = rpc.input();
 
             tracing::debug!(version = ?version, ?feature_flags, "VmBus client connecting");
             let target_info = protocol::TargetInfo::new(SINT, VTL, feature_flags);
@@ -552,16 +574,17 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             return;
         }
 
-        let message = protocol::ModifyConnection::from(request.0);
+        let message = protocol::ModifyConnection::from(*request.input());
         self.modify_request = Some(request);
         self.inner.send(&message);
     }
 
-    fn handle_tl_connect(&mut self, request: HvsockConnectRequest) {
+    fn handle_tl_connect(&mut self, rpc: Rpc<HvsockConnectRequest, Option<OfferInfo>>) {
         // The client only supports protocol versions which use the newer message format.
         // The host will not send a TlConnectRequestResult message on success, so a response to this
         // message is not guaranteed.
-        let message = protocol::TlConnectRequest2::from(request);
+        let message = protocol::TlConnectRequest2::from(*rpc.input());
+        self.hvsock_tracker.add_request(rpc);
         self.inner.send(&message);
     }
 
@@ -678,10 +701,14 @@ impl<T: VmbusMessageSource> ClientTask<T> {
                 subchannel_index = offer.subchannel_index,
                 "received offer");
 
-            if let ClientState::RequestingOffers(_, send) = &self.state {
-                send.send(offer_info);
+            if let Some(offer) = self.hvsock_tracker.check_offer(&offer_info.offer) {
+                offer.complete(Some(offer_info));
             } else {
-                self.notify_send.send(ClientNotification::Offer(offer_info));
+                if let ClientState::RequestingOffers(_, send) = &self.state {
+                    send.send(offer_info);
+                } else {
+                    self.notify_send.send(ClientNotification::Offer(offer_info));
+                }
             }
         }
     }
@@ -781,7 +808,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             unreachable!("validated above");
         };
 
-        sender.send(gpadl_created)
+        sender.complete(gpadl_created)
     }
 
     fn handle_open_result(&mut self, result: protocol::OpenResult) {
@@ -811,7 +838,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             return;
         };
 
-        rpc.send(channel_opened);
+        rpc.complete(channel_opened);
     }
 
     fn handle_gpadl_torndown(&mut self, request: protocol::GpadlTorndown) {
@@ -893,12 +920,13 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             return;
         };
 
-        sender.send(response.status);
+        sender.complete(response.status);
     }
 
     fn handle_tl_connect_result(&mut self, response: protocol::TlConnectResult) {
-        self.notify_send
-            .send(ClientNotification::HvsockConnectResult(response.into()))
+        if let Some(rpc) = self.hvsock_tracker.check_result(&response) {
+            rpc.complete(None);
+        }
     }
 
     fn handle_synic_message(&mut self, data: &[u8]) {
@@ -981,7 +1009,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
         }
 
         tracing::info!(channel_id = channel_id.0, "opening channel on host");
-        let request = &rpc.0;
+        let request = rpc.input();
         let open_data = &request.open_data;
 
         let open_channel = protocol::OpenChannel {
@@ -1014,15 +1042,16 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             self.inner.send(&open_channel);
         }
 
-        self.inner.channels.get_mut(&channel_id).unwrap().state = ChannelState::Opening(rpc.1);
+        self.inner.channels.get_mut(&channel_id).unwrap().state =
+            ChannelState::Opening(rpc.split().1);
     }
 
     fn handle_gpadl(&mut self, channel_id: ChannelId, rpc: Rpc<GpadlRequest, bool>) {
-        let request = &rpc.0;
+        let (request, rpc) = rpc.split();
         if self
             .inner
             .gpadls
-            .insert((channel_id, request.id), GpadlState::Offered(rpc.1))
+            .insert((channel_id, request.id), GpadlState::Offered(rpc))
             .is_some()
         {
             panic!(
@@ -1129,12 +1158,12 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             panic!("duplicate channel modify request {channel_id:?}");
         }
 
-        channel.modify_response_send = Some(rpc.1);
-        let request = &rpc.0;
+        let (request, response) = rpc.split();
+        channel.modify_response_send = Some(response);
         let payload = match request {
             ModifyRequest::TargetVp { target_vp } => protocol::ModifyChannel {
                 channel_id,
-                target_vp: *target_vp,
+                target_vp,
             },
         };
 
@@ -1311,7 +1340,7 @@ impl<T: VmbusMessageSource> Inspect for ClientTask<T> {
 #[derive(Debug)]
 enum GpadlState {
     /// GpadlHeader has been sent to the host.
-    Offered(mesh::OneshotSender<bool>),
+    Offered(Rpc<(), bool>),
     /// Host has responded with GpadlCreated.
     Created,
     /// GpadlTeardown message has been sent to the host.
@@ -1409,7 +1438,7 @@ mod tests {
         }
 
         async fn connect(&self, client: &mut VmbusClient) {
-            let recv = client.client_request_send.call(
+            let recv = client.access.client_request_send.call(
                 ClientRequest::InitiateContact,
                 InitiateContactRequest::default(),
             );
@@ -1439,6 +1468,7 @@ mod tests {
 
             let (send, mut recv) = mesh::channel();
             client
+                .access
                 .client_request_send
                 .send(ClientRequest::RequestOffers(send));
 
@@ -1550,7 +1580,7 @@ mod tests {
     #[async_test]
     async fn test_initiate_contact_success() {
         let (server, client, _) = test_init();
-        let _recv = client.client_request_send.call(
+        let _recv = client.access.client_request_send.call(
             ClientRequest::InitiateContact,
             InitiateContactRequest::default(),
         );
@@ -1574,7 +1604,7 @@ mod tests {
     #[async_test]
     async fn test_connect_success() {
         let (server, client, _) = test_init();
-        let recv = client.client_request_send.call(
+        let recv = client.access.client_request_send.call(
             ClientRequest::InitiateContact,
             InitiateContactRequest::default(),
         );
@@ -1616,7 +1646,7 @@ mod tests {
     #[async_test]
     async fn test_feature_flags() {
         let (server, client, _) = test_init();
-        let recv = client.client_request_send.call(
+        let recv = client.access.client_request_send.call(
             ClientRequest::InitiateContact,
             InitiateContactRequest::default(),
         );
@@ -1668,6 +1698,7 @@ mod tests {
             ..Default::default()
         };
         let _recv = client
+            .access
             .client_request_send
             .call(ClientRequest::InitiateContact, initiate_contact);
 
@@ -1690,7 +1721,7 @@ mod tests {
     #[async_test]
     async fn test_version_negotiation() {
         let (server, client, _) = test_init();
-        let recv = client.client_request_send.call(
+        let recv = client.access.client_request_send.call(
             ClientRequest::InitiateContact,
             InitiateContactRequest::default(),
         );
@@ -1755,6 +1786,7 @@ mod tests {
 
         let (send, mut recv) = mesh::channel();
         client
+            .access
             .client_request_send
             .send(ClientRequest::RequestOffers(send));
 
@@ -1795,8 +1827,8 @@ mod tests {
         let (server, mut client, _) = test_init();
         let channel = server.get_channel(&mut client).await;
 
-        let (send, recv) = mesh::oneshot();
-        channel.request_send.send(ChannelRequest::Open(Rpc(
+        let recv = channel.request_send.call(
+            ChannelRequest::Open,
             OpenRequest {
                 open_data: OpenData {
                     target_vp: 0,
@@ -1808,8 +1840,7 @@ mod tests {
                 },
                 flags: OpenChannelFlags::new(),
             },
-            send,
-        )));
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -1846,8 +1877,8 @@ mod tests {
         let (server, mut client, _) = test_init();
         let channel = server.get_channel(&mut client).await;
 
-        let (send, recv) = mesh::oneshot();
-        channel.request_send.send(ChannelRequest::Open(Rpc(
+        let recv = channel.request_send.call(
+            ChannelRequest::Open,
             OpenRequest {
                 open_data: OpenData {
                     target_vp: 0,
@@ -1859,8 +1890,7 @@ mod tests {
                 },
                 flags: OpenChannelFlags::new(),
             },
-            send,
-        )));
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -1899,11 +1929,10 @@ mod tests {
 
         // N.B. A real server requires the channel to be open before sending this, but the test
         //      server doesn't care.
-        let (send, recv) = mesh::oneshot();
-        channel.request_send.send(ChannelRequest::Modify(Rpc(
+        let recv = channel.request_send.call(
+            ChannelRequest::Modify,
             ModifyRequest::TargetVp { target_vp: 1 },
-            send,
-        )));
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -2016,15 +2045,14 @@ mod tests {
     async fn test_gpadl_success() {
         let (server, mut client, _) = test_init();
         let mut channel = server.get_channel(&mut client).await;
-        let (send, recv) = mesh::oneshot();
-        channel.request_send.send(ChannelRequest::Gpadl(Rpc(
+        let recv = channel.request_send.call(
+            ChannelRequest::Gpadl,
             GpadlRequest {
                 id: GpadlId(1),
                 count: 1,
                 buf: vec![5],
             },
-            send,
-        )));
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -2079,15 +2107,14 @@ mod tests {
     async fn test_gpadl_fail() {
         let (server, mut client, _) = test_init();
         let channel = server.get_channel(&mut client).await;
-        let (send, recv) = mesh::oneshot();
-        channel.request_send.send(ChannelRequest::Gpadl(Rpc(
+        let recv = channel.request_send.call(
+            ChannelRequest::Gpadl,
             GpadlRequest {
                 id: GpadlId(1),
                 count: 1,
                 buf: vec![7],
             },
-            send,
-        )));
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -2121,15 +2148,14 @@ mod tests {
         let mut channel = server.get_channel(&mut client).await;
         let channel_id = ChannelId(0);
         let gpadl_id = GpadlId(1);
-        let (send, recv) = mesh::oneshot();
-        channel.request_send.send(ChannelRequest::Gpadl(Rpc(
+        let recv = channel.request_send.call(
+            ChannelRequest::Gpadl,
             GpadlRequest {
                 id: gpadl_id,
                 count: 1,
                 buf: vec![3],
             },
-            send,
-        )));
+        );
 
         assert_eq!(
             server.next().unwrap(),
@@ -2193,7 +2219,7 @@ mod tests {
     async fn test_modify_connection() {
         let (server, mut client, _) = test_init();
         server.connect(&mut client).await;
-        let call = client.client_request_send.call(
+        let call = client.access.client_request_send.call(
             ClientRequest::Modify,
             ModifyConnectionRequest {
                 monitor_page: Some(MonitorPageGpas {
@@ -2224,7 +2250,7 @@ mod tests {
 
     #[async_test]
     async fn test_hvsock() {
-        let (server, mut client, mut notify_recv) = test_init();
+        let (server, mut client, _notify_recv) = test_init();
         server.connect(&mut client).await;
         let request = HvsockConnectRequest {
             service_id: Guid::new_random(),
@@ -2232,7 +2258,7 @@ mod tests {
             silo_id: Guid::new_random(),
         };
 
-        client.connect_hvsock(request);
+        let resp = client.access().connect_hvsock(request);
         assert_eq!(
             server.next().unwrap(),
             OutgoingMessage::new(&protocol::TlConnectRequest2 {
@@ -2242,31 +2268,6 @@ mod tests {
                 },
                 silo_id: request.silo_id,
             })
-        );
-
-        // Send a success result (even though the host shouldn't send one, try it anyway to make
-        // sure the success field gets set correctly).
-        server.send(in_msg(
-            MessageType::TL_CONNECT_REQUEST_RESULT,
-            protocol::TlConnectResult {
-                service_id: request.service_id,
-                endpoint_id: request.endpoint_id,
-                status: 0,
-            },
-        ));
-
-        let ClientNotification::HvsockConnectResult(result) = notify_recv.next().await.unwrap()
-        else {
-            panic!("invalid notification")
-        };
-
-        assert_eq!(
-            result,
-            HvsockConnectResult {
-                service_id: request.service_id,
-                endpoint_id: request.endpoint_id,
-                success: true
-            }
         );
 
         // Now send a failure result.
@@ -2279,18 +2280,7 @@ mod tests {
             },
         ));
 
-        let ClientNotification::HvsockConnectResult(result) = notify_recv.next().await.unwrap()
-        else {
-            panic!("invalid notification")
-        };
-
-        assert_eq!(
-            result,
-            HvsockConnectResult {
-                service_id: request.service_id,
-                endpoint_id: request.endpoint_id,
-                success: false
-            }
-        );
+        let result = resp.await;
+        assert!(result.is_none());
     }
 }

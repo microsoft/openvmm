@@ -465,7 +465,7 @@ impl WhpProcessor<'_> {
             .vtls
             .lapic(self.state.runnable_vtls.highest_set().unwrap())
             .as_ref()
-            .map_or(false, |lapic| self.state.halted || lapic.startup_suspend);
+            .is_some_and(|lapic| self.state.halted || lapic.startup_suspend);
 
         Ok(!halted)
     }

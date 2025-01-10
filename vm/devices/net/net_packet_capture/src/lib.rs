@@ -310,7 +310,7 @@ impl Endpoint for PacketCaptureEndpoint {
                 Message::PacketCaptureEndpointCommand(
                     PacketCaptureEndpointCommand::PacketCapture(rpc),
                 ) => {
-                    let options = rpc.0;
+                    let (options, response) = rpc.split();
                     let result = async {
                         let id = &self.id;
                         let start = match options.operation {
@@ -341,7 +341,7 @@ impl Endpoint for PacketCaptureEndpoint {
                         Err(e) => (Err(e), false),
                         Ok(value) => (Ok(()), value),
                     };
-                    rpc.1.send(result.map_err(RemoteError::new));
+                    response.complete(result.map_err(RemoteError::new));
                     if restart_required {
                         break EndpointAction::RestartRequired;
                     }

@@ -264,7 +264,7 @@ fn parse_attr_list<T: Parse>(input: ParseStream<'_>) -> syn::Result<Punctuated<A
 fn parse_attrs<T: Parse>(attrs: &[Attribute]) -> syn::Result<Vec<Attr<T>>> {
     let mut idents = Vec::new();
     for attr in attrs {
-        if !attr.path().get_ident().map_or(false, |x| x == "inspect") {
+        if attr.path().get_ident().is_none_or(|x| x != "inspect") {
             continue;
         }
         let attrs = attr.parse_args_with(parse_attr_list)?;
@@ -276,7 +276,7 @@ fn parse_attrs<T: Parse>(attrs: &[Attribute]) -> syn::Result<Vec<Attr<T>>> {
 /// Parses a `bitfield(u32)` style attribute, returning the bitfield type.
 fn parse_bitfield_attr(attrs: &[Attribute]) -> syn::Result<Option<Ident>> {
     for attr in attrs {
-        if attr.path().get_ident().map_or(false, |x| x == "bitfield") {
+        if attr.path().get_ident().is_some_and(|x| x == "bitfield") {
             return Ok(Some(attr.parse_args()?));
         }
     }
@@ -403,7 +403,7 @@ fn fields_response(
                     && field
                         .ident
                         .as_ref()
-                        .map_or(false, |id| id.to_string().starts_with('_'));
+                        .is_some_and(|id| id.to_string().starts_with('_'));
 
                 (!skip).then(|| {
                     let ident = field.ident.as_ref().map_or_else(

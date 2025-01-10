@@ -510,7 +510,7 @@ impl ReceiverCore {
                         if !local
                             .waker
                             .as_ref()
-                            .map_or(false, |waker| waker.will_wake(cx.waker()))
+                            .is_some_and(|waker| waker.will_wake(cx.waker()))
                             && !this.is_closed()
                         {
                             local.waker = Some(cx.waker().clone());
