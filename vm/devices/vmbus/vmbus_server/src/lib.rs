@@ -33,13 +33,11 @@ use futures::StreamExt;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
 use inspect::Inspect;
-use mesh::error::RemoteError;
-use mesh::error::RemoteResult;
-use mesh::error::RemoteResultExt;
 use mesh::payload::Protobuf;
+use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh::RecvError;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_event::Event;
@@ -207,7 +205,7 @@ pub struct OfferInfo {
 
 #[derive(mesh::MeshPayload)]
 pub enum OfferRequest {
-    Offer(OfferInfo, mesh::OneshotSender<RemoteResult<()>>),
+    Offer(FailableRpc<OfferInfo, ()>),
 }
 
 impl Inspect for VmbusServer {
@@ -623,13 +621,13 @@ struct ServerTaskInner {
     hvsock_send: mesh::Sender<HvsockConnectRequest>,
     channels: HashMap<OfferId, Channel>,
     channel_responses: FuturesUnordered<
-        Pin<Box<dyn Send + Future<Output = (OfferId, u64, Result<ChannelResponse, RecvError>)>>>,
+        Pin<Box<dyn Send + Future<Output = (OfferId, u64, Result<ChannelResponse, RpcError>)>>>,
     >,
     external_server_send: Option<mesh::Sender<InitiateContactRequest>>,
     relay_send: mesh::Sender<ModifyRelayRequest>,
     channel_bitmap: Option<Arc<ChannelBitmap>>,
     shared_event_port: Option<Box<dyn Send>>,
-    reset_done: Option<mesh::OneshotSender<()>>,
+    reset_done: Option<Rpc<(), ()>>,
     enable_mnf: bool,
 }
 
@@ -722,7 +720,7 @@ impl ServerTask {
         &mut self,
         offer_id: OfferId,
         seq: u64,
-        response: Result<ChannelResponse, RecvError>,
+        response: Result<ChannelResponse, RpcError>,
     ) {
         // Validate the sequence to ensure the response is not for a revoked channel.
         let channel = self
@@ -847,9 +845,9 @@ impl ServerTask {
     fn handle_request(&mut self, request: VmbusRequest) {
         tracing::debug!(?request, "handle_request");
         match request {
-            VmbusRequest::Reset(Rpc((), done)) => {
+            VmbusRequest::Reset(rpc) => {
                 assert!(self.inner.reset_done.is_none());
-                self.inner.reset_done = Some(done);
+                self.inner.reset_done = Some(rpc);
                 self.server.with_notifier(&mut self.inner).reset();
                 // TODO: clear pending messages and other requests.
             }
@@ -1000,8 +998,8 @@ impl ServerTask {
                 }
                 r = self.offer_recv.select_next_some() => {
                     match r {
-                        OfferRequest::Offer(request, response) => {
-                            response.send(self.handle_offer(request).map_err(RemoteError::new))
+                        OfferRequest::Offer(rpc) => {
+                            rpc.handle_failable_sync(|request| { self.handle_offer(request) })
                         },
                     }
                 }
@@ -1156,10 +1154,9 @@ impl channels::Notifier for ServerTaskInner {
             req: impl FnOnce(Rpc<I, R>) -> ChannelRequest,
             input: I,
             f: impl 'static + Send + FnOnce(R) -> ChannelResponse,
-        ) -> Pin<Box<dyn Send + Future<Output = (OfferId, u64, Result<ChannelResponse, RecvError>)>>>
+        ) -> Pin<Box<dyn Send + Future<Output = (OfferId, u64, Result<ChannelResponse, RpcError>)>>>
         {
-            let (response, recv) = mesh::oneshot();
-            channel.send.send((req)(Rpc(input, response)));
+            let recv = channel.send.call(req, input);
             let seq = channel.seq;
             Box::pin(async move {
                 let r = recv.await.map(f);
@@ -1337,7 +1334,7 @@ impl channels::Notifier for ServerTaskInner {
         }
 
         let done = self.reset_done.take().expect("must have requested reset");
-        done.send(());
+        done.complete(());
     }
 }
 
@@ -1503,9 +1500,9 @@ impl VmbusServerControl {
     /// This is used by the relay to forward the host's parameters.
     pub async fn offer_core(&self, offer_info: OfferInfo) -> anyhow::Result<OfferResources> {
         let flags = offer_info.params.flags;
-        let (send, recv) = mesh::oneshot();
-        self.send.send(OfferRequest::Offer(offer_info, send));
-        recv.await.flatten()?;
+        self.send
+            .call_failable(OfferRequest::Offer, offer_info)
+            .await?;
         Ok(OfferResources::new(
             self.mem.clone(),
             if flags.confidential_ring_buffer() || flags.confidential_external_memory() {
@@ -1713,7 +1710,7 @@ mod tests {
                 panic!("Wrong request");
             };
 
-            f(&rpc.0);
+            f(rpc.input());
             rpc.complete(true);
         }
 

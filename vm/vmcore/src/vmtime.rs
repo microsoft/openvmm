@@ -289,7 +289,7 @@ impl TimerState {
         }
 
         // Update the timer if needed.
-        if self.next.map_or(false, |next| next.is_before(time)) {
+        if self.next.is_some_and(|next| next.is_before(time)) {
             return;
         }
         self.set_next(time);
@@ -305,7 +305,7 @@ impl TimerState {
     ) -> Poll<Timestamp> {
         let now = self.now(now_os);
         let state = &mut self.waiters[index];
-        if next.map_or(false, |next| next.is_before(now.vmtime)) {
+        if next.is_some_and(|next| next.is_before(now.vmtime)) {
             state.waker = None;
             state.next = None;
             return Poll::Ready(now);

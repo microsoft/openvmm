@@ -8,7 +8,7 @@ use iced_x86::ConditionCode;
 use iced_x86::Instruction;
 use x86defs::RFlags;
 
-impl<'a, T: Cpu> Emulator<'a, T> {
+impl<T: Cpu> Emulator<'_, T> {
     pub(super) async fn setcc(
         &mut self,
         instr: &Instruction,

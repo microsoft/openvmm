@@ -17,6 +17,7 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
@@ -39,9 +40,9 @@ pub struct NvmeWorkers {
 #[derive(Debug)]
 enum EnableState {
     Disabled,
-    Enabling(mesh::OneshotReceiver<()>),
+    Enabling(PendingRpc<()>),
     Enabled,
-    Resetting(mesh::OneshotReceiver<()>),
+    Resetting(PendingRpc<()>),
 }
 
 impl InspectMut for NvmeWorkers {

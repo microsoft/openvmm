@@ -6889,6 +6889,8 @@ dependencies = [
  "base64 0.21.7",
  "base64-serde",
  "cvm_tracing",
+ "disk_backend",
+ "disklayer_ram",
  "getrandom",
  "guest_emulation_transport",
  "guid",
@@ -7985,12 +7987,12 @@ dependencies = [
  "parking_lot",
  "tracelimit",
  "tracing",
+ "unicycle",
  "vmbus_channel",
  "vmbus_client",
  "vmbus_core",
  "vmbus_server",
  "vmcore",
- "zerocopy",
 ]
 
 [[package]]

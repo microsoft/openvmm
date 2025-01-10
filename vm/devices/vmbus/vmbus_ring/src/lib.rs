@@ -1155,7 +1155,7 @@ pub fn inspect_ring<M: RingMem>(mem: M, req: inspect::Request<'_>) {
 /// Returns whether a ring buffer is in a state where the receiving end might
 /// need a signal.
 pub fn reader_needs_signal<M: RingMem>(mem: M) -> bool {
-    InnerRing::new(mem).map_or(false, |ring| {
+    InnerRing::new(mem).is_ok_and(|ring| {
         let control = ring.control();
         control.interrupt_mask().load(Ordering::Relaxed) == 0
             && (control.inp().load(Ordering::Relaxed) != control.outp().load(Ordering::Relaxed))
@@ -1165,7 +1165,7 @@ pub fn reader_needs_signal<M: RingMem>(mem: M) -> bool {
 /// Returns whether a ring buffer is in a state where the sending end might need
 /// a signal.
 pub fn writer_needs_signal<M: RingMem>(mem: M) -> bool {
-    InnerRing::new(mem).map_or(false, |ring| {
+    InnerRing::new(mem).is_ok_and(|ring| {
         let control = ring.control();
         let pending_size = control.pending_send_size().load(Ordering::Relaxed);
         pending_size != 0

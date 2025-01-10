@@ -27,6 +27,7 @@ mod windows;
 
 use inspect::InspectMut;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use pal_async::driver::Driver;
 use smoltcp::phy::Checksum;
@@ -51,7 +52,7 @@ use thiserror::Error;
 pub enum ConsommeMessageError {
     /// Communication error with running instance.
     #[error("communication error")]
-    Mesh(mesh::RecvError),
+    Mesh(RpcError),
     /// Error executing request on current network instance.
     #[error("network err")]
     Network(DropReason),
