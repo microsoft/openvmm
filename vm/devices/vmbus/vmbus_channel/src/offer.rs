@@ -182,7 +182,7 @@ impl Offer {
             gpadl_map: self.gpadl_map.clone(),
         };
         message.response.respond(Some(OpenResult {
-            guest_to_host_interrupt: Interrupt::from_event(self.event.event().unwrap().clone()),
+            guest_to_host_interrupt: self.event.clone().interrupt(),
         }));
         Ok(resources)
     }
