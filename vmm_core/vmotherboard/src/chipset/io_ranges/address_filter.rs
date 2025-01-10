@@ -84,7 +84,7 @@ where
             .unwrap_or_else(|x| x);
         self.ranges
             .get(i)
-            .map_or(false, |(start, end)| address >= start && address <= end)
+            .is_some_and(|(start, end)| address >= start && address <= end)
     }
 }
 

@@ -45,6 +45,7 @@ pub const VERSION_THRESHOLD: u16 = version(6, 2);
 
 open_enum! {
     #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub enum NtStatus: u32 {
         SUCCESS = 0x0000_0000,
         BUFFER_OVERFLOW = 0x8000_0005, // The data was too large to fit into the specified buffer.
@@ -66,6 +67,7 @@ open_enum! {
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Packet {
     // Requested operation type
     pub operation: Operation,
@@ -77,6 +79,7 @@ pub struct Packet {
 
 open_enum! {
     #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub enum Operation: u32 {
         COMPLETE_IO = 1,
         REMOVE_DEVICE = 2,
@@ -101,6 +104,7 @@ pub const VMSCSI_SENSE_BUFFER_SIZE: usize = 0x14;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ScsiRequest {
     pub length: u16,
     pub srb_status: SrbStatusAndFlags,

@@ -83,8 +83,8 @@ impl UeventListener {
                     || (kvs.get("RESIZE") == Some("1")
                         && kvs.get("SUBSYSTEM") == Some("block")
                         && kvs.get("ACTION") == Some("change")
-                        && kvs.get("MAJOR").map_or(false, |x| x.parse() == Ok(major))
-                        && kvs.get("MINOR").map_or(false, |x| x.parse() == Ok(minor)))
+                        && kvs.get("MAJOR").is_some_and(|x| x.parse() == Ok(major))
+                        && kvs.get("MINOR").is_some_and(|x| x.parse() == Ok(minor)))
                 {
                     notify();
                 }

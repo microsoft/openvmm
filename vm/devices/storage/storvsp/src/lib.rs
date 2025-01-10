@@ -6,10 +6,18 @@
 #[cfg(feature = "ioperf")]
 pub mod ioperf;
 
+#[cfg(feature = "fuzz_helpers")]
+pub mod protocol;
+#[cfg(feature = "fuzz_helpers")]
+pub mod test_helpers;
+
+#[cfg(not(feature = "fuzz_helpers"))]
 mod protocol;
+#[cfg(not(feature = "fuzz_helpers"))]
+mod test_helpers;
+
 pub mod resolver;
 mod save_restore;
-mod test_helpers;
 
 use crate::ring::gparange::GpnList;
 use crate::ring::gparange::MultiPagedRangeBuf;
@@ -64,6 +72,7 @@ use thiserror::Error;
 use tracing_helpers::ErrorValueExt;
 use unicycle::FuturesUnordered;
 use vmbus_async::queue;
+use vmbus_async::queue::ExternalDataError;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
 use vmbus_async::queue::Queue;
@@ -294,9 +303,9 @@ enum PacketError {
     #[error("Invalid data transfer length")]
     InvalidDataTransferLength,
     #[error("Access error: {0}")]
-    Access(AccessError),
+    Access(#[source] AccessError),
     #[error("Range error")]
-    Range,
+    Range(#[source] ExternalDataError),
 }
 
 #[derive(Debug, Default, Clone)]
@@ -391,9 +400,7 @@ fn parse_packet<T: RingMem>(
                 let request_buf = &mut full_request.request.as_bytes_mut()[..request_size];
                 reader.read(request_buf).map_err(PacketError::Access)?;
 
-                let buf = packet
-                    .read_external_ranges()
-                    .map_err(|_| PacketError::Range)?;
+                let buf = packet.read_external_ranges().map_err(PacketError::Range)?;
 
                 full_request.external_data = Range::new(buf, &full_request.request)
                     .ok_or(PacketError::InvalidDataTransferLength)?;
@@ -1735,6 +1742,17 @@ mod tests {
     use test_with_tracing::test;
     use vmbus_channel::connected_async_channels;
 
+    // Discourage `Clone` for `ScsiController` outside the crate, but it is
+    // necessary for testing. The fuzzer also uses `TestWorker`, which needs
+    // a `clone` of the inner state, but is not in this crate.
+    impl Clone for ScsiController {
+        fn clone(&self) -> Self {
+            ScsiController {
+                state: self.state.clone(),
+            }
+        }
+    }
+
     #[async_test]
     async fn test_channel_working(driver: DefaultDriver) {
         // set up the channels and worker
@@ -1759,7 +1777,7 @@ mod tests {
             .unwrap();
 
         let test_worker = TestWorker::start(
-            controller.state.clone(),
+            controller.clone(),
             driver.clone(),
             test_guest_mem.clone(),
             host,
@@ -1814,7 +1832,7 @@ mod tests {
         let controller = ScsiController::new();
 
         let _worker = TestWorker::start(
-            controller.state.clone(),
+            controller.clone(),
             driver.clone(),
             test_guest_mem,
             host,
@@ -1885,7 +1903,7 @@ mod tests {
         let controller = ScsiController::new();
 
         let _worker = TestWorker::start(
-            controller.state.clone(),
+            controller.clone(),
             driver.clone(),
             test_guest_mem,
             host,
@@ -1935,7 +1953,7 @@ mod tests {
         let controller = ScsiController::new();
 
         let worker = TestWorker::start(
-            controller.state.clone(),
+            controller.clone(),
             driver.clone(),
             test_guest_mem,
             host,
@@ -1975,7 +1993,7 @@ mod tests {
         let controller = ScsiController::new();
 
         let _worker = TestWorker::start(
-            controller.state.clone(),
+            controller.clone(),
             driver.clone(),
             test_guest_mem,
             host,
@@ -2060,7 +2078,7 @@ mod tests {
         let controller = ScsiController::new();
 
         let _worker = TestWorker::start(
-            controller.state.clone(),
+            controller.clone(),
             driver.clone(),
             test_guest_mem,
             host,
@@ -2102,7 +2120,7 @@ mod tests {
         let controller = ScsiController::new();
 
         let test_worker = TestWorker::start(
-            controller.state.clone(),
+            controller.clone(),
             driver.clone(),
             test_guest_mem.clone(),
             host,
@@ -2283,7 +2301,7 @@ mod tests {
 
         let test_guest_mem = GuestMemory::allocate(16384);
         let worker = TestWorker::start(
-            controller.state.clone(),
+            controller.clone(),
             &driver,
             test_guest_mem.clone(),
             host,

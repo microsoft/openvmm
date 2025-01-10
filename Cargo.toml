@@ -30,6 +30,7 @@ members = [
   "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
   "vm/devices/storage/scsi_buffers/fuzz",
+  "vm/devices/storage/storvsp/fuzz",
   "vm/vmcore/guestmem/fuzz",
   "vm/x86/x86emu/fuzz",
   # in-guest test bins
@@ -591,12 +592,20 @@ rust-2024-compatibility = { level = "warn", priority = -1 }
 edition_2024_expr_fragment_specifier = "allow"
 impl_trait_overcaptures = "allow"
 deprecated-safe-2024 = "allow"
+tail-expr-drop-order = "allow"
+if-let-rescope = "allow"
 
 unused_qualifications = "warn"
 
 # Code that needs unsafe should opt-in via a module-scoped allow.
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "forbid"
+
+# TODO: Needed for xshell compatibility, fixed in v0.2.7
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(trick_rust_analyzer_into_highlighting_interpolated_bits)'] }
+
+# TODO: Remove when we update to Rust 1.84, needed for if-let-rescope
+unknown_lints = "allow"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"
