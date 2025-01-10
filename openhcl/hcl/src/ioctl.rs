@@ -1872,7 +1872,7 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
 
         // By default block all (i.e. set all), and only allow (unset) given vectors
         for (filter, irr) in proxy_irr_blocked.iter_mut().zip(irr_filter.iter()) {
-            filter.store(0xFFFFFFFF & (!irr), Ordering::Relaxed);
+            filter.store(!irr, Ordering::Relaxed);
             tracing::debug!(irr, "update_proxy_irr_filter");
         }
     }
