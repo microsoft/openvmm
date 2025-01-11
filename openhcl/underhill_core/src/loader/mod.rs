@@ -427,12 +427,12 @@ pub fn write_uefi_config(
             let header =
                 acpi_spec::Header::ref_from_prefix(table).ok_or(Error::InvalidAcpiTableLength)?;
             match &header.signature {
-                b"HMAT" => cfg.add_raw(config::BlobStructureType::Hmat, table),
-                b"IORT" => cfg.add_raw(config::BlobStructureType::Iort, table),
-                b"MADT" => {
+                b"APIC" => {
                     cfg.add_raw(config::BlobStructureType::Madt, table);
                     build_madt = false
                 }
+                b"HMAT" => cfg.add_raw(config::BlobStructureType::Hmat, table),
+                b"IORT" => cfg.add_raw(config::BlobStructureType::Iort, table),
                 b"MCFG" => cfg.add_raw(config::BlobStructureType::Mcfg, table),
                 b"SRAT" => {
                     cfg.add_raw(config::BlobStructureType::Srat, table);
