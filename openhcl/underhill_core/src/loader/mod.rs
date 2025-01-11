@@ -428,15 +428,15 @@ pub fn write_uefi_config(
                 acpi_spec::Header::ref_from_prefix(table).ok_or(Error::InvalidAcpiTableLength)?;
             match &header.signature {
                 b"APIC" => {
-                    cfg.add_raw(config::BlobStructureType::Madt, table);
-                    build_madt = false
+                    build_madt = false;
+                    cfg.add_raw(config::BlobStructureType::Madt, table)
                 }
                 b"HMAT" => cfg.add_raw(config::BlobStructureType::Hmat, table),
                 b"IORT" => cfg.add_raw(config::BlobStructureType::Iort, table),
                 b"MCFG" => cfg.add_raw(config::BlobStructureType::Mcfg, table),
                 b"SRAT" => {
-                    cfg.add_raw(config::BlobStructureType::Srat, table);
-                    build_srat = false
+                    build_srat = false;
+                    cfg.add_raw(config::BlobStructureType::Srat, table)
                 }
                 b"SSDT" => cfg.add_raw(config::BlobStructureType::Ssdt, table),
                 _ => return Err(Error::InvalidAcpiTableSignature(header.signature)),
@@ -446,7 +446,7 @@ pub fn write_uefi_config(
 
     // - Data that comes from the IGVM parameters
 
-    if (build_madt || build_srat) {
+    if build_madt || build_srat {
         let acpi_builder = AcpiTablesBuilder {
             processor_topology,
             mem_layout,
@@ -460,14 +460,14 @@ pub fn write_uefi_config(
         };
 
         // Build the ACPI tables as specified.
-        if (build_madt) {
+        if build_madt {
             let madt = acpi_builder.build_madt();
             cfg.add_raw(config::BlobStructureType::Madt, &madt);
         }
 
-        if (build_srat) {
+        if build_srat {
             let srat = acpi_builder.build_srat();
-            cfg.add_raw(config::BlobStructureType::Srat, &srat)
+            cfg.add_raw(config::BlobStructureType::Srat, &srat);
         }
     }
 
