@@ -7,6 +7,7 @@ edition = "2021"
 rust-version.workspace = true
 
 [dependencies]
+bitfield-struct.workspace = true
 open_enum.workspace = true
 guid.workspace = true
 mesh.workspace = true

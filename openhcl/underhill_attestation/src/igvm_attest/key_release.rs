@@ -7,8 +7,7 @@
 
 use base64::Engine;
 use openhcl_attestation_protocol::igvm_attest::akv;
-use openhcl_attestation_protocol::igvm_attest::get::IgvmResultInfo;
-use openhcl_attestation_protocol::igvm_attest::get::IGVM_SIGNAL_RETRY_RCOMMENDED_BIT;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
 use openssl::hash::MessageDigest;
 use openssl::pkey::PKey;
 use openssl::rsa::Padding;
@@ -25,6 +24,8 @@ use zerocopy::FromBytes;
 pub(crate) enum KeyReleaseError {
     #[error("the response size is too small to parse")]
     ResponseSizeTooSmall,
+    #[error("the response payload size is too small to parse")]
+    PayloadSizeTooSmall,
     #[error("failed to parse AKV JWT (API version > 7.2)")]
     ParseAkvJwt(#[source] AkvKeyReleaseJwtError),
     #[error("error occurs during AKV JWT signature verification")]
@@ -140,31 +141,30 @@ pub fn parse_response(
         openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader,
     >();
 
-    const RESULT_INFO_SIZE: usize = size_of::<IgvmResultInfo>();
+    const ERROR_INFO_SIZE: usize = size_of::<IgvmErrorInfo>();
 
     let wrapped_key_size = rsa_modulus_size + rsa_modulus_size + AES_IC_SIZE;
     let wrapped_key_base64_url_size = wrapped_key_size / 3 * 4;
-    let minimum_response_size =
-        CIPHER_TEXT_KEY.len() + wrapped_key_base64_url_size - 1 + HEADER_SIZE;
+    let minimum_payload_size = CIPHER_TEXT_KEY.len() + wrapped_key_base64_url_size - 1;
 
     if response.is_empty() || response.len() < HEADER_SIZE {
         Err(KeyReleaseError::ResponseSizeTooSmall)?
     }
 
     // Extract result info from response header
-    let result_info =
-        IgvmResultInfo::ref_from_prefix(&response[HEADER_SIZE - RESULT_INFO_SIZE..]).unwrap();
+    let error_info =
+        IgvmErrorInfo::ref_from_prefix(&response[HEADER_SIZE - ERROR_INFO_SIZE..]).unwrap();
 
-    if 0 != result_info.igvmagent_error_code {
+    if 0 != error_info.error_code {
         Err(KeyReleaseError::IgvmAttestation {
-            error_code: result_info.igvmagent_error_code,
-            http_status_code: result_info.igvmagent_http_status_code,
-            retry_signal: 0 != (result_info.igvmagent_signal & IGVM_SIGNAL_RETRY_RCOMMENDED_BIT),
+            error_code: error_info.error_code,
+            http_status_code: error_info.http_status_code,
+            retry_signal: error_info.igvm_signal.retry(),
         })?
     }
 
-    if response.len() < minimum_response_size {
-        Err(KeyReleaseError::ResponseSizeTooSmall)?
+    if response.len() < minimum_payload_size {
+        Err(KeyReleaseError::PayloadSizeTooSmall)?
     }
 
     let payload = &response[HEADER_SIZE..];

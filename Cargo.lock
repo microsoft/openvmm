@@ -4472,6 +4472,7 @@ version = "0.0.0"
 dependencies = [
  "base64 0.21.7",
  "base64-serde",
+ "bitfield-struct",
  "guid",
  "hex",
  "mesh",
