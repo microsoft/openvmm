@@ -8,6 +8,7 @@ mod channels;
 pub mod hvsock;
 mod monitor;
 mod proxyintegration;
+mod util;
 
 /// The GUID type used for vmbus channel identifiers.
 pub type Guid = guid::Guid;
@@ -18,6 +19,7 @@ use channel_bitmap::ChannelBitmap;
 use channels::ConnectionTarget;
 pub use channels::InitiateContactRequest;
 use channels::InterruptPageError;
+use channels::MessageTarget;
 use channels::ModifyConnectionRequest;
 pub use channels::ModifyConnectionResponse;
 use channels::OfferId;
@@ -81,6 +83,7 @@ use vmcore::interrupt::Interrupt;
 use vmcore::save_restore::SavedStateRoot;
 use vmcore::synic::EventPort;
 use vmcore::synic::GuestEventPort;
+use vmcore::synic::GuestMessagePort;
 use vmcore::synic::MessagePort;
 use vmcore::synic::SynicPortAccess;
 
@@ -462,10 +465,10 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             private_gm: self.private_gm,
             vtl: self.vtl,
             redirect_vtl,
-            message_target: ConnectionTarget {
-                vp: 0,
-                sint: redirect_sint,
-            },
+            redirect_sint,
+            message_port: self
+                .synic
+                .new_guest_message_port(redirect_vtl, 0, redirect_sint),
             synic: self.synic,
             hvsock_requests: 0,
             hvsock_send,
@@ -616,7 +619,8 @@ struct ServerTaskInner {
     synic: Arc<dyn SynicPortAccess>,
     vtl: Vtl,
     redirect_vtl: Vtl,
-    message_target: ConnectionTarget,
+    redirect_sint: u8,
+    message_port: Box<dyn GuestMessagePort>,
     hvsock_requests: usize,
     hvsock_send: mesh::Sender<HvsockConnectRequest>,
     channels: HashMap<OfferId, Channel>,
@@ -647,6 +651,7 @@ struct Channel {
     state: ChannelState,
     gpadls: Arc<GpadlMap>,
     guest_event_port: Box<dyn GuestEventPort>,
+    reserved_guest_message_port: Option<Box<dyn GuestMessagePort>>,
     flags: protocol::OfferFlags,
 }
 
@@ -698,6 +703,7 @@ impl ServerTask {
                 state: ChannelState::Closed,
                 gpadls: GpadlMap::new(),
                 guest_event_port,
+                reserved_guest_message_port: None,
                 seq: id,
                 flags,
             },
@@ -853,7 +859,7 @@ impl ServerTask {
             }
             VmbusRequest::Inspect(deferred) => {
                 deferred.respond(|resp| {
-                    resp.field("message_target.vp", self.inner.message_target.vp)
+                    resp.field("message_target.vp", self.inner.message_port.target_vp())
                         .field("running", self.running)
                         .field("hvsock_requests", self.inner.hvsock_requests)
                         .field_mut_with("unstick_channels", |v| {
@@ -1238,7 +1244,7 @@ impl channels::Notifier for ServerTaskInner {
             channels::Action::Modify { target_vp } => {
                 if let ChannelState::Open { open_params, .. } = channel.state {
                     let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
-                        (self.redirect_vtl, self.message_target.sint)
+                        (self.redirect_vtl, self.redirect_sint)
                     } else {
                         (self.vtl, SINT)
                     };
@@ -1273,7 +1279,7 @@ impl channels::Notifier for ServerTaskInner {
             .context("Failed to map monitor page.")?;
 
         if let Some(vp) = request.target_message_vp {
-            self.message_target.vp = vp;
+            self.message_port.set_target_vp(vp);
         }
 
         if request.notify_relay {
@@ -1324,11 +1330,24 @@ impl channels::Notifier for ServerTaskInner {
         }
     }
 
-    fn send_message(&mut self, message: OutgoingMessage, target: Option<ConnectionTarget>) {
-        let ConnectionTarget { vp, sint } = target.unwrap_or(self.message_target);
+    fn send_message(&mut self, message: OutgoingMessage, target: MessageTarget) {
+        let port = match target {
+            MessageTarget::Default => util::BorrowedOrOwned::Borrowed(&self.message_port),
+            MessageTarget::ReservedChannel(offer_id) => util::BorrowedOrOwned::Borrowed(
+                self.channels
+                    .get(&offer_id)
+                    .expect("channel does not exist")
+                    .reserved_guest_message_port
+                    .as_ref()
+                    .expect("channel is not reserved"),
+            ),
+            MessageTarget::Custom { vp, sint } => util::BorrowedOrOwned::Owned(
+                self.synic
+                    .new_guest_message_port(self.redirect_vtl, vp, sint),
+            ),
+        };
 
-        self.synic
-            .post_message(self.redirect_vtl, vp, sint, 1, message.data());
+        port.post_message(1, message.data());
     }
 
     fn notify_hvsock(&mut self, request: &HvsockConnectRequest) {
@@ -1345,6 +1364,21 @@ impl channels::Notifier for ServerTaskInner {
 
         let done = self.reset_done.take().expect("must have requested reset");
         done.complete(());
+    }
+
+    fn update_reserved_channel(&mut self, offer_id: OfferId, target: ConnectionTarget) {
+        let channel = self
+            .channels
+            .get_mut(&offer_id)
+            .expect("channel does not exist");
+
+        // Destroy the old port before creating a new one.
+        channel.reserved_guest_message_port = None;
+        channel.reserved_guest_message_port = Some(self.synic.new_guest_message_port(
+            self.redirect_vtl,
+            target.vp,
+            target.sint,
+        ));
     }
 }
 
@@ -1367,7 +1401,7 @@ impl ServerTaskInner {
             (open_params.open_data.target_vp, open_params.event_flag)
         };
         let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
-            (self.redirect_vtl, self.message_target.sint)
+            (self.redirect_vtl, self.redirect_sint)
         } else {
             (self.vtl, SINT)
         };
@@ -1385,6 +1419,15 @@ impl ServerTaskInner {
                 .monitor_support()
                 .map(|monitor| monitor.register_monitor(monitor_id, open_params.connection_id))
         });
+
+        // Set up a message port if this is a reserved channel.
+        if let Some(reserved_target) = open_params.reserved_target {
+            channel.reserved_guest_message_port = Some(self.synic.new_guest_message_port(
+                self.redirect_vtl,
+                reserved_target.vp,
+                reserved_target.sint,
+            ));
+        }
 
         channel.state = ChannelState::Opening {
             open_params: *open_params,
@@ -1699,6 +1742,20 @@ mod tests {
         fn set(&mut self, _vtl: Vtl, _vp: u32, _sint: u8, _flag: u16) {}
     }
 
+    struct MockGuestMessagePort(mesh::Sender<Vec<u8>>);
+
+    impl GuestMessagePort for MockGuestMessagePort {
+        fn post_message(&self, _typ: u32, payload: &[u8]) {
+            self.0.send(payload.into());
+        }
+
+        fn set_target_vp(&mut self, _vp: u32) {}
+
+        fn target_vp(&self) -> u32 {
+            0
+        }
+    }
+
     impl SynicPortAccess for MockSynic {
         fn add_message_port(
             &self,
@@ -1719,8 +1776,13 @@ mod tests {
             Ok(Box::new(connection_id))
         }
 
-        fn post_message(&self, _vtl: Vtl, _vp: u32, _sint: u8, _typ: u32, payload: &[u8]) {
-            self.message_send.send(payload.into());
+        fn new_guest_message_port(
+            &self,
+            _vtl: Vtl,
+            _vp: u32,
+            _sint: u8,
+        ) -> Box<dyn GuestMessagePort> {
+            Box::new(MockGuestMessagePort(self.message_send.clone()))
         }
 
         fn new_guest_event_port(&self) -> Box<dyn GuestEventPort> {

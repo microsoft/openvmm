@@ -53,13 +53,8 @@ pub trait SynicPortAccess: Send + Sync {
         port: Arc<dyn EventPort>,
     ) -> Result<Box<dyn Sync + Send>, Error>;
 
-    /// Posts a message to the guest.
-    ///
-    /// It is the caller's responsibility to not queue too many messages. There
-    /// is no backpressure mechanism at the transport layer.
-    ///
-    /// FUTURE: add backpressure.
-    fn post_message(&self, vtl: Vtl, vp: u32, sint: u8, typ: u32, payload: &[u8]);
+    /// Creates a [`GuestMessagePort`] for posting messages to the guest.
+    fn new_guest_message_port(&self, vtl: Vtl, vp: u32, sint: u8) -> Box<dyn GuestMessagePort>;
 
     /// Creates a [`GuestEventPort`] for signaling VMBus channels in the guest.
     fn new_guest_event_port(&self) -> Box<dyn GuestEventPort>;
@@ -102,4 +97,21 @@ pub trait GuestEventPort: Send + Sync {
 
     /// Updates the parameters for the event port.
     fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16);
+}
+
+/// A guest message port, created by [`SynicPortAccess::new_guest_message_port`].
+pub trait GuestMessagePort: Send + Sync {
+    /// Posts a message to the guest.
+    ///
+    /// It is the caller's responsibility to not queue too many messages. There
+    /// is no backpressure mechanism at the transport layer.
+    ///
+    /// FUTURE: add backpressure.
+    fn post_message(&self, typ: u32, payload: &[u8]);
+
+    /// Changes the virtual processor to which messages are sent.
+    fn set_target_vp(&mut self, vp: u32);
+
+    /// Gets the current virtual processor to which messages are sent.
+    fn target_vp(&self) -> u32;
 }
