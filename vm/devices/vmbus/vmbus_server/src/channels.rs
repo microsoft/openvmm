@@ -81,6 +81,8 @@ pub enum ChannelError {
     ChannelNotReserved,
     #[error("received untrusted message for trusted connection")]
     UntrustedMessage,
+    #[error("an error occurred in the synic")]
+    SynicError(#[source] vmcore::synic::Error),
 }
 
 #[derive(Debug, Error)]
@@ -638,7 +640,7 @@ impl From<OfferParams> for OfferParamsInternal {
 pub enum MessageTarget {
     Default,
     ReservedChannel(OfferId),
-    Custom { vp: u32, sint: u8 },
+    Custom(ConnectionTarget),
 }
 
 impl MessageTarget {
@@ -1245,7 +1247,11 @@ pub trait Notifier: Send {
     fn reset_complete(&mut self);
 
     /// Updates the message port for a reserved channel.
-    fn update_reserved_channel(&mut self, offer_id: OfferId, target: ConnectionTarget);
+    fn update_reserved_channel(
+        &mut self,
+        offer_id: OfferId,
+        target: ConnectionTarget,
+    ) -> Result<(), ChannelError>;
 }
 
 impl Server {
@@ -2017,10 +2023,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             // Send an unsupported response to the requested SINT.
             self.send_version_response_with_target(
                 None,
-                MessageTarget::Custom {
+                MessageTarget::Custom(ConnectionTarget {
                     vp: request.target_message_vp,
                     sint: request.target_sint,
-                },
+                }),
             );
 
             return;
@@ -2791,7 +2797,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     resvd.target.vp = input.target_vp;
                     resvd.target.sint = input.target_sint as u8;
                     self.notifier
-                        .update_reserved_channel(offer_id, resvd.target);
+                        .update_reserved_channel(offer_id, resvd.target)?;
                 }
 
                 channel.state = ChannelState::Closing {
@@ -3597,7 +3603,7 @@ mod tests {
                 padding: 0,
                 selected_version_or_connection_id: 0,
             }),
-            MessageTarget::Custom { vp: 0, sint: 3 },
+            MessageTarget::Custom(ConnectionTarget { vp: 0, sint: 3 }),
         );
 
         // SINT is ignored if the multiclient port is not used.
@@ -3976,9 +3982,14 @@ mod tests {
             self.reset = true;
         }
 
-        fn update_reserved_channel(&mut self, offer_id: OfferId, target: ConnectionTarget) {
+        fn update_reserved_channel(
+            &mut self,
+            offer_id: OfferId,
+            target: ConnectionTarget,
+        ) -> Result<(), ChannelError> {
             assert!(self.reserved_channel_update.is_none());
             self.reserved_channel_update = Some((offer_id, target));
+            Ok(())
         }
     }
 

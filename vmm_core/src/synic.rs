@@ -139,17 +139,24 @@ impl SynicPortAccess for SynicPorts {
         }))
     }
 
-    fn new_guest_message_port(&self, vtl: Vtl, vp: u32, sint: u8) -> Box<dyn GuestMessagePort> {
-        Box::new(DirectGuestMessagePort {
+    fn new_guest_message_port(
+        &self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+    ) -> Result<Box<dyn GuestMessagePort>, vmcore::synic::Error> {
+        Ok(Box::new(DirectGuestMessagePort {
             partition: Arc::clone(&self.partition),
             vtl,
             vp: VpIndex::new(vp),
             sint,
-        })
+        }))
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn vmcore::synic::GuestEventPort> {
-        self.partition.new_guest_event_port()
+    fn new_guest_event_port(
+        &self,
+    ) -> Result<Box<dyn vmcore::synic::GuestEventPort>, vmcore::synic::Error> {
+        Ok(self.partition.new_guest_event_port())
     }
 
     fn prefer_os_events(&self) -> bool {

@@ -16,6 +16,7 @@ pub type Guid = guid::Guid;
 use anyhow::Context;
 use async_trait::async_trait;
 use channel_bitmap::ChannelBitmap;
+use channels::ChannelError;
 use channels::ConnectionTarget;
 pub use channels::InitiateContactRequest;
 use channels::InterruptPageError;
@@ -468,7 +469,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             redirect_sint,
             message_port: self
                 .synic
-                .new_guest_message_port(redirect_vtl, 0, redirect_sint),
+                .new_guest_message_port(redirect_vtl, 0, redirect_sint)?,
             synic: self.synic,
             hvsock_requests: 0,
             hvsock_send,
@@ -689,7 +690,7 @@ impl ServerTask {
             .offer_channel(info.params)
             .context("channel offer failed")?;
 
-        let guest_event_port = self.inner.synic.new_guest_event_port();
+        let guest_event_port = self.inner.synic.new_guest_event_port()?;
 
         tracing::debug!(?offer_id, %key, "offered channel");
 
@@ -828,19 +829,22 @@ impl ServerTask {
             }
         }
 
-        let open_request = params.zip(open).map(|(params, result)| {
-            let (_, interrupt) = self.inner.open_channel(offer_id, &params);
-            let channel = self.inner.complete_open(offer_id, Some(result));
-            OpenRequest::new(
-                params.open_data,
-                interrupt,
-                self.server
-                    .get_version()
-                    .expect("must be connected")
-                    .feature_flags,
-                channel.flags,
-            )
-        });
+        let open_request = params
+            .zip(open)
+            .map(|(params, result)| -> anyhow::Result<_> {
+                let (_, interrupt) = self.inner.open_channel(offer_id, &params)?;
+                let channel = self.inner.complete_open(offer_id, Some(result));
+                Ok(OpenRequest::new(
+                    params.open_data,
+                    interrupt,
+                    self.server
+                        .get_version()
+                        .expect("must be connected")
+                        .feature_flags,
+                    channel.flags,
+                ))
+            })
+            .transpose()?;
         let result = RestoreResult {
             open_request,
             gpadls,
@@ -1182,19 +1186,25 @@ impl channels::Notifier for ServerTaskInner {
 
         let response = match action {
             channels::Action::Open(open_params, version) => {
-                let (channel, interrupt) = self.open_channel(offer_id, &open_params);
-                handle(
-                    offer_id,
-                    channel,
-                    ChannelRequest::Open,
-                    OpenRequest::new(
-                        open_params.open_data,
-                        interrupt,
-                        version.feature_flags,
-                        channel.flags,
+                let seq = channel.seq;
+                match self.open_channel(offer_id, &open_params) {
+                    Ok((channel, interrupt)) => handle(
+                        offer_id,
+                        channel,
+                        ChannelRequest::Open,
+                        OpenRequest::new(
+                            open_params.open_data,
+                            interrupt,
+                            version.feature_flags,
+                            channel.flags,
+                        ),
+                        ChannelResponse::Open,
                     ),
-                    ChannelResponse::Open,
-                )
+                    Err(err) => {
+                        tracelimit::error_ratelimited!(?err, "failed to open channel");
+                        Box::pin(async move { (offer_id, seq, Ok(ChannelResponse::Open(false))) })
+                    }
+                }
             }
             channels::Action::Close => {
                 if let Some(channel_bitmap) = self.channel_bitmap.as_ref() {
@@ -1341,9 +1351,22 @@ impl channels::Notifier for ServerTaskInner {
                     .as_ref()
                     .expect("channel is not reserved"),
             ),
-            MessageTarget::Custom { vp, sint } => util::BorrowedOrOwned::Owned(
-                self.synic
-                    .new_guest_message_port(self.redirect_vtl, vp, sint),
+            MessageTarget::Custom(target) => util::BorrowedOrOwned::Owned(
+                match self
+                    .synic
+                    .new_guest_message_port(self.redirect_vtl, target.vp, target.sint)
+                {
+                    Ok(port) => port,
+                    Err(err) => {
+                        tracing::error!(
+                            ?err,
+                            ?self.redirect_vtl,
+                            ?target,
+                            "could not create message port"
+                        );
+                        return;
+                    }
+                },
             ),
         };
 
@@ -1366,7 +1389,11 @@ impl channels::Notifier for ServerTaskInner {
         done.complete(());
     }
 
-    fn update_reserved_channel(&mut self, offer_id: OfferId, target: ConnectionTarget) {
+    fn update_reserved_channel(
+        &mut self,
+        offer_id: OfferId,
+        target: ConnectionTarget,
+    ) -> Result<(), ChannelError> {
         let channel = self
             .channels
             .get_mut(&offer_id)
@@ -1374,11 +1401,13 @@ impl channels::Notifier for ServerTaskInner {
 
         // Destroy the old port before creating a new one.
         channel.reserved_guest_message_port = None;
-        channel.reserved_guest_message_port = Some(self.synic.new_guest_message_port(
-            self.redirect_vtl,
-            target.vp,
-            target.sint,
-        ));
+        channel.reserved_guest_message_port = Some(
+            self.synic
+                .new_guest_message_port(self.redirect_vtl, target.vp, target.sint)
+                .map_err(ChannelError::SynicError)?,
+        );
+
+        Ok(())
     }
 }
 
@@ -1387,7 +1416,7 @@ impl ServerTaskInner {
         &mut self,
         offer_id: OfferId,
         open_params: &OpenParams,
-    ) -> (&mut Channel, Interrupt) {
+    ) -> Result<(&mut Channel, Interrupt), ChannelError> {
         let channel = self
             .channels
             .get_mut(&offer_id)
@@ -1422,11 +1451,15 @@ impl ServerTaskInner {
 
         // Set up a message port if this is a reserved channel.
         if let Some(reserved_target) = open_params.reserved_target {
-            channel.reserved_guest_message_port = Some(self.synic.new_guest_message_port(
-                self.redirect_vtl,
-                reserved_target.vp,
-                reserved_target.sint,
-            ));
+            channel.reserved_guest_message_port = Some(
+                self.synic
+                    .new_guest_message_port(
+                        self.redirect_vtl,
+                        reserved_target.vp,
+                        reserved_target.sint,
+                    )
+                    .map_err(ChannelError::SynicError)?,
+            );
         }
 
         channel.state = ChannelState::Opening {
@@ -1434,7 +1467,7 @@ impl ServerTaskInner {
             monitor,
             host_to_guest_interrupt: interrupt.clone(),
         };
-        (channel, interrupt)
+        Ok((channel, interrupt))
     }
 
     fn complete_open(&mut self, offer_id: OfferId, result: Option<OpenResult>) -> &mut Channel {
@@ -1781,12 +1814,12 @@ mod tests {
             _vtl: Vtl,
             _vp: u32,
             _sint: u8,
-        ) -> Box<dyn GuestMessagePort> {
-            Box::new(MockGuestMessagePort(self.message_send.clone()))
+        ) -> Result<Box<dyn GuestMessagePort>, vmcore::synic::Error> {
+            Ok(Box::new(MockGuestMessagePort(self.message_send.clone())))
         }
 
-        fn new_guest_event_port(&self) -> Box<dyn GuestEventPort> {
-            Box::new(MockGuestPort {})
+        fn new_guest_event_port(&self) -> Result<Box<dyn GuestEventPort>, vmcore::synic::Error> {
+            Ok(Box::new(MockGuestPort {}))
         }
 
         fn prefer_os_events(&self) -> bool {
