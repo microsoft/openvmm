@@ -636,6 +636,12 @@ impl From<OfferParams> for OfferParamsInternal {
     }
 }
 
+#[derive(Debug, Copy, Clone, Inspect, PartialEq, Eq)]
+pub struct ConnectionTarget {
+    pub vp: u32,
+    pub sint: u8,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum MessageTarget {
     Default,
@@ -651,12 +657,6 @@ impl MessageTarget {
             Self::Default
         }
     }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Inspect)]
-pub struct ConnectionTarget {
-    pub vp: u32,
-    pub sint: u8,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1438,7 +1438,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                                 &info,
                                 &request,
                                 channel.handled_monitor_id(),
-                                None, // TODO: Is this correct?
+                                None,
                             ),
                             self.inner.state.get_version().expect("must be connected"),
                         ),
@@ -2612,7 +2612,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     info,
                     input,
                     channel.handled_monitor_id(),
-                    reserved_state.map(|info| info.target),
+                    reserved_state.map(|state| state.target),
                 ),
                 self.inner.state.get_version().expect("must be connected"),
             ),
@@ -3595,7 +3595,6 @@ mod tests {
         // unsupported message is sent to the requested SINT.
         assert!(notifier.modify_requests.is_empty());
         assert!(matches!(server.state, ConnectionState::Disconnected));
-        // TODO: Update this once sending an unsupported message works again.
         notifier.check_message_with_target(
             OutgoingMessage::new(&protocol::VersionResponse {
                 version_supported: 0,
