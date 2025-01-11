@@ -870,16 +870,56 @@ pub struct GhContextVarReaderEventPullRequest {
     pub head: Head,
 }
 
-pub struct GhContextVarReaderEvent {}
-impl GhContextVarReaderEvent {
-    pub fn pull_request(
-        &mut self,
-        context: &mut NodeCtx<'_>,
-    ) -> ReadVar<Option<GhContextVarReaderEventPullRequest>> {
-        let var_name = "github.event.pull_request".to_string();
-        let (var, write_var) = context.new_var();
+mod ghvarstate {
+    pub enum Root {}
+    pub enum Event {}
+}
+
+pub struct GhContextVarReader<'a, S> {
+    ctx: NodeCtx<'a>,
+    _state: std::marker::PhantomData<S>,
+}
+
+impl<'a> GhContextVarReader<'a, ghvarstate::Root> {
+    pub fn global(&self, gh_var: GhContextVar) -> ReadVar<String> {
+        let (var, write_var) = self.ctx.new_maybe_secret_var(gh_var.is_secret(), false, "");
         let write_var = write_var.claim(&mut StepCtx {
-            backend: context.backend.clone(),
+            backend: self.ctx.backend.clone(),
+        });
+        let gh_to_rust = vec![(
+            gh_var.as_raw_var_name(),
+            write_var.backing_var,
+            write_var.is_secret,
+            false,
+        )];
+
+        self.ctx.backend.borrow_mut().on_emit_gh_step(
+            &format!("🌼 read {}", gh_var.as_raw_var_name()),
+            "",
+            BTreeMap::new(),
+            None,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            gh_to_rust,
+            Vec::new(),
+        );
+        var
+    }
+
+    pub fn event(self) -> GhContextVarReader<'a, ghvarstate::Event> {
+        GhContextVarReader {
+            ctx: self.ctx,
+            _state: std::marker::PhantomData,
+        }
+    }
+}
+
+impl GhContextVarReader<'_, ghvarstate::Event> {
+    pub fn pull_request(self) -> ReadVar<Option<GhContextVarReaderEventPullRequest>> {
+        let var_name = "github.event.pull_request".to_string();
+        let (var, write_var) = self.ctx.new_var();
+        let write_var = write_var.claim(&mut StepCtx {
+            backend: self.ctx.backend.clone(),
         });
         let gh_to_rust = vec![(
             var_name.clone(),
@@ -888,7 +928,7 @@ impl GhContextVarReaderEvent {
             true,
         )];
 
-        context.backend.borrow_mut().on_emit_gh_step(
+        self.ctx.backend.borrow_mut().on_emit_gh_step(
             &format!("🌼 read {}", var_name),
             "",
             BTreeMap::new(),
@@ -902,38 +942,7 @@ impl GhContextVarReaderEvent {
     }
 }
 
-pub struct GhContextVarReader {}
-impl GhContextVarReader {
-    pub fn global(&self, context: &mut NodeCtx<'_>, gh_var: GhContextVar) -> ReadVar<String> {
-        let (var, write_var) = context.new_maybe_secret_var(gh_var.is_secret(), false, "");
-        let write_var = write_var.claim(&mut StepCtx {
-            backend: context.backend.clone(),
-        });
-        let gh_to_rust = vec![(
-            gh_var.as_raw_var_name(),
-            write_var.backing_var,
-            write_var.is_secret,
-            false,
-        )];
-
-        context.backend.borrow_mut().on_emit_gh_step(
-            &format!("🌼 read {}", gh_var.as_raw_var_name()),
-            "",
-            BTreeMap::new(),
-            None,
-            BTreeMap::new(),
-            BTreeMap::new(),
-            gh_to_rust,
-            Vec::new(),
-        );
-        var
-    }
-    pub fn event(&self) -> GhContextVarReaderEvent {
-        GhContextVarReaderEvent {}
-    }
-}
-
-impl NodeCtx<'_> {
+impl<'ctx> NodeCtx<'ctx> {
     /// Emit a Rust-based step.
     ///
     /// As a convenience feature, this function returns a special _optional_
@@ -1153,8 +1162,13 @@ impl NodeCtx<'_> {
     /// Load a GitHub context variable into a flowey [`ReadVar`].
     #[track_caller]
     #[must_use]
-    pub fn get_gh_context_var(&mut self) -> GhContextVarReader {
-        GhContextVarReader {}
+    pub fn get_gh_context_var(&mut self) -> GhContextVarReader<'ctx, ghvarstate::Root> {
+        GhContextVarReader {
+            ctx: NodeCtx {
+                backend: self.backend.clone(),
+            },
+            _state: std::marker::PhantomData,
+        }
     }
 
     /// Emit a GitHub Actions action step.

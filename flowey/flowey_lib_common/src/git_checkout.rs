@@ -523,8 +523,8 @@ impl Node {
 
         let parent_path = ctx
             .get_gh_context_var()
-            .global(ctx, GhContextVar::GITHUB__WORKSPACE);
-        let test_pull_request_event = ctx.get_gh_context_var().event().pull_request(ctx);
+            .global(GhContextVar::GITHUB__WORKSPACE);
+        let test_pull_request_event = ctx.get_gh_context_var().event().pull_request();
         ctx.emit_rust_step("report cloned repo directories", move |ctx| {
             did_checkouts.claim(ctx);
             let mut registered_repos = registered_repos.into_iter().map(|(k, (a, b))| (k, (a, b.claim(ctx)))).collect::<BTreeMap<_, _>>();
