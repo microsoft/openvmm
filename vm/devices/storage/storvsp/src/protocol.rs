@@ -156,6 +156,7 @@ pub const STORAGE_CHANNEL_SUPPORTS_MULTI_CHANNEL: u32 = 0x1;
 
 #[repr(C)]
 #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ProtocolVersion {
     // Major (MSB) and minor (LSB) version numbers.
     pub major_minor: u16,

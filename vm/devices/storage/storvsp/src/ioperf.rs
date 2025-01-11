@@ -29,7 +29,7 @@ impl PerfTester {
     pub async fn new(driver: impl SpawnDriver + Clone) -> Self {
         let io_queue_depth = None;
         let device = ram_disk(64 * 1024, true).unwrap();
-        let controller = ScsiController::new();
+        let controller = Arc::new(ScsiController::new());
         let disk =
             ScsiControllerDisk::new(Arc::new(SimpleScsiDisk::new(device, Default::default())));
         controller
@@ -54,7 +54,7 @@ impl PerfTester {
         let test_guest_mem = GuestMemory::allocate(16 * 1024);
 
         let worker = TestWorker::start(
-            controller,
+            &controller,
             driver,
             test_guest_mem.clone(),
             host,
