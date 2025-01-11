@@ -12,8 +12,8 @@ use zerocopy::FromBytes;
 /// AkCertError is returned by parse_ak_cert_response() in emuplat/tpm.rs
 #[derive(Debug, Error)]
 pub enum AkCertError {
-    #[error("AK cert response is too small to parse. Found {size} bytes but expected at least {expected_size}")]
-    SizeTooSmall { size: usize, expected_size: usize },
+    #[error("AK cert response is too small to parse. Found {size} bytes but expected at least {minimum_size}")]
+    SizeTooSmall { size: usize, minimum_size: usize },
     #[error(
         "AK cert response size {specified_size} specified in the header is larger then the actual size {size}"
     )]
@@ -33,7 +33,7 @@ pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
     let Some(header) = IgvmAttestAkCertResponseHeader::read_from_prefix(response) else {
         Err(AkCertError::SizeTooSmall {
             size: response.len(),
-            expected_size: HEADER_SIZE,
+            minimum_size: HEADER_SIZE,
         })?
     };
 
