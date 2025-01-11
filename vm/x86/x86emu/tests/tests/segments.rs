@@ -3,6 +3,7 @@
 
 use super::common::SingleCellCpu;
 use super::common::TestCpu;
+use super::common::CpuState;
 use futures::FutureExt;
 use iced_x86::code_asm::*;
 use x86defs::cpuid::Vendor;
@@ -13,9 +14,36 @@ use x86emu::Gp;
 use x86emu::Segment;
 use x86emu::Emulator;
 
+fn protected_cpu() -> SingleCellCpu<u64> {
+    let seg = SegmentRegister {
+        base: 0,
+        limit: 0,
+        attributes: SegmentAttributes::new().with_default(true),
+        selector: 0,
+    };
+    let state = CpuState {
+        gps: [0xbadc0ffee0ddf00d; 16],
+        segs: [seg; 6],
+        rip: 0,
+        rflags: 0.into(),
+        cr0: x86defs::X64_CR0_PE,
+        efer: 0,
+    };
+    SingleCellCpu {
+        valid_gva: 0,
+        mem_val: 0,
+        valid_io_port: 0,
+        io_val: 0,
+        xmm: [0; 16],
+        invert_after_read: false,
+        state
+    }
+
+}
+
 fn do_data_segment_test(modify_state: impl FnOnce(&mut SingleCellCpu<u64>)) {
-    let mut cpu = SingleCellCpu::<u64>::new(0.into());
-    cpu.set_cr0(x86defs::X64_CR0_PE);
+    let mut cpu = protected_cpu();
+
     let mut asm = CodeAssembler::new(32).unwrap();
     asm.mov(ptr(edx).ds(), ebx).unwrap();
 
@@ -152,8 +180,7 @@ fn below_expand_down_limit() {
 }
 
 fn do_code_segment_test(modify_state: impl FnOnce(&mut SingleCellCpu<u64>)) {
-    let mut cpu = SingleCellCpu::<u64>::new(0.into());
-    cpu.set_cr0(x86defs::X64_CR0_PE);
+    let mut cpu = protected_cpu();
     let mut asm = CodeAssembler::new(32).unwrap();
     asm.mov(ebx, ptr(edx).cs()).unwrap();
 
@@ -207,8 +234,8 @@ fn above_limit_cs() {
 #[test]
 #[should_panic(expected = "GENERAL_PROTECTION_FAULT, Some(0)")]
 fn cant_write_cs() {
-    let mut cpu = SingleCellCpu::<u64>::new(0.into());
-    cpu.set_cr0(x86defs::X64_CR0_PE);
+    let mut cpu = protected_cpu();
+
     let mut asm = CodeAssembler::new(32).unwrap();
     asm.mov(ptr(edx).cs(), ebx).unwrap();
 
