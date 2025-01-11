@@ -54,8 +54,8 @@ fn btx<T: BtInstr>(mut instr: T) {
             behavior,
             |asm| instr.instr(asm, dword_ptr(rax + 0x10), bit),
             |cpu| {
-                cpu.gp(Gp::RAX.into(), base);
-                let rflags = cpu.rflags();
+                cpu.set_gp(Gp::RAX.into(), base);
+                let mut rflags = cpu.rflags();
                 rflags.set_carry(initial_carry);
                 cpu.set_rflags(rflags);
                 // Note the % and regular division when using the imm form of these instructions
@@ -80,7 +80,7 @@ fn btx<T: BtInstr>(mut instr: T) {
             |cpu| {
                 cpu.set_gp(Gp::RAX.into(), base);
                 cpu.set_gp(Gp::RBX.into(), bit as u64);
-                let rflags = cpu.rflags();
+                let mut rflags = cpu.rflags();
                 rflags.set_carry(initial_carry);
                 cpu.set_rflags(rflags);
                 cpu.valid_gva = reg_gva;

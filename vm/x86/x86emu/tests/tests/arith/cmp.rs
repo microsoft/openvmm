@@ -60,7 +60,7 @@ fn cmp_memory_to_regvalue64() {
             RFLAGS_ARITH_MASK,
             |asm| asm.cmp(qword_ptr(rax + 0x10), rax),
             |cpu| {
-                cpu.gp(Gp::RAX.into(), right);
+                cpu.set_gp(Gp::RAX.into(), right);
                 cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
                 cpu.mem_val = left;
             },
@@ -137,12 +137,12 @@ fn cmp_regvalue_to_memory() {
             |asm| asm.cmp(eax, dword_ptr(rax + 0x10)),
             |cpu| {
                 cpu.set_gp(Gp::RAX.into(), left);
-                cpu.valid_gva = cpu.gp(Gp::RAX).wrapping_add(0x10);
+                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
                 cpu.mem_val = right;
             },
         );
 
-        assert_eq!(state.rflags & RFLAGS_ARITH_MASK, rflags.into());
+        assert_eq!(cpu.rflags() & RFLAGS_ARITH_MASK, rflags.into());
     }
 }
 
@@ -174,8 +174,8 @@ fn cmp_regvalue_to_memory64() {
             RFLAGS_ARITH_MASK,
             |asm| asm.cmp(rax, qword_ptr(rax + 0x10)),
             |cpu| {
-                cpu.gp(Gp::RAX.into(), left);
-                cpu.valid_gva = cpu.gp(Gp::RAX).wrapping_add(0x10);
+                cpu.set_gp(Gp::RAX.into(), left);
+                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
                 cpu.mem_val = right;
             },
         );
@@ -209,7 +209,7 @@ fn cmp_memory_to_byte() {
             |asm| asm.cmp(dword_ptr(rax), right),
             |cpu| {
                 cpu.set_gp(Gp::RAX.into(), 0x1234);
-                cpu.valid_gva = cpu.gp(Gp::RAX);
+                cpu.valid_gva = cpu.gp(Gp::RAX.into());
                 cpu.mem_val = left;
             },
         );

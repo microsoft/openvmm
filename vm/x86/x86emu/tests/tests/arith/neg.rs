@@ -5,6 +5,7 @@ use crate::tests::common::run_lockable_test;
 use crate::tests::common::LockTestBehavior;
 use crate::tests::common::RFLAGS_ARITH_MASK;
 use iced_x86::code_asm::*;
+use x86emu::Cpu;
 
 #[test]
 fn neg_memory() {
@@ -32,6 +33,6 @@ fn neg_memory() {
         );
 
         assert_eq!(cpu.mem_val, result);
-        assert_eq!(state.rflags & RFLAGS_ARITH_MASK, rflags.into());
+        assert_eq!(cpu.rflags() & RFLAGS_ARITH_MASK, rflags.into());
     }
 }

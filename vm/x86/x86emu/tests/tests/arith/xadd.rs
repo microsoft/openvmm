@@ -32,12 +32,12 @@ fn xadd_regvalue_to_memory() {
     ];
 
     for (left, right, result, rflags) in variations {
-        let cpu = run_lockable_test::<u64>(
+        let mut cpu = run_lockable_test::<u64>(
             RFLAGS_ARITH_MASK,
             LockTestBehavior::Fail,
             |asm| asm.xadd(dword_ptr(512), eax),
             |cpu| {
-                cpu.set_gp(Gp::RAX, right);
+                cpu.set_gp(Gp::RAX.into(), right);
                 cpu.valid_gva = 512;
                 cpu.mem_val = left;
             },

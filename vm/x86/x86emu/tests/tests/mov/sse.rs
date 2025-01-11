@@ -4,6 +4,7 @@
 use crate::tests::common::run_u128_test;
 use iced_x86::code_asm::*;
 use x86defs::RFlags;
+use x86emu::Cpu;
 
 #[test]
 fn mov_regvalue_to_memory_sse() {
@@ -24,12 +25,12 @@ fn mov_regvalue_to_memory_sse() {
     ];
 
     for instr in variations {
-        let (_state, cpu) = run_u128_test(
+        let cpu = run_u128_test(
             RFlags::new(),
             |asm| instr(asm, xmmword_ptr(0x200), xmm15),
-            |_state, cpu| {
+            |cpu| {
                 cpu.valid_gva = 0x200;
-                cpu.xmm[15] = 0x1234567890abcdef13579ace24680bdf;
+                let _ = cpu.set_xmm(15, 0x1234567890abcdef13579ace24680bdf);
             },
         );
 
@@ -53,16 +54,16 @@ fn mov_memory_to_regvalue_sse() {
     ];
 
     for instr in variations {
-        let (_state, cpu) = run_u128_test(
+        let mut cpu = run_u128_test(
             RFlags::new(),
             |asm| instr(asm, xmm15, xmmword_ptr(0x200)),
-            |_state, cpu| {
+            |cpu| {
                 cpu.valid_gva = 0x200;
                 cpu.mem_val = 0x1234567890abcdef13579ace24680bdfu128;
             },
         );
 
-        assert_eq!(cpu.xmm[15], 0x1234567890abcdef13579ace24680bdf);
+        assert_eq!(cpu.xmm(15), 0x1234567890abcdef13579ace24680bdf);
     }
 }
 
@@ -72,9 +73,9 @@ fn movaps_unaligned() {
     run_u128_test(
         RFlags::new(),
         |asm| asm.movaps(xmmword_ptr(0x205), xmm15),
-        |_state, cpu| {
+        |cpu| {
             cpu.valid_gva = 0x205;
-            cpu.xmm[15] = 0x1234567890abcdef13579ace24680bdf;
+            let _ = cpu.set_xmm(15, 0x1234567890abcdef13579ace24680bdf);
         },
     );
 }
@@ -85,9 +86,9 @@ fn movapd_unaligned() {
     run_u128_test(
         RFlags::new(),
         |asm| asm.movapd(xmmword_ptr(0x205), xmm15),
-        |_state, cpu| {
+        |cpu| {
             cpu.valid_gva = 0x205;
-            cpu.xmm[15] = 0x1234567890abcdef13579ace24680bdf;
+            let _ = cpu.set_xmm(15, 0x1234567890abcdef13579ace24680bdf);
         },
     );
 }
@@ -98,9 +99,9 @@ fn movdqa_unaligned() {
     run_u128_test(
         RFlags::new(),
         |asm| asm.movdqa(xmmword_ptr(0x205), xmm15),
-        |_state, cpu| {
+        |cpu| {
             cpu.valid_gva = 0x205;
-            cpu.xmm[15] = 0x1234567890abcdef13579ace24680bdf;
+            let _ = cpu.set_xmm(15, 0x1234567890abcdef13579ace24680bdf);
         },
     );
 }

@@ -27,7 +27,6 @@ pub struct CpuState {
     pub rip: u64,
     /// RFLAGS.
     pub rflags: RFlags,
-
     /// CR0. Immutable.
     pub cr0: u64,
     /// EFER. Immutable.
@@ -608,9 +607,11 @@ impl Cpu for MultipleCellCpu {
 //     }
 // }
 
-trait TestCpu: Debug + PartialEq<Self> + Cpu {
+pub trait TestCpu: Debug + PartialEq<Self> + Cpu {
     fn new(rflags: RFlags) -> Self;
     fn state(&self) -> CpuState;
+    fn set_cr0(&mut self, v: u64);
+    fn set_segment(&mut self, index: Segment, v: SegmentRegister);
 }
 
 impl<T: TestRegister> TestCpu for SingleCellCpu<T> {
@@ -642,6 +643,14 @@ impl<T: TestRegister> TestCpu for SingleCellCpu<T> {
 }
     fn state(&self) -> CpuState {
         self.state
+    }
+
+    fn set_cr0(&mut self, v: u64){
+        self.state.cr0 = v;
+    }
+
+    fn set_segment(&mut self, index: Segment, v: SegmentRegister){
+        self.state.segs[index as usize] = v;
     }
 }
 
@@ -685,6 +694,14 @@ impl TestCpu for MultipleCellCpu {
 }
     fn state(&self) -> CpuState {
         self.state
+    }
+
+    fn set_cr0(&mut self, v: u64){
+        self.state.cr0 = v;
+    }
+
+    fn set_segment(&mut self, index: Segment, v: SegmentRegister){
+        self.state.segs[index as usize] = v;
     }
 }
 
