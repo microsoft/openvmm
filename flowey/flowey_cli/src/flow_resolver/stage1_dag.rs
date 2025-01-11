@@ -600,7 +600,7 @@ pub(crate) enum Step {
     },
     GitHubYaml {
         gh_to_rust: Vec<(String, String, bool, bool)>,
-        rust_to_gh: Vec<(String, String, bool)>,
+        rust_to_gh: Vec<(String, String, bool, bool)>,
         label: String,
         step_id: String,
         uses: String,
@@ -782,7 +782,7 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
         outputs: BTreeMap<String, Vec<(String, bool, bool)>>,
         permissions: BTreeMap<GhPermission, GhPermissionValue>,
         mut gh_to_rust: Vec<(String, String, bool, bool)>,
-        mut rust_to_gh: Vec<(String, String, bool)>,
+        mut rust_to_gh: Vec<(String, String, bool, bool)>,
     ) {
         let mut fresh_yaml_var = || {
             *self.yaml_var_ordinal += 1;
@@ -803,10 +803,15 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
                 ClaimedGhParam::Static(v) => (k, v),
                 ClaimedGhParam::GhVar(v) => (k, format!("${{{{ {} }}}}", v.as_raw_var_name())),
                 ClaimedGhParam::FloweyVar(v) => {
-                    let (backing_var, is_secret) = read_var_internals(&v);
+                    let (backing_var, is_secret, is_object) = read_var_internals(&v);
                     let backing_var = backing_var.unwrap();
                     let new_gh_var_name = fresh_yaml_var();
-                    rust_to_gh.push((backing_var.clone(), new_gh_var_name.clone(), is_secret));
+                    rust_to_gh.push((
+                        backing_var.clone(),
+                        new_gh_var_name.clone(),
+                        is_secret,
+                        is_object,
+                    ));
                     (k, format!("${{{{ env.{} }}}}", new_gh_var_name))
                 }
             })

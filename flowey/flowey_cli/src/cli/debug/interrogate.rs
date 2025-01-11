@@ -171,7 +171,7 @@ impl flowey_core::node::NodeCtxBackend for InterrogateCtx {
         _outputs: BTreeMap<String, Vec<(String, bool, bool)>>,
         _permissions: BTreeMap<GhPermission, GhPermissionValue>,
         _gh_to_rust: Vec<(String, String, bool, bool)>,
-        _rust_to_gh: Vec<(String, String, bool)>,
+        _rust_to_gh: Vec<(String, String, bool, bool)>,
     ) {
         println!("[step][yaml]    # {}", label);
         self.idx_tracker += 1;

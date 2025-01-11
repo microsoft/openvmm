@@ -836,12 +836,12 @@ fn resolve_flow_as_github_yaml_steps(
                     output_steps.push(map.into());
                 }
 
-                for (rust_var, gh_var, is_secret) in rust_to_gh {
+                for (rust_var, gh_var, is_secret, is_object) in rust_to_gh {
                     let mut cmd = String::new();
 
                     // flowey considers all GitHub vars to be typed as raw strings
                     let set_gh_env_var =
-                        var_db_cmd(&rust_var, is_secret, None, true, Some(gh_var.clone()));
+                        var_db_cmd(&rust_var, is_secret, None, !is_object, Some(gh_var.clone()));
                     writeln!(cmd, r#"{set_gh_env_var}"#)?;
 
                     let mut map = serde_yaml::Mapping::new();
@@ -882,7 +882,7 @@ fn resolve_flow_as_github_yaml_steps(
                     // flowey considers all GitHub vars to be typed as raw strings
                     let write_rust_var = var_db_cmd(&rust_var, is_secret, Some("{0}"), true, None);
                     let cmd = if is_object {
-                        format!(r#"echo '${{{{ toJSON({gh_var}) }}}}' | jq ."#)
+                        format!(r#"${{{{ toJSON({gh_var}) }}}}"#)
                     } else {
                         format!(r#"${{{{ {gh_var} }}}}"#)
                     };

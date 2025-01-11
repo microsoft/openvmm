@@ -626,11 +626,11 @@ where
 /// implementing flow / pipeline resolution logic.
 pub fn read_var_internals<T: Serialize + DeserializeOwned, C>(
     var: &ReadVar<T, C>,
-) -> (Option<String>, bool) {
+) -> (Option<String>, bool, bool) {
     match &var.backing_var {
-        ReadVarBacking::RuntimeVar(s) => (Some(s.clone()), var.is_secret),
-        ReadVarBacking::Inline(_) => (None, var.is_secret),
-        ReadVarBacking::InlineSideEffect => (None, var.is_secret),
+        ReadVarBacking::RuntimeVar(s) => (Some(s.clone()), var.is_secret, var.is_object),
+        ReadVarBacking::Inline(_) => (None, var.is_secret, var.is_object),
+        ReadVarBacking::InlineSideEffect => (None, var.is_secret, var.is_object),
     }
 }
 
@@ -709,7 +709,7 @@ pub trait NodeCtxBackend {
         outputs: BTreeMap<String, Vec<(String, bool, bool)>>,
         permissions: BTreeMap<GhPermission, GhPermissionValue>,
         gh_to_rust: Vec<(String, String, bool, bool)>,
-        rust_to_gh: Vec<(String, String, bool)>,
+        rust_to_gh: Vec<(String, String, bool, bool)>,
     );
 
     fn on_emit_side_effect_step(&mut self);

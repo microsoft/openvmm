@@ -313,7 +313,7 @@ impl flowey_core::node::NodeCtxBackend for ExecSnippetCtx<'_, '_> {
         _outputs: BTreeMap<String, Vec<(String, bool, bool)>>,
         _permissions: BTreeMap<GhPermission, GhPermissionValue>,
         _gh_to_rust: Vec<(String, String, bool, bool)>,
-        _rust_to_gh: Vec<(String, String, bool)>,
+        _rust_to_gh: Vec<(String, String, bool, bool)>,
     ) {
         self.idx_tracker += 1;
     }
