@@ -1026,5 +1026,7 @@ pub fn emulate_mnf_write_fast_path<T: EmulatorSupport>(
         bytes[..valid_bytes].copy_from_slice(instruction_bytes);
     }
     let instruction_bytes = &bytes[..valid_bytes];
-    x86emu::fast_path::emulate_fast_path_set_bit(instruction_bytes, &mut cpu)
+    let bit = x86emu::fast_path::emulate_fast_path_set_bit(instruction_bytes, &mut cpu);
+    support.flush();
+    bit
 }
