@@ -79,7 +79,7 @@ impl RegisterIndex {
     pub fn apply_update(&self, extended_register: u64, v: u64) -> u64 {
         match self.size {
             GpSize::BYTE(shift) => {
-                let mask = (!0xff) << shift;
+                let mask = !(0xff << shift);
                 (extended_register & mask) | (((v as u8) as u64) << shift)
             }
             GpSize::WORD => (extended_register & !0xffff) | (v as u16) as u64,
