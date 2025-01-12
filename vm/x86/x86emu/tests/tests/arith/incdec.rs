@@ -9,7 +9,6 @@ use x86defs::RFlags;
 use x86emu::Cpu;
 use x86emu::Gp;
 
-
 /// The mask of flags that are changed by an inc/dec operation.
 const RFLAGS_INC_MASK: RFlags = RFLAGS_ARITH_MASK.with_carry(false);
 

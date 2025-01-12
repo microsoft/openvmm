@@ -27,7 +27,7 @@ fn outs() {
                 |cpu| {
                     let port = 0x3f9;
                     cpu.valid_io_port = port;
-                    cpu.set_gp(Gp::RDX.into(),port.into());
+                    cpu.set_gp(Gp::RDX.into(), port.into());
 
                     let mut rflags = cpu.rflags();
                     rflags.set_direction(direction);

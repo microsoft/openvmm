@@ -818,7 +818,8 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
     fn set_gp(&mut self, reg: RegisterIndex, v: u64) {
         let register_value = self.gp(reg);
         updated_register_value = reg.apply_update(register_value, v);
-        self.support.set_gp(reg.extended_index, updated_register_value);
+        self.support
+            .set_gp(reg.extended_index, updated_register_value);
     }
 
     fn rip(&mut self) -> u64 {

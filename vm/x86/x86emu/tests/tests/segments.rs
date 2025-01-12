@@ -1,18 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::common::CpuState;
 use super::common::SingleCellCpu;
 use super::common::TestCpu;
-use super::common::CpuState;
 use futures::FutureExt;
 use iced_x86::code_asm::*;
 use x86defs::cpuid::Vendor;
 use x86defs::SegmentAttributes;
 use x86defs::SegmentRegister;
 use x86emu::Cpu;
+use x86emu::Emulator;
 use x86emu::Gp;
 use x86emu::Segment;
-use x86emu::Emulator;
 
 fn protected_cpu() -> SingleCellCpu<u64> {
     let seg = SegmentRegister {
@@ -36,9 +36,8 @@ fn protected_cpu() -> SingleCellCpu<u64> {
         io_val: 0,
         xmm: [0; 16],
         invert_after_read: false,
-        state
+        state,
     }
-
 }
 
 fn do_data_segment_test(modify_state: impl FnOnce(&mut SingleCellCpu<u64>)) {
@@ -56,14 +55,10 @@ fn do_data_segment_test(modify_state: impl FnOnce(&mut SingleCellCpu<u64>)) {
     emu_ds.base = 0x200;
 
     emu_ds.limit = 0x104;
-    emu_ds
-        .attributes
-        .set_non_system_segment(true);
+    emu_ds.attributes.set_non_system_segment(true);
     emu_ds.attributes.set_segment_type(0b0010);
     emu_ds.attributes.set_present(true);
-    emu_ds
-        .attributes
-        .set_descriptor_privilege_level(2);
+    emu_ds.attributes.set_descriptor_privilege_level(2);
     emu_ds.selector = 0x1002;
 
     cpu.set_segment(Segment::DS, emu_ds);
@@ -71,9 +66,7 @@ fn do_data_segment_test(modify_state: impl FnOnce(&mut SingleCellCpu<u64>)) {
     let mut emu_ss = cpu.segment(Segment::SS);
 
     // Set CPL
-    emu_ss
-        .attributes
-        .set_descriptor_privilege_level(2);
+    emu_ss.attributes.set_descriptor_privilege_level(2);
 
     cpu.set_segment(Segment::SS, emu_ss);
 
@@ -129,9 +122,7 @@ fn rpl() {
 fn cpl() {
     do_data_segment_test(|cpu| {
         let mut emu_ss = cpu.segment(Segment::SS);
-        emu_ss
-            .attributes
-            .set_descriptor_privilege_level(3);
+        emu_ss.attributes.set_descriptor_privilege_level(3);
         cpu.set_segment(Segment::SS, emu_ss);
     });
 }
@@ -141,9 +132,7 @@ fn cpl() {
 fn system_segment() {
     do_data_segment_test(|cpu| {
         let mut emu_ds = cpu.segment(Segment::DS);
-        emu_ds
-            .attributes
-            .set_non_system_segment(false);
+        emu_ds.attributes.set_non_system_segment(false);
         cpu.set_segment(Segment::DS, emu_ds);
     });
 }

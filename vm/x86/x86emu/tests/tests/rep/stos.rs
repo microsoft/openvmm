@@ -28,8 +28,8 @@ fn stos() {
                     let mut rflags = cpu.rflags();
                     rflags.set_direction(direction);
                     cpu.set_rflags(rflags);
-                    cpu.set_gp(Gp::RAX.into(),0xAAAAAAAAAAAAAAAA);
-                    cpu.set_gp(Gp::RDI.into(),START_GVA);
+                    cpu.set_gp(Gp::RAX.into(), 0xAAAAAAAAAAAAAAAA);
+                    cpu.set_gp(Gp::RDI.into(), START_GVA);
                     cpu.valid_gva = START_GVA;
                 },
             );
@@ -61,9 +61,9 @@ fn rep_stos() {
                 |asm| instr(asm.rep()),
                 |cpu| {
                     cpu.valid_gva = START_GVA;
-                    cpu.set_gp(Gp::RDI.into(),START_GVA);
-                    cpu.set_gp(Gp::RAX.into(),0xAAAAAAAAAAAAAAAA);
-                    cpu.set_gp(Gp::RCX.into(),len);
+                    cpu.set_gp(Gp::RDI.into(), START_GVA);
+                    cpu.set_gp(Gp::RAX.into(), 0xAAAAAAAAAAAAAAAA);
+                    cpu.set_gp(Gp::RCX.into(), len);
 
                     let mut rflags = cpu.rflags();
                     rflags.set_direction(false);

@@ -37,7 +37,7 @@ fn cmps() {
                         let mut rflags = cpu.rflags();
                         rflags.set_direction(direction);
                         cpu.set_rflags(rflags);
-                        cpu.set_gp(Gp::RSI.into(),START_GVA);
+                        cpu.set_gp(Gp::RSI.into(), START_GVA);
                         cpu.set_gp(Gp::RDI.into(), START_GVA + size as u64);
                         cpu.valid_gva = START_GVA;
                         cpu.mem_val = SCAN_VALUE.to_le_bytes()[..size]

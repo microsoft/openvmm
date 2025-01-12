@@ -10,10 +10,10 @@ use x86defs::RFlags;
 use x86defs::SegmentAttributes;
 use x86defs::SegmentRegister;
 use x86emu::Cpu;
-use x86emu::RegisterIndex;
-use x86emu::Segment;
 use x86emu::Emulator;
 use x86emu::Error;
+use x86emu::RegisterIndex;
+use x86emu::Segment;
 
 #[derive(Debug, Clone, PartialEq, Copy)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -102,9 +102,10 @@ pub fn run_lockable_test<T: TestRegister>(
 
         // Move the rip back by the size of the lock prefix.
         let rip = locked_cpu.rip();
-        locked_cpu.set_rip(rip-1);
+        locked_cpu.set_rip(rip - 1);
         assert_eq!(
-            unlocked_cpu.state(), locked_cpu.state(),
+            unlocked_cpu.state(),
+            locked_cpu.state(),
             "lock success state should match unlocked state"
         );
         assert_eq!(
@@ -144,7 +145,8 @@ pub fn run_lockable_test<T: TestRegister>(
                     "lock failure cpu should match unlocked cpu"
                 );
                 assert_eq!(
-                    lock_failure_cpu.state(), unlocked_cpu.state(),
+                    lock_failure_cpu.state(),
+                    unlocked_cpu.state(),
                     "lock failure state should match unlocked state"
                 );
             } else {
@@ -153,7 +155,8 @@ pub fn run_lockable_test<T: TestRegister>(
                     "lock failure cpu should match init cpu"
                 );
                 assert_eq!(
-                    lock_failure_cpu.state(), init_cpu.state(),
+                    lock_failure_cpu.state(),
+                    init_cpu.state(),
                     "lock failure state should match init state"
                 );
             }
@@ -191,8 +194,7 @@ fn run_test_core<T: TestCpu>(
     set_state: impl Fn(&mut T),
 ) -> Result<T, Box<Error<<T as Cpu>::Error>>> {
     let mut zero_cpu = run_one_test(0.into(), rflags_mask, incr_rip, &asm, &set_state)?;
-    let mut one_cpu =
-        run_one_test((!0).into(), rflags_mask, incr_rip, &asm, &set_state)?;
+    let mut one_cpu = run_one_test((!0).into(), rflags_mask, incr_rip, &asm, &set_state)?;
 
     assert_eq!(
         zero_cpu, one_cpu,
@@ -206,7 +208,8 @@ fn run_test_core<T: TestCpu>(
 
     one_cpu.set_rflags(zero_cpu.rflags());
     assert_eq!(
-        zero_cpu.state(), one_cpu.state(),
+        zero_cpu.state(),
+        one_cpu.state(),
         "Behavior differed across different starting RFLAGS values."
     );
     Ok(zero_cpu)
@@ -250,7 +253,8 @@ fn run_one_test<T: TestCpu>(
         );
     } else {
         assert_eq!(
-            cpu.rip(), 0,
+            cpu.rip(),
+            0,
             "RIP was incremented when it shouldn't have been."
         );
     }
@@ -289,7 +293,7 @@ pub struct SingleCellCpu<T: TestRegister> {
     pub io_val: u32,
     pub xmm: [u128; 16],
     pub invert_after_read: bool,
-    pub state: CpuState
+    pub state: CpuState,
 }
 
 impl<T: TestRegister> SingleCellCpu<T> {
@@ -414,7 +418,6 @@ impl<T: TestRegister> Cpu for SingleCellCpu<T> {
 
     fn rflags(&mut self) -> RFlags {
         self.state.rflags
-
     }
     fn set_rflags(&mut self, v: RFlags) {
         self.state.rflags = v
@@ -440,7 +443,7 @@ pub struct MultipleCellCpu {
     pub read_mem_offset: usize,
     pub write_mem_offset: usize,
 
-    pub state: CpuState
+    pub state: CpuState,
 }
 
 impl Cpu for MultipleCellCpu {
@@ -549,7 +552,6 @@ impl Cpu for MultipleCellCpu {
 
     fn rflags(&mut self) -> RFlags {
         self.state.rflags
-
     }
     fn set_rflags(&mut self, v: RFlags) {
         self.state.rflags = v
@@ -616,40 +618,39 @@ pub trait TestCpu: Debug + PartialEq<Self> + Cpu {
 
 impl<T: TestRegister> TestCpu for SingleCellCpu<T> {
     fn new(rflags: RFlags) -> Self {
-    let seg = SegmentRegister {
-        base: 0,
-        limit: 0,
-        attributes: SegmentAttributes::new().with_long(true),
-        selector: 0,
-    };
-    let state = CpuState {
-        gps: [0xbadc0ffee0ddf00d; 16],
-        segs: [seg; 6],
-        rip: 0,
-        rflags,
-        cr0: x86defs::X64_CR0_PE,
-        efer: x86defs::X64_EFER_LMA | x86defs::X64_EFER_LME,
-    };
-    SingleCellCpu {
-        valid_gva: 0,
-        mem_val: T::default(),
-        valid_io_port: 0,
-        io_val: 0,
-        xmm: [0; 16],
-        invert_after_read: false,
-        state
+        let seg = SegmentRegister {
+            base: 0,
+            limit: 0,
+            attributes: SegmentAttributes::new().with_long(true),
+            selector: 0,
+        };
+        let state = CpuState {
+            gps: [0xbadc0ffee0ddf00d; 16],
+            segs: [seg; 6],
+            rip: 0,
+            rflags,
+            cr0: x86defs::X64_CR0_PE,
+            efer: x86defs::X64_EFER_LMA | x86defs::X64_EFER_LME,
+        };
+        SingleCellCpu {
+            valid_gva: 0,
+            mem_val: T::default(),
+            valid_io_port: 0,
+            io_val: 0,
+            xmm: [0; 16],
+            invert_after_read: false,
+            state,
+        }
     }
-
-}
     fn state(&self) -> CpuState {
         self.state
     }
 
-    fn set_cr0(&mut self, v: u64){
+    fn set_cr0(&mut self, v: u64) {
         self.state.cr0 = v;
     }
 
-    fn set_segment(&mut self, index: Segment, v: SegmentRegister){
+    fn set_segment(&mut self, index: Segment, v: SegmentRegister) {
         self.state.segs[index as usize] = v;
     }
 }
@@ -657,12 +658,12 @@ impl<T: TestRegister> TestCpu for SingleCellCpu<T> {
 /// ignore register state when comparing CPUs
 impl<T: TestRegister> PartialEq for SingleCellCpu<T> {
     fn eq(&self, other: &Self) -> bool {
-       self.valid_gva == other.valid_gva &&
-            self.mem_val == other.mem_val &&
-            self.valid_io_port == other.valid_io_port &&
-            self.io_val == other.io_val &&
-            self.xmm == other.xmm &&
-            self.invert_after_read == other.invert_after_read
+        self.valid_gva == other.valid_gva
+            && self.mem_val == other.mem_val
+            && self.valid_io_port == other.valid_io_port
+            && self.io_val == other.io_val
+            && self.xmm == other.xmm
+            && self.invert_after_read == other.invert_after_read
     }
 }
 
@@ -689,18 +690,18 @@ impl TestCpu for MultipleCellCpu {
             io_val: Vec::<u8>::default(),
             read_mem_offset: 0,
             write_mem_offset: 0,
-            state
+            state,
         }
-}
+    }
     fn state(&self) -> CpuState {
         self.state
     }
 
-    fn set_cr0(&mut self, v: u64){
+    fn set_cr0(&mut self, v: u64) {
         self.state.cr0 = v;
     }
 
-    fn set_segment(&mut self, index: Segment, v: SegmentRegister){
+    fn set_segment(&mut self, index: Segment, v: SegmentRegister) {
         self.state.segs[index as usize] = v;
     }
 }
@@ -708,12 +709,12 @@ impl TestCpu for MultipleCellCpu {
 /// ignore register state when comparing CPUs
 impl PartialEq for MultipleCellCpu {
     fn eq(&self, other: &Self) -> bool {
-       self.valid_gva == other.valid_gva &&
-            self.mem_val == other.mem_val &&
-            self.valid_io_port == other.valid_io_port &&
-            self.io_val == other.io_val &&
-            self.read_mem_offset == other.read_mem_offset &&
-            self.write_mem_offset == other.write_mem_offset
+        self.valid_gva == other.valid_gva
+            && self.mem_val == other.mem_val
+            && self.valid_io_port == other.valid_io_port
+            && self.io_val == other.io_val
+            && self.read_mem_offset == other.read_mem_offset
+            && self.write_mem_offset == other.write_mem_offset
     }
 }
 
@@ -744,4 +745,3 @@ impl TestRegister for u128 {
         (*self).to_le_bytes()
     }
 }
-

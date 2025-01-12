@@ -23,8 +23,8 @@ fn cmpxchg8b_equal() {
             cpu.set_gp(Gp::RDX.into(), 0x10203040);
             cpu.set_gp(Gp::RAX.into(), 0x50607080);
 
-            cpu.set_gp(Gp::RCX.into(),0x90a0b0c0);
-            cpu.set_gp(Gp::RBX.into(),0xd0e0f000);
+            cpu.set_gp(Gp::RCX.into(), 0x90a0b0c0);
+            cpu.set_gp(Gp::RBX.into(), 0xd0e0f000);
         },
     );
 
@@ -47,11 +47,11 @@ fn cmpxchg8b_not_equal() {
             cpu.valid_gva = 0x100;
             cpu.mem_val = 0xf000f000f000f000u64;
 
-            cpu.set_gp(Gp::RDX.into(),0x10203040);
-            cpu.set_gp(Gp::RAX.into(),0x50607080);
+            cpu.set_gp(Gp::RDX.into(), 0x10203040);
+            cpu.set_gp(Gp::RAX.into(), 0x50607080);
 
-            cpu.set_gp(Gp::RCX.into(),0x90a0b0c0);
-            cpu.set_gp(Gp::RBX.into(),0xd0e0f000);
+            cpu.set_gp(Gp::RCX.into(), 0x90a0b0c0);
+            cpu.set_gp(Gp::RBX.into(), 0xd0e0f000);
         },
     );
 
@@ -71,11 +71,11 @@ fn cmpxchg16b_equal() {
             cpu.valid_gva = 0x100;
             cpu.mem_val = 0x102030405060708090a0b0c0d0e0f000u128;
 
-            cpu.set_gp(Gp::RDX.into(),0x1020304050607080);
-            cpu.set_gp(Gp::RAX.into(),0x90a0b0c0d0e0f000);
+            cpu.set_gp(Gp::RDX.into(), 0x1020304050607080);
+            cpu.set_gp(Gp::RAX.into(), 0x90a0b0c0d0e0f000);
 
-            cpu.set_gp(Gp::RCX.into(),0x0102030405060708);
-            cpu.set_gp(Gp::RBX.into(),0x090a0b0c0d0e0f00);
+            cpu.set_gp(Gp::RCX.into(), 0x0102030405060708);
+            cpu.set_gp(Gp::RBX.into(), 0x090a0b0c0d0e0f00);
         },
     );
 
@@ -98,11 +98,11 @@ fn cmpxchg16b_not_equal() {
             cpu.valid_gva = 0x100;
             cpu.mem_val = 0xf000f000f000f000f000f000f000f000u128;
 
-            cpu.set_gp(Gp::RDX.into(),0x1020304050607080);
-            cpu.set_gp(Gp::RAX.into(),0x90a0b0c0d0e0f000);
+            cpu.set_gp(Gp::RDX.into(), 0x1020304050607080);
+            cpu.set_gp(Gp::RAX.into(), 0x90a0b0c0d0e0f000);
 
-            cpu.set_gp(Gp::RCX.into(),0x0102030405060708);
-            cpu.set_gp(Gp::RBX.into(),0x090a0b0c0d0e0f00);
+            cpu.set_gp(Gp::RCX.into(), 0x0102030405060708);
+            cpu.set_gp(Gp::RBX.into(), 0x090a0b0c0d0e0f00);
         },
     );
 

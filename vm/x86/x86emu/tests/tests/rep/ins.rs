@@ -4,8 +4,8 @@
 use crate::tests::common::run_wide_test;
 use iced_x86::code_asm::*;
 use x86defs::RFlags;
-use x86emu::Gp;
 use x86emu::Cpu;
+use x86emu::Gp;
 use x86emu::MAX_REP_LOOPS;
 
 #[test]

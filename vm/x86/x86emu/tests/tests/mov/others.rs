@@ -98,7 +98,7 @@ fn movsx_memory_to_regvalue() {
             |cpu| {
                 cpu.valid_gva = 0x200;
                 cpu.mem_val = 0xaaaa;
-                cpu.set_gp(Gp::RAX.into(),  0x3333333333333333);
+                cpu.set_gp(Gp::RAX.into(), 0x3333333333333333);
             },
         );
 

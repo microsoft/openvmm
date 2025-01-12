@@ -29,7 +29,7 @@ pub(crate) struct WhpEmulationState<'a, 'b, T: CpuIo> {
     vp: &'a mut WhpProcessor<'b>,
     interruption_pending: bool,
     dev: &'a T,
-    cache: x86emu::CpuState
+    cache: x86emu::CpuState,
 }
 
 impl<'a, 'b, T: CpuIo> WhpEmulationState<'a, 'b, T> {
@@ -46,7 +46,7 @@ impl<'a, 'b, T: CpuIo> WhpEmulationState<'a, 'b, T> {
             vp,
             interruption_pending,
             dev,
-            cache: cache.expect("emulation cannot proceed without reading guest register state")
+            cache: cache.expect("emulation cannot proceed without reading guest register state"),
         }
     }
 }
@@ -102,9 +102,7 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
         assert!(reg < 16);
         let reg = whp::abi::WHV_REGISTER_NAME(whp::abi::WHvX64RegisterXmm0.0 + reg as u32);
         let mut value = [Default::default()];
-        let _ = self.vp
-            .current_whp()
-            .get_registers(&[reg], &mut value);
+        let _ = self.vp.current_whp().get_registers(&[reg], &mut value);
         value[0].0.into()
     }
 

@@ -421,7 +421,7 @@ impl MshvProcessor<'_> {
             vp_index: self.vpindex,
             message,
             interruption_pending,
-            cache
+            cache,
         };
         virt_support_x86emu::emulate::emulate(&mut support, &self.partition.gm, devices).await
     }
@@ -690,7 +690,7 @@ struct MshvEmulationState<'a> {
     vp_index: VpIndex,
     message: &'a hv_message,
     interruption_pending: bool,
-    cache: x86emu::CpuState
+    cache: x86emu::CpuState,
 }
 
 impl EmulatorSupport for MshvEmulationState<'_> {

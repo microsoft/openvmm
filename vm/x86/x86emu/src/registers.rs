@@ -92,10 +92,10 @@ impl RegisterIndex {
 }
 
 impl Into<RegisterIndex> for Gp {
-    fn into(self) -> RegisterIndex{
+    fn into(self) -> RegisterIndex {
         RegisterIndex {
             extended_index: self,
-            size: GpSize::QWORD
+            size: GpSize::QWORD,
         }
     }
 }

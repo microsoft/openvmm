@@ -9,8 +9,8 @@ use futures::FutureExt;
 use iced_x86::code_asm::*;
 use x86defs::cpuid::Vendor;
 use x86emu::Cpu;
-use x86emu::Gp;
 use x86emu::Emulator;
+use x86emu::Gp;
 
 #[test]
 fn scas() {
@@ -39,7 +39,6 @@ fn scas() {
                         let mut rflags = cpu.rflags();
                         rflags.set_direction(direction);
                         cpu.set_rflags(rflags);
-
 
                         cpu.set_gp(Gp::RAX.into(), SCAN_VALUE);
                         cpu.set_gp(Gp::RDI.into(), START_GVA);
@@ -84,9 +83,9 @@ fn rep_scas() {
                 rflags.set_direction(false);
                 cpu.set_rflags(rflags);
 
-                cpu.set_gp(Gp::RAX.into(),value);
-                cpu.set_gp(Gp::RCX.into(),len);
-                cpu.set_gp(Gp::RDI.into(),0);
+                cpu.set_gp(Gp::RAX.into(), value);
+                cpu.set_gp(Gp::RCX.into(), len);
+                cpu.set_gp(Gp::RDI.into(), 0);
                 cpu.valid_gva = 0;
                 cpu.mem_val.clone_from(range);
             },

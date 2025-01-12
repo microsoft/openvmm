@@ -5,9 +5,9 @@ use crate::tests::common::run_test;
 use crate::tests::common::TestCpu;
 use iced_x86::code_asm::*;
 use x86defs::RFlags;
+use x86emu::Cpu;
 use x86emu::Gp;
 use x86emu::Segment;
-use x86emu::Cpu;
 
 mod others;
 mod sse;
@@ -23,7 +23,7 @@ fn mov_regvalue_to_memory() {
         |asm| asm.mov(dword_ptr(rax), esi),
         |cpu| {
             cpu.set_gp(Gp::RAX.into(), 0x456);
-            cpu.set_gp(Gp::RSI.into(),0xcccc12345678);
+            cpu.set_gp(Gp::RSI.into(), 0xcccc12345678);
             cpu.valid_gva = cpu.gp(Gp::RAX.into());
         },
     );
@@ -140,8 +140,7 @@ fn mov_alignment_check() {
             cpu.set_cr0(am);
 
             let mut um = cpu.segment(Segment::SS);
-            um
-                .attributes
+            um.attributes
                 .set_descriptor_privilege_level(x86defs::USER_MODE_DPL);
 
             cpu.set_segment(Segment::SS, um);
@@ -170,8 +169,7 @@ fn mov_alignment_check_fail() {
             cpu.set_cr0(am);
 
             let mut um = cpu.segment(Segment::SS);
-            um
-                .attributes
+            um.attributes
                 .set_descriptor_privilege_level(x86defs::USER_MODE_DPL);
 
             cpu.set_segment(Segment::SS, um);

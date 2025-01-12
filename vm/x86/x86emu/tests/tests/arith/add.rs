@@ -4,8 +4,8 @@
 use crate::tests::common::run_test;
 use crate::tests::common::RFLAGS_ARITH_MASK;
 use iced_x86::code_asm::*;
-use x86emu::Gp;
 use x86emu::Cpu;
+use x86emu::Gp;
 
 #[test]
 fn add_regvalue_to_memory() {
