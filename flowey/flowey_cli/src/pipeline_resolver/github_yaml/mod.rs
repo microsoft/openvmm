@@ -10,7 +10,6 @@ use super::generic::ResolvedJobUseParameter;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
 use crate::cli::pipeline::CheckMode;
-use crate::cli::var_db::VarDbMode;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
 use crate::flow_resolver::stage1_dag::Step;
 use crate::pipeline_resolver::common_yaml::job_flowey_bootstrap_source;
@@ -224,15 +223,7 @@ pub fn github_yaml(
             gh_steps.push(map.into());
         }
 
-        let bootstrap_bash_var_db_inject = |var, is_raw_string, from_json| {
-            let mode = if is_raw_string {
-                VarDbMode::RawString
-            } else if from_json {
-                VarDbMode::Json
-            } else {
-                VarDbMode::None
-            };
-
+        let bootstrap_bash_var_db_inject = |var, is_raw_string| {
             crate::cli::var_db::construct_var_db_cli(
                 &flowey_bin,
                 job_idx.index(),
@@ -240,7 +231,7 @@ pub fn github_yaml(
                 false,
                 true,
                 None,
-                mode,
+                is_raw_string,
                 None,
             )
         };
@@ -324,9 +315,9 @@ EOF
             let runtime_debug_level = if runtime_debug_log { "debug" } else { "info" };
 
             let var_db_insert_runtime_debug_level =
-                bootstrap_bash_var_db_inject("FLOWEY_LOG", false, false);
+                bootstrap_bash_var_db_inject("FLOWEY_LOG", false);
             let var_db_insert_working_dir =
-                bootstrap_bash_var_db_inject(VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR, true, false);
+                bootstrap_bash_var_db_inject(VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR, true);
 
             // Need to use "normalized" path in cases where the path is being
             // used directly from a bash context, as is the case when we are
@@ -372,7 +363,7 @@ echo "{RUNNER_TEMP}/work" | {var_db_insert_working_dir}
             }
             .expect("defaults are currently required for parameters in Github backend");
 
-            let var_db_inject_cmd = bootstrap_bash_var_db_inject(flowey_var, is_string, false);
+            let var_db_inject_cmd = bootstrap_bash_var_db_inject(flowey_var, is_string);
 
             let name = parameters[*pipeline_param_idx].name();
 
@@ -395,7 +386,7 @@ EOF
                 flowey_bootstrap_bash,
                 r#"mkdir -p "$AgentTempDirNormal/publish_artifacts/{name}""#
             )?;
-            let var_db_inject_cmd = bootstrap_bash_var_db_inject(flowey_var, true, false);
+            let var_db_inject_cmd = bootstrap_bash_var_db_inject(flowey_var, true);
             match platform.kind() {
                 FlowPlatformKind::Windows => {
                     writeln!(
@@ -415,7 +406,7 @@ EOF
         // lastly, emit GitHub steps that report the dirs for any artifacts which
         // are used by this job
         for ResolvedJobArtifact { flowey_var, name } in artifacts_used {
-            let var_db_inject_cmd = bootstrap_bash_var_db_inject(flowey_var, true, false);
+            let var_db_inject_cmd = bootstrap_bash_var_db_inject(flowey_var, true);
             match platform.kind() {
                 FlowPlatformKind::Windows => {
                     writeln!(
@@ -786,31 +777,19 @@ fn resolve_flow_as_github_yaml_steps(
                 condvar,
                 permissions,
             } => {
-                let var_db_cmd = |var: &str,
-                                  is_secret,
-                                  update_from_file,
-                                  is_raw_string,
-                                  from_json,
-                                  write_to_gh_env| {
-                    let mode = if is_raw_string {
-                        VarDbMode::RawString
-                    } else if from_json {
-                        VarDbMode::Json
-                    } else {
-                        VarDbMode::None
+                let var_db_cmd =
+                    |var: &str, is_secret, update_from_file, is_raw_string, write_to_gh_env| {
+                        crate::cli::var_db::construct_var_db_cli(
+                            flowey_bin,
+                            job_idx,
+                            var,
+                            is_secret,
+                            false,
+                            update_from_file,
+                            is_raw_string,
+                            write_to_gh_env,
+                        )
                     };
-
-                    crate::cli::var_db::construct_var_db_cli(
-                        flowey_bin,
-                        job_idx,
-                        var,
-                        is_secret,
-                        false,
-                        update_from_file,
-                        mode,
-                        write_to_gh_env,
-                    )
-                };
 
                 for permission in permissions {
                     if let Some(permission_map) = gh_permissions.get(&node_handle) {
@@ -843,7 +822,6 @@ fn resolve_flow_as_github_yaml_steps(
                         false,
                         None,
                         false,
-                        false,
                         Some("FLOWEY_CONDITION".to_string()),
                     );
                     writeln!(cmd, r#"{set_condvar}"#)?;
@@ -862,14 +840,8 @@ fn resolve_flow_as_github_yaml_steps(
                     let mut cmd = String::new();
 
                     // flowey considers all GitHub vars to be typed as raw strings
-                    let set_gh_env_var = var_db_cmd(
-                        &rust_var,
-                        is_secret,
-                        None,
-                        !is_object,
-                        is_object,
-                        Some(gh_var.clone()),
-                    );
+                    let set_gh_env_var =
+                        var_db_cmd(&rust_var, is_secret, None, !is_object, Some(gh_var.clone()));
                     writeln!(cmd, r#"{set_gh_env_var}"#)?;
 
                     let mut map = serde_yaml::Mapping::new();
@@ -908,14 +880,8 @@ fn resolve_flow_as_github_yaml_steps(
 
                 for (gh_var, rust_var, is_secret, is_object) in gh_to_rust {
                     // flowey considers all GitHub vars to be typed as raw strings
-                    let write_rust_var = var_db_cmd(
-                        &rust_var,
-                        is_secret,
-                        Some("{0}"),
-                        !is_object,
-                        is_object,
-                        None,
-                    );
+                    let write_rust_var =
+                        var_db_cmd(&rust_var, is_secret, Some("{0}"), !is_object, None);
                     let cmd = if is_object {
                         format!(r#"${{{{ toJSON({gh_var}) }}}}"#)
                     } else {

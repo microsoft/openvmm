@@ -9,12 +9,6 @@ use std::io::Read;
 use std::io::Write;
 use std::path::PathBuf;
 
-pub enum VarDbMode {
-    None,
-    RawString,
-    Json,
-}
-
 pub fn construct_var_db_cli(
     flowey_bin: &str,
     job_idx: usize,
@@ -22,7 +16,7 @@ pub fn construct_var_db_cli(
     is_secret: bool,
     update_from_stdin: bool,
     update_from_file: Option<&str>,
-    mode: VarDbMode,
+    is_raw_string: bool,
     write_to_gh_env: Option<String>,
 ) -> String {
     let mut base = format!(r#"{flowey_bin} v {job_idx} '{var}'"#);
@@ -47,14 +41,8 @@ pub fn construct_var_db_cli(
         base = format!("{base} --write-to-gh-env {gh_var}");
     }
 
-    match mode {
-        VarDbMode::None => {}
-        VarDbMode::RawString => {
-            base += " --is-raw-string";
-        }
-        VarDbMode::Json => {
-            base += " --from-json";
-        }
+    if is_raw_string {
+        base += " --is-raw-string"
     }
 
     base
@@ -85,10 +73,6 @@ pub struct VarDb {
     #[clap(long, requires = "update")]
     is_secret: bool,
 
-    /// Whether or not the variable set is a JSON string
-    #[clap(long, conflicts_with = "is_raw_string")]
-    from_json: bool,
-
     /// Set the variable as a github environment variable with the given name
     /// rather than printing to stdout.
     #[clap(long, requires = "var_name", group = "update")]
@@ -104,7 +88,6 @@ impl VarDb {
             update_from_file,
             is_secret,
             is_raw_string,
-            from_json,
             write_to_gh_env,
         } = self;
 
@@ -145,9 +128,6 @@ impl VarDb {
             if is_raw_string {
                 let s: String = serde_json::from_slice(&data).unwrap();
                 data = s.into();
-            } else if from_json {
-                // Reading JSON object
-                println!("From JSON");
             }
 
             if let Some(write_to_gh_env) = write_to_gh_env {

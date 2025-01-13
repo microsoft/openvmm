@@ -10,7 +10,6 @@ use super::generic::ResolvedJobUseParameter;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
 use crate::cli::pipeline::CheckMode;
-use crate::cli::var_db::VarDbMode;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
 use crate::flow_resolver::stage1_dag::Step;
 use crate::pipeline_resolver::generic::ResolvedPipeline;
@@ -234,12 +233,6 @@ echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
         let mut flowey_bootstrap_bash = String::new();
 
         let bootstrap_bash_var_db_inject = |var, is_raw_string| {
-            let mode = if is_raw_string {
-                VarDbMode::RawString
-            } else {
-                VarDbMode::None
-            };
-
             crate::cli::var_db::construct_var_db_cli(
                 "$FLOWEY_BIN",
                 job_idx.index(),
@@ -247,7 +240,7 @@ echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
                 false,
                 true,
                 None,
-                mode,
+                is_raw_string,
                 None,
             )
         };
@@ -854,12 +847,6 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
                 }
 
                 let var_db_cmd = |var: &str, is_secret, update_from_stdin, is_raw_string| {
-                    let mode = if is_raw_string {
-                        VarDbMode::RawString
-                    } else {
-                        VarDbMode::None
-                    };
-
                     crate::cli::var_db::construct_var_db_cli(
                         "$(FLOWEY_BIN)",
                         job_idx,
@@ -867,7 +854,7 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
                         is_secret,
                         update_from_stdin,
                         None,
-                        mode,
+                        is_raw_string,
                         None,
                     )
                 };

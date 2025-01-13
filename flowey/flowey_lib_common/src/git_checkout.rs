@@ -591,9 +591,11 @@ impl Node {
         }
 
         let git_ensure_installed = ctx.reqv(crate::install_git::Request::EnsureInstalled);
+        let pull_request_event = ctx.get_gh_context_var().event().pull_request();
 
         ctx.emit_rust_step("report repo directory", move |ctx| {
             git_ensure_installed.claim(ctx);
+            let pull_request_event = pull_request_event.claim(ctx);
             let register_repo = register_repo
                 .into_iter()
                 .map(|process_reqs::RequestRegisterRepo { repo_id, repo_src, allow_persist_credentials: _, depth, pre_run_deps }|
@@ -607,6 +609,11 @@ impl Node {
                 .collect::<Vec<_>>();
 
             move |rt| {
+               let pull_request_event = rt.read(pull_request_event);
+               if let Some(event) = pull_request_event {
+                println!("{}", event.head.head_ref);
+               }
+
                for (checkout_repo_id, repo_path, _persist_credentials) in checkout_repo {
                     let checkout_repo_id = rt.read(checkout_repo_id);
 
