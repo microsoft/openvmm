@@ -238,13 +238,14 @@ impl GuestEventPort for OffloadedGuestEventPortNoTrigger {
         *self.params.lock() = None;
     }
 
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) {
+    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) -> anyhow::Result<()> {
         *self.params.lock() = Some(WhpEventPortParams {
             vtl,
             vp: VpIndex::new(vp),
             sint,
             flag,
         });
+        Ok(())
     }
 }
 
@@ -279,7 +280,7 @@ impl GuestEventPort for OffloadedGuestEventPort {
         }
     }
 
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) {
+    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) -> anyhow::Result<()> {
         assert_eq!(vtl, Vtl::Vtl0);
         if let Some(partition) = self.partition.upgrade() {
             partition
@@ -295,6 +296,8 @@ impl GuestEventPort for OffloadedGuestEventPort {
                 )
                 .expect("cannot fail");
         }
+
+        Ok(())
     }
 }
 
@@ -348,13 +351,15 @@ impl GuestEventPort for EmulatedGuestEventPort {
         *self.params.lock() = None;
     }
 
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) {
+    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) -> anyhow::Result<()> {
         *self.params.lock() = Some(WhpEventPortParams {
             vtl,
             vp: VpIndex::new(vp),
             sint,
             flag,
         });
+
+        Ok(())
     }
 }
 

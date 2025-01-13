@@ -59,10 +59,10 @@ pub trait SynicPortAccess: Send + Sync {
         vtl: Vtl,
         vp: u32,
         sint: u8,
-    ) -> Result<Box<dyn GuestMessagePort>, Error>;
+    ) -> anyhow::Result<Box<dyn GuestMessagePort>>;
 
     /// Creates a [`GuestEventPort`] for signaling VMBus channels in the guest.
-    fn new_guest_event_port(&self) -> Result<Box<dyn GuestEventPort>, Error>;
+    fn new_guest_event_port(&self) -> anyhow::Result<Box<dyn GuestEventPort>>;
 
     /// Returns whether callers should pass an OS event when creating event
     /// ports, as opposed to passing a function to call.
@@ -101,7 +101,7 @@ pub trait GuestEventPort: Send + Sync {
     fn clear(&mut self);
 
     /// Updates the parameters for the event port.
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16);
+    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) -> anyhow::Result<()>;
 }
 
 /// A guest message port, created by [`SynicPortAccess::new_guest_message_port`].
@@ -115,7 +115,7 @@ pub trait GuestMessagePort: Send + Sync {
     fn post_message(&self, typ: u32, payload: &[u8]);
 
     /// Changes the virtual processor to which messages are sent.
-    fn set_target_vp(&mut self, vp: u32);
+    fn set_target_vp(&mut self, vp: u32) -> anyhow::Result<()>;
 
     /// Gets the current virtual processor to which messages are sent.
     fn target_vp(&self) -> u32;

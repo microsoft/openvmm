@@ -1255,20 +1255,34 @@ impl channels::Notifier for ServerTaskInner {
                         (self.vtl, SINT)
                     };
 
-                    channel.guest_event_port.set(
+                    if let Err(err) = channel.guest_event_port.set(
                         target_vtl,
                         target_vp,
                         target_sint,
                         open_params.event_flag,
-                    );
-
-                    handle(
-                        offer_id,
-                        channel,
-                        ChannelRequest::Modify,
-                        ModifyRequest::TargetVp { target_vp },
-                        ChannelResponse::Modify,
-                    )
+                    ) {
+                        tracelimit::error_ratelimited!(
+                            ?err,
+                            channel = %channel.key,
+                            "could not modify channel",
+                        );
+                        let seq = channel.seq;
+                        Box::pin(async move {
+                            (
+                                offer_id,
+                                seq,
+                                Ok(ChannelResponse::Modify(protocol::STATUS_UNSUCCESSFUL)),
+                            )
+                        })
+                    } else {
+                        handle(
+                            offer_id,
+                            channel,
+                            ChannelRequest::Modify,
+                            ModifyRequest::TargetVp { target_vp },
+                            ChannelResponse::Modify,
+                        )
+                    }
                 } else {
                     unreachable!();
                 }
@@ -1285,7 +1299,7 @@ impl channels::Notifier for ServerTaskInner {
             .context("Failed to map monitor page.")?;
 
         if let Some(vp) = request.target_message_vp {
-            self.message_port.set_target_vp(vp);
+            self.message_port.set_target_vp(vp)?;
         }
 
         if request.notify_relay {
@@ -1349,7 +1363,7 @@ impl channels::Notifier for ServerTaskInner {
                     .expect("channel does not exist")
                     .state
                 else {
-                    panic!("channel is not reserved");
+                    unreachable!("channel is not reserved");
                 };
                 util::BorrowedOrOwned::Borrowed(message_port)
             }
@@ -1432,21 +1446,6 @@ impl ServerTaskInner {
             .get_mut(&offer_id)
             .expect("channel does not exist");
 
-        // For pre-Win8 guests, the host-to-guest event always targets vp 0 and the channel
-        // bitmap is used instead of the event flag.
-        let (target_vp, event_flag) = if self.channel_bitmap.is_some() {
-            (0, 0)
-        } else {
-            (open_params.open_data.target_vp, open_params.event_flag)
-        };
-        let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
-            (self.redirect_vtl, self.redirect_sint)
-        } else {
-            (self.vtl, SINT)
-        };
-        channel
-            .guest_event_port
-            .set(target_vtl, target_vp, target_sint, event_flag);
         let interrupt = ChannelBitmap::create_interrupt(
             &self.channel_bitmap,
             channel.guest_event_port.interrupt(),
@@ -1471,7 +1470,7 @@ impl ServerTaskInner {
         &mut self,
         offer_id: OfferId,
         result: Option<OpenResult>,
-    ) -> Result<&mut Channel, ChannelError> {
+    ) -> anyhow::Result<&mut Channel> {
         let channel = self
             .channels
             .get_mut(&offer_id)
@@ -1493,6 +1492,21 @@ impl ServerTaskInner {
                             guest_to_host_event.0.clone(),
                         );
                     }
+                    // For pre-Win8 guests, the host-to-guest event always targets vp 0 and the channel
+                    // bitmap is used instead of the event flag.
+                    let (target_vp, event_flag) = if self.channel_bitmap.is_some() {
+                        (0, 0)
+                    } else {
+                        (open_params.open_data.target_vp, open_params.event_flag)
+                    };
+                    let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
+                        (self.redirect_vtl, self.redirect_sint)
+                    } else {
+                        (self.vtl, SINT)
+                    };
+                    channel
+                        .guest_event_port
+                        .set(target_vtl, target_vp, target_sint, event_flag)?;
                     // Always set up an event port; if V1, this will be unused.
                     let event_port = self
                         .synic
@@ -1501,7 +1515,7 @@ impl ServerTaskInner {
                             self.vtl,
                             guest_to_host_event.clone(),
                         )
-                        .map_err(ChannelError::SynicError)?;
+                        .map_err(ChannelError::EventPortError)?;
                     // Set up a message port if this is a reserved channel.
                     let reserved_guest_message_port =
                         if let Some(reserved_target) = open_params.reserved_target {
@@ -1789,7 +1803,9 @@ mod tests {
 
         fn clear(&mut self) {}
 
-        fn set(&mut self, _vtl: Vtl, _vp: u32, _sint: u8, _flag: u16) {}
+        fn set(&mut self, _vtl: Vtl, _vp: u32, _sint: u8, _flag: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     struct MockGuestMessagePort(mesh::Sender<Vec<u8>>);
@@ -1799,7 +1815,9 @@ mod tests {
             self.0.send(payload.into());
         }
 
-        fn set_target_vp(&mut self, _vp: u32) {}
+        fn set_target_vp(&mut self, _vp: u32) -> anyhow::Result<()> {
+            Ok(())
+        }
 
         fn target_vp(&self) -> u32 {
             0
@@ -1831,11 +1849,11 @@ mod tests {
             _vtl: Vtl,
             _vp: u32,
             _sint: u8,
-        ) -> Result<Box<dyn GuestMessagePort>, vmcore::synic::Error> {
+        ) -> anyhow::Result<Box<dyn GuestMessagePort>> {
             Ok(Box::new(MockGuestMessagePort(self.message_send.clone())))
         }
 
-        fn new_guest_event_port(&self) -> Result<Box<dyn GuestEventPort>, vmcore::synic::Error> {
+        fn new_guest_event_port(&self) -> anyhow::Result<Box<dyn GuestEventPort>> {
             Ok(Box::new(MockGuestPort {}))
         }
 

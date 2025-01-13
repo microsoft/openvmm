@@ -22,6 +22,7 @@ pal_event.workspace = true
 inspect.workspace = true
 tracelimit.workspace = true
 
+anyhow.workspace = true
 mshv-bindings = { workspace = true, features = ["with-serde", "fam-wrappers"] }
 mshv-ioctls.workspace = true
 arrayvec.workspace = true

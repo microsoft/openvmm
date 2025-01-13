@@ -43,6 +43,7 @@ use vmbus_core::OutgoingMessage;
 use vmbus_core::VersionInfo;
 use vmbus_ring::gparange;
 use vmcore::monitor::MonitorId;
+use vmcore::synic;
 use zerocopy::AsBytes;
 use zerocopy::FromZeroes;
 
@@ -81,8 +82,10 @@ pub enum ChannelError {
     ChannelNotReserved,
     #[error("received untrusted message for trusted connection")]
     UntrustedMessage,
+    #[error("an error occurred creating an event port")]
+    EventPortError(#[source] synic::Error),
     #[error("an error occurred in the synic")]
-    SynicError(#[source] vmcore::synic::Error),
+    SynicError(#[source] anyhow::Error),
 }
 
 #[derive(Debug, Error)]
@@ -1212,7 +1215,7 @@ pub enum InterruptPageError {
     #[error("memory")]
     MemoryError(#[from] GuestMemoryError),
     #[error("synic")]
-    SynicError(#[from] vmcore::synic::Error),
+    SynicError(#[from] synic::Error),
     #[error("gpa {0:#x} is not page aligned")]
     NotPageAligned(u64),
 }

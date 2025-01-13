@@ -144,7 +144,7 @@ impl SynicPortAccess for SynicPorts {
         vtl: Vtl,
         vp: u32,
         sint: u8,
-    ) -> Result<Box<dyn GuestMessagePort>, vmcore::synic::Error> {
+    ) -> anyhow::Result<Box<dyn GuestMessagePort>> {
         Ok(Box::new(DirectGuestMessagePort {
             partition: Arc::clone(&self.partition),
             vtl,
@@ -153,9 +153,7 @@ impl SynicPortAccess for SynicPorts {
         }))
     }
 
-    fn new_guest_event_port(
-        &self,
-    ) -> Result<Box<dyn vmcore::synic::GuestEventPort>, vmcore::synic::Error> {
+    fn new_guest_event_port(&self) -> anyhow::Result<Box<dyn vmcore::synic::GuestEventPort>> {
         Ok(self.partition.new_guest_event_port())
     }
 
@@ -233,8 +231,9 @@ impl GuestMessagePort for DirectGuestMessagePort {
             .post_message(self.vtl, self.vp, self.sint, typ, payload)
     }
 
-    fn set_target_vp(&mut self, vp: u32) {
+    fn set_target_vp(&mut self, vp: u32) -> anyhow::Result<()> {
         self.vp = VpIndex::new(vp);
+        Ok(())
     }
 
     fn target_vp(&self) -> u32 {
