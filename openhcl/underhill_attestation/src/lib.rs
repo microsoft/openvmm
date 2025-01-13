@@ -1166,7 +1166,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn unlock_unencrypted_vmgs_without_derived_keys() {
+    async fn do_nothing_without_derived_keys() {
         let mut vmgs = new_formatted_vmgs().await;
 
         let mut key_protector = new_key_protector();
