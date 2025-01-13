@@ -670,6 +670,7 @@ enum ChannelState {
         guest_to_host_event: Arc<ChannelEvent>,
         reserved_guest_message_port: Option<Box<dyn GuestMessagePort>>,
     },
+    ClosingReserved(Box<dyn GuestMessagePort>),
 }
 
 impl ServerTask {
@@ -781,15 +782,45 @@ impl ServerTask {
     }
 
     fn handle_close(&mut self, offer_id: OfferId) {
-        self.server
-            .with_notifier(&mut self.inner)
-            .close_complete(offer_id);
         let channel = self
             .inner
             .channels
             .get_mut(&offer_id)
             .expect("channel still exists");
-        channel.state = ChannelState::Closed;
+
+        let ChannelState::Open {
+            reserved_guest_message_port,
+            ..
+        } = &mut channel.state
+        else {
+            tracing::error!(?offer_id, "invalid close channel response");
+            return;
+        };
+
+        // If the channel is reserved, the message port needs to remain available to send the closed
+        // response.
+        let mut reserved = false;
+        if let Some(message_port) = reserved_guest_message_port.take() {
+            channel.state = ChannelState::ClosingReserved(message_port);
+            reserved = true;
+        } else {
+            channel.state = ChannelState::Closed;
+        }
+
+        self.server
+            .with_notifier(&mut self.inner)
+            .close_complete(offer_id);
+
+        if reserved {
+            // Now the message port can be dropped.
+            let channel = self
+                .inner
+                .channels
+                .get_mut(&offer_id)
+                .expect("channel still exists");
+
+            channel.state = ChannelState::Closed;
+        }
     }
 
     fn handle_gpadl_create(&mut self, offer_id: OfferId, gpadl_id: GpadlId, ok: bool) {
@@ -1354,16 +1385,17 @@ impl channels::Notifier for ServerTaskInner {
         let port = match target {
             MessageTarget::Default => util::BorrowedOrOwned::Borrowed(&self.message_port),
             MessageTarget::ReservedChannel(offer_id) => {
-                let ChannelState::Open {
-                    reserved_guest_message_port: Some(message_port),
-                    ..
-                } = &self
+                let channel = self
                     .channels
                     .get(&offer_id)
-                    .expect("channel does not exist")
-                    .state
-                else {
-                    unreachable!("channel is not reserved");
+                    .expect("channel does not exist");
+                let message_port = match &channel.state {
+                    ChannelState::Open {
+                        reserved_guest_message_port: Some(message_port),
+                        ..
+                    }
+                    | ChannelState::ClosingReserved(message_port) => message_port,
+                    _ => unreachable!("channel is not reserved"),
                 };
                 util::BorrowedOrOwned::Borrowed(message_port)
             }
