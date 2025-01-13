@@ -17,6 +17,7 @@ pub fn construct_var_db_cli(
     update_from_stdin: bool,
     update_from_file: Option<&str>,
     is_raw_string: bool,
+    from_json: bool,
     write_to_gh_env: Option<String>,
 ) -> String {
     let mut base = format!(r#"{flowey_bin} v {job_idx} '{var}'"#);
@@ -43,6 +44,10 @@ pub fn construct_var_db_cli(
 
     if is_raw_string {
         base += " --is-raw-string"
+    }
+
+    if from_json {
+        base += " --from-json"
     }
 
     base
@@ -73,6 +78,10 @@ pub struct VarDb {
     #[clap(long, requires = "update")]
     is_secret: bool,
 
+    /// Whether or not the variable set is a JSON string
+    #[clap(long, conflicts_with = "is_raw_string")]
+    from_json: bool,
+
     /// Set the variable as a github environment variable with the given name
     /// rather than printing to stdout.
     #[clap(long, requires = "var_name", group = "update")]
@@ -88,6 +97,7 @@ impl VarDb {
             update_from_file,
             is_secret,
             is_raw_string,
+            from_json,
             write_to_gh_env,
         } = self;
 
@@ -128,6 +138,9 @@ impl VarDb {
             if is_raw_string {
                 let s: String = serde_json::from_slice(&data).unwrap();
                 data = s.into();
+            } else if from_json {
+                // Reading JSON object
+                println!("From JSON");
             }
 
             if let Some(write_to_gh_env) = write_to_gh_env {

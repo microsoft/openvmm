@@ -241,6 +241,7 @@ echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
                 true,
                 None,
                 is_raw_string,
+                false,
                 None,
             )
         };
@@ -855,6 +856,7 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
                         update_from_stdin,
                         None,
                         is_raw_string,
+                        false,
                         None,
                     )
                 };
