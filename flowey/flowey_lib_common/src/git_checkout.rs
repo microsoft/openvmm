@@ -524,6 +524,7 @@ impl Node {
         let parent_path = ctx
             .get_gh_context_var()
             .global(GhContextVar::GITHUB__WORKSPACE);
+        let test_pull_request_event = ctx.get_gh_context_var().event().pull_request();
         ctx.emit_rust_step("report cloned repo directories", move |ctx| {
             did_checkouts.claim(ctx);
             let mut registered_repos = registered_repos.into_iter().map(|(k, (a, b))| (k, (a, b.claim(ctx)))).collect::<BTreeMap<_, _>>();
@@ -534,9 +535,11 @@ impl Node {
                 })
                 .collect::<Vec<_>>();
             let parent_path = parent_path.claim(ctx);
+            let test_pull_request_event = test_pull_request_event.claim(ctx);
 
             move |rt| {
                 let mut checkout_reqs = BTreeMap::<(String, bool), Vec<ClaimedWriteVar<PathBuf>>>::new();
+                println!("pull request head ref: {:?}", rt.read(test_pull_request_event).expect("pull_request_event").head.head_ref);
                 for (repo_id, repo_path, persist_credentials) in checkout_repo {
                     checkout_reqs
                         .entry((rt.read(repo_id), persist_credentials))
@@ -591,11 +594,9 @@ impl Node {
         }
 
         let git_ensure_installed = ctx.reqv(crate::install_git::Request::EnsureInstalled);
-        let pull_request_event = ctx.get_gh_context_var().event().pull_request();
 
         ctx.emit_rust_step("report repo directory", move |ctx| {
             git_ensure_installed.claim(ctx);
-            let pull_request_event = pull_request_event.claim(ctx);
             let register_repo = register_repo
                 .into_iter()
                 .map(|process_reqs::RequestRegisterRepo { repo_id, repo_src, allow_persist_credentials: _, depth, pre_run_deps }|
@@ -609,11 +610,6 @@ impl Node {
                 .collect::<Vec<_>>();
 
             move |rt| {
-               let pull_request_event = rt.read(pull_request_event);
-               if let Some(event) = pull_request_event {
-                println!("{}", event.head.head_ref);
-               }
-
                for (checkout_repo_id, repo_path, _persist_credentials) in checkout_repo {
                     let checkout_repo_id = rt.read(checkout_repo_id);
 
