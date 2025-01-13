@@ -866,6 +866,11 @@ pub struct Head {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct GhContextVarReaderEventRelease {
+    pub action: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct GhContextVarReaderEventPullRequest {
     pub head: Head,
 }
@@ -917,6 +922,32 @@ impl<'a> GhContextVarReader<'a, ghvarstate::Root> {
 impl GhContextVarReader<'_, ghvarstate::Event> {
     pub fn pull_request(self) -> ReadVar<Option<GhContextVarReaderEventPullRequest>> {
         let var_name = "github.event.pull_request".to_string();
+        let (var, write_var) = self.ctx.new_var();
+        let write_var = write_var.claim(&mut StepCtx {
+            backend: self.ctx.backend.clone(),
+        });
+        let gh_to_rust = vec![(
+            var_name.clone(),
+            write_var.backing_var,
+            write_var.is_secret,
+            true,
+        )];
+
+        self.ctx.backend.borrow_mut().on_emit_gh_step(
+            &format!("🌼 read {}", var_name),
+            "",
+            BTreeMap::new(),
+            None,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            gh_to_rust,
+            Vec::new(),
+        );
+        var
+    }
+
+    pub fn release(self) -> ReadVar<Option<GhContextVarReaderEventRelease>> {
+        let var_name = "github.event.release".to_string();
         let (var, write_var) = self.ctx.new_var();
         let write_var = write_var.claim(&mut StepCtx {
             backend: self.ctx.backend.clone(),
