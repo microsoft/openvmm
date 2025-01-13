@@ -10,6 +10,7 @@ use super::generic::ResolvedJobUseParameter;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
 use crate::cli::pipeline::CheckMode;
+use crate::cli::var_db::VarDbMode;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
 use crate::flow_resolver::stage1_dag::Step;
 use crate::pipeline_resolver::common_yaml::job_flowey_bootstrap_source;
@@ -224,6 +225,14 @@ pub fn github_yaml(
         }
 
         let bootstrap_bash_var_db_inject = |var, is_raw_string, from_json| {
+            let mode = if is_raw_string {
+                VarDbMode::RawString
+            } else if from_json {
+                VarDbMode::Json
+            } else {
+                VarDbMode::None
+            };
+
             crate::cli::var_db::construct_var_db_cli(
                 &flowey_bin,
                 job_idx.index(),
@@ -231,8 +240,7 @@ pub fn github_yaml(
                 false,
                 true,
                 None,
-                is_raw_string,
-                from_json,
+                mode,
                 None,
             )
         };
@@ -784,6 +792,14 @@ fn resolve_flow_as_github_yaml_steps(
                                   is_raw_string,
                                   from_json,
                                   write_to_gh_env| {
+                    let mode = if is_raw_string {
+                        VarDbMode::RawString
+                    } else if from_json {
+                        VarDbMode::Json
+                    } else {
+                        VarDbMode::None
+                    };
+
                     crate::cli::var_db::construct_var_db_cli(
                         flowey_bin,
                         job_idx,
@@ -791,8 +807,7 @@ fn resolve_flow_as_github_yaml_steps(
                         is_secret,
                         false,
                         update_from_file,
-                        is_raw_string,
-                        from_json,
+                        mode,
                         write_to_gh_env,
                     )
                 };

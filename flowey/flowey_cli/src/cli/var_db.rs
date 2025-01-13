@@ -9,6 +9,12 @@ use std::io::Read;
 use std::io::Write;
 use std::path::PathBuf;
 
+pub enum VarDbMode {
+    None,
+    RawString,
+    Json,
+}
+
 pub fn construct_var_db_cli(
     flowey_bin: &str,
     job_idx: usize,
@@ -16,8 +22,7 @@ pub fn construct_var_db_cli(
     is_secret: bool,
     update_from_stdin: bool,
     update_from_file: Option<&str>,
-    is_raw_string: bool,
-    from_json: bool,
+    mode: VarDbMode,
     write_to_gh_env: Option<String>,
 ) -> String {
     let mut base = format!(r#"{flowey_bin} v {job_idx} '{var}'"#);
@@ -42,12 +47,14 @@ pub fn construct_var_db_cli(
         base = format!("{base} --write-to-gh-env {gh_var}");
     }
 
-    if is_raw_string {
-        base += " --is-raw-string"
-    }
-
-    if from_json {
-        base += " --from-json"
+    match mode {
+        VarDbMode::None => {}
+        VarDbMode::RawString => {
+            base += " --is-raw-string";
+        }
+        VarDbMode::Json => {
+            base += " --from-json";
+        }
     }
 
     base
