@@ -1093,43 +1093,34 @@ mod tests {
         let mut vmgs = Vmgs::format_new(disk).await.unwrap();
 
         assert!(
-            key_protectors_are_empty(&mut vmgs, true, true).await,
-            "Newly formatted VMGS should have empty key protectors"
+            key_protector_is_empty(&mut vmgs).await,
+            "Newly formatted VMGS should have an empty key protector"
+        );
+        assert!(
+            key_protector_by_id_is_empty(&mut vmgs).await,
+            "Newly formatted VMGS should have an empty key protector by id"
         );
 
         vmgs
     }
 
-    async fn key_protectors_are_empty(
-        vmgs: &mut Vmgs,
-        check_key_protector: bool,
-        check_key_protector_by_id: bool,
-    ) -> bool {
-        if check_key_protector {
-            let key_protector = vmgs::read_key_protector(vmgs, AES_WRAPPED_AES_KEY_LENGTH)
-                .await
-                .unwrap();
+    async fn key_protector_is_empty(vmgs: &mut Vmgs) -> bool {
+        let key_protector = vmgs::read_key_protector(vmgs, AES_WRAPPED_AES_KEY_LENGTH)
+            .await
+            .unwrap();
 
-            if !key_protector.as_bytes().iter().all(|&b| b == 0) {
-                return false;
-            }
-        }
+        key_protector.as_bytes().iter().all(|&b| b == 0)
+    }
 
-        if check_key_protector_by_id {
-            if !vmgs::read_key_protector_by_id(vmgs)
-                .await
-                .is_err_and(|err| {
-                    matches!(
-                        err,
-                        vmgs::ReadFromVmgsError::EntryNotFound(FileId::VM_UNIQUE_ID)
-                    )
-                })
-            {
-                return false;
-            }
-        }
-
-        true
+    async fn key_protector_by_id_is_empty(vmgs: &mut Vmgs) -> bool {
+        vmgs::read_key_protector_by_id(vmgs)
+            .await
+            .is_err_and(|err| {
+                matches!(
+                    err,
+                    vmgs::ReadFromVmgsError::EntryNotFound(FileId::VM_UNIQUE_ID)
+                )
+            })
     }
 
     fn new_key_protector() -> KeyProtector {
@@ -1201,10 +1192,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(
-            key_protectors_are_empty(&mut vmgs, true, true).await,
-            "No changes should be made to the key protectors"
-        );
+        assert!(key_protector_is_empty(&mut vmgs).await);
+        assert!(key_protector_by_id_is_empty(&mut vmgs).await);
     }
 
     #[async_test]
@@ -1241,6 +1230,9 @@ mod tests {
         .unwrap();
 
         // Since both `should_write_kp` and `use_gsp_by_id` are true, both key protectors should be updated
+        assert!(!key_protector_is_empty(&mut vmgs).await);
+        assert!(!key_protector_by_id_is_empty(&mut vmgs).await);
+
         let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
             .await
             .unwrap();
@@ -1543,11 +1535,6 @@ mod tests {
         let active_kp_gsp_length_copy =
             key_protector.gsp[key_protector.active_kp as usize].gsp_length;
 
-        assert!(
-            key_protectors_are_empty(&mut vmgs, true, true).await,
-            "Newly formatted VMGS should have empty key protectors"
-        );
-
         // When all key protector settings are true, no actions will be taken on the key protectors or VMGS
         let key_protector_settings = KeyProtectorSettings {
             should_write_kp: true,
@@ -1564,10 +1551,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(
-            key_protectors_are_empty(&mut vmgs, true, true).await,
-            "No changes should be made to the key protectors"
-        );
+        assert!(key_protector_is_empty(&mut vmgs).await);
+        assert!(key_protector_by_id_is_empty(&mut vmgs).await);
 
         // The key protector should remain unchanged
         assert_eq!(active_kp_copy, key_protector.active_kp);
@@ -1595,11 +1580,6 @@ mod tests {
         let active_kp_gsp_length_copy =
             key_protector.gsp[key_protector.active_kp as usize].gsp_length;
 
-        assert!(
-            key_protectors_are_empty(&mut vmgs, true, true).await,
-            "Newly formatted VMGS should have empty key protectors"
-        );
-
         // When `use_gsp_by_id` is true and `should_write_kp` is false, the key protector by id should be written to the VMGS
         let key_protector_settings = KeyProtectorSettings {
             should_write_kp: false,
@@ -1617,10 +1597,8 @@ mod tests {
         .unwrap();
 
         // The previously empty VMGS now holds the key protector by id but not the key protector
-        assert!(
-            key_protectors_are_empty(&mut vmgs, true, false).await,
-            "Key protector should be empty"
-        );
+        assert!(key_protector_is_empty(&mut vmgs).await);
+        assert!(!key_protector_by_id_is_empty(&mut vmgs).await);
 
         let found_key_protector_by_id = vmgs::read_key_protector_by_id(&mut vmgs).await.unwrap();
         assert_eq!(
@@ -1670,10 +1648,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(
-            key_protectors_are_empty(&mut vmgs, false, true).await,
-            "Only the key protector should be non-empty"
-        );
+        assert!(!key_protector_is_empty(&mut vmgs).await);
+        assert!(key_protector_by_id_is_empty(&mut vmgs).await);
 
         // The previously empty VMGS's key protector should now be overwritten
         let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
@@ -1698,11 +1674,6 @@ mod tests {
         let mut key_protector_by_id = new_key_protector_by_id(None, None, true);
         let bios_guid = Guid::new_random();
 
-        assert!(
-            key_protectors_are_empty(&mut vmgs, true, true).await,
-            "Newly formatted VMGS should have empty key protectors"
-        );
-
         // When `use_gsp_by_id` is false, `should_write_kp` is true, `use_hardware_unlock` is true, and
         // the key protector by id is found and not ported, the key protector by id should be marked as ported
         let key_protector_settings = KeyProtectorSettings {
@@ -1721,10 +1692,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(
-            key_protectors_are_empty(&mut vmgs, true, false).await,
-            "Only the key protector by id should be non-empty"
-        );
+        assert!(key_protector_is_empty(&mut vmgs).await);
+        assert!(!key_protector_by_id_is_empty(&mut vmgs).await);
 
         // The previously empty VMGS's key protector by id should now be overwritten
         let found_key_protector_by_id = vmgs::read_key_protector_by_id(&mut vmgs).await.unwrap();
