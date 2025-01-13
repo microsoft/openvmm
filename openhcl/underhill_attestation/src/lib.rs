@@ -1316,7 +1316,7 @@ mod tests {
         // After the VMGS has been unlocked, the VMGS encryption key should be rotated from ingress to egress
         vmgs.unlock_with_encryption_key(&ingress).await.unwrap_err();
         let egress_index = vmgs.unlock_with_encryption_key(&egress).await.unwrap();
-        // The ingress key is still present and in the 0th slot, so the egress key will be in the 1th slot
+        // The ingress key was removed, but not before the egress key was added in the 0th slot
         assert_eq!(egress_index, 1);
 
         // Since both `should_write_kp` and `use_gsp_by_id` are true, both key protectors should be updated
@@ -1333,7 +1333,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn unlock_vmgs_failed_to_persist_kp() {
+    async fn failed_to_persist_ingress_key_so_use_egress_key_to_unlock_vmgs() {
         let mut vmgs = new_formatted_vmgs().await;
 
         let mut key_protector = new_key_protector();
