@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use std::ops::Deref;
 
 // Similar to Cow, but doesn't require T to implement ToOwned.
