@@ -1399,6 +1399,11 @@ impl channels::Notifier for ServerTaskInner {
             .get_mut(&offer_id)
             .expect("channel does not exist");
 
+        assert!(
+            channel.reserved_guest_message_port.is_some(),
+            "channel is not reserved"
+        );
+
         // Destroy the old port before creating a new one.
         channel.reserved_guest_message_port = None;
         channel.reserved_guest_message_port = Some(
@@ -1408,6 +1413,20 @@ impl channels::Notifier for ServerTaskInner {
         );
 
         Ok(())
+    }
+
+    fn unreserve_channel(&mut self, offer_id: OfferId) {
+        let channel = self
+            .channels
+            .get_mut(&offer_id)
+            .expect("channel does not exist");
+
+        assert!(
+            channel.reserved_guest_message_port.is_some(),
+            "channel is not reserved"
+        );
+
+        channel.reserved_guest_message_port = None;
     }
 }
 
