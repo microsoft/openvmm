@@ -1220,7 +1220,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn provision_vmgs() {
+    async fn provision_vmgs_and_rotate_keys() {
         let mut vmgs = new_formatted_vmgs().await;
 
         let mut key_protector = new_key_protector();
@@ -1344,6 +1344,7 @@ mod tests {
 
         let derived_keys = Keys { ingress, egress };
 
+        // Add only the egress key to the VMGS to simulate a failure to persist the ingress key
         let egress_key_index = vmgs
             .add_new_encryption_key(&egress, EncryptionAlgorithm::AES_GCM)
             .await
@@ -1353,6 +1354,9 @@ mod tests {
         let found_egress_key_index = vmgs.unlock_with_encryption_key(&egress).await.unwrap();
         assert_eq!(found_egress_key_index, egress_key_index);
 
+        // Confirm that the ingress key cannot be used to unlock the VMGS
+        vmgs.unlock_with_encryption_key(&ingress).await.unwrap_err();
+
         let key_protector_settings = KeyProtectorSettings {
             should_write_kp: true,
             use_gsp_by_id: true,
@@ -1360,10 +1364,6 @@ mod tests {
         };
 
         let bios_guid = Guid::new_random();
-
-        // In the event that the ingress key is not persisted, the egress key will be used to unlock the VMGS
-        // and the egress key will be discarded
-        vmgs.unlock_with_encryption_key(&ingress).await.unwrap_err();
 
         unlock_vmgs_data_store(
             &mut vmgs,
@@ -1377,8 +1377,12 @@ mod tests {
         .await
         .unwrap();
 
-        // Confirm that the ingress key is not preserved
+        // Confirm that the ingress key was not added
         vmgs.unlock_with_encryption_key(&ingress).await.unwrap_err();
+
+        // The egress key can still unlock the VMGS
+        let found_egress_key_index = vmgs.unlock_with_encryption_key(&egress).await.unwrap();
+        assert_eq!(found_egress_key_index, egress_key_index);
 
         // Since both `should_write_kp` and `use_gsp_by_id` are true, both key protectors should be updated
         let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
@@ -1391,10 +1395,6 @@ mod tests {
             found_key_protector_by_id.as_bytes(),
             key_protector_by_id.inner.as_bytes()
         );
-
-        // The egress key can still unlock the VMGS
-        let found_egress_key_index = vmgs.unlock_with_encryption_key(&egress).await.unwrap();
-        assert_eq!(found_egress_key_index, egress_key_index);
     }
 
     #[async_test]
