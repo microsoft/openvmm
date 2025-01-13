@@ -767,12 +767,15 @@ impl ServerTask {
     }
 
     fn handle_open(&mut self, offer_id: OfferId, result: Option<OpenResult>) {
-        let status = if result.is_some() {
+        let mut status = if result.is_some() {
             0
         } else {
             protocol::STATUS_UNSUCCESSFUL
         };
-        self.inner.complete_open(offer_id, result);
+        if let Err(err) = self.inner.complete_open(offer_id, result) {
+            tracelimit::error_ratelimited!(?err, "failed to complete open");
+            status = protocol::STATUS_UNSUCCESSFUL;
+        }
         self.server
             .with_notifier(&mut self.inner)
             .open_complete(offer_id, status);
@@ -832,8 +835,8 @@ impl ServerTask {
         let open_request = params
             .zip(open)
             .map(|(params, result)| -> anyhow::Result<_> {
-                let (_, interrupt) = self.inner.open_channel(offer_id, &params)?;
-                let channel = self.inner.complete_open(offer_id, Some(result));
+                let (_, interrupt) = self.inner.open_channel(offer_id, &params);
+                let channel = self.inner.complete_open(offer_id, Some(result))?;
                 Ok(OpenRequest::new(
                     params.open_data,
                     interrupt,
@@ -1186,25 +1189,19 @@ impl channels::Notifier for ServerTaskInner {
 
         let response = match action {
             channels::Action::Open(open_params, version) => {
-                let seq = channel.seq;
-                match self.open_channel(offer_id, &open_params) {
-                    Ok((channel, interrupt)) => handle(
-                        offer_id,
-                        channel,
-                        ChannelRequest::Open,
-                        OpenRequest::new(
-                            open_params.open_data,
-                            interrupt,
-                            version.feature_flags,
-                            channel.flags,
-                        ),
-                        ChannelResponse::Open,
+                let (channel, interrupt) = self.open_channel(offer_id, &open_params);
+                handle(
+                    offer_id,
+                    channel,
+                    ChannelRequest::Open,
+                    OpenRequest::new(
+                        open_params.open_data,
+                        interrupt,
+                        version.feature_flags,
+                        channel.flags,
                     ),
-                    Err(err) => {
-                        tracelimit::error_ratelimited!(?err, "failed to open channel");
-                        Box::pin(async move { (offer_id, seq, Ok(ChannelResponse::Open(false))) })
-                    }
-                }
+                    ChannelResponse::Open,
+                )
             }
             channels::Action::Close => {
                 if let Some(channel_bitmap) = self.channel_bitmap.as_ref() {
@@ -1435,7 +1432,7 @@ impl ServerTaskInner {
         &mut self,
         offer_id: OfferId,
         open_params: &OpenParams,
-    ) -> Result<(&mut Channel, Interrupt), ChannelError> {
+    ) -> (&mut Channel, Interrupt) {
         let channel = self
             .channels
             .get_mut(&offer_id)
@@ -1468,28 +1465,19 @@ impl ServerTaskInner {
                 .map(|monitor| monitor.register_monitor(monitor_id, open_params.connection_id))
         });
 
-        // Set up a message port if this is a reserved channel.
-        if let Some(reserved_target) = open_params.reserved_target {
-            channel.reserved_guest_message_port = Some(
-                self.synic
-                    .new_guest_message_port(
-                        self.redirect_vtl,
-                        reserved_target.vp,
-                        reserved_target.sint,
-                    )
-                    .map_err(ChannelError::SynicError)?,
-            );
-        }
-
         channel.state = ChannelState::Opening {
             open_params: *open_params,
             monitor,
             host_to_guest_interrupt: interrupt.clone(),
         };
-        Ok((channel, interrupt))
+        (channel, interrupt)
     }
 
-    fn complete_open(&mut self, offer_id: OfferId, result: Option<OpenResult>) -> &mut Channel {
+    fn complete_open(
+        &mut self,
+        offer_id: OfferId,
+        result: Option<OpenResult>,
+    ) -> Result<&mut Channel, ChannelError> {
         let channel = self
             .channels
             .get_mut(&offer_id)
@@ -1519,7 +1507,19 @@ impl ServerTaskInner {
                             self.vtl,
                             guest_to_host_event.clone(),
                         )
-                        .expect("connection ID should not be in use");
+                        .map_err(ChannelError::SynicError)?;
+                    // Set up a message port if this is a reserved channel.
+                    if let Some(reserved_target) = open_params.reserved_target {
+                        channel.reserved_guest_message_port = Some(
+                            self.synic
+                                .new_guest_message_port(
+                                    self.redirect_vtl,
+                                    reserved_target.vp,
+                                    reserved_target.sint,
+                                )
+                                .map_err(ChannelError::SynicError)?,
+                        );
+                    }
                     ChannelState::Open {
                         open_params,
                         _event_port: event_port,
@@ -1536,7 +1536,7 @@ impl ServerTaskInner {
         } else {
             ChannelState::Closed
         };
-        channel
+        Ok(channel)
     }
 
     /// If the client specified an interrupt page, map it into host memory and
