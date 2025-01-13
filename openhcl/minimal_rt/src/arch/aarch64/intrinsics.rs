@@ -53,6 +53,20 @@ unsafe extern "C" fn memset(mut ptr: *mut u8, val: i32, len: usize) -> *mut u8 {
     ptr
 }
 
+#[cfg(minimal_rt)]
+// SAFETY: The minimal_rt_build crate ensures that when this code is compiled
+// there is no libc for this to conflict with.
+#[unsafe(no_mangle)]
+pub static __stack_chk_guard: usize = 0x0BADC0DEDEADBEEF;
+
+#[cfg(minimal_rt)]
+// SAFETY: The minimal_rt_build crate ensures that when this code is compiled
+// there is no libc for this to conflict with.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn __stack_chk_fail() {
+    panic!("stack smashing detected");
+}
+
 /// Causes a processor fault.
 #[inline]
 pub fn fault() -> ! {
