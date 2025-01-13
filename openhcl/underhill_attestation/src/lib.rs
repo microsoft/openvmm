@@ -1466,6 +1466,7 @@ mod tests {
             egress: ingress,
         };
 
+        // Add two random keys to the VMGS to simulate unlock failure when ingress and egress keys are the same
         let additional_key = [2; AES_GCM_KEY_LENGTH];
         let yet_another_key = [3; AES_GCM_KEY_LENGTH];
 
@@ -1518,6 +1519,7 @@ mod tests {
             egress: [2; AES_GCM_KEY_LENGTH],
         };
 
+        // Add two random keys to the VMGS to simulate unlock failure when ingress and egress keys are *not* the same
         let additional_key = [3; AES_GCM_KEY_LENGTH];
         let yet_another_key = [4; AES_GCM_KEY_LENGTH];
 
