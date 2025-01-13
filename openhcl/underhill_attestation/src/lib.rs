@@ -1239,7 +1239,7 @@ mod tests {
         let bios_guid = Guid::new_random();
 
         // Without encryption implies the provision path
-        // The VMGS will be encrypted using the egress key
+        // The VMGS will be locked using the egress key
         unlock_vmgs_data_store(
             &mut vmgs,
             false,
