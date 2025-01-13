@@ -1166,7 +1166,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn do_nothing_without_derived_keys() {
+    async fn unlock_unencrypted_vmgs_without_derived_keys() {
         let mut vmgs = new_formatted_vmgs().await;
 
         let mut key_protector = new_key_protector();
@@ -1206,37 +1206,6 @@ mod tests {
         unlock_vmgs_data_store(
             &mut vmgs,
             true,
-            &mut key_protector,
-            &mut key_protector_by_id,
-            None,
-            key_protector_settings,
-            bios_guid,
-        )
-        .await
-        .unwrap();
-
-        assert!(key_protector_is_empty(&mut vmgs).await);
-        assert!(key_protector_by_id_is_empty(&mut vmgs).await);
-    }
-
-    #[async_test]
-    async fn unlock_unencrypted_vmgs_without_derived_keys() {
-        let mut vmgs = new_formatted_vmgs().await;
-
-        let mut key_protector = new_key_protector();
-        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
-
-        let key_protector_settings = KeyProtectorSettings {
-            should_write_kp: false,
-            use_gsp_by_id: false,
-            use_hardware_unlock: false,
-        };
-
-        let bios_guid = Guid::new_random();
-
-        unlock_vmgs_data_store(
-            &mut vmgs,
-            false,
             &mut key_protector,
             &mut key_protector_by_id,
             None,
