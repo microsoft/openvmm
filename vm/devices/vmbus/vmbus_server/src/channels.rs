@@ -1252,8 +1252,6 @@ pub trait Notifier: Send {
         offer_id: OfferId,
         target: ConnectionTarget,
     ) -> Result<(), ChannelError>;
-
-    fn unreserve_channel(&mut self, offer_id: OfferId);
 }
 
 impl Server {
@@ -1856,7 +1854,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 if matches!(self.inner.state, ConnectionState::Connected { .. }) {
                     let channel_id = channel.info.expect("assigned").channel_id;
                     self.send_close_reserved_channel_response(channel_id, offer_id);
-                    self.notifier.unreserve_channel(offer_id);
                 } else {
                     // Handle closing reserved channels while disconnected/ing. Since we weren't waiting
                     // on the channel, no need to call check_disconnected, but we do need to release it.
@@ -3870,7 +3867,6 @@ mod tests {
         monitor_page: Option<MonitorPageGpas>,
         target_message_vp: Option<u32>,
         reserved_channel_update: Option<(OfferId, ConnectionTarget)>,
-        unreserved_channel: Option<OfferId>,
     }
 
     impl TestNotifier {
@@ -3888,7 +3884,6 @@ mod tests {
                     monitor_page: None,
                     target_message_vp: None,
                     reserved_channel_update: None,
-                    unreserved_channel: None,
                 },
                 recv,
             )
@@ -3995,17 +3990,11 @@ mod tests {
             self.reserved_channel_update = Some((offer_id, target));
             Ok(())
         }
-
-        fn unreserve_channel(&mut self, offer_id: OfferId) {
-            assert!(self.unreserved_channel.is_none());
-            self.unreserved_channel = Some(offer_id);
-        }
     }
 
     impl Drop for TestNotifier {
         fn drop(&mut self) {
             assert!(self.reserved_channel_update.is_none());
-            assert!(self.unreserved_channel.is_none());
         }
     }
 
@@ -4768,9 +4757,7 @@ mod tests {
         env.c().open_complete(offer_id7, 0);
         env.close_reserved(8, 2, SINT.into());
         env.c().close_complete(offer_id8);
-        assert!(env.notifier.unreserved_channel.take().is_some());
         env.c().close_complete(offer_id9);
-        assert!(env.notifier.unreserved_channel.take().is_some());
 
         env.c().reset();
 
@@ -5046,7 +5033,6 @@ mod tests {
             env.notifier.reserved_channel_update.take(),
             Some((offer_id1, ConnectionTarget { vp: 4, sint: SINT }))
         );
-        assert_eq!(env.notifier.unreserved_channel.take(), Some(offer_id1),);
         env.notifier.check_message_with_target(
             OutgoingMessage::new(&protocol::CloseReservedChannelResponse {
                 channel_id: ChannelId(1),
