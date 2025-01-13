@@ -1731,7 +1731,7 @@ mod aarch64 {
     use virt::io::CpuIo;
     use virt::VpHaltReason;
 
-    impl<'a> WhpProcessor<'a> {
+    impl WhpProcessor<'_> {
         pub(super) fn process_apic(&mut self, _dev: &impl CpuIo) -> Result<bool, WhpRunVpError> {
             Ok(true)
         }
