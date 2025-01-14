@@ -553,6 +553,22 @@ impl HardwareIsolatedBacking for TdxBacked {
     ) {
         todo!()
     }
+
+    fn set_intercept_control_register(
+        _this: &mut UhProcessor<'_, Self>,
+        _intercept_control: hvdef::HvRegisterCrInterceptControl,
+    ) -> Result<(), HvError> {
+        // TODO TDX GUEST VSM
+        todo!()
+    }
+
+    fn set_control_register_mask_register(
+        _this: &mut UhProcessor<'_, Self>,
+        _mask: super::ControlRegisterMask,
+    ) {
+        // TODO TDX GUEST VSM
+        todo!()
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.

@@ -755,6 +755,8 @@ impl Default for HvMessageType {
     }
 }
 
+pub const HV_SYNIC_INTERCEPTION_SINT_INDEX: u8 = 0;
+
 pub const NUM_SINTS: usize = 16;
 pub const NUM_TIMERS: usize = 4;
 
@@ -2262,6 +2264,11 @@ registers! {
 
         // AMD SEV configuration MSRs
         SevControl = 0x00090040,
+
+        CrInterceptControl = 0x000E0000,
+        CrInterceptCr0Mask = 0x000E0001,
+        CrInterceptCr4Mask = 0x000E0002,
+        CrInterceptIa32MiscEnableMask = 0x000E0003,
     }
 }
 
@@ -2961,6 +2968,34 @@ open_enum! {
         POWER_OFF = 0,
         REBOOT = 1,
     }
+}
+
+#[bitfield(u8)]
+#[derive(AsBytes, FromBytes, FromZeroes)]
+pub struct HvX64RegisterInterceptMessageFlags {
+    pub is_memory_op: bool,
+    #[bits(7)]
+    _rsvd: u8,
+}
+
+// Note: in C, the access_info is a union:
+// typedef union _HV_X64_REGISTER_ACCESS_INFO
+// {
+//     HV_REGISTER_VALUE SourceValue;
+//     HV_REGISTER_NAME DestinationRegister;
+//     UINT64 SourceAddress;
+//     UINT64 DestinationAddress;
+// } HV_X64_REGISTER_ACCESS_INFO, *PHV_X64_REGISTER_ACCESS_INFO;
+
+#[repr(C)]
+#[derive(AsBytes, FromBytes, FromZeroes)]
+pub struct HvX64RegisterInterceptMessage {
+    pub header: HvX64InterceptMessageHeader,
+    pub flags: HvX64RegisterInterceptMessageFlags,
+    pub rsvd: u8,
+    pub rsvd2: u16,
+    pub register_name: HvX64RegisterName,
+    pub access_info: u128,
 }
 
 open_enum! {
@@ -3671,4 +3706,39 @@ pub struct HvRegisterVsmVpSecureVtlConfig {
     pub hardware_hvpt_enabled: bool,
     #[bits(60)]
     _reserved: u64,
+}
+
+#[bitfield(u64)]
+pub struct HvRegisterCrInterceptControl {
+    pub cr0_write: bool,
+    pub cr4_write: bool,
+    pub xcr0_write: bool,
+    pub ia32_misc_enable_read: bool,
+    pub ia32_misc_enable_write: bool,
+    pub msr_lstar_read: bool,
+    pub msr_lstar_write: bool,
+    pub msr_star_read: bool,
+    pub msr_star_write: bool,
+    pub msr_cstar_read: bool,
+    pub msr_cstar_write: bool,
+    pub apic_base_msr_read: bool,
+    pub apic_base_msr_write: bool,
+    pub msr_efer_read: bool,
+    pub msr_efer_write: bool,
+    pub gdtr_write: bool,
+    pub idtr_write: bool,
+    pub ldtr_write: bool,
+    pub tr_write: bool,
+    pub msr_sysenter_cs_write: bool,
+    pub msr_sysenter_eip_write: bool,
+    pub msr_sysenter_esp_write: bool,
+    pub msr_sfmask_write: bool,
+    pub msr_tsc_aux_write: bool,
+    pub msr_sgx_launch_control_write: bool,
+    pub msr_xss_write: bool,
+    pub msr_scet_write: bool,
+    pub msr_pls_ssp_write: bool,
+    pub msr_interrupt_ssp_table_addr_write: bool,
+    #[bits(35)]
+    pub rsvd_z: u64,
 }

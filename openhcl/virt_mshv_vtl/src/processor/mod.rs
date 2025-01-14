@@ -308,6 +308,22 @@ trait HardwareIsolatedBacking: Backing {
         vtl: GuestVtl,
         event: hvdef::HvX64PendingExceptionEvent,
     );
+
+    fn set_intercept_control_register(
+        this: &mut UhProcessor<'_, Self>,
+        intercept_control: hvdef::HvRegisterCrInterceptControl,
+    ) -> Result<(), HvError>;
+
+    fn set_control_register_mask_register(
+        this: &mut UhProcessor<'_, Self>,
+        mask: ControlRegisterMask,
+    );
+}
+
+pub enum ControlRegisterMask {
+    Cr0(u64),
+    Cr4(u64),
+    Ia32MiscEnable(u64),
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
