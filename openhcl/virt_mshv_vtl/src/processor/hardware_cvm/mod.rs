@@ -554,6 +554,65 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
 
                 self.set_vtl0_pending_event(HvX64PendingExceptionEvent::from(reg.value.as_u128()))
             }
+            HvX64RegisterName::CrInterceptControl => {
+                tracing::info!(?reg, "handling write to cr intercept control register");
+                if vtl != GuestVtl::Vtl1 {
+                    tracing::info!("cr intercept control register can only be written by VTL 1");
+                    return Err(HvError::AccessDenied);
+                }
+
+                let supported_controls = hvdef::HvRegisterCrInterceptControl::new()
+                    .with_cr0_write(true)
+                    .with_cr4_write(true)
+                    .with_xcr0_write(true)
+                    .with_ia32_misc_enable_write(true)
+                    .with_msr_lstar_write(true)
+                    .with_msr_star_write(true)
+                    .with_msr_cstar_write(true)
+                    .with_apic_base_msr_write(true)
+                    .with_msr_efer_write(true)
+                    .with_gdtr_write(true)
+                    .with_idtr_write(true)
+                    .with_ldtr_write(true)
+                    .with_tr_write(true)
+                    .with_msr_sysenter_cs_write(true)
+                    .with_msr_sysenter_eip_write(true)
+                    .with_msr_sysenter_esp_write(true)
+                    .with_msr_sfmask_write(true)
+                    .with_msr_tsc_aux_write(true);
+
+                if reg.value.as_u64() & !u64::from(supported_controls) != 0 {
+                    return Err(HvError::InvalidRegisterValue);
+                }
+
+                B::set_intercept_control_register(
+                    self.vp,
+                    hvdef::HvRegisterCrInterceptControl::from(reg.value.as_u64()),
+                )
+            }
+            mask_reg @ (HvX64RegisterName::CrInterceptCr0Mask
+            | HvX64RegisterName::CrInterceptCr4Mask
+            | HvX64RegisterName::CrInterceptIa32MiscEnableMask) => {
+                tracing::info!(?reg, "handling write to cr intercept mask register");
+                if vtl != GuestVtl::Vtl1 {
+                    tracing::info!("cr intercept mask register can only be written by VTL 1");
+                    return Err(HvError::AccessDenied);
+                }
+                let mask = match mask_reg {
+                    HvX64RegisterName::CrInterceptCr0Mask => {
+                        super::ControlRegisterMask::Cr0(reg.value.as_u64())
+                    }
+                    HvX64RegisterName::CrInterceptCr4Mask => {
+                        super::ControlRegisterMask::Cr4(reg.value.as_u64())
+                    }
+                    HvX64RegisterName::CrInterceptIa32MiscEnableMask => {
+                        super::ControlRegisterMask::Ia32MiscEnable(reg.value.as_u64())
+                    }
+                    _ => unreachable!(),
+                };
+                B::set_control_register_mask_register(self.vp, mask);
+                Ok(())
+            }
             _ => {
                 tracing::error!(
                     ?reg,
@@ -1677,6 +1736,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 ?start_enable_vtl_state.operation,
                 "setting up vp with initial registers"
             );
+
+            // TODO GUEST VSM: check for register intercepts
 
             hv1_emulator::hypercall::set_x86_vp_context(
                 &mut self.access_state(vtl.into()),
