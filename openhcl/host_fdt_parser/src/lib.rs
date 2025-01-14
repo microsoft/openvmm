@@ -1372,7 +1372,7 @@ mod tests {
         let p_memory_allocation_mode = root.add_string("memory-allocation-mode").unwrap();
         let p_memory_allocation_size = root.add_string("memory-size").unwrap();
         let p_mmio_allocation_size = root.add_string("mmio-size").unwrap();
-        let p_device_dma_page_count = root.add_string("dma-preserve-pages").unwrap();
+        let p_device_dma_page_count = root.add_string("total-pages").unwrap();
         let mut openhcl = root.start_node("openhcl").unwrap();
 
         let memory_alloc_str = match context.memory_allocation_mode {
