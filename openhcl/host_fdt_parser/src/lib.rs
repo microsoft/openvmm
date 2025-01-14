@@ -516,13 +516,6 @@ impl<
                                 storage.entropy = Some(entropy);
                             }
                             // These parameters may not be present so it is not an error if they are missing.
-                            "servicing" => {
-                                storage.device_dma_page_count = openhcl_child
-                                    .find_property("dma-preserve-pages")
-                                    .ok()
-                                    .flatten()
-                                    .and_then(|p| p.read_u64(0).ok());
-                            }
                             "keep-alive" => {
                                 storage.nvme_keepalive = openhcl_child
                                     .find_property("device-types")
@@ -532,8 +525,7 @@ impl<
                                     == Some("nvme");
                             }
                             "device-dma" => {
-                                // This one will eventually replace 'servicing/dma-preserve-pages'.
-                                // For now they both coexist as the former was already released.
+                                // DMA reserved page count hint.
                                 storage.device_dma_page_count = openhcl_child
                                     .find_property("total-pages")
                                     .ok()
@@ -1409,7 +1401,7 @@ mod tests {
         // add device_dma_page_count
         if let Some(device_dma_page_count) = context.device_dma_page_count {
             openhcl = openhcl
-                .start_node("servicing")
+                .start_node("device-dma")
                 .unwrap()
                 .add_u64(p_device_dma_page_count, device_dma_page_count)
                 .unwrap()
