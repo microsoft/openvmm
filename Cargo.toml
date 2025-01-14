@@ -590,7 +590,6 @@ rust_2018_idioms = { level = "deny", priority = -2 }
 rust-2024-compatibility = { level = "warn", priority = -1 }
 edition_2024_expr_fragment_specifier = "allow"
 # TODO: Fix all of the below, https://github.com/microsoft/openvmm/issues/288
-deprecated-safe-2024 = "allow"
 tail-expr-drop-order = "allow"
 if-let-rescope = "allow"
 
