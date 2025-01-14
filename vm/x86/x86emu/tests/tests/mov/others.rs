@@ -19,7 +19,7 @@ fn mov_memory_to_regvalue_others() {
     ) -> Result<(), IcedError>] = &[&CodeAssembler::movdiri, &CodeAssembler::movnti];
 
     for instr in variations {
-        let mut cpu = run_test(
+        let cpu = run_test(
             RFLAGS_MOV_MASK,
             |asm| instr(asm, ptr(0x200), rax),
             |cpu| {

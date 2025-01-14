@@ -165,7 +165,7 @@ fn mov_alignment_check_fail() {
             rflags.set_alignment_check(true);
             cpu.set_rflags(rflags);
 
-            let mut am = cpu.cr0() | x86defs::X64_CR0_AM;
+            let am = cpu.cr0() | x86defs::X64_CR0_AM;
             cpu.set_cr0(am);
 
             let mut um = cpu.segment(Segment::SS);

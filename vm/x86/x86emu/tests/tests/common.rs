@@ -15,7 +15,7 @@ use x86emu::Error;
 use x86emu::RegisterIndex;
 use x86emu::Segment;
 
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CpuState {
     /// GP registers, in the canonical order (as defined by `RAX`, etc.).
@@ -260,23 +260,6 @@ fn run_one_test<T: TestCpu>(
     }
 
     Ok(cpu)
-}
-
-pub fn initial_state(rflags: RFlags) -> CpuState {
-    let seg = SegmentRegister {
-        base: 0,
-        limit: 0,
-        attributes: SegmentAttributes::new().with_long(true),
-        selector: 0,
-    };
-    CpuState {
-        gps: [0xbadc0ffee0ddf00d; 16],
-        segs: [seg; 6],
-        rip: 0,
-        rflags,
-        cr0: x86defs::X64_CR0_PE,
-        efer: x86defs::X64_EFER_LMA | x86defs::X64_EFER_LME,
-    }
 }
 
 #[derive(Debug)]
@@ -611,7 +594,7 @@ impl Cpu for MultipleCellCpu {
 
 pub trait TestCpu: Debug + PartialEq<Self> + Cpu {
     fn new(rflags: RFlags) -> Self;
-    fn state(&self) -> CpuState;
+    fn state(&self) -> &CpuState;
     fn set_cr0(&mut self, v: u64);
     fn set_segment(&mut self, index: Segment, v: SegmentRegister);
 }
@@ -642,8 +625,8 @@ impl<T: TestRegister> TestCpu for SingleCellCpu<T> {
             state,
         }
     }
-    fn state(&self) -> CpuState {
-        self.state
+    fn state(&self) -> &CpuState {
+        &self.state
     }
 
     fn set_cr0(&mut self, v: u64) {
@@ -693,8 +676,8 @@ impl TestCpu for MultipleCellCpu {
             state,
         }
     }
-    fn state(&self) -> CpuState {
-        self.state
+    fn state(&self) -> &CpuState {
+        &self.state
     }
 
     fn set_cr0(&mut self, v: u64) {
