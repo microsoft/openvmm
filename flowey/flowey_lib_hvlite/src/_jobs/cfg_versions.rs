@@ -14,7 +14,6 @@ use flowey::node::prelude::*;
 //
 // This would require nodes that currently accept a `Version(String)` to accept
 // a `Version(ReadVar<String>)`, but that shouldn't be a serious blocker.
-pub const AZCOPY: &str = "10.27.0-20241030";
 pub const AZURE_CLI: &str = "2.56.0";
 pub const FUZZ: &str = "0.12.0";
 pub const GH_CLI: &str = "2.52.0";
@@ -68,7 +67,6 @@ impl FlowNode for Node {
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::CvmDev, OPENHCL_KERNEL_DEV_VERSION.into()));
         ctx.req(crate::download_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
         ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
-        ctx.req(flowey_lib_common::download_azcopy::Request::Version(AZCOPY.into()));
         ctx.req(flowey_lib_common::download_cargo_fuzz::Request::Version(FUZZ.into()));
         ctx.req(flowey_lib_common::download_cargo_nextest::Request::Version(NEXTEST.into()));
         ctx.req(flowey_lib_common::download_gh_cli::Request::Version(GH_CLI.into()));

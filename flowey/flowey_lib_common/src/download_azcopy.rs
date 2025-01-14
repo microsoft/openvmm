@@ -9,8 +9,6 @@ use flowey::node::prelude::*;
 
 flowey_request! {
     pub enum Request {
-        /// Version of `azcopy` to install (e.g: "v10")
-        Version(String),
         /// Get a path to `azcopy`
         GetAzCopy(WriteVar<PathBuf>),
     }
@@ -27,19 +25,14 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut version = None;
         let mut get_azcopy = Vec::new();
 
         for req in requests {
             match req {
-                Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::GetAzCopy(v) => get_azcopy.push(v),
             }
         }
 
-        let version_with_date =
-            version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
-        let version_without_date = version_with_date.split_once('-').unwrap().0.to_owned();
         let get_azcopy = get_azcopy;
 
         // -- end of req processing -- //
@@ -54,7 +47,7 @@ impl FlowNode for Node {
             |_| Ok(std::env::current_dir()?.absolute()?)
         });
 
-        let cache_key = ReadVar::from_static(format!("azcopy-{version_with_date}"));
+        let cache_key = ReadVar::from_static(format!("azcopy"));
         let hitvar = ctx.reqv(|hitvar| crate::cache::Request {
             label: "azcopy".into(),
             dir: cache_dir.clone(),
@@ -100,25 +93,15 @@ impl FlowNode for Node {
                     cached
                 } else {
                     let sh = xshell::Shell::new()?;
-                    let arch = match rt.arch() {
-                        FlowArch::X86_64 => "amd64",
-                        FlowArch::Aarch64 => "arm64",
-                        arch => anyhow::bail!("unhandled arch {arch}"),
-                    };
                     match rt.platform().kind() {
                         FlowPlatformKind::Windows => {
-                            xshell::cmd!(sh, "curl --fail -L https://azcopyvnext-awgzd8g7aagqhzhe.b02.azurefd.net/releases/release-{version_with_date}/azcopy_windows_{arch}_{version_without_date}.zip -o azcopy.zip").run()?;
+                            xshell::cmd!(sh, "curl --fail -L https://aka.ms/downloadazcopy-v10-windows -o azcopy.zip").run()?;
 
                             let bsdtar = crate::_util::bsdtar_name(rt);
                             xshell::cmd!(sh, "{bsdtar} -xf azcopy.zip --strip-components=1").run()?;
                         }
                         FlowPlatformKind::Unix => {
-                            let os = match rt.platform() {
-                                FlowPlatform::Linux(_) => "linux",
-                                FlowPlatform::MacOs => "darwin",
-                                platform => anyhow::bail!("unhandled platform {platform}"),
-                            };
-                            xshell::cmd!(sh, "curl --fail -L https://azcopyvnext-awgzd8g7aagqhzhe.b02.azurefd.net/releases/release-{version_with_date}/azcopy_{os}_{arch}_{version_without_date}.tar.gz -o azcopy.tar.gz").run()?;
+                            xshell::cmd!(sh, "curl --fail -L https://aka.ms/downloadazcopy-v10-linux -o azcopy.tar.gz").run()?;
                             xshell::cmd!(sh, "tar -xf azcopy.tar.gz --strip-components=1").run()?;
                         }
                     };
