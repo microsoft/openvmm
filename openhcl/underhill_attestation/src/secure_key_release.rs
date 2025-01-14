@@ -174,25 +174,51 @@ pub async fn request_vmgs_encryption_keys(
                 )
             }
             Err(
-                e @ RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
-                    igvm_attest::key_release::KeyReleaseError::IgvmAttestation {
-                        error_code,
-                        http_status_code,
-                        retry_signal,
-                    },
+                wrapped_key_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(
+                    igvm_attest::wrapped_key::WrappedKeyError::ParseHeader(
+                        igvm_attest::Error::Attestation {
+                            error_code,
+                            http_status_code,
+                            retry_signal,
+                        },
+                    ),
                 ),
             ) => {
                 tracing::error!(
                     CVM_ALLOWED,
                     retry = i,
-                    igvm_error_code = error_code,
-                    igvm_http_status_code = http_status_code,
-                    retry_signal = retry_signal,
-                    error = &e as &dyn std::error::Error,
+                    igvm_error_code = &error_code,
+                    igvm_http_status_code = &http_status_code,
+                    retry_signal = &retry_signal,
+                    error = &wrapped_key_attest_error as &dyn std::error::Error,
                     "VMGS key-encryption failed due to igvm attest retryable error, will retry"
                 );
                 if !retry_signal || i == (max_retry - 1) {
-                    Err(e)?
+                    Err(wrapped_key_attest_error)?
+                }
+            }
+            Err(
+                key_release_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
+                    igvm_attest::key_release::KeyReleaseError::ParseHeader(
+                        igvm_attest::Error::Attestation {
+                            error_code,
+                            http_status_code,
+                            retry_signal,
+                        },
+                    ),
+                ),
+            ) => {
+                tracing::error!(
+                    CVM_ALLOWED,
+                    retry = i,
+                    igvm_error_code = &error_code,
+                    igvm_http_status_code = &http_status_code,
+                    retry_signal = &retry_signal,
+                    error = &key_release_attest_error as &dyn std::error::Error,
+                    "VMGS key-encryption failed due to igvm attest retryable error, will retry"
+                );
+                if !retry_signal || i == (max_retry - 1) {
+                    Err(key_release_attest_error)?
                 }
             }
             Err(e) if i == (max_retry - 1) => {
@@ -307,7 +333,12 @@ async fn make_igvm_attest_requests(
             Some(parsed_response.wrapped_key)
         }
         // The request does not succeed. Ignore the wrapped des key.
-        Err(igvm_attest::wrapped_key::WrappedKeyError::ResponseSizeTooSmall) => None,
+        Err(
+            igvm_attest::wrapped_key::WrappedKeyError::ParseHeader(
+                igvm_attest::Error::ResponseSizeTooSmall { .. },
+            )
+            | igvm_attest::wrapped_key::WrappedKeyError::PayloadSizeTooSmall,
+        ) => None,
         Err(e) => Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(e))?,
     };
 
@@ -332,7 +363,12 @@ async fn make_igvm_attest_requests(
             rsa_aes_wrapped_key: Some(rsa_aes_wrapped_key),
             wrapped_des_key,
         }),
-        Err(igvm_attest::key_release::KeyReleaseError::PayloadSizeTooSmall) => {
+        Err(
+            igvm_attest::key_release::KeyReleaseError::ParseHeader(
+                igvm_attest::Error::ResponseSizeTooSmall { .. },
+            )
+            | igvm_attest::key_release::KeyReleaseError::PayloadSizeTooSmall,
+        ) => {
             // The request does not succeed
             Ok(WrappedKeyVmgsEncryptionKeys {
                 rsa_aes_wrapped_key: None,

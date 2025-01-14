@@ -4,6 +4,8 @@
 //! The module for `WRAPPED_KEY_REQUEST` request type that supports parsing the
 //! response in JSON format defined by Azure CVM Provisioning Service (CPS).
 
+use crate::igvm_attest::parse_response_header;
+use crate::igvm_attest::Error as CommonError;
 use openhcl_attestation_protocol::igvm_attest::cps;
 use thiserror::Error;
 
@@ -16,8 +18,10 @@ pub(crate) enum WrappedKeyError {
         json_err: serde_json::Error,
         json_data: String,
     },
-    #[error("the response size is too small to parse")]
-    ResponseSizeTooSmall,
+    #[error("the response payload size is too small to parse")]
+    PayloadSizeTooSmall,
+    #[error("error in response header)")]
+    ParseHeader(#[source] CommonError),
 }
 
 /// Return value of the [`parse_response`].
@@ -33,20 +37,27 @@ pub struct IgvmWrappedKeyParsedResponse {
 /// Returns `Ok(IgvmWrappedKeyParsedResponse)` on successfully extracting a wrapped DiskEncryptionSettings
 /// key from `response`, otherwise returns an error.
 pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, WrappedKeyError> {
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
+    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
+
+    let header = parse_response_header(response).map_err(WrappedKeyError::ParseHeader)?;
+
+    // Extract payload as per header version
+    let header_size = match header.version {
+        IGVM_ATTEST_RESPONSE_VERSION_1 => size_of::<IgvmAttestCommonResponseHeader>(),
+        _ => size_of::<IgvmAttestWrappedKeyResponseHeader>(),
+    };
+    let payload = &response[header_size..header.data_size as usize];
+
+    // Minimum acceptable payload would look like {"ciphertext":"base64URL wrapped key"}
     const CIPHER_TEXT_KEY: &str = r#"{"ciphertext":""}"#;
     const MINIMUM_WRAPPED_KEY_SIZE: usize = 256;
     const MINIMUM_WRAPPED_KEY_BASE64_URL_SIZE: usize = MINIMUM_WRAPPED_KEY_SIZE / 3 * 4;
-    const HEADER_SIZE: usize = size_of::<
-        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader,
-    >();
-    const MINIMUM_RESPONSE_SIZE: usize =
-        CIPHER_TEXT_KEY.len() + MINIMUM_WRAPPED_KEY_BASE64_URL_SIZE + HEADER_SIZE;
-
-    if response.is_empty() || response.len() < MINIMUM_RESPONSE_SIZE {
-        Err(WrappedKeyError::ResponseSizeTooSmall)?
+    const MINIMUM_PAYLOAD_SIZE: usize = CIPHER_TEXT_KEY.len() + MINIMUM_WRAPPED_KEY_BASE64_URL_SIZE;
+    if payload.len() < MINIMUM_PAYLOAD_SIZE {
+        Err(WrappedKeyError::PayloadSizeTooSmall)?
     }
-
-    let payload = &response[HEADER_SIZE..];
     let payload = String::from_utf8_lossy(payload);
     let payload: cps::VmmdBlob = serde_json::from_str(&payload).map_err(|json_err| {
         WrappedKeyError::WrappedKeyResponsePayloadToJson {
@@ -77,8 +88,8 @@ pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, W
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
     use zerocopy::AsBytes;
-    use zerocopy::FromZeroes;
 
     const KEY_REFERENCE: &str = r#"{
     "key_info": {
@@ -158,6 +169,9 @@ mod tests {
     }
 
     fn mock_response() -> Vec<u8> {
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
+        use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
+
         const WRAPPED_KEY: [u8; 256] = [
             0x9d, 0x72, 0x81, 0xbc, 0x6d, 0x0c, 0xeb, 0x8f, 0x32, 0xb9, 0xc3, 0xd0, 0xd2, 0x58,
             0x89, 0x2f, 0x49, 0xb4, 0x40, 0xb1, 0x3d, 0xb1, 0x2f, 0x1e, 0x9c, 0xb5, 0x46, 0x4a,
@@ -201,7 +215,11 @@ mod tests {
         assert!(result.is_ok());
         let payload = result.unwrap();
 
-        let header = openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader::new_zeroed();
+        let header = IgvmAttestWrappedKeyResponseHeader {
+            data_size: (payload.len() + size_of::<IgvmAttestWrappedKeyResponseHeader>()) as u32,
+            version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+            error_info: IgvmErrorInfo::default(),
+        };
         let response = [header.as_bytes(), payload.as_bytes()].concat();
 
         response

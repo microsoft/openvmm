@@ -196,6 +196,20 @@ pub struct IgvmSignal {
     _reserved: u32,
 }
 
+/// The common response header that comply with both V1 and V2 Igvm attest response
+#[repr(C)]
+#[derive(Default, Debug, AsBytes, FromBytes, FromZeroes)]
+pub struct IgvmAttestCommonResponseHeader {
+    /// Data size
+    pub data_size: u32,
+    /// Version
+    pub version: u32,
+}
+
+pub const IGVM_ATTEST_RESPONSE_VERSION_1: u32 = 1;
+pub const IGVM_ATTEST_RESPONSE_VERSION_2: u32 = 2;
+pub const IGVM_ATTEST_RESPONSE_CURRENT_VERSION: u32 = IGVM_ATTEST_RESPONSE_VERSION_2;
+
 /// The response header for `IGVM_ERROR_INFO` (C-style struct)
 #[repr(C)]
 #[derive(Default, Debug, AsBytes, FromBytes, FromZeroes)]
