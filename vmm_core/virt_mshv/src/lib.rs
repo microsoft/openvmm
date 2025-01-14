@@ -1486,7 +1486,13 @@ impl GuestEventPort for MshvGuestEventPort {
         *self.params.lock() = None;
     }
 
-    fn set(&mut self, _vtl: Vtl, vp: u32, sint: u8, flag: u16) -> anyhow::Result<()> {
+    fn set(
+        &mut self,
+        _vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Result<(), vmcore::synic::HypervisorError> {
         *self.params.lock() = Some(MshvEventPortParams {
             vp: VpIndex::new(vp),
             sint,

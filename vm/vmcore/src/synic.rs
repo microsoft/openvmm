@@ -6,6 +6,7 @@
 use crate::interrupt::Interrupt;
 use crate::monitor::MonitorId;
 use hvdef::Vtl;
+use inspect::Inspect;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -26,11 +27,15 @@ pub trait EventPort: Send + Sync {
 }
 
 #[derive(Debug, Error)]
+#[error(transparent)]
+pub struct HypervisorError(#[from] pub Box<dyn std::error::Error + Send + Sync>);
+
+#[derive(Debug, Error)]
 pub enum Error {
     #[error("connection ID in use: {0}")]
     ConnectionIdInUse(u32),
     #[error("hypervisor error")]
-    Hypervisor(#[source] Box<dyn std::error::Error + Send + Sync>),
+    Hypervisor(#[source] HypervisorError),
 }
 
 /// Trait for accessing partition's synic ports.
@@ -59,10 +64,10 @@ pub trait SynicPortAccess: Send + Sync {
         vtl: Vtl,
         vp: u32,
         sint: u8,
-    ) -> anyhow::Result<Box<dyn GuestMessagePort>>;
+    ) -> Result<Box<dyn GuestMessagePort>, HypervisorError>;
 
     /// Creates a [`GuestEventPort`] for signaling VMBus channels in the guest.
-    fn new_guest_event_port(&self) -> anyhow::Result<Box<dyn GuestEventPort>>;
+    fn new_guest_event_port(&self) -> Result<Box<dyn GuestEventPort>, HypervisorError>;
 
     /// Returns whether callers should pass an OS event when creating event
     /// ports, as opposed to passing a function to call.
@@ -101,22 +106,19 @@ pub trait GuestEventPort: Send + Sync {
     fn clear(&mut self);
 
     /// Updates the parameters for the event port.
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) -> anyhow::Result<()>;
+    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) -> Result<(), HypervisorError>;
 }
 
 /// A guest message port, created by [`SynicPortAccess::new_guest_message_port`].
-pub trait GuestMessagePort: Send + Sync {
+pub trait GuestMessagePort: Send + Sync + Inspect {
     /// Posts a message to the guest.
     ///
     /// It is the caller's responsibility to not queue too many messages. There
     /// is no backpressure mechanism at the transport layer.
     ///
     /// FUTURE: add backpressure.
-    fn post_message(&self, typ: u32, payload: &[u8]);
+    fn post_message(&mut self, typ: u32, payload: &[u8]);
 
     /// Changes the virtual processor to which messages are sent.
-    fn set_target_vp(&mut self, vp: u32) -> anyhow::Result<()>;
-
-    /// Gets the current virtual processor to which messages are sent.
-    fn target_vp(&self) -> u32;
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), HypervisorError>;
 }

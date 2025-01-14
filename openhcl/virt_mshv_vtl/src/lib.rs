@@ -1030,7 +1030,13 @@ impl vmcore::synic::GuestEventPort for UhEventPort {
         *self.params.lock() = None;
     }
 
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) -> anyhow::Result<()> {
+    fn set(
+        &mut self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Result<(), vmcore::synic::HypervisorError> {
         let vtl = GuestVtl::try_from(vtl).expect("higher vtl not configured");
         *self.params.lock() = Some(UhEventPortParams {
             vp: VpIndex::new(vp),

@@ -8,7 +8,6 @@ mod channels;
 pub mod hvsock;
 mod monitor;
 mod proxyintegration;
-mod util;
 
 /// The GUID type used for vmbus channel identifiers.
 pub type Guid = guid::Guid;
@@ -896,7 +895,7 @@ impl ServerTask {
             }
             VmbusRequest::Inspect(deferred) => {
                 deferred.respond(|resp| {
-                    resp.field("message_target.vp", self.inner.message_port.target_vp())
+                    resp.merge(&self.inner.message_port)
                         .field("running", self.running)
                         .field("hvsock_requests", self.inner.hvsock_requests)
                         .field_mut_with("unstick_channels", |v| {
@@ -1382,28 +1381,29 @@ impl channels::Notifier for ServerTaskInner {
     }
 
     fn send_message(&mut self, message: OutgoingMessage, target: MessageTarget) {
+        let mut port_storage;
         let port = match target {
-            MessageTarget::Default => util::BorrowedOrOwned::Borrowed(&self.message_port),
+            MessageTarget::Default => &mut self.message_port,
             MessageTarget::ReservedChannel(offer_id) => {
                 let channel = self
                     .channels
-                    .get(&offer_id)
+                    .get_mut(&offer_id)
                     .expect("channel does not exist");
-                let message_port = match &channel.state {
+                match &mut channel.state {
                     ChannelState::Open {
                         reserved_guest_message_port: Some(message_port),
                         ..
                     }
                     | ChannelState::ClosingReserved(message_port) => message_port,
                     _ => unreachable!("channel is not reserved"),
-                };
-                util::BorrowedOrOwned::Borrowed(message_port)
+                }
             }
-            MessageTarget::Custom(target) => util::BorrowedOrOwned::Owned(
-                match self
-                    .synic
-                    .new_guest_message_port(self.redirect_vtl, target.vp, target.sint)
-                {
+            MessageTarget::Custom(target) => {
+                port_storage = match self.synic.new_guest_message_port(
+                    self.redirect_vtl,
+                    target.vp,
+                    target.sint,
+                ) {
                     Ok(port) => port,
                     Err(err) => {
                         tracing::error!(
@@ -1414,8 +1414,9 @@ impl channels::Notifier for ServerTaskInner {
                         );
                         return;
                     }
-                },
-            ),
+                };
+                &mut port_storage
+            }
         };
 
         port.post_message(1, message.data());
@@ -1460,7 +1461,7 @@ impl channels::Notifier for ServerTaskInner {
         *reserved_guest_message_port = Some(
             self.synic
                 .new_guest_message_port(self.redirect_vtl, target.vp, target.sint)
-                .map_err(ChannelError::SynicError)?,
+                .map_err(ChannelError::HypervisorError)?,
         );
 
         Ok(())
@@ -1547,7 +1548,7 @@ impl ServerTaskInner {
                             self.vtl,
                             guest_to_host_event.clone(),
                         )
-                        .map_err(ChannelError::EventPortError)?;
+                        .map_err(ChannelError::SynicError)?;
                     // Set up a message port if this is a reserved channel.
                     let reserved_guest_message_port =
                         if let Some(reserved_target) = open_params.reserved_target {
@@ -1558,7 +1559,7 @@ impl ServerTaskInner {
                                         reserved_target.vp,
                                         reserved_target.sint,
                                     )
-                                    .map_err(ChannelError::SynicError)?,
+                                    .map_err(ChannelError::HypervisorError)?,
                             )
                         } else {
                             None
@@ -1835,7 +1836,13 @@ mod tests {
 
         fn clear(&mut self) {}
 
-        fn set(&mut self, _vtl: Vtl, _vp: u32, _sint: u8, _flag: u16) -> anyhow::Result<()> {
+        fn set(
+            &mut self,
+            _vtl: Vtl,
+            _vp: u32,
+            _sint: u8,
+            _flag: u16,
+        ) -> Result<(), vmcore::synic::HypervisorError> {
             Ok(())
         }
     }
@@ -1843,17 +1850,17 @@ mod tests {
     struct MockGuestMessagePort(mesh::Sender<Vec<u8>>);
 
     impl GuestMessagePort for MockGuestMessagePort {
-        fn post_message(&self, _typ: u32, payload: &[u8]) {
+        fn post_message(&mut self, _typ: u32, payload: &[u8]) {
             self.0.send(payload.into());
         }
 
-        fn set_target_vp(&mut self, _vp: u32) -> anyhow::Result<()> {
+        fn set_target_vp(&mut self, _vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
             Ok(())
         }
+    }
 
-        fn target_vp(&self) -> u32 {
-            0
-        }
+    impl Inspect for MockGuestMessagePort {
+        fn inspect(&self, _req: inspect::Request<'_>) {}
     }
 
     impl SynicPortAccess for MockSynic {
@@ -1881,11 +1888,13 @@ mod tests {
             _vtl: Vtl,
             _vp: u32,
             _sint: u8,
-        ) -> anyhow::Result<Box<dyn GuestMessagePort>> {
+        ) -> Result<Box<(dyn GuestMessagePort)>, vmcore::synic::HypervisorError> {
             Ok(Box::new(MockGuestMessagePort(self.message_send.clone())))
         }
 
-        fn new_guest_event_port(&self) -> anyhow::Result<Box<dyn GuestEventPort>> {
+        fn new_guest_event_port(
+            &self,
+        ) -> Result<Box<(dyn GuestEventPort)>, vmcore::synic::HypervisorError> {
             Ok(Box::new(MockGuestPort {}))
         }
 

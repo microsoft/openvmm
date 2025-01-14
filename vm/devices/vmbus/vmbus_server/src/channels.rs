@@ -82,9 +82,9 @@ pub enum ChannelError {
     #[error("received untrusted message for trusted connection")]
     UntrustedMessage,
     #[error("an error occurred creating an event port")]
-    EventPortError(#[source] vmcore::synic::Error),
+    SynicError(#[source] vmcore::synic::Error),
     #[error("an error occurred in the synic")]
-    SynicError(#[source] anyhow::Error),
+    HypervisorError(#[source] vmcore::synic::HypervisorError),
 }
 
 #[derive(Debug, Error)]

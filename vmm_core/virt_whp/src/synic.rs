@@ -67,7 +67,9 @@ impl virt::Synic for WhpPartition {
                         // notification ports are not supported; TODO-remove once old Iron builds age out
                         None
                     }
-                    Err(e) => Some(Err(vmcore::synic::Error::Hypervisor(e.into()))),
+                    Err(e) => Some(Err(vmcore::synic::Error::Hypervisor(
+                        vmcore::synic::HypervisorError(e.into()),
+                    ))),
                 }
             })
             .collect::<Result<_, _>>()?;
@@ -238,7 +240,13 @@ impl GuestEventPort for OffloadedGuestEventPortNoTrigger {
         *self.params.lock() = None;
     }
 
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) -> anyhow::Result<()> {
+    fn set(
+        &mut self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Result<(), vmcore::synic::HypervisorError> {
         *self.params.lock() = Some(WhpEventPortParams {
             vtl,
             vp: VpIndex::new(vp),
@@ -280,7 +288,13 @@ impl GuestEventPort for OffloadedGuestEventPort {
         }
     }
 
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) -> anyhow::Result<()> {
+    fn set(
+        &mut self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Result<(), vmcore::synic::HypervisorError> {
         assert_eq!(vtl, Vtl::Vtl0);
         if let Some(partition) = self.partition.upgrade() {
             partition
@@ -351,7 +365,13 @@ impl GuestEventPort for EmulatedGuestEventPort {
         *self.params.lock() = None;
     }
 
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) -> anyhow::Result<()> {
+    fn set(
+        &mut self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Result<(), vmcore::synic::HypervisorError> {
         *self.params.lock() = Some(WhpEventPortParams {
             vtl,
             vp: VpIndex::new(vp),
