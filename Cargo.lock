@@ -7461,7 +7461,6 @@ name = "virt_kvm"
 version = "0.0.0"
 dependencies = [
  "aarch64defs",
- "anyhow",
  "bitfield-struct",
  "build_rs_guest_arch",
  "cfg-if",
@@ -7491,7 +7490,6 @@ dependencies = [
 name = "virt_mshv"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "arrayvec",
  "build_rs_guest_arch",
  "guestmem",
