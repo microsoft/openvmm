@@ -12,14 +12,14 @@
 
 #![warn(missing_docs)]
 // UNSAFETY: Uses transmute to allow for type erasure.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 pub mod kind;
 
 use async_trait::async_trait;
 use inspect::Inspect;
 use mesh::MeshPayload;
-use mesh::Message;
+use mesh::OwnedMessage;
 use std::any::Any;
 use std::borrow::Cow;
 use std::fmt::Display;
@@ -76,7 +76,7 @@ pub trait CanResolveTo<O>: ResourceKind {
 pub struct Resource<K: ResourceKind> {
     #[mesh(encoding = "mesh::payload::encoding::OwningCowField")]
     id: Cow<'static, str>,
-    message: Message,
+    message: OwnedMessage,
     _phantom: PhantomData<fn(K) -> K>,
 }
 
@@ -86,7 +86,7 @@ pub trait IntoResource<K: ResourceKind> {
     fn into_resource(self) -> Resource<K>;
 }
 
-impl<T: ResourceId<K> + MeshPayload, K: ResourceKind> IntoResource<K> for T {
+impl<T: 'static + ResourceId<K> + MeshPayload + Send, K: ResourceKind> IntoResource<K> for T {
     fn into_resource(self) -> Resource<K> {
         Resource::new(self)
     }
@@ -94,10 +94,10 @@ impl<T: ResourceId<K> + MeshPayload, K: ResourceKind> IntoResource<K> for T {
 
 impl<K: ResourceKind> Resource<K> {
     /// Wraps `value` as an opaque resource.
-    pub fn new<T: ResourceId<K> + MeshPayload>(value: T) -> Self {
+    pub fn new<T: 'static + ResourceId<K> + MeshPayload + Send>(value: T) -> Self {
         Self {
             id: Cow::Borrowed(T::ID),
-            message: Message::new(value),
+            message: OwnedMessage::new(value),
             _phantom: PhantomData,
         }
     }
@@ -208,7 +208,7 @@ where
     K: CanResolveTo<O>,
     O: 'static,
     R: ResolveResource<K, T, Output = O>,
-    T: MeshPayload + ResourceId<K>,
+    T: 'static + MeshPayload + ResourceId<K> + Send,
 {
     async fn dyn_resolve(
         &self,
@@ -244,7 +244,7 @@ where
     K: CanResolveTo<O>,
     O: 'static,
     R: AsyncResolveResource<K, T, Output = O>,
-    T: MeshPayload + ResourceId<K>,
+    T: 'static + MeshPayload + ResourceId<K> + Send,
 {
     async fn dyn_resolve(
         &self,
@@ -430,7 +430,7 @@ pub mod private {
     impl<K: CanResolveTo<O>, O> UntypedStaticResolver<K, O> {
         pub const fn new<T, R>(resolver: &'static R) -> Self
         where
-            T: ResourceId<K> + MeshPayload,
+            T: 'static + ResourceId<K> + MeshPayload + Send,
             R: ResolveResource<K, T, Output = O>,
         {
             // SAFETY: TypedResolver<T, R> contains a &'static R and is transparent.
@@ -442,7 +442,7 @@ pub mod private {
 
         pub const fn new_async<T, R>(resolver: &'static R) -> Self
         where
-            T: ResourceId<K> + MeshPayload,
+            T: 'static + ResourceId<K> + MeshPayload + Send,
             R: AsyncResolveResource<K, T, Output = O>,
         {
             // SAFETY: TypedAsyncResolver<T, R> contains a &'static R and is transparent.
@@ -534,7 +534,7 @@ impl ResourceResolver {
     where
         K: CanResolveTo<O>,
         O: 'static,
-        T: ResourceId<K> + MeshPayload,
+        T: 'static + ResourceId<K> + MeshPayload + Send,
         R: 'static + ResolveResource<K, T, Output = O>,
     {
         let key = ResolverKey {
@@ -559,7 +559,7 @@ impl ResourceResolver {
     where
         K: CanResolveTo<O>,
         O: 'static,
-        T: ResourceId<K> + MeshPayload,
+        T: 'static + ResourceId<K> + MeshPayload + Send,
         R: 'static + AsyncResolveResource<K, T, Output = O>,
     {
         let key = ResolverKey {

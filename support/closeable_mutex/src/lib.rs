@@ -20,7 +20,7 @@
 //! concurrent accessors competing for the lock.
 
 // UNSAFETY: unsafe needed to implement interior mutability to locked values.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 #![warn(missing_docs)]
 
 use parking_lot::Mutex;

@@ -6,6 +6,7 @@
 //! In the future, this should be generalized and move to `mesh_channel`.
 
 use futures::Stream;
+use mesh::local_node::HandleMessageError;
 use mesh::local_node::HandlePortEvent;
 use mesh::local_node::NodeError;
 use mesh::local_node::Port;
@@ -16,6 +17,7 @@ use mesh::message::MeshField;
 use mesh::payload::Protobuf;
 use mesh::resource::Resource;
 use mesh::Message;
+use mesh::OwnedMessage;
 use mesh::RecvError;
 use std::collections::VecDeque;
 use std::future::poll_fn;
@@ -62,21 +64,21 @@ pub fn bounded<T: MeshField>(quota: u32) -> (BoundedSender<T>, BoundedReceiver<T
 }
 
 struct ReceiverState {
-    data: VecDeque<Message>,
+    data: VecDeque<OwnedMessage>,
     consumed_messages: u32,
     closed: bool,
-    failed: Option<RecvError>,
+    failed: Option<NodeError>,
     waker: Option<Waker>,
 }
 
-impl<T: MeshField> BoundedReceiver<T> {
+impl<T: 'static + MeshField + Send> BoundedReceiver<T> {
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
         let mut old_waker = None;
         self.port.with_port_and_handler(|port, state| {
             let Some(message) = state.data.pop_front() else {
                 if let Some(err) = state.failed.take() {
                     state.closed = true;
-                    return Err(err).into();
+                    return Err(RecvError::Error(err.into())).into();
                 } else if state.closed {
                     return Err(RecvError::Closed).into();
                 }
@@ -98,7 +100,7 @@ impl<T: MeshField> BoundedReceiver<T> {
     }
 }
 
-impl<T: MeshField> Stream for BoundedReceiver<T> {
+impl<T: 'static + MeshField + Send> Stream for BoundedReceiver<T> {
     type Item = T;
 
     fn poll_next(
@@ -120,31 +122,36 @@ impl<T: MeshField> Stream for BoundedReceiver<T> {
 }
 
 impl HandlePortEvent for ReceiverState {
-    fn message(&mut self, control: &mut PortControl<'_>, message: Message) {
-        if self.failed.is_some() {
-            return;
+    fn message(
+        &mut self,
+        control: &mut PortControl<'_, '_>,
+        message: Message<'_>,
+    ) -> Result<(), HandleMessageError> {
+        if let Some(err) = &self.failed {
+            return Err(HandleMessageError::new(err.clone()));
         }
-        self.data.push_back(message);
+        self.data.push_back(message.into_owned());
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
+        Ok(())
     }
 
-    fn close(&mut self, control: &mut PortControl<'_>) {
+    fn close(&mut self, control: &mut PortControl<'_, '_>) {
         self.closed = true;
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
     }
 
-    fn fail(&mut self, control: &mut PortControl<'_>, err: NodeError) {
-        self.failed = Some(RecvError::Error(err.into()));
+    fn fail(&mut self, control: &mut PortControl<'_, '_>, err: NodeError) {
+        self.failed = Some(err);
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
     }
 
-    fn drain(&mut self) -> Vec<Message> {
+    fn drain(&mut self) -> Vec<OwnedMessage> {
         std::mem::take(&mut self.data).into()
     }
 }
@@ -170,7 +177,7 @@ pub enum TrySendError {
     Closed,
 }
 
-impl<T: MeshField> BoundedSender<T> {
+impl<T: 'static + MeshField + Send> BoundedSender<T> {
     fn poll_send(&mut self, cx: &mut Context<'_>, message: &mut Option<T>) -> Poll<()> {
         let mut old_waker = None;
         self.port.with_port_and_handler(|port, state| {
@@ -209,42 +216,40 @@ impl<T: MeshField> BoundedSender<T> {
 }
 
 impl HandlePortEvent for SenderState {
-    fn message(&mut self, control: &mut PortControl<'_>, message: Message) {
-        match message.parse::<QuotaMessage>() {
-            Ok(message) => {
-                self.remaining_quota += message.messages;
-            }
-            Err(err) => {
-                tracing::error!(
-                    error = &err as &dyn std::error::Error,
-                    "bounded sender error"
-                );
-                self.closed = true;
-            }
-        }
+    fn message(
+        &mut self,
+        control: &mut PortControl<'_, '_>,
+        message: Message<'_>,
+    ) -> Result<(), HandleMessageError> {
+        let message = message.parse::<QuotaMessage>().map_err(|err| {
+            self.closed = true;
+            HandleMessageError::new(err)
+        })?;
+        self.remaining_quota += message.messages;
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
+        Ok(())
     }
 
-    fn close(&mut self, control: &mut PortControl<'_>) {
+    fn close(&mut self, control: &mut PortControl<'_, '_>) {
         self.closed = true;
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
     }
 
-    fn fail(&mut self, control: &mut PortControl<'_>, _err: NodeError) {
+    fn fail(&mut self, control: &mut PortControl<'_, '_>, _err: NodeError) {
         self.closed = true;
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
     }
 
-    fn drain(&mut self) -> Vec<Message> {
+    fn drain(&mut self) -> Vec<OwnedMessage> {
         // Send remaining quota as a message to avoid having to synchronize
         // during encoding.
-        vec![Message::new(QuotaMessage {
+        vec![OwnedMessage::new(QuotaMessage {
             messages: self.remaining_quota,
         })]
     }

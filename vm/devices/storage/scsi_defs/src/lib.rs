@@ -713,6 +713,7 @@ pub const SCSI_SENSEQ_OPERATING_DEFINITION_CHANGED: u8 = 0x02;
 
 open_enum! {
     #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub enum ScsiStatus: u8 {
         GOOD = 0x00,
         CHECK_CONDITION = 0x02,

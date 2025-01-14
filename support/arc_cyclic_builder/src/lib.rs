@@ -65,7 +65,7 @@
 
 #![warn(missing_docs)]
 // UNSAFETY: See crate-level doccomment.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use std::mem;
 use std::ptr;

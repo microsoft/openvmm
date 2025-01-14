@@ -229,11 +229,7 @@ mod private {
         /// message slot.
         ///
         /// This is used for hypervisor-managed and untrusted SINTs.
-        fn request_untrusted_sint_readiness(
-            this: &mut UhProcessor<'_, Self>,
-            vtl: GuestVtl,
-            sints: u16,
-        );
+        fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
         /// Returns whether this VP should be put to sleep in usermode, or
         /// whether it's ready to proceed into the kernel.
@@ -673,7 +669,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 // Ensure the waker is set.
                 if !last_waker
                     .as_ref()
-                    .map_or(false, |waker| cx.waker().will_wake(waker))
+                    .is_some_and(|waker| cx.waker().will_wake(waker))
                 {
                     last_waker = Some(cx.waker().clone());
                     self.inner.waker.write().clone_from(&last_waker);
@@ -958,7 +954,8 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         };
 
         if sints & untrusted_sints != 0 {
-            T::request_untrusted_sint_readiness(self, vtl, sints & untrusted_sints);
+            assert_eq!(vtl, GuestVtl::Vtl0);
+            T::request_untrusted_sint_readiness(self, sints & untrusted_sints);
         }
     }
 

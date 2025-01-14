@@ -107,6 +107,7 @@ impl Xtask for UnusedDeps {
         results.sort_by(|a, b| a.1.cmp(b.1));
 
         let mut workspace = analyze_workspace(&ctx.root)?;
+        let full_deps = workspace.deps.clone();
 
         // Display all the results.
 
@@ -137,20 +138,32 @@ impl Xtask for UnusedDeps {
             workspace.deps.retain(|x| !analysis.deps.contains(x));
         }
 
-        if !workspace.deps.is_empty() {
-            workspace.deps.sort();
+        workspace.deps.sort();
+        workspace.ignored.sort();
+        if workspace.deps != workspace.ignored {
             found_something = true;
+            let mut unused_deps = Vec::new();
+
             println!("Workspace -- {}:", workspace.path.display());
             for dep in &workspace.deps {
-                println!("\t{} is unused", dep);
+                if !workspace.ignored.contains(dep) {
+                    println!("\t{} is unused", dep);
+                    unused_deps.push(DepResult::Unused(dep.clone()));
+                }
+            }
+            for ign in &workspace.ignored {
+                if !workspace.deps.contains(ign) {
+                    if full_deps.contains(ign) {
+                        println!("\t{} is ignored, but being used", ign);
+                        unused_deps.push(DepResult::IgnoredButUsed(ign.clone()));
+                    } else {
+                        println!("\t{} is ignored, but it's not even being depended on", ign);
+                        unused_deps.push(DepResult::IgnoredAndMissing(ign.clone()));
+                    }
+                }
             }
 
             if self.fix {
-                let unused_deps = workspace
-                    .deps
-                    .into_iter()
-                    .map(DepResult::Unused)
-                    .collect::<Vec<_>>();
                 let fixed =
                     remove_dependencies(&fs_err::read_to_string(&workspace.path)?, &unused_deps)?;
                 fs_err::write(&workspace.path, fixed).context("Cargo.toml write error")?;
@@ -212,11 +225,38 @@ fn remove_dependencies(manifest: &str, analysis_results: &[DepResult]) -> anyhow
                 }
             }
             "workspace" => {
-                if let Some(t) = v
-                    .get_mut("dependencies")
-                    .and_then(|t| t.as_table_like_mut())
-                {
-                    dep_tables.push(t);
+                for (k2, v2) in v.iter_mut() {
+                    let v2 = match v2 {
+                        v2 if v2.is_table_like() => v2.as_table_like_mut().unwrap(),
+                        _ => continue,
+                    };
+
+                    match k2.get() {
+                        "dependencies" => dep_tables.push(v2),
+                        "metadata" => {
+                            // get_mut() seems to create a new table that wasn't previously
+                            // there in some cases, so first check with the immutable
+                            // accessors.
+                            if v2
+                                .get("xtask")
+                                .and_then(|x| x.get("unused-deps"))
+                                .and_then(|u| u.get("ignored"))
+                                .is_some()
+                            {
+                                ignored_array = v2
+                                    .get_mut("metadata")
+                                    .unwrap()
+                                    .get_mut("xtask")
+                                    .unwrap()
+                                    .get_mut("unused-deps")
+                                    .unwrap()
+                                    .get_mut("ignored")
+                                    .unwrap()
+                                    .as_array_mut();
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             "package" => {
@@ -337,6 +377,7 @@ enum DepResult {
 struct WorkspaceAnalysis {
     pub path: PathBuf,
     pub deps: Vec<String>,
+    pub ignored: Vec<String>,
 }
 
 fn make_regexp(name: &str) -> String {
@@ -467,15 +508,22 @@ impl Search {
 fn analyze_workspace(root: &Path) -> anyhow::Result<WorkspaceAnalysis> {
     let path = root.join("Cargo.toml");
     let manifest = Manifest::from_path_with_metadata(&path)?;
-
-    let deps = manifest
+    let workspace = manifest
         .workspace
-        .expect("workspace manifest must have a workspace section")
-        .dependencies
-        .into_keys()
-        .collect();
+        .expect("workspace manifest must have a workspace section");
 
-    Ok(WorkspaceAnalysis { deps, path })
+    let deps = workspace.dependencies.into_keys().collect();
+
+    let ignored = workspace
+        .metadata
+        .and_then(|meta| meta.xtask.and_then(|x| x.unused_deps.map(|u| u.ignored)))
+        .unwrap_or_default();
+
+    Ok(WorkspaceAnalysis {
+        deps,
+        path,
+        ignored,
+    })
 }
 
 fn analyze_crate(manifest_path: &Path) -> anyhow::Result<Option<PackageAnalysis>> {

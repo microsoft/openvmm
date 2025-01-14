@@ -15,8 +15,7 @@ flowey_request! {
         Doc {
             target_triple: target_lexicon::Triple,
             docs_dir: WriteVar<PathBuf>,
-        },
-        SetDenyWarnings(bool),
+        }
     }
 }
 
@@ -31,14 +30,10 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut set_deny_warnings = None;
         let mut doc_requests = Vec::new();
 
         for req in requests {
             match req {
-                Request::SetDenyWarnings(v) => {
-                    same_across_all_reqs("SetDenyWarnings", &mut set_deny_warnings, v)?
-                }
                 Request::Doc {
                     target_triple,
                     docs_dir,
@@ -46,9 +41,6 @@ impl FlowNode for Node {
             }
         }
 
-        let set_deny_warnings = set_deny_warnings.ok_or(anyhow::anyhow!(
-            "Missing essential request: SetDenyWarnings"
-        ))?;
         let doc_requests = doc_requests;
 
         // -- end of req processing -- //
@@ -112,12 +104,7 @@ impl FlowNode for Node {
                 move |rt| {
                     let cargo_cmd = rt.read(cargo_cmd);
                     let sh = xshell::Shell::new()?;
-                    let out_path = cargo_cmd.run_with(&sh, |mut cmd| {
-                        if set_deny_warnings {
-                            cmd = cmd.env("RUSTDOCFLAGS", "-D warnings")
-                        }
-                        cmd
-                    })?;
+                    let out_path = cargo_cmd.run(&sh)?;
 
                     rt.write(docs_dir, &out_path);
                     Ok(())

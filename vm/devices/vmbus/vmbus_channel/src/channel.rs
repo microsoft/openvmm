@@ -10,6 +10,7 @@ use crate::bus::OfferInput;
 use crate::bus::OfferParams;
 use crate::bus::OfferResources;
 use crate::bus::OpenRequest;
+use crate::bus::OpenResult;
 use crate::bus::ParentBus;
 use crate::gpadl::GpadlMap;
 use crate::gpadl::GpadlMapView;
@@ -335,20 +336,19 @@ async fn offer_generic(
     let (state_req_send, state_req_recv) = mesh::channel();
 
     let use_event = bus.use_event();
-    let new_event = || {
-        if use_event {
-            Notify::from_event(Event::new())
-        } else {
-            Notify::from_slim_event(Arc::new(SlimEvent::new()))
-        }
-    };
 
-    let event = new_event();
-    let subchannel_events: Vec<_> = (0..max_subchannels).map(|_| new_event()).collect();
+    let events: Vec<_> = (0..max_subchannels + 1)
+        .map(|_| {
+            if use_event {
+                Notify::from_event(Event::new())
+            } else {
+                Notify::from_slim_event(Arc::new(SlimEvent::new()))
+            }
+        })
+        .collect();
 
     let request = OfferInput {
         params: offer,
-        event: event.clone().interrupt(),
         request_send,
         server_request_recv,
     };
@@ -357,12 +357,12 @@ async fn offer_generic(
 
     let offer_result = bus.add_child(request).await?;
 
-    let mut resources = vec![ChannelResources { event }];
-    for idx in 0..max_subchannels {
-        resources.push(ChannelResources {
-            event: subchannel_events[idx as usize].clone(),
-        });
-    }
+    let resources = events
+        .iter()
+        .map(|event| ChannelResources {
+            event: event.clone(),
+        })
+        .collect();
 
     let (subchannel_enable_send, subchannel_enable_recv) = mesh::channel();
     channel.install(DeviceResources {
@@ -380,7 +380,7 @@ async fn offer_generic(
         let device = Device::new(
             request_recv,
             server_request_send,
-            subchannel_events,
+            events,
             gpadl_map,
             subchannel_enable_recv,
         );
@@ -427,9 +427,6 @@ pub enum ChannelRestoreError {
     /// Failed to enable subchannels.
     #[error("failed to enable subchannels")]
     EnablingSubchannels(#[source] anyhow::Error),
-    /// Failed to send restore request.
-    #[error("failed to send restore request")]
-    SendingRequest(#[source] RecvError),
     /// Failed to restore vmbus channel.
     #[error("failed to restore vmbus channel")]
     RestoreError(#[source] anyhow::Error),
@@ -449,7 +446,7 @@ struct Device {
     open: Vec<bool>,
     subchannel_gpadls: Vec<BTreeSet<GpadlId>>,
     requests: SelectAll<TaggedStream<usize, mesh::Receiver<ChannelRequest>>>,
-    subchannel_events: Vec<Notify>,
+    events: Vec<Notify>,
     gpadl_map: Arc<GpadlMap>,
     subchannel_enable_recv: mesh::Receiver<u16>,
 }
@@ -458,7 +455,7 @@ impl Device {
     fn new(
         request_recv: mesh::Receiver<ChannelRequest>,
         server_request_send: mesh::Sender<ChannelServerRequest>,
-        subchannel_events: Vec<Notify>,
+        events: Vec<Notify>,
         gpadl_map: Arc<GpadlMap>,
         subchannel_enable_recv: mesh::Receiver<u16>,
     ) -> Self {
@@ -472,7 +469,7 @@ impl Device {
             open,
             subchannel_gpadls,
             requests,
-            subchannel_events,
+            events,
             gpadl_map,
             subchannel_enable_recv,
         }
@@ -570,8 +567,8 @@ impl Device {
                 self.handle_gpadl(gpadl.id, gpadl.count, gpadl.buf, channel_idx);
                 true
             }),
-            ChannelRequest::TeardownGpadl(Rpc(id, response_send)) => {
-                self.handle_teardown_gpadl(id, response_send, channel_idx);
+            ChannelRequest::TeardownGpadl(rpc) => {
+                self.handle_teardown_gpadl(rpc, channel_idx);
             }
             ChannelRequest::Modify(rpc) => {
                 rpc.handle(|req| async {
@@ -588,7 +585,7 @@ impl Device {
         channel: &mut dyn VmbusDevice,
         channel_idx: usize,
         open_request: OpenRequest,
-    ) -> bool {
+    ) -> Option<OpenResult> {
         assert!(!self.open[channel_idx]);
         // N.B. Any asynchronous GPADL requests will block while in
         //      open(). This should be fine for all known devices.
@@ -597,11 +594,13 @@ impl Device {
                 error = error.as_ref() as &dyn std::error::Error,
                 "failed to open channel"
             );
-            false
+            None
         } else {
-            true
+            Some(OpenResult {
+                guest_to_host_interrupt: self.events[channel_idx].clone().interrupt(),
+            })
         };
-        self.open[channel_idx] = opened;
+        self.open[channel_idx] = opened.is_some();
         opened
     }
 
@@ -644,16 +643,12 @@ impl Device {
         }
     }
 
-    fn handle_teardown_gpadl(
-        &mut self,
-        id: GpadlId,
-        response_send: mesh::OneshotSender<()>,
-        channel_idx: usize,
-    ) {
+    fn handle_teardown_gpadl(&mut self, rpc: Rpc<GpadlId, ()>, channel_idx: usize) {
+        let id = *rpc.input();
         if let Some(f) = self.gpadl_map.remove(
             id,
             Box::new(move || {
-                response_send.send(());
+                rpc.complete(());
             }),
         ) {
             f()
@@ -746,9 +741,6 @@ impl Device {
                     subchannel_index: subchannel_idx as u16,
                     ..offer.clone()
                 },
-                event: self.subchannel_events[subchannel_idx - 1]
-                    .clone()
-                    .interrupt(),
                 request_send,
                 server_request_recv,
             };
@@ -785,11 +777,13 @@ impl Device {
             .map_err(ChannelRestoreError::EnablingSubchannels)?;
 
         let mut results = Vec::with_capacity(states.len());
-        for (channel_idx, open) in states.iter().copied().enumerate() {
+        for (channel_idx, (open, event)) in states.iter().copied().zip(&self.events).enumerate() {
+            let open_result = open.then(|| OpenResult {
+                guest_to_host_interrupt: event.clone().interrupt(),
+            });
             let result = self.server_requests[channel_idx]
-                .call(ChannelServerRequest::Restore, open)
+                .call_failable(ChannelServerRequest::Restore, open_result)
                 .await
-                .map_err(ChannelRestoreError::SendingRequest)?
                 .map_err(|err| ChannelRestoreError::RestoreError(err.into()))?;
 
             assert!(open == result.open_request.is_some());

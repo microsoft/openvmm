@@ -7,7 +7,7 @@
 // See build.rs.
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: Interacting with low level hardware and bootloader primitives.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 mod arch;
 mod boot_logger;
@@ -825,7 +825,7 @@ fn validate_vp_hw_ids(partition_info: &PartitionInfo) {
     if let Some((i, &vp_index)) = vp_indexes
         .iter()
         .enumerate()
-        .find(|(i, &vp_index)| *i as u32 != vp_index)
+        .find(|&(i, vp_index)| i as u32 != *vp_index)
     {
         panic!(
             "CPU hardware ID {:#x} does not correspond to VP index {}",

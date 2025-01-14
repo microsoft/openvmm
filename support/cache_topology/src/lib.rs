@@ -6,7 +6,7 @@
 
 #![warn(missing_docs)]
 // UNSAFETY: needed to call Win32 functions to query cache topology
-#![cfg_attr(windows, allow(unsafe_code))]
+#![cfg_attr(windows, expect(unsafe_code))]
 
 use thiserror::Error;
 
@@ -190,7 +190,7 @@ mod linux {
                         .file_name()
                         .unwrap()
                         .to_str()
-                        .map_or(false, |s| s.starts_with("index"))
+                        .is_some_and(|s| s.starts_with("index"))
                     {
                         continue;
                     }

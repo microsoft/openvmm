@@ -65,7 +65,7 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            let Self { ref output_buffer } = self;
+            let Self { output_buffer } = self;
 
             let saved_state = state::SavedState {
                 output_buffer: output_buffer.iter().copied().collect(),

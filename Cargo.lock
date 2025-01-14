@@ -2141,6 +2141,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuzz_storvsp"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "arbitrary",
+ "disklayer_ram",
+ "guestmem",
+ "libfuzzer-sys",
+ "pal_async",
+ "scsi_defs",
+ "scsidisk",
+ "storvsp",
+ "storvsp_resources",
+ "vmbus_async",
+ "vmbus_channel",
+ "vmbus_ring",
+ "xtask_fuzz",
+ "zerocopy",
+]
+
+[[package]]
 name = "fuzz_ucs2"
 version = "0.0.0"
 dependencies = [
@@ -3734,15 +3755,32 @@ dependencies = [
 name = "mesh_channel"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "futures",
  "futures-concurrency",
  "futures-core",
  "futures-io",
+ "mesh_channel_core",
  "mesh_node",
  "mesh_protobuf",
  "pal_async",
  "pal_event",
  "parking_lot",
+ "test_with_tracing",
+ "thiserror 2.0.0",
+ "tracing",
+]
+
+[[package]]
+name = "mesh_channel_core"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "futures-core",
+ "mesh_node",
+ "mesh_protobuf",
+ "parking_lot",
+ "static_assertions",
  "test_with_tracing",
  "thiserror 2.0.0",
  "tracing",
@@ -5670,6 +5708,7 @@ dependencies = [
 name = "scsi_defs"
 version = "0.0.0"
 dependencies = [
+ "arbitrary",
  "bitfield-struct",
  "open_enum",
  "zerocopy",
@@ -6071,9 +6110,9 @@ dependencies = [
 
 [[package]]
 name = "smallbox"
-version = "0.8.2"
+version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d92359f97e6b417da4328a970cf04a044db104fbd57f7d72cb7ff665bb8806af"
+checksum = "43d92e0947c1c04c508c9fd39608a1557226141410fd33b5b314d73fa76508d3"
 
 [[package]]
 name = "smallvec"
@@ -6162,6 +6201,7 @@ name = "storvsp"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "arbitrary",
  "async-trait",
  "criterion",
  "disklayer_ram",
@@ -6203,6 +6243,7 @@ dependencies = [
 name = "storvsp_resources"
 version = "0.0.0"
 dependencies = [
+ "arbitrary",
  "guid",
  "mesh",
  "vm_resource",
@@ -6872,6 +6913,8 @@ dependencies = [
  "base64 0.21.7",
  "base64-serde",
  "cvm_tracing",
+ "disk_backend",
+ "disklayer_ram",
  "getrandom",
  "guest_emulation_transport",
  "guid",
@@ -7939,12 +7982,14 @@ dependencies = [
 name = "vmbus_proxy"
 version = "0.0.0"
 dependencies = [
+ "futures",
  "guestmem",
  "mesh",
  "ntapi",
  "pal",
  "pal_async",
  "pal_event",
+ "tracing",
  "vmbus_core",
  "winapi",
  "zerocopy",
@@ -7966,12 +8011,12 @@ dependencies = [
  "parking_lot",
  "tracelimit",
  "tracing",
+ "unicycle",
  "vmbus_channel",
  "vmbus_client",
  "vmbus_core",
  "vmbus_server",
  "vmcore",
- "zerocopy",
 ]
 
 [[package]]
@@ -8108,6 +8153,7 @@ dependencies = [
  "vmbus_proxy",
  "vmbus_ring",
  "vmcore",
+ "winapi",
  "zerocopy",
  "zerocopy_helpers",
 ]

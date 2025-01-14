@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 use tracing_subscriber::filter::Targets;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -23,6 +24,7 @@ pub fn init_tracing() -> mesh::pipe::ReadPipe {
         .with_timer(tracing_subscriber::fmt::time::uptime())
         .with_writer(Arc::new(TracingWriter(log_write)))
         .with_max_level(tracing::level_filters::LevelFilter::DEBUG)
+        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
         .log_internal_errors(true)
         .finish()
         .with(targets)

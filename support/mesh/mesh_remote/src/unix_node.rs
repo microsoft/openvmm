@@ -14,7 +14,7 @@
 #![cfg(unix)]
 // UNSAFETY: Calls to libc send/recvmsg fns and the work to prepare their inputs
 // and handle their outputs (mem::zeroed, transmutes, from_raw_fds).
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 #[cfg(target_os = "linux")]
 mod memfd;
@@ -29,6 +29,8 @@ use futures::StreamExt;
 use io::ErrorKind;
 use mesh_channel::channel;
 use mesh_channel::oneshot;
+use mesh_channel::OneshotReceiver;
+use mesh_channel::OneshotSender;
 use mesh_channel::RecvError;
 use mesh_node::common::Address;
 use mesh_node::common::NodeId;
@@ -109,7 +111,7 @@ pub struct UnixNode {
         Mutex<Option<Arc<mesh_channel::Sender<(NodeId, mesh_channel::Sender<Followers>)>>>>,
 
     // meaningful drop
-    _drop_send: mesh_channel::OneshotSender<()>,
+    _drop_send: OneshotSender<()>,
 }
 
 #[derive(Debug, Protobuf)]
@@ -143,9 +145,10 @@ pub struct Followers {
 
 #[derive(Debug, Protobuf)]
 #[mesh(resource = "Resource")]
-struct InitialPacket {
+struct InitialMessage {
     leader_send: mesh_channel::Sender<LeaderRequest>,
     follower_recv: mesh_channel::Receiver<FollowerRequest>,
+    user_port: Port,
 }
 
 /// Processes incoming requests from the leader to a follower. Currently the only
@@ -203,7 +206,9 @@ async fn run_leader(
         if receivers.is_empty() {
             return;
         }
-        let recvs = receivers.iter_mut().map(|(_, recv)| recv.recv());
+        let recvs = receivers
+            .iter_mut()
+            .map(|(_, recv)| poll_fn(|cx| recv.poll_recv(cx)));
         let (req, index, _) = futures::select! { // merge semantics
             r = resign_recv.next() => break r,
             r = future::select_all(recvs).fuse() => r,
@@ -242,13 +247,8 @@ async fn run_leader(
                     tracing::debug!(?remote_id, "invitation request");
                     match new_socket_pair() {
                         Ok((left, right)) => {
-                            let (init_send, init_recv) = channel();
                             let (leader_send, leader_recv) = channel();
                             let (follower_send, follower_recv) = channel();
-                            init_send.send(InitialPacket {
-                                leader_send,
-                                follower_recv,
-                            });
                             let remote_addr = Address {
                                 node: NodeId::new(),
                                 port: PortId::new(),
@@ -262,10 +262,14 @@ async fn run_leader(
                                 handle,
                                 UnixSocket::new(driver, left),
                             );
-                            local_node
-                                .add_port(local_port_id, remote_addr)
-                                .bridge(init_recv.into());
-                            port.bridge(init_send.into());
+                            let init_send = OneshotSender::<InitialMessage>::from(
+                                local_node.add_port(local_port_id, remote_addr),
+                            );
+                            init_send.send(InitialMessage {
+                                leader_send,
+                                follower_recv,
+                                user_port: port,
+                            });
                             let invitation = Invitation {
                                 address: InvitationAddress {
                                     local_addr: remote_addr,
@@ -921,13 +925,10 @@ impl UnixNode {
         let handle = this
             .local_node
             .add_remote(invitation.address.remote_addr.node);
-        let mut init_port: mesh_channel::Receiver<InitialPacket> = this
-            .local_node
-            .add_port(
-                invitation.address.local_addr.port,
-                invitation.address.remote_addr,
-            )
-            .into();
+        let init_recv = OneshotReceiver::<InitialMessage>::from(this.local_node.add_port(
+            invitation.address.local_addr.port,
+            invitation.address.remote_addr,
+        ));
 
         start_connection(
             &this.tasks,
@@ -937,13 +938,10 @@ impl UnixNode {
             UnixSocket::new(this.driver.as_ref(), invitation.fd.into()),
         );
 
-        // Get the ports to communicate with the leader from the initial
-        // port, then reuse the initial port for the caller-provided
-        // port (by bridging them).
-        let init_message = init_port.recv().await.map_err(JoinError)?;
+        let init_message = init_recv.await.map_err(JoinError)?;
         to_leader_recv.bridge(init_message.leader_send);
         from_leader_send.bridge(init_message.follower_recv);
-        port.bridge(init_port.into());
+        port.bridge(init_message.user_port);
 
         Ok(this)
     }

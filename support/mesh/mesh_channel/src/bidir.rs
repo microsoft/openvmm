@@ -12,6 +12,7 @@ use super::lazy::LazyMessage;
 use super::lazy::SerializeFn;
 use super::RecvError;
 use super::TryRecvError;
+use mesh_node::local_node::HandleMessageError;
 use mesh_node::local_node::HandlePortEvent;
 use mesh_node::local_node::NodeError;
 use mesh_node::local_node::Port;
@@ -20,6 +21,7 @@ use mesh_node::local_node::PortField;
 use mesh_node::local_node::PortWithHandler;
 use mesh_node::message::MeshPayload;
 use mesh_node::message::Message;
+use mesh_node::message::OwnedMessage;
 use mesh_node::resource::SerializedMessage;
 use std::any::TypeId;
 use std::collections::VecDeque;
@@ -70,7 +72,7 @@ impl From<GenericChannel> for Port {
     }
 }
 
-impl<T: MeshPayload, U: MeshPayload> From<Channel<T, U>> for Port {
+impl<T: 'static + MeshPayload, U: 'static + MeshPayload> From<Channel<T, U>> for Port {
     fn from(channel: Channel<T, U>) -> Self {
         channel
             .change_types::<SerializedMessage, SerializedMessage>()
@@ -79,7 +81,7 @@ impl<T: MeshPayload, U: MeshPayload> From<Channel<T, U>> for Port {
     }
 }
 
-impl<T: MeshPayload, U: MeshPayload> From<Port> for Channel<T, U> {
+impl<T: 'static + MeshPayload, U: 'static + MeshPayload> From<Port> for Channel<T, U> {
     fn from(port: Port) -> Self {
         <Channel<SerializedMessage, SerializedMessage>>::new(GenericChannel::new(port))
             .change_types()
@@ -142,7 +144,7 @@ impl GenericChannel {
 
     /// Consumes and returns the first message from the incoming message queue
     /// if there are any messages available.
-    fn try_recv(&self) -> Result<Message, TryRecvError> {
+    fn try_recv(&self) -> Result<OwnedMessage, TryRecvError> {
         self.port.with_handler(|queue| match &queue.state {
             QueueState::Open => queue.messages.pop_front().ok_or(TryRecvError::Empty),
             QueueState::Closed => queue.messages.pop_front().ok_or(TryRecvError::Closed),
@@ -151,7 +153,7 @@ impl GenericChannel {
     }
 
     /// Polls the message queue.
-    fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Result<Message, RecvError>> {
+    fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Result<OwnedMessage, RecvError>> {
         let mut old_waker = None;
         self.port.with_handler(|queue| match &queue.state {
             QueueState::Open => {
@@ -205,8 +207,8 @@ impl<T: 'static + Send, U: 'static + Send> Channel<T, U> {
     pub fn try_recv(&mut self) -> Result<U, TryRecvError> {
         self.generic
             .try_recv()?
-            .try_parse()
-            .or_else(|m| lazy_parse(m, &mut self.deserialize))
+            .try_unwrap()
+            .or_else(|m| lazy_parse(m.serialize(), &mut self.deserialize))
             .map_err(|err| TryRecvError::Error(err.into()))
     }
 
@@ -214,8 +216,8 @@ impl<T: 'static + Send, U: 'static + Send> Channel<T, U> {
     pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<U, RecvError>> {
         let r = std::task::ready!(self.generic.poll_recv(cx)).and_then(|message| {
             message
-                .try_parse()
-                .or_else(|m| lazy_parse(m, &mut self.deserialize))
+                .try_unwrap()
+                .or_else(|m| lazy_parse(m.serialize(), &mut self.deserialize))
                 .map_err(|err| RecvError::Error(err.into()))
         });
         if r.is_err() {
@@ -254,7 +256,7 @@ impl<T: 'static + Send, U: 'static + Send> Channel<T, U> {
     }
 }
 
-impl<T: MeshPayload, U: MeshPayload> Channel<T, U> {
+impl<T: 'static + MeshPayload, U: 'static + MeshPayload> Channel<T, U> {
     /// Changes the message types for the port.
     ///
     /// The old and new types must be serializable since the port's peer is
@@ -264,7 +266,9 @@ impl<T: MeshPayload, U: MeshPayload> Channel<T, U> {
     ///
     /// The caller must therefore ensure that the new message type is compatible
     /// with the message encoding.
-    pub fn change_types<NewT: MeshPayload, NewU: MeshPayload>(self) -> Channel<NewT, NewU> {
+    pub fn change_types<NewT: 'static + MeshPayload, NewU: 'static + MeshPayload>(
+        self,
+    ) -> Channel<NewT, NewU> {
         // Ensure all the types are serializable so that the peer port can
         // convert between them as necessary.
         ensure_serializable::<T>();
@@ -289,34 +293,39 @@ enum QueueState {
 
 #[derive(Debug, Default)]
 struct MessageQueue {
-    messages: VecDeque<Message>,
+    messages: VecDeque<OwnedMessage>,
     state: QueueState,
     waker: Option<Waker>,
 }
 
 impl HandlePortEvent for MessageQueue {
-    fn message(&mut self, control: &mut PortControl<'_>, message: Message) {
-        self.messages.push_back(message);
+    fn message(
+        &mut self,
+        control: &mut PortControl<'_, '_>,
+        message: Message<'_>,
+    ) -> Result<(), HandleMessageError> {
+        self.messages.push_back(message.into_owned());
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
+        Ok(())
     }
 
-    fn fail(&mut self, control: &mut PortControl<'_>, err: NodeError) {
+    fn fail(&mut self, control: &mut PortControl<'_, '_>, err: NodeError) {
         self.state = QueueState::Failed(err);
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
     }
 
-    fn close(&mut self, control: &mut PortControl<'_>) {
+    fn close(&mut self, control: &mut PortControl<'_, '_>) {
         self.state = QueueState::Closed;
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
     }
 
-    fn drain(&mut self) -> Vec<Message> {
+    fn drain(&mut self) -> Vec<OwnedMessage> {
         std::mem::take(&mut self.messages).into()
     }
 }

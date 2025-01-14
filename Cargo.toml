@@ -30,6 +30,7 @@ members = [
   "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
   "vm/devices/storage/scsi_buffers/fuzz",
+  "vm/devices/storage/storvsp/fuzz",
   "vm/vmcore/guestmem/fuzz",
   "vm/x86/x86emu/fuzz",
   # in-guest test bins
@@ -105,6 +106,7 @@ local_clock = { path = "support/local_clock" }
 mesh = { path = "support/mesh" }
 mesh_build = { path = "support/mesh/mesh_build" }
 mesh_channel = { path = "support/mesh/mesh_channel" }
+mesh_channel_core = { path = "support/mesh/mesh_channel_core" }
 mesh_derive = { path = "support/mesh/mesh_derive" }
 mesh_node = { path = "support/mesh/mesh_node" }
 mesh_process = { path = "support/mesh/mesh_process" }
@@ -499,6 +501,7 @@ thiserror = { version = "2", default-features = false }
 time = "0.3"
 toml_edit = "0.21"
 tracing = "0.1"
+tracing-core = "=0.1.30" # Pin to avoid binary size increase https://github.com/tokio-rs/tracing/issues/3182
 tracing-subscriber = "0.3.16"
 typed-path = "0.7"
 uefi = "0.32"
@@ -520,6 +523,10 @@ xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshel
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
 zerocopy = { version = "0.7.32", features = ["derive"] }
+
+[workspace.metadata.xtask.unused-deps]
+# Pulled in through "tracing", but we need to pin the version
+ignored = ["tracing-core"]
 
 [profile.release]
 panic = 'abort'
@@ -585,12 +592,20 @@ rust-2024-compatibility = { level = "warn", priority = -1 }
 edition_2024_expr_fragment_specifier = "allow"
 impl_trait_overcaptures = "allow"
 deprecated-safe-2024 = "allow"
+tail-expr-drop-order = "allow"
+if-let-rescope = "allow"
 
 unused_qualifications = "warn"
 
 # Code that needs unsafe should opt-in via a module-scoped allow.
 unsafe_code = "deny"
-unsafe_op_in_unsafe_fn = "warn"
+unsafe_op_in_unsafe_fn = "forbid"
+
+# TODO: Needed for xshell compatibility, fixed in v0.2.7
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(trick_rust_analyzer_into_highlighting_interpolated_bits)'] }
+
+# TODO: Remove when we update to Rust 1.84, needed for if-let-rescope
+unknown_lints = "allow"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"

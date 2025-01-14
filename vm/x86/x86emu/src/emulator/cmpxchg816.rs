@@ -8,7 +8,7 @@ use crate::Cpu;
 use iced_x86::Instruction;
 use iced_x86::Register;
 
-impl<'a, T: Cpu> Emulator<'a, T> {
+impl<T: Cpu> Emulator<'_, T> {
     // cmpxchg8/16 rm
     pub(super) async fn cmpxchg8_16(
         &mut self,

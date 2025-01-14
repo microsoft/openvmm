@@ -2275,7 +2275,7 @@ pub mod private {
     pub static FLOW_NODES: [FlowNodeMeta] = [..];
 
     // UNSAFETY: linkme uses manual link sections, which are unsafe.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     #[linkme::distributed_slice(FLOW_NODES)]
     static DUMMY_FLOW_NODE: FlowNodeMeta = FlowNodeMeta {
         module_path: "<dummy>::_only_one_call_to_flowey_node_per_module",

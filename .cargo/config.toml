@@ -112,3 +112,10 @@ rustflags = [
   # Treat warnings as errors in CI.
 ### ENABLE_IN_CI "-Dwarnings",
 ]
+
+# Specify a common set of rustdocflags for all targets.
+[build]
+rustdocflags = [
+  # Treat warnings as errors in CI.
+### ENABLE_IN_CI "-Dwarnings",
+]

@@ -8,7 +8,7 @@ use super::InternalError;
 use crate::Cpu;
 use iced_x86::Instruction;
 
-impl<'a, T: Cpu> Emulator<'a, T> {
+impl<T: Cpu> Emulator<'_, T> {
     // bt/btc/btr/bts m, r/imm
     pub(super) async fn bt_m<Op: BitOp>(
         &mut self,

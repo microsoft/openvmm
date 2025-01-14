@@ -6,6 +6,7 @@
 use crate::ChannelError;
 use futures_io::AsyncRead;
 use futures_io::AsyncWrite;
+use mesh_node::local_node::HandleMessageError;
 use mesh_node::local_node::HandlePortEvent;
 use mesh_node::local_node::NodeError;
 use mesh_node::local_node::Port;
@@ -13,6 +14,7 @@ use mesh_node::local_node::PortControl;
 use mesh_node::local_node::PortField;
 use mesh_node::local_node::PortWithHandler;
 use mesh_node::message::Message;
+use mesh_node::message::OwnedMessage;
 use mesh_node::resource::Resource;
 use mesh_protobuf::encoding::OptionField;
 use mesh_protobuf::Protobuf;
@@ -140,39 +142,44 @@ impl AsyncRead for ReadPipe {
 }
 
 impl HandlePortEvent for ReadPipeState {
-    fn message(&mut self, control: &mut PortControl<'_>, message: Message) {
-        if self.failed.is_some() {
-            return;
+    fn message(
+        &mut self,
+        control: &mut PortControl<'_, '_>,
+        message: Message<'_>,
+    ) -> Result<(), HandleMessageError> {
+        if let Some(err) = &self.failed {
+            return Err(HandleMessageError::new(err.clone()));
         }
-        let data = message.serialize().data;
+        let (data, _) = message.serialize();
         if data.len() + self.data.len() + self.consumed_bytes as usize > self.quota_bytes as usize {
             self.failed = Some(ReadError::OverQuota);
-            return;
+            return Err(HandleMessageError::new(ReadError::OverQuota));
         }
-        self.data.extend(&data);
+        self.data.extend(data.as_ref());
         self.consumed_messages += 1;
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
+        Ok(())
     }
 
-    fn close(&mut self, control: &mut PortControl<'_>) {
+    fn close(&mut self, control: &mut PortControl<'_, '_>) {
         self.closed = true;
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
     }
 
-    fn fail(&mut self, control: &mut PortControl<'_>, err: NodeError) {
+    fn fail(&mut self, control: &mut PortControl<'_, '_>, err: NodeError) {
         self.failed = Some(ReadError::NodeFailure(err));
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
     }
 
-    fn drain(&mut self) -> Vec<Message> {
+    fn drain(&mut self) -> Vec<OwnedMessage> {
         let data = std::mem::take(&mut self.data).into();
-        vec![Message::serialized(mesh_protobuf::SerializedMessage {
+        vec![OwnedMessage::serialized(mesh_protobuf::SerializedMessage {
             data,
             resources: Vec::new(),
         })]
@@ -223,10 +230,7 @@ impl WritePipe {
                 let n = buf.len().min(state.remaining_bytes as usize);
                 state.remaining_bytes -= n as u32;
                 state.remaining_messages -= 1;
-                port.respond(Message::serialized(mesh_protobuf::SerializedMessage {
-                    data: buf[..n].to_vec(),
-                    resources: Vec::new(),
-                }));
+                port.respond(Message::serialized(&buf[..n], Vec::new()));
                 Ok(n).into()
             } else {
                 if let Some(cx) = cx {
@@ -258,46 +262,49 @@ impl AsyncWrite for WritePipe {
 }
 
 impl HandlePortEvent for WritePipeState {
-    fn message(&mut self, control: &mut PortControl<'_>, message: Message) {
-        if self.failed.is_some() {
-            return;
+    fn message(
+        &mut self,
+        control: &mut PortControl<'_, '_>,
+        message: Message<'_>,
+    ) -> Result<(), HandleMessageError> {
+        if let Some(err) = &self.failed {
+            return Err(HandleMessageError::new(err.clone()));
         }
-        match message.parse::<QuotaMessage>() {
-            Ok(message) => {
-                if self.remaining_bytes == 0 || self.remaining_messages == 0 {
-                    if let Some(waker) = self.waker.take() {
-                        control.wake(waker);
-                    }
-                }
-                self.remaining_bytes += message.bytes;
-                self.remaining_messages += message.messages;
+        let message = message.parse::<QuotaMessage>().map_err(|err| {
+            let err = Arc::new(ChannelError::from(err));
+            if self.failed.is_none() {
+                self.failed = Some(err.clone());
             }
-            Err(err) => {
-                if self.failed.is_none() {
-                    self.failed = Some(Arc::new(err.into()));
-                }
+            HandleMessageError::new(err)
+        })?;
+        if self.remaining_bytes == 0 || self.remaining_messages == 0 {
+            if let Some(waker) = self.waker.take() {
+                control.wake(waker);
             }
         }
+        self.remaining_bytes += message.bytes;
+        self.remaining_messages += message.messages;
+        Ok(())
     }
 
-    fn close(&mut self, control: &mut PortControl<'_>) {
+    fn close(&mut self, control: &mut PortControl<'_, '_>) {
         self.closed = true;
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
     }
 
-    fn fail(&mut self, control: &mut PortControl<'_>, err: NodeError) {
+    fn fail(&mut self, control: &mut PortControl<'_, '_>, err: NodeError) {
         self.failed = Some(Arc::new(err.into()));
         if let Some(waker) = self.waker.take() {
             control.wake(waker);
         }
     }
 
-    fn drain(&mut self) -> Vec<Message> {
+    fn drain(&mut self) -> Vec<OwnedMessage> {
         // Send remaining quota as a message to avoid having to synchronize
         // during encoding.
-        vec![Message::new(QuotaMessage {
+        vec![OwnedMessage::new(QuotaMessage {
             bytes: self.remaining_bytes,
             messages: self.remaining_messages,
         })]

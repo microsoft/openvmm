@@ -5,8 +5,6 @@
 //! definitions of data structures according to TDX specification.
 
 #![warn(missing_docs)]
-// UNSAFETY: unsafe needed to make ioctl calls.
-#![allow(unsafe_code)]
 
 pub mod protocol;
 

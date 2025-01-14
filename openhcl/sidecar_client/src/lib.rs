@@ -6,7 +6,7 @@
 //! The client interface to the sidecar kernel driver.
 
 // UNSAFETY: Manually mapping memory for the sidecar kernel and calling ioctls.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 #![warn(missing_docs)]
 
 use fs_err::os::unix::fs::OpenOptionsExt;
@@ -572,7 +572,7 @@ impl<'a> SidecarVp<'a> {
             match &mut *vp {
                 VpState::Stopped => unreachable!(),
                 VpState::Running(waker) => {
-                    if !waker.as_ref().map_or(false, |w| cx.waker().will_wake(w)) {
+                    if waker.as_ref().is_none_or(|w| !cx.waker().will_wake(w)) {
                         *waker = Some(cx.waker().clone());
                     }
                     Poll::Pending

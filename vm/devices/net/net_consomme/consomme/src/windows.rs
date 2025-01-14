@@ -3,7 +3,7 @@
 
 #![cfg(windows)]
 // UNSAFETY: Calling Win32 APIs to set TCP initial RTO.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use socket2::Socket;
 use std::os::windows::io::AsRawSocket;
