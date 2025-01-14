@@ -618,7 +618,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -628,7 +628,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -636,7 +636,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -741,7 +741,213 @@ jobs:
       run: flowey.exe e 10 flowey_lib_common::cache 4
       shell: bash
     - run: |
+<<<<<<< HEAD
         flowey.exe v 10 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar4 --is-raw-string
+=======
+        flowey.exe v 1 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar1 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar1'
+    - run: |
+        flowey.exe v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar2'
+    - id: flowey_lib_common__cache__1
+      uses: actions/cache@v4
+      with:
+        key: ${{ env.floweyvar1 }}
+        path: ${{ env.floweyvar2 }}
+      name: 'Restore cache: gh-release-download'
+    - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+      shell: flowey.exe v 1 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
+      name: 🌼 Read from 'steps.flowey_lib_common__cache__1.outputs.cache-hit'
+    - name: map Github cache-hit to flowey
+      run: flowey.exe e 1 flowey_lib_common::cache 2
+      shell: bash
+    - name: download artifacts from github releases
+      run: flowey.exe e 1 flowey_lib_common::download_gh_release 1
+      shell: bash
+    - name: unpack protoc
+      run: flowey.exe e 1 flowey_lib_common::download_protoc 0
+      shell: bash
+    - name: report openvmm magicpath dir
+      run: flowey.exe e 1 flowey_lib_hvlite::cfg_openvmm_magicpath 0
+      shell: bash
+    - name: symlink protoc
+      run: flowey.exe e 1 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
+      shell: bash
+    - name: install Rust
+      run: flowey.exe e 1 flowey_lib_common::install_rust 0
+      shell: bash
+    - name: unpack Microsoft.WSL.LxUtil.x64.zip
+      run: flowey.exe e 1 flowey_lib_hvlite::download_lxutil 0
+      shell: bash
+    - name: move lxutil.dll into its magic folder
+      run: flowey.exe e 1 flowey_lib_hvlite::init_openvmm_magicpath_lxutil 0
+      shell: bash
+    - name: detect active toolchain
+      run: flowey.exe e 1 flowey_lib_common::install_rust 1
+      shell: bash
+    - name: report common cargo flags
+      run: flowey.exe e 1 flowey_lib_common::cfg_cargo_common_flags 0
+      shell: bash
+    - name: construct cargo doc command
+      run: flowey.exe e 1 flowey_lib_common::run_cargo_doc 0
+      shell: bash
+    - name: document repo for target x86_64-pc-windows-msvc
+      run: flowey.exe e 1 flowey_lib_hvlite::build_rustdoc 0
+      shell: bash
+    - name: archive rustdoc dir
+      run: flowey.exe e 1 flowey_lib_hvlite::artifact_rustdoc::publish 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 1 flowey_lib_hvlite::artifact_rustdoc::publish 1
+      shell: bash
+    - name: copying rustdoc to artifact dir
+      run: flowey.exe e 1 flowey_lib_common::copy_to_artifact_dir 0
+      shell: bash
+    - name: 'validate cache entry: gh-release-download'
+      run: flowey.exe e 1 flowey_lib_common::cache 3
+      shell: bash
+    - name: 🌼📦 Publish x64-windows-rustdoc
+      uses: actions/upload-artifact@v4
+      with:
+        name: x64-windows-rustdoc
+        path: ${{ runner.temp }}/publish_artifacts/x64-windows-rustdoc/
+  job10:
+    name: build artifacts [x64-linux]
+    runs-on:
+    - self-hosted
+    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
+    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    permissions:
+      contents: read
+      id-token: write
+    if: github.event.pull_request.draft == false
+    steps:
+    - run: echo "injected!"
+      name: 🌼🥾 Bootstrap flowey
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
+        . "$HOME/.cargo/env"
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        rustup show
+      if: runner.os == 'Linux'
+      name: rustup (Linux)
+      shell: bash
+    - run: |
+        set -x
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
+        ./rustup-init.exe -y --default-toolchain=1.84.0
+        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+      if: runner.os == 'Windows' && runner.arch == 'X64'
+      name: rustup (Windows X64)
+      shell: bash
+    - run: |
+        set -x
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
+        ./rustup-init.exe -y --default-toolchain=1.84.0
+        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      name: rustup (Windows ARM64)
+      shell: bash
+    - uses: actions/checkout@v4
+      with:
+        path: flowey_bootstrap
+    - name: Build flowey
+      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Stage flowey artifact
+      run: |
+        mkdir ./flowey_bootstrap_temp
+        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Copy flowey artifact
+      run: |
+        OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+        mkdir -p $OutDirNormal
+        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Cleanup staged flowey artifact
+      run: rm -rf ./flowey_bootstrap_temp
+      working-directory: flowey_bootstrap
+      shell: bash
+    - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
+      shell: bash
+      name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
+    - name: 🌼🛫 Initialize job
+      run: |
+        AgentTempDirNormal="${{ runner.temp }}"
+        AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+        echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
+
+        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey
+
+        echo '"debug"' | flowey v 10 'FLOWEY_LOG' --update-from-stdin
+        echo "${{ runner.temp }}/work" | flowey v 10 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
+
+        cat <<'EOF' | flowey v 10 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        EOF
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-guest_test_uefi"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-guest_test_uefi" | flowey v 10 'artifact_publish_from_x64-guest_test_uefi' --update-from-stdin --is-raw-string
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-igvmfilegen"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-linux-igvmfilegen" | flowey v 10 'artifact_publish_from_x64-linux-igvmfilegen' --update-from-stdin --is-raw-string
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-ohcldiag-dev"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-linux-ohcldiag-dev" | flowey v 10 'artifact_publish_from_x64-linux-ohcldiag-dev' --update-from-stdin --is-raw-string
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-openvmm"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-linux-openvmm" | flowey v 10 'artifact_publish_from_x64-linux-openvmm' --update-from-stdin --is-raw-string
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-vmgs_lib"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-linux-vmgs_lib" | flowey v 10 'artifact_publish_from_x64-linux-vmgs_lib' --update-from-stdin --is-raw-string
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-vmgstool"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-linux-vmgstool" | flowey v 10 'artifact_publish_from_x64-linux-vmgstool' --update-from-stdin --is-raw-string
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-vmm-tests-archive"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-linux-vmm-tests-archive" | flowey v 10 'artifact_publish_from_x64-linux-vmm-tests-archive' --update-from-stdin --is-raw-string
+      shell: bash
+    - name: install Rust
+      run: flowey e 10 flowey_lib_common::install_rust 0
+      shell: bash
+    - name: detect active toolchain
+      run: flowey e 10 flowey_lib_common::install_rust 1
+      shell: bash
+    - name: report common cargo flags
+      run: flowey e 10 flowey_lib_common::cfg_cargo_common_flags 0
+      shell: bash
+    - name: checking if packages need to be installed
+      run: flowey e 10 flowey_lib_common::install_dist_pkg 0
+      shell: bash
+    - name: installing packages
+      run: flowey e 10 flowey_lib_common::install_dist_pkg 1
+      shell: bash
+    - name: create gh-release-download cache dir
+      run: flowey e 10 flowey_lib_common::download_gh_release 0
+      shell: bash
+    - name: Pre-processing cache vars
+      run: flowey e 10 flowey_lib_common::cache 4
+      shell: bash
+    - run: |
+        flowey v 10 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar3 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar3'
+    - run: |
+        flowey v 10 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
+>>>>>>> fe6466b (Update repo to Rust 1.84 (#659))
       shell: bash
       name: 🌼 Write to 'floweyvar4'
     - run: |
@@ -5838,7 +6044,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -5848,7 +6054,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -5856,7 +6062,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -7873,7 +8079,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -7883,7 +8089,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -7891,7 +8097,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
