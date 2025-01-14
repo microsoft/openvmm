@@ -10,6 +10,7 @@ use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
+use flowey_core::node::GhVarState;
 use flowey_core::node::NodeHandle;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -599,8 +600,8 @@ pub(crate) enum Step {
         >,
     },
     GitHubYaml {
-        gh_to_rust: Vec<(String, String, bool, bool)>,
-        rust_to_gh: Vec<(String, String, bool, bool)>,
+        gh_to_rust: Vec<GhVarState>,
+        rust_to_gh: Vec<GhVarState>,
         label: String,
         step_id: String,
         uses: String,
@@ -781,8 +782,8 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
         condvar: Option<String>,
         outputs: BTreeMap<String, Vec<(String, bool, bool)>>,
         permissions: BTreeMap<GhPermission, GhPermissionValue>,
-        mut gh_to_rust: Vec<(String, String, bool, bool)>,
-        mut rust_to_gh: Vec<(String, String, bool, bool)>,
+        mut gh_to_rust: Vec<GhVarState>,
+        mut rust_to_gh: Vec<GhVarState>,
     ) {
         let mut fresh_yaml_var = || {
             *self.yaml_var_ordinal += 1;
@@ -803,15 +804,15 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
                 ClaimedGhParam::Static(v) => (k, v),
                 ClaimedGhParam::GhVar(v) => (k, format!("${{{{ {} }}}}", v.as_raw_var_name())),
                 ClaimedGhParam::FloweyVar(v) => {
-                    let (backing_var, is_secret, is_object) = read_var_internals(&v);
+                    let (backing_var, is_secret) = read_var_internals(&v);
                     let backing_var = backing_var.unwrap();
                     let new_gh_var_name = fresh_yaml_var();
-                    rust_to_gh.push((
-                        backing_var.clone(),
-                        new_gh_var_name.clone(),
+                    rust_to_gh.push(GhVarState {
+                        backing_var: backing_var.clone(),
+                        raw_name: new_gh_var_name.clone(),
+                        is_object: false,
                         is_secret,
-                        is_object,
-                    ));
+                    });
                     (k, format!("${{{{ env.{} }}}}", new_gh_var_name))
                 }
             })
@@ -820,7 +821,12 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
         for (name, output_vars) in outputs {
             for output in output_vars {
                 let gh_context_var_name = format!("steps.{step_id}.outputs.{name}");
-                gh_to_rust.push((gh_context_var_name, output.0, output.1, output.2));
+                gh_to_rust.push(GhVarState {
+                    backing_var: output.0,
+                    raw_name: gh_context_var_name,
+                    is_secret: output.1,
+                    is_object: output.2,
+                });
             }
         }
 

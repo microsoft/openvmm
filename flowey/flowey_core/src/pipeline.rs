@@ -821,7 +821,6 @@ impl PipelineJobCtx<'_> {
         crate::node::thin_air_write_runtime_var(
             format!("start{}", self.pipeline.dummy_done_idx),
             false,
-            false,
         )
     }
 
@@ -834,7 +833,6 @@ impl PipelineJobCtx<'_> {
 
         crate::node::thin_air_read_runtime_var(
             consistent_artifact_runtime_var_name(&self.pipeline.artifacts[artifact.idx].name, true),
-            false,
             false,
         )
     }
@@ -854,7 +852,6 @@ impl PipelineJobCtx<'_> {
                 false,
             ),
             false,
-            false,
         )
     }
 
@@ -873,7 +870,6 @@ impl PipelineJobCtx<'_> {
                 .parameter
                 .name()
                 .to_string(),
-            false,
             false,
         )
     }
