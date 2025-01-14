@@ -46,7 +46,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.82"
+rust-version = "1.84"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
@@ -581,7 +581,10 @@ unused_qualifications = "warn"
 
 # Code that needs unsafe should opt-in via a module-scoped allow.
 unsafe_code = "deny"
-unsafe_op_in_unsafe_fn = "warn"
+unsafe_op_in_unsafe_fn = "forbid"
+
+# TODO: Needed for xshell compatibility, fixed in v0.2.7
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(trick_rust_analyzer_into_highlighting_interpolated_bits)'] }
 
 [workspace.lints.clippy]
 dbg_macro = "warn"
