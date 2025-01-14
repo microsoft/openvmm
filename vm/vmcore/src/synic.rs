@@ -27,15 +27,15 @@ pub trait EventPort: Send + Sync {
 }
 
 #[derive(Debug, Error)]
-#[error(transparent)]
+#[error("hypervisor error")]
 pub struct HypervisorError(#[from] pub Box<dyn std::error::Error + Send + Sync>);
 
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("connection ID in use: {0}")]
     ConnectionIdInUse(u32),
-    #[error("hypervisor error")]
-    Hypervisor(#[source] HypervisorError),
+    #[error(transparent)]
+    Hypervisor(HypervisorError),
 }
 
 /// Trait for accessing partition's synic ports.
