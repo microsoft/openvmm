@@ -259,7 +259,7 @@ enum EmulationError<E> {
     #[error("linear IP was not within CS segment limit")]
     LinearIpPastCsLimit,
     #[error("failed to flush the emulator cache")]
-    CacheFlushFailed(E),
+    CacheFlushFailed(#[source] E),
     #[error("failed to read instruction stream")]
     InstructionRead(#[source] E),
     #[error("emulator error (instruction {bytes:02x?})")]
