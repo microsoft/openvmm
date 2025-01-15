@@ -5,13 +5,13 @@
 
 use self::steps::ado::AdoRuntimeVar;
 use self::steps::ado::AdoStepServices;
-use self::steps::github::GhContextVar;
-use self::steps::github::GhParam;
 use self::steps::github::GhStepBuilder;
 use self::steps::rust::RustRuntimeServices;
 use self::user_facing::ClaimedGhParam;
 use self::user_facing::GhPermission;
 use self::user_facing::GhPermissionValue;
+use crate::github_context::GhContextVarReader;
+use crate::github_context::GhVarState;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
@@ -19,6 +19,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use user_facing::GhParam;
 
 /// Node types which are considered "user facing", and re-exported in the
 /// `flowey` crate.
@@ -193,8 +194,8 @@ pub enum VarClaimed {}
 /// is possible to infer what order steps must be run in.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WriteVar<T: Serialize + DeserializeOwned, C = VarNotClaimed> {
-    backing_var: String,
-    is_secret: bool,
+    pub backing_var: String,
+    pub is_secret: bool,
 
     #[serde(skip)]
     _kind: core::marker::PhantomData<(T, C)>,
@@ -812,7 +813,7 @@ impl std::fmt::Display for FlowArch {
 
 /// Context object for an individual step.
 pub struct StepCtx<'a> {
-    backend: Rc<RefCell<&'a mut dyn NodeCtxBackend>>,
+    pub backend: Rc<RefCell<&'a mut dyn NodeCtxBackend>>,
 }
 
 impl StepCtx<'_> {
@@ -835,101 +836,7 @@ const NO_ADO_INLINE_SCRIPT: Option<
 
 /// Context object for a `FlowNode`.
 pub struct NodeCtx<'a> {
-    backend: Rc<RefCell<&'a mut dyn NodeCtxBackend>>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Head {
-    #[serde(rename = "ref")]
-    pub head_ref: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct GhContextVarReaderEventPullRequest {
-    pub head: Head,
-}
-
-mod ghvarstate {
-    pub enum Root {}
-    pub enum Event {}
-}
-
-#[derive(Clone)]
-pub struct GhVarState {
-    pub raw_name: String,
-    pub backing_var: String,
-    pub is_secret: bool,
-    pub is_object: bool,
-}
-
-pub struct GhContextVarReader<'a, S> {
-    ctx: NodeCtx<'a>,
-    _state: std::marker::PhantomData<S>,
-}
-
-impl<'a> GhContextVarReader<'a, ghvarstate::Root> {
-    pub fn global(&self, gh_var: GhContextVar) -> ReadVar<String> {
-        let (var, write_var) = self.ctx.new_maybe_secret_var(gh_var.is_secret(), "");
-        let write_var = write_var.claim(&mut StepCtx {
-            backend: self.ctx.backend.clone(),
-        });
-        let var_state = GhVarState {
-            raw_name: gh_var.as_raw_var_name(),
-            backing_var: write_var.backing_var,
-            is_secret: write_var.is_secret,
-            is_object: false,
-        };
-        let gh_to_rust = vec![var_state];
-
-        self.ctx.backend.borrow_mut().on_emit_gh_step(
-            &format!("🌼 read {}", gh_var.as_raw_var_name()),
-            "",
-            BTreeMap::new(),
-            None,
-            BTreeMap::new(),
-            BTreeMap::new(),
-            gh_to_rust,
-            Vec::new(),
-        );
-        var
-    }
-
-    pub fn event(self) -> GhContextVarReader<'a, ghvarstate::Event> {
-        GhContextVarReader {
-            ctx: self.ctx,
-            _state: std::marker::PhantomData,
-        }
-    }
-}
-
-impl GhContextVarReader<'_, ghvarstate::Event> {
-    pub fn pull_request(self) -> ReadVar<Option<GhContextVarReaderEventPullRequest>> {
-        let var_name = "github.event.pull_request".to_string();
-        let (var, write_var) = self.ctx.new_var();
-        let write_var = write_var.claim(&mut StepCtx {
-            backend: self.ctx.backend.clone(),
-        });
-        let var_state = GhVarState {
-            raw_name: var_name.clone(),
-            backing_var: write_var.backing_var,
-            is_secret: write_var.is_secret,
-            is_object: true,
-        };
-
-        let gh_to_rust = vec![var_state];
-
-        self.ctx.backend.borrow_mut().on_emit_gh_step(
-            &format!("🌼 read {}", var_name),
-            "",
-            BTreeMap::new(),
-            None,
-            BTreeMap::new(),
-            BTreeMap::new(),
-            gh_to_rust,
-            Vec::new(),
-        );
-        var
-    }
+    pub backend: Rc<RefCell<&'a mut dyn NodeCtxBackend>>,
 }
 
 impl<'ctx> NodeCtx<'ctx> {
@@ -1152,7 +1059,7 @@ impl<'ctx> NodeCtx<'ctx> {
     /// Load a GitHub context variable into a flowey [`ReadVar`].
     #[track_caller]
     #[must_use]
-    pub fn get_gh_context_var(&mut self) -> GhContextVarReader<'ctx, ghvarstate::Root> {
+    pub fn get_gh_context_var(&mut self) -> GhContextVarReader<'ctx, crate::github_context::Root> {
         GhContextVarReader {
             ctx: NodeCtx {
                 backend: self.backend.clone(),
@@ -1359,7 +1266,7 @@ impl<'ctx> NodeCtx<'ctx> {
 
     #[track_caller]
     #[must_use]
-    fn new_maybe_secret_var<T>(
+    pub fn new_maybe_secret_var<T>(
         &self,
         is_secret: bool,
         prefix: &'static str,

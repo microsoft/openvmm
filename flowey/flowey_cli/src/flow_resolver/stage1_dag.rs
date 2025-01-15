@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use anyhow::Context;
+use flowey_core::github_context::GhVarState;
 use flowey_core::node::read_var_internals;
 use flowey_core::node::steps::rust::RustRuntimeServices;
 use flowey_core::node::user_facing::ClaimedGhParam;
@@ -10,7 +11,6 @@ use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
-use flowey_core::node::GhVarState;
 use flowey_core::node::NodeHandle;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
