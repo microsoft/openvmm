@@ -21,11 +21,7 @@ struct StaticParams {
 }
 
 fn do_fuzz(static_params: StaticParams) -> arbitrary::Result<()> {
-    let StaticParams {
-        cpu,
-        vendor,
-        code,
-    } = static_params;
+    let StaticParams { cpu, vendor, code } = static_params;
 
     let mut emu = Emulator::new(cpu, vendor, &code);
     emu.run().now_or_never().unwrap().or_else(|e| {

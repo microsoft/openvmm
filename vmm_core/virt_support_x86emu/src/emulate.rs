@@ -383,7 +383,7 @@ pub async fn emulate<T: EmulatorSupport>(
 
     if let Err(e) = cpu.support.flush() {
         return Err(VpHaltReason::EmulationFailure(
-            EmulationError::<T::Error>::CacheFlushFailed(e).into()
+            EmulationError::<T::Error>::CacheFlushFailed(e).into(),
         ));
     }
 
@@ -1036,7 +1036,7 @@ pub fn emulate_mnf_write_fast_path<T: EmulatorSupport>(
         Ok(_) => Ok(bit),
         Err(e) => {
             return Err(VpHaltReason::EmulationFailure(
-                EmulationError::<T::Error>::CacheFlushFailed(e).into()
+                EmulationError::<T::Error>::CacheFlushFailed(e).into(),
             ));
         }
     }

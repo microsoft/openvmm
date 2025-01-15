@@ -1436,7 +1436,7 @@ impl UhProcessor<'_, SnpBacked> {
 impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
     type Error = UhRunVpError;
 
-    fn flush(&mut self) -> Result<(), Self::Error>{
+    fn flush(&mut self) -> Result<(), Self::Error> {
         Ok(())
         //AMD SNP does not require an emulation cache
     }

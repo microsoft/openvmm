@@ -179,7 +179,6 @@ impl EmulatorSupport for MockSupport {
     }
     fn set_gp(&mut self, reg: Gp, v: u64) {
         self.state.gps[reg as usize] = v;
-
     }
     fn rip(&mut self) -> u64 {
         self.state.rip

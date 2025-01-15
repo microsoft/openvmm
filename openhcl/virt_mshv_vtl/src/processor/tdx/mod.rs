@@ -2294,14 +2294,14 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
     }
 
     fn efer(&mut self) -> u64 {
-        self.vp.backing.efer
+        self.vp.backing.vtls[self.vtl].efer
     }
 
     fn cr0(&mut self) -> u64 {
         let reg = self
             .cache
             .cr0
-            .get_or_insert_with(|| self.vp.backing.cr0.read(&self.vp.runner));
+            .get_or_insert_with(|| self.vp.backing.vtls[self.vtl].cr0.read(&self.vp.runner));
         (*reg).into()
     }
 

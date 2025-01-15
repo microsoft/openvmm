@@ -5,9 +5,9 @@ use arbitrary::Arbitrary;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
 use x86emu::Cpu;
-use x86emu::Segment;
-use x86emu::RegisterIndex;
 use x86emu::CpuState;
+use x86emu::RegisterIndex;
+use x86emu::Segment;
 
 #[derive(Debug, Arbitrary)]
 pub(crate) struct FuzzerCpu {
