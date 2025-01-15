@@ -731,7 +731,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                 dev,
                 interruption_pending,
                 tlb_lock_held,
-            ) {
+            )? {
                 if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
                     signal_mnf(dev, connection_id);
                 }
@@ -1306,7 +1306,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX86> {
     type Error = UhRunVpError;
 
-    fn flush(&mut self) {
+    fn flush(&mut self) -> Result<(), Self::Error> {
         self.vp
             .runner
             .set_vp_registers(
@@ -1318,6 +1318,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
                 ],
             )
             .unwrap();
+        Ok(())
     }
 
     fn vp_index(&self) -> VpIndex {

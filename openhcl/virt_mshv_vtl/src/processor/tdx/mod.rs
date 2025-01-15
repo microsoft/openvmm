@@ -2234,13 +2234,14 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         self.vp.vp_index()
     }
 
-    fn flush(&mut self) {
+    fn flush(&mut self) -> Result<(), Self::Error> {
         // no cached registers are modifiable by the emulator for TDX
+        Ok(())
     }
 
     fn vendor(&self) -> x86defs::cpuid::Vendor {
-        if self.vtl != Vtl::Vtl0 {
-            unsupported!("tdx: emulation is only supported for vtl0")
+        if self.vtl != GuestVtl::Vtl0 {
+            unimplemented!("tdx: emulation is only supported for vtl0")
         }
         self.vp.partition.caps.vendor
     }

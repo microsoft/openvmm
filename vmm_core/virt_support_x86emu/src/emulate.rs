@@ -19,7 +19,6 @@ use x86defs::Exception;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
 use x86emu::Gp;
-use x86emu::GpSize;
 use x86emu::RegisterIndex;
 use x86emu::Segment;
 use zerocopy::AsBytes;
@@ -70,7 +69,7 @@ pub trait EmulatorSupport {
     fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error>;
 
     /// Flush registers in the emulation cache to the backing
-    fn flush(&mut self);
+    fn flush(&mut self) -> Result<(), Self::Error>;
 
     /// The instruction bytes, if available.
     fn instruction_bytes(&self) -> &[u8];
@@ -259,6 +258,8 @@ enum EmulationError<E> {
     InterruptionPending,
     #[error("linear IP was not within CS segment limit")]
     LinearIpPastCsLimit,
+    #[error("failed to flush the emulator cache")]
+    CacheFlushFailed(E),
     #[error("failed to read instruction stream")]
     InstructionRead(#[source] E),
     #[error("emulator error (instruction {bytes:02x?})")]
@@ -380,7 +381,11 @@ pub async fn emulate<T: EmulatorSupport>(
         break res;
     };
 
-    cpu.support.flush();
+    if let Err(e) = cpu.support.flush() {
+        return Err(VpHaltReason::EmulationFailure(
+            EmulationError::<T::Error>::CacheFlushFailed(e).into()
+        ));
+    }
 
     // If the alignment check flag is not in sync with the hypervisor because the instruction emulator
     // modifies internally, then the appropriate SMAP enforcement flags need to be passed to the hypervisor
@@ -1012,11 +1017,11 @@ pub fn emulate_mnf_write_fast_path<T: EmulatorSupport>(
     dev: &impl CpuIo,
     interruption_pending: bool,
     tlb_lock_held: bool,
-) -> Option<u32> {
+) -> Result<Option<u32>, VpHaltReason<T::Error>> {
     let mut cpu = EmulatorCpu::new(gm, dev, support);
     let instruction_bytes = cpu.support.instruction_bytes();
     if interruption_pending || !tlb_lock_held || instruction_bytes.is_empty() {
-        return None;
+        return Ok(None);
     }
     let mut bytes = [0; 16];
     let valid_bytes;
@@ -1027,6 +1032,12 @@ pub fn emulate_mnf_write_fast_path<T: EmulatorSupport>(
     }
     let instruction_bytes = &bytes[..valid_bytes];
     let bit = x86emu::fast_path::emulate_fast_path_set_bit(instruction_bytes, &mut cpu);
-    support.flush();
-    bit
+    match support.flush() {
+        Ok(_) => Ok(bit),
+        Err(e) => {
+            return Err(VpHaltReason::EmulationFailure(
+                EmulationError::<T::Error>::CacheFlushFailed(e).into()
+            ));
+        }
+    }
 }

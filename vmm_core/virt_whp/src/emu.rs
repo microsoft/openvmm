@@ -117,8 +117,9 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
         Ok(())
     }
 
-    fn flush(&mut self) {
-        let _ = self.vp.set_emulator_state(&self.cache);
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        self.vp.set_emulator_state(&self.cache)?;
+        Ok(())
     }
 
     /// Check if the given gpa is accessible by the current VTL.

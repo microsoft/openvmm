@@ -652,7 +652,7 @@ impl MshvProcessor<'_> {
         }
     }
 
-    fn emulation_cache(&self) -> x86emu::CpuState {
+    fn emulation_cache(&self) -> Result<x86emu::CpuState, Self::Error> {
         let regs = self.inner.vcpufd.get_regs().unwrap();
         let gps = [
             regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
@@ -767,7 +767,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         Ok(())
     }
 
-    fn flush(&mut self) {
+    fn flush(&mut self) -> Result<(), Self::Error> {
         let arr_reg_name_value = [
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_RIP,
@@ -843,7 +843,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
             ),
         ];
 
-        let _ = set_registers_64!(self.processor.vcpufd, arr_reg_name_value);
+        set_registers_64!(self.processor.vcpufd, arr_reg_name_value)?
     }
 
     fn instruction_bytes(&self) -> &[u8] {

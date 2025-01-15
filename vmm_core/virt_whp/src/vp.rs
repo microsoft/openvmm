@@ -920,7 +920,7 @@ mod x86 {
                         dev,
                         interruption_pending,
                         gva_valid,
-                    ) {
+                    )? {
                         if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
                             self.signal_mnf(dev, connection_id);
                         }
