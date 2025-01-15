@@ -1853,6 +1853,11 @@ pub mod steps {
         ///
         /// Includes a (non-exhaustive) list of associated constants
         /// corresponding to global GitHub vars which are _always_ available.
+        ///
+
+        // TODO: This shouldn't be extended further and instead should be refactored to be removed.
+        // These member variables and associated logic can be moved to GhContextVarReader to
+        // encode the correct behavior on a per-context variable basis.
         #[derive(Serialize, Deserialize, Clone, Debug)]
         pub struct GhContextVar {
             is_secret: bool,
