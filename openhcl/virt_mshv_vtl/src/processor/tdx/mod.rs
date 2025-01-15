@@ -2239,6 +2239,9 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
     }
 
     fn vendor(&self) -> x86defs::cpuid::Vendor {
+        if self.vtl != Vtl::Vtl0 {
+            unsupported!("tdx: emulation is only supported for vtl0")
+        }
         self.vp.partition.caps.vendor
     }
 
@@ -2360,7 +2363,6 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         _gpa: u64,
         _mode: TranslateMode,
     ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
-        // TODO TDX GUEST VSM: VTL1 not supported
         // Lock Vtl TLB
         Ok(())
     }
