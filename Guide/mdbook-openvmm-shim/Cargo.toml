@@ -3,12 +3,8 @@
 
 [package]
 name = "mdbook-openvmm-shim"
-edition = "2021"
-
-[dependencies]
-
-
-[workspace.lints]
+edition.workspace = true
+rust-version.workspace = true
 
 [lints]
 workspace = true
@@ -16,6 +12,3 @@ workspace = true
 [package.metadata.xtask.house-rules]
 # emits a binary, where kebab-case is more natural
 allow-dash-in-name = true
-# no deps on any remotely recent Rust features. avoids the need to keep this
-# rust-version in-sync with the main repo's
-allow-missing-rust-version = true
