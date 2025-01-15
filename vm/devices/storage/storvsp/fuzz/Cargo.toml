@@ -11,6 +11,7 @@ rust-version.workspace = true
 anyhow.workspace = true
 arbitrary = { workspace = true, features = ["derive"] }
 disklayer_ram.workspace = true
+futures.workspace = true
 guestmem.workspace = true
 pal_async.workspace = true
 scsi_defs = {workspace = true, features = ["arbitrary"]}

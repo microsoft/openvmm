@@ -83,7 +83,7 @@ use zerocopy::FromZeroes;
 
 /// Error returned by HCL operations.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum Error {
     #[error("failed to open mshv device")]
     OpenMshv(#[source] io::Error),
@@ -151,7 +151,7 @@ pub struct IoctlError(#[source] pub(crate) nix::Error);
 
 /// Error returned when issuing hypercalls.
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum HypercallError {
     #[error("hypercall failed with {0:?}")]
     Hypervisor(HvError),
@@ -173,7 +173,7 @@ impl HypercallError {
 
 /// Errors when issuing hypercalls via the kernel direct interface.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum HvcallError {
     #[error("kernel rejected the hypercall, most likely due to the hypercall code not being allowed via set_allowed_hypercalls")]
     HypercallIoctlFailed(#[source] nix::Error),
@@ -188,7 +188,7 @@ pub enum HvcallError {
 /// Error applying VTL protections.
 // TODO: move to `underhill_mem`.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum ApplyVtlProtectionsError {
     #[error(
         "hypervisor returned {output:?} error {hv_error:?} when protecting pages {range} for vtl {vtl:?}"
@@ -223,7 +223,7 @@ pub enum ApplyVtlProtectionsError {
 
 /// Error setting guest VSM configuration.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum SetGuestVsmConfigError {
     #[error(
         "hypervisor returned error {hv_error:?} when configuring guest vsm {enable_guest_vsm:?}"
@@ -236,7 +236,7 @@ pub enum SetGuestVsmConfigError {
 
 /// Error getting the VP idnex from an APIC ID.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum GetVpIndexFromApicIdError {
     #[error("hypervisor returned error {hv_error:?} when querying vp index for {apic_id}")]
     Hypervisor { hv_error: HvError, apic_id: u32 },
@@ -244,7 +244,7 @@ pub enum GetVpIndexFromApicIdError {
 
 /// Error setting VSM partition configuration.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum SetVsmPartitionConfigError {
     #[error(
         "hypervisor returned error {hv_error:?} when configuring vsm partition config {config:?}"
@@ -257,7 +257,7 @@ pub enum SetVsmPartitionConfigError {
 
 /// Error translating a GVA to a GPA.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum TranslateGvaToGpaError {
     #[error("hypervisor returned error {hv_error:?} on gva {gva:x}")]
     Hypervisor { gva: u64, hv_error: HvError },
@@ -281,7 +281,7 @@ pub struct CheckVtlAccessResult {
 /// Error accepting pages.
 // TODO: move to `underhill_mem`.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum AcceptPagesError {
     #[error("hypervisor returned {output:?} error {hv_error:?} when accepting pages {range}")]
     Hypervisor {

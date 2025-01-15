@@ -9,6 +9,7 @@ use crate::bus::OfferInput;
 use crate::bus::OfferParams;
 use crate::bus::OfferResources;
 use crate::bus::OpenRequest;
+use crate::bus::OpenResult;
 use crate::bus::ParentBus;
 use crate::gpadl::GpadlMap;
 use crate::gpadl::GpadlMapView;
@@ -70,7 +71,6 @@ impl Offer {
         let result = bus
             .add_child(OfferInput {
                 params: offer_params,
-                event: Interrupt::from_event(event.clone()),
                 request_send,
                 server_request_recv,
             })
@@ -181,7 +181,9 @@ impl Offer {
             channel,
             gpadl_map: self.gpadl_map.clone(),
         };
-        message.response.respond(true);
+        message.response.respond(Some(OpenResult {
+            guest_to_host_interrupt: self.event.clone().interrupt(),
+        }));
         Ok(resources)
     }
 
@@ -220,18 +222,18 @@ struct OpenMessage {
     response: OpenResponse,
 }
 
-struct OpenResponse(Option<Rpc<(), bool>>);
+struct OpenResponse(Option<Rpc<(), Option<OpenResult>>>);
 
 impl OpenResponse {
-    fn respond(mut self, open: bool) {
-        self.0.take().unwrap().complete(open)
+    fn respond(mut self, result: Option<OpenResult>) {
+        self.0.take().unwrap().complete(result)
     }
 }
 
 impl Drop for OpenResponse {
     fn drop(&mut self) {
         if let Some(rpc) = self.0.take() {
-            rpc.complete(false);
+            rpc.complete(None);
         }
     }
 }

@@ -314,7 +314,7 @@ enum ReservedMemoryType {
 fn reserved_memory_regions(
     partition_info: &PartitionInfo,
     sidecar: Option<&SidecarConfig<'_>>,
-) -> OffStackRef<'static, impl AsRef<[(MemoryRange, ReservedMemoryType)]>> {
+) -> OffStackRef<'static, impl AsRef<[(MemoryRange, ReservedMemoryType)]> + use<>> {
     let mut reserved = off_stack!(ArrayVec<(MemoryRange, ReservedMemoryType), MAX_RESERVED_MEM_RANGES>, ArrayVec::new_const());
     reserved.clear();
     reserved.extend(

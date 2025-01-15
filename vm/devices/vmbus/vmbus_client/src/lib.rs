@@ -221,7 +221,7 @@ impl VmbusClientAccess {
     pub fn connect_hvsock(
         &self,
         request: HvsockConnectRequest,
-    ) -> impl Future<Output = Option<OfferInfo>> {
+    ) -> impl Future<Output = Option<OfferInfo>> + use<> {
         self.client_request_send
             .call(ClientRequest::HvsockConnect, request)
             .map(|r| r.ok().flatten())

@@ -14,7 +14,6 @@ use openssl_kdf::kdf::Kbkdf;
 use thiserror::Error;
 use zerocopy::AsBytes;
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum HardwareDerivedKeysError {
     #[error("failed to initialize hardware secret")]
@@ -23,7 +22,6 @@ pub(crate) enum HardwareDerivedKeysError {
     KdfWithHardwareSecret(#[source] openssl_kdf::kdf::KdfError),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum HardwareKeySealingError {
     #[error("failed to encrypt the egress key")]

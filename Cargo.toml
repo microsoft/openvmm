@@ -49,7 +49,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.82"
+rust-version = "1.84"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
@@ -588,10 +588,8 @@ nonstandard_style = { level = "deny", priority = -2 }
 rust_2018_idioms = { level = "deny", priority = -2 }
 
 rust-2024-compatibility = { level = "warn", priority = -1 }
-# TODO: Fix all of the below, https://github.com/microsoft/openvmm/issues/288
 edition_2024_expr_fragment_specifier = "allow"
-impl_trait_overcaptures = "allow"
-deprecated-safe-2024 = "allow"
+# TODO: Fix all of the below, https://github.com/microsoft/openvmm/issues/288
 tail-expr-drop-order = "allow"
 if-let-rescope = "allow"
 
@@ -603,9 +601,6 @@ unsafe_op_in_unsafe_fn = "forbid"
 
 # TODO: Needed for xshell compatibility, fixed in v0.2.7
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(trick_rust_analyzer_into_highlighting_interpolated_bits)'] }
-
-# TODO: Remove when we update to Rust 1.84, needed for if-let-rescope
-unknown_lints = "allow"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"

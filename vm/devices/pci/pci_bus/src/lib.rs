@@ -40,7 +40,7 @@ use zerocopy::AsBytes;
 use zerocopy::FromZeroes;
 
 /// Standard x86 IO ports associated with PCI
-#[allow(missing_docs)] // self explanatory constants
+#[expect(missing_docs)] // self explanatory constants
 pub mod standard_x86_io_ports {
     pub const ADDR_START: u16 = 0xCF8;
     pub const ADDR_END: u16 = 0xCFB;

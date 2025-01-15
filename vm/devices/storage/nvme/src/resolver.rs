@@ -29,7 +29,7 @@ declare_static_async_resolver! {
 
 /// Error returned by [`NvmeControllerResolver`].
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum Error {
     #[error("failed to resolve namespace {nsid}")]
     NamespaceResolve {
