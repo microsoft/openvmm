@@ -50,6 +50,8 @@ pub trait DeviceBacking: 'static + Send + Inspect {
 
 /// Access to device registers.
 pub trait DeviceRegisterIo: Send + Sync {
+    /// Returns the length of the register space.
+    fn len(&self) -> usize;
     /// Reads a `u32` register.
     fn read_u32(&self, offset: usize) -> u32;
     /// Reads a `u64` register.

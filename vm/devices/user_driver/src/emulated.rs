@@ -21,6 +21,7 @@ use guestmem::GuestMemoryAccess;
 use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
+use pci_core::chipset_device_ext::PciChipsetDeviceExt;
 use pci_core::msi::MsiControl;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
@@ -34,6 +35,7 @@ pub struct EmulatedDevice<T> {
     device: Arc<Mutex<T>>,
     controller: MsiController,
     shared_mem: DeviceSharedMemory,
+    bar0_len: usize,
 }
 
 impl<T: InspectMut> Inspect for EmulatedDevice<T> {
@@ -76,6 +78,9 @@ impl<T: PciConfigSpace + MmioIntercept> EmulatedDevice<T> {
         let controller = MsiController::new(msi_set.len());
         msi_set.connect(&controller);
 
+        let bars = device.probe_bar_masks();
+        let bar0_len = !(bars[0] & !0xf) as usize + 1;
+
         // Enable BAR0 at 0, BAR4 at X.
         device.pci_cfg_write(0x20, 0).unwrap();
         device.pci_cfg_write(0x24, 0x1).unwrap();
@@ -103,6 +108,7 @@ impl<T: PciConfigSpace + MmioIntercept> EmulatedDevice<T> {
             device: Arc::new(Mutex::new(device)),
             controller,
             shared_mem,
+            bar0_len,
         }
     }
 }
@@ -113,6 +119,7 @@ pub struct Mapping<T> {
     #[inspect(skip)]
     device: Arc<Mutex<T>>,
     addr: u64,
+    len: usize,
 }
 
 #[repr(C, align(4096))]
@@ -298,9 +305,13 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
     }
 
     fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers> {
+        if n != 0 {
+            anyhow::bail!("invalid bar {n}");
+        }
         Ok(Mapping {
             device: self.device.clone(),
             addr: (n as u64) << 32,
+            len: self.bar0_len,
         })
     }
 
@@ -326,6 +337,10 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
 }
 
 impl<T: MmioIntercept + Send> DeviceRegisterIo for Mapping<T> {
+    fn len(&self) -> usize {
+        self.len
+    }
+
     fn read_u32(&self, offset: usize) -> u32 {
         let mut n = [0; 4];
         self.device
