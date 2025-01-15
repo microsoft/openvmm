@@ -34,7 +34,7 @@ pub struct Snp {
 
 /// Error returned by failing SNP operations.
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum SnpError {
     #[error("operating system error")]
     Os(#[source] nix::Error),
@@ -44,7 +44,7 @@ pub enum SnpError {
 
 /// Error returned by failing SNP page operations.
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum SnpPageError {
     #[error("pvalidate failed")]
     Pvalidate(#[source] SnpError),

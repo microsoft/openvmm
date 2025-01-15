@@ -364,7 +364,7 @@ impl VmService {
         &self,
         ctx: mesh::CancelContext,
         request: inspect_proto::InspectRequest,
-    ) -> impl Future<Output = anyhow::Result<InspectResponse2>> {
+    ) -> impl Future<Output = anyhow::Result<InspectResponse2>> + use<> {
         let mut inspection = InspectionBuilder::new(&request.path)
             .depth(Some(request.depth as usize))
             .inspect(inspect::adhoc(|req| {
@@ -387,7 +387,7 @@ impl VmService {
         &self,
         ctx: mesh::CancelContext,
         request: inspect_proto::UpdateRequest,
-    ) -> impl Future<Output = anyhow::Result<UpdateResponse2>> {
+    ) -> impl Future<Output = anyhow::Result<UpdateResponse2>> + use<> {
         let update = inspect::update(
             &request.path,
             &request.value,
@@ -603,12 +603,12 @@ impl VmService {
         Ok(())
     }
 
-    fn pause_vm(&mut self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> {
+    fn pause_vm(&mut self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> + use<> {
         let recv = vm.worker_rpc.call(VmRpc::Pause, ());
         async move { recv.await.map(drop).context("pause failed") }
     }
 
-    fn resume_vm(&mut self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> {
+    fn resume_vm(&mut self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> + use<> {
         let recv = vm.worker_rpc.call(VmRpc::Resume, ());
         async move { recv.await.map(drop).context("resume failed") }
     }
@@ -617,7 +617,7 @@ impl VmService {
         &mut self,
         mut ctx: mesh::CancelContext,
         vm: Arc<Vm>,
-    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>>> {
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
         let mut notify_recv = vm
             .notify_recv
             .lock()
@@ -642,7 +642,7 @@ impl VmService {
         &mut self,
         vm: &Vm,
         request: vmservice::ModifyResourceRequest,
-    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>>> {
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
         use vmservice::modify_resource_request::Resource;
         match request.resource.context("missing resource")? {
             Resource::ScsiDisk(disk) => {

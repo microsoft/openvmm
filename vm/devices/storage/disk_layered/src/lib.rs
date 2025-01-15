@@ -83,7 +83,7 @@ impl DiskLayer {
 
 /// Metadata of a particular layer, collected from various [`LayerIo`] APIs.
 #[derive(Clone)]
-#[allow(missing_docs)] // self-explanatory names
+#[expect(missing_docs)] // self-explanatory names
 pub struct DiskLayerMetadata {
     pub disk_id: Option<[u8; 16]>,
     pub sector_size: u32,

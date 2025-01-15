@@ -7,12 +7,12 @@ members = ["xsync"]
 resolver = "2"
 
 [workspace.package]
-rust-version = "1.82"
+rust-version = "1.84"
 
 [workspace.dependencies]
 anyhow = "1.0"
 cargo_toml = "0.20"
-cargo-lock = "9.0.0"
+cargo-lock = "10.0.0"
 clap = "4.2"
 dunce = "1.0.5"
 fs-err = "2.9"

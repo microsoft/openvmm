@@ -45,7 +45,7 @@ use vmcore::vmtime::VmTimeAccess;
 open_enum! {
     /// Power management I/O offsets from base port address
     pub enum DynReg: u8 {
-        #![allow(missing_docs)] // self explanatory constants
+        #![expect(missing_docs)] // self explanatory constants
         STATUS             = 0x00, // two-byte value
         RESUME_ENABLE      = 0x02, // two-byte value
         CONTROL            = 0x04, // two-byte value
@@ -324,7 +324,7 @@ impl PmState {
 }
 
 /// Power action being requested
-#[allow(missing_docs)] // self explanatory variants
+#[expect(missing_docs)] // self explanatory variants
 #[derive(Debug, Copy, Clone)]
 pub enum PowerAction {
     PowerOff,

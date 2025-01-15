@@ -1625,7 +1625,7 @@ fn compute_crc32(buf: &[u8]) -> u32 {
 }
 
 #[cfg(feature = "save_restore")]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub mod save_restore {
     use super::*;
 

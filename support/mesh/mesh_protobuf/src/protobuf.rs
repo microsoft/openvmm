@@ -666,7 +666,7 @@ impl<'a, 'b, R> MessageReader<'a, 'b, R> {
     }
 
     /// Returns an iterator to consume the resources for this message.
-    pub fn take_resources(&mut self) -> impl 'b + ExactSizeIterator<Item = Result<R>> {
+    pub fn take_resources(&mut self) -> impl ExactSizeIterator<Item = Result<R>> + use<'b, R> {
         let state = self.state;
         self.resources.clone().map(move |i| {
             state
