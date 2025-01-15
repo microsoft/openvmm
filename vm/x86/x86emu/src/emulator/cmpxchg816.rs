@@ -7,6 +7,7 @@ use super::InternalError;
 use crate::Cpu;
 use iced_x86::Instruction;
 use iced_x86::Register;
+use crate::Gp;
 
 impl<T: Cpu> Emulator<'_, T> {
     // cmpxchg8/16 rm
@@ -55,14 +56,18 @@ impl<T: Cpu> Emulator<'_, T> {
                 }
                 _ => unreachable!(),
             }?;
-            self.state.rflags.set_zero(true);
+            let mut rflags = self.cpu.rflags();
+            rflags.set_zero(true);
+            self.cpu.set_rflags(rflags);
         } else {
+            let mut rflags = self.cpu.rflags();
+            rflags.set_zero(false);
             let high_val = (left >> (op_size / 2)) as u64;
             let low_val = (left & !(u128::MAX << (op_size / 2))) as u64;
             let (high_reg, low_reg) = RegisterPair::DxAx.to_registers(op_size);
-            self.state.set_gp(high_reg, high_val);
-            self.state.set_gp(low_reg, low_val);
-            self.state.rflags.set_zero(false);
+            self.cpu.set_gp(high_reg, Gp(high_val));
+            self.cpu.set_gp(low_reg, Gp(low_val));
+            self.cpu.set_rflags(rflags);
         }
 
         Ok(())
@@ -70,8 +75,8 @@ impl<T: Cpu> Emulator<'_, T> {
 
     fn get_combined_value(&mut self, op_size: usize, pair: RegisterPair) -> u128 {
         let (high_reg, low_reg) = pair.to_registers(op_size);
-        let high_val = self.state.get_gp(high_reg) as u128;
-        let low_val = self.state.get_gp(low_reg) as u128;
+        let high_val = self.cpu.gp(high_reg).unwrap() as u128;
+        let low_val = self.cpu.gp(low_reg).unwrap() as u128;
         (high_val << (op_size / 2)) | low_val
     }
 }

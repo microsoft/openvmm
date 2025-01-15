@@ -72,7 +72,9 @@ impl<T: Cpu> Emulator<'_, T> {
         }
 
         let carry = val & mask != 0;
-        self.state.rflags.set_carry(carry);
+        let mut rflags = self.cpu.rflags();
+        rflags.set_carry(carry);
+        self.cpu.set_rflags(rflags);
 
         Ok(())
     }
