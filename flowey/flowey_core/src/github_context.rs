@@ -34,7 +34,7 @@ pub struct GhContextVarReader<'a, S> {
     pub _state: std::marker::PhantomData<S>,
 }
 
-impl<'a, S> GhContextVarReader<'a, S> {
+impl<S> GhContextVarReader<'_, S> {
     fn read_var<T: Serialize + DeserializeOwned>(
         &self,
         var_name: String,
