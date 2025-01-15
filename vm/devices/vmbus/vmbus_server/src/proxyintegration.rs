@@ -57,19 +57,22 @@ impl ProxyIntegration {
     }
 
     /// Returns the handle to the vmbus proxy driver.
-    pub fn handle(&self) -> &OwnedHandle {
-        &self.handle
+    pub fn handle(&self) -> BorrowedHandle<'_> {
+        self.handle.as_handle()
     }
 
-    pub(crate) async fn start(
+    /// Starts the vmbus proxy.
+    pub async fn start(
         driver: &(impl SpawnDriver + Clone),
         handle: ProxyHandle,
         server: Arc<VmbusServerControl>,
-        mem: &GuestMemory,
+        mem: Option<&GuestMemory>,
     ) -> io::Result<Self> {
         let mut proxy = VmbusProxy::new(driver, handle)?;
         let handle = proxy.handle().try_clone_to_owned()?;
-        proxy.set_memory(mem).await?;
+        if let Some(mem) = mem {
+            proxy.set_memory(mem).await?;
+        }
 
         let (cancel_ctx, cancel) = CancelContext::new().with_cancel();
         driver
