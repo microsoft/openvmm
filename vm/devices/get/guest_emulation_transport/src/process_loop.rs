@@ -631,7 +631,12 @@ impl HostRequestPipeAccess {
 
     /// Sends a notification to the host.
     ///
-    /// This function does not wait for a response.
+    /// This function does not wait for a response from the host.
+    /// It is specifically designed for scenarios where the host does not send any response.
+    /// One of such scenario is the save failure, where host does not send any response.
+    ///
+    /// In the future, GED notifications for failures need to be added.
+    /// This will require updates to both the host and openHCL.
     async fn send_notification_fixed_size<T: AsBytes + ?Sized>(
         &mut self,
         data: &T,
