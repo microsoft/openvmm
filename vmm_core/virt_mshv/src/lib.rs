@@ -414,9 +414,7 @@ impl MshvProcessor<'_> {
         devices: &impl CpuIo,
         interruption_pending: bool,
     ) -> Result<(), VpHaltReason<MshvRunVpError>> {
-        let cache = self
-            .emulation_cache()
-            .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+        let cache = self.emulation_cache().map_err(VpHaltReason::Hypervisor)?;
         let mut support = MshvEmulationState {
             partition: self.partition,
             processor: self.inner,
@@ -765,7 +763,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
                 name, value,
             )))
         };
-        let _ = self.processor.vcpufd.set_reg(&[reg])?;
+        self.processor.vcpufd.set_reg(&[reg])?;
         Ok(())
     }
 

@@ -2305,7 +2305,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
             .cache
             .cr0
             .get_or_insert_with(|| self.vp.backing.vtls[self.vtl].cr0.read(&self.vp.runner));
-        (*reg).into()
+        *reg
     }
 
     fn rflags(&mut self) -> RFlags {
