@@ -51,12 +51,18 @@ pub fn check_package_info(f: &Path, fix: bool) -> anyhow::Result<()> {
         }
     }
 
-    let Some(package) = parsed.get_mut("package") else {
+    if !parsed.contains_key("package") {
         // workspace root, skip
         return Ok(());
-    };
+    }
 
-    let package = package
+    let mut lints_table = Table::new();
+    lints_table.insert("workspace", Item::Value(true.into()));
+    let old_lints_table = parsed.insert("lints", Item::Table(lints_table.clone()));
+
+    let package = parsed
+        .get_mut("package")
+        .unwrap()
         .as_table_mut()
         .with_context(|| format!("invalid package section in {}", f.display()))?;
 
@@ -74,13 +80,15 @@ pub fn check_package_info(f: &Path, fix: bool) -> anyhow::Result<()> {
     let invalid = package.remove("authors").is_some()
         | package.remove("version").is_some()
         | (!excluded_from_workspace
-            && ((old_rust_version.map(|o| o.to_string()) != Some(rust_version_field.to_string()))
-                | (old_edition_field.map(|o| o.to_string()) != Some(edition_field.to_string()))));
+            && (old_lints_table.map(|o| o.to_string()) != Some(lints_table.to_string()))
+                | (old_rust_version.map(|o| o.to_string())
+                    != Some(rust_version_field.to_string()))
+                | (old_edition_field.map(|o| o.to_string()) != Some(edition_field.to_string())));
 
     if invalid {
         if !fix {
             anyhow::bail!(
-                "invalid inclusion of package authors or version, or non-workspaced rust-version or edition, in {}",
+                "invalid inclusion of package authors or version, or non-workspaced lints, rust-version, or edition, in {}",
                 f.display()
             );
         }

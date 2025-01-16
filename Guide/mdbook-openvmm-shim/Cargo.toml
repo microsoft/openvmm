@@ -9,6 +9,3 @@ edition = "2021"
 # emits a binary, where kebab-case is more natural
 allow-dash-in-name = true
 excluded-from-workspace = true
-
-[lints]
-workspace = true
