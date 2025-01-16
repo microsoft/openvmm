@@ -3,12 +3,12 @@
 
 [package]
 name = "mdbook-openvmm-shim"
-edition.workspace = true
-rust-version.workspace = true
-
-[lints]
-workspace = true
+edition = "2021"
 
 [package.metadata.xtask.house-rules]
 # emits a binary, where kebab-case is more natural
 allow-dash-in-name = true
+excluded-from-workspace = true
+
+[lints]
+workspace = true
