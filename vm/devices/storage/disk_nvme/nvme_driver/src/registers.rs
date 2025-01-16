@@ -8,6 +8,8 @@ use inspect::Inspect;
 use pal_async::driver::Driver;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
+use std::time::Duration;
+use std::time::Instant;
 use tracing::instrument;
 use user_driver::backoff::Backoff;
 use user_driver::DeviceBacking;
@@ -108,6 +110,8 @@ impl<T: DeviceRegisterIo + Inspect> Bar0<T> {
         let cc = self.cc().with_en(false);
         self.set_cc(cc);
         let mut backoff = Backoff::new(driver);
+        let start = Instant::now();
+        let timeout = Duration::from_millis(self.cap().to() as u64 * 500);
         loop {
             let csts = self.csts();
             if !csts.rdy() {
@@ -117,6 +121,9 @@ impl<T: DeviceRegisterIo + Inspect> Bar0<T> {
                 break false;
             }
             backoff.back_off().await;
+            if start.elapsed() >= timeout {
+                break false;
+            }
         }
     }
 }
