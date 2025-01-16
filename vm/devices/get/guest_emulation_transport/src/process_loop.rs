@@ -629,7 +629,7 @@ impl HostRequestPipeAccess {
         self.recv_response_fixed_size(req_header.message_id).await
     }
 
-    /// Sends a notification to the host.
+    /// Sends a fail notification to the host.
     ///
     /// This function does not wait for a response from the host.
     /// It is specifically designed for scenarios where the host does not send any response.
@@ -637,7 +637,7 @@ impl HostRequestPipeAccess {
     ///
     /// In the future, GED notifications for failures need to be added.
     /// This will require updates to both the host and openHCL.
-    async fn send_notification_fixed_size<T: AsBytes + ?Sized>(
+    async fn send_failed_save_state<T: AsBytes + ?Sized>(
         &mut self,
         data: &T,
     ) -> Result<(), FatalError> {
@@ -1696,7 +1696,7 @@ async fn request_send_servicing_state(
         Err(_err) => {
             // Sends a failure notification to host.
             return access
-                .send_notification_fixed_size(&get_protocol::SaveGuestVtl2StateRequest::new(
+                .send_failed_save_state(&get_protocol::SaveGuestVtl2StateRequest::new(
                     get_protocol::GuestVtl2SaveRestoreStatus::FAILURE,
                 ))
                 .await
