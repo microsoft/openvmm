@@ -985,7 +985,7 @@ impl GuestMemory {
         Self {
             inner: Arc::new(GuestMemoryInner {
                 imp,
-                debug_name: debug_name.into(),
+                debug_name,
                 region_def: RegionDefinition {
                     invalid_mask: 1 << 63,
                     region_mask: !0 >> 1,
