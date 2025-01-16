@@ -8,6 +8,7 @@ use x86defs::SegmentRegister;
 
 #[repr(usize)]
 #[derive(Debug, Copy, Clone, PartialEq)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum Gp {
     RAX = 0,
     RCX = 1,
@@ -28,6 +29,7 @@ pub enum Gp {
 }
 
 #[derive(Debug, Copy, Clone)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum GpSize {
     /// 8-bit registers have a shift value, depending on if we're capturing the high/low bits
     BYTE(usize),
@@ -38,6 +40,7 @@ pub enum GpSize {
 
 #[repr(usize)]
 #[derive(Debug, Copy, Clone)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum Segment {
     ES = 0,
     CS = 1,
@@ -91,16 +94,15 @@ impl RegisterIndex {
     }
 }
 
-impl Into<RegisterIndex> for Gp {
-    fn into(self) -> RegisterIndex {
+impl From<Gp> for RegisterIndex {
+    fn from(val: Gp) -> Self {
         RegisterIndex {
-            extended_index: self,
+            extended_index: val,
             size: GpSize::QWORD,
         }
     }
 }
 
-//TODO(babayet2) this should be killed after each emulator implementation defines its own cache
 /// The current CPU register state. Some of the fields are updated by the emulator.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]

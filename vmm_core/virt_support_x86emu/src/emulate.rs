@@ -381,11 +381,9 @@ pub async fn emulate<T: EmulatorSupport>(
         break res;
     };
 
-    if let Err(e) = cpu.support.flush() {
-        return Err(VpHaltReason::EmulationFailure(
-            EmulationError::<T::Error>::CacheFlushFailed(e).into(),
-        ));
-    }
+    cpu.support.flush().map_err(|err| {
+        VpHaltReason::EmulationFailure(EmulationError::<T::Error>::CacheFlushFailed(err).into())
+    })?;
 
     // If the alignment check flag is not in sync with the hypervisor because the instruction emulator
     // modifies internally, then the appropriate SMAP enforcement flags need to be passed to the hypervisor
@@ -1032,12 +1030,8 @@ pub fn emulate_mnf_write_fast_path<T: EmulatorSupport>(
     }
     let instruction_bytes = &bytes[..valid_bytes];
     let bit = x86emu::fast_path::emulate_fast_path_set_bit(instruction_bytes, &mut cpu);
-    match support.flush() {
-        Ok(_) => Ok(bit),
-        Err(e) => {
-            return Err(VpHaltReason::EmulationFailure(
-                EmulationError::<T::Error>::CacheFlushFailed(e).into(),
-            ));
-        }
-    }
+    support.flush().map_err(|err| {
+        VpHaltReason::EmulationFailure(EmulationError::<T::Error>::CacheFlushFailed(err).into())
+    })?;
+    Ok(bit)
 }

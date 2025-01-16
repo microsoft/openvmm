@@ -414,7 +414,9 @@ impl MshvProcessor<'_> {
         devices: &impl CpuIo,
         interruption_pending: bool,
     ) -> Result<(), VpHaltReason<MshvRunVpError>> {
-        let cache = self.emulation_cache();
+        let cache = self
+            .emulation_cache()
+            .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
         let mut support = MshvEmulationState {
             partition: self.partition,
             processor: self.inner,
@@ -652,8 +654,8 @@ impl MshvProcessor<'_> {
         }
     }
 
-    fn emulation_cache(&self) -> Result<x86emu::CpuState, Self::Error> {
-        let regs = self.inner.vcpufd.get_regs().unwrap();
+    fn emulation_cache(&self) -> Result<x86emu::CpuState, MshvRunVpError> {
+        let regs = self.inner.vcpufd.get_regs()?;
         let gps = [
             regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
             regs.r8, regs.r9, regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
@@ -673,14 +675,14 @@ impl MshvProcessor<'_> {
         let cr0 = sregs.cr0;
         let efer = sregs.efer;
 
-        x86emu::CpuState {
+        Ok(x86emu::CpuState {
             gps,
             segs,
             rip,
             rflags: rflags.into(),
             cr0,
             efer,
-        }
+        })
     }
 }
 
@@ -843,7 +845,8 @@ impl EmulatorSupport for MshvEmulationState<'_> {
             ),
         ];
 
-        set_registers_64!(self.processor.vcpufd, arr_reg_name_value)?
+        set_registers_64!(self.processor.vcpufd, arr_reg_name_value)?;
+        Ok(())
     }
 
     fn instruction_bytes(&self) -> &[u8] {

@@ -68,11 +68,11 @@ impl EmulatorRegister for u128 {
     }
 }
 
-impl Into<RegisterIndex> for Register {
-    fn into(self) -> RegisterIndex {
-        let size = match self.size() {
+impl From<Register> for RegisterIndex {
+    fn from(val: Register) -> Self {
+        let size = match val.size() {
             1 => {
-                if self >= Register::SPL || self < Register::AH {
+                if val >= Register::SPL || val < Register::AH {
                     GpSize::BYTE(0)
                 } else {
                     GpSize::BYTE(8)
@@ -83,7 +83,7 @@ impl Into<RegisterIndex> for Register {
             8 => GpSize::QWORD,
             _ => panic!("invalid gp register size"),
         };
-        let extended_index = match self.full_register() {
+        let extended_index = match val.full_register() {
             Register::RAX => Gp::RAX,
             Register::RCX => Gp::RCX,
             Register::RDX => Gp::RDX,
@@ -109,9 +109,9 @@ impl Into<RegisterIndex> for Register {
     }
 }
 
-impl Into<Segment> for Register {
-    fn into(self) -> Segment {
-        match self {
+impl From<Register> for Segment {
+    fn from(val: Register) -> Self {
+        match val {
             Register::ES => Segment::ES,
             Register::CS => Segment::CS,
             Register::SS => Segment::SS,

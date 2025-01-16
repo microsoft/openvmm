@@ -1066,7 +1066,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 interruption_pending: intercept_state.interruption_pending,
                 devices,
                 vtl,
-                cache
+                cache,
             },
             intercept_state,
             guest_memory,

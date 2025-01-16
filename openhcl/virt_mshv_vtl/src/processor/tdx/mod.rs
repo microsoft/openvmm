@@ -2240,9 +2240,6 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
     }
 
     fn vendor(&self) -> x86defs::cpuid::Vendor {
-        if self.vtl != GuestVtl::Vtl0 {
-            unimplemented!("tdx: emulation is only supported for vtl0")
-        }
         self.vp.partition.caps.vendor
     }
 
@@ -2275,6 +2272,8 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         enter_state.rip = v;
     }
 
+    /// TDX segment registers are mutable by the paravisor
+    /// the x86 emulator only ever reads them, so we don't provide a write interface
     fn segment(&mut self, index: Segment) -> x86defs::SegmentRegister {
         let tdx_segment_index = match index {
             Segment::CS => TdxSegmentReg::Cs,
@@ -2293,10 +2292,14 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         (*reg).into()
     }
 
+    /// The EFER MSR is mutable by the paravisor in TDX
+    /// the x86 emulator only ever reads it, so we don't provide a write interface
     fn efer(&mut self) -> u64 {
         self.vp.backing.vtls[self.vtl].efer
     }
 
+    /// CR0 is mutable by the paravisor in TDX
+    /// the x86 emulator only ever reads it, so we don't provide a write interface
     fn cr0(&mut self) -> u64 {
         let reg = self
             .cache
@@ -2365,6 +2368,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         _mode: TranslateMode,
     ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
         // Lock Vtl TLB
+        // TODO TDX GUEST VSM: VTL1 not yet supported
         Ok(())
     }
 
