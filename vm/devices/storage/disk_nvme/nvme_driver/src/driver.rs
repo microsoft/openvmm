@@ -400,6 +400,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         let qsize = {
             let io_cqsize = QueuePair::MAX_CQ_ENTRIES.min(worker.registers.cap.mqes_z().saturating_add(1));
+            let io_sqsize = QueuePair::MAX_SQ_ENTRIES.min(worker.registers.cap.mqes_z().saturating_add(1));
+
             // Some hardware (such as ASAP) require that the sq and cq have the same size.
             io_cqsize.min(io_sqsize)
         };
