@@ -77,6 +77,19 @@ impl SectorBitmapRange<'_> {
     pub fn set_count(&self) -> usize {
         self.set_count
     }
+
+    pub(crate) fn unset_iter(&self) -> impl '_ + Iterator<Item = Range<u64>> {
+        let mut n = self.start_sector;
+        self.bits.chunk_by(|&a, &b| a == b).filter_map(move |bits| {
+            let start = n;
+            n += bits.len() as u64;
+            if bits.first().is_some_and(|&x| !x) {
+                Some(start..n)
+            } else {
+                None
+            }
+        })
+    }
 }
 
 /// A type to mark sectors that have been read by a layer as part of a

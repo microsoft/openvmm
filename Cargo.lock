@@ -1242,8 +1242,11 @@ dependencies = [
  "futures",
  "guestmem",
  "inspect",
+ "pal_async",
+ "parking_lot",
  "scsi_buffers",
  "thiserror 2.0.0",
+ "tracelimit",
  "vm_resource",
 ]
 
