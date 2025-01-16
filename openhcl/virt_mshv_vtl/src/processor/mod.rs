@@ -1053,6 +1053,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         devices: &D,
         intercept_state: &aarch64emu::InterceptState,
         vtl: GuestVtl,
+        cache: T::EmulationCache,
     ) -> Result<(), VpHaltReason<UhRunVpError>>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>:
@@ -1065,7 +1066,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 interruption_pending: intercept_state.interruption_pending,
                 devices,
                 vtl,
-                cache: T::EmulationCache::default(),
+                cache
             },
             intercept_state,
             guest_memory,
