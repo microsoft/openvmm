@@ -29,7 +29,19 @@ pub(crate) struct WhpEmulationState<'a, 'b, T: CpuIo> {
     vp: &'a mut WhpProcessor<'b>,
     interruption_pending: bool,
     dev: &'a T,
-    cache: x86emu::CpuState,
+    cache: WhpEmuCache,
+}
+
+pub(crate) struct WhpEmuCache {
+    /// GP registers, in the canonical order (as defined by `RAX`, etc.).
+    gps: [u64; 16],
+    /// Segment registers, in the canonical order (as defined by `ES`, etc.).
+    segs: [SegmentRegister; 6],
+    rip: u64,
+    rflags: RFlags,
+
+    cr0: u64,
+    efer: u64,
 }
 
 impl<'a, 'b, T: CpuIo> WhpEmulationState<'a, 'b, T> {
@@ -327,7 +339,7 @@ fn from_seg_reg(reg: &whp::abi::WHV_X64_SEGMENT_REGISTER) -> SegmentRegister {
 }
 
 impl WhpProcessor<'_> {
-    pub(crate) fn emulator_state(&mut self) -> Result<x86emu::CpuState, WhpRunVpError> {
+    pub(crate) fn emulator_state(&mut self) -> Result<WhpEmuCache, WhpRunVpError> {
         let (
             rip,
             rflags,
@@ -388,7 +400,7 @@ impl WhpProcessor<'_> {
         )
         .map_err(WhpRunVpError::EmulationState)?;
 
-        Ok(x86emu::CpuState {
+        Ok(WhpEmuCache {
             gps: [
                 rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15,
             ],
@@ -407,7 +419,7 @@ impl WhpProcessor<'_> {
         })
     }
 
-    pub fn set_emulator_state(&mut self, state: &x86emu::CpuState) -> Result<(), WhpRunVpError> {
+    pub(crate) fn set_emulator_state(&mut self, state: &WhpEmuCache) -> Result<(), WhpRunVpError> {
         whp::set_registers!(
             self.current_whp(),
             [

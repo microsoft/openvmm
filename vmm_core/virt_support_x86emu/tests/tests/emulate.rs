@@ -12,7 +12,6 @@ use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::EmulatorSupport;
 use x86defs::cpuid::Vendor;
 use x86defs::RFlags;
-use x86emu::CpuState;
 use x86emu::Gp;
 use x86emu::Segment;
 

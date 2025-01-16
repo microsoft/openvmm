@@ -12,7 +12,6 @@ pub use emulator::fast_path;
 pub use emulator::Emulator;
 pub use emulator::Error;
 pub use emulator::MAX_REP_LOOPS;
-pub use registers::CpuState;
 pub use registers::Gp;
 pub use registers::GpSize;
 pub use registers::RegisterIndex;

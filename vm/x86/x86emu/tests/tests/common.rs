@@ -16,7 +16,6 @@ use x86emu::RegisterIndex;
 use x86emu::Segment;
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CpuState {
     /// GP registers, in the canonical order (as defined by `RAX`, etc.).
     pub gps: [u64; 16],

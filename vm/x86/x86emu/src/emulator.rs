@@ -743,6 +743,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             }
         }
         tracing::trace!(
+            bytes = ?self.bytes[..instr.len()],
             cs = ?self.cpu.segment(Segment::CS),
             rip = self.cpu.rip(),
             ?bitness,

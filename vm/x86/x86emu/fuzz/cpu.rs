@@ -5,7 +5,6 @@ use arbitrary::Arbitrary;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
 use x86emu::Cpu;
-use x86emu::CpuState;
 use x86emu::RegisterIndex;
 use x86emu::Segment;
 
@@ -15,6 +14,19 @@ pub(crate) struct FuzzerCpu {
     io_data: [u8; 4],
     xmm_val: u128,
     state: CpuState,
+}
+
+#[derive(Debug, Arbitrary)]
+struct CpuState {
+    /// GP registers, in the canonical order (as defined by `RAX`, etc.).
+    pub gps: [u64; 16],
+    /// Segment registers, in the canonical order (as defined by `ES`, etc.).
+    pub segs: [SegmentRegister; 6],
+    pub rip: u64,
+    pub rflags: RFlags,
+
+    pub cr0: u64,
+    pub efer: u64,
 }
 
 impl Cpu for FuzzerCpu {

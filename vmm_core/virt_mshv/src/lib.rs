@@ -74,10 +74,24 @@ use virt_support_x86emu::emulate::TranslateMode;
 use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::interrupt::Interrupt;
 use vmcore::synic::GuestEventPort;
+use x86defs::RFlags;
+use x86defs::SegmentRegister;
 use zerocopy::AsBytes;
 
 #[derive(Debug)]
 pub struct LinuxMshv;
+
+struct MshvEmuCache {
+    /// GP registers, in the canonical order (as defined by `RAX`, etc.).
+    gps: [u64; 16],
+    /// Segment registers, in the canonical order (as defined by `ES`, etc.).
+    segs: [SegmentRegister; 6],
+    rip: u64,
+    rflags: RFlags,
+
+    cr0: u64,
+    efer: u64,
+}
 
 impl virt::Hypervisor for LinuxMshv {
     type ProtoPartition<'a> = MshvProtoPartition<'a>;
@@ -652,7 +666,7 @@ impl MshvProcessor<'_> {
         }
     }
 
-    fn emulation_cache(&self) -> Result<x86emu::CpuState, MshvRunVpError> {
+    fn emulation_cache(&self) -> Result<MshvEmuCache, MshvRunVpError> {
         let regs = self.inner.vcpufd.get_regs()?;
         let gps = [
             regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
@@ -673,7 +687,7 @@ impl MshvProcessor<'_> {
         let cr0 = sregs.cr0;
         let efer = sregs.efer;
 
-        Ok(x86emu::CpuState {
+        Ok(MshvEmuCache {
             gps,
             segs,
             rip,
@@ -690,7 +704,7 @@ struct MshvEmulationState<'a> {
     vp_index: VpIndex,
     message: &'a hv_message,
     interruption_pending: bool,
-    cache: x86emu::CpuState,
+    cache: MshvEmuCache,
 }
 
 impl EmulatorSupport for MshvEmulationState<'_> {
@@ -720,7 +734,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         self.cache.rip = v;
     }
 
-    fn segment(&mut self, reg: x86emu::Segment) -> x86defs::SegmentRegister {
+    fn segment(&mut self, reg: x86emu::Segment) -> SegmentRegister {
         self.cache.segs[reg as usize]
     }
 
@@ -732,11 +746,11 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         self.cache.cr0
     }
 
-    fn rflags(&mut self) -> x86defs::RFlags {
+    fn rflags(&mut self) -> RFlags {
         self.cache.rflags
     }
 
-    fn set_rflags(&mut self, v: x86defs::RFlags) {
+    fn set_rflags(&mut self, v: RFlags) {
         self.cache.rflags = v;
     }
 
@@ -1393,12 +1407,12 @@ pub enum MshvRunVpError {
     MsHv(#[from] vmm_sys_util::errno::Error),
 }
 
-fn x86emu_sreg_from_mshv_sreg(reg: mshv_bindings::SegmentRegister) -> x86defs::SegmentRegister {
+fn x86emu_sreg_from_mshv_sreg(reg: mshv_bindings::SegmentRegister) -> SegmentRegister {
     let reg: hv_x64_segment_register = hv_x64_segment_register::from(reg);
     // SAFETY: This union only contains one field.
     let attributes: u16 = unsafe { reg.__bindgen_anon_1.attributes };
 
-    x86defs::SegmentRegister {
+    SegmentRegister {
         base: reg.base,
         limit: reg.limit,
         selector: reg.selector,
@@ -1406,8 +1420,8 @@ fn x86emu_sreg_from_mshv_sreg(reg: mshv_bindings::SegmentRegister) -> x86defs::S
     }
 }
 
-fn from_seg(reg: hvdef::HvX64SegmentRegister) -> x86defs::SegmentRegister {
-    x86defs::SegmentRegister {
+fn from_seg(reg: hvdef::HvX64SegmentRegister) -> SegmentRegister {
+    SegmentRegister {
         base: reg.base,
         limit: reg.limit,
         selector: reg.selector,

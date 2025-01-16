@@ -2272,8 +2272,6 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         enter_state.rip = v;
     }
 
-    /// TDX segment registers are mutable by the paravisor
-    /// the x86 emulator only ever reads them, so we don't provide a write interface
     fn segment(&mut self, index: Segment) -> x86defs::SegmentRegister {
         let tdx_segment_index = match index {
             Segment::CS => TdxSegmentReg::Cs,
@@ -2292,14 +2290,10 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         (*reg).into()
     }
 
-    /// The EFER MSR is mutable by the paravisor in TDX
-    /// the x86 emulator only ever reads it, so we don't provide a write interface
     fn efer(&mut self) -> u64 {
         self.vp.backing.vtls[self.vtl].efer
     }
 
-    /// CR0 is mutable by the paravisor in TDX
-    /// the x86 emulator only ever reads it, so we don't provide a write interface
     fn cr0(&mut self) -> u64 {
         let reg = self
             .cache

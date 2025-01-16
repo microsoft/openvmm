@@ -9072,7 +9072,6 @@ dependencies = [
 name = "x86emu"
 version = "0.0.0"
 dependencies = [
- "arbitrary",
  "futures",
  "iced-x86",
  "thiserror 2.0.0",

@@ -1515,7 +1515,6 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         vmsa.set_rip(v);
     }
 
-    /// segment registers are immutable for snp
     fn segment(&mut self, index: x86emu::Segment) -> SegmentRegister {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         match index {
@@ -1528,13 +1527,11 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         }
     }
 
-    /// efer is immutable for snp
     fn efer(&mut self) -> u64 {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         vmsa.efer()
     }
 
-    /// cr0 is immutable for snp
     fn cr0(&mut self) -> u64 {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         vmsa.cr0()

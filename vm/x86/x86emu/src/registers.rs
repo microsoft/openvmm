@@ -3,7 +3,6 @@
 
 //! Structs to hold register state for the x86 instruction emulator.
 
-use x86defs::RFlags;
 use x86defs::SegmentRegister;
 
 #[repr(usize)]
@@ -101,26 +100,6 @@ impl From<Gp> for RegisterIndex {
             size: GpSize::QWORD,
         }
     }
-}
-
-/// The current CPU register state. Some of the fields are updated by the emulator.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-pub struct CpuState {
-    /// GP registers, in the canonical order (as defined by `RAX`, etc.).
-    pub gps: [u64; 16],
-    /// Segment registers, in the canonical order (as defined by `ES`, etc.).
-    /// Immutable for now.
-    pub segs: [SegmentRegister; 6],
-    /// RIP.
-    pub rip: u64,
-    /// RFLAGS.
-    pub rflags: RFlags,
-
-    /// CR0. Immutable.
-    pub cr0: u64,
-    /// EFER. Immutable.
-    pub efer: u64,
 }
 
 pub(crate) fn bitness(cr0: u64, efer: u64, cs: SegmentRegister) -> Bitness {

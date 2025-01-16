@@ -10,7 +10,7 @@ rust-version.workspace = true
 [dependencies]
 xtask_fuzz.workspace = true
 
-x86emu = { workspace = true, features = ["arbitrary"] }
+x86emu.workspace = true
 x86defs = { workspace = true, features = ["arbitrary"] }
 
 arbitrary = { workspace = true, features = ["derive"] }

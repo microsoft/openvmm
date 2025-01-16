@@ -10,7 +10,6 @@ use virt_support_x86emu::emulate::*;
 use vm_topology::processor::VpIndex;
 use x86defs::cpuid::Vendor;
 use x86defs::RFlags;
-use x86emu::CpuState;
 use x86emu::Gp;
 use x86emu::Segment;
 use zerocopy::AsBytes;
