@@ -628,6 +628,16 @@ impl HostRequestPipeAccess {
             get_protocol::HeaderHostRequest::read_from_prefix(data.as_bytes()).unwrap();
         self.recv_response_fixed_size(req_header.message_id).await
     }
+
+    /// Sends a request to the host.
+    ///
+    async fn send_request_fixed_size_no_response<T: AsBytes + ?Sized>(
+        &mut self,
+        data: &T,
+    ) -> Result<(), FatalError> {
+        self.send_message(data.as_bytes().to_vec());
+        Ok(())
+    }
 }
 
 impl<T: RingMem> ProcessLoop<T> {
@@ -1680,7 +1690,7 @@ async fn request_send_servicing_state(
         Err(_err) => {
             // TODO: send error to host.
             return access
-                .send_request_fixed_size(&get_protocol::SaveGuestVtl2StateRequest::new(
+                .send_request_fixed_size_no_response(&get_protocol::SaveGuestVtl2StateRequest::new(
                     get_protocol::GuestVtl2SaveRestoreStatus::FAILURE,
                 ))
                 .await
