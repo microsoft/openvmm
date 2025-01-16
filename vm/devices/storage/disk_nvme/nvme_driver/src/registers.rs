@@ -110,13 +110,12 @@ impl<T: DeviceRegisterIo + Inspect> Bar0<T> {
         let cc = self.cc().with_en(false);
         self.set_cc(cc);
         let mut backoff = Backoff::new(driver);
-
         let timeout_duration = self.cap().to() as u64 * 500;
         #[cfg(fuzz_timeout)]
         timeout_duration = 10;
-
         let start = Instant::now();
         let timeout = Duration::from_millis(timeout_duration);
+
         loop {
             let csts = self.csts();
             if !csts.rdy() {
@@ -125,10 +124,10 @@ impl<T: DeviceRegisterIo + Inspect> Bar0<T> {
             if u32::from(csts) == !0 {
                 break false;
             }
-            backoff.back_off().await;
             if start.elapsed() >= timeout {
                 break false;
             }
+            backoff.back_off().await;
         }
     }
 }
