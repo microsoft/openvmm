@@ -629,9 +629,10 @@ impl HostRequestPipeAccess {
         self.recv_response_fixed_size(req_header.message_id).await
     }
 
-    /// Sends a request to the host.
+    /// Sends a notification to the host.
     ///
-    async fn send_request_fixed_size_no_response<T: AsBytes + ?Sized>(
+    /// This function does not wait for a response.
+    async fn send_notification_fixed_size<T: AsBytes + ?Sized>(
         &mut self,
         data: &T,
     ) -> Result<(), FatalError> {
@@ -1688,9 +1689,9 @@ async fn request_send_servicing_state(
     let saved_state_buf = match result {
         Ok(saved_state_buf) => saved_state_buf,
         Err(_err) => {
-            // TODO: send error to host.
+            // Sends a failure notification to host.
             return access
-                .send_request_fixed_size_no_response(&get_protocol::SaveGuestVtl2StateRequest::new(
+                .send_notification_fixed_size(&get_protocol::SaveGuestVtl2StateRequest::new(
                     get_protocol::GuestVtl2SaveRestoreStatus::FAILURE,
                 ))
                 .await
