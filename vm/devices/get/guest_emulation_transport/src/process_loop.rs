@@ -616,6 +616,22 @@ impl HostRequestPipeAccess {
             get_protocol::HeaderHostRequest::read_from_prefix(data.as_bytes()).unwrap();
         self.recv_response_fixed_size(req_header.message_id).await
     }
+
+    /// Sends a fail notification to the host.
+    ///
+    /// This function does not wait for a response from the host.
+    /// It is specifically designed for scenarios where the host does not send any response.
+    /// One of such scenario is the save failure, where host does not send any response.
+    ///
+    /// In the future, GED notifications for failures need to be added.
+    /// This will require updates to both the host and openHCL.
+    async fn send_failed_save_state<T: AsBytes + ?Sized>(
+        &mut self,
+        data: &T,
+    ) -> Result<(), FatalError> {
+        self.send_message(data.as_bytes().to_vec());
+        Ok(())
+    }
 }
 
 impl<T: RingMem> ProcessLoop<T> {
@@ -1668,9 +1684,9 @@ async fn request_send_servicing_state(
     let saved_state_buf = match result {
         Ok(saved_state_buf) => saved_state_buf,
         Err(_err) => {
-            // TODO: send error to host.
+            // Sends a failure notification to host.
             return access
-                .send_request_fixed_size(&get_protocol::SaveGuestVtl2StateRequest::new(
+                .send_failed_save_state(&get_protocol::SaveGuestVtl2StateRequest::new(
                     get_protocol::GuestVtl2SaveRestoreStatus::FAILURE,
                 ))
                 .await
