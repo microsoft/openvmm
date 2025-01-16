@@ -116,7 +116,7 @@ use zerocopy::FromZeroes;
 
 /// General error returned by operations.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum Error {
     #[error("hcl error")]
     Hcl(#[source] hcl::ioctl::Error),
@@ -161,7 +161,7 @@ pub enum Error {
 
 /// Error revoking guest VSM.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum RevokeGuestVsmError {
     #[error("failed to set vsm config")]
     SetGuestVsmConfig(#[source] hcl::ioctl::SetGuestVsmConfigError),

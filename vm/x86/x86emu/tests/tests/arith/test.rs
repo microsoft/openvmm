@@ -4,7 +4,8 @@
 use crate::tests::common::run_test;
 use crate::tests::common::RFLAGS_LOGIC_MASK;
 use iced_x86::code_asm::*;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 
 #[test]
 fn test_regvalue_to_memory() {
@@ -30,16 +31,16 @@ fn test_regvalue_to_memory() {
     ];
 
     for (left, right, rflags) in variations {
-        let (state, _cpu) = run_test(
+        let mut cpu = run_test(
             RFLAGS_LOGIC_MASK,
             |asm| asm.and(eax, dword_ptr(rax + 0x10)),
-            |state, cpu| {
-                state.gps[CpuState::RAX] = left;
-                cpu.valid_gva = state.gps[CpuState::RAX].wrapping_add(0x10);
+            |cpu| {
+                cpu.set_gp(Gp::RAX.into(), left);
+                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
                 cpu.mem_val = right;
             },
         );
 
-        assert_eq!(state.rflags & RFLAGS_LOGIC_MASK, rflags.into());
+        assert_eq!(cpu.rflags() & RFLAGS_LOGIC_MASK, rflags.into());
     }
 }

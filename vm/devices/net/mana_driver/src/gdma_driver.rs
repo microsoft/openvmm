@@ -97,6 +97,13 @@ struct Bar0<T: Inspect> {
 }
 
 impl<T: DeviceRegisterIo + Inspect> Doorbell for Bar0<T> {
+    fn page_count(&self) -> u32 {
+        self.mem
+            .len()
+            .saturating_sub(self.map.vf_db_pages_zone_offset as usize) as u32
+            >> self.doorbell_shift
+    }
+
     fn write(&self, page_number: u32, address: u32, value: u64) {
         let offset = self.map.vf_db_pages_zone_offset
             + ((page_number as u64) << self.doorbell_shift)
@@ -212,6 +219,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     pub async fn new(driver: &impl Driver, mut device: T, num_vps: u32) -> anyhow::Result<Self> {
         let bar0_mapping = device.map_bar(0)?;
+        let bar0_len = bar0_mapping.len();
+        if bar0_len < size_of::<RegMap>() {
+            anyhow::bail!("bar0 ({} bytes) too small for reg map", bar0_mapping.len());
+        }
         // Only allocate the HWC interrupt now. Rest will be allocated later.
         let num_msix = 1;
         let mut interrupt0 = device.map_interrupt(0, 0)?;
@@ -243,6 +254,16 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             anyhow::bail!(
                 "unexpected shared memory size: {}",
                 map.vf_gdma_sriov_shared_sz
+            );
+        }
+
+        if (bar0_len as u64).saturating_sub(map.vf_gdma_sriov_shared_reg_start)
+            < map.vf_gdma_sriov_shared_sz as u64
+        {
+            anyhow::bail!(
+                "bar0 ({} bytes) too small for shared memory at {}",
+                bar0_mapping.len(),
+                map.vf_gdma_sriov_shared_reg_start
             );
         }
 
@@ -315,11 +336,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             doorbell_shift,
         });
 
-        let mut eq = Eq::new_eq(
-            dma_buffer.subblock(0, PAGE_SIZE),
-            DoorbellPage::new(bar0.clone(), !0),
-            0,
-        );
+        let mut eq = Eq::new_eq(dma_buffer.subblock(0, PAGE_SIZE), DoorbellPage::null(), 0);
 
         let mut cq_id = None;
         let mut rq_id = None;
@@ -354,7 +371,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 GDMA_EQE_HWC_INIT_EQ_ID_DB => {
                     let data = HwcInitEqIdDb::read_from_prefix(&eqe.data[..]).unwrap();
                     eq.set_id(data.eq_id().into());
-                    eq.set_doorbell(DoorbellPage::new(bar0.clone(), data.doorbell().into()));
+                    eq.set_doorbell(DoorbellPage::new(bar0.clone(), data.doorbell().into())?);
                     db_id = Some(data.doorbell());
                 }
                 GDMA_EQE_HWC_INIT_DATA => {
@@ -396,21 +413,21 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let cq_id = cq_id.context("cq id not provided")?;
         let cq = Cq::new_cq(
             dma_buffer.subblock(CQ_PAGE * PAGE_SIZE, PAGE_SIZE),
-            DoorbellPage::new(bar0.clone(), db_id),
+            DoorbellPage::new(bar0.clone(), db_id)?,
             cq_id,
         );
 
         let rq_id = rq_id.context("rq id not provided")?;
         let rq = Wq::new_rq(
             dma_buffer.subblock(RQ_PAGE * PAGE_SIZE, PAGE_SIZE),
-            DoorbellPage::new(bar0.clone(), db_id),
+            DoorbellPage::new(bar0.clone(), db_id)?,
             rq_id,
         );
 
         let sq_id = sq_id.context("sq id not provided")?;
         let sq = Wq::new_sq(
             dma_buffer.subblock(SQ_PAGE * PAGE_SIZE, PAGE_SIZE),
-            DoorbellPage::new(bar0.clone(), db_id),
+            DoorbellPage::new(bar0.clone(), db_id)?,
             sq_id,
         );
 

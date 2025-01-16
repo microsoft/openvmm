@@ -3,7 +3,7 @@
 
 [package]
 name = "vmbus_serial_host"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

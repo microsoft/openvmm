@@ -12,8 +12,8 @@ use zerocopy::FromBytes;
 /// AkCertError is returned by parse_ak_cert_response() in emuplat/tpm.rs
 #[derive(Debug, Error)]
 pub enum AkCertError {
-    #[error("AK cert response size is too small to parse")]
-    SizeTooSmall,
+    #[error("AK cert response is too small to parse. Found {size} bytes but expected at least {minimum_size}")]
+    SizeTooSmall { size: usize, minimum_size: usize },
     #[error(
         "AK cert response size {specified_size} specified in the header is larger then the actual size {size}"
     )]
@@ -31,7 +31,10 @@ pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
     const HEADER_SIZE: usize = size_of::<IgvmAttestAkCertResponseHeader>();
 
     let Some(header) = IgvmAttestAkCertResponseHeader::read_from_prefix(response) else {
-        Err(AkCertError::SizeTooSmall)?
+        Err(AkCertError::SizeTooSmall {
+            size: response.len(),
+            minimum_size: HEADER_SIZE,
+        })?
     };
 
     let size = header.data_size as usize;
@@ -57,9 +60,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_empty_response() {
+    fn test_undersized_response() {
+        const HEADER_SIZE: usize = size_of::<IgvmAttestAkCertResponseHeader>();
+        let properly_sized_response: [u8; HEADER_SIZE] = [1; HEADER_SIZE];
+        let undersized_response = &properly_sized_response[..HEADER_SIZE - 1];
+
+        // Empty response counts as an undersized response
         let result = parse_response(&[]);
         assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "AK cert response is too small to parse. Found 0 bytes but expected at least 8"
+        );
+
+        // Response has to be at least `HEADER_SIZE` bytes long, so `HEADER_SIZE - 1` bytes is too small.
+        let undersized_parse_ = parse_response(undersized_response);
+        assert!(undersized_parse_.is_err());
+        assert_eq!(
+            undersized_parse_.unwrap_err().to_string(),
+            format!(
+                "AK cert response is too small to parse. Found {} bytes but expected at least {}",
+                HEADER_SIZE - 1,
+                HEADER_SIZE
+            )
+        );
+
+        // When we finally have `HEADER_SIZE` bytes, we no longer see the failure as `AkCertError::SizeTooSmall`,
+        // but we still see a different error since the response is not valid.
+        let properly_sized_parse = parse_response(&properly_sized_response);
+        assert!(!properly_sized_parse
+            .unwrap_err()
+            .to_string()
+            .starts_with("AK cert response is too small to parse"),);
     }
 
     #[test]

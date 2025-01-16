@@ -7,7 +7,8 @@ use crate::tests::common::run_wide_test;
 use iced_x86::code_asm::*;
 use iced_x86::Register;
 use x86defs::RFlags;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 
 #[test]
 fn mov_memory_to_regvalue_others() {
@@ -18,12 +19,12 @@ fn mov_memory_to_regvalue_others() {
     ) -> Result<(), IcedError>] = &[&CodeAssembler::movdiri, &CodeAssembler::movnti];
 
     for instr in variations {
-        let (_state, cpu) = run_test(
+        let cpu = run_test(
             RFLAGS_MOV_MASK,
             |asm| instr(asm, ptr(0x200), rax),
-            |state, cpu| {
+            |cpu| {
                 cpu.valid_gva = 0x200;
-                state.gps[CpuState::RAX] = 0x0123456789abcdef;
+                cpu.set_gp(Gp::RAX.into(), 0x0123456789abcdef);
             },
         );
 
@@ -43,7 +44,7 @@ fn movzx_memory_to_regvalue() {
     ];
 
     for &(dst_reg, src, result) in variations {
-        let (state, _cpu) = run_test(
+        let mut cpu = run_test(
             RFLAGS_MOV_MASK,
             |asm| {
                 // work around iced limitations
@@ -57,14 +58,14 @@ fn movzx_memory_to_regvalue() {
                     unreachable!()
                 }
             },
-            |state, cpu| {
+            |cpu| {
                 cpu.valid_gva = 0x200;
                 cpu.mem_val = 0x9999;
-                state.gps[CpuState::RAX] = 0xffffffffffffffff;
+                cpu.set_gp(Gp::RAX.into(), 0xffffffffffffffff);
             },
         );
 
-        assert_eq!(state.gps[CpuState::RAX], result);
+        assert_eq!(cpu.gp(Gp::RAX.into()), result);
     }
 }
 
@@ -80,7 +81,7 @@ fn movsx_memory_to_regvalue() {
     ];
 
     for &(dst_reg, src, result) in variations {
-        let (state, _cpu) = run_test(
+        let mut cpu = run_test(
             RFLAGS_MOV_MASK,
             |asm| {
                 // Please ignore these really silly type shenanigans to work around iced limitations
@@ -94,14 +95,14 @@ fn movsx_memory_to_regvalue() {
                     unreachable!()
                 }
             },
-            |state, cpu| {
+            |cpu| {
                 cpu.valid_gva = 0x200;
                 cpu.mem_val = 0xaaaa;
-                state.gps[CpuState::RAX] = 0x3333333333333333;
+                cpu.set_gp(Gp::RAX.into(), 0x3333333333333333);
             },
         );
 
-        assert_eq!(state.gps[CpuState::RAX], result);
+        assert_eq!(cpu.gp(Gp::RAX.into()), result);
     }
 }
 
@@ -115,7 +116,7 @@ fn movsxd_memory_to_regvalue() {
     ];
 
     for &(dst_reg, src, result) in variations {
-        let (state, _cpu) = run_test(
+        let mut cpu = run_test(
             RFLAGS_MOV_MASK,
             |asm| {
                 // Please ignore these really silly type shenanigans to work around iced limitations
@@ -129,29 +130,29 @@ fn movsxd_memory_to_regvalue() {
                     unreachable!()
                 }
             },
-            |state, cpu| {
+            |cpu| {
                 cpu.valid_gva = 0x200;
                 cpu.mem_val = 0xaaaaaaaaaaaaaaaa;
-                state.gps[CpuState::RAX] = 0x3333333333333333;
+                cpu.set_gp(Gp::RAX.into(), 0x3333333333333333);
             },
         );
 
-        assert_eq!(state.gps[CpuState::RAX], result);
+        assert_eq!(cpu.gp(Gp::RAX.into()), result);
     }
 }
 
 #[test]
 fn movdir64b() {
     let values: Vec<u8> = (0..64).collect();
-    let (_state, cpu) = run_wide_test(
+    let cpu = run_wide_test(
         RFlags::new(),
         true,
         |asm| asm.movdir64b(r8, ptr(0x200)),
-        |state, cpu| {
+        |cpu| {
             cpu.valid_gva = 0x200;
             cpu.mem_val.clone_from(&values);
             cpu.write_mem_offset = 0x1000;
-            state.gps[CpuState::R8] = 0x1200;
+            cpu.set_gp(Gp::R8.into(), 0x1200);
         },
     );
 
@@ -162,15 +163,15 @@ fn movdir64b() {
 #[should_panic(expected = "MandatoryAlignment")]
 fn movdir64b_unaligned() {
     let values: Vec<u8> = (0..64).collect();
-    let (_state, _cpu) = run_wide_test(
+    let _cpu = run_wide_test(
         RFlags::new(),
         true,
         |asm| asm.movdir64b(r8, ptr(0x200)),
-        |state, cpu| {
+        |cpu| {
             cpu.valid_gva = 0x200;
             cpu.mem_val.clone_from(&values);
             cpu.write_mem_offset = 0x1001;
-            state.gps[CpuState::R8] = 0x1201;
+            cpu.set_gp(Gp::R8.into(), 0x1201);
         },
     );
 }

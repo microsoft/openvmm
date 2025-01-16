@@ -4,7 +4,8 @@
 use crate::tests::common::run_test;
 use crate::tests::common::RFLAGS_LOGIC_MASK;
 use iced_x86::code_asm::*;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 
 fn shiftd_test(
     variations: &[(u64, u64, u32, u64, u64)],
@@ -19,18 +20,18 @@ fn shiftd_test(
             RFLAGS_LOGIC_MASK
         };
 
-        let (state, cpu) = run_test(
+        let mut cpu = run_test(
             flags,
             |asm| shift_op(asm, ptr(0x100), rax, count),
-            |state, cpu| {
-                state.gps[CpuState::RAX] = right;
+            |cpu| {
+                cpu.set_gp(Gp::RAX.into(), right);
                 cpu.valid_gva = 0x100;
                 cpu.mem_val = left;
             },
         );
 
         assert_eq!(cpu.mem_val, result);
-        assert_eq!(state.rflags & flags, rflags.into());
+        assert_eq!(cpu.rflags() & flags, rflags.into());
     }
 }
 
@@ -126,17 +127,17 @@ fn shiftd_underflow_test(
             RFLAGS_LOGIC_MASK
         };
 
-        let (state, cpu) = run_test(
+        let mut cpu = run_test(
             flags,
             |asm| shift_op(asm, ptr(0x100), ax, count),
-            |state, cpu| {
-                state.gps[CpuState::RAX] = 0;
+            |cpu| {
+                cpu.set_gp(Gp::RAX.into(), 0);
                 cpu.valid_gva = 0x100;
                 cpu.mem_val = 0xFFFF;
             },
         );
         assert_eq!(cpu.mem_val, result.into());
-        assert_eq!(state.rflags & flags, rflags.into());
+        assert_eq!(cpu.rflags() & flags, rflags.into());
     }
 }
 

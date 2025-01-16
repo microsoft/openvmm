@@ -148,6 +148,7 @@ impl VfioDevice {
         Ok(MappedRegionWithFallback {
             device: self.device.clone(),
             mapping,
+            len: info.size as usize,
             offset: info.offset,
             read_fallback: SharedCounter::new(),
             write_fallback: SharedCounter::new(),
@@ -167,6 +168,7 @@ pub struct MappedRegionWithFallback {
     #[inspect(skip)]
     mapping: vfio_sys::MappedRegion,
     offset: u64,
+    len: usize,
     read_fallback: SharedCounter,
     write_fallback: SharedCounter,
 }
@@ -333,6 +335,10 @@ fn set_irq_affinity(irq: u32, cpu: u32) -> std::io::Result<()> {
 }
 
 impl DeviceRegisterIo for vfio_sys::MappedRegion {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
     fn read_u32(&self, offset: usize) -> u32 {
         self.read_u32(offset)
     }
@@ -403,6 +409,10 @@ impl MappedRegionWithFallback {
 }
 
 impl DeviceRegisterIo for MappedRegionWithFallback {
+    fn len(&self) -> usize {
+        self.len
+    }
+
     fn read_u32(&self, offset: usize) -> u32 {
         self.read_from_mapping(offset).unwrap_or_else(|_| {
             let mut buf = [0u8; 4];

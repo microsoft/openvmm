@@ -352,7 +352,7 @@ impl<T: DeviceBacking> Vport<T> {
             .await
             .context("failed to create eq")?;
         Ok(BnicEq {
-            doorbell: DoorbellPage::new(self.inner.doorbell.clone(), self.inner.dev_data.db_id),
+            doorbell: DoorbellPage::new(self.inner.doorbell.clone(), self.inner.dev_data.db_id)?,
             mem,
             id,
             interrupt,
@@ -391,6 +391,7 @@ impl<T: DeviceBacking> Vport<T> {
         } else {
             GdmaQueueType::GDMA_RQ
         };
+        let doorbell = DoorbellPage::new(self.inner.doorbell.clone(), self.inner.dev_data.db_id)?;
         let resp = BnicDriver::new(&mut *gdma, self.inner.dev_id)
             .create_wq_obj(
                 arena,
@@ -408,7 +409,7 @@ impl<T: DeviceBacking> Vport<T> {
             .await?;
 
         Ok(BnicWq {
-            doorbell: DoorbellPage::new(self.inner.doorbell.clone(), self.inner.dev_data.db_id),
+            doorbell,
             wq_mem,
             cq_mem,
             wq_id: resp.wq_id,

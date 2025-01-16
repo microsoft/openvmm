@@ -3,7 +3,7 @@
 
 [package]
 name = "net_packet_capture"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

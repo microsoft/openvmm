@@ -9,6 +9,7 @@ use zerocopy::FromZeroes;
 
 #[bitfield(u8)]
 #[derive(AsBytes, FromBytes, FromZeroes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SrbStatusAndFlags {
     #[bits(6)]
     status_bits: u8,

@@ -3,7 +3,7 @@
 
 [package]
 name = "virt_hvf"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]

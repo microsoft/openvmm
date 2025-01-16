@@ -17,11 +17,14 @@ use anyhow::anyhow;
 use anyhow::Context;
 use anyhow::Result;
 use futures::StreamExt;
+use futures_concurrency::stream::Merge;
 use guid::Guid;
 use inspect::InspectMut;
 use mesh::rpc::RpcSend;
 use pal_async::driver::SpawnDriver;
+use std::future::pending;
 use std::future::Future;
+use std::pin::pin;
 use std::sync::Arc;
 use task_control::AsyncRun;
 use task_control::Cancelled;
@@ -38,7 +41,6 @@ use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::SignalVmbusChannel;
 use vmbus_client::ChannelRequest;
 use vmbus_client::ChannelResponse;
-use vmbus_client::ClientNotification;
 use vmbus_client::OfferInfo;
 use vmbus_client::OpenRequest;
 use vmbus_core::protocol::ConnectionId;
@@ -583,9 +585,33 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
     /// device wrapper.
     pub async fn process_messages(&mut self, state: &mut SimpleVmbusClientDeviceTaskState) {
         loop {
-            let msg = state.recv_relay.select_next_some().await;
-            match msg {
-                InterceptChannelRequest::Client(ClientNotification::Offer(offer)) => {
+            enum Event {
+                Request(InterceptChannelRequest),
+                Revoke(()),
+            }
+            let revoke = pin!(async {
+                if let Some(offer) = &mut state.offer {
+                    let r = offer.response_recv.next().await;
+                    assert!(r.is_none(), "unexpected channel response");
+                } else {
+                    pending().await
+                }
+            });
+            let Some(r) = (
+                (&mut state.recv_relay).map(Event::Request),
+                futures::stream::once(revoke).map(Event::Revoke),
+            )
+                .merge()
+                .next()
+                .await
+            else {
+                break;
+            };
+            match r {
+                Event::Revoke(()) => {
+                    self.handle_revoke(state).await;
+                }
+                Event::Request(InterceptChannelRequest::Offer(offer)) => {
                     // Any extraneous offer notifications (e.g. from a request offers
                     // query) are ignored.
                     if !self.device.is_running() {
@@ -597,19 +623,16 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
                         }
                     }
                 }
-                InterceptChannelRequest::Client(ClientNotification::Revoke(_)) => {
-                    self.handle_revoke(state).await;
-                }
-                InterceptChannelRequest::Start => {
+                Event::Request(InterceptChannelRequest::Start) => {
                     self.handle_start(state).await;
                 }
-                InterceptChannelRequest::Stop(rpc) => {
+                Event::Request(InterceptChannelRequest::Stop(rpc)) => {
                     rpc.handle(|()| self.handle_stop(state)).await;
                 }
-                InterceptChannelRequest::Save(rpc) => {
+                Event::Request(InterceptChannelRequest::Save(rpc)) => {
                     rpc.handle_sync(|()| self.handle_save());
                 }
-                InterceptChannelRequest::Restore(saved_state) => {
+                Event::Request(InterceptChannelRequest::Restore(saved_state)) => {
                     self.handle_restore(&saved_state);
                 }
             }

@@ -3,7 +3,7 @@
 
 [package]
 name = "scsi_buffers"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

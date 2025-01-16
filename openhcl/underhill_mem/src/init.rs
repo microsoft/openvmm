@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(missing_docs)]
+#![expect(missing_docs)]
 
 use crate::mapping::GuestMemoryMapping;
 use crate::mapping::HardwareIsolatedMemoryProtector;

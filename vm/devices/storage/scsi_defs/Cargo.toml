@@ -3,10 +3,15 @@
 
 [package]
 name = "scsi_defs"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
+[features]
+# Enable generating arbitrary values of types useful for fuzzing.
+arbitrary = ["dep:arbitrary"]
+
 [dependencies]
+arbitrary = { workspace = true, optional = true, features = ["derive"] }
 zerocopy.workspace = true
 bitfield-struct.workspace = true
 open_enum.workspace = true

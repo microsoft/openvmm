@@ -3,7 +3,7 @@
 
 [package]
 name = "uefi_nvram_specvars"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]

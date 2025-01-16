@@ -29,7 +29,7 @@ use zerocopy::FromZeroes;
 
 /// An error getting a namespace.
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum NamespaceError {
     #[error("namespace not found")]
     NotFound,

@@ -4,7 +4,8 @@
 use crate::tests::common::run_test;
 use iced_x86::code_asm::*;
 use x86defs::RFlags;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 
 const ROTATE_MASK: RFlags = RFlags::new().with_carry(true);
 
@@ -44,19 +45,21 @@ fn rotate_memory_by_regvalue(
             ROTATE_MASK
         };
 
-        let (state, cpu) = run_test(
+        let mut cpu = run_test(
             flags,
             |asm| shift_op(asm, ptr_op(rcx + 0x10), cl),
-            |state, cpu| {
-                state.rflags.set_carry(initial_carry);
-                state.gps[CpuState::RCX] = right;
-                cpu.valid_gva = state.gps[CpuState::RCX].wrapping_add(0x10);
+            |cpu| {
+                let mut rflags = cpu.rflags();
+                rflags.set_carry(initial_carry);
+                cpu.set_rflags(rflags);
+                cpu.set_gp(Gp::RCX.into(), right);
+                cpu.valid_gva = cpu.gp(Gp::RCX.into()).wrapping_add(0x10);
                 cpu.mem_val = left;
             },
         );
 
         assert_eq!(cpu.mem_val, result);
-        assert_eq!(state.rflags & flags, rflags.into());
+        assert_eq!(cpu.rflags() & flags, rflags.into());
     }
 }
 

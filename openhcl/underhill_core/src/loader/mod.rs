@@ -416,61 +416,97 @@ pub fn write_uefi_config(
         entropy
     }));
 
-    let acpi_builder = AcpiTablesBuilder {
-        processor_topology,
-        mem_layout,
-        cache_topology: None,
-        with_ioapic: cfg!(guest_arch = "x86_64"), // underhill always runs with ioapic on x64
-        with_pic: false,                          // uefi never runs with pic or pit
-        with_pit: false,
-        with_psp: platform_config.general.psp_enabled,
-        pm_base: crate::worker::PM_BASE,
-        acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
-    };
+    // We will generate these tables unless trusted tables are passed via DevicePlatformSettings
+    let mut build_madt = true;
+    let mut build_srat = true;
 
-    // Build the ACPI tables as specified.
-    let madt = acpi_builder.build_madt();
-    let srat = acpi_builder.build_srat();
+    // ACPI tables that come from the DevicePlatformSettings
+    // We can only trust these tables from the host if this is not an isolated VM
+    if !isolated {
+        for table in &platform_config.acpi_tables {
+            let header =
+                acpi_spec::Header::ref_from_prefix(table).ok_or(Error::InvalidAcpiTableLength)?;
+            match &header.signature {
+                b"APIC" => {
+                    build_madt = false;
+                    cfg.add_raw(config::BlobStructureType::Madt, table)
+                }
+                b"HMAT" => cfg.add_raw(config::BlobStructureType::Hmat, table),
+                b"IORT" => cfg.add_raw(config::BlobStructureType::Iort, table),
+                b"MCFG" => cfg.add_raw(config::BlobStructureType::Mcfg, table),
+                b"SRAT" => {
+                    build_srat = false;
+                    cfg.add_raw(config::BlobStructureType::Srat, table)
+                }
+                b"SSDT" => cfg.add_raw(config::BlobStructureType::Ssdt, table),
+                _ => return Err(Error::InvalidAcpiTableSignature(header.signature)),
+            };
+        }
+    }
 
     // - Data that comes from the IGVM parameters
+
+    if build_madt || build_srat {
+        let acpi_builder = AcpiTablesBuilder {
+            processor_topology,
+            mem_layout,
+            cache_topology: None,
+            with_ioapic: cfg!(guest_arch = "x86_64"), // OpenHCL always runs with ioapic on x64
+            with_pic: false,                          // uefi never runs with pic or pit
+            with_pit: false,
+            with_psp: platform_config.general.psp_enabled,
+            pm_base: crate::worker::PM_BASE,
+            acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+        };
+
+        // Build the ACPI tables as specified.
+        if build_madt {
+            let madt = acpi_builder.build_madt();
+            cfg.add_raw(config::BlobStructureType::Madt, &madt);
+        }
+
+        if build_srat {
+            let srat = acpi_builder.build_srat();
+            cfg.add_raw(config::BlobStructureType::Srat, &srat);
+        }
+    }
+
     {
-        cfg.add_raw(config::BlobStructureType::Madt, &madt)
-            .add_raw(config::BlobStructureType::Srat, &srat)
-            .add_raw(
-                config::BlobStructureType::MemoryMap,
-                vtl0_memory_map
-                    .iter()
-                    .map(|(range, typ)| config::MemoryRangeV5 {
-                        base_address: range.range.start(),
-                        length: range.range.len(),
-                        flags: convert_range_type_flag(*typ),
-                        reserved: 0,
-                    })
-                    .collect::<Vec<_>>()
-                    .as_bytes(),
-            )
-            .add_raw(
-                config::BlobStructureType::MmioRanges,
-                mem_layout
-                    .mmio()
-                    .iter()
-                    .map(|range| config::Mmio {
-                        mmio_page_number_start: range.start() / HV_PAGE_SIZE,
-                        mmio_size_in_pages: range.len() / HV_PAGE_SIZE,
-                    })
-                    .collect::<Vec<_>>()
-                    .as_bytes(),
-            )
-            .add(&config::ProcessorInformation {
-                max_processor_count: processor_topology.vp_count(),
-                processor_count: processor_topology.vp_count(),
-                processors_per_virtual_socket: processor_topology.reserved_vps_per_socket(),
-                threads_per_processor: if processor_topology.smt_enabled() {
-                    2
-                } else {
-                    1
-                },
-            });
+        cfg.add_raw(
+            config::BlobStructureType::MemoryMap,
+            vtl0_memory_map
+                .iter()
+                .map(|(range, typ)| config::MemoryRangeV5 {
+                    base_address: range.range.start(),
+                    length: range.range.len(),
+                    flags: convert_range_type_flag(*typ),
+                    reserved: 0,
+                })
+                .collect::<Vec<_>>()
+                .as_bytes(),
+        )
+        .add_raw(
+            config::BlobStructureType::MmioRanges,
+            mem_layout
+                .mmio()
+                .iter()
+                .map(|range| config::Mmio {
+                    mmio_page_number_start: range.start() / HV_PAGE_SIZE,
+                    mmio_size_in_pages: range.len() / HV_PAGE_SIZE,
+                })
+                .collect::<Vec<_>>()
+                .as_bytes(),
+        )
+        .add(&config::ProcessorInformation {
+            max_processor_count: processor_topology.vp_count(),
+            processor_count: processor_topology.vp_count(),
+            processors_per_virtual_socket: processor_topology.reserved_vps_per_socket(),
+            threads_per_processor: if processor_topology.smt_enabled() {
+                2
+            } else {
+                1
+            },
+        });
 
         if let Some(slit) = igvm_parameters.slit() {
             cfg.add_raw(config::BlobStructureType::Slit, slit);
@@ -626,22 +662,6 @@ pub fn write_uefi_config(
             gic_distributor_base: processor_topology.gic_distributor_base(),
             gic_redistributors_base: processor_topology.gic_redistributors_base(),
         });
-    }
-
-    // ACPI tables that come from the DevicePlatformSettings
-    // We can only trust these tables from the host if this is not an isolated VM
-    if !isolated {
-        for table in &platform_config.acpi_tables {
-            let header =
-                acpi_spec::Header::ref_from_prefix(table).ok_or(Error::InvalidAcpiTableLength)?;
-            match &header.signature {
-                b"HMAT" => cfg.add_raw(config::BlobStructureType::Hmat, table),
-                b"IORT" => cfg.add_raw(config::BlobStructureType::Iort, table),
-                b"MCFG" => cfg.add_raw(config::BlobStructureType::Mcfg, table),
-                b"SSDT" => cfg.add_raw(config::BlobStructureType::Ssdt, table),
-                _ => return Err(Error::InvalidAcpiTableSignature(header.signature)),
-            };
-        }
     }
 
     // Finally, with the bios config constructed, we can inject it into guest memory

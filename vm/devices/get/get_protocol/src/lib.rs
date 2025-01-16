@@ -1179,8 +1179,11 @@ impl UpdateGenerationId {
 #[bitfield(u64)]
 #[derive(AsBytes, FromBytes, FromZeroes)]
 pub struct SaveGuestVtl2StateFlags {
+    /// Explicitly allow nvme_keepalive feature when servicing.
+    #[bits(1)]
+    pub enable_nvme_keepalive: bool,
     /// Reserved, must be zero.
-    #[bits(64)]
+    #[bits(63)]
     _rsvd1: u64,
 }
 

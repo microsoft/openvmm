@@ -79,7 +79,6 @@ enum AttestationErrorInner {
     ReadGuestSecretKey(#[source] vmgs::ReadFromVmgsError),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 enum GetDerivedKeysError {
     #[error("failed to get ingress/egress keys from the the key protector")]
@@ -114,7 +113,6 @@ enum GetDerivedKeysError {
     DeriveEgressKey(#[source] crypto::KbkdfError),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 enum GetDerivedKeysByIdError {
     #[error("failed to derive an egress key based on current vm bios guid")]
@@ -133,7 +131,6 @@ enum GetDerivedKeysByIdError {
     },
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 enum UnlockVmgsDataStoreError {
     #[error("failed to unlock vmgs with the new ingress key")]
@@ -154,7 +151,6 @@ enum UnlockVmgsDataStoreError {
     PersistAllKeyProtectors(#[source] PersistAllKeyProtectorsError),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 enum PersistAllKeyProtectorsError {
     #[error("failed to write key protector to vmgs")]

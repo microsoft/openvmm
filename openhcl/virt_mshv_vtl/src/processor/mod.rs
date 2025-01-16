@@ -189,7 +189,7 @@ mod private {
 
     pub trait BackingPrivate: 'static + Sized + InspectMut + Sized {
         type HclBacking: hcl::ioctl::Backing;
-        type EmulationCache: Default;
+        type EmulationCache;
         type Shared;
 
         fn shared(shared: &BackingShared) -> &Self::Shared;
@@ -1053,24 +1053,21 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         devices: &D,
         interruption_pending: bool,
         vtl: GuestVtl,
+        cache: T::EmulationCache,
     ) -> Result<(), VpHaltReason<UhRunVpError>>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>:
             virt_support_x86emu::emulate::EmulatorSupport<Error = UhRunVpError>,
     {
         let guest_memory = &self.partition.gm[vtl];
-        virt_support_x86emu::emulate::emulate(
-            &mut UhEmulationState {
-                vp: &mut *self,
-                interruption_pending,
-                devices,
-                vtl,
-                cache: T::EmulationCache::default(),
-            },
-            guest_memory,
+        let mut emulation_state = UhEmulationState {
+            vp: &mut *self,
+            interruption_pending,
             devices,
-        )
-        .await
+            vtl,
+            cache,
+        };
+        virt_support_x86emu::emulate::emulate(&mut emulation_state, guest_memory, devices).await
     }
 
     /// Emulates an instruction due to a memory access exit.
@@ -1080,6 +1077,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         devices: &D,
         intercept_state: &aarch64emu::InterceptState,
         vtl: GuestVtl,
+        cache: T::EmulationCache,
     ) -> Result<(), VpHaltReason<UhRunVpError>>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>:
@@ -1092,7 +1090,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 interruption_pending: intercept_state.interruption_pending,
                 devices,
                 vtl,
-                cache: T::EmulationCache::default(),
+                cache,
             },
             intercept_state,
             guest_memory,
@@ -1217,10 +1215,6 @@ struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing> {
     interruption_pending: bool,
     devices: &'a T,
     vtl: GuestVtl,
-    #[cfg_attr(
-        guest_arch = "x86_64",
-        expect(dead_code, reason = "not used yet in x86_64")
-    )]
     cache: U::EmulationCache,
 }
 

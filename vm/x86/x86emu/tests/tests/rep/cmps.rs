@@ -7,7 +7,8 @@
 use crate::tests::common::run_wide_test;
 use crate::tests::common::RFLAGS_ARITH_MASK;
 use iced_x86::code_asm::*;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 
 #[test]
 fn cmps() {
@@ -28,14 +29,16 @@ fn cmps() {
                 (SCAN_VALUE + 1, 0x85),
                 (SCAN_VALUE - 1, 0),
             ] {
-                let (state, _cpu) = run_wide_test(
+                let mut cpu = run_wide_test(
                     RFLAGS_ARITH_MASK,
                     true,
                     |asm| instruction(asm),
-                    |state, cpu| {
-                        state.rflags.set_direction(direction);
-                        state.gps[CpuState::RSI] = START_GVA;
-                        state.gps[CpuState::RDI] = START_GVA + size as u64;
+                    |cpu| {
+                        let mut rflags = cpu.rflags();
+                        rflags.set_direction(direction);
+                        cpu.set_rflags(rflags);
+                        cpu.set_gp(Gp::RSI.into(), START_GVA);
+                        cpu.set_gp(Gp::RDI.into(), START_GVA + size as u64);
                         cpu.valid_gva = START_GVA;
                         cpu.mem_val = SCAN_VALUE.to_le_bytes()[..size]
                             .iter()
@@ -46,19 +49,19 @@ fn cmps() {
                 );
 
                 assert_eq!(
-                    state.gps[CpuState::RSI],
+                    cpu.gp(Gp::RSI.into()),
                     START_GVA
                         .wrapping_add(if direction { size.wrapping_neg() } else { size } as u64)
                 );
                 assert_eq!(
-                    state.gps[CpuState::RDI],
+                    cpu.gp(Gp::RDI.into()),
                     (START_GVA + size as u64).wrapping_add(if direction {
                         size.wrapping_neg()
                     } else {
                         size
                     } as u64)
                 );
-                assert_eq!(state.rflags & RFLAGS_ARITH_MASK, flags.into());
+                assert_eq!(cpu.rflags() & RFLAGS_ARITH_MASK, flags.into());
             }
         }
     }
