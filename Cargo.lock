@@ -1184,8 +1184,10 @@ dependencies = [
  "block_crypto",
  "disk_backend",
  "disk_crypt_resources",
+ "disklayer_ram",
  "guestmem",
  "inspect",
+ "pal_async",
  "scsi_buffers",
  "thiserror 2.0.0",
  "vm_resource",
@@ -8026,6 +8028,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "futures",
+ "futures-concurrency",
  "guid",
  "inspect",
  "mesh",
@@ -9072,7 +9075,6 @@ dependencies = [
 name = "x86emu"
 version = "0.0.0"
 dependencies = [
- "arbitrary",
  "futures",
  "iced-x86",
  "thiserror 2.0.0",

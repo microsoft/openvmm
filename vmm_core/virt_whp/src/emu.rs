@@ -16,6 +16,7 @@ use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::emulate::TranslateMode;
 use virt_support_x86emu::translate::TranslationRegisters;
+use x86defs::RFlags;
 use x86defs::SegmentRegister;
 
 pub(crate) enum WhpVpRefEmulation<'a> {
@@ -28,6 +29,19 @@ pub(crate) struct WhpEmulationState<'a, 'b, T: CpuIo> {
     vp: &'a mut WhpProcessor<'b>,
     interruption_pending: bool,
     dev: &'a T,
+    cache: WhpEmuCache,
+}
+
+pub(crate) struct WhpEmuCache {
+    /// GP registers, in the canonical order (as defined by `RAX`, etc.).
+    gps: [u64; 16],
+    /// Segment registers, in the canonical order (as defined by `ES`, etc.).
+    segs: [SegmentRegister; 6],
+    rip: u64,
+    rflags: RFlags,
+
+    cr0: u64,
+    efer: u64,
 }
 
 impl<'a, 'b, T: CpuIo> WhpEmulationState<'a, 'b, T> {
@@ -38,11 +52,13 @@ impl<'a, 'b, T: CpuIo> WhpEmulationState<'a, 'b, T> {
         dev: &'a T,
     ) -> Self {
         let interruption_pending = exit.vp_context.ExecutionState.InterruptionPending();
+        let cache = vp.emulator_state();
         Self {
             access,
             vp,
             interruption_pending,
             dev,
+            cache: cache.expect("emulation cannot proceed without reading guest register state"),
         }
     }
 }
@@ -58,12 +74,64 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
         self.vp.vp.partition.caps.vendor
     }
 
-    fn state(&mut self) -> Result<x86emu::CpuState, Self::Error> {
-        self.vp.emulator_state()
+    fn gp(&mut self, reg: x86emu::Gp) -> u64 {
+        self.cache.gps[reg as usize]
     }
 
-    fn set_state(&mut self, state: x86emu::CpuState) -> Result<(), Self::Error> {
-        self.vp.set_emulator_state(&state)
+    fn set_gp(&mut self, reg: x86emu::Gp, v: u64) {
+        self.cache.gps[reg as usize] = v;
+    }
+
+    fn rip(&mut self) -> u64 {
+        self.cache.rip
+    }
+
+    fn set_rip(&mut self, v: u64) {
+        self.cache.rip = v;
+    }
+
+    fn segment(&mut self, reg: x86emu::Segment) -> SegmentRegister {
+        self.cache.segs[reg as usize]
+    }
+
+    fn efer(&mut self) -> u64 {
+        self.cache.efer
+    }
+
+    fn cr0(&mut self) -> u64 {
+        self.cache.cr0
+    }
+
+    fn rflags(&mut self) -> RFlags {
+        self.cache.rflags
+    }
+
+    fn set_rflags(&mut self, v: RFlags) {
+        self.cache.rflags = v;
+    }
+
+    fn xmm(&mut self, reg: usize) -> u128 {
+        assert!(reg < 16);
+        let reg = whp::abi::WHV_REGISTER_NAME(whp::abi::WHvX64RegisterXmm0.0 + reg as u32);
+        let mut value = [Default::default()];
+        let _ = self.vp.current_whp().get_registers(&[reg], &mut value);
+        value[0].0.into()
+    }
+
+    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
+        assert!(reg < 16);
+        let reg = whp::abi::WHV_REGISTER_NAME(whp::abi::WHvX64RegisterXmm0.0 + reg as u32);
+        let value = [whp::abi::WHV_REGISTER_VALUE(value.into())];
+        self.vp
+            .current_whp()
+            .set_registers(&[reg], &value)
+            .map_err(WhpRunVpError::EmulationState)?;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        self.vp.set_emulator_state(&self.cache)?;
+        Ok(())
     }
 
     /// Check if the given gpa is accessible by the current VTL.
@@ -185,28 +253,6 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
         }
     }
 
-    fn get_xmm(&mut self, reg: usize) -> Result<u128, Self::Error> {
-        assert!(reg < 16);
-        let reg = whp::abi::WHV_REGISTER_NAME(whp::abi::WHvX64RegisterXmm0.0 + reg as u32);
-        let mut value = [Default::default()];
-        self.vp
-            .current_whp()
-            .get_registers(&[reg], &mut value)
-            .map_err(WhpRunVpError::EmulationState)?;
-        Ok(value[0].0.into())
-    }
-
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
-        assert!(reg < 16);
-        let reg = whp::abi::WHV_REGISTER_NAME(whp::abi::WHvX64RegisterXmm0.0 + reg as u32);
-        let value = [whp::abi::WHV_REGISTER_VALUE(value.into())];
-        self.vp
-            .current_whp()
-            .set_registers(&[reg], &value)
-            .map_err(WhpRunVpError::EmulationState)?;
-        Ok(())
-    }
-
     fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
         self.vp
             .vp
@@ -293,7 +339,7 @@ fn from_seg_reg(reg: &whp::abi::WHV_X64_SEGMENT_REGISTER) -> SegmentRegister {
 }
 
 impl WhpProcessor<'_> {
-    pub(crate) fn emulator_state(&mut self) -> Result<x86emu::CpuState, WhpRunVpError> {
+    pub(crate) fn emulator_state(&mut self) -> Result<WhpEmuCache, WhpRunVpError> {
         let (
             rip,
             rflags,
@@ -354,7 +400,7 @@ impl WhpProcessor<'_> {
         )
         .map_err(WhpRunVpError::EmulationState)?;
 
-        Ok(x86emu::CpuState {
+        Ok(WhpEmuCache {
             gps: [
                 rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15,
             ],
@@ -373,7 +419,7 @@ impl WhpProcessor<'_> {
         })
     }
 
-    pub fn set_emulator_state(&mut self, state: &x86emu::CpuState) -> Result<(), WhpRunVpError> {
+    pub(crate) fn set_emulator_state(&mut self, state: &WhpEmuCache) -> Result<(), WhpRunVpError> {
         whp::set_registers!(
             self.current_whp(),
             [

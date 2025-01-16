@@ -3,7 +3,7 @@
 
 [package]
 name = "mesh_protobuf"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]

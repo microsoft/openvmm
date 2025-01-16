@@ -36,10 +36,7 @@ impl<T: Cpu> Emulator<'_, T> {
             OpKind::Register => {
                 let reg = instr.op1_register();
                 assert!(reg.is_xmm());
-                let xmm_index = reg.number();
-                self.cpu
-                    .get_xmm(xmm_index)
-                    .map_err(|err| Error::XmmRegister(xmm_index, super::OperationKind::Read, err))?
+                self.cpu.xmm(reg.number())
             }
             _ => Err(self.unsupported_instruction(instr))?,
         };
@@ -66,7 +63,7 @@ impl<T: Cpu> Emulator<'_, T> {
     ) -> Result<(), InternalError<T::Error>> {
         let mut buffer = [0; 64];
         let src = self.memory_op_offset(instr, 1);
-        let dst = self.state.get_gp(instr.op0_register());
+        let dst = self.cpu.gp(instr.op0_register().into());
 
         self.read_memory(
             instr.memory_segment(),

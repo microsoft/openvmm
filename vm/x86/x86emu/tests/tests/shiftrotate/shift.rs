@@ -4,7 +4,8 @@
 use crate::tests::common::run_test;
 use crate::tests::common::RFLAGS_LOGIC_MASK;
 use iced_x86::code_asm::*;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 
 const COUNT_MASK32: u64 = 0x1f;
 const COUNT_MASK64: u64 = 0x3f;
@@ -27,18 +28,18 @@ fn shift_memory_by_regvalue(
             RFLAGS_LOGIC_MASK
         };
 
-        let (state, cpu) = run_test(
+        let mut cpu = run_test(
             flags,
             |asm| shift_op(asm, ptr_op(rcx + 0x10), cl),
-            |state, cpu| {
-                state.gps[CpuState::RCX] = right;
-                cpu.valid_gva = state.gps[CpuState::RCX].wrapping_add(0x10);
+            |cpu| {
+                cpu.set_gp(Gp::RCX.into(), right);
+                cpu.valid_gva = cpu.gp(Gp::RCX.into()).wrapping_add(0x10);
                 cpu.mem_val = left;
             },
         );
 
         assert_eq!(cpu.mem_val, result);
-        assert_eq!(state.rflags & flags, rflags.into());
+        assert_eq!(cpu.rflags() & flags, rflags.into());
     }
 }
 

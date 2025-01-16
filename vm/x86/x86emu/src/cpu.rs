@@ -3,7 +3,11 @@
 
 //! Trait for asynchronous callouts from the emulator to the VM.
 
+use crate::registers::RegisterIndex;
+use crate::registers::Segment;
 use std::future::Future;
+use x86defs::RFlags;
+use x86defs::SegmentRegister;
 
 /// Trait for asynchronous callouts from the emulator to the VM.
 pub trait Cpu {
@@ -56,10 +60,18 @@ pub trait Cpu {
         bytes: &[u8],
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
-    /// Gets the value of an XMM* register.
-    fn get_xmm(&mut self, reg: usize) -> Result<u128, Self::Error>;
-    /// Sets the value of an XMM* register.
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error>;
+    fn gp(&mut self, reg: RegisterIndex) -> u64;
+    fn gp_sign_extend(&mut self, reg: RegisterIndex) -> i64;
+    fn set_gp(&mut self, reg: RegisterIndex, v: u64);
+    fn xmm(&mut self, index: usize) -> u128;
+    fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error>;
+    fn rip(&mut self) -> u64;
+    fn set_rip(&mut self, v: u64);
+    fn segment(&mut self, index: Segment) -> SegmentRegister;
+    fn efer(&mut self) -> u64;
+    fn cr0(&mut self) -> u64;
+    fn rflags(&mut self) -> RFlags;
+    fn set_rflags(&mut self, v: RFlags);
 }
 
 impl<T: Cpu + ?Sized> Cpu for &mut T {
@@ -109,11 +121,51 @@ impl<T: Cpu + ?Sized> Cpu for &mut T {
         (*self).write_io(io_port, bytes)
     }
 
-    fn get_xmm(&mut self, reg: usize) -> Result<u128, Self::Error> {
-        (*self).get_xmm(reg)
+    fn gp(&mut self, reg: RegisterIndex) -> u64 {
+        (*self).gp(reg)
     }
 
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
-        (*self).set_xmm(reg, value)
+    fn gp_sign_extend(&mut self, reg: RegisterIndex) -> i64 {
+        (*self).gp_sign_extend(reg)
+    }
+
+    fn set_gp(&mut self, reg: RegisterIndex, v: u64) {
+        (*self).set_gp(reg, v)
+    }
+
+    fn xmm(&mut self, index: usize) -> u128 {
+        (*self).xmm(index)
+    }
+
+    fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error> {
+        (*self).set_xmm(index, v)
+    }
+
+    fn rip(&mut self) -> u64 {
+        (*self).rip()
+    }
+
+    fn set_rip(&mut self, v: u64) {
+        (*self).set_rip(v);
+    }
+
+    fn segment(&mut self, index: Segment) -> SegmentRegister {
+        (*self).segment(index)
+    }
+
+    fn efer(&mut self) -> u64 {
+        (*self).efer()
+    }
+
+    fn cr0(&mut self) -> u64 {
+        (*self).cr0()
+    }
+
+    fn rflags(&mut self) -> RFlags {
+        (*self).rflags()
+    }
+
+    fn set_rflags(&mut self, v: RFlags) {
+        (*self).set_rflags(v);
     }
 }

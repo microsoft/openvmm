@@ -4,23 +4,26 @@
 use crate::tests::common::run_test;
 use crate::tests::common::RFLAGS_ARITH_MASK;
 use iced_x86::code_asm::*;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 
 fn sbb_regvalue_to_memory(variations: &[(u64, u64, u64, u64)], carry: bool) {
     for &(left, right, result, rflags) in variations {
-        let (state, _cpu) = run_test(
+        let mut cpu = run_test(
             RFLAGS_ARITH_MASK,
             |asm| asm.sbb(eax, dword_ptr(rax + 0x10)),
-            |state, cpu| {
-                state.rflags.set_carry(carry);
-                state.gps[CpuState::RAX] = left;
-                cpu.valid_gva = state.gps[CpuState::RAX].wrapping_add(0x10);
+            |cpu| {
+                let mut rflags = cpu.rflags();
+                rflags.set_carry(carry);
+                cpu.set_rflags(rflags);
+                cpu.set_gp(Gp::RAX.into(), left);
+                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
                 cpu.mem_val = right;
             },
         );
 
-        assert_eq!(state.gps[CpuState::RAX], result);
-        assert_eq!(state.rflags & RFLAGS_ARITH_MASK, rflags.into());
+        assert_eq!(cpu.gp(Gp::RAX.into()), result);
+        assert_eq!(cpu.rflags() & RFLAGS_ARITH_MASK, rflags.into());
     }
 }
 

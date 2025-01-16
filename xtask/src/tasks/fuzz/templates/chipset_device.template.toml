@@ -3,9 +3,8 @@
 
 [package]
 name = "$FUZZ_CRATE_NAME$"
-version = "0.0.0"
 publish = false
-edition = "2021"
+edition.workspace = true
 
 [dependencies]
 $PARENT$.workspace = true

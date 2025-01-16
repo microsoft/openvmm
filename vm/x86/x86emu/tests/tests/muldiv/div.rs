@@ -4,7 +4,8 @@
 use crate::tests::common::run_test;
 use iced_x86::code_asm::*;
 use x86defs::RFlags;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 
 const RFLAGS_DIV_MASK: RFlags = RFlags::new();
 
@@ -14,19 +15,19 @@ fn divide_regvalue_by_memory(
     ptr_op: impl Fn(AsmMemoryOperand) -> AsmMemoryOperand,
 ) {
     for &(left_high, left_low, right, quotient, remainder) in variations {
-        let (state, _cpu) = run_test(
+        let mut cpu = run_test(
             RFLAGS_DIV_MASK,
             |asm| div_op(asm, ptr_op(rax + 0x10)),
-            |state, cpu| {
-                state.gps[CpuState::RAX] = left_low;
-                state.gps[CpuState::RDX] = (left_high).unwrap_or(0);
-                cpu.valid_gva = state.gps[CpuState::RAX].wrapping_add(0x10);
+            |cpu| {
+                cpu.set_gp(Gp::RAX.into(), left_low);
+                cpu.set_gp(Gp::RDX.into(), (left_high).unwrap_or(0));
+                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
                 cpu.mem_val = right;
             },
         );
 
-        assert_eq!(state.gps[CpuState::RAX], quotient);
-        assert_eq!(state.gps[CpuState::RDX], remainder);
+        assert_eq!(cpu.gp(Gp::RAX.into()), quotient);
+        assert_eq!(cpu.gp(Gp::RDX.into()), remainder);
     }
 }
 

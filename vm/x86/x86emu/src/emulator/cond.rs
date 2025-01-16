@@ -13,7 +13,7 @@ impl<T: Cpu> Emulator<'_, T> {
         &mut self,
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
-        let value = eval_cond(instr, self.state.rflags);
+        let value = eval_cond(instr, self.cpu.rflags());
         self.write_op_0(instr, value as u64).await?;
         Ok(())
     }
@@ -24,7 +24,7 @@ impl<T: Cpu> Emulator<'_, T> {
     ) -> Result<(), InternalError<T::Error>> {
         // CMOV always writes to the destination register. This may seem like a no-op on false conditions, but
         // actually can cause truncation when the destination is a 32-bit register.
-        let src_op = if eval_cond(instr, self.state.rflags) {
+        let src_op = if eval_cond(instr, self.cpu.rflags()) {
             1
         } else {
             0

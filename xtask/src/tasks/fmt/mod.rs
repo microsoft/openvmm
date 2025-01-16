@@ -5,7 +5,6 @@ mod house_rules;
 mod rustfmt;
 mod unused_deps;
 mod verify_flowey;
-mod verify_lints;
 mod workspace;
 
 use crate::Xtask;
@@ -53,7 +52,6 @@ enum PassName {
     HouseRules,
     Rustfmt,
     UnusedDeps,
-    VerifyLints,
     VerifyWorkspace,
     VerifyFuzzers,
     VerifyFlowey,
@@ -65,7 +63,6 @@ impl PassName {
             PassName::HouseRules => "house-rules",
             PassName::Rustfmt => "rustfmt",
             PassName::UnusedDeps => "unused-deps",
-            PassName::VerifyLints => "verify-lints",
             PassName::VerifyWorkspace => "verify-workspace",
             PassName::VerifyFuzzers => "verify-fuzzers",
             PassName::VerifyFlowey => "verify-flowey",
@@ -78,7 +75,6 @@ enum Passes {
     HouseRules(house_rules::HouseRules),
     Rustfmt(rustfmt::Rustfmt),
     UnusedDeps(unused_deps::UnusedDeps),
-    VerifyLints(verify_lints::VerifyLints),
     VerifyWorkspace(workspace::VerifyWorkspace),
     VerifyFuzzers(crate::tasks::fuzz::VerifyFuzzers),
     VerifyFlowey(verify_flowey::VerifyFlowey),
@@ -96,7 +92,6 @@ impl Xtask for Fmt {
                 Passes::UnusedDeps(cmd) => cmd.run(ctx)?,
                 Passes::Rustfmt(cmd) => cmd.run(ctx)?,
                 Passes::HouseRules(cmd) => cmd.run(ctx)?,
-                Passes::VerifyLints(cmd) => cmd.run(ctx)?,
                 Passes::VerifyWorkspace(cmd) => cmd.run(ctx)?,
                 Passes::VerifyFuzzers(cmd) => cmd.run(ctx)?,
                 Passes::VerifyFlowey(cmd) => cmd.run(ctx)?,
@@ -142,7 +137,6 @@ impl Xtask for Fmt {
                     PassName::HouseRules,
                     PassName::Rustfmt,
                     PassName::UnusedDeps,
-                    PassName::VerifyLints,
                     PassName::VerifyWorkspace,
                     PassName::VerifyFuzzers,
                     PassName::VerifyFlowey,
@@ -164,9 +158,6 @@ impl Xtask for Fmt {
                         }),
                         PassName::UnusedDeps => wrapper(&ctx, name, {
                             move |ctx| unused_deps::UnusedDeps { fix }.run(ctx)
-                        }),
-                        PassName::VerifyLints => wrapper(&ctx, name, {
-                            move |ctx| verify_lints::VerifyLints { fix }.run(ctx)
                         }),
                         PassName::VerifyWorkspace => wrapper(&ctx, name, {
                             move |ctx| workspace::VerifyWorkspace.run(ctx)

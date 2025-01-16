@@ -3,7 +3,7 @@
 
 [package]
 name = "scsi_defs"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]

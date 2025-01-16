@@ -3,7 +3,7 @@
 
 //! Functions to help parse instructions.
 
-use crate::CpuState;
+use crate::Cpu;
 use iced_x86::CodeSize;
 use iced_x86::Instruction;
 use iced_x86::Register;
@@ -26,11 +26,11 @@ pub fn address_size(instr: &Instruction) -> usize {
     }
 }
 
-pub fn memory_op_offset(state: &CpuState, instr: &Instruction, operand: u32) -> u64 {
+pub fn memory_op_offset<T: Cpu>(cpu: &mut T, instr: &Instruction, operand: u32) -> u64 {
     instr
         .virtual_address(operand, 0, |reg, _element_index, _element_size| {
             if reg.is_gpr() {
-                Some(state.get_gp(reg))
+                Some(cpu.gp(reg.into()))
             } else if reg.is_segment_register() {
                 // The segment base is ignored since it's applied in compute_and_validate_gva.
                 Some(0)

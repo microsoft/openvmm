@@ -6,7 +6,18 @@ use virt::VpIndex;
 use x86defs::RFlags;
 use x86defs::SegmentAttributes;
 use x86defs::SegmentRegister;
-use x86emu::CpuState;
+
+pub struct CpuState {
+    /// GP registers, in the canonical order (as defined by `RAX`, etc.).
+    pub gps: [u64; 16],
+    /// Segment registers, in the canonical order (as defined by `ES`, etc.).
+    pub segs: [SegmentRegister; 6],
+    pub rip: u64,
+    pub rflags: RFlags,
+
+    pub cr0: u64,
+    pub efer: u64,
+}
 
 /// Return [`CpuState`] that has long mode and protected mode enabled
 ///

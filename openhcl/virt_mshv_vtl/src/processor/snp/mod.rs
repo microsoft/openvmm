@@ -69,6 +69,8 @@ use x86defs::snp::SevSelector;
 use x86defs::snp::SevStatusMsr;
 use x86defs::snp::SevVmsa;
 use x86defs::snp::Vmpl;
+use x86defs::RFlags;
+use x86defs::SegmentRegister;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
@@ -482,7 +484,7 @@ impl BackingPrivate for SnpBacked {
                 return true;
             }
 
-            if (check_rflags && !x86defs::RFlags::from_bits(vmsa.rflags()).interrupt_enable())
+            if (check_rflags && !RFlags::from_bits(vmsa.rflags()).interrupt_enable())
                 || vmsa.v_intr_cntrl().intr_shadow()
                 || !vmsa.v_intr_cntrl().irq()
             {
@@ -1164,7 +1166,7 @@ impl UhProcessor<'_, SnpBacked> {
             SevExitCode::IOIO => {
                 let io_info = x86defs::snp::SevIoAccessInfo::from(vmsa.exit_info1() as u32);
                 if io_info.string_access() || io_info.rep_access() {
-                    self.emulate(dev, false, entered_from_vtl).await?;
+                    self.emulate(dev, false, entered_from_vtl, ()).await?;
                 } else {
                     let len = if io_info.access_size32() {
                         4
@@ -1262,7 +1264,7 @@ impl UhProcessor<'_, SnpBacked> {
 
                 if emulate {
                     has_intercept = false;
-                    self.emulate(dev, false, entered_from_vtl).await?;
+                    self.emulate(dev, false, entered_from_vtl, ()).await?;
                     &mut self.backing.exit_stats[entered_from_vtl].npf
                 } else {
                     &mut self.backing.exit_stats[entered_from_vtl].npf_spurious
@@ -1434,6 +1436,11 @@ impl UhProcessor<'_, SnpBacked> {
 impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
     type Error = UhRunVpError;
 
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+        //AMD SNP does not require an emulation cache
+    }
+
     fn vp_index(&self) -> VpIndex {
         self.vp.vp_index()
     }
@@ -1442,83 +1449,102 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         self.vp.partition.caps.vendor
     }
 
-    fn state(&mut self) -> Result<x86emu::CpuState, Self::Error> {
+    fn gp(&mut self, reg: x86emu::Gp) -> u64 {
         let vmsa = self.vp.runner.vmsa(self.vtl);
-        Ok(x86emu::CpuState {
-            gps: [
-                vmsa.rax(),
-                vmsa.rcx(),
-                vmsa.rdx(),
-                vmsa.rbx(),
-                vmsa.rsp(),
-                vmsa.rbp(),
-                vmsa.rsi(),
-                vmsa.rdi(),
-                vmsa.r8(),
-                vmsa.r9(),
-                vmsa.r10(),
-                vmsa.r11(),
-                vmsa.r12(),
-                vmsa.r13(),
-                vmsa.r14(),
-                vmsa.r15(),
-            ],
-            segs: [
-                from_seg(hv_seg_from_snp(&vmsa.es())),
-                from_seg(hv_seg_from_snp(&vmsa.cs())),
-                from_seg(hv_seg_from_snp(&vmsa.ss())),
-                from_seg(hv_seg_from_snp(&vmsa.ds())),
-                from_seg(hv_seg_from_snp(&vmsa.fs())),
-                from_seg(hv_seg_from_snp(&vmsa.gs())),
-            ],
-            rip: vmsa.rip(),
-            rflags: vmsa.rflags().into(),
-            cr0: vmsa.cr0(),
-            efer: vmsa.efer(),
-        })
+        match reg {
+            x86emu::Gp::RAX => vmsa.rax(),
+            x86emu::Gp::RCX => vmsa.rcx(),
+            x86emu::Gp::RDX => vmsa.rdx(),
+            x86emu::Gp::RBX => vmsa.rbx(),
+            x86emu::Gp::RSP => vmsa.rsp(),
+            x86emu::Gp::RBP => vmsa.rbp(),
+            x86emu::Gp::RSI => vmsa.rsi(),
+            x86emu::Gp::RDI => vmsa.rdi(),
+            x86emu::Gp::R8 => vmsa.r8(),
+            x86emu::Gp::R9 => vmsa.r9(),
+            x86emu::Gp::R10 => vmsa.r10(),
+            x86emu::Gp::R11 => vmsa.r11(),
+            x86emu::Gp::R12 => vmsa.r12(),
+            x86emu::Gp::R13 => vmsa.r13(),
+            x86emu::Gp::R14 => vmsa.r14(),
+            x86emu::Gp::R15 => vmsa.r15(),
+        }
     }
 
-    fn set_state(&mut self, state: x86emu::CpuState) -> Result<(), Self::Error> {
+    fn set_gp(&mut self, reg: x86emu::Gp, v: u64) {
         let mut vmsa = self.vp.runner.vmsa_mut(self.vtl);
-        let x86emu::CpuState {
-            gps: [rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15],
-            segs: _, // immutable
-            rip,
-            rflags,
-            cr0: _,  // immutable
-            efer: _, // immutable
-        } = state;
-        vmsa.set_rax(rax);
-        vmsa.set_rcx(rcx);
-        vmsa.set_rdx(rdx);
-        vmsa.set_rbx(rbx);
-        vmsa.set_rsp(rsp);
-        vmsa.set_rbp(rbp);
-        vmsa.set_rsi(rsi);
-        vmsa.set_rdi(rdi);
-        vmsa.set_r8(r8);
-        vmsa.set_r9(r9);
-        vmsa.set_r10(r10);
-        vmsa.set_r11(r11);
-        vmsa.set_r12(r12);
-        vmsa.set_r13(r13);
-        vmsa.set_r14(r14);
-        vmsa.set_r15(r15);
-        vmsa.set_rip(rip);
-        vmsa.set_rflags(rflags.into());
-        Ok(())
+        match reg {
+            x86emu::Gp::RAX => vmsa.set_rax(v),
+            x86emu::Gp::RCX => vmsa.set_rcx(v),
+            x86emu::Gp::RDX => vmsa.set_rdx(v),
+            x86emu::Gp::RBX => vmsa.set_rbx(v),
+            x86emu::Gp::RSP => vmsa.set_rsp(v),
+            x86emu::Gp::RBP => vmsa.set_rbp(v),
+            x86emu::Gp::RSI => vmsa.set_rsi(v),
+            x86emu::Gp::RDI => vmsa.set_rdi(v),
+            x86emu::Gp::R8 => vmsa.set_r8(v),
+            x86emu::Gp::R9 => vmsa.set_r9(v),
+            x86emu::Gp::R10 => vmsa.set_r10(v),
+            x86emu::Gp::R11 => vmsa.set_r11(v),
+            x86emu::Gp::R12 => vmsa.set_r12(v),
+            x86emu::Gp::R13 => vmsa.set_r13(v),
+            x86emu::Gp::R14 => vmsa.set_r14(v),
+            x86emu::Gp::R15 => vmsa.set_r15(v),
+        };
     }
 
-    fn get_xmm(&mut self, reg: usize) -> Result<u128, Self::Error> {
-        Ok(self.vp.runner.vmsa(self.vtl).xmm_registers(reg))
+    fn xmm(&mut self, index: usize) -> u128 {
+        self.vp.runner.vmsa_mut(self.vtl).xmm_registers(index)
     }
 
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error> {
         self.vp
             .runner
             .vmsa_mut(self.vtl)
-            .set_xmm_registers(reg, value);
+            .set_xmm_registers(index, v);
         Ok(())
+    }
+
+    fn rip(&mut self) -> u64 {
+        let vmsa = self.vp.runner.vmsa(self.vtl);
+        vmsa.rip()
+    }
+
+    fn set_rip(&mut self, v: u64) {
+        let mut vmsa = self.vp.runner.vmsa_mut(self.vtl);
+        vmsa.set_rip(v);
+    }
+
+    fn segment(&mut self, index: x86emu::Segment) -> SegmentRegister {
+        let vmsa = self.vp.runner.vmsa(self.vtl);
+        match index {
+            x86emu::Segment::ES => from_seg(hv_seg_from_snp(&vmsa.es())),
+            x86emu::Segment::CS => from_seg(hv_seg_from_snp(&vmsa.cs())),
+            x86emu::Segment::SS => from_seg(hv_seg_from_snp(&vmsa.ss())),
+            x86emu::Segment::DS => from_seg(hv_seg_from_snp(&vmsa.ds())),
+            x86emu::Segment::FS => from_seg(hv_seg_from_snp(&vmsa.fs())),
+            x86emu::Segment::GS => from_seg(hv_seg_from_snp(&vmsa.gs())),
+        }
+    }
+
+    fn efer(&mut self) -> u64 {
+        let vmsa = self.vp.runner.vmsa(self.vtl);
+        vmsa.efer()
+    }
+
+    fn cr0(&mut self) -> u64 {
+        let vmsa = self.vp.runner.vmsa(self.vtl);
+        vmsa.cr0()
+    }
+
+    fn rflags(&mut self) -> RFlags {
+        let vmsa = self.vp.runner.vmsa(self.vtl);
+        vmsa.rflags().into()
+    }
+
+    fn set_rflags(&mut self, v: RFlags) {
+        let mut vmsa = self.vp.runner.vmsa_mut(self.vtl);
+        vmsa.set_rflags(v.into());
     }
 
     fn instruction_bytes(&self) -> &[u8] {

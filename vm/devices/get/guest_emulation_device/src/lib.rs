@@ -204,9 +204,6 @@ struct VmgsState {
     disk: Disk,
     /// Memory for the disk to DMA to/from.
     mem: GuestMemory,
-    /// Memory to buffer data for sending to the guest.
-    #[inspect(skip)]
-    buf: Vec<u8>,
 }
 
 impl GuestEmulationDevice {
@@ -228,7 +225,6 @@ impl GuestEmulationDevice {
             vmgs: vmgs_disk.map(|disk| VmgsState {
                 disk,
                 mem: GuestMemory::allocate(MAX_PAYLOAD_SIZE),
-                buf: vec![0; MAX_PAYLOAD_SIZE],
             }),
             save_restore_buf: None,
             waiting_for_vtl0_start: Vec::new(),
@@ -649,7 +645,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 vmgs.disk.sector_count(),
                 vmgs.disk.sector_size().try_into().unwrap(),
                 vmgs.disk.physical_sector_size().try_into().unwrap(),
-                vmgs.buf.len().try_into().unwrap(),
+                MAX_PAYLOAD_SIZE as u32,
             )
         } else {
             get_protocol::VmgsGetDeviceInfoResponse::new(VmgsIoStatus::DEVICE_ERROR, 0, 0, 0, 0)
@@ -685,11 +681,13 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 )
                 .await
             {
-                Ok(()) => {
-                    let payload = &mut vmgs.buf[..len as usize];
-                    vmgs.mem.read_at(0, payload).unwrap();
-                    (VmgsIoStatus::SUCCESS, &*payload)
-                }
+                Ok(()) => (
+                    VmgsIoStatus::SUCCESS,
+                    &vmgs
+                        .mem
+                        .inner_buf_mut()
+                        .expect("memory should not be aliased")[..len as usize],
+                ),
                 Err(err) => {
                     tracelimit::error_ratelimited!(
                         error = &err as &dyn std::error::Error,

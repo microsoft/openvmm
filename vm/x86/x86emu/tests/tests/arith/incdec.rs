@@ -6,14 +6,15 @@ use crate::tests::common::LockTestBehavior;
 use crate::tests::common::RFLAGS_ARITH_MASK;
 use iced_x86::code_asm::*;
 use x86defs::RFlags;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 
 /// The mask of flags that are changed by an inc/dec operation.
 const RFLAGS_INC_MASK: RFlags = RFLAGS_ARITH_MASK.with_carry(false);
 
 fn incdec(variations: &[(u64, u64)], inc: bool) {
     for &(value, rflags) in variations {
-        let (state, cpu) = run_lockable_test(
+        let mut cpu = run_lockable_test(
             RFLAGS_INC_MASK,
             LockTestBehavior::Fail,
             |asm| {
@@ -23,8 +24,8 @@ fn incdec(variations: &[(u64, u64)], inc: bool) {
                     asm.dec(qword_ptr(rax + 0x10))
                 }
             },
-            |state, cpu| {
-                cpu.valid_gva = state.gps[CpuState::RAX].wrapping_add(0x10);
+            |cpu| {
+                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
                 cpu.mem_val = value;
             },
         );
@@ -33,7 +34,7 @@ fn incdec(variations: &[(u64, u64)], inc: bool) {
             cpu.mem_val,
             value.wrapping_add_signed(if inc { 1 } else { -1 })
         );
-        assert_eq!(state.rflags & RFLAGS_INC_MASK, rflags.into());
+        assert_eq!(cpu.rflags() & RFLAGS_INC_MASK, rflags.into());
     }
 }
 
