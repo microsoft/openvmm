@@ -79,6 +79,8 @@ use guestmem::MemoryWrite;
 use inspect::Inspect;
 use rusqlite::Connection;
 use scsi_buffers::RequestBuffers;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Formatting parameters provided to [`FormatOnAttachSqliteDiskLayer::new`].
@@ -106,10 +108,8 @@ pub struct FormatParams {
 
 /// A disk layer backed by sqlite, which lazily infers its topology from the
 /// layer it is being stacked on-top of.
-#[derive(Inspect)]
-#[non_exhaustive]
 pub struct FormatOnAttachSqliteDiskLayer {
-    dbhd_path: String,
+    dbhd_path: PathBuf,
     read_only: bool,
     format_dbhd: IncompleteFormatParams,
 }
@@ -117,16 +117,12 @@ pub struct FormatOnAttachSqliteDiskLayer {
 impl FormatOnAttachSqliteDiskLayer {
     /// Create a new sqlite-backed disk layer, which is formatted when it is
     /// attached.
-    pub fn new(
-        dbhd_path: String,
-        read_only: bool,
-        format_dbhd: IncompleteFormatParams,
-    ) -> anyhow::Result<Self> {
-        Ok(Self {
+    pub fn new(dbhd_path: PathBuf, read_only: bool, format_dbhd: IncompleteFormatParams) -> Self {
+        Self {
             dbhd_path,
             read_only,
             format_dbhd,
-        })
+        }
     }
 }
 
@@ -136,13 +132,12 @@ pub struct SqliteDiskLayer {
     #[inspect(skip)]
     conn: Arc<Mutex<Connection>>, // FUTURE: switch to connection-pool instead
     meta: schema::DiskMeta,
-    read_only: bool,
 }
 
 impl SqliteDiskLayer {
     /// Create a new sqlite-backed disk layer.
     pub fn new(
-        dbhd_path: String,
+        dbhd_path: &Path,
         read_only: bool,
         format_dbhd: Option<FormatParams>,
     ) -> anyhow::Result<Self> {
@@ -232,7 +227,6 @@ impl SqliteDiskLayer {
         Ok(SqliteDiskLayer {
             conn: Arc::new(Mutex::new(conn)),
             meta,
-            read_only,
         })
     }
 
@@ -242,7 +236,7 @@ impl SqliteDiskLayer {
         sector: u64,
         overwrite: bool,
     ) -> Result<(), DiskError> {
-        assert!(!self.read_only);
+        assert!(!(overwrite && self.meta.logically_read_only));
 
         let count = buffers.len() / self.meta.sector_size as usize;
         tracing::trace!(sector, count, "write");
@@ -281,7 +275,7 @@ impl LayerAttach for FormatOnAttachSqliteDiskLayer {
         let sector_size = lower_layer_metadata.map(|x| x.sector_size).unwrap_or(512);
 
         SqliteDiskLayer::new(
-            self.dbhd_path,
+            &self.dbhd_path,
             self.read_only,
             Some(FormatParams {
                 logically_read_only: self.format_dbhd.logically_read_only,
@@ -306,7 +300,7 @@ impl LayerIo for SqliteDiskLayer {
     }
 
     fn is_read_only(&self) -> bool {
-        self.read_only
+        self.meta.logically_read_only
     }
 
     fn disk_id(&self) -> Option<[u8; 16]> {

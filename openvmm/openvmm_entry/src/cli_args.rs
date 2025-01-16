@@ -637,6 +637,11 @@ pub enum DiskCliKind {
         create: bool,
         disk: Box<DiskCliKind>,
     },
+    // autocache:[key]:<kind>
+    AutoCacheSqlite {
+        key: String,
+        disk: Box<DiskCliKind>,
+    },
     // prwrap:<kind>
     PersistentReservationsWrapper(Box<DiskCliKind>),
     // file:<path>
@@ -713,6 +718,13 @@ impl FromStr for DiskCliKind {
                             create: false,
                             disk,
                         },
+                    }
+                }
+                "autocache" => {
+                    let (key, kind) = arg.split_once(':').context("expected [key]:kind")?;
+                    DiskCliKind::AutoCacheSqlite {
+                        key: key.to_string(),
+                        disk: Box::new(kind.parse()?),
                     }
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),

@@ -113,9 +113,6 @@ pub enum InvalidLayer {
     /// Read caching was requested but is not supported.
     #[error("read caching was requested but is not supported")]
     ReadCacheNotSupported,
-    /// Caching was requested but the layer is read only.
-    #[error("caching was requested but the layer is read only")]
-    ReadOnlyCache,
     /// The sector size is invalid.
     #[error("sector size {0} is invalid")]
     InvalidSectorSize(u32),
@@ -204,9 +201,6 @@ impl LayeredDisk {
                 // perform some layer validation prior to attaching subsequent layers
                 if read_cache && !layer_meta.can_read_cache {
                     return Err(layer_error(InvalidLayer::ReadCacheNotSupported));
-                }
-                if (read_cache || write_through) && layer_meta.read_only {
-                    return Err(layer_error(InvalidLayer::ReadOnlyCache));
                 }
                 if !layer_meta.sector_size.is_power_of_two() {
                     return Err(layer_error(InvalidLayer::InvalidSectorSize(
@@ -413,7 +407,7 @@ impl<T: LayerIo> DynLayerIo for T {
     }
 }
 
-trait DynLayerAttach: Send + Sync + Inspect {
+trait DynLayerAttach: Send + Sync {
     fn attach(
         self: Box<Self>,
         lower_layer_metadata: Option<DiskLayerMetadata>,
@@ -458,7 +452,7 @@ impl<T: LayerAttach> DynLayerAttach for T {
 /// which are pre-initialized with a fixed set of metadata) can simply implement
 /// `LayerIo` directly, and leverage the blanket-impl of `impl<T: LayerIo>
 /// LayerAttach for T` which simply returns `Self` during the state transition.
-pub trait LayerAttach: 'static + Send + Sync + Inspect {
+pub trait LayerAttach: 'static + Send + Sync {
     /// Error returned if on attach failure.
     type Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>;
     /// Object implementating [`LayerIo`] after being attached.
@@ -521,7 +515,10 @@ pub trait LayerIo: 'static + Send + Sync + Inspect {
     /// committed to disk.
     fn is_fua_respected(&self) -> bool;
 
-    /// Returns true if the layer is read only.
+    /// Returns true if the layer is logically read only.
+    ///
+    /// If this returns true, the layer might still be writable via
+    /// `write_no_overwrite`, used to populate the layer as a read cache.
     fn is_read_only(&self) -> bool;
 
     /// Issues an asynchronous flush operation to the disk.

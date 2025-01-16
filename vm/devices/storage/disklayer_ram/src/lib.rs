@@ -34,7 +34,6 @@ use thiserror::Error;
 
 /// A disk layer backed by RAM, which lazily infers its topology from the layer
 /// it is being stacked on-top of
-#[derive(Inspect)]
 #[non_exhaustive]
 pub struct LazyRamDiskLayer {}
 

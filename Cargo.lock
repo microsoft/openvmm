@@ -1370,6 +1370,7 @@ dependencies = [
  "disk_backend",
  "disk_backend_resources",
  "disk_layered",
+ "fs-err",
  "futures",
  "guestmem",
  "inspect",
