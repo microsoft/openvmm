@@ -839,7 +839,6 @@ fn resolve_flow_as_github_yaml_steps(
                 for gh_var_state in rust_to_gh {
                     let mut cmd = String::new();
 
-                    // flowey considers all GitHub vars to be typed as raw strings
                     let set_gh_env_var = var_db_cmd(
                         &gh_var_state.backing_var,
                         gh_var_state.is_secret,
@@ -887,7 +886,6 @@ fn resolve_flow_as_github_yaml_steps(
                 }
 
                 for gh_var_state in gh_to_rust {
-                    // flowey considers all GitHub vars to be typed as raw strings
                     let write_rust_var = var_db_cmd(
                         &gh_var_state.backing_var,
                         gh_var_state.is_secret,

@@ -524,7 +524,6 @@ impl Node {
         let parent_path = ctx
             .get_gh_context_var()
             .global(GhContextVar::GITHUB__WORKSPACE);
-        let test_pull_request_event = ctx.get_gh_context_var().event().pull_request();
         ctx.emit_rust_step("report cloned repo directories", move |ctx| {
             did_checkouts.claim(ctx);
             let mut registered_repos = registered_repos.into_iter().map(|(k, (a, b))| (k, (a, b.claim(ctx)))).collect::<BTreeMap<_, _>>();
@@ -535,11 +534,9 @@ impl Node {
                 })
                 .collect::<Vec<_>>();
             let parent_path = parent_path.claim(ctx);
-            let test_pull_request_event = test_pull_request_event.claim(ctx);
 
             move |rt| {
                 let mut checkout_reqs = BTreeMap::<(String, bool), Vec<ClaimedWriteVar<PathBuf>>>::new();
-                println!("pull request head ref: {:?}", rt.read(test_pull_request_event).expect("pull_request_event").head.head_ref);
                 for (repo_id, repo_path, persist_credentials) in checkout_repo {
                     checkout_reqs
                         .entry((rt.read(repo_id), persist_credentials))

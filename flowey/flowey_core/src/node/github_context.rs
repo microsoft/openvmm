@@ -3,8 +3,14 @@
 
 //! Core types and traits used to read GitHub context variables.
 
-use crate::node::{user_facing::GhContextVar, ClaimVar, NodeCtx, ReadVar, StepCtx};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use crate::node::user_facing::GhContextVar;
+use crate::node::ClaimVar;
+use crate::node::NodeCtx;
+use crate::node::ReadVar;
+use crate::node::StepCtx;
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
@@ -18,8 +24,10 @@ pub struct GhContextVarReaderEventPullRequest {
     pub head: Head,
 }
 
-pub enum Root {}
-pub enum Event {}
+pub mod state {
+    pub enum Root {}
+    pub enum Event {}
+}
 
 #[derive(Clone)]
 pub struct GhVarState {
@@ -67,12 +75,12 @@ impl<S> GhContextVarReader<'_, S> {
     }
 }
 
-impl<'a> GhContextVarReader<'a, Root> {
+impl<'a> GhContextVarReader<'a, state::Root> {
     pub fn global(&self, gh_var: GhContextVar) -> ReadVar<String> {
         self.read_var(gh_var.as_raw_var_name(), gh_var.is_secret(), false)
     }
 
-    pub fn event(self) -> GhContextVarReader<'a, Event> {
+    pub fn event(self) -> GhContextVarReader<'a, state::Event> {
         GhContextVarReader {
             ctx: self.ctx,
             _state: std::marker::PhantomData,
@@ -80,7 +88,7 @@ impl<'a> GhContextVarReader<'a, Root> {
     }
 }
 
-impl GhContextVarReader<'_, Event> {
+impl GhContextVarReader<'_, state::Event> {
     pub fn pull_request(self) -> ReadVar<Option<GhContextVarReaderEventPullRequest>> {
         self.read_var("github.event.pull_request".to_string(), false, true)
     }

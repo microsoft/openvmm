@@ -3,6 +3,8 @@
 
 //! Core types and traits used to create and work with flowey nodes.
 
+mod github_context;
+
 use self::steps::ado::AdoRuntimeVar;
 use self::steps::ado::AdoStepServices;
 use self::steps::github::GhStepBuilder;
@@ -10,8 +12,8 @@ use self::steps::rust::RustRuntimeServices;
 use self::user_facing::ClaimedGhParam;
 use self::user_facing::GhPermission;
 use self::user_facing::GhPermissionValue;
-use crate::github_context::GhContextVarReader;
-use crate::github_context::GhVarState;
+use crate::node::github_context::GhContextVarReader;
+use github_context::state::Root;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
@@ -20,6 +22,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use user_facing::GhParam;
+use user_facing::GhVarState;
 
 /// Node types which are considered "user facing", and re-exported in the
 /// `flowey` crate.
@@ -55,6 +58,8 @@ pub mod user_facing {
     pub use crate::flowey_request;
     pub use crate::new_flow_node;
     pub use crate::new_simple_flow_node;
+    pub use crate::node::github_context::state;
+    pub use crate::node::github_context::GhVarState;
     pub use crate::node::FlowPlatformLinuxDistro;
 
     /// Helper method to streamline request validation in cases where a value is
@@ -194,8 +199,8 @@ pub enum VarClaimed {}
 /// is possible to infer what order steps must be run in.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WriteVar<T: Serialize + DeserializeOwned, C = VarNotClaimed> {
-    pub backing_var: String,
-    pub is_secret: bool,
+    backing_var: String,
+    is_secret: bool,
 
     #[serde(skip)]
     _kind: core::marker::PhantomData<(T, C)>,
@@ -813,7 +818,7 @@ impl std::fmt::Display for FlowArch {
 
 /// Context object for an individual step.
 pub struct StepCtx<'a> {
-    pub backend: Rc<RefCell<&'a mut dyn NodeCtxBackend>>,
+    backend: Rc<RefCell<&'a mut dyn NodeCtxBackend>>,
 }
 
 impl StepCtx<'_> {
@@ -836,7 +841,7 @@ const NO_ADO_INLINE_SCRIPT: Option<
 
 /// Context object for a `FlowNode`.
 pub struct NodeCtx<'a> {
-    pub backend: Rc<RefCell<&'a mut dyn NodeCtxBackend>>,
+    backend: Rc<RefCell<&'a mut dyn NodeCtxBackend>>,
 }
 
 impl<'ctx> NodeCtx<'ctx> {
@@ -1059,7 +1064,7 @@ impl<'ctx> NodeCtx<'ctx> {
     /// Load a GitHub context variable into a flowey [`ReadVar`].
     #[track_caller]
     #[must_use]
-    pub fn get_gh_context_var(&mut self) -> GhContextVarReader<'ctx, crate::github_context::Root> {
+    pub fn get_gh_context_var(&mut self) -> GhContextVarReader<'ctx, Root> {
         GhContextVarReader {
             ctx: NodeCtx {
                 backend: self.backend.clone(),
@@ -1266,7 +1271,7 @@ impl<'ctx> NodeCtx<'ctx> {
 
     #[track_caller]
     #[must_use]
-    pub fn new_maybe_secret_var<T>(
+    fn new_maybe_secret_var<T>(
         &self,
         is_secret: bool,
         prefix: &'static str,

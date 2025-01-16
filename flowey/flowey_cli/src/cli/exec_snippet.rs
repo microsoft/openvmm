@@ -3,11 +3,11 @@
 
 use crate::cli::FlowBackendCli;
 use anyhow::Context;
-use flowey_core::github_context::GhVarState;
 use flowey_core::node::steps::rust::RustRuntimeServices;
 use flowey_core::node::user_facing::ClaimedGhParam;
 use flowey_core::node::user_facing::GhPermission;
 use flowey_core::node::user_facing::GhPermissionValue;
+use flowey_core::node::user_facing::GhVarState;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
