@@ -15,6 +15,7 @@ use sparse_mmap::AsMappableRef;
 use std::fmt::Debug;
 use std::io;
 use std::ops::Deref;
+use std::ops::DerefMut;
 use std::ops::Range;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicU8;
@@ -229,9 +230,31 @@ impl Deref for AlignedHeapMemory {
     }
 }
 
+impl DerefMut for AlignedHeapMemory {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: the buffer is unaliased and valid.
+        unsafe { std::slice::from_raw_parts_mut(self.pages.as_mut_ptr().cast(), self.len()) }
+    }
+}
+
 impl AsRef<[AtomicU8]> for AlignedHeapMemory {
     fn as_ref(&self) -> &[AtomicU8] {
         self
+    }
+}
+
+impl AsMut<[AtomicU8]> for AlignedHeapMemory {
+    fn as_mut(&mut self) -> &mut [AtomicU8] {
+        self
+    }
+}
+
+impl AsMut<[u8]> for AlignedHeapMemory {
+    fn as_mut(&mut self) -> &mut [u8] {
+        // FUTURE: use AtomicU8::get_mut_slice once stabilized.
+        // SAFETY: the buffer is unaliased, so it is fine to cast away the atomicness of the
+        // slice.
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr().cast(), self.len()) }
     }
 }
 
@@ -795,6 +818,7 @@ struct GuestMemoryInner<T: ?Sized = dyn GuestMemoryAccess> {
     region_def: RegionDefinition,
     regions: Vec<MemoryRegion>,
     debug_name: Arc<str>,
+    allocated: bool,
     imp: T,
 }
 
@@ -953,7 +977,10 @@ impl GuestMemory {
         if imp.mapping().is_some() && !cfg!(miri) {
             sparse_mmap::initialize_try_copy();
         }
+        Self::new_inner(debug_name.into(), imp, false)
+    }
 
+    fn new_inner(debug_name: Arc<str>, imp: impl GuestMemoryAccess, allocated: bool) -> Self {
         let regions = vec![MemoryRegion::new(&imp)];
         Self {
             inner: Arc::new(GuestMemoryInner {
@@ -965,6 +992,7 @@ impl GuestMemory {
                     region_bits: 63, // right shift of 64 isn't valid, so restrict the space
                 },
                 regions,
+                allocated,
             }),
         }
     }
@@ -1042,6 +1070,7 @@ impl GuestMemory {
             region_def,
             regions,
             imp,
+            allocated: false,
         };
 
         Ok(Self {
@@ -1059,7 +1088,51 @@ impl GuestMemory {
     /// different debug name, manually use `GuestMemory::new` with
     /// [`AlignedHeapMemory`].
     pub fn allocate(size: usize) -> Self {
-        GuestMemory::new("heap", AlignedHeapMemory::new(size))
+        Self::new_inner("heap".into(), AlignedHeapMemory::new(size), true)
+    }
+
+    /// If this memory is unaliased and was created via
+    /// [`GuestMemory::allocate`], returns the backing buffer.
+    ///
+    /// Returns `Err(self)` if there are other references to this memory (via
+    /// `clone()`).
+    pub fn into_inner_buf(self) -> Result<AlignedHeapMemory, Self> {
+        if !self.inner.allocated {
+            return Err(self);
+        }
+        // FUTURE: consider using `Any` and `Arc::downcast` once trait upcasting is stable.
+        // SAFETY: the inner implementation is guaranteed to be a `AlignedHeapMemory`.
+        let inner = unsafe {
+            Arc::<GuestMemoryInner<AlignedHeapMemory>>::from_raw(Arc::into_raw(self.inner).cast())
+        };
+        let inner = Arc::try_unwrap(inner).map_err(|inner| Self { inner })?;
+        Ok(inner.imp)
+    }
+
+    /// If this memory was created via [`GuestMemory::allocate`], returns a slice to
+    /// the allocated buffer.
+    pub fn inner_buf(&self) -> Option<&[AtomicU8]> {
+        if !self.inner.allocated {
+            return None;
+        }
+        // FUTURE: consider using `<dyn Any>::downcast` once trait upcasting is stable.
+        // SAFETY: the inner implementation is guaranteed to be a `AlignedHeapMemory`.
+        let inner = unsafe { &*core::ptr::from_ref(&self.inner.imp).cast::<AlignedHeapMemory>() };
+        Some(inner)
+    }
+
+    /// If this memory was created via [`GuestMemory::allocate`] and there are
+    /// no other references to it, returns a mutable slice to the backing
+    /// buffer.
+    pub fn inner_buf_mut(&mut self) -> Option<&mut [u8]> {
+        if !self.inner.allocated {
+            return None;
+        }
+        let inner = Arc::get_mut(&mut self.inner)?;
+        // FUTURE: consider using `<dyn Any>::downcast` once trait upcasting is stable.
+        // SAFETY: the inner implementation is guaranteed to be a `AlignedHeapMemory`.
+        let imp = unsafe { &mut *core::ptr::from_mut(&mut inner.imp).cast::<AlignedHeapMemory>() };
+        Some(imp.as_mut())
     }
 
     /// Returns an empty guest memory, which fails every operation.
@@ -2316,5 +2389,21 @@ mod tests {
         gm.read_plain::<u16>(PAGE_SIZE64 * 3 - 1).unwrap_err();
         gm.read_plain::<u8>(PAGE_SIZE64 * 3 - 1).unwrap();
         gm.write_plain::<u8>(PAGE_SIZE64 * 3 - 1, &0).unwrap_err();
+    }
+
+    #[test]
+    fn test_allocated() {
+        let mut gm = GuestMemory::allocate(0x10000);
+        let pattern = [0x42; 0x10000];
+        gm.write_at(0, &pattern).unwrap();
+        assert_eq!(gm.inner_buf_mut().unwrap(), &pattern);
+        gm.inner_buf().unwrap();
+        let gm2 = gm.clone();
+        assert!(gm.inner_buf_mut().is_none());
+        gm.inner_buf().unwrap();
+        let mut gm = gm.into_inner_buf().unwrap_err();
+        drop(gm2);
+        assert_eq!(gm.inner_buf_mut().unwrap(), &pattern);
+        gm.into_inner_buf().unwrap();
     }
 }

@@ -19,5 +19,9 @@ vm_resource.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+disklayer_ram.workspace = true
+pal_async.workspace = true
+
 [lints]
 workspace = true
