@@ -639,7 +639,7 @@ pub enum DiskCliKind {
     },
     // autocache:[key]:<kind>
     AutoCacheSqlite {
-        key: String,
+        key: Option<String>,
         disk: Box<DiskCliKind>,
     },
     // prwrap:<kind>
@@ -723,7 +723,7 @@ impl FromStr for DiskCliKind {
                 "autocache" => {
                     let (key, kind) = arg.split_once(':').context("expected [key]:kind")?;
                     DiskCliKind::AutoCacheSqlite {
-                        key: key.to_string(),
+                        key: (!key.is_empty()).then(|| key.to_string()),
                         disk: Box::new(kind.parse()?),
                     }
                 }

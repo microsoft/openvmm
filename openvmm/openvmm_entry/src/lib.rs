@@ -1598,11 +1598,7 @@ fn disk_open_inner(
                 layer: SqliteAutoCacheDiskLayerHandle {
                     cache_path: std::env::var("OPENVMM_AUTO_CACHE_PATH")
                         .context("must set cache path environment variable")?,
-                    cache_key: if key.is_empty() {
-                        None
-                    } else {
-                        Some(key.clone())
-                    },
+                    cache_key: key.clone(),
                 }
                 .into_resource(),
             }));
