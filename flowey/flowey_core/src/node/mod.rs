@@ -31,7 +31,6 @@ pub mod user_facing {
     pub use super::steps::ado::AdoRuntimeVar;
     pub use super::steps::ado::AdoStepServices;
     pub use super::steps::github::ClaimedGhParam;
-    pub use super::steps::github::GhContextVar;
     pub use super::steps::github::GhParam;
     pub use super::steps::github::GhPermission;
     pub use super::steps::github::GhPermissionValue;
@@ -1618,9 +1617,6 @@ pub mod steps {
         use crate::node::VarClaimed;
         use crate::node::VarNotClaimed;
         use crate::node::WriteVar;
-        use serde::Deserialize;
-        use serde::Serialize;
-        use std::borrow::Cow;
         use std::collections::BTreeMap;
 
         pub struct GhStepBuilder {
@@ -1761,79 +1757,9 @@ pub mod steps {
             }
         }
 
-        /// Handle to a GitHub context variable.
-        ///
-        /// Includes a (non-exhaustive) list of associated constants
-        /// corresponding to global GitHub vars which are _always_ available.
-        ///
-
-        // TODO: This shouldn't be extended further and instead should be refactored to be removed.
-        // These member variables and associated logic can be moved to GhContextVarReader to
-        // encode the correct behavior on a per-context variable basis.
-        #[derive(Serialize, Deserialize, Clone, Debug)]
-        pub struct GhContextVar {
-            is_secret: bool,
-            is_object: bool,
-            gh_var: Cow<'static, str>,
-        }
-
-        #[allow(non_upper_case_globals)]
-        impl GhContextVar {
-            /// `github.repository`
-            pub const GITHUB__REPOSITORY: GhContextVar = GhContextVar::new("github.repository");
-
-            /// `runner.temp`
-            pub const RUNNER__TEMP: GhContextVar = GhContextVar::new("runner.temp");
-
-            /// `github.workspace`
-            pub const GITHUB__WORKSPACE: GhContextVar = GhContextVar::new("github.workspace");
-
-            /// `github.token`
-            pub const GITHUB__TOKEN: GhContextVar = GhContextVar::new_secret("github.token");
-        }
-
-        impl GhContextVar {
-            const fn new(s: &'static str) -> Self {
-                Self {
-                    is_secret: false,
-                    is_object: false,
-                    gh_var: Cow::Borrowed(s),
-                }
-            }
-
-            const fn new_secret(s: &'static str) -> Self {
-                Self {
-                    is_secret: true,
-                    is_object: false,
-                    gh_var: Cow::Borrowed(s),
-                }
-            }
-
-            /// Get a handle to GitHub runtime variable corresponding to a
-            /// GitHub secret with the given name.
-            pub(crate) fn from_secrets(gh_var_name: impl AsRef<str>) -> Self {
-                Self {
-                    is_secret: true,
-                    is_object: false,
-                    gh_var: (format!("secrets.{}", gh_var_name.as_ref())).into(),
-                }
-            }
-
-            /// Check if the GitHub var is tagged as being a secret
-            pub fn is_secret(&self) -> bool {
-                self.is_secret
-            }
-
-            /// Get the raw underlying GitHub variable name
-            pub fn as_raw_var_name(&self) -> String {
-                self.gh_var.as_ref().into()
-            }
-        }
-
         #[derive(Clone, Debug)]
         pub enum GhParam<C = VarNotClaimed> {
             Static(String),
-            GhVar(GhContextVar),
             FloweyVar(ReadVar<String, C>),
         }
 
@@ -1846,12 +1772,6 @@ pub mod steps {
         impl From<&str> for GhParam {
             fn from(param: &str) -> GhParam {
                 GhParam::Static(param.to_string())
-            }
-        }
-
-        impl From<GhContextVar> for GhParam {
-            fn from(param: GhContextVar) -> GhParam {
-                GhParam::GhVar(param)
             }
         }
 
@@ -1869,7 +1789,6 @@ pub mod steps {
             fn claim(self, ctx: &mut StepCtx<'_>) -> ClaimedGhParam {
                 match self {
                     GhParam::Static(s) => ClaimedGhParam::Static(s),
-                    GhParam::GhVar(var) => ClaimedGhParam::GhVar(var),
                     GhParam::FloweyVar(var) => match &var.backing_var {
                         ReadVarBacking::RuntimeVar(_) => ClaimedGhParam::FloweyVar(var.claim(ctx)),
                         ReadVarBacking::Inline(var) => ClaimedGhParam::Static(var.clone()),

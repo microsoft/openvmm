@@ -802,7 +802,6 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
             .into_iter()
             .map(|(k, v)| match v {
                 ClaimedGhParam::Static(v) => (k, v),
-                ClaimedGhParam::GhVar(v) => (k, format!("${{{{ {} }}}}", v.as_raw_var_name())),
                 ClaimedGhParam::FloweyVar(v) => {
                     let (backing_var, is_secret) = read_var_internals(&v);
                     let backing_var = backing_var.unwrap();

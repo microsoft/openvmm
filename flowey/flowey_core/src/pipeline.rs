@@ -6,7 +6,6 @@
 use self::internal::*;
 use crate::node::steps::ado::AdoResourcesRepositoryId;
 use crate::node::user_facing::AdoRuntimeVar;
-use crate::node::user_facing::GhContextVar;
 use crate::node::user_facing::GhPermission;
 use crate::node::user_facing::GhPermissionValue;
 use crate::node::FlowArch;
@@ -539,14 +538,6 @@ impl Pipeline {
     pub fn gh_set_ci_triggers(&mut self, triggers: GhCiTriggers) -> &mut Self {
         self.gh_ci_triggers = Some(triggers);
         self
-    }
-
-    /// (GitHub Actions only) Use a pre-defined GitHub Actions secret variable.
-    ///
-    /// For more information on defining secrets for use in GitHub Actions, see
-    /// <https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions>
-    pub fn gh_use_secret(&mut self, secret_name: impl AsRef<str>) -> GhContextVar {
-        GhContextVar::from_secrets(secret_name)
     }
 
     pub fn new_job(
