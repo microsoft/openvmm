@@ -37,7 +37,7 @@ pub fn main() -> ! {
 pub fn do_main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1).peekable();
 
-    let level = if args.peek().map_or(false, |x| x == "-v") {
+    let level = if args.peek().is_some_and(|x| x == "-v") {
         args.next();
         Level::DEBUG
     } else {

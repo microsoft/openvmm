@@ -3,7 +3,7 @@
 
 [package]
 name = "openhcl_attestation_protocol"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

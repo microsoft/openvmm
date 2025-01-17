@@ -6,8 +6,10 @@
 use super::instruction;
 use crate::emulator::arith::ArithOp;
 use crate::emulator::arith::OrOp;
+use crate::registers::bitness;
 use crate::registers::Bitness;
-use crate::CpuState;
+use crate::registers::Segment;
+use crate::Cpu;
 use iced_x86::OpKind;
 
 const PAGE_SIZE: u32 = 4096;
@@ -28,17 +30,17 @@ const PAGE_SIZE: u32 = 4096;
 ///
 /// If the fast path is impossible, returns `None`. The caller should use the
 /// full emulator.
-pub fn emulate_fast_path_set_bit(instruction_bytes: &[u8], state: &mut CpuState) -> Option<u32> {
-    if state.rflags.trap() {
+pub fn emulate_fast_path_set_bit<T: Cpu>(instruction_bytes: &[u8], cpu: &mut T) -> Option<u32> {
+    if cpu.rflags().trap() {
         return None;
     }
 
-    let bitness = state.bitness();
+    let bitness = bitness(cpu.cr0(), cpu.efer(), cpu.segment(Segment::CS));
     let mut decoder = iced_x86::Decoder::new(bitness.into(), instruction_bytes, 0);
-    decoder.set_ip(state.rip);
+    decoder.set_ip(cpu.rip());
 
     let instr = decoder.decode();
-    let mut rflags = state.rflags;
+    let mut rflags = cpu.rflags();
     let (address, bit) = match instr.code() {
         // [lock] bts m, r
         //
@@ -49,11 +51,11 @@ pub fn emulate_fast_path_set_bit(instruction_bytes: &[u8], state: &mut CpuState)
             let op_size = instr.memory_size().size() as u8 as i64;
 
             // When in the register form, the offset is treated as a signed value
-            let bit_offset = state.get_gp_sign_extend(instr.op1_register());
+            let bit_offset = cpu.gp_sign_extend(instr.op1_register().into());
 
             let address_size = instruction::address_size(&instr);
 
-            let bit_base = instruction::memory_op_offset(state, &instr, 0);
+            let bit_base = instruction::memory_op_offset(cpu, &instr, 0);
             let address_mask = u64::MAX >> (64 - address_size * 8);
             let address = bit_base
                 .wrapping_add_signed(op_size * bit_offset.div_euclid(op_size * 8))
@@ -73,8 +75,8 @@ pub fn emulate_fast_path_set_bit(instruction_bytes: &[u8], state: &mut CpuState)
         | iced_x86::Code::Or_rm16_r16
             if instr.op0_kind() == OpKind::Memory =>
         {
-            let address = instruction::memory_op_offset(state, &instr, 0);
-            let mask = state.get_gp(instr.op1_register());
+            let address = instruction::memory_op_offset(cpu, &instr, 0);
+            let mask = cpu.gp(instr.op1_register().into());
             if !mask.is_power_of_two() {
                 tracing::debug!(mask, "fast path set bit: or without exactly one bit");
                 return None;
@@ -92,7 +94,7 @@ pub fn emulate_fast_path_set_bit(instruction_bytes: &[u8], state: &mut CpuState)
         }
     };
 
-    let seg = &state.segs[instr.memory_segment().number()];
+    let seg = cpu.segment(instr.memory_segment().into());
     let offset = page_offset(address.wrapping_add(seg.base));
 
     // Ensure the access doesn't straddle a page boundary.
@@ -111,8 +113,8 @@ pub fn emulate_fast_path_set_bit(instruction_bytes: &[u8], state: &mut CpuState)
     let bit_in_page = offset * 8 + bit;
     tracing::trace!(bit_in_page, "fast path set bit");
 
-    state.rip = instr.next_ip();
-    state.rflags = rflags;
+    cpu.set_rip(instr.next_ip());
+    cpu.set_rflags(rflags);
     Some(bit_in_page)
 }
 

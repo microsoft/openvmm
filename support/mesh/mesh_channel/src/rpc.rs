@@ -5,19 +5,18 @@
 
 use super::error::RemoteResult;
 use crate::error::RemoteError;
-use crate::error::RemoteResultExt;
-use crate::error::RpcError;
 use crate::oneshot;
-use crate::MpscSender;
 use crate::OneshotReceiver;
 use crate::OneshotSender;
-use crate::Sender;
+use crate::RecvError;
 use mesh_node::message::MeshField;
 use mesh_protobuf::Protobuf;
+use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::ready;
 use std::task::Poll;
+use thiserror::Error;
 
 /// An RPC message for a request with input of type `I` and output of type `R`.
 /// The receiver of the message should process the request and return results
@@ -27,12 +26,31 @@ use std::task::Poll;
     bound = "I: 'static + MeshField + Send, R: 'static + MeshField + Send",
     resource = "mesh_node::resource::Resource"
 )]
-pub struct Rpc<I, R>(pub I, pub OneshotSender<R>);
+pub struct Rpc<I, R>(I, OneshotSender<R>);
 
 /// An RPC message with a failable result.
 pub type FailableRpc<I, R> = Rpc<I, RemoteResult<R>>;
 
 impl<I, R: 'static + Send> Rpc<I, R> {
+    /// Returns a new RPC message with `input` and no one listening for the
+    /// result.
+    pub fn detached(input: I) -> Self {
+        let (result_send, _) = oneshot();
+        Rpc(input, result_send)
+    }
+
+    /// Returns the input to the RPC.
+    pub fn input(&self) -> &I {
+        &self.0
+    }
+
+    /// Splits the RPC into its input and an input-less RPC. This is useful when
+    /// the input is needed in one place but the RPC will be completed in
+    /// another.
+    pub fn split(self) -> (I, Rpc<(), R>) {
+        (self.0, Rpc((), self.1))
+    }
+
     /// Handles an RPC request by calling `f` and sending the result to the
     /// initiator.
     pub fn handle_sync<F>(self, f: F)
@@ -103,12 +121,12 @@ impl<I, R: 'static + Send> Rpc<I, Result<R, RemoteError>> {
 }
 
 /// A trait implemented by objects that can send RPC requests.
-pub trait RpcSend {
+pub trait RpcSend: Sized {
     /// The message type for this sender.
     type Message;
 
     /// Send an RPC request.
-    fn send_rpc(&self, message: Self::Message);
+    fn send_rpc(self, message: Self::Message);
 
     /// Issues a request and returns a channel to receive the result.
     ///
@@ -129,14 +147,14 @@ pub trait RpcSend {
     ///     assert_eq!(send.call(Request::Add, (3, 4)).await.unwrap(), 7);
     /// }
     /// ```
-    fn call<F, I, R>(&self, f: F, input: I) -> OneshotReceiver<R>
+    fn call<F, I, R>(self, f: F, input: I) -> PendingRpc<R>
     where
         F: FnOnce(Rpc<I, R>) -> Self::Message,
         R: 'static + Send,
     {
         let (result_send, result_recv) = oneshot();
         self.send_rpc(f(Rpc(input, result_send)));
-        result_recv
+        PendingRpc(result_recv)
     }
 
     /// Issues a request and returns an object to receive the result.
@@ -144,45 +162,145 @@ pub trait RpcSend {
     /// This is like [`RpcSend::call`], but for RPCs that return a [`Result`].
     /// The returned object combines the channel error and the call's error into
     /// a single [`RpcError`] type, which makes it easier to handle errors.
-    fn call_failable<F, I, T, E>(&self, f: F, input: I) -> RpcResultReceiver<Result<T, E>>
+    fn call_failable<F, I, T, E>(self, f: F, input: I) -> PendingFailableRpc<T, E>
     where
         F: FnOnce(Rpc<I, Result<T, E>>) -> Self::Message,
         T: 'static + Send,
         E: 'static + Send,
     {
-        RpcResultReceiver(self.call(f, input))
+        PendingFailableRpc(self.call(f, input))
+    }
+}
+
+/// A trait implemented by objects that can try to send RPC requests but may
+/// fail.
+pub trait TryRpcSend: Sized {
+    /// The message type for this sender.
+    type Message;
+    /// The error type returned when sending an RPC request fails.
+    type Error;
+
+    /// Tries to send an RPC request.
+    fn try_send_rpc(self, message: Self::Message) -> Result<(), Self::Error>;
+
+    /// Issues a request and returns a channel to receive the result.
+    ///
+    /// `f` maps an [`Rpc`] object to the message type and is often an enum
+    /// variant name.
+    ///
+    /// `input` is the input to the call.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use mesh_channel::rpc::{Rpc, RpcSend};
+    /// # use mesh_channel::Sender;
+    /// enum Request {
+    ///     Add(Rpc<(u32, u32), u32>),
+    /// }
+    /// async fn add(send: &Sender<Request>) {
+    ///     assert_eq!(send.call(Request::Add, (3, 4)).await.unwrap(), 7);
+    /// }
+    /// ```
+    fn try_call<F, I, R>(self, f: F, input: I) -> Result<PendingRpc<R>, Self::Error>
+    where
+        F: FnOnce(Rpc<I, R>) -> Self::Message,
+        R: 'static + Send,
+    {
+        let (result_send, result_recv) = oneshot();
+        self.try_send_rpc(f(Rpc(input, result_send)))?;
+        Ok(PendingRpc(result_recv))
+    }
+
+    /// Issues a request and returns an object to receive the result.
+    ///
+    /// This is like [`TryRpcSend::try_call`], but for RPCs that return a
+    /// [`Result`]. The returned object combines the channel error and the
+    /// call's error into a single [`RpcError`] type, which makes it easier to
+    /// handle errors.
+    fn try_call_failable<F, I, T, E>(
+        self,
+        f: F,
+        input: I,
+    ) -> Result<PendingFailableRpc<T, E>, Self::Error>
+    where
+        F: FnOnce(Rpc<I, Result<T, E>>) -> Self::Message,
+        T: 'static + Send,
+        E: 'static + Send,
+    {
+        Ok(PendingFailableRpc(self.try_call(f, input)?))
+    }
+}
+
+/// An error from an RPC call, via
+/// [`RpcSend::call_failable`] or [`RpcSend::call`].
+#[derive(Debug, Error)]
+pub enum RpcError<E = Infallible> {
+    #[error(transparent)]
+    Call(E),
+    #[error(transparent)]
+    Channel(RecvError),
+}
+
+/// The result future of an [`RpcSend::call`] call.
+#[must_use]
+#[derive(Debug)]
+pub struct PendingRpc<T>(OneshotReceiver<T>);
+
+impl<T: 'static + Send> Future for PendingRpc<T> {
+    type Output = Result<T, RpcError<Infallible>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(ready!(Pin::new(&mut self.get_mut().0).poll(cx)).map_err(RpcError::Channel))
     }
 }
 
 /// The result future of an [`RpcSend::call_failable`] call.
 #[must_use]
-pub struct RpcResultReceiver<R>(OneshotReceiver<R>);
+#[derive(Debug)]
+pub struct PendingFailableRpc<T, E = RemoteError>(PendingRpc<Result<T, E>>);
 
-impl<T: 'static + Send, E: 'static + Send> Future for RpcResultReceiver<Result<T, E>> {
+impl<T: 'static + Send, E: 'static + Send> Future for PendingFailableRpc<T, E> {
     type Output = Result<T, RpcError<E>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        Poll::Ready(ready!(Pin::new(&mut self.get_mut().0).poll(cx)).flatten())
+        let r = ready!(Pin::new(&mut self.get_mut().0).poll(cx));
+        match r {
+            Ok(Ok(t)) => Ok(t),
+            Ok(Err(e)) => Err(RpcError::Call(e)),
+            Err(RpcError::Channel(e)) => Err(RpcError::Channel(e)),
+        }
+        .into()
     }
 }
 
-impl<T: 'static + Send> RpcSend for Sender<T> {
+impl<T: 'static + Send> RpcSend for OneshotSender<T> {
+    type Message = T;
+    fn send_rpc(self, message: T) {
+        self.send(message);
+    }
+}
+
+#[cfg(feature = "newchan")]
+impl<T: 'static + Send> RpcSend for &mesh_channel_core::Sender<T> {
+    type Message = T;
+    fn send_rpc(self, message: T) {
+        self.send(message);
+    }
+}
+
+#[cfg(not(feature = "newchan_spsc"))]
+impl<T: 'static + Send> RpcSend for &crate::Sender<T> {
     type Message = T;
     fn send_rpc(&self, message: T) {
         self.send(message);
     }
 }
 
-impl<T: 'static + Send> RpcSend for MpscSender<T> {
+#[cfg(not(feature = "newchan_mpsc"))]
+impl<T: 'static + Send> RpcSend for &crate::MpscSender<T> {
     type Message = T;
-    fn send_rpc(&self, message: T) {
+    fn send_rpc(self, message: T) {
         self.send(message);
-    }
-}
-
-impl<T: RpcSend> RpcSend for &T {
-    type Message = T::Message;
-    fn send_rpc(&self, message: T::Message) {
-        (*self).send_rpc(message);
     }
 }

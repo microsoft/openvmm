@@ -121,7 +121,7 @@ where
                     Ok(message) => match message {
                         WorkerRpc::Stop => return Ok(()),
                         WorkerRpc::Inspect(deferred) => deferred.inspect(&mut server),
-                        WorkerRpc::Restart(response) => {
+                        WorkerRpc::Restart(rpc) => {
                             let vm_proxy = match server.state {
                                 State::Listening { vm_proxy } => vm_proxy,
                                 State::Connected { task, abort, .. } => {
@@ -148,7 +148,7 @@ where
                                     },
                                 }
                             };
-                            response.send(Ok(state));
+                            rpc.complete(Ok(state));
                             return Ok(());
                         }
                     },

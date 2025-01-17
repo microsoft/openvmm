@@ -19,6 +19,9 @@ use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
+use mesh::rpc::TryRpcSend;
 use mesh::RecvError;
 use parking_lot::Mutex;
 use std::cmp::min;
@@ -398,6 +401,15 @@ impl<const MAX_SIZE: usize, T: Send + 'static> BufferedSender<MAX_SIZE, T> {
     }
 }
 
+impl<const MAX_SIZE: usize, T: Send + 'static> TryRpcSend for &mut BufferedSender<MAX_SIZE, T> {
+    type Message = T;
+    type Error = BufferedSenderFull;
+
+    fn try_send_rpc(self, message: Self::Message) -> Result<(), Self::Error> {
+        self.send(message)
+    }
+}
+
 /// A variant of `Option<mesh::Sender<T>>` for late-bound guest notification
 /// consumers that buffers a fixed-number of messages during the window between
 /// GET init and worker startup.
@@ -508,7 +520,7 @@ struct GuestNotificationListeners {
 // pair of notifications that don't really act like "notifications" for the
 // foreseeable future...
 enum GuestNotificationResponse {
-    ModifyVtl2Settings(Result<Result<(), Vec<Vtl2SettingsErrorInfo>>, RecvError>),
+    ModifyVtl2Settings(Result<(), RpcError<Vec<Vtl2SettingsErrorInfo>>>),
 }
 
 #[derive(Default, Inspect)]
@@ -553,7 +565,7 @@ struct PipeChannels {
 
 enum WriteRequest {
     Message(Vec<u8>),
-    Flush(mesh::OneshotSender<()>),
+    Flush(Rpc<(), ()>),
 }
 
 impl HostRequestPipeAccess {
@@ -615,6 +627,22 @@ impl HostRequestPipeAccess {
         let req_header =
             get_protocol::HeaderHostRequest::read_from_prefix(data.as_bytes()).unwrap();
         self.recv_response_fixed_size(req_header.message_id).await
+    }
+
+    /// Sends a fail notification to the host.
+    ///
+    /// This function does not wait for a response from the host.
+    /// It is specifically designed for scenarios where the host does not send any response.
+    /// One of such scenario is the save failure, where host does not send any response.
+    ///
+    /// In the future, GED notifications for failures need to be added.
+    /// This will require updates to both the host and openHCL.
+    async fn send_failed_save_state<T: AsBytes + ?Sized>(
+        &mut self,
+        data: &T,
+    ) -> Result<(), FatalError> {
+        self.send_message(data.as_bytes().to_vec());
+        Ok(())
     }
 }
 
@@ -780,7 +808,7 @@ impl<T: RingMem> ProcessLoop<T> {
                         }
                         match self.write_recv.recv().await.unwrap() {
                             WriteRequest::Message(message) => outgoing = message,
-                            WriteRequest::Flush(send) => send.send(()),
+                            WriteRequest::Flush(send) => send.complete(()),
                         }
                     }
                 }
@@ -953,7 +981,7 @@ impl<T: RingMem> ProcessLoop<T> {
     /// for its response.
     fn push_basic_host_request_handler<Req, I, Resp>(
         &mut self,
-        req: mesh::rpc::Rpc<I, Resp>,
+        req: Rpc<I, Resp>,
         f: impl 'static + Send + FnOnce(I) -> Req,
     ) where
         Req: AsBytes + 'static + Send + Sync,
@@ -973,10 +1001,10 @@ impl<T: RingMem> ProcessLoop<T> {
         match message {
             // GET infrastructure - not part of the GET protocol itself.
             // No direct interaction with the host.
-            Msg::FlushWrites(mesh::rpc::Rpc((), response)) => {
+            Msg::FlushWrites(rpc) => {
                 self.pipe_channels
                     .message_send
-                    .send(WriteRequest::Flush(response));
+                    .send(WriteRequest::Flush(rpc));
             }
             Msg::Inspect(req) => {
                 req.inspect(self);
@@ -1132,9 +1160,10 @@ impl<T: RingMem> ProcessLoop<T> {
             Msg::SendServicingState(req) => self.push_host_request_handler(move |access| {
                 req.handle_must_succeed(|data| request_send_servicing_state(access, data))
             }),
-            Msg::CompleteStartVtl0(mesh::rpc::Rpc(input, res)) => {
+            Msg::CompleteStartVtl0(rpc) => {
+                let (input, res) = rpc.split();
                 self.complete_start_vtl0(input)?;
-                res.send(());
+                res.complete(());
             }
 
             // Host Notifications (don't require a response)
@@ -1368,17 +1397,13 @@ impl<T: RingMem> ProcessLoop<T> {
         vtl2_settings_buf: Vec<u8>,
         kind: get_protocol::GuestNotifications,
     ) -> Result<(), FatalError> {
-        let (result_send, result_recv) = mesh::oneshot();
-
-        let req = ModifyVtl2SettingsRequest(mesh::rpc::Rpc(vtl2_settings_buf, result_send));
-        let res = result_recv
+        let res = self
+            .guest_notification_listeners
+            .vtl2_settings
+            .try_call_failable(ModifyVtl2SettingsRequest, vtl2_settings_buf)
+            .map_err(|_| FatalError::TooManyGuestNotifications(kind))?
             .map(GuestNotificationResponse::ModifyVtl2Settings)
             .boxed();
-
-        self.guest_notification_listeners
-            .vtl2_settings
-            .send(req)
-            .map_err(|_| FatalError::TooManyGuestNotifications(kind))?;
 
         self.guest_notification_responses.push(res);
         Ok(())
@@ -1439,13 +1464,14 @@ impl<T: RingMem> ProcessLoop<T> {
 
     fn complete_modify_vtl2_settings(
         &mut self,
-        result: Result<Result<(), Vec<Vtl2SettingsErrorInfo>>, RecvError>,
+        result: Result<(), RpcError<Vec<Vtl2SettingsErrorInfo>>>,
     ) -> Result<(), FatalError> {
-        let errors = result.unwrap_or_else(|err| {
-            Err(vec![Vtl2SettingsErrorInfo::new(
+        let errors = result.map_err(|err| match err {
+            RpcError::Call(err) => err,
+            RpcError::Channel(err) => vec![Vtl2SettingsErrorInfo::new(
                 underhill_config::Vtl2SettingsErrorCode::InternalFailure,
                 err.to_string(),
-            )])
+            )],
         });
 
         let (status, errors_json) = match errors {
@@ -1668,9 +1694,9 @@ async fn request_send_servicing_state(
     let saved_state_buf = match result {
         Ok(saved_state_buf) => saved_state_buf,
         Err(_err) => {
-            // TODO: send error to host.
+            // Sends a failure notification to host.
             return access
-                .send_request_fixed_size(&get_protocol::SaveGuestVtl2StateRequest::new(
+                .send_failed_save_state(&get_protocol::SaveGuestVtl2StateRequest::new(
                     get_protocol::GuestVtl2SaveRestoreStatus::FAILURE,
                 ))
                 .await

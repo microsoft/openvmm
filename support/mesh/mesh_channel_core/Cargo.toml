@@ -1,0 +1,25 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "mesh_channel_core"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mesh_protobuf.workspace = true
+mesh_node.workspace = true
+
+futures-core.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+static_assertions.workspace = true
+test_with_tracing.workspace = true
+
+futures.workspace = true
+
+[lints]
+workspace = true

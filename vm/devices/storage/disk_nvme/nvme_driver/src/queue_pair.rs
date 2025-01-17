@@ -22,6 +22,7 @@ use guestmem::GuestMemoryError;
 use inspect::Inspect;
 use inspect_counters::Counter;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh::Cancel;
 use mesh::CancelContext;
@@ -92,11 +93,7 @@ impl PendingCommands {
     }
 
     /// Inserts a command into the pending list, updating it with a new CID.
-    fn insert(
-        &mut self,
-        command: &mut spec::Command,
-        respond: mesh::OneshotSender<spec::Completion>,
-    ) {
+    fn insert(&mut self, command: &mut spec::Command, respond: Rpc<(), spec::Completion>) {
         let entry = self.commands.vacant_entry();
         assert!(entry.key() < Self::MAX_CIDS);
         assert_eq!(self.next_cid_high_bits % Self::CID_SEQ_OFFSET, Wrapping(0));
@@ -109,7 +106,7 @@ impl PendingCommands {
         });
     }
 
-    fn remove(&mut self, cid: u16) -> mesh::OneshotSender<spec::Completion> {
+    fn remove(&mut self, cid: u16) -> Rpc<(), spec::Completion> {
         let command = self
             .commands
             .try_remove((cid & Self::CID_KEY_MASK) as usize)
@@ -152,7 +149,6 @@ impl PendingCommands {
             commands: commands
                 .iter()
                 .map(|state| {
-                    let (send, mut _recv) = mesh::oneshot::<nvme_spec::Completion>();
                     // To correctly restore Slab we need both the command index,
                     // inherited from command's CID, and the command itself.
                     (
@@ -160,7 +156,7 @@ impl PendingCommands {
                         (state.command.cdw0.cid() & Self::CID_KEY_MASK) as usize,
                         PendingCommand {
                             command: state.command,
-                            respond: send,
+                            respond: Rpc::detached(()),
                         },
                     )
                 })
@@ -333,10 +329,10 @@ impl QueuePair {
 
 /// An error issuing an NVMe request.
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum RequestError {
     #[error("queue pair is gone")]
-    Gone(#[source] mesh::RecvError),
+    Gone(#[source] RpcError),
     #[error("nvme error")]
     Nvme(#[source] NvmeError),
     #[error("memory error")]
@@ -579,7 +575,7 @@ struct PendingCommand {
     // Keep the command around for diagnostics.
     command: spec::Command,
     #[inspect(skip)]
-    respond: mesh::OneshotSender<spec::Completion>,
+    respond: Rpc<(), spec::Completion>,
 }
 
 enum Req {
@@ -659,7 +655,8 @@ impl QueueHandler {
 
             match event {
                 Event::Request(req) => match req {
-                    Req::Command(Rpc(mut command, respond)) => {
+                    Req::Command(rpc) => {
+                        let (mut command, respond) = rpc.split();
                         self.commands.insert(&mut command, respond);
                         self.sq.write(command).unwrap();
                         self.stats.issued.increment();
@@ -679,7 +676,7 @@ impl QueueHandler {
                         self.drain_after_restore = false;
                     }
                     self.sq.update_head(completion.sqhd);
-                    respond.send(completion);
+                    respond.complete(completion);
                     self.stats.completed.increment();
                 }
             }

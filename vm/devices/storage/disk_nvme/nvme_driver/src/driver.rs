@@ -48,6 +48,10 @@ use zerocopy::FromZeroes;
 ///
 /// Note that if this is dropped, the process will abort. Call
 /// [`NvmeDriver::shutdown`] to drop this.
+///
+/// Further, note that this is an internal interface to be used
+/// only by `NvmeDisk`! Remove any sanitization in `fuzz_nvm_driver.rs`
+/// if this struct is used anywhere else.
 #[derive(Inspect)]
 pub struct NvmeDriver<T: DeviceBacking> {
     #[inspect(flatten)]
@@ -348,6 +352,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         //
         // Note that interrupt zero is shared between IO queue 1 and the admin queue.
         let max_interrupt_count = worker.device.max_interrupt_count();
+        if max_interrupt_count == 0 {
+            anyhow::bail!("bad device behavior: max_interrupt_count == 0");
+        }
+
         let requested_io_queue_count = if max_interrupt_count < requested_io_queue_count as u32 {
             tracing::warn!(
                 max_interrupt_count,
@@ -444,7 +452,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         drop(self);
     }
 
-    fn reset(&mut self) -> impl 'static + Send + std::future::Future<Output = ()> {
+    fn reset(&mut self) -> impl Send + std::future::Future<Output = ()> + use<T> {
         let driver = self.driver.clone();
         let mut task = std::mem::take(&mut self.task).unwrap();
         async move {
@@ -484,7 +492,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .per_cpu
             .iter()
             .enumerate()
-            .filter(|&(cpu, c)| c.get().map_or(false, |c| c.cpu != cpu as u32))
+            .filter(|&(cpu, c)| c.get().is_some_and(|c| c.cpu != cpu as u32))
             .count()
     }
 

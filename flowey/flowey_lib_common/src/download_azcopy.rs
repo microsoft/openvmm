@@ -107,7 +107,7 @@ impl FlowNode for Node {
                     };
                     match rt.platform().kind() {
                         FlowPlatformKind::Windows => {
-                            xshell::cmd!(sh, "curl --fail -L https://azcopyvnext.azureedge.net/releases/release-{version_with_date}/azcopy_windows_{arch}_{version_without_date}.zip -o azcopy.zip").run()?;
+                            xshell::cmd!(sh, "curl --fail -L https://azcopyvnext-awgzd8g7aagqhzhe.b02.azurefd.net/releases/release-{version_with_date}/azcopy_windows_{arch}_{version_without_date}.zip -o azcopy.zip").run()?;
 
                             let bsdtar = crate::_util::bsdtar_name(rt);
                             xshell::cmd!(sh, "{bsdtar} -xf azcopy.zip --strip-components=1").run()?;
@@ -118,7 +118,7 @@ impl FlowNode for Node {
                                 FlowPlatform::MacOs => "darwin",
                                 platform => anyhow::bail!("unhandled platform {platform}"),
                             };
-                            xshell::cmd!(sh, "curl --fail -L https://azcopyvnext.azureedge.net/releases/release-{version_with_date}/azcopy_{os}_{arch}_{version_without_date}.tar.gz -o azcopy.tar.gz").run()?;
+                            xshell::cmd!(sh, "curl --fail -L https://azcopyvnext-awgzd8g7aagqhzhe.b02.azurefd.net/releases/release-{version_with_date}/azcopy_{os}_{arch}_{version_without_date}.tar.gz -o azcopy.tar.gz").run()?;
                             xshell::cmd!(sh, "tar -xf azcopy.tar.gz --strip-components=1").run()?;
                         }
                     };

@@ -3,7 +3,7 @@
 
 [package]
 name = "win_import_lib"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

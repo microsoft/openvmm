@@ -52,7 +52,7 @@ pub async fn spawn_get_worker(
 }
 
 #[cfg(any(feature = "test_utilities", test))]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub mod test_utilities {
     use super::*;
     use crate::worker::GuestEmulationTransportWorker;

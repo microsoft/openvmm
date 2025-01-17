@@ -36,10 +36,11 @@ use futures::StreamExt;
 use futures_concurrency::stream::Merge;
 use inspect::Inspect;
 use inspect::InspectMut;
-use mesh::oneshot;
 use mesh::payload::Protobuf;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
+use mesh::rpc::RpcSend;
 use mesh::MeshPayload;
 use mesh::Receiver;
 use mesh::Sender;
@@ -257,7 +258,7 @@ pub struct NameInUse(Arc<str>);
 struct UnitRecvError {
     name: Arc<str>,
     #[source]
-    source: mesh::RecvError,
+    source: RpcError,
 }
 
 #[derive(Debug, Clone)]
@@ -887,13 +888,12 @@ impl ReadySet {
 /// future with a span, and wrapping its error with something more informative.
 ///
 /// `operation` and `name` are used in tracing and error construction.
-fn state_change<I: 'static, R: 'static + Send>(
+fn state_change<I: 'static, R: 'static + Send, Req: FnOnce(Rpc<I, R>) -> StateRequest>(
     name: Arc<str>,
     unit: &Unit,
-    request: impl FnOnce(Rpc<I, R>) -> StateRequest,
+    request: Req,
     input: Option<I>,
-) -> impl Future<Output = Result<Option<R>, UnitRecvError>> {
-    let (response_send, response_recv) = oneshot();
+) -> impl Future<Output = Result<Option<R>, UnitRecvError>> + use<I, R, Req> {
     let send = unit.send.clone();
 
     async move {
@@ -901,8 +901,8 @@ fn state_change<I: 'static, R: 'static + Send>(
         let span = tracing::info_span!("device_state_change", device = name.as_ref());
         async move {
             let start = Instant::now();
-            send.send((request)(Rpc(input, response_send)));
-            let r = response_recv
+            let r = send
+                .call(request, input)
                 .await
                 .map_err(|err| UnitRecvError { name, source: err });
             tracing::debug!(duration = ?Instant::now() - start, "device state change complete");

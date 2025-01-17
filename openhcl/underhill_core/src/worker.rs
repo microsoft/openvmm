@@ -430,7 +430,7 @@ impl Worker for UnderhillVmWorker {
             };
 
             tracing::info!("sending worker restart state");
-            state.restart_response.send(Ok(RestartState {
+            state.restart_rpc.complete(Ok(RestartState {
                 params,
                 servicing_state: state.servicing_state,
             }))
@@ -1870,7 +1870,7 @@ async fn new_underhill_vm(
 
         let private_pool_spanwer = private_pool.as_ref().map(|p| p.allocator_spawner());
 
-        let save_restore_supported = env_cfg.nvme_keep_alive;
+        let save_restore_supported = env_cfg.nvme_keep_alive && private_pool_spanwer.is_some();
         let vfio_dma_buffer_spawner = Box::new(
             move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
                 shared_vis_pool_spawner
@@ -2572,15 +2572,19 @@ async fn new_underhill_vm(
         // If VTOM is present (CVM scenario), accesses to physical device and PCI config space may
         // occur below or above vTOM, but only within MMIO regions. Forward both to the host.
         let vtom = vtom.unwrap_or(0);
-        let mut untrusted_mmio_ranges: Vec<_> = mem_layout.mmio().to_vec();
-        if vtom > 0 {
-            untrusted_mmio_ranges.extend(
-                mem_layout
-                    .mmio()
-                    .iter()
-                    .map(|range| MemoryRange::new((range.start() + vtom)..(range.end() + vtom))),
-            );
-        }
+        let untrusted_mmio_ranges =
+            if cfg!(guest_arch = "aarch64") && vtom == 0 {
+                // By default on aarch64 send all MMIO accesses to the host.
+                None
+            } else {
+                let mut untrusted_mmio_ranges: Vec<_> = mem_layout.mmio().to_vec();
+                if vtom > 0 {
+                    untrusted_mmio_ranges.extend(mem_layout.mmio().iter().map(|range| {
+                        MemoryRange::new((range.start() + vtom)..(range.end() + vtom))
+                    }));
+                }
+                Some(untrusted_mmio_ranges)
+            };
 
         Arc::new(CloseableMutex::new(FallbackMmioDevice {
             partition: Arc::downgrade(&partition),
@@ -3365,30 +3369,42 @@ impl chipset::pm::PmTimerAssist for UnderhillPmTimerAssist {
 // MmioIntercept traits.
 struct FallbackMmioDevice {
     partition: std::sync::Weak<UhPartition>,
-    mmio_ranges: Vec<MemoryRange>,
+    mmio_ranges: Option<Vec<MemoryRange>>,
 }
 
 impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> chipset_device::io::IoResult {
-        data.fill(!0);
-        if let Some(partition) = self.partition.upgrade() {
-            if self.mmio_ranges.iter().any(|range| {
+        let Some(partition) = self.partition.upgrade() else {
+            return chipset_device::io::IoResult::Ok;
+        };
+
+        if let Some(mmio_ranges) = &self.mmio_ranges {
+            data.fill(!0);
+            if mmio_ranges.iter().any(|range| {
                 range.contains_addr(addr) && range.contains_addr(addr + data.len() as u64 - 1)
             }) {
                 partition.host_mmio_read(addr, data);
             }
+        } else {
+            partition.host_mmio_read(addr, data);
         }
 
         chipset_device::io::IoResult::Ok
     }
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> chipset_device::io::IoResult {
-        if let Some(partition) = self.partition.upgrade() {
-            if self.mmio_ranges.iter().any(|range| {
+        let Some(partition) = self.partition.upgrade() else {
+            return chipset_device::io::IoResult::Ok;
+        };
+
+        if let Some(mmio_ranges) = &self.mmio_ranges {
+            if mmio_ranges.iter().any(|range| {
                 range.contains_addr(addr) && range.contains_addr(addr + data.len() as u64 - 1)
             }) {
                 partition.host_mmio_write(addr, data);
             }
+        } else {
+            partition.host_mmio_write(addr, data);
         }
 
         chipset_device::io::IoResult::Ok

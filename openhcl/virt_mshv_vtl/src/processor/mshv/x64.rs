@@ -84,6 +84,7 @@ use x86defs::xsave::XsaveHeader;
 use x86defs::xsave::XFEATURE_SSE;
 use x86defs::xsave::XFEATURE_X87;
 use x86defs::RFlags;
+use x86defs::SegmentRegister;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
@@ -122,10 +123,23 @@ struct ProcessorStatsX86 {
     exception_intercept: Counter,
 }
 
+pub struct MshvEmulationCache {
+    rsp: u64,
+    es: SegmentRegister,
+    ds: SegmentRegister,
+    fs: SegmentRegister,
+    gs: SegmentRegister,
+    ss: SegmentRegister,
+    cr0: u64,
+    efer: u64,
+    rip: u64,
+    rflags: RFlags,
+}
+
 impl BackingPrivate for HypervisorBackedX86 {
     type HclBacking = MshvX64;
     type Shared = ();
-    type EmulationCache = ();
+    type EmulationCache = MshvEmulationCache;
 
     fn shared(_: &BackingShared) -> &Self::Shared {
         &()
@@ -389,11 +403,7 @@ impl BackingPrivate for HypervisorBackedX86 {
             .set_interrupt_notification(true);
     }
 
-    fn request_untrusted_sint_readiness(
-        this: &mut UhProcessor<'_, Self>,
-        _vtl: GuestVtl,
-        sints: u16,
-    ) {
+    fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16) {
         this.backing
             .next_deliverability_notifications
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
@@ -704,18 +714,24 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             == self.vp.partition.monitor_page.gpa()
             && message.header.intercept_access_type == HvInterceptAccessType::WRITE
         {
-            let instruction_bytes = message.instruction_bytes;
-            let instruction_bytes = &instruction_bytes[..message.instruction_byte_count as usize];
             let tlb_lock_held = message.memory_access_info.gva_gpa_valid()
                 || message.memory_access_info.tlb_locked();
-            let mut state = self.vp.emulator_state(self.intercepted_vtl);
+            let guest_memory = &self.vp.partition.gm[self.intercepted_vtl];
+            let cache = self.vp.emulation_cache(self.intercepted_vtl);
+            let mut emulation_state = UhEmulationState {
+                vp: &mut *self.vp,
+                interruption_pending,
+                devices: dev,
+                vtl: self.intercepted_vtl,
+                cache,
+            };
             if let Some(bit) = virt_support_x86emu::emulate::emulate_mnf_write_fast_path(
-                instruction_bytes,
-                &mut state,
+                &mut emulation_state,
+                guest_memory,
+                dev,
                 interruption_pending,
                 tlb_lock_held,
-            ) {
-                self.vp.set_emulator_state(self.intercepted_vtl, &state);
+            )? {
                 if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
                     signal_mnf(dev, connection_id);
                 }
@@ -723,8 +739,9 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             }
         }
 
+        let cache = self.vp.emulation_cache(self.intercepted_vtl);
         self.vp
-            .emulate(dev, interruption_pending, self.intercepted_vtl)
+            .emulate(dev, interruption_pending, self.intercepted_vtl, cache)
             .await?;
         Ok(())
     }
@@ -745,8 +762,9 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         let interruption_pending = message.header.execution_state.interruption_pending();
 
         if message.access_info.string_op() || message.access_info.rep_prefix() {
+            let cache = self.vp.emulation_cache(self.intercepted_vtl);
             self.vp
-                .emulate(dev, interruption_pending, self.intercepted_vtl)
+                .emulate(dev, interruption_pending, self.intercepted_vtl, cache)
                 .await
         } else {
             let next_rip = next_rip(&message.header);
@@ -1141,62 +1159,6 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             .expect("set_vp_register should succeed for pending event");
     }
 
-    fn emulator_state(&mut self, vtl: GuestVtl) -> x86emu::CpuState {
-        const NAMES: &[HvX64RegisterName] = &[
-            HvX64RegisterName::Rsp,
-            HvX64RegisterName::Es,
-            HvX64RegisterName::Ds,
-            HvX64RegisterName::Fs,
-            HvX64RegisterName::Gs,
-            HvX64RegisterName::Ss,
-            HvX64RegisterName::Cr0,
-            HvX64RegisterName::Efer,
-        ];
-        let mut values = [FromZeroes::new_zeroed(); NAMES.len()];
-        self.runner
-            .get_vp_registers(vtl, NAMES, &mut values)
-            .expect("register query should not fail");
-
-        let [rsp, es, ds, fs, gs, ss, cr0, efer] = values;
-
-        let mut gps = self.runner.cpu_context().gps;
-        gps[x86emu::CpuState::RSP] = rsp.as_u64();
-
-        let message = self.runner.exit_message();
-        let header = HvX64InterceptMessageHeader::ref_from_prefix(message.payload()).unwrap();
-
-        x86emu::CpuState {
-            gps,
-            segs: [
-                from_seg(es.into()),
-                from_seg(header.cs_segment),
-                from_seg(ss.into()),
-                from_seg(ds.into()),
-                from_seg(fs.into()),
-                from_seg(gs.into()),
-            ],
-            rip: header.rip,
-            rflags: header.rflags.into(),
-            cr0: cr0.as_u64(),
-            efer: efer.as_u64(),
-        }
-    }
-
-    fn set_emulator_state(&mut self, vtl: GuestVtl, state: &x86emu::CpuState) {
-        self.runner
-            .set_vp_registers(
-                vtl,
-                [
-                    (HvX64RegisterName::Rip, state.rip),
-                    (HvX64RegisterName::Rflags, state.rflags.into()),
-                    (HvX64RegisterName::Rsp, state.gps[x86emu::CpuState::RSP]),
-                ],
-            )
-            .unwrap();
-
-        self.runner.cpu_context_mut().gps = state.gps;
-    }
-
     fn set_vsm_partition_config(
         &mut self,
         vtl: GuestVtl,
@@ -1301,10 +1263,63 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         Ok(())
     }
+
+    ///Eagerly load registers for emulation
+    ///Typically we load expensive registers lazily, however some registers will always be used,
+    ///and the underlying ioctl supports batching multiple register retrievals into a single call
+    fn emulation_cache(&mut self, vtl: GuestVtl) -> MshvEmulationCache {
+        const NAMES: &[HvX64RegisterName] = &[
+            HvX64RegisterName::Rsp,
+            HvX64RegisterName::Es,
+            HvX64RegisterName::Ds,
+            HvX64RegisterName::Fs,
+            HvX64RegisterName::Gs,
+            HvX64RegisterName::Ss,
+            HvX64RegisterName::Cr0,
+            HvX64RegisterName::Efer,
+        ];
+        let mut values = [FromZeroes::new_zeroed(); NAMES.len()];
+        self.runner
+            .get_vp_registers(vtl, NAMES, &mut values)
+            .expect("register query should not fail");
+
+        let [rsp, es, ds, fs, gs, ss, cr0, efer] = values;
+
+        let message = self.runner.exit_message();
+        let header = HvX64InterceptMessageHeader::ref_from_prefix(message.payload()).unwrap();
+
+        MshvEmulationCache {
+            rsp: rsp.as_u64(),
+            es: from_seg(es.into()),
+            ds: from_seg(ds.into()),
+            fs: from_seg(fs.into()),
+            gs: from_seg(gs.into()),
+            ss: from_seg(ss.into()),
+            cr0: cr0.as_u64(),
+            efer: efer.as_u64(),
+            rip: header.rip,
+            rflags: header.rflags.into(),
+        }
+    }
 }
 
 impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX86> {
     type Error = UhRunVpError;
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        self.vp
+            .runner
+            .set_vp_registers(
+                self.vtl,
+                [
+                    (HvX64RegisterName::Rip, self.cache.rip),
+                    (HvX64RegisterName::Rflags, self.cache.rflags.into()),
+                    (HvX64RegisterName::Rsp, self.cache.rsp),
+                ],
+            )
+            .unwrap();
+        Ok(())
+    }
 
     fn vp_index(&self) -> VpIndex {
         self.vp.vp_index()
@@ -1314,13 +1329,67 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         self.vp.partition.caps.vendor
     }
 
-    fn state(&mut self) -> Result<x86emu::CpuState, Self::Error> {
-        Ok(self.vp.emulator_state(self.vtl))
+    fn gp(&mut self, reg: x86emu::Gp) -> u64 {
+        match reg {
+            x86emu::Gp::RSP => self.cache.rsp,
+            _ => self.vp.runner.cpu_context().gps[reg as usize],
+        }
     }
 
-    fn set_state(&mut self, state: x86emu::CpuState) -> Result<(), Self::Error> {
-        self.vp.set_emulator_state(self.vtl, &state);
+    fn set_gp(&mut self, reg: x86emu::Gp, v: u64) {
+        if reg == x86emu::Gp::RSP {
+            self.cache.rsp = v;
+        }
+        self.vp.runner.cpu_context_mut().gps[reg as usize] = v;
+    }
+
+    fn xmm(&mut self, index: usize) -> u128 {
+        u128::from_le_bytes(self.vp.runner.cpu_context().fx_state.xmm[index])
+    }
+
+    fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error> {
+        self.vp.runner.cpu_context_mut().fx_state.xmm[index] = v.to_le_bytes();
         Ok(())
+    }
+
+    fn rip(&mut self) -> u64 {
+        self.cache.rip
+    }
+
+    fn set_rip(&mut self, v: u64) {
+        self.cache.rip = v;
+    }
+
+    fn segment(&mut self, index: x86emu::Segment) -> SegmentRegister {
+        match index {
+            x86emu::Segment::CS => {
+                let message = self.vp.runner.exit_message();
+                let header =
+                    HvX64InterceptMessageHeader::ref_from_prefix(message.payload()).unwrap();
+                from_seg(header.cs_segment)
+            }
+            x86emu::Segment::ES => self.cache.es,
+            x86emu::Segment::SS => self.cache.ss,
+            x86emu::Segment::DS => self.cache.ds,
+            x86emu::Segment::FS => self.cache.fs,
+            x86emu::Segment::GS => self.cache.gs,
+        }
+    }
+
+    fn efer(&mut self) -> u64 {
+        self.cache.efer
+    }
+
+    fn cr0(&mut self) -> u64 {
+        self.cache.cr0
+    }
+
+    fn rflags(&mut self) -> RFlags {
+        self.cache.rflags
+    }
+
+    fn set_rflags(&mut self, v: RFlags) {
+        self.cache.rflags = v;
     }
 
     fn instruction_bytes(&self) -> &[u8] {
@@ -1523,17 +1592,6 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             .runner
             .set_vp_registers_hvcall(self.vtl.into(), regs)
             .expect("set_vp_registers hypercall for setting pending event should not fail");
-    }
-
-    fn get_xmm(&mut self, reg: usize) -> Result<u128, Self::Error> {
-        Ok(u128::from_le_bytes(
-            self.vp.runner.cpu_context().fx_state.xmm[reg],
-        ))
-    }
-
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
-        self.vp.runner.cpu_context_mut().fx_state.xmm[reg] = value.to_le_bytes();
-        Ok(())
     }
 
     fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {

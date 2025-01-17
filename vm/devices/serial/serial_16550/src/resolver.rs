@@ -26,7 +26,7 @@ declare_static_async_resolver! {
 }
 
 /// An error resolving a [`Serial16550DeviceHandle`].
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 #[derive(Debug, Error)]
 pub enum Resolve16550Error {
     #[error("failed to resolve io backend")]

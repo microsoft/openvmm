@@ -42,7 +42,7 @@ use mesh_tracing::Type;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
 use tracing_helpers::formatter::FieldFormatter;
-use tracing_subscriber::fmt;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::format::Format;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -152,13 +152,13 @@ impl GetTracingBackend {
             )
                 .merge();
 
-            let flush_response = loop {
+            let flush_rpc = loop {
                 let trace_type = streams.next().await.unwrap();
                 match trace_type {
                     Event::Trace(data) => {
                         write.send(&data).await.ok();
                     }
-                    Event::Flush(Rpc((), response)) => break Some(response),
+                    Event::Flush(rpc) => break Some(rpc),
                     Event::Done => break None,
                 }
             };
@@ -174,8 +174,8 @@ impl GetTracingBackend {
             // Wait for the host to read everything.
             write.wait_empty().await.ok();
 
-            if let Some(resp) = flush_response {
-                resp.send(());
+            if let Some(rpc) = flush_rpc {
+                rpc.complete(());
             } else {
                 break;
             }
@@ -185,7 +185,7 @@ impl GetTracingBackend {
 
 /// Enables tracing output to the tracing task and to stderr.
 pub fn init_tracing(spawn: impl Spawn, tracer: RemoteTracer) -> anyhow::Result<()> {
-    if legacy_openvmm_env("OPENVMM_DISABLE_TRACING_RATELIMITS").map_or(false, |v| !v.is_empty()) {
+    if legacy_openvmm_env("OPENVMM_DISABLE_TRACING_RATELIMITS").is_ok_and(|v| !v.is_empty()) {
         tracelimit::disable_rate_limiting(true);
     }
 
@@ -193,9 +193,9 @@ pub fn init_tracing(spawn: impl Spawn, tracer: RemoteTracer) -> anyhow::Result<(
         .as_ref()
         .map_or("", |v| v.as_str())
     {
-        "close" => fmt::format::FmtSpan::CLOSE,
-        "1" | "true" => fmt::format::FmtSpan::NEW | fmt::format::FmtSpan::CLOSE,
-        "" => fmt::format::FmtSpan::NONE,
+        "close" => FmtSpan::CLOSE,
+        "1" | "true" => FmtSpan::NEW | FmtSpan::CLOSE,
+        "0" | "false" | "" => FmtSpan::NONE,
         x => anyhow::bail!("invalid OPENVMM_SHOW_SPANS value: {x}"),
     };
 
@@ -203,7 +203,7 @@ pub fn init_tracing(spawn: impl Spawn, tracer: RemoteTracer) -> anyhow::Result<(
     let json_fmt_layer = json_layer::JsonMeshLayer::new(tracer.trace_writer);
 
     // Output nicely readable events to kmsg (and therefore also serial).
-    let kmsg_layer = fmt::layer()
+    let kmsg_layer = tracing_subscriber::fmt::layer()
         .event_format(
             Format::default()
                 .without_time()

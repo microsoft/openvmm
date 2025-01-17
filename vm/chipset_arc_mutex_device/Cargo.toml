@@ -3,7 +3,7 @@
 
 [package]
 name = "chipset_arc_mutex_device"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

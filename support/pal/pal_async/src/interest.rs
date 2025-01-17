@@ -261,7 +261,7 @@ impl PollInterestSet {
             if !interest
                 .waker
                 .as_ref()
-                .map_or(false, |w| w.will_wake(cx.waker()))
+                .is_some_and(|w| w.will_wake(cx.waker()))
             {
                 interest.waker = Some(cx.waker().clone());
             }

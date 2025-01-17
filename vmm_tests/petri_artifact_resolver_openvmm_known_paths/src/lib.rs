@@ -453,7 +453,7 @@ pub fn get_output_executable_path(name: &str) -> anyhow::Result<PathBuf> {
 /// A description of a command that can be run to create a missing file.
 // DEVNOTE: `pub` in order to re-use logic in closed-source known_paths resolver
 #[derive(Copy, Clone)]
-#[allow(missing_docs)] // Self-describing field names.
+#[expect(missing_docs)] // Self-describing field names.
 pub enum MissingCommand<'a> {
     /// A `cargo build` invocation.
     Build {
@@ -470,7 +470,7 @@ pub enum MissingCommand<'a> {
         description: &'a str,
         xflowey_args: &'a [&'a str],
     },
-    /// A `ci/restore.sh` invocation.
+    /// A `xflowey restore-packages` invocation.
     Restore { description: &'a str },
     /// A custom command.
     Custom { description: &'a str, cmd: &'a str },
@@ -499,7 +499,7 @@ impl MissingCommand<'_> {
                     args.join(" ")
                 ),
             MissingCommand::Restore { description } => {
-                anyhow::bail!("Failed to find {}. Run ci/restore.sh.", description)
+                anyhow::bail!("Failed to find {}. Run `cargo xflowey restore-packages`.", description)
             }
             MissingCommand::Custom { description, cmd } => {
                 anyhow::bail!(

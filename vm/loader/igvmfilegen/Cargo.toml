@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-edition = "2021"
+edition.workspace = true
 name = "igvmfilegen"
 rust-version.workspace = true
 

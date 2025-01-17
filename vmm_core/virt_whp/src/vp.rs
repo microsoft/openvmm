@@ -269,7 +269,7 @@ impl<'a> WhpProcessor<'a> {
                 // Ensure the waker is set.
                 if !last_waker
                     .as_ref()
-                    .map_or(false, |waker| cx.waker().will_wake(waker))
+                    .is_some_and(|waker| cx.waker().will_wake(waker))
                 {
                     last_waker = Some(cx.waker().clone());
                     self.inner.waker.write().clone_from(&last_waker);
@@ -604,7 +604,7 @@ mod x86 {
     // to the bottom of what's going on here.
     const MYSTERY_MSRS: &[u32] = &[0x88, 0x89, 0x8a, 0x116, 0x118, 0x119, 0x11a, 0x11b, 0x11e];
 
-    impl<'a> WhpProcessor<'a> {
+    impl WhpProcessor<'_> {
         pub(super) async fn handle_exit(
             &mut self,
             dev: &impl CpuIo,
@@ -804,12 +804,12 @@ mod x86 {
             if self.intercept_state().is_some()
                 && self.state.active_vtl == Vtl::Vtl0
                 && !dev.is_mmio(access.Gpa)
-                && !self
+                && self
                     .state
                     .vtls
                     .lapic(self.state.active_vtl)
                     .and_then(|lapic| lapic.apic.base_address())
-                    .map_or(false, |base| access.Gpa & !0xfff == base)
+                    .is_none_or(|base| access.Gpa & !0xfff != base)
             {
                 let access_type = match access.AccessInfo.AccessType() {
                     whp::abi::WHvMemoryAccessRead => HvInterceptAccessType::READ,
@@ -909,15 +909,18 @@ mod x86 {
                     == self.vp.partition.monitor_page.gpa()
                     && access.AccessInfo.AccessType() == whp::abi::WHvMemoryAccessWrite
                 {
-                    let mut state = self.emulator_state().map_err(VpHaltReason::Hypervisor)?;
+                    let guest_memory = &self.vp.partition.gm;
+                    let interruption_pending = exit.vp_context.ExecutionState.InterruptionPending();
+                    let gva_valid = access.AccessInfo.GvaValid();
+                    let access = &WhpVpRefEmulation::MemoryAccessContext(access);
+                    let mut state = emu::WhpEmulationState::new(access, self, &exit, dev);
                     if let Some(bit) = virt_support_x86emu::emulate::emulate_mnf_write_fast_path(
-                        &access.InstructionBytes[..access.InstructionByteCount as usize],
                         &mut state,
-                        exit.vp_context.ExecutionState.InterruptionPending(),
-                        access.AccessInfo.GvaValid(),
-                    ) {
-                        self.set_emulator_state(&state)
-                            .map_err(VpHaltReason::Hypervisor)?;
+                        guest_memory,
+                        dev,
+                        interruption_pending,
+                        gva_valid,
+                    )? {
                         if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
                             self.signal_mnf(dev, connection_id);
                         }
@@ -1731,7 +1734,7 @@ mod aarch64 {
     use virt::io::CpuIo;
     use virt::VpHaltReason;
 
-    impl<'a> WhpProcessor<'a> {
+    impl WhpProcessor<'_> {
         pub(super) fn process_apic(&mut self, _dev: &impl CpuIo) -> Result<bool, WhpRunVpError> {
             Ok(true)
         }

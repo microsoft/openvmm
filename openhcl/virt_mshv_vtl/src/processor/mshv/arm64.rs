@@ -190,11 +190,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
             .set_interrupt_notification(true);
     }
 
-    fn request_untrusted_sint_readiness(
-        this: &mut UhProcessor<'_, Self>,
-        _vtl: GuestVtl,
-        sints: u16,
-    ) {
+    fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16) {
         this.backing
             .next_deliverability_notifications
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
@@ -310,7 +306,9 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             Self::intercepted_vtl(&message.header).map_err(|UnsupportedGuestVtl(vtl)| {
                 VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl(vtl))
             })?;
-        self.emulate(dev, &intercept_state, intercepted_vtl).await?;
+        let cache = UhCpuStateCache::default();
+        self.emulate(dev, &intercept_state, intercepted_vtl, cache)
+            .await?;
         Ok(())
     }
 

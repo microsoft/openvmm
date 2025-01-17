@@ -6,7 +6,18 @@ use virt::VpIndex;
 use x86defs::RFlags;
 use x86defs::SegmentAttributes;
 use x86defs::SegmentRegister;
-use x86emu::CpuState;
+
+pub struct CpuState {
+    /// GP registers, in the canonical order (as defined by `RAX`, etc.).
+    pub gps: [u64; 16],
+    /// Segment registers, in the canonical order (as defined by `ES`, etc.).
+    pub segs: [SegmentRegister; 6],
+    pub rip: u64,
+    pub rflags: RFlags,
+
+    pub cr0: u64,
+    pub efer: u64,
+}
 
 /// Return [`CpuState`] that has long mode and protected mode enabled
 ///
@@ -69,25 +80,25 @@ impl CpuIo for MockCpu {
         todo!()
     }
 
-    async fn read_mmio<'a>(&self, _vp: VpIndex, address: u64, _data: &'a mut [u8]) {
+    async fn read_mmio(&self, _vp: VpIndex, address: u64, _data: &mut [u8]) {
         panic!(
             "Attempt to read MMIO when test environment has no MMIO. address: {:x}",
             address
         )
     }
 
-    async fn write_mmio<'a>(&self, _vp: VpIndex, address: u64, data: &'a [u8]) {
+    async fn write_mmio(&self, _vp: VpIndex, address: u64, data: &[u8]) {
         panic!(
             "Attempt to write MMIO when test environment has no MMIO. address: {:x}, data: {:x?}",
             address, data
         )
     }
 
-    async fn read_io<'a>(&self, _vp: VpIndex, _port: u16, _data: &'a mut [u8]) {
+    async fn read_io(&self, _vp: VpIndex, _port: u16, _data: &mut [u8]) {
         todo!()
     }
 
-    async fn write_io<'a>(&self, _vp: VpIndex, _port: u16, _data: &'a [u8]) {
+    async fn write_io(&self, _vp: VpIndex, _port: u16, _data: &[u8]) {
         todo!()
     }
 }

@@ -13,7 +13,7 @@ use virt::VpIndex;
 use vmm_core_defs::HaltReason;
 use vmotherboard::Chipset;
 
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 #[derive(Clone)]
 pub struct ChipsetPlusSynic {
     pub synic_ports: Arc<SynicPorts>,
@@ -21,7 +21,7 @@ pub struct ChipsetPlusSynic {
 }
 
 impl ChipsetPlusSynic {
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     pub fn new(synic_ports: Arc<SynicPorts>, chipset: Arc<Chipset>) -> Self {
         Self {
             synic_ports,
@@ -58,38 +58,38 @@ impl CpuIo for ChipsetPlusSynic {
             .on_post_message(vtl, connection_id, secure, message)
     }
 
-    fn read_mmio<'a>(
+    fn read_mmio(
         &self,
         vp: VpIndex,
         address: u64,
-        data: &'a mut [u8],
+        data: &mut [u8],
     ) -> impl std::future::Future<Output = ()> {
         self.chipset.mmio_read(vp.index(), address, data)
     }
 
-    fn write_mmio<'a>(
+    fn write_mmio(
         &self,
         vp: VpIndex,
         address: u64,
-        data: &'a [u8],
+        data: &[u8],
     ) -> impl std::future::Future<Output = ()> {
         self.chipset.mmio_write(vp.index(), address, data)
     }
 
-    fn read_io<'a>(
+    fn read_io(
         &self,
         vp: VpIndex,
         port: u16,
-        data: &'a mut [u8],
+        data: &mut [u8],
     ) -> impl std::future::Future<Output = ()> {
         self.chipset.io_read(vp.index(), port, data)
     }
 
-    fn write_io<'a>(
+    fn write_io(
         &self,
         vp: VpIndex,
         port: u16,
-        data: &'a [u8],
+        data: &[u8],
     ) -> impl std::future::Future<Output = ()> {
         self.chipset.io_write(vp.index(), port, data)
     }

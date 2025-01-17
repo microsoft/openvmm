@@ -7,7 +7,6 @@ use arbitrary::Arbitrary;
 use cpu::FuzzerCpu;
 use futures::FutureExt;
 use x86defs::cpuid::Vendor;
-use x86emu::CpuState;
 use x86emu::Emulator;
 use x86emu::Error;
 use xtask_fuzz::fuzz_target;
@@ -17,20 +16,14 @@ mod cpu;
 #[derive(Debug, Arbitrary)]
 struct StaticParams {
     cpu: FuzzerCpu,
-    state: CpuState,
     vendor: Vendor,
     code: [u8; 16],
 }
 
 fn do_fuzz(static_params: StaticParams) -> arbitrary::Result<()> {
-    let StaticParams {
-        cpu,
-        mut state,
-        vendor,
-        code,
-    } = static_params;
+    let StaticParams { cpu, vendor, code } = static_params;
 
-    let mut emu = Emulator::new(cpu, &mut state, vendor, &code);
+    let mut emu = Emulator::new(cpu, vendor, &code);
     emu.run().now_or_never().unwrap().or_else(|e| {
         match *e {
             // Acceptable results

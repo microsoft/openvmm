@@ -58,7 +58,6 @@ mod mapping {
     use x86defs::tdx::TdgMemPageGpaAttr;
 
     /// Error querying vtl permissions on a page
-    #[allow(missing_docs)]
     #[derive(Debug, Error)]
     pub enum QueryVtlPermissionsError {
         #[error("failed to query rmp permissions")]
@@ -79,7 +78,6 @@ mod mapping {
     }
 
     /// Error constructing a [`GuestMemoryMapping`].
-    #[allow(missing_docs)]
     #[derive(Debug, Error)]
     pub enum MappingError {
         #[error("failed to allocate VA space for guest memory")]

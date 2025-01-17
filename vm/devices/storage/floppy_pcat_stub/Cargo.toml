@@ -3,7 +3,7 @@
 
 [package]
 name = "floppy_pcat_stub"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

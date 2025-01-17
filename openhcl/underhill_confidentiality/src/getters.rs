@@ -7,7 +7,7 @@ static CONFIDENTIAL: OnceLock<bool> = OnceLock::new();
 static CONFIDENTIAL_DEBUG: OnceLock<bool> = OnceLock::new();
 
 fn get_bool_env_var(name: &str) -> bool {
-    std::env::var_os(name).map_or(false, |v| !v.is_empty() && v != "0")
+    std::env::var_os(name).is_some_and(|v| !v.is_empty() && v != "0")
 }
 
 /// Gets whether the current VM is a confidential VM.

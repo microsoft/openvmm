@@ -9,6 +9,7 @@ extern crate self as test_with_tracing;
 pub use test_with_tracing_macro::test;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::filter::Targets;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
 
 #[doc(hidden)]
@@ -28,6 +29,7 @@ pub fn init() {
             .log_internal_errors(true)
             .with_test_writer()
             .with_max_level(LevelFilter::TRACE)
+            .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
             .finish()
             .with(targets)
             .init();

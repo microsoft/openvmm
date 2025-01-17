@@ -18,6 +18,7 @@ use self::deferred::DeferredActions;
 use self::ioctls::*;
 use crate::ioctl::deferred::DeferredAction;
 use crate::protocol;
+use crate::protocol::hcl_intr_offload_flags;
 use crate::protocol::hcl_run;
 use crate::protocol::EnterModes;
 use crate::protocol::HCL_REG_PAGE_OFFSET;
@@ -82,7 +83,7 @@ use zerocopy::FromZeroes;
 
 /// Error returned by HCL operations.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum Error {
     #[error("failed to open mshv device")]
     OpenMshv(#[source] io::Error),
@@ -150,7 +151,7 @@ pub struct IoctlError(#[source] pub(crate) nix::Error);
 
 /// Error returned when issuing hypercalls.
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum HypercallError {
     #[error("hypercall failed with {0:?}")]
     Hypervisor(HvError),
@@ -172,7 +173,7 @@ impl HypercallError {
 
 /// Errors when issuing hypercalls via the kernel direct interface.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum HvcallError {
     #[error("kernel rejected the hypercall, most likely due to the hypercall code not being allowed via set_allowed_hypercalls")]
     HypercallIoctlFailed(#[source] nix::Error),
@@ -187,7 +188,7 @@ pub enum HvcallError {
 /// Error applying VTL protections.
 // TODO: move to `underhill_mem`.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum ApplyVtlProtectionsError {
     #[error(
         "hypervisor returned {output:?} error {hv_error:?} when protecting pages {range} for vtl {vtl:?}"
@@ -222,7 +223,7 @@ pub enum ApplyVtlProtectionsError {
 
 /// Error setting guest VSM configuration.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum SetGuestVsmConfigError {
     #[error(
         "hypervisor returned error {hv_error:?} when configuring guest vsm {enable_guest_vsm:?}"
@@ -235,7 +236,7 @@ pub enum SetGuestVsmConfigError {
 
 /// Error getting the VP idnex from an APIC ID.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum GetVpIndexFromApicIdError {
     #[error("hypervisor returned error {hv_error:?} when querying vp index for {apic_id}")]
     Hypervisor { hv_error: HvError, apic_id: u32 },
@@ -243,7 +244,7 @@ pub enum GetVpIndexFromApicIdError {
 
 /// Error setting VSM partition configuration.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum SetVsmPartitionConfigError {
     #[error(
         "hypervisor returned error {hv_error:?} when configuring vsm partition config {config:?}"
@@ -256,7 +257,7 @@ pub enum SetVsmPartitionConfigError {
 
 /// Error translating a GVA to a GPA.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum TranslateGvaToGpaError {
     #[error("hypervisor returned error {hv_error:?} on gva {gva:x}")]
     Hypervisor { gva: u64, hv_error: HvError },
@@ -280,7 +281,7 @@ pub struct CheckVtlAccessResult {
 /// Error accepting pages.
 // TODO: move to `underhill_mem`.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum AcceptPagesError {
     #[error("hypervisor returned {output:?} error {hv_error:?} when accepting pages {range}")]
     Hypervisor {
@@ -1835,27 +1836,40 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
     /// Gets the proxied interrupt request bitmap from the hypervisor.
     pub fn proxy_irr(&mut self) -> Option<[u32; 8]> {
         // SAFETY: the `scan_proxy_irr` and `proxy_irr` fields of the run page
-        // are concurrently updated by the kernel, but only on this processor.
+        // are concurrently updated by the kernel on multiple processors. They
+        // are accessed atomically everywhere.
         unsafe {
             let scan_proxy_irr =
                 &*(addr_of!((*self.run.as_ptr()).scan_proxy_irr).cast::<AtomicU8>());
             let proxy_irr = &*(addr_of!((*self.run.as_ptr()).proxy_irr).cast::<[AtomicU32; 8]>());
-            if scan_proxy_irr.load(Ordering::Relaxed) == 0 {
+            if scan_proxy_irr.load(Ordering::Acquire) == 0 {
                 return None;
             }
 
-            scan_proxy_irr.store(0, Ordering::Relaxed);
+            scan_proxy_irr.store(0, Ordering::SeqCst);
             let mut r = [0; 8];
             for (irr, r) in proxy_irr.iter().zip(r.iter_mut()) {
-                // In theory we don't need atomic operations, we just need the
-                // swap to happen in a single instruction. This would require
-                // inline assembly.
                 if irr.load(Ordering::Relaxed) != 0 {
                     *r = irr.swap(0, Ordering::Relaxed);
                 }
             }
             Some(r)
         }
+    }
+
+    /// Gets the proxy_irr_exit bitmask. This mask ensures that
+    /// the masked interrupts always exit to user-space, and cannot
+    /// be injected in the kernel. Interrupts matching this condition
+    /// will be left on the proxy_irr field.
+    pub fn proxy_irr_exit_mut(&mut self) -> &mut [u32; 8] {
+        // SAFETY: The `proxy_irr_exit` field of the run page will not be concurrently updated.
+        unsafe { &mut (*self.run.as_ptr()).proxy_irr_exit }
+    }
+
+    /// Gets the current offload_flags from the run page.
+    pub fn offload_flags_mut(&mut self) -> &mut hcl_intr_offload_flags {
+        // SAFETY: The `offload_flags` field of the run page will not be concurrently updated.
+        unsafe { &mut (*self.run.as_ptr()).offload_flags }
     }
 
     /// Runs the VP via the sidecar kernel.

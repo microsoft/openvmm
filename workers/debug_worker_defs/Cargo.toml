@@ -3,7 +3,7 @@
 
 [package]
 name = "debug_worker_defs"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
