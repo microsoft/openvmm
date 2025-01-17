@@ -19,6 +19,7 @@ use crate::node::WriteVar;
 use crate::patch::PatchResolver;
 use crate::patch::ResolvedPatches;
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -38,6 +39,7 @@ pub mod user_facing {
     pub use super::GhRunner;
     pub use super::GhRunnerOsLabel;
     pub use super::GhScheduleTriggers;
+    pub use super::GhUserSecretVar;
     pub use super::HostExt;
     pub use super::IntoPipeline;
     pub use super::ParameterKind;
@@ -354,6 +356,9 @@ pub struct Pipeline {
     gh_bootstrap_template: String,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct GhUserSecretVar(pub String);
+
 impl Pipeline {
     pub fn new() -> Pipeline {
         Pipeline::default()
@@ -538,6 +543,14 @@ impl Pipeline {
     pub fn gh_set_ci_triggers(&mut self, triggers: GhCiTriggers) -> &mut Self {
         self.gh_ci_triggers = Some(triggers);
         self
+    }
+
+    /// (GitHub Actions only) Use a pre-defined GitHub Actions secret variable.
+    ///
+    /// For more information on defining secrets for use in GitHub Actions, see
+    /// <https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions>
+    pub fn gh_use_secret(&mut self, secret_name: impl AsRef<str>) -> GhUserSecretVar {
+        GhUserSecretVar(secret_name.as_ref().to_string())
     }
 
     pub fn new_job(

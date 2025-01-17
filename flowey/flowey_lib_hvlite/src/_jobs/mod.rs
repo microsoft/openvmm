@@ -22,6 +22,7 @@ pub mod build_and_run_doc_tests;
 pub mod build_and_run_nextest_unit_tests;
 pub mod build_and_run_nextest_vmm_tests;
 pub mod cfg_common;
+pub mod cfg_gh_azure_login;
 pub mod cfg_hvlite_reposource;
 pub mod cfg_versions;
 pub mod check_clippy;

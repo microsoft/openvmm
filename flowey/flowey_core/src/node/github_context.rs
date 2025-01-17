@@ -7,6 +7,7 @@ use crate::node::ClaimVar;
 use crate::node::NodeCtx;
 use crate::node::ReadVar;
 use crate::node::StepCtx;
+use crate::pipeline::GhUserSecretVar;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
@@ -88,6 +89,10 @@ impl<'a> GhContextVarReader<'a, state::Root> {
             ctx: self.ctx,
             _state: std::marker::PhantomData,
         }
+    }
+
+    pub fn secret(self, secret: GhUserSecretVar) -> ReadVar<String> {
+        self.read_var(format!("secrets.{}", secret.0), true, false)
     }
 }
 
