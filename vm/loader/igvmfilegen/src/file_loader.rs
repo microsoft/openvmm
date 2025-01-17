@@ -247,7 +247,6 @@ impl IgvmLoaderRegister for X86Register {
                 if u64::from(policy) != 0 {
                     // NOTE: In 2411 branch, disable host debugging independent
                     // of enable_debug to enable PMK release for public preview.
-
                     let no_debug_policy = policy.with_debug_allowed(0);
 
                     init_headers.push(IgvmInitializationHeader::GuestPolicy {
