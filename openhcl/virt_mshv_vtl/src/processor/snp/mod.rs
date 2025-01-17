@@ -3,6 +3,7 @@
 
 //! Processor support for SNP partitions.
 
+use super::apic::ApicBacking;
 use super::from_seg;
 use super::hardware_cvm;
 use super::private::BackingParams;
@@ -52,7 +53,6 @@ use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt_support_apic::ApicClient;
-use virt_support_apic::ApicWork;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
@@ -394,61 +394,22 @@ impl BackingPrivate for SnpBacked {
         vtl: GuestVtl,
         scan_irr: bool,
     ) -> Result<(), UhRunVpError> {
-        // Check for interrupt requests from the host.
-        // TODO SNP GUEST VSM supporting VTL 1 proxy irrs requires kernel changes
-        if vtl == GuestVtl::Vtl0 {
-            if let Some(irr) = this.runner.proxy_irr() {
-                // TODO SNP: filter proxy IRRs.
-                this.backing.cvm.lapics[vtl]
-                    .lapic
-                    .request_fixed_interrupts(irr);
-            }
-        }
-
         // Clear any pending interrupt.
         this.runner.vmsa_mut(vtl).v_intr_cntrl_mut().set_irq(false);
 
-        let ApicWork {
-            init,
-            extint,
-            sipi,
-            nmi,
-            interrupt,
-        } = this.backing.cvm.lapics[vtl]
-            .lapic
-            .scan(&mut this.vmtime, scan_irr);
-
-        // An INIT/SIPI targeted at a VP with more than one guest VTL enabled is ignored.
-        // Check VTL enablement inside each block to avoid taking a lock on the hot path,
-        // INIT and SIPI are quite cold.
-        if init {
-            if !*this.inner.hcvm_vtl1_enabled.lock() {
-                this.handle_init(vtl)?;
-            }
-        }
-
-        if let Some(vector) = sipi {
-            if !*this.inner.hcvm_vtl1_enabled.lock() {
-                this.handle_sipi(vtl, vector)?;
-            }
-        }
-
-        // Interrupts are ignored while waiting for SIPI.
-        if this.backing.cvm.lapics[vtl].activity != MpState::WaitForSipi {
-            if nmi {
-                this.handle_nmi(vtl);
-            }
-
-            if let Some(vector) = interrupt {
-                this.handle_interrupt(vtl, vector);
-            }
-
-            if extint {
-                tracelimit::warn_ratelimited!("extint not supported");
-            }
-        }
-
-        Ok(())
+        // TODO SNP: filter proxy IRRs.
+        super::apic::poll_apic_core(
+            this,
+            |this| {
+                this.backing.cvm.lapics[vtl]
+                    .lapic
+                    .scan(&mut this.vmtime, scan_irr)
+            },
+            |this| this.runner.proxy_irr(),
+            |this| &mut this.backing.cvm.lapics[vtl],
+            |this| *this.inner.hcvm_vtl1_enabled.lock(),
+            vtl,
+        )
     }
 
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {
@@ -775,17 +736,18 @@ impl<T> HypercallIo for GhcbEnlightenedHypercall<'_, '_, '_, T> {
     }
 }
 
-impl UhProcessor<'_, SnpBacked> {
-    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) {
+impl ApicBacking for UhProcessor<'_, SnpBacked> {
+    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
         let mut vmsa = self.runner.vmsa_mut(vtl);
         vmsa.v_intr_cntrl_mut().set_vector(vector);
         vmsa.v_intr_cntrl_mut().set_priority((vector >> 4).into());
         vmsa.v_intr_cntrl_mut().set_ignore_tpr(false);
         vmsa.v_intr_cntrl_mut().set_irq(true);
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
+        Ok(())
     }
 
-    fn handle_nmi(&mut self, vtl: GuestVtl) {
+    fn handle_nmi(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
         // TODO SNP: support virtual NMI injection
         // For now, just inject an NMI and hope for the best.
         // Don't forget to update handle_cross_vtl_interrupts if this code changes.
@@ -797,6 +759,7 @@ impl UhProcessor<'_, SnpBacked> {
                 .with_valid(true),
         );
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
+        Ok(())
     }
 
     fn handle_init(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
@@ -824,6 +787,13 @@ impl UhProcessor<'_, SnpBacked> {
         Ok(())
     }
 
+    fn handle_extint(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
+        tracelimit::warn_ratelimited!(?vtl, "extint not supported");
+        Ok(())
+    }
+}
+
+impl UhProcessor<'_, SnpBacked> {
     fn handle_synic_deliverable_exit(&mut self) {
         let message = hvdef::HvX64SynicSintDeliverableMessage::ref_from_prefix(
             self.runner.exit_message().payload(),

@@ -14,6 +14,7 @@ use super::super::vp_state::UhVpStateAccess;
 use super::super::BackingPrivate;
 use super::super::UhEmulationState;
 use super::super::UhRunVpError;
+use crate::processor::apic::ApicBacking;
 use crate::processor::from_seg;
 use crate::processor::LapicState;
 use crate::processor::SidecarExitReason;
@@ -70,7 +71,6 @@ use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt_support_apic::ApicClient;
-use virt_support_apic::ApicWork;
 use virt_support_x86emu::emulate::EmuCheckVtlAccessError;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
@@ -337,48 +337,22 @@ impl BackingPrivate for HypervisorBackedX86 {
         vtl: GuestVtl,
         scan_irr: bool,
     ) -> Result<(), UhRunVpError> {
-        let Some(lapics) = this.backing.lapics.as_mut() else {
+        if this.backing.lapics.is_none() {
             return Ok(());
-        };
-
-        let ApicWork {
-            init,
-            extint,
-            sipi,
-            nmi,
-            interrupt,
-        } = lapics[vtl].lapic.scan(&mut this.vmtime, scan_irr);
-
-        // TODO WHP GUEST VSM: An INIT/SIPI targeted at a VP with more than one guest VTL enabled is ignored.
-        if init {
-            this.handle_init(vtl)?;
         }
 
-        if let Some(vector) = sipi {
-            this.handle_sipi(vtl, vector)?;
-        }
-
-        let Some(lapics) = this.backing.lapics.as_mut() else {
-            unreachable!()
-        };
-
-        // Interrupts are ignored while waiting for SIPI.
-        if lapics[vtl].activity != MpState::WaitForSipi {
-            if nmi || lapics[vtl].nmi_pending {
-                lapics[vtl].nmi_pending = true;
-                this.handle_nmi(vtl)?;
-            }
-
-            if let Some(vector) = interrupt {
-                this.handle_interrupt(vtl, vector)?;
-            }
-
-            if extint {
-                todo!();
-            }
-        }
-
-        Ok(())
+        super::super::apic::poll_apic_core(
+            this,
+            |this| {
+                this.backing.lapics.as_mut().unwrap()[vtl]
+                    .lapic
+                    .scan(&mut this.vmtime, scan_irr)
+            },
+            |_| None,
+            |this| &mut this.backing.lapics.as_mut().unwrap()[vtl],
+            |_| false, // TODO WHP GUEST VSM
+            vtl,
+        )
     }
 
     fn halt_in_usermode(this: &mut UhProcessor<'_, Self>, target_vtl: GuestVtl) -> bool {
@@ -959,7 +933,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
     }
 }
 
-impl UhProcessor<'_, HypervisorBackedX86> {
+impl ApicBacking for UhProcessor<'_, HypervisorBackedX86> {
     fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
         const NAMES: &[HvX64RegisterName] = &[
             HvX64RegisterName::Rflags,
@@ -1134,6 +1108,12 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         Ok(())
     }
 
+    fn handle_extint(&mut self, _vtl: GuestVtl) -> Result<(), UhRunVpError> {
+        todo!()
+    }
+}
+
+impl UhProcessor<'_, HypervisorBackedX86> {
     fn set_rip(&mut self, vtl: GuestVtl, rip: u64) -> Result<(), VpHaltReason<UhRunVpError>> {
         self.runner
             .set_vp_register(vtl, HvX64RegisterName::Rip, rip.into())
