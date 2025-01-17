@@ -1242,8 +1242,11 @@ dependencies = [
  "futures",
  "guestmem",
  "inspect",
+ "pal_async",
+ "parking_lot",
  "scsi_buffers",
  "thiserror 2.0.0",
+ "tracelimit",
  "vm_resource",
 ]
 
@@ -6918,6 +6921,7 @@ dependencies = [
  "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
+ "get_protocol",
  "getrandom",
  "guest_emulation_transport",
  "guid",
@@ -6933,6 +6937,7 @@ dependencies = [
  "time",
  "tracing",
  "vmgs",
+ "vmgs_format",
  "zerocopy",
 ]
 

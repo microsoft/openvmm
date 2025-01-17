@@ -24,6 +24,11 @@ cfg_if::cfg_if!(
         use processor::tdx::TdxBackedShared;
         use std::arch::x86_64::CpuidResult;
         use virt::CpuidLeaf;
+        use bitvec::prelude::BitArray;
+        use bitvec::prelude::Lsb0;
+        /// Bitarray type for representing IRR bits in a x86-64 APIC
+        /// Each bit represent the 256 possible vectors.
+        type IrrBitmap = BitArray<[u32; 8], Lsb0>;
     } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
         pub use crate::processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
         use hvdef::HvArm64RegisterName;
@@ -223,6 +228,10 @@ struct UhPartitionInner {
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
     backing_shared: BackingShared,
+    #[cfg(guest_arch = "x86_64")]
+    // N.B For now, only one device vector table i.e. for VTL0 only
+    #[inspect(with = "|x| inspect::iter_by_index(x.read().into_inner().map(inspect::AsHex))")]
+    device_vector_table: RwLock<IrrBitmap>,
 }
 
 #[derive(Inspect)]
@@ -628,7 +637,8 @@ struct WakeReason {
     message_queues: bool,
     hv_start_enable_vtl_vp: bool,
     intcon: bool,
-    #[bits(28)]
+    update_proxy_irr_filter: bool,
+    #[bits(27)]
     _reserved: u32,
 }
 
@@ -638,6 +648,8 @@ impl WakeReason {
     const MESSAGE_QUEUES: Self = Self::new().with_message_queues(true);
     const HV_START_ENABLE_VP_VTL: Self = Self::new().with_hv_start_enable_vtl_vp(true); // StartVp/EnableVpVtl handling
     const INTCON: Self = Self::new().with_intcon(true);
+    #[cfg(guest_arch = "x86_64")]
+    const UPDATE_PROXY_IRR_FILTER: Self = Self::new().with_update_proxy_irr_filter(true);
 }
 
 /// Immutable access to useful bits of Partition state.
@@ -747,6 +759,39 @@ impl virt::X86Partition for UhPartition {
 impl UhPartitionInner {
     fn vp(&self, index: VpIndex) -> Option<&'_ UhVpInner> {
         self.vps.get(index.index() as usize)
+    }
+
+    /// For requester VP to issue `proxy_irr_blocked` update to other VPs
+    #[cfg(guest_arch = "x86_64")]
+    fn request_proxy_irr_filter_update(&self, vtl: GuestVtl, device_vector: u8, req_vp_index: u32) {
+        tracing::debug!(
+            ?vtl,
+            device_vector,
+            req_vp_index,
+            "request_proxy_irr_filter_update"
+        );
+
+        // Add given vector to partition global device vector table (VTL0 only for now)
+        {
+            let mut device_vector_table = self.device_vector_table.write();
+            device_vector_table.set(device_vector as usize, true);
+        }
+
+        // Wake all other VPs for their `proxy_irr_blocked` filter update
+        for vp in self.vps.iter() {
+            if vp.cpu_index != req_vp_index {
+                vp.wake(vtl, WakeReason::UPDATE_PROXY_IRR_FILTER);
+            }
+        }
+    }
+
+    /// Get current partition global device irr vectors (VTL0 for now)
+    #[cfg(guest_arch = "x86_64")]
+    fn fill_device_vectors(&self, _vtl: GuestVtl, irr_vectors: &mut IrrBitmap) {
+        let device_vector_table = self.device_vector_table.read();
+        for idx in device_vector_table.iter_ones() {
+            irr_vectors.set(idx, true);
+        }
     }
 
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
@@ -1609,6 +1654,8 @@ impl<'a> UhProtoPartition<'a> {
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
             backing_shared: BackingShared::new(isolation, BackingSharedParams { cvm_state })?,
+            #[cfg(guest_arch = "x86_64")]
+            device_vector_table: RwLock::new(IrrBitmap::new(Default::default())),
         });
 
         if cfg!(guest_arch = "x86_64") {
