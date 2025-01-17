@@ -175,12 +175,12 @@ impl UhProcessor<'_, TdxBacked> {
         } else {
             gla_flags.set_list(true);
 
-            let page_mapping = flush_page.mapping().expect("allocated");
+            let page_mapping = flush_page.mapping().unwrap();
 
             for (i, gva_range) in flush_addrs.iter().enumerate() {
                 page_mapping
                     .write_at(i * size_of::<HvGvaRange>(), gva_range.as_bytes())
-                    .expect("just allocated, should never fail");
+                    .unwrap();
             }
 
             let gla_list = TdxGlaListInfo::new()
