@@ -60,7 +60,7 @@ trait CpuidArchInitializer {
     /// for retrieving the result of a given subleaf.
     //
     // (TODO TDX: This will be to populate them, will need to update the
-    // signature to pass CpuidResults as a mutable reference)
+    // signature to pass CpuidResults as a mutable reference. Issue #556)
     fn process_extended_state_subleaves(
         &self,
         results: &mut CpuidSubtable,

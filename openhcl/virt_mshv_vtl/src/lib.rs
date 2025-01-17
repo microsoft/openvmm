@@ -866,7 +866,7 @@ impl virt::Synic for UhPartition {
     fn monitor_support(&self) -> Option<&dyn virt::SynicMonitor> {
         // TODO TDX TODO SNP: Disable monitor support for TDX and SNP as support
         // for VTL2 protections is needed to emulate this page, which is not
-        // implemented yet.
+        // implemented yet. (Issue #575)
         if self.inner.isolation.is_hardware_isolated() {
             None
         } else {
@@ -1391,7 +1391,7 @@ impl<'a> UhProtoPartition<'a> {
         // TODO TDX: This currently works on TDX because all Underhill TDs today
         // have the debug policy bit set, allowing the hypervisor to install the
         // intercept on behalf of the guest. In the future, Underhill should
-        // register for these intercepts itself.
+        // register for these intercepts itself. (Issue #558)
         if params.intercept_debug_exceptions {
             if !cfg!(feature = "gdb") {
                 return Err(Error::InvalidDebugConfiguration);
@@ -1745,7 +1745,7 @@ impl UhProtoPartition<'_> {
         match params.isolation {
             IsolationType::None | IsolationType::Vbs => {}
             #[cfg(guest_arch = "x86_64")]
-            IsolationType::Tdx => return false, // TODO TDX GUEST_VSM
+            IsolationType::Tdx => return false, // TODO TDX GUEST_VSM (Issue #557)
             #[cfg(guest_arch = "x86_64")]
             IsolationType::Snp => {
                 if !params.env_cvm_guest_vsm {
