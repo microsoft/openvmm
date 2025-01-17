@@ -646,8 +646,8 @@ impl BackingPrivate for TdxBacked {
 
         // Allowed cr4 bits depend on the values allowed by the SEAM.
         //
-        // Isse #555: Consider just using MSR kernel module instead of explicit
-        // ioctl.
+        // TODO TDX: Consider just using MSR kernel module instead of explicit
+        // ioctl. (Issue #555)
         let read_cr4 = hcl.read_vmx_cr4_fixed1();
         let allowed_cr4_bits = (ShadowedRegister::Cr4.guest_owned_mask() | X64_CR4_MCE) & read_cr4;
 
