@@ -26,6 +26,8 @@ cfg_if::cfg_if!(
         use virt::CpuidLeaf;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
+        /// Bitarray type for representing IRR bits in a x86-64 APIC
+        /// Each bit represent the 256 possible vectors.
         type IrrBitmap = BitArray<[u32; 8], Lsb0>;
     } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
         pub use crate::processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
@@ -785,7 +787,7 @@ impl UhPartitionInner {
 
     /// Get current partition global device irr vectors (VTL0 for now)
     #[cfg(guest_arch = "x86_64")]
-    fn get_device_vectors(&self, _vtl: GuestVtl, irr_vectors: &mut IrrBitmap) {
+    fn fill_device_vectors(&self, _vtl: GuestVtl, irr_vectors: &mut IrrBitmap) {
         let device_vector_table = self.device_vector_table.read();
         for idx in device_vector_table.iter_ones() {
             irr_vectors.set(idx, true);

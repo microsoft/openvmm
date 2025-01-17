@@ -1155,7 +1155,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     fn update_proxy_irr_filter(&mut self, vtl: GuestVtl) {
         let mut irr_bits: BitArray<[u32; 8], Lsb0> = BitArray::new(Default::default());
 
-        // Get all not maksed && proxy SINT vectors
+        // Get all not masked && proxy SINT vectors
         if let Some(hv) = self.backing.hv(vtl).as_ref() {
             for sint in 0..NUM_SINTS as u8 {
                 let sint_msr = hv.synic.sint(sint);
@@ -1167,7 +1167,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         }
 
         // Get all device vectors
-        self.partition.get_device_vectors(vtl, &mut irr_bits);
+        self.partition.fill_device_vectors(vtl, &mut irr_bits);
 
         // Update `proxy_irr_blocked` filter in run page
         self.runner.update_proxy_irr_filter(&irr_bits.into_inner());

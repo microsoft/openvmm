@@ -1870,7 +1870,9 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
             &mut *(addr_of_mut!((*self.run.as_ptr()).proxy_irr_blocked).cast::<[AtomicU32; 8]>())
         };
 
-        // By default block all (i.e. set all), and only allow (unset) given vectors
+        // `irr_filter` bitmap has bits set for all allowed vectors (i.e. SINT and device interrupts)
+        // Replace current `proxy_irr_blocked` with the given `irr_filter` bitmap.
+        // By default block all (i.e. set all), and only allow (unset) given vectors from `irr_filter`.
         for (filter, irr) in proxy_irr_blocked.iter_mut().zip(irr_filter.iter()) {
             filter.store(!irr, Ordering::Relaxed);
             tracing::debug!(irr, "update_proxy_irr_filter");
