@@ -1137,11 +1137,11 @@ mod mapping {
                     }
                 }
                 IsolationType::Tdx => {
-                    // Issue #573: implement acceptor.vtl_permissions
+                    // TODO TDX: implement acceptor.vtl_permissions
                     // For now, since guest vsm isn't enabled (therefore no VTL
                     // 1), and VTL 0 can't change its own permissions, the
                     // permissions should be the same as when VTL 2 initialized
-                    // guest memory.
+                    // guest memory. (Issue #573)
 
                     GpaVtlPermissions::new(IsolationType::Tdx, vtl, HV_MAP_GPA_PERMISSIONS_ALL)
                 }

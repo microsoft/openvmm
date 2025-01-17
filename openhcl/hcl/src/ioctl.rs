@@ -2797,7 +2797,7 @@ impl Hcl {
             IsolationType::Snp => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available()),
-            // Issue #560. Figure out what these values should be.
+            // TODO TDX: Figure out what these values should be. (Issue #560)
             IsolationType::Tdx => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available()),
@@ -2898,7 +2898,7 @@ impl Hcl {
         target_vtl: HvInputVtl,
     ) -> Result<(), ApplyVtlProtectionsError> {
         if self.isolation.is_hardware_isolated() {
-            // Issue # 559 - required for vmbus relay monitor page support
+            // TODO SNP TODO TDX - required for vmbus relay monitor page support (Issue #559)
             todo!();
         }
 
