@@ -26,6 +26,7 @@ parking_lot.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+cvm_tracing.workspace = true
 
 [lints]
 workspace = true
