@@ -29,6 +29,7 @@ vmotherboard = { workspace = true, features = [
 
 build_info.workspace = true
 cvm_tracing.workspace = true
+once_cell.workspace = true
 diag_proto.workspace = true
 diag_server.workspace = true
 debug_worker_defs = { workspace = true, optional = true }

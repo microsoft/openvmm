@@ -20,6 +20,7 @@ use crate::dispatch::vtl2_settings_worker::wait_for_mana;
 use crate::dispatch::vtl2_settings_worker::InitialControllers;
 use crate::dispatch::LoadedVm;
 use crate::dispatch::LoadedVmNetworkSettings;
+use crate::dma_manager::GlobalDmaManager;
 use crate::emuplat::firmware::UnderhillLogger;
 use crate::emuplat::firmware::UnderhillVsmConfig;
 use crate::emuplat::framebuffer::FramebufferRemoteControl;
@@ -737,6 +738,7 @@ impl UhVmNetworkSettings {
         state_units: &StateUnits,
         tp: &AffinitizedThreadpool,
         vmbus_server: &Option<VmbusServerHandle>,
+        dma_manager: GlobalDmaManager,
     ) -> anyhow::Result<RuntimeSavedState> {
         let instance_id = nic_config.instance_id;
         let nic_max_sub_channels = nic_config
@@ -757,6 +759,7 @@ impl UhVmNetworkSettings {
             vfio_dma_buffer(shared_vis_pages_pool, format!("nic_{}", instance_id))
                 .context("creating vfio dma buffer")?,
             self.dma_mode,
+            dma_manager
         )
         .await?;
 
@@ -868,6 +871,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
+        dma_manager: GlobalDmaManager,
     ) -> anyhow::Result<RuntimeSavedState> {
         if self.vf_managers.contains_key(&instance_id) {
             return Err(NetworkSettingsError::VFManagerExists(instance_id).into());
@@ -900,6 +904,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
                 state_units,
                 threadpool,
                 vmbus_server,
+                dma_manager,
             )
             .await?;
 
@@ -1863,6 +1868,7 @@ async fn new_underhill_vm(
         crate::inspect_proc::periodic_telemetry_task(driver_source.simple()),
     );
 
+    let mut dma_manager = GlobalDmaManager::new();
     let nvme_manager = if env_cfg.nvme_vfio {
         let shared_vis_pool_spawner = shared_vis_pages_pool
             .as_ref()
@@ -1894,12 +1900,13 @@ async fn new_underhill_vm(
         );
 
         let manager = NvmeManager::new(
-            &driver_source,
-            processor_topology.vp_count(),
-            vfio_dma_buffer_spawner,
-            save_restore_supported,
-            servicing_state.nvme_state.unwrap_or(None),
-        );
+                    &driver_source,
+                    processor_topology.vp_count(),
+                    vfio_dma_buffer_spawner,
+                    save_restore_supported,
+                    servicing_state.nvme_state.unwrap_or(None),
+                    dma_manager.clone(),
+                );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
             manager.client().clone(),
@@ -2839,6 +2846,7 @@ async fn new_underhill_vm(
                     partition.clone(),
                     &state_units,
                     &vmbus_server,
+                    dma_manager.clone(),
                 )
                 .await?;
 
@@ -3060,6 +3068,7 @@ async fn new_underhill_vm(
         shared_vis_pool: shared_vis_pages_pool,
         private_pool,
         nvme_keep_alive: env_cfg.nvme_keep_alive,
+        dma_manager,
     };
 
     Ok(loaded_vm)

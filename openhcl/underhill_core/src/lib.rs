@@ -9,6 +9,7 @@
 
 mod diag;
 mod dispatch;
+mod dma_manager;
 mod emuplat;
 mod get_tracing;
 mod inspect_internal;

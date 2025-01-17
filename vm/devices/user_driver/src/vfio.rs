@@ -12,6 +12,7 @@ use crate::memory::MemoryBlock;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use crate::HostDmaAllocator;
+use crate::DmaClient;
 use anyhow::Context;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -35,6 +36,7 @@ use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+
 
 pub trait VfioDmaBuffer: 'static + Send + Sync {
     /// Create a new DMA buffer of the given `len` bytes. Guaranteed to be zero-initialized.
@@ -62,6 +64,8 @@ pub struct VfioDevice {
     driver_source: VmTaskDriverSource,
     #[inspect(iter_by_index)]
     interrupts: Vec<Option<InterruptState>>,
+    #[inspect(skip)]
+    dma_client: Arc<dyn DmaClient>,
 }
 
 #[derive(Inspect)]
@@ -79,8 +83,9 @@ impl VfioDevice {
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
         dma_buffer: Arc<dyn VfioDmaBuffer>,
+        dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
-        Self::restore(driver_source, pci_id, dma_buffer, false).await
+        Self::restore(driver_source, pci_id, dma_buffer, false, dma_client).await
     }
 
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
@@ -90,6 +95,7 @@ impl VfioDevice {
         pci_id: &str,
         dma_buffer: Arc<dyn VfioDmaBuffer>,
         keepalive: bool,
+        dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
@@ -134,6 +140,7 @@ impl VfioDevice {
             msix_info,
             driver_source: driver_source.clone(),
             interrupts: Vec::new(),
+            dma_client,
         })
     }
 

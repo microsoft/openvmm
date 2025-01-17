@@ -7,6 +7,7 @@ mod pci_shutdown;
 pub mod vtl2_settings_worker;
 
 use self::vtl2_settings_worker::DeviceInterfaces;
+use crate::dma_manager::GlobalDmaManager;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::EmuplatServicing;
 use crate::nvme_manager::NvmeManager;
@@ -108,6 +109,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
+        dma_manager: GlobalDmaManager,
     ) -> anyhow::Result<RuntimeSavedState>;
 
     /// Callback when network is removed externally.
@@ -179,6 +181,7 @@ pub(crate) struct LoadedVm {
     pub shared_vis_pool: Option<PagePool>,
     pub private_pool: Option<PagePool>,
     pub nvme_keep_alive: bool,
+    pub dma_manager: GlobalDmaManager,
 }
 
 pub struct LoadedVmState<T> {
@@ -721,26 +724,26 @@ impl LoadedVm {
             return Err(NetworkSettingsError::NetworkSettingsMissing.into());
         }
 
-        let save_state = self
-            .network_settings
-            .as_mut()
-            .unwrap()
-            .add_network(
-                instance_id,
-                subordinate_instance_id,
-                max_sub_channels,
-                threadpool,
-                &self.uevent_listener,
-                &None, // VF getting added; no existing state
-                &self.shared_vis_pool,
-                self.partition.clone(),
-                &self.state_units,
-                &self.vmbus_server,
-            )
-            .await?;
+        //let save_state = self
+        //    .network_settings
+        //    .as_mut()
+        //    .unwrap()
+        //    .add_network(
+        //        instance_id,
+        //        subordinate_instance_id,
+        //        max_sub_channels,
+        //        threadpool,
+        //        &self.uevent_listener,
+        //        &None, // VF getting added; no existing state
+        //        &self.shared_vis_pool,
+        //        self.partition.clone(),
+        //        &self.state_units,
+        //        &self.vmbus_server,
+        //    )
+        //    .await?;
 
-        self.state_units.start_stopped_units().await;
-        self.emuplat_servicing.netvsp_state.push(save_state);
+        //self.state_units.start_stopped_units().await;
+        //self.emuplat_servicing.netvsp_state.push(save_state);
 
         Ok(())
     }
