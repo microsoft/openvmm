@@ -709,6 +709,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         }
 
         // TODO GUEST VSM: interrupt rewinding
+        // TODO TDX GUEST VSM: update execution mode
     }
 }
 

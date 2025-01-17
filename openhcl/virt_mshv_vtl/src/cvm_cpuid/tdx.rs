@@ -182,7 +182,9 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
             if (1 << i) & summary_mask != 0 {
                 let result = Self::cpuid(CpuidFunction::ExtendedStateEnumeration.0, i);
                 let result_xfd = cpuid::ExtendedStateEnumerationSubleafNEcx::from(result.ecx).xfd();
-                if xfd_supported && result_xfd {}
+                if xfd_supported && result_xfd {
+                    // TODO TDX: update some maximum xfd value; see HvlpMaximumXfd
+                }
 
                 results.insert(i, result);
             }

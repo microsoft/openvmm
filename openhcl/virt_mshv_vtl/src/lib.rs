@@ -113,7 +113,7 @@ use zerocopy::FromZeroes;
 
 /// General error returned by operations.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum Error {
     #[error("hcl error")]
     Hcl(#[source] hcl::ioctl::Error),
@@ -158,7 +158,7 @@ pub enum Error {
 
 /// Error revoking guest VSM.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum RevokeGuestVsmError {
     #[error("failed to set vsm config")]
     SetGuestVsmConfig(#[source] hcl::ioctl::SetGuestVsmConfigError),
@@ -1691,7 +1691,7 @@ impl UhProtoPartition<'_> {
         match params.isolation {
             IsolationType::None | IsolationType::Vbs => {}
             #[cfg(guest_arch = "x86_64")]
-            IsolationType::Tdx => return false,
+            IsolationType::Tdx => return false, // TODO TDX GUEST_VSM
             #[cfg(guest_arch = "x86_64")]
             IsolationType::Snp => {
                 if !params.env_cvm_guest_vsm {
