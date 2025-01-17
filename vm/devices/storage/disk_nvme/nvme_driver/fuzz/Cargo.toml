@@ -16,7 +16,7 @@ guestmem.workspace = true
 guid.workspace = true
 inspect.workspace = true
 nvme.workspace = true
-nvme_driver = { workspace = true, features = ["fuzz_timeout"] }
+nvme_driver.workspace = true
 nvme_spec.workspace = true
 pal_async.workspace = true
 parking_lot.workspace = true

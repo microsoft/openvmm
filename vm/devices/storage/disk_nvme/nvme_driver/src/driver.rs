@@ -15,6 +15,8 @@ use crate::NamespaceError;
 use crate::NvmeDriverSavedState;
 use crate::RequestError;
 use crate::NVME_PAGE_SHIFT;
+use crate::NVME_TIMEOUT_INCREMENT;
+use crate::NVME_TIMEOUT_MINIMUM;
 use anyhow::Context as _;
 use futures::future::join_all;
 use futures::StreamExt;
@@ -27,6 +29,7 @@ use pal_async::task::Task;
 use save_restore::NvmeDriverWorkerSavedState;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::time::Duration;
 use task_control::AsyncRun;
 use task_control::InspectTask;
 use task_control::TaskControl;
@@ -71,6 +74,8 @@ pub struct NvmeDriver<T: DeviceBacking> {
     namespaces: Vec<Arc<Namespace>>,
     /// Keeps the controller connected (CC.EN==1) while servicing.
     nvme_keepalive: bool,
+    #[inspect(skip)]
+    reset_timeout: Duration,
 }
 
 #[derive(Inspect)]
@@ -165,14 +170,16 @@ enum NvmeWorkerRequest {
 }
 
 impl<T: DeviceBacking> NvmeDriver<T> {
-    /// Initializes the driver.
+    /// Initializes the driver. Only provide reset timeout for testing.
+    /// If no value provided, timeout from device capabilites will be used.
     pub async fn new(
         driver_source: &VmTaskDriverSource,
         cpu_count: u32,
         device: T,
+        reset_timeout: Option<Duration>,
     ) -> anyhow::Result<Self> {
         let pci_id = device.id().to_owned();
-        let mut this = Self::new_disabled(driver_source, cpu_count, device)
+        let mut this = Self::new_disabled(driver_source, cpu_count, device, reset_timeout)
             .instrument(tracing::info_span!("nvme_new_disabled", pci_id))
             .await?;
         match this
@@ -198,6 +205,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         driver_source: &VmTaskDriverSource,
         cpu_count: u32,
         mut device: T,
+        reset_timeout: Option<Duration>
     ) -> anyhow::Result<Self> {
         let driver = driver_source.simple();
         let bar0 = Bar0(
@@ -206,10 +214,15 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 .context("failed to map device registers")?,
         );
 
+        let timeout = match reset_timeout {
+            Some(duration) => duration,
+            None => Duration::from_millis(NVME_TIMEOUT_MINIMUM.max(bar0.cap().to() as u64 * NVME_TIMEOUT_INCREMENT)),
+        };
+
         let cc = bar0.cc();
         if cc.en() || bar0.csts().rdy() {
             if !bar0
-                .reset(&driver)
+                .reset(&driver, timeout.clone())
                 .instrument(tracing::info_span!(
                     "nvme_already_enabled",
                     pci_id = device.id().to_owned()
@@ -254,6 +267,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             rescan_event: Default::default(),
             namespaces: vec![],
             nvme_keepalive: false,
+            reset_timeout: timeout,
         })
     }
 
@@ -319,7 +333,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 anyhow::bail!("device is gone");
             }
             if csts.cfs() {
-                worker.registers.bar0.reset(&self.driver).await;
+                worker.registers.bar0.reset(&self.driver, self.reset_timeout.clone()).await;
                 anyhow::bail!("device had fatal error");
             }
             if csts.rdy() {
@@ -454,6 +468,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     fn reset(&mut self) -> impl 'static + Send + std::future::Future<Output = ()> {
         let driver = self.driver.clone();
+        let timeout = self.reset_timeout.clone();
         let mut task = std::mem::take(&mut self.task).unwrap();
         async move {
             task.stop().await;
@@ -468,7 +483,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             if let Some(admin) = worker.admin {
                 _admin_responses = admin.shutdown().await;
             }
-            worker.registers.bar0.reset(&driver).await;
+            worker.registers.bar0.reset(&driver, timeout).await;
         }
     }
 
@@ -549,6 +564,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         if !bar0.csts().rdy() {
             anyhow::bail!("device is gone");
         }
+        
+        let reset_timeout = Duration::from_millis(NVME_TIMEOUT_MINIMUM.max(bar0.cap().to() as u64 * NVME_TIMEOUT_INCREMENT));
 
         let registers = Arc::new(DeviceRegisters::new(bar0));
 
@@ -557,7 +574,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             per_cpu: (0..cpu_count).map(|_| OnceLock::new()).collect(),
             send,
         });
-
+ 
         let mut this = Self {
             device_id: device.id().to_owned(),
             task: Some(TaskControl::new(DriverWorkerTask {
@@ -579,6 +596,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             rescan_event: Default::default(),
             namespaces: vec![],
             nvme_keepalive: true,
+            reset_timeout,
         };
 
         let task = &mut this.task.as_mut().unwrap();

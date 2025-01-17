@@ -25,3 +25,6 @@ pub use self::queue_pair::RequestError;
 use nvme_spec as spec;
 
 const NVME_PAGE_SHIFT: u8 = 12;
+const NVME_TIMEOUT_INCREMENT: u64 = 500;
+const NVME_TIMEOUT_MINIMUM: u64 = 10000;
+pub const NVME_TIMEOUT_FUZZER: u64 = 10;

@@ -74,7 +74,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
 
     let device = EmulatedDevice::new(nvme, msi_set, mem);
 
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
+    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, None)
         .await
         .unwrap();
 
@@ -183,7 +183,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
         .unwrap();
 
     let device = EmulatedDevice::new(nvme_ctrl, msi_x, mem);
-    let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
+    let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, None)
         .await
         .unwrap();
     let _ns1 = nvme_driver.namespace(1).await.unwrap();

@@ -13,11 +13,13 @@ use nvme::NvmeController;
 use nvme::NvmeControllerCaps;
 use nvme_driver::Namespace;
 use nvme_driver::NvmeDriver;
+use nvme_driver::NVME_TIMEOUT_FUZZER;
 use nvme_spec::nvm::DsmRange;
 use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::convert::TryFrom;
+use std::time::Duration;
 use user_driver::emulated::DeviceSharedMemory;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -67,7 +69,8 @@ impl FuzzNvmeDriver {
             .unwrap();
 
         let device = FuzzEmulatedDevice::new(nvme, msi_set, mem);
-        let nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device).await?; // TODO: [use-arbitrary-input]
+        let timeout = Duration::from_millis(NVME_TIMEOUT_FUZZER);
+        let nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device, Some(timeout)).await?; // TODO: [use-arbitrary-input]
         let namespace = nvme_driver.namespace(1).await?; // TODO: [use-arbitrary-input]
 
         Ok(Self {

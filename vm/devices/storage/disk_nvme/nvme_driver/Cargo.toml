@@ -6,10 +6,6 @@ name = "nvme_driver"
 edition = "2021"
 rust-version.workspace = true
 
-[features]
-# Reduced timeouts for faster fuzzing
-fuzz_timeout = []
-
 [dependencies]
 inspect = { workspace = true, features = ["defer"] }
 inspect_counters.workspace = true
