@@ -11,6 +11,7 @@ use crate::interrupt::DeviceInterruptSource;
 use crate::memory::MemoryBlock;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
+use crate::DmaClient;
 use crate::HostDmaAllocator;
 use anyhow::Context;
 use futures::FutureExt;
@@ -65,6 +66,7 @@ pub struct VfioDevice {
     interrupts: Vec<Option<InterruptState>>,
     #[inspect(skip)]
     config_space: vfio_sys::RegionInfo,
+    dma_client: Arc<dyn DmaClient>,
 }
 
 #[derive(Inspect)]
@@ -82,8 +84,9 @@ impl VfioDevice {
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
         dma_buffer: Arc<dyn VfioDmaBuffer>,
+        dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
-        Self::restore(driver_source, pci_id, dma_buffer, false).await
+        Self::restore(driver_source, pci_id, dma_buffer, false, dma_client).await
     }
 
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
@@ -93,6 +96,7 @@ impl VfioDevice {
         pci_id: &str,
         dma_buffer: Arc<dyn VfioDmaBuffer>,
         keepalive: bool,
+        dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
@@ -139,6 +143,7 @@ impl VfioDevice {
             config_space,
             driver_source: driver_source.clone(),
             interrupts: Vec::new(),
+            dma_client,
         };
 
         // Ensure bus master enable and memory space enable are set, and that

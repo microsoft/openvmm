@@ -68,3 +68,10 @@ pub trait HostDmaAllocator: Send + Sync {
     /// Attach to a previously allocated memory block with contiguous PFNs.
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }
+
+pub trait DmaClient : Send + Sync {
+    fn map_dma_ranges(
+        &self,
+        ranges: i32
+    ) -> anyhow::Result<Vec<i32>>;
+}
