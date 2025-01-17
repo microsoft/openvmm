@@ -3,7 +3,7 @@
 
 [package]
 name = "xtask_fuzz"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

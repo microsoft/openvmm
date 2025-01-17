@@ -1059,3 +1059,712 @@ async fn persist_all_key_protectors(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use disk_backend::Disk;
+    use disklayer_ram::ram_disk;
+    use get_protocol::GspExtendedStatusFlags;
+    use get_protocol::GSP_CLEARTEXT_MAX;
+    use key_protector::AES_WRAPPED_AES_KEY_LENGTH;
+    use openhcl_attestation_protocol::vmgs::DekKp;
+    use openhcl_attestation_protocol::vmgs::GspKp;
+    use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
+    use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
+    use openhcl_attestation_protocol::vmgs::NUMBER_KP;
+    use pal_async::async_test;
+    use vmgs_format::EncryptionAlgorithm;
+    use vmgs_format::FileId;
+
+    const ONE_MEGA_BYTE: u64 = 1024 * 1024;
+
+    fn new_test_file() -> Disk {
+        ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
+    }
+
+    async fn new_formatted_vmgs() -> Vmgs {
+        let disk = new_test_file();
+
+        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
+
+        assert!(
+            key_protector_is_empty(&mut vmgs).await,
+            "Newly formatted VMGS should have an empty key protector"
+        );
+        assert!(
+            key_protector_by_id_is_empty(&mut vmgs).await,
+            "Newly formatted VMGS should have an empty key protector by id"
+        );
+
+        vmgs
+    }
+
+    async fn key_protector_is_empty(vmgs: &mut Vmgs) -> bool {
+        let key_protector = vmgs::read_key_protector(vmgs, AES_WRAPPED_AES_KEY_LENGTH)
+            .await
+            .unwrap();
+
+        key_protector.as_bytes().iter().all(|&b| b == 0)
+    }
+
+    async fn key_protector_by_id_is_empty(vmgs: &mut Vmgs) -> bool {
+        vmgs::read_key_protector_by_id(vmgs)
+            .await
+            .is_err_and(|err| {
+                matches!(
+                    err,
+                    vmgs::ReadFromVmgsError::EntryNotFound(FileId::VM_UNIQUE_ID)
+                )
+            })
+    }
+
+    fn new_key_protector() -> KeyProtector {
+        // Ingress and egress KPs are assumed to be the only two KPs, therefore `NUMBER_KP` should be 2
+        assert_eq!(NUMBER_KP, 2);
+
+        let ingress_dek = DekKp {
+            dek_buffer: [1; DEK_BUFFER_SIZE],
+        };
+        let egress_dek = DekKp {
+            dek_buffer: [2; DEK_BUFFER_SIZE],
+        };
+        let ingress_gsp = GspKp {
+            gsp_length: GSP_BUFFER_SIZE as u32,
+            gsp_buffer: [3; GSP_BUFFER_SIZE],
+        };
+        let egress_gsp = GspKp {
+            gsp_length: GSP_BUFFER_SIZE as u32,
+            gsp_buffer: [4; GSP_BUFFER_SIZE],
+        };
+        KeyProtector {
+            dek: [ingress_dek, egress_dek],
+            gsp: [ingress_gsp, egress_gsp],
+            active_kp: 0,
+        }
+    }
+
+    fn new_key_protector_by_id(
+        id_guid: Option<Guid>,
+        ported: Option<u8>,
+        found_id: bool,
+    ) -> KeyProtectorById {
+        let key_protector_by_id = openhcl_attestation_protocol::vmgs::KeyProtectorById {
+            id_guid: id_guid.unwrap_or_else(Guid::new_random),
+            ported: ported.unwrap_or(0),
+            pad: [0; 3],
+        };
+
+        KeyProtectorById {
+            inner: key_protector_by_id,
+            found_id,
+        }
+    }
+
+    #[async_test]
+    async fn do_nothing_without_derived_keys() {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: false,
+            use_gsp_by_id: false,
+            use_hardware_unlock: false,
+        };
+
+        let bios_guid = Guid::new_random();
+
+        unlock_vmgs_data_store(
+            &mut vmgs,
+            false,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            None,
+            key_protector_settings,
+            bios_guid,
+        )
+        .await
+        .unwrap();
+
+        assert!(key_protector_is_empty(&mut vmgs).await);
+        assert!(key_protector_by_id_is_empty(&mut vmgs).await);
+
+        // Create another instance as the previous `unlock_vmgs_data_store` took ownership of the last one
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: false,
+            use_gsp_by_id: false,
+            use_hardware_unlock: false,
+        };
+
+        // Even if the VMGS is encrypted, if no derived keys are provided, nothing should happen
+        unlock_vmgs_data_store(
+            &mut vmgs,
+            true,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            None,
+            key_protector_settings,
+            bios_guid,
+        )
+        .await
+        .unwrap();
+
+        assert!(key_protector_is_empty(&mut vmgs).await);
+        assert!(key_protector_by_id_is_empty(&mut vmgs).await);
+    }
+
+    #[async_test]
+    async fn provision_vmgs_and_rotate_keys() {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+
+        let ingress = [1; AES_GCM_KEY_LENGTH];
+        let egress = [2; AES_GCM_KEY_LENGTH];
+        let derived_keys = Keys { ingress, egress };
+
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: true,
+            use_hardware_unlock: false,
+        };
+
+        let bios_guid = Guid::new_random();
+
+        // Without encryption implies the provision path
+        // The VMGS will be locked using the egress key
+        unlock_vmgs_data_store(
+            &mut vmgs,
+            false,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            Some(derived_keys),
+            key_protector_settings,
+            bios_guid,
+        )
+        .await
+        .unwrap();
+
+        // The ingress key is essentially ignored since the VMGS wasn't previously encrypted
+        vmgs.unlock_with_encryption_key(&ingress).await.unwrap_err();
+
+        // The egress key was used to lock the VMGS after provisioning
+        let egress_index = vmgs.unlock_with_encryption_key(&egress).await.unwrap();
+        // Since this is a new VMGS, the egress key is the first and only key
+        assert_eq!(egress_index, 0);
+
+        // Since both `should_write_kp` and `use_gsp_by_id` are true, both key protectors should be updated
+        assert!(!key_protector_is_empty(&mut vmgs).await);
+        assert!(!key_protector_by_id_is_empty(&mut vmgs).await);
+
+        let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
+            .await
+            .unwrap();
+        assert_eq!(found_key_protector.as_bytes(), key_protector.as_bytes());
+
+        let found_key_protector_by_id = vmgs::read_key_protector_by_id(&mut vmgs).await.unwrap();
+        assert_eq!(
+            found_key_protector_by_id.as_bytes(),
+            key_protector_by_id.inner.as_bytes()
+        );
+
+        // Now that the VMGS has been provisioned, simulate the rotation of keys
+        let new_egress = [3; AES_GCM_KEY_LENGTH];
+
+        let mut new_key_protector = new_key_protector();
+        let mut new_key_protector_by_id = new_key_protector_by_id(None, None, false);
+
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: true,
+            use_hardware_unlock: false,
+        };
+
+        // Ingress is now the old egress, and we provide a new new egress key
+        let derived_keys = Keys {
+            ingress: egress,
+            egress: new_egress,
+        };
+
+        unlock_vmgs_data_store(
+            &mut vmgs,
+            true,
+            &mut new_key_protector,
+            &mut new_key_protector_by_id,
+            Some(derived_keys),
+            key_protector_settings,
+            bios_guid,
+        )
+        .await
+        .unwrap();
+
+        // We should still fail to unlock the VMGS with the original ingress key
+        vmgs.unlock_with_encryption_key(&ingress).await.unwrap_err();
+        // The old egress key should no longer be able to unlock the VMGS
+        vmgs.unlock_with_encryption_key(&egress).await.unwrap_err();
+
+        // The new egress key should be able to unlock the VMGS
+        let new_egress_index = vmgs.unlock_with_encryption_key(&new_egress).await.unwrap();
+        // The old egress key was removed, but not before the new egress key was added in the 1th slot
+        assert_eq!(new_egress_index, 1);
+
+        let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
+            .await
+            .unwrap();
+        assert_eq!(found_key_protector.as_bytes(), new_key_protector.as_bytes());
+
+        let found_key_protector_by_id = vmgs::read_key_protector_by_id(&mut vmgs).await.unwrap();
+        assert_eq!(
+            found_key_protector_by_id.as_bytes(),
+            new_key_protector_by_id.inner.as_bytes()
+        );
+    }
+
+    #[async_test]
+    async fn unlock_previously_encrypted_vmgs_with_ingress_key() {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+
+        let ingress = [1; AES_GCM_KEY_LENGTH];
+        let egress = [2; AES_GCM_KEY_LENGTH];
+
+        let derived_keys = Keys { ingress, egress };
+
+        vmgs.add_new_encryption_key(&ingress, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+
+        // Initially, the VMGS can be unlocked using the ingress key
+        let ingress_index = vmgs.unlock_with_encryption_key(&ingress).await.unwrap();
+        assert_eq!(ingress_index, 0);
+
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: true,
+            use_hardware_unlock: false,
+        };
+
+        let bios_guid = Guid::new_random();
+
+        unlock_vmgs_data_store(
+            &mut vmgs,
+            true,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            Some(derived_keys),
+            key_protector_settings,
+            bios_guid,
+        )
+        .await
+        .unwrap();
+
+        // After the VMGS has been unlocked, the VMGS encryption key should be rotated from ingress to egress
+        vmgs.unlock_with_encryption_key(&ingress).await.unwrap_err();
+        let egress_index = vmgs.unlock_with_encryption_key(&egress).await.unwrap();
+        // The ingress key was removed, but not before the egress key was added in the 0th slot
+        assert_eq!(egress_index, 1);
+
+        // Since both `should_write_kp` and `use_gsp_by_id` are true, both key protectors should be updated
+        let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
+            .await
+            .unwrap();
+        assert_eq!(found_key_protector.as_bytes(), key_protector.as_bytes());
+
+        let found_key_protector_by_id = vmgs::read_key_protector_by_id(&mut vmgs).await.unwrap();
+        assert_eq!(
+            found_key_protector_by_id.as_bytes(),
+            key_protector_by_id.inner.as_bytes()
+        );
+    }
+
+    #[async_test]
+    async fn failed_to_persist_ingress_key_so_use_egress_key_to_unlock_vmgs() {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+
+        let ingress = [1; AES_GCM_KEY_LENGTH];
+        let egress = [2; AES_GCM_KEY_LENGTH];
+
+        let derived_keys = Keys { ingress, egress };
+
+        // Add only the egress key to the VMGS to simulate a failure to persist the ingress key
+        let egress_key_index = vmgs
+            .add_new_encryption_key(&egress, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(egress_key_index, 0);
+
+        let found_egress_key_index = vmgs.unlock_with_encryption_key(&egress).await.unwrap();
+        assert_eq!(found_egress_key_index, egress_key_index);
+
+        // Confirm that the ingress key cannot be used to unlock the VMGS
+        vmgs.unlock_with_encryption_key(&ingress).await.unwrap_err();
+
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: true,
+            use_hardware_unlock: false,
+        };
+
+        let bios_guid = Guid::new_random();
+
+        unlock_vmgs_data_store(
+            &mut vmgs,
+            true,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            Some(derived_keys),
+            key_protector_settings,
+            bios_guid,
+        )
+        .await
+        .unwrap();
+
+        // Confirm that the ingress key was not added
+        vmgs.unlock_with_encryption_key(&ingress).await.unwrap_err();
+
+        // The egress key can still unlock the VMGS
+        let found_egress_key_index = vmgs.unlock_with_encryption_key(&egress).await.unwrap();
+        assert_eq!(found_egress_key_index, egress_key_index);
+
+        // Since both `should_write_kp` and `use_gsp_by_id` are true, both key protectors should be updated
+        let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
+            .await
+            .unwrap();
+        assert_eq!(found_key_protector.as_bytes(), key_protector.as_bytes());
+
+        let found_key_protector_by_id = vmgs::read_key_protector_by_id(&mut vmgs).await.unwrap();
+        assert_eq!(
+            found_key_protector_by_id.as_bytes(),
+            key_protector_by_id.inner.as_bytes()
+        );
+    }
+
+    #[async_test]
+    async fn fail_to_unlock_vmgs_with_existing_ingress_key() {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+
+        let ingress = [1; AES_GCM_KEY_LENGTH];
+
+        // Ingress and egress keys are the same
+        let derived_keys = Keys {
+            ingress,
+            egress: ingress,
+        };
+
+        // Add two random keys to the VMGS to simulate unlock failure when ingress and egress keys are the same
+        let additional_key = [2; AES_GCM_KEY_LENGTH];
+        let yet_another_key = [3; AES_GCM_KEY_LENGTH];
+
+        let additional_key_index = vmgs
+            .add_new_encryption_key(&additional_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(additional_key_index, 0);
+
+        let yet_another_key_index = vmgs
+            .add_new_encryption_key(&yet_another_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(yet_another_key_index, 1);
+
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: true,
+            use_hardware_unlock: false,
+        };
+
+        let bios_guid = Guid::new_random();
+
+        let unlock_result = unlock_vmgs_data_store(
+            &mut vmgs,
+            true,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            Some(derived_keys),
+            key_protector_settings,
+            bios_guid,
+        )
+        .await;
+        assert!(unlock_result.is_err());
+        assert_eq!(
+            unlock_result.unwrap_err().to_string(),
+            "failed to unlock vmgs with the existing ingress key".to_string()
+        );
+    }
+
+    #[async_test]
+    async fn fail_to_unlock_vmgs_with_new_ingress_key() {
+        let mut vmgs = new_formatted_vmgs().await;
+
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+
+        let derived_keys = Keys {
+            ingress: [1; AES_GCM_KEY_LENGTH],
+            egress: [2; AES_GCM_KEY_LENGTH],
+        };
+
+        // Add two random keys to the VMGS to simulate unlock failure when ingress and egress keys are *not* the same
+        let additional_key = [3; AES_GCM_KEY_LENGTH];
+        let yet_another_key = [4; AES_GCM_KEY_LENGTH];
+
+        let additional_key_index = vmgs
+            .add_new_encryption_key(&additional_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(additional_key_index, 0);
+
+        let yet_another_key_index = vmgs
+            .add_new_encryption_key(&yet_another_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(yet_another_key_index, 1);
+
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: true,
+            use_hardware_unlock: false,
+        };
+
+        let bios_guid = Guid::new_random();
+
+        let unlock_result = unlock_vmgs_data_store(
+            &mut vmgs,
+            true,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            Some(derived_keys),
+            key_protector_settings,
+            bios_guid,
+        )
+        .await;
+        assert!(unlock_result.is_err());
+        assert_eq!(
+            unlock_result.unwrap_err().to_string(),
+            "failed to unlock vmgs with the new ingress key".to_string()
+        );
+    }
+
+    #[async_test]
+    async fn get_derived_keys_using_id() {
+        let bios_guid = Guid::new_random();
+
+        let gsp_response_by_id = GuestStateProtectionById {
+            seed: guest_emulation_transport::api::GspCleartextContent {
+                length: GSP_CLEARTEXT_MAX,
+                buffer: [1; GSP_CLEARTEXT_MAX as usize * 2],
+            },
+            extended_status_flags: GspExtendedStatusFlags::from_bits(0),
+        };
+
+        // When the key protector by id inner `id_guid` is all zeroes, the derived ingress and egress keys
+        // should be identical.
+        let mut key_protector_by_id =
+            new_key_protector_by_id(Some(Guid::new_zeroed()), None, false);
+        let derived_keys =
+            get_derived_keys_by_id(&mut key_protector_by_id, bios_guid, gsp_response_by_id)
+                .unwrap();
+
+        assert_eq!(derived_keys.ingress, derived_keys.egress);
+
+        // When the key protector by id inner `id_guid` is not all zeroes, the derived ingress and egress keys
+        // should be different.
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+        let derived_keys =
+            get_derived_keys_by_id(&mut key_protector_by_id, bios_guid, gsp_response_by_id)
+                .unwrap();
+
+        assert_ne!(derived_keys.ingress, derived_keys.egress);
+
+        // When the `gsp_response_by_id` seed length is 0, deriving a key will fail.
+        let gsp_response_by_id_with_0_length_seed = GuestStateProtectionById {
+            seed: guest_emulation_transport::api::GspCleartextContent {
+                length: 0,
+                buffer: [1; GSP_CLEARTEXT_MAX as usize * 2],
+            },
+            extended_status_flags: GspExtendedStatusFlags::from_bits(0),
+        };
+
+        let derived_keys_response = get_derived_keys_by_id(
+            &mut key_protector_by_id,
+            bios_guid,
+            gsp_response_by_id_with_0_length_seed,
+        );
+        assert!(derived_keys_response.is_err());
+        assert_eq!(
+            derived_keys_response.unwrap_err().to_string(),
+            "failed to derive an egress key based on current vm bios guid".to_string()
+        );
+    }
+
+    #[async_test]
+    async fn pass_through_persist_all_key_protectors() {
+        let mut vmgs = new_formatted_vmgs().await;
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+        let bios_guid = Guid::new_random();
+
+        // Copied/cloned bits used for comparison later
+        let kp_copy = key_protector.as_bytes().to_vec();
+        let active_kp_copy = key_protector.active_kp;
+
+        // When all key protector settings are true, no actions will be taken on the key protectors or VMGS
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: true,
+            use_hardware_unlock: true,
+        };
+        persist_all_key_protectors(
+            &mut vmgs,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            bios_guid,
+            key_protector_settings,
+        )
+        .await
+        .unwrap();
+
+        assert!(key_protector_is_empty(&mut vmgs).await);
+        assert!(key_protector_by_id_is_empty(&mut vmgs).await);
+
+        // The key protector should remain unchanged
+        assert_eq!(active_kp_copy, key_protector.active_kp);
+        assert_eq!(kp_copy.as_slice(), key_protector.as_bytes());
+    }
+
+    #[async_test]
+    async fn persist_all_key_protectors_write_key_protector_by_id() {
+        let mut vmgs = new_formatted_vmgs().await;
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+        let bios_guid = Guid::new_random();
+
+        // Copied/cloned bits used for comparison later
+        let kp_copy = key_protector.as_bytes().to_vec();
+        let active_kp_copy = key_protector.active_kp;
+
+        // When `use_gsp_by_id` is true and `should_write_kp` is false, the key protector by id should be written to the VMGS
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: false,
+            use_gsp_by_id: true,
+            use_hardware_unlock: false,
+        };
+        persist_all_key_protectors(
+            &mut vmgs,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            bios_guid,
+            key_protector_settings,
+        )
+        .await
+        .unwrap();
+
+        // The previously empty VMGS now holds the key protector by id but not the key protector
+        assert!(key_protector_is_empty(&mut vmgs).await);
+        assert!(!key_protector_by_id_is_empty(&mut vmgs).await);
+
+        let found_key_protector_by_id = vmgs::read_key_protector_by_id(&mut vmgs).await.unwrap();
+        assert_eq!(
+            found_key_protector_by_id.as_bytes(),
+            key_protector_by_id.inner.as_bytes()
+        );
+
+        // The key protector should remain unchanged
+        assert_eq!(kp_copy.as_slice(), key_protector.as_bytes());
+        assert_eq!(active_kp_copy, key_protector.active_kp);
+    }
+
+    #[async_test]
+    async fn persist_all_key_protectors_remove_ingress_kp() {
+        let mut vmgs = new_formatted_vmgs().await;
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, false);
+        let bios_guid = Guid::new_random();
+
+        // Copied active KP for later use
+        let active_kp_copy = key_protector.active_kp;
+
+        // When `use_gsp_by_id` is false, `should_write_kp` is true, and `use_hardware_unlock` is false, the active key protector's
+        // active kp's dek should be zeroed, the active kp's gsp length should be set to 0, and the active kp should be incremented
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: false,
+            use_hardware_unlock: false,
+        };
+        persist_all_key_protectors(
+            &mut vmgs,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            bios_guid,
+            key_protector_settings,
+        )
+        .await
+        .unwrap();
+
+        assert!(!key_protector_is_empty(&mut vmgs).await);
+        assert!(key_protector_by_id_is_empty(&mut vmgs).await);
+
+        // The previously empty VMGS's key protector should now be overwritten
+        let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
+            .await
+            .unwrap();
+
+        assert!(found_key_protector.dek[active_kp_copy as usize]
+            .dek_buffer
+            .iter()
+            .all(|&b| b == 0),);
+        assert_eq!(
+            found_key_protector.gsp[active_kp_copy as usize].gsp_length,
+            0
+        );
+        assert_eq!(found_key_protector.active_kp, active_kp_copy + 1);
+    }
+
+    #[async_test]
+    async fn persist_all_key_protectors_mark_key_protector_by_id_as_not_in_use() {
+        let mut vmgs = new_formatted_vmgs().await;
+        let mut key_protector = new_key_protector();
+        let mut key_protector_by_id = new_key_protector_by_id(None, None, true);
+        let bios_guid = Guid::new_random();
+
+        // When `use_gsp_by_id` is false, `should_write_kp` is true, `use_hardware_unlock` is true, and
+        // the key protector by id is found and not ported, the key protector by id should be marked as ported
+        let key_protector_settings = KeyProtectorSettings {
+            should_write_kp: true,
+            use_gsp_by_id: false,
+            use_hardware_unlock: true,
+        };
+
+        persist_all_key_protectors(
+            &mut vmgs,
+            &mut key_protector,
+            &mut key_protector_by_id,
+            bios_guid,
+            key_protector_settings,
+        )
+        .await
+        .unwrap();
+
+        assert!(key_protector_is_empty(&mut vmgs).await);
+        assert!(!key_protector_by_id_is_empty(&mut vmgs).await);
+
+        // The previously empty VMGS's key protector by id should now be overwritten
+        let found_key_protector_by_id = vmgs::read_key_protector_by_id(&mut vmgs).await.unwrap();
+        assert_eq!(found_key_protector_by_id.ported, 1);
+        assert_eq!(
+            found_key_protector_by_id.id_guid,
+            key_protector_by_id.inner.id_guid
+        );
+    }
+}

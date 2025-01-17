@@ -3,7 +3,7 @@
 
 [package]
 name = "disk_layered"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -14,11 +14,17 @@ scsi_buffers.workspace = true
 guestmem.workspace = true
 vm_resource.workspace = true
 inspect = { workspace = true, features = ["std"] }
+tracelimit.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+pal_async.workspace = true
+
+parking_lot.workspace = true
 
 [lints]
 workspace = true

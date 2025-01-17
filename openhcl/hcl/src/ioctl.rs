@@ -1590,7 +1590,12 @@ impl HclVp {
         isolation_type: IsolationType,
     ) -> Result<Self, Error> {
         let fd = &hcl.mshv_vtl.file;
-        let run = MappedPage::new(fd, vp as i64).map_err(|e| Error::MmapVp(e, None))?;
+        let run: MappedPage<hcl_run> =
+            MappedPage::new(fd, vp as i64).map_err(|e| Error::MmapVp(e, None))?;
+        // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
+        // so we know we have exclusive access. Initializing to block all vectors by default
+        let proxy_irr_blocked = unsafe { &mut *addr_of_mut!((*run.0.as_ptr()).proxy_irr_blocked) };
+        proxy_irr_blocked.fill(0xFFFFFFFF);
 
         let backing = match isolation_type {
             IsolationType::None | IsolationType::Vbs => BackingState::Mshv {
@@ -1854,6 +1859,23 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
                 }
             }
             Some(r)
+        }
+    }
+
+    /// Update the `proxy_irr_blocked` in run page
+    pub fn update_proxy_irr_filter(&mut self, irr_filter: &[u32; 8]) {
+        // SAFETY: `proxy_irr_blocked` is accessed by current VP only, but could
+        // be concurrently accessed by kernel too, hence accessing as Atomic
+        let proxy_irr_blocked = unsafe {
+            &mut *(addr_of_mut!((*self.run.as_ptr()).proxy_irr_blocked).cast::<[AtomicU32; 8]>())
+        };
+
+        // `irr_filter` bitmap has bits set for all allowed vectors (i.e. SINT and device interrupts)
+        // Replace current `proxy_irr_blocked` with the given `irr_filter` bitmap.
+        // By default block all (i.e. set all), and only allow (unset) given vectors from `irr_filter`.
+        for (filter, irr) in proxy_irr_blocked.iter_mut().zip(irr_filter.iter()) {
+            filter.store(!irr, Ordering::Relaxed);
+            tracing::debug!(irr, "update_proxy_irr_filter");
         }
     }
 

@@ -3,7 +3,7 @@
 
 [package]
 name = "hcl_compat_uefi_nvram_storage"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]

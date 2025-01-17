@@ -3,7 +3,7 @@
 
 [package]
 name = "safe_intrinsics"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

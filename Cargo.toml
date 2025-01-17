@@ -50,6 +50,7 @@ exclude = [
 
 [workspace.package]
 rust-version = "1.84"
+edition = "2021"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }

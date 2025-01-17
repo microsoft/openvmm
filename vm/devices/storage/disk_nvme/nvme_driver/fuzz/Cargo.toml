@@ -4,7 +4,7 @@
 [package]
 name = "fuzz_nvme_driver"
 publish = false
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

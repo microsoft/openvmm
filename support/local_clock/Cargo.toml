@@ -3,7 +3,7 @@
 
 [package]
 name = "local_clock"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]

@@ -3,7 +3,7 @@
 
 [package]
 name = "mesh_build"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

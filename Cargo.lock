@@ -1184,8 +1184,10 @@ dependencies = [
  "block_crypto",
  "disk_backend",
  "disk_crypt_resources",
+ "disklayer_ram",
  "guestmem",
  "inspect",
+ "pal_async",
  "scsi_buffers",
  "thiserror 2.0.0",
  "vm_resource",
@@ -1240,8 +1242,11 @@ dependencies = [
  "futures",
  "guestmem",
  "inspect",
+ "pal_async",
+ "parking_lot",
  "scsi_buffers",
  "thiserror 2.0.0",
+ "tracelimit",
  "vm_resource",
 ]
 
@@ -6916,6 +6921,7 @@ dependencies = [
  "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
+ "get_protocol",
  "getrandom",
  "guest_emulation_transport",
  "guid",
@@ -6931,6 +6937,7 @@ dependencies = [
  "time",
  "tracing",
  "vmgs",
+ "vmgs_format",
  "zerocopy",
 ]
 
@@ -8026,6 +8033,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "futures",
+ "futures-concurrency",
  "guid",
  "inspect",
  "mesh",
@@ -9072,7 +9080,6 @@ dependencies = [
 name = "x86emu"
 version = "0.0.0"
 dependencies = [
- "arbitrary",
  "futures",
  "iced-x86",
  "thiserror 2.0.0",

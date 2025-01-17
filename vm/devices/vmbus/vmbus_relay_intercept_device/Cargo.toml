@@ -3,7 +3,7 @@
 
 [package]
 name = "vmbus_relay_intercept_device"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -25,6 +25,7 @@ user_driver.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true
+futures-concurrency.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true

@@ -5,6 +5,7 @@ use crate::tests::common::run_lockable_test;
 use crate::tests::common::LockTestBehavior;
 use crate::tests::common::RFLAGS_ARITH_MASK;
 use iced_x86::code_asm::*;
+use x86emu::Cpu;
 
 #[test]
 fn neg_memory() {
@@ -21,17 +22,17 @@ fn neg_memory() {
     ];
 
     for (left, result, rflags) in variations {
-        let (state, cpu) = run_lockable_test::<u64>(
+        let mut cpu = run_lockable_test::<u64>(
             RFLAGS_ARITH_MASK,
             LockTestBehavior::Fail,
             |asm| asm.neg(dword_ptr(0x100)),
-            |_state, cpu| {
+            |cpu| {
                 cpu.valid_gva = 0x100;
                 cpu.mem_val = left;
             },
         );
 
         assert_eq!(cpu.mem_val, result);
-        assert_eq!(state.rflags & RFLAGS_ARITH_MASK, rflags.into());
+        assert_eq!(cpu.rflags() & RFLAGS_ARITH_MASK, rflags.into());
     }
 }

@@ -1217,7 +1217,7 @@ impl Vmgs {
 
             // Initialize a new extended file table.
             let new_extended_file_table = VmgsExtendedFileTable::new_zeroed();
-            // Write the extende file table to the newly allocated space
+            // Write the extended file table to the newly allocated space
             self.write_file_internal(
                 FileId::EXTENDED_FILE_TABLE,
                 new_extended_file_table.as_bytes(),

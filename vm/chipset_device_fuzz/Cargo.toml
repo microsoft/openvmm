@@ -4,7 +4,7 @@
 [package]
 name = "chipset_device_fuzz"
 publish = false
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
