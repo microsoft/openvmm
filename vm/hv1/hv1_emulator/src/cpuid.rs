@@ -129,6 +129,7 @@ pub fn hv_cpuid_leaves(
                 .with_use_apic_msrs(use_apic_msrs);
 
             if hardware_isolated {
+                // Issue #546: Process TDX isolation type when it's ready
                 if isolation == IsolationType::Snp {
                     enlightenments = enlightenments
                         .with_use_hypercall_for_remote_flush_and_local_flush_entire(true);

@@ -22,6 +22,8 @@ pub const TDX_REQUIRED_LEAVES: &[(CpuidFunction, Option<u32>)] = &[
     (CpuidFunction::TileInformation, Some(0)),
     (CpuidFunction::TileInformation, Some(1)),
     (CpuidFunction::TmulInformation, Some(0)),
+    // Issue #562: The following aren't required from AMD. Need to double-check if
+    // they're required for TDX
     (CpuidFunction::CacheAndTlbInformation, None),
     (CpuidFunction::ExtendedFeatures, Some(1)),
     (CpuidFunction::CacheParameters, Some(0)),
@@ -49,6 +51,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
     }
 
     fn extended_max_function(&self) -> u32 {
+        // Issue #556: Check if this is the same value in the OS repo
         CpuidFunction::ExtendedIntelMaximum.0
     }
 
@@ -108,6 +111,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
             }
             CpuidFunction::TmulInformation => {
                 if subleaf == 0 {
+                    // Issue #556: does this actually have subleaves? the spec says 1+ are reserved
                     Some(CpuidResultMask::new(
                         0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, true,
                     ))
@@ -160,6 +164,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
         results: &mut CpuidSubtable,
         extended_state_mask: u64,
     ) -> Result<(), CpuidResultsError> {
+        // Issue #556: See HvlpPopulateExtendedStateCpuid
         let xfd_supported = if let Some(support) = results.get(&1).map(
             |CpuidResult {
                  eax,
@@ -183,7 +188,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
                 let result = Self::cpuid(CpuidFunction::ExtendedStateEnumeration.0, i);
                 let result_xfd = cpuid::ExtendedStateEnumerationSubleafNEcx::from(result.ecx).xfd();
                 if xfd_supported && result_xfd {
-                    // TODO TDX: update some maximum xfd value; see HvlpMaximumXfd
+                    // Issue #556: update some maximum xfd value; see HvlpMaximumXfd
                 }
 
                 results.insert(i, result);
@@ -200,6 +205,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
         _address_space_sizes_ecx: cpuid::ExtendedAddressSpaceSizesEcx,
         _processor_topology_ebx: Option<cpuid::ProcessorTopologyDefinitionEbx>, // Will be None for Intel
     ) -> Result<super::ExtendedTopologyResult, CpuidResultsError> {
+        // Issue #556: see HvlpInitializeCpuidTopologyIntel and fix returned errors
         let vps_per_socket;
         if !version_and_features_edx.mt_per_socket() {
             if version_and_features_ebx.lps_per_package() > 1 {
@@ -213,6 +219,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
             vps_per_socket = version_and_features_ebx.lps_per_package();
         }
 
+        // Issue #556: validation of leaf 0xB
         Ok(super::ExtendedTopologyResult {
             subleaf0: None,
             subleaf1: None,

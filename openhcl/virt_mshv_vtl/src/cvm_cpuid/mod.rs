@@ -59,6 +59,8 @@ trait CpuidArchInitializer {
     /// Processes extended state enumeration subleaves 2+. result is a helper
     /// for retrieving the result of a given subleaf.
     //
+    // (Issue #556: This will be to populate them, will need to update the
+    // signature to pass CpuidResults as a mutable reference)
     fn process_extended_state_subleaves(
         &self,
         results: &mut CpuidSubtable,

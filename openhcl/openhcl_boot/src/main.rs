@@ -796,6 +796,15 @@ fn validate_vp_hw_ids(partition_info: &PartitionInfo) {
     use hypercall::HwId;
 
     if partition_info.isolation.is_hardware_isolated() {
+        // Issue #572: check and make sure the vp index ordering is in agreement with   
+        // the host and hypervisor. We don't have a GHCB/GHCI page set up to communicate
+        // with the hypervisor here, so we can't easily perform the check. Since
+        // there is no security impact to this check, we can skip it for now; if
+        // the VM fails to boot, then this is due to a host contract violation.
+        //
+        // For TDX, we could use ENUM TOPOLOGY to validate that the TD VCPU
+        // indexes correspond to the APIC IDs in the right order. I am not
+        // certain if there are places where we depend on this mapping today.        
         return;
     }
 
