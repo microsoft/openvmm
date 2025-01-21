@@ -1310,7 +1310,7 @@ impl Notifier for ServerTaskInner {
                         open_params.event_flag,
                     ) {
                         tracelimit::error_ratelimited!(
-                            ?err,
+                            error = &err as &dyn std::error::Error,
                             channel = %channel.key,
                             "could not modify channel",
                         );
@@ -1437,7 +1437,8 @@ impl Notifier for ServerTaskInner {
             }
         };
 
-        port.post_message(1, message.data());
+        const VMBUS_MESSAGE_TYPE: u32 = 1;
+        port.post_message(VMBUS_MESSAGE_TYPE, message.data());
     }
 
     fn notify_hvsock(&mut self, request: &HvsockConnectRequest) {
