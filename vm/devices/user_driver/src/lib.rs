@@ -6,9 +6,12 @@
 // UNSAFETY: Manual memory management around buffers and mmap.
 #![expect(unsafe_code)]
 
+use std::sync::Arc;
+
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;
 use memory::MemoryBlock;
+use vfio::VfioDmaBuffer;
 
 pub mod backoff;
 pub mod emulated;
@@ -74,4 +77,9 @@ pub trait DmaClient : Send + Sync {
         &self,
         ranges: i32
     ) -> anyhow::Result<Vec<i32>>;
+
+    fn get_dma_buffer_allocator(
+        &self,
+        device_name: String,
+    ) -> anyhow::Result<Arc<dyn VfioDmaBuffer>>;
 }
