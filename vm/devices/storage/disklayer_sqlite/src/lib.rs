@@ -299,7 +299,7 @@ impl LayerIo for SqliteDiskLayer {
         self.meta.sector_size
     }
 
-    fn is_read_only(&self) -> bool {
+    fn is_logically_read_only(&self) -> bool {
         self.meta.logically_read_only
     }
 

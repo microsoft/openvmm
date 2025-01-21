@@ -435,7 +435,7 @@ impl<T: LayerAttach> DynLayerAttach for T {
                         physical_sector_size: backing.physical_sector_size(),
                         unmap_behavior: backing.unmap_behavior(),
                         optimal_unmap_sectors: backing.optimal_unmap_sectors(),
-                        read_only: backing.is_read_only(),
+                        read_only: backing.is_logically_read_only(),
                         can_read_cache,
                     },
                     backing: Box::new(backing),
@@ -519,7 +519,7 @@ pub trait LayerIo: 'static + Send + Sync + Inspect {
     ///
     /// If this returns true, the layer might still be writable via
     /// `write_no_overwrite`, used to populate the layer as a read cache.
-    fn is_read_only(&self) -> bool;
+    fn is_logically_read_only(&self) -> bool;
 
     /// Issues an asynchronous flush operation to the disk.
     fn sync_cache(&self) -> impl Future<Output = Result<(), DiskError>> + Send;
@@ -863,7 +863,7 @@ impl LayerIo for DiskAsLayer {
         self.0.is_fua_respected()
     }
 
-    fn is_read_only(&self) -> bool {
+    fn is_logically_read_only(&self) -> bool {
         self.0.is_read_only()
     }
 
