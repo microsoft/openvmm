@@ -23,7 +23,7 @@ use user_driver::emulated::DeviceSharedMemory;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 
-const NVME_TIMEOUT_FUZZER: u64 = 10;
+const NVME_TIMEOUT_FUZZER: Duration = Duration::from_millis(10);
 
 /// Nvme driver fuzzer
 pub struct FuzzNvmeDriver {
@@ -70,8 +70,7 @@ impl FuzzNvmeDriver {
             .unwrap();
 
         let device = FuzzEmulatedDevice::new(nvme, msi_set, mem);
-        let timeout = Duration::from_millis(NVME_TIMEOUT_FUZZER);
-        let nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device, Some(timeout)).await?; // TODO: [use-arbitrary-input]
+        let nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device, Some(NVME_TIMEOUT_FUZZER)).await?; // TODO: [use-arbitrary-input]
         let namespace = nvme_driver.namespace(1).await?; // TODO: [use-arbitrary-input]
 
         Ok(Self {

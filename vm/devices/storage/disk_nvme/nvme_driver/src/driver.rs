@@ -74,7 +74,7 @@ pub struct NvmeDriver<T: DeviceBacking> {
     namespaces: Vec<Arc<Namespace>>,
     /// Keeps the controller connected (CC.EN==1) while servicing.
     nvme_keepalive: bool,
-    #[inspect(skip)]
+    #[inspect(debug)]
     reset_timeout: Duration,
 }
 
