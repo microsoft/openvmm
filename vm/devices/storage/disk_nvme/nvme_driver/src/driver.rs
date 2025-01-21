@@ -413,6 +413,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         let max_io_queues = allocated_io_queue_count.min(requested_io_queue_count);
 
         let qsize = {
+            if worker.registers.cap.mqes_z() < 1 {
+                anyhow::bail!("Maximum Queue Entries Supported (MQES) by the NVMe controller cannot be less than 1");
+            }
+
             let io_cqsize = (QueuePair::MAX_CQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
             let io_sqsize = (QueuePair::MAX_SQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
 
