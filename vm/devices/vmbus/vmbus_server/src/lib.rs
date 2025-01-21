@@ -22,6 +22,7 @@ use channels::InterruptPageError;
 use channels::MessageTarget;
 use channels::ModifyConnectionRequest;
 pub use channels::ModifyConnectionResponse;
+use channels::Notifier;
 use channels::OfferId;
 pub use channels::OfferParamsInternal;
 use channels::OpenParams;
@@ -670,6 +671,7 @@ enum ChannelState {
         reserved_guest_message_port: Option<Box<dyn GuestMessagePort>>,
     },
     ClosingReserved(Box<dyn GuestMessagePort>),
+    FailedOpen,
 }
 
 impl ServerTask {
@@ -766,18 +768,22 @@ impl ServerTask {
     }
 
     fn handle_open(&mut self, offer_id: OfferId, result: Option<OpenResult>) {
-        let mut status = if result.is_some() {
+        let status = if result.is_some() {
             0
         } else {
             protocol::STATUS_UNSUCCESSFUL
         };
         if let Err(err) = self.inner.complete_open(offer_id, result) {
             tracelimit::error_ratelimited!(?err, "failed to complete open");
-            status = protocol::STATUS_UNSUCCESSFUL;
+            // If complete_open failed, the channel is now in FailedOpen state and the device needs
+            // to notified to close it. Calling open_complete is postponed until the device responds
+            // to the close request.
+            self.inner.notify(offer_id, channels::Action::Close);
+        } else {
+            self.server
+                .with_notifier(&mut self.inner)
+                .open_complete(offer_id, status);
         }
-        self.server
-            .with_notifier(&mut self.inner)
-            .open_complete(offer_id, status);
     }
 
     fn handle_close(&mut self, offer_id: OfferId) {
@@ -787,39 +793,48 @@ impl ServerTask {
             .get_mut(&offer_id)
             .expect("channel still exists");
 
-        let ChannelState::Open {
-            reserved_guest_message_port,
-            ..
-        } = &mut channel.state
-        else {
-            tracing::error!(?offer_id, "invalid close channel response");
-            return;
+        match &mut channel.state {
+            ChannelState::Open {
+                reserved_guest_message_port,
+                ..
+            } => {
+                // If the channel is reserved, the message port needs to remain available to send
+                // the closed response.
+                let mut reserved = false;
+                channel.state = if let Some(port) = reserved_guest_message_port.take() {
+                    reserved = true;
+                    ChannelState::ClosingReserved(port)
+                } else {
+                    ChannelState::Closed
+                };
+
+                self.server
+                    .with_notifier(&mut self.inner)
+                    .close_complete(offer_id);
+
+                if reserved {
+                    // Now the message port can be dropped.
+                    let channel = self
+                        .inner
+                        .channels
+                        .get_mut(&offer_id)
+                        .expect("channel still exists");
+
+                    channel.state = ChannelState::Closed;
+                }
+            }
+            ChannelState::FailedOpen => {
+                // Now that the device has processed the close request after open failed, we can
+                // finish handling the failed open and send an open result to the guest.
+                channel.state = ChannelState::Closed;
+                self.server
+                    .with_notifier(&mut self.inner)
+                    .open_complete(offer_id, protocol::STATUS_UNSUCCESSFUL);
+            }
+            _ => {
+                tracing::error!(?offer_id, "invalid close channel response");
+            }
         };
-
-        // If the channel is reserved, the message port needs to remain available to send the closed
-        // response.
-        let mut reserved = false;
-        if let Some(message_port) = reserved_guest_message_port.take() {
-            channel.state = ChannelState::ClosingReserved(message_port);
-            reserved = true;
-        } else {
-            channel.state = ChannelState::Closed;
-        }
-
-        self.server
-            .with_notifier(&mut self.inner)
-            .close_complete(offer_id);
-
-        if reserved {
-            // Now the message port can be dropped.
-            let channel = self
-                .inner
-                .channels
-                .get_mut(&offer_id)
-                .expect("channel still exists");
-
-            channel.state = ChannelState::Closed;
-        }
     }
 
     fn handle_gpadl_create(&mut self, offer_id: OfferId, gpadl_id: GpadlId, ok: bool) {
@@ -1193,7 +1208,7 @@ impl ServerTask {
     }
 }
 
-impl channels::Notifier for ServerTaskInner {
+impl Notifier for ServerTaskInner {
     fn notify(&mut self, offer_id: OfferId, action: channels::Action) {
         let channel = self
             .channels
@@ -1510,7 +1525,9 @@ impl ServerTaskInner {
             .expect("channel does not exist");
 
         channel.state = if let Some(result) = result {
-            match std::mem::replace(&mut channel.state, ChannelState::Closed) {
+            // The channel will be left in the FailedOpen state only if an error occurs in the match
+            // arm.
+            match std::mem::replace(&mut channel.state, ChannelState::FailedOpen) {
                 ChannelState::Opening {
                     open_params,
                     monitor,
@@ -1575,6 +1592,7 @@ impl ServerTaskInner {
                 }
                 s => {
                     tracing::error!("attempting to complete open of open or closed channel");
+                    // Restore the original state
                     s
                 }
             }
