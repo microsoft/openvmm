@@ -4,6 +4,7 @@
 //! Tests for the cpu topology-related subleaves.
 use super::super::*;
 use super::*;
+use zerocopy::FromZeros;
 
 #[test]
 fn real_topology() {

@@ -53,7 +53,7 @@ use x86defs::GdtEntry;
 use x86defs::IdtAttributes;
 use x86defs::IdtEntry64;
 use x86defs::Pte;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 unsafe extern "C" {
     static IMAGE_PDE: Pte;
@@ -526,7 +526,7 @@ impl NodeDefinition {
                 selector: 0,
                 attributes: x86defs::X64_BUSY_TSS_SEGMENT_ATTRIBUTES.into(),
             },
-            ldtr: FromZeroes::new_zeroed(),
+            ldtr: FromZeros::new_zeroed(),
             idtr,
             gdtr,
             efer: x86defs::X64_EFER_LMA | x86defs::X64_EFER_LME | x86defs::X64_EFER_NXE,

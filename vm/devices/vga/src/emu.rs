@@ -31,9 +31,11 @@ use std::ops::Index;
 use std::ops::IndexMut;
 use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 #[derive(Inspect)]
 pub struct Emulator {
@@ -434,7 +436,7 @@ impl VideoS3DeviceState {
             vga_attrib_reg_flip_flop: true,
             vga_graphics_reg_index: VgaGraphicsReg(0),
             vga_graphics_reg_index_shadow: 0,
-            pel_colors: FromZeroes::new_zeroed(),
+            pel_colors: FromZeros::new_zeroed(),
             pel_reg_write_index: 0,
             pel_reg_read_index: 0,
             pel_mask_register: 0xFF,
@@ -462,7 +464,7 @@ impl VideoS3DeviceState {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct PelColor {
     red: u8,
     green: u8,
@@ -867,13 +869,13 @@ impl Emulator {
         within_vram
     }
 
-    fn read_vram<T: AsBytes + FromBytes>(&self, address: u32) -> T {
+    fn read_vram<T: IntoBytes + FromBytes + Immutable + KnownLayout>(&self, address: u32) -> T {
         self.vram
             .read_plain(address.into())
             .expect("framebuffer is mapped")
     }
 
-    fn write_vram<T: AsBytes>(&self, address: u32, value: T) {
+    fn write_vram<T: IntoBytes + Immutable + KnownLayout>(&self, address: u32, value: T) {
         self.vram
             .write_plain(address.into(), &value)
             .expect("framebuffer is mapped")
@@ -2803,7 +2805,7 @@ impl Emulator {
     }
 
     fn write_pel_data_register(&mut self, data: u8) {
-        let pel_reg_entry = self.state.persistent_state.pel_colors.as_bytes_mut();
+        let pel_reg_entry = self.state.persistent_state.pel_colors.as_mut_bytes();
         let len = pel_reg_entry.len();
 
         //

@@ -30,7 +30,10 @@ use winapi::shared::winerror::ERROR_CANCELLED;
 use winapi::um::ioapiset::DeviceIoControl;
 use winapi::um::winnt::GENERIC_ALL;
 use winapi::um::winnt::SYNCHRONIZE;
-use zerocopy::AsBytes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 pub mod vmbusioctl {
     #![allow(
@@ -94,7 +97,10 @@ mod proxyioctl {
     use winapi::um::winioctl::FILE_READ_ACCESS;
     use winapi::um::winioctl::FILE_WRITE_ACCESS;
     use winapi::um::winioctl::METHOD_BUFFERED;
-    use zerocopy::AsBytes;
+    use zerocopy::FromZeros;
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     const fn CTL_CODE(DeviceType: u32, Function: u32, Method: u32, Access: u32) -> u32 {
         (DeviceType << 16) | (Access << 14) | (Function << 2) | Method
@@ -190,7 +196,7 @@ mod proxyioctl {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, AsBytes)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout)]
     pub struct VMBUS_PROXY_CREATE_GPADL_INPUT {
         pub ChannelId: u64,
         pub GpadlId: u32,

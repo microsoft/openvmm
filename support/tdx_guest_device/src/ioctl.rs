@@ -10,7 +10,7 @@ use crate::protocol;
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use thiserror::Error;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 #[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]

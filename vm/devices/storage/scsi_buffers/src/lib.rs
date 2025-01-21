@@ -22,9 +22,10 @@ use std::ops::Deref;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// A pointer/length pair that is ABI compatible with the iovec type on Linux.
 #[derive(Debug, Copy, Clone)]
@@ -135,7 +136,7 @@ impl Deref for IoBuffer<'_> {
 const PAGE_SIZE: usize = 4096;
 
 #[repr(C, align(4096))]
-#[derive(Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct Page([u8; PAGE_SIZE]);
 
 const ZERO_PAGE: Page = Page([0; PAGE_SIZE]);
@@ -150,7 +151,7 @@ impl BounceBuffer {
     /// Allocates a new bounce buffer of `size` bytes.
     pub fn new(size: usize) -> Self {
         let mut pages = vec![ZERO_PAGE; size.div_ceil(PAGE_SIZE)];
-        let io_vec = pages.as_bytes_mut()[..size].as_atomic_bytes().into();
+        let io_vec = pages.as_mut_bytes()[..size].as_atomic_bytes().into();
         BounceBuffer { pages, io_vec }
     }
 

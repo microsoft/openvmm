@@ -54,8 +54,8 @@ use sha2::Sha384;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::fmt::Display;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 pub const DEFAULT_COMPATIBILITY_MASK: u32 = 0x1;
 
@@ -834,7 +834,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                 gpa: page_base * PAGE_SIZE_4K,
                 compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
                 vp_index: 0,
-                vmsa: Box::new(SevVmsa::read_from(data).expect("should be correct size")),
+                vmsa: Box::new(SevVmsa::read_from_bytes(data).expect("should be correct size")), // todo: zerocopy: map_err
             });
         } else {
             for page in page_base..page_base + page_count {

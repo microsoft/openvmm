@@ -10,7 +10,7 @@ use guid::Guid;
 use std::io::Cursor;
 use std::io::Seek;
 use std::path::Path;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 const SECTOR_SIZE: usize = 512;
 const EFI_GUID: Guid = Guid::from_static_str("{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}");

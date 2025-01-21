@@ -82,7 +82,7 @@ mod tests {
     use vmbus_core::protocol::HvsockUserDefinedParameters;
     use vmbus_core::protocol::OfferFlags;
     use vmbus_core::protocol::UserDefinedData;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
 
     #[test]
     fn test_check_result() {
@@ -183,7 +183,7 @@ mod tests {
                 .with_named_pipe_mode(true)
                 .with_tlnpi_provider(hvsock),
             user_defined,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         }
     }
 }

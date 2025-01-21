@@ -31,9 +31,11 @@ use std::io;
 use std::pin::pin;
 use thiserror::Error;
 use tracing::Instrument;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// A mesh that consists of exactly two nodes, communicating over an arbitrary
 /// bidirectional byte stream.
@@ -170,7 +172,7 @@ async fn exchange_addresses(
     read: &mut (impl AsyncRead + Unpin),
 ) -> io::Result<Address> {
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     struct Message {
         magic: [u8; 4],
         node: [u8; 16],
@@ -187,7 +189,7 @@ async fn exchange_addresses(
     let mut remote_msg = Message::new_zeroed();
     try_join(
         write.write_all(local_msg.as_bytes()),
-        read.read_exact(remote_msg.as_bytes_mut()),
+        read.read_exact(remote_msg.as_mut_bytes()),
     )
     .await?;
 

@@ -13,8 +13,10 @@ use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PAGE_SIZE_USIZE;
 use std::marker::PhantomData;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::Ref;
 
 /// A hypercall definition.
@@ -275,7 +277,7 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
                 HypercallParameters {
                     control,
                     input: &input.as_bytes()[..input_len],
-                    output: &mut output.as_bytes_mut()[..output_len],
+                    output: &mut output.as_mut_bytes()[..output_len],
                     elements_processed: elements_processed.as_mut(),
                 },
             );
@@ -313,8 +315,8 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
             check_buffer(self.handler.input_gpa(), input_len)?;
             check_buffer(self.handler.output_gpa(), output_len)?;
 
-            let input = &mut input_buffer.0.as_bytes_mut()[..input_len];
-            let output = &mut output_buffer.0.as_bytes_mut()[..output_len];
+            let input = &mut input_buffer.0.as_mut_bytes()[..input_len];
+            let output = &mut output_buffer.0.as_mut_bytes()[..output_len];
 
             // FUTURE: consider copying only the header and entries after
             // `rep_start` for rep hypercalls.
@@ -499,14 +501,14 @@ pub struct SimpleHypercall<In, Out, const CODE: u16>(PhantomData<(In, Out)>);
 
 impl<In, Out, const CODE: u16> SimpleHypercall<In, Out, CODE>
 where
-    In: AsBytes + FromBytes,
-    Out: AsBytes + FromBytes,
+    In: IntoBytes + FromBytes + Immutable + KnownLayout,
+    Out: IntoBytes + FromBytes + Immutable + KnownLayout,
 {
     /// Parses the hypercall parameters to input and output types.
     pub fn parse(params: HypercallParameters<'_>) -> (&In, &mut Out) {
         (
-            FromBytes::ref_from_prefix(params.input).unwrap(),
-            FromBytes::mut_from_prefix(params.output).unwrap(),
+            FromBytes::ref_from_prefix(params.input).unwrap().0, // todo: zerocopy: ref-from-prefix: use-rest-of-range, err
+            FromBytes::mut_from_prefix(params.output).unwrap().0, // todo: zerocopy: mut-from-prefix: use-rest-of-range, err
         )
     }
 }
@@ -526,16 +528,16 @@ pub struct VariableHypercall<In, Out, const CODE: u16>(PhantomData<(In, Out)>);
 
 impl<In, Out, const CODE: u16> VariableHypercall<In, Out, CODE>
 where
-    In: AsBytes + FromBytes,
-    Out: AsBytes + FromBytes,
+    In: IntoBytes + FromBytes + Immutable + KnownLayout,
+    Out: IntoBytes + FromBytes + Immutable + KnownLayout,
 {
     /// Parses the hypercall parameters to input and output types.
     pub fn parse(params: HypercallParameters<'_>) -> (&In, &[u64], &mut Out) {
-        let (input, rest) = Ref::<_, In>::new_from_prefix(params.input).unwrap();
+        let (input, rest) = Ref::<_, In>::from_prefix(params.input).unwrap();
         (
-            input.into_ref(),
-            u64::slice_from(rest).unwrap(),
-            Out::mut_from_prefix(params.output).unwrap(),
+            Ref::into_ref(input),
+            <[u64]>::ref_from_bytes(rest).unwrap(), //todo: zerocopy: err
+            Out::mut_from_prefix(params.output).unwrap().0, //todo: zerocopy: err
         )
     }
 }
@@ -555,26 +557,35 @@ pub struct RepHypercall<Hdr, In, Out, const CODE: u16>(PhantomData<(Hdr, In, Out
 
 impl<Hdr, In, Out, const CODE: u16> RepHypercall<Hdr, In, Out, CODE>
 where
-    Hdr: AsBytes + FromBytes,
-    In: AsBytes + FromBytes,
-    Out: AsBytes + FromBytes,
+    Hdr: IntoBytes + FromBytes + Immutable + KnownLayout,
+    In: IntoBytes + FromBytes + Immutable + KnownLayout,
+    Out: IntoBytes + FromBytes + Immutable + KnownLayout,
 {
     /// Parses the hypercall parameters to input and output types.
     pub fn parse(params: HypercallParameters<'_>) -> (&Hdr, &[In], &mut [Out], &mut usize) {
-        let (header, rest) = Ref::<_, Hdr>::new_from_prefix(params.input).unwrap();
+        let (header, rest) = Ref::<_, Hdr>::from_prefix(params.input).unwrap();
         let input = if size_of::<In>() == 0 {
             &[]
         } else {
-            &In::slice_from(rest).unwrap()[params.control.rep_start()..]
+            // todo: zerocopy: review carefully!
+            // todo: zerocopy: err
+            &<[In]>::ref_from_bytes(rest).unwrap()[params.control.rep_start()..]
         };
         let output = if size_of::<Out>() == 0 {
             &mut []
         } else {
-            &mut Out::mut_slice_from(params.output).unwrap()[params.control.rep_start()..]
+            // todo: zerocopy: review carefully!
+            // todo: zerocopy: err
+            &mut <[Out]>::mut_from_prefix_with_elems(
+                params.output,
+                params.output.len() / size_of::<Out>(),
+            )
+            .unwrap()
+            .0[params.control.rep_start()..]
         };
 
         (
-            header.into_ref(),
+            Ref::into_ref(header),
             input,
             output,
             params.elements_processed.unwrap(),
@@ -598,28 +609,37 @@ pub struct VariableRepHypercall<Hdr, In, Out, const CODE: u16>(PhantomData<(Hdr,
 
 impl<Hdr, In, Out, const CODE: u16> VariableRepHypercall<Hdr, In, Out, CODE>
 where
-    Hdr: AsBytes + FromBytes,
-    In: AsBytes + FromBytes,
-    Out: AsBytes + FromBytes,
+    Hdr: IntoBytes + FromBytes + Immutable + KnownLayout,
+    In: IntoBytes + FromBytes + Immutable + KnownLayout,
+    Out: IntoBytes + FromBytes + Immutable + KnownLayout,
 {
     /// Parses the hypercall parameters to input and output types.
     pub fn parse(params: HypercallParameters<'_>) -> (&Hdr, &[u64], &[In], &mut [Out], &mut usize) {
-        let (header, rest) = Ref::<_, Hdr>::new_from_prefix(params.input).unwrap();
+        let (header, rest) = Ref::<_, Hdr>::from_prefix(params.input).unwrap();
         let (var_header, rest) =
-            u64::slice_from_prefix(rest, params.control.variable_header_size()).unwrap();
+            <[u64]>::ref_from_prefix_with_elems(rest, params.control.variable_header_size())
+                .unwrap();
         let input = if size_of::<In>() == 0 {
             &[]
         } else {
-            &In::slice_from(rest).unwrap()[params.control.rep_start()..]
+            &<[In]>::ref_from_bytes(rest).unwrap()[params.control.rep_start()..]
+            // todo: zerocopy: review carefully!
         };
         let output = if size_of::<Out>() == 0 {
             &mut []
         } else {
-            &mut Out::mut_slice_from(params.output).unwrap()[params.control.rep_start()..]
+            // todo: zerocopy: review carefully!
+            // todo: zerocopy: err
+            &mut <[Out]>::mut_from_prefix_with_elems(
+                params.output,
+                params.output.len() / size_of::<Out>(),
+            )
+            .unwrap()
+            .0[params.control.rep_start()..]
         };
 
         (
-            header.into_ref(),
+            Ref::into_ref(header),
             var_header,
             input,
             output,
@@ -646,7 +666,7 @@ pub struct VtlHypercall<const CODE: u16>(());
 
 impl<const CODE: u16> VtlHypercall<CODE> {
     pub fn parse(params: HypercallParameters<'_>) -> (u64, Control) {
-        (u64::read_from(params.input).unwrap(), params.control)
+        (u64::read_from_bytes(params.input).unwrap(), params.control)
     }
 }
 

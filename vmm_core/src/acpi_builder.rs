@@ -21,7 +21,7 @@ use vm_topology::processor::x86::X86Topology;
 use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
 use x86defs::apic::APIC_BASE_ADDRESS;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 /// Binary ACPI tables constructed by [`AcpiTablesBuilder`].
 pub struct BuiltAcpiTables {

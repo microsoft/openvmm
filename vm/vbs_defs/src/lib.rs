@@ -9,14 +9,16 @@ use bitfield_struct::bitfield;
 use igvm_defs::PAGE_SIZE_4K;
 use open_enum::open_enum;
 use static_assertions::const_assert;
-use zerocopy::AsBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 pub const VBS_VP_CHUNK_SIZE_BYTES: usize = PAGE_SIZE_4K as usize + size_of::<VpGpaPageChunk>();
 
 /// Structure containing the completed VBS boot measurement of the IGVM file.
 /// The signature of the hash of this struct is the signature for [`igvm_defs::IGVM_VHS_VBS_MEASUREMENT`]
 #[repr(C)]
-#[derive(AsBytes, Debug)]
+#[derive(IntoBytes, Immutable, KnownLayout, Debug)]
 pub struct VBS_VM_BOOT_MEASUREMENT_SIGNED_DATA {
     /// The version of the signature structure
     pub version: u32,
@@ -57,7 +59,7 @@ pub struct VBS_VM_BOOT_MEASUREMENT_SIGNED_DATA {
 ///
 /// Structure describing the chunk to be measured
 #[repr(C)]
-#[derive(AsBytes)]
+#[derive(IntoBytes, Immutable, KnownLayout)]
 pub struct VbsChunkHeader {
     /// The full size to be measured
     pub byte_count: u32,
@@ -67,7 +69,7 @@ pub struct VbsChunkHeader {
 
 /// Structure describing the register being measured. Will be padded to [`VBS_VP_CHUNK_SIZE_BYTES`] when hashed to generate digest
 #[repr(C)]
-#[derive(AsBytes)]
+#[derive(IntoBytes, Immutable, KnownLayout)]
 pub struct VbsRegisterChunk {
     pub header: VbsChunkHeader,
     pub reserved: u32,
@@ -83,7 +85,7 @@ const_assert!(size_of::<VbsRegisterChunk>() <= VBS_VP_CHUNK_SIZE_BYTES);
 /// Structure describing the page to be measured.
 /// Page data is hashed after struct to generate digest, if not a full page, measurable data will be padded to [`VBS_VP_CHUNK_SIZE_BYTES`]
 #[repr(C)]
-#[derive(AsBytes)]
+#[derive(IntoBytes, Immutable, KnownLayout)]
 pub struct VpGpaPageChunk {
     pub header: VbsChunkHeader,
     pub metadata: u64,
@@ -91,7 +93,7 @@ pub struct VpGpaPageChunk {
 }
 
 open_enum! {
-#[derive(AsBytes)]
+#[derive(IntoBytes, Immutable, KnownLayout)]
 pub enum BootMeasurementType: u32 {
     VP_REGISTER = 0,
     VP_VTL_ENABLED = 1,
@@ -113,7 +115,7 @@ pub struct VBS_VM_GPA_PAGE_BOOT_METADATA {
 
 /// Flags defining the security policy for the guest
 #[bitfield(u32)]
-#[derive(AsBytes)]
+#[derive(IntoBytes, Immutable, KnownLayout)]
 pub struct VBS_POLICY_FLAGS {
     /// Guest supports debugging
     #[bits(1)]

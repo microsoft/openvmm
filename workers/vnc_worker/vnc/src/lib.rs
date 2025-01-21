@@ -13,8 +13,8 @@ use futures::FutureExt;
 use futures::StreamExt;
 use pal_async::socket::PolledSocket;
 use thiserror::Error;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -115,7 +115,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
             .await?;
 
         let mut version = rfb::ProtocolVersion::new_zeroed();
-        socket.read_exact(version.as_bytes_mut()).await?;
+        socket.read_exact(version.as_mut_bytes()).await?;
 
         if version.0 != rfb::PROTOCOL_VERSION_33 {
             return Err(Error::UnsupportedVersion(version));
@@ -132,7 +132,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
             .await?;
 
         let mut init = rfb::ClientInit::new_zeroed();
-        socket.read_exact(init.as_bytes_mut()).await?;
+        socket.read_exact(init.as_mut_bytes()).await?;
 
         let mut fmt = rfb::PixelFormat {
             bits_per_pixel: 32,
@@ -175,7 +175,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                 .into();
             futures::select! { // merge semantics
                 _ = update => update_ready = true,
-                r = socket.read(message_type.as_bytes_mut()).fuse() => {
+                r = socket.read(message_type.as_mut_bytes()).fuse() => {
                     if r? == 0 {
                         return Ok(())
                     }
@@ -247,7 +247,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                         1 => {
                             let mut line = vec![0u8; width as usize];
                             for y in 0..height {
-                                self.fb.read_line(y, src_line.as_bytes_mut());
+                                self.fb.read_line(y, src_line.as_mut_bytes());
                                 for x in 0..width as usize {
                                     let p = src_line[x];
                                     let (r, g, b) = (p & 0xff0000, p & 0xff00, p & 0xff);
@@ -262,7 +262,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                         2 => {
                             let mut line = vec![0u16; width as usize];
                             for y in 0..height {
-                                self.fb.read_line(y, src_line.as_bytes_mut());
+                                self.fb.read_line(y, src_line.as_mut_bytes());
                                 for x in 0..width as usize {
                                     let p = src_line[x];
                                     let (r, g, b) = (p & 0xff0000, p & 0xff00, p & 0xff);
@@ -279,14 +279,14 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                             && shift_b == fmt.blue_shift as u32 =>
                         {
                             for y in 0..height {
-                                self.fb.read_line(y, src_line.as_bytes_mut());
+                                self.fb.read_line(y, src_line.as_mut_bytes());
                                 socket.write_all(src_line.as_bytes()).await?;
                             }
                         }
                         4 => {
                             let mut line = vec![0u32; width as usize];
                             for y in 0..height {
-                                self.fb.read_line(y, src_line.as_bytes_mut());
+                                self.fb.read_line(y, src_line.as_mut_bytes());
                                 for x in (width as usize & !3)..width as usize {
                                     let p = src_line[x];
                                     let (r, g, b) = (p & 0xff0000, p & 0xff00, p & 0xff);
@@ -307,15 +307,15 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                 match message_type {
                     rfb::CS_MESSAGE_SET_PIXEL_FORMAT => {
                         let mut input = rfb::SetPixelFormat::new_zeroed();
-                        socket.read_exact(&mut input.as_bytes_mut()[1..]).await?;
+                        socket.read_exact(&mut input.as_mut_bytes()[1..]).await?;
                         fmt = input.pixel_format;
                     }
                     rfb::CS_MESSAGE_SET_ENCODINGS => {
                         let mut input = rfb::SetEncodings::new_zeroed();
-                        socket.read_exact(&mut input.as_bytes_mut()[1..]).await?;
+                        socket.read_exact(&mut input.as_mut_bytes()[1..]).await?;
                         let mut encodings: Vec<zerocopy::U32<zerocopy::BE>> =
                             vec![0.into(); input.encoding_count.get().into()];
-                        socket.read_exact(encodings.as_bytes_mut()).await?;
+                        socket.read_exact(encodings.as_mut_bytes()).await?;
                         if !encodings.contains(&rfb::ENCODING_TYPE_DESKTOP_SIZE.into()) {
                             // Can't really operate without being able to change the desktop size dynamically.
                             return Err(Error::DesktopResizeNotSupported);
@@ -346,12 +346,12 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     }
                     rfb::CS_MESSAGE_FRAMEBUFFER_UPDATE_REQUEST => {
                         let mut input = rfb::FramebufferUpdateRequest::new_zeroed();
-                        socket.read_exact(&mut input.as_bytes_mut()[1..]).await?;
+                        socket.read_exact(&mut input.as_mut_bytes()[1..]).await?;
                         ready_for_update = true;
                     }
                     rfb::CS_MESSAGE_KEY_EVENT => {
                         let mut input = rfb::KeyEvent::new_zeroed();
-                        socket.read_exact(&mut input.as_bytes_mut()[1..]).await?;
+                        socket.read_exact(&mut input.as_mut_bytes()[1..]).await?;
 
                         // RFB key events are in xkeysym format. Convert them to
                         // US keyboard scancodes and send them to the keyboard
@@ -410,7 +410,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     }
                     rfb::CS_MESSAGE_POINTER_EVENT => {
                         let mut input = rfb::PointerEvent::new_zeroed();
-                        socket.read_exact(&mut input.as_bytes_mut()[1..]).await?;
+                        socket.read_exact(&mut input.as_mut_bytes()[1..]).await?;
                         //scale the mouse coordinates in the VNC itself
                         let mut x = 0;
                         let mut y = 0;
@@ -431,7 +431,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     }
                     rfb::CS_MESSAGE_CLIENT_CUT_TEXT => {
                         let mut input = rfb::ClientCutText::new_zeroed();
-                        socket.read_exact(&mut input.as_bytes_mut()[1..]).await?;
+                        socket.read_exact(&mut input.as_mut_bytes()[1..]).await?;
                         let mut text_latin1 = vec![0; input.length.get() as usize];
                         socket.read_exact(&mut text_latin1).await?;
                         // Latin1 characters map to the first 256 characters of Unicode (roughly).
@@ -439,11 +439,11 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     }
                     rfb::CS_MESSAGE_QEMU => {
                         let mut input = rfb::QemuMessageHeader::new_zeroed();
-                        socket.read_exact(&mut input.as_bytes_mut()[1..]).await?;
+                        socket.read_exact(&mut input.as_mut_bytes()[1..]).await?;
                         match input.submessage_type {
                             rfb::QEMU_MESSAGE_EXTENDED_KEY_EVENT => {
                                 let mut input = rfb::QemuExtendedKeyEvent::new_zeroed();
-                                socket.read_exact(&mut input.as_bytes_mut()[2..]).await?;
+                                socket.read_exact(&mut input.as_mut_bytes()[2..]).await?;
                                 let mut scancode = input.keycode.get() as u16;
                                 // An E0 prefix is sometimes encoded via the
                                 // high bit on a single byte.

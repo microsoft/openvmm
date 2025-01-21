@@ -35,14 +35,12 @@ tracelimit.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(windows)'.dependencies]
 vmbus_proxy.workspace = true
 winapi.workspace = true
 
 [dev-dependencies]
 test_with_tracing.workspace = true
-zerocopy_helpers.workspace = true
 
 [lints]
 workspace = true

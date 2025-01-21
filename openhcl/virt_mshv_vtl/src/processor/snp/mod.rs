@@ -71,9 +71,9 @@ use x86defs::snp::SevStatusMsr;
 use x86defs::snp::SevVmsa;
 use x86defs::snp::Vmpl;
 use x86defs::RFlags;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// A backing for SNP partitions.
 #[derive(InspectMut)]
@@ -517,7 +517,7 @@ fn virt_table_to_snp(val: TableRegister) -> SevSelector {
     SevSelector {
         limit: val.limit as u32,
         base: val.base,
-        ..FromZeroes::new_zeroed()
+        ..FromZeros::new_zeroed()
     }
 }
 
@@ -779,7 +779,8 @@ impl UhProcessor<'_, SnpBacked> {
         let message = hvdef::HvX64SynicSintDeliverableMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
         )
-        .unwrap();
+        .unwrap()
+        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
 
         tracing::trace!(
             deliverable_sints = message.deliverable_sints,
@@ -800,7 +801,8 @@ impl UhProcessor<'_, SnpBacked> {
         let message = hvdef::HvX64VmgexitInterceptMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
         )
-        .unwrap();
+        .unwrap()
+        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
 
         let ghcb_msr = x86defs::snp::GhcbMsr::from(message.ghcb_msr);
         tracing::trace!(?ghcb_msr, "vmgexit intercept");
@@ -1179,7 +1181,8 @@ impl UhProcessor<'_, SnpBacked> {
                     HvMessageType::HvMessageTypeExceptionIntercept => {
                         let exception_message =
                             hvdef::HvX64ExceptionInterceptMessage::ref_from_prefix(payload)
-                                .unwrap();
+                                .unwrap()
+                                .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
 
                         exception_message.vector
                             == x86defs::Exception::SEV_VMM_COMMUNICATION.0 as u16
@@ -1191,7 +1194,9 @@ impl UhProcessor<'_, SnpBacked> {
                         // - determine whether the intercept message should be delivered to VTL 1
                         // - determine whether emulation is appropriate for this gpa
                         let gpa_message: &hvdef::HvX64MemoryInterceptMessage =
-                            hvdef::HvX64MemoryInterceptMessage::ref_from_prefix(payload).unwrap();
+                            hvdef::HvX64MemoryInterceptMessage::ref_from_prefix(payload)
+                                .unwrap()
+                                .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
 
                         // Only the page numbers need to match.
                         (gpa_message.guest_physical_address >> hvdef::HV_PAGE_SHIFT)

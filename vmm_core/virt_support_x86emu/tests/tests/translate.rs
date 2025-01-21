@@ -12,7 +12,7 @@ use x86defs::cpuid::Vendor;
 use x86defs::RFlags;
 use x86emu::Gp;
 use x86emu::Segment;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 const INITIAL_GVA: u64 = 0x2000;
 const INITIAL_GPA: u64 = 0x1000;

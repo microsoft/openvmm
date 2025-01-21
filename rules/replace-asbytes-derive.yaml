@@ -1,0 +1,29 @@
+id: replace-asbytes-derive
+language: rust
+rule:
+  all:
+    - pattern:
+        context: "#[derive($$$ARGS)]"
+        selector: attribute
+transform:
+  ARGS_NO_ASBYTES:
+    replace:
+      source: $$$ARGS
+      replace: AsBytes
+      by: IntoBytes, Immutable, KnownLayout
+  ARGS_NO_FROMZEROES:
+    replace:
+      source: $ARGS_NO_ASBYTES
+      replace: FromZeroes,
+      by: ""
+  COMMA_FIXUPS:
+    replace:
+      source: $ARGS_NO_FROMZEROES
+      replace: ", FromZeroes"
+      by: ""
+  COMMA_FIXUPS_2:
+    replace:
+      source: $COMMA_FIXUPS
+      replace: "FromZeroes"
+      by: ""
+fix: 'derive($COMMA_FIXUPS_2)'

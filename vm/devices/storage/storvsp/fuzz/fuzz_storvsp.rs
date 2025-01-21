@@ -26,8 +26,8 @@ use vmbus_channel::connected_async_channels;
 use vmbus_ring::OutgoingPacketType;
 use vmbus_ring::PAGE_SIZE;
 use xtask_fuzz::fuzz_target;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 #[derive(Arbitrary)]
 enum StorvspFuzzAction {
@@ -110,7 +110,7 @@ async fn send_arbitrary_readwrite_packet(
         operation_code: *(u.choose(&scsiop_choices)?),
         logical_block: block.into(),
         transfer_blocks: ((byte_len / 512) as u16).into(),
-        ..FromZeroes::new_zeroed()
+        ..FromZeros::new_zeroed()
     };
 
     let mut scsi_req = protocol::ScsiRequest {
@@ -121,7 +121,7 @@ async fn send_arbitrary_readwrite_packet(
         cdb_length: size_of::<Cdb10>() as u8,
         data_transfer_length: byte_len.try_into()?,
         data_in: 1,
-        ..FromZeroes::new_zeroed()
+        ..FromZeros::new_zeroed()
     };
 
     scsi_req.payload[0..10].copy_from_slice(cdb.as_bytes());

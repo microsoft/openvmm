@@ -8,7 +8,7 @@ use crate::protocol;
 use crate::protocol::hcl_run;
 use std::ptr::addr_of_mut;
 use std::ptr::NonNull;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Default)]
 pub struct DeferredActions {

@@ -22,7 +22,7 @@ use hvdef::HV_PARTITION_ID_SELF;
 use hvdef::HV_VP_INDEX_SELF;
 use sidecar_client::SidecarVp;
 use std::ptr::NonNull;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 /// Result when the translate gva hypercall returns a code indicating
 /// the translation was unsuccessful.
@@ -132,8 +132,7 @@ impl ProcessorRunner<'_, MshvX64> {
                 gva_page: gvn,
             };
 
-            let mut output: hypercall::TranslateVirtualAddressExOutputX64 =
-                FromZeroes::new_zeroed();
+            let mut output: hypercall::TranslateVirtualAddressExOutputX64 = FromZeros::new_zeroed();
 
             // SAFETY: The input header and slice are the correct types for this hypercall.
             //         The hypercall output is validated right after the hypercall is issued.

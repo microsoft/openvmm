@@ -5,16 +5,17 @@
 
 use bitfield_struct::bitfield;
 use guid::Guid;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::Unaligned;
 
 pub const CRASHDUMP_GUID: Guid = Guid::from_static_str("427b03e7-4ceb-4286-b5fc-486f4a1dd439");
 
 /// Capabilities supported by the host crash dump services
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout, PartialEq, Eq)]
 pub struct Capabilities {
     pub windows_config_v1: bool,
     pub linux_config_v1: bool,
@@ -24,7 +25,7 @@ pub struct Capabilities {
 
 open_enum::open_enum! {
     /// Dump types
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum DumpType: u32 {
         NONE = 0x00000000,
         ELF = 0x00000001,
@@ -33,7 +34,7 @@ open_enum::open_enum! {
 }
 
 /// Crash dump configuration.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C, packed)]
 pub struct ConfigV1 {
     pub max_dump_size: u64,
@@ -41,7 +42,7 @@ pub struct ConfigV1 {
 }
 
 /// Dump completion information
-#[derive(Debug, Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C, packed)]
 pub struct CompletionInfoV1 {
     pub major_version: u32,
@@ -57,7 +58,7 @@ pub struct CompletionInfoV1 {
 
 open_enum::open_enum! {
     /// Message types
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum MessageType : u64 {
         INVALID = 0, // The default invalid type
 
@@ -86,7 +87,7 @@ open_enum::open_enum! {
 }
 
 /// Common message header for all requests and responses.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C, packed)]
 pub struct Header {
     /// Correlates messages across guest/host
@@ -95,14 +96,14 @@ pub struct Header {
 }
 
 /// Complete message payload for ResponseGetCapabilities_v1
-#[derive(Debug, Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C, packed)]
 pub struct DumpCapabilitiesRequestV1 {
     pub header: Header,
 }
 
 /// Complete message payload for ResponseGetCapabilities_v1
-#[derive(Debug, Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C, packed)]
 pub struct DumpCapabilitiesResponseV1 {
     pub header: Header,
@@ -110,14 +111,14 @@ pub struct DumpCapabilitiesResponseV1 {
 }
 
 /// Complete message payload for RequestGetNixDumpConfig_v1
-#[derive(Debug, Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C, packed)]
 pub struct DumpConfigRequestV1 {
     pub header: Header,
 }
 
 /// Complete message payload for ResponseGetNixDumpConfig_v1
-#[derive(Debug, Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C, packed)]
 pub struct DumpConfigResponseV1 {
     pub header: Header,
@@ -125,14 +126,14 @@ pub struct DumpConfigResponseV1 {
 }
 
 /// Complete message payload for RequestGetNixDumpConfig_v1
-#[derive(Debug, Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C, packed)]
 pub struct DumpStartRequestV1 {
     pub header: Header,
 }
 
 /// Complete message payload for ResponseGetNixDumpConfig_v1
-#[derive(Debug, Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C, packed)]
 pub struct DumpStartResponseV1 {
     pub header: Header,
@@ -142,7 +143,9 @@ pub struct DumpStartResponseV1 {
 
 /// Complete message payload for RequestNixDumpWrite_v1
 /// Data follows in a separate message with no headers.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes, Unaligned)]
+#[derive(
+    Debug, Copy, Clone, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout, Unaligned,
+)]
 #[repr(C, packed)]
 pub struct DumpWriteRequestV1 {
     pub header: Header,
@@ -152,7 +155,7 @@ pub struct DumpWriteRequestV1 {
 
 /// Response to a RequestNixDumpWrite_v1
 /// A response is only sent if an error has occurred.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C, packed)]
 pub struct DumpWriteResponseV1 {
     pub header: Header,
@@ -161,7 +164,7 @@ pub struct DumpWriteResponseV1 {
 }
 
 /// Completes a Nix crash dump
-#[derive(Debug, Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C, packed)]
 pub struct DumpCompleteRequestV1 {
     pub header: Header,

@@ -9,8 +9,8 @@ use super::spec::U64b;
 use core::fmt::Display;
 use core::mem::size_of;
 use zerocopy::FromBytes;
-use zerocopy::Ref;
-use zerocopy_helpers::FromBytesExt;
+use zerocopy::Immutable;
+use zerocopy::KnownLayout;
 
 /// Errors returned when parsing a FDT.
 #[derive(Debug)]
@@ -172,7 +172,9 @@ impl<'a> Parser<'a> {
     /// Read just the `totalsize` field of a FDT header. This is useful when
     /// attempting to determine the overall size of a device tree.
     pub fn read_total_size(buf: &[u8]) -> Result<usize, Error<'a>> {
-        let header = spec::Header::read_from_prefix(buf).ok_or(Error(ErrorKind::NoHeader))?;
+        let header = spec::Header::read_from_prefix(buf)
+            .map_err(|_| Error(ErrorKind::NoHeader))?
+            .0; // todo: zerocopy: map_err
 
         if u32::from(header.magic) != spec::MAGIC {
             Err(Error(ErrorKind::HeaderMagic))
@@ -187,7 +189,9 @@ impl<'a> Parser<'a> {
             return Err(Error(ErrorKind::BufferAlignment));
         }
 
-        let header = spec::Header::read_from_prefix(buf).ok_or(Error(ErrorKind::NoHeader))?;
+        let header = spec::Header::read_from_prefix(buf)
+            .map_err(|_| Error(ErrorKind::NoHeader))?
+            .0; // todo: zerocopy: map_err
 
         if u32::from(header.magic) != spec::MAGIC {
             return Err(Error(ErrorKind::HeaderMagic));
@@ -213,8 +217,8 @@ impl<'a> Parser<'a> {
             .get(mem_rsvmap_offset..)
             .ok_or(Error(ErrorKind::MemoryReservationBlock))?;
         loop {
-            let (entry, rest) = spec::ReserveEntry::read_from_prefix_split(mem_rsvmap)
-                .ok_or(Error(ErrorKind::MemoryReservationBlockEnd))?;
+            let (entry, rest) = spec::ReserveEntry::read_from_prefix(mem_rsvmap)
+                .map_err(|_| Error(ErrorKind::MemoryReservationBlockEnd))?; // todo: zerocopy: map_err
 
             if u64::from(entry.address) == 0 && u64::from(entry.size) == 0 {
                 break;
@@ -357,7 +361,7 @@ impl Display for ParseTokenError {
 
 /// Read to the next token from `buf`, returning `(token, remaining_buffer)`.
 fn read_token(buf: &[u8]) -> Result<(ParsedToken<'_>, &[u8]), ParseTokenError> {
-    let (token, rest) = U32b::read_from_prefix_split(buf).ok_or(ParseTokenError::BufLen)?;
+    let (token, rest) = U32b::read_from_prefix(buf).map_err(|_| ParseTokenError::BufLen)?; // todo: zerocopy: map_err
     let token = u32::from(token);
     match token {
         spec::BEGIN_NODE => {
@@ -378,8 +382,8 @@ fn read_token(buf: &[u8]) -> Result<(ParsedToken<'_>, &[u8]), ParseTokenError> {
         }
         spec::PROP => {
             // Read the property header
-            let (header, rest) = spec::PropHeader::read_from_prefix_split(rest)
-                .ok_or(ParseTokenError::PropHeader)?;
+            let (header, rest) = spec::PropHeader::read_from_prefix(rest)
+                .map_err(|_| ParseTokenError::PropHeader)?; // todo: zerocopy: map_err
             let len = u32::from(header.len) as usize;
             let align_up_len = (len + 4 - 1) & !(4 - 1);
 
@@ -620,7 +624,7 @@ pub struct Property<'a> {
 impl<'a> Property<'a> {
     /// Read a value at a given offset, indexed by `size_of::<T>() * index`.
     /// T must be BigEndian.
-    fn read_val<T: FromBytes + Copy + zerocopy::Unaligned>(
+    fn read_val<T: FromBytes + Copy + zerocopy::Unaligned + Immutable + KnownLayout>(
         &self,
         index: usize,
     ) -> Result<T, Error<'a>> {
@@ -633,17 +637,21 @@ impl<'a> Property<'a> {
         // read types that are greater than 4 bytes, we must bound T to accept
         // unaligned types so LayoutVerified does not apply alignment and read
         // incorrect values.
-        Ok(*Ref::new_slice_unaligned(self.data)
-            .ok_or(Error(ErrorKind::PropertyDataTypeBuffer {
-                node_name: self.node_name,
-                prop_name: self.name,
-            }))?
-            .into_slice()
+        // todo: zerocopy: review carefully! (manual)
+        <[T]>::ref_from_bytes(self.data)
+            .map_err(|_| {
+                // todo: zerocopy: map_err
+                Error(ErrorKind::PropertyDataTypeBuffer {
+                    node_name: self.node_name,
+                    prop_name: self.name,
+                })
+            })?
             .get(index)
             .ok_or(Error(ErrorKind::PropertyOffset {
                 node_name: self.node_name,
                 prop_name: self.name,
-            }))?)
+            }))
+            .copied()
     }
 
     /// Read a u32 from this property, at a given u32 index.
@@ -672,11 +680,14 @@ impl<'a> Property<'a> {
 
     /// Read data as an iterator of u64 values.
     pub fn as_64_list(&self) -> Result<impl Iterator<Item = u64> + use<'a>, Error<'a>> {
-        Ok(U64b::slice_from(self.data)
-            .ok_or(Error(ErrorKind::PropertyDataTypeBuffer {
-                node_name: self.node_name,
-                prop_name: self.name,
-            }))?
+        Ok(<[U64b]>::ref_from_bytes(self.data)
+            .map_err(|_| {
+                // todo: zerocopy: map_err
+                Error(ErrorKind::PropertyDataTypeBuffer {
+                    node_name: self.node_name,
+                    prop_name: self.name,
+                })
+            })?
             .iter()
             .map(|v| v.get()))
     }
@@ -714,8 +725,8 @@ impl<'a> MemoryReserveIter<'a> {
             return Ok(None);
         }
 
-        let (entry, rest) = spec::ReserveEntry::read_from_prefix_split(self.memory_reservations)
-            .ok_or(ErrorKind::MemoryReservationBlock)?;
+        let (entry, rest) = spec::ReserveEntry::read_from_prefix(self.memory_reservations)
+            .map_err(|_| ErrorKind::MemoryReservationBlock)?; // todo: zerocopy: map_err
 
         if u64::from(entry.address) == 0 && u64::from(entry.size) == 0 {
             return Ok(None);

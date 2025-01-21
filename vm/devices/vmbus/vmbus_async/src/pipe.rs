@@ -30,8 +30,8 @@ use vmbus_channel::RawAsyncChannel;
 use vmbus_ring as ring;
 use vmbus_ring::FlatRingMem;
 use vmbus_ring::RingMem;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 enum Error {
@@ -358,7 +358,7 @@ impl<M: RingMem> PipeReader<'_, M> {
                 let mut reader = payload.reader(self.core.in_ring());
                 let bytes_read = if !self.state.raw {
                     let mut header = ring::PipeHeader::new_zeroed();
-                    reader.read(header.as_bytes_mut())?;
+                    reader.read(header.as_mut_bytes())?;
                     if header.packet_type != ring::PIPE_PACKET_TYPE_DATA {
                         return Err(TryReadError::Pipe(Error::InvalidPipePacketType(
                             header.packet_type,
@@ -411,7 +411,7 @@ impl<M: RingMem> PipeReader<'_, M> {
                 }) => {
                     let mut reader = payload.reader(self.core.in_ring());
                     let mut header = ring::PipeHeader::new_zeroed();
-                    reader.read(header.as_bytes_mut())?;
+                    reader.read(header.as_mut_bytes())?;
                     let (off, len) = match header.packet_type {
                         ring::PIPE_PACKET_TYPE_DATA => {
                             // A zero-byte packet indicates EOF--the opposite
@@ -916,7 +916,7 @@ mod tests {
     use pal_async::DefaultDriver;
     use std::io::ErrorKind;
     use std::time::Duration;
-    use zerocopy::AsBytes;
+    use zerocopy::IntoBytes;
 
     #[async_test]
     async fn test_async_channel_close() {
@@ -963,10 +963,10 @@ mod tests {
             let mut timer = PolledTimer::new(&driver);
             timer.sleep(Duration::from_millis(200)).await;
             let mut v = [0_u16; 2000];
-            let n = host.recv(v.as_bytes_mut()).await.unwrap();
+            let n = host.recv(v.as_mut_bytes()).await.unwrap();
             assert_eq!(n, v.as_bytes().len());
             assert!(v.iter().copied().eq(0..2000_u16));
-            let n = host.recv(v.as_bytes_mut()).await.unwrap();
+            let n = host.recv(v.as_mut_bytes()).await.unwrap();
             assert_eq!(n, v.as_bytes().len());
             assert!(v.iter().copied().eq(2000..4000_u16));
         };
@@ -986,7 +986,7 @@ mod tests {
             let mut timer = PolledTimer::new(&driver);
             timer.sleep(Duration::from_millis(200)).await;
             let mut v = [0_u16; 10000];
-            host.read_exact(v.as_bytes_mut()).await.unwrap();
+            host.read_exact(v.as_mut_bytes()).await.unwrap();
             assert!(v.iter().copied().eq(0..10000_u16));
         };
         futures::future::join(guest_write, host_read).await;

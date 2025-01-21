@@ -13,11 +13,9 @@ default = []
 guid.workspace = true
 ucs2.workspace = true
 uefi_specs.workspace = true
-zerocopy_helpers.workspace = true
 
 thiserror.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 
 [lints]

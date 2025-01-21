@@ -23,13 +23,15 @@ use virtio::VirtioQueueWorker;
 use virtio::VirtioQueueWorkerContext;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const VIRTIO_DEVICE_TYPE_FS: u16 = 26;
 
 /// PCI configuration space values for virtio-fs devices.
 #[repr(C)]
-#[derive(AsBytes)]
+#[derive(IntoBytes, Immutable, KnownLayout)]
 struct VirtioFsDeviceConfig {
     tag: [u8; 36],
     num_request_queues: u32,

@@ -27,8 +27,10 @@ use thiserror::Error;
 use unix as sys;
 #[cfg(windows)]
 use windows as sys;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Must be called before using try_copy on Unix platforms.
 pub fn initialize_try_copy() {
@@ -269,7 +271,7 @@ pub unsafe fn try_write_bytes<T>(dest: *mut T, val: u8, count: usize) -> Result<
 /// appropriate protection. For example, this routine is useful if `dest` is a
 /// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
 /// some are mapped with PAGE_READWRITE/PROT_WRITE.
-pub unsafe fn try_compare_exchange<T: AsBytes + FromBytes>(
+pub unsafe fn try_compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
     dest: *mut T,
     mut current: T,
     new: T,
@@ -338,7 +340,9 @@ pub unsafe fn try_compare_exchange<T: AsBytes + FromBytes>(
 /// appropriate protection. For example, this routine is useful if `dest` is a
 /// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
 /// some are mapped with PAGE_READWRITE/PROT_WRITE.
-pub unsafe fn try_compare_exchange_ref<T: AsBytes + FromBytes + ?Sized>(
+pub unsafe fn try_compare_exchange_ref<
+    T: IntoBytes + FromBytes + Immutable + KnownLayout + ?Sized,
+>(
     dest: *mut u8,
     current: &mut T,
     new: &T,
@@ -349,25 +353,25 @@ pub unsafe fn try_compare_exchange_ref<T: AsBytes + FromBytes + ?Sized>(
         match (size_of_val(current), size_of_val(new)) {
             (1, 1) => try_cmpxchg8(
                 dest,
-                &mut *current.as_bytes_mut().as_mut_ptr(),
+                &mut *current.as_mut_bytes().as_mut_ptr(),
                 new.as_bytes()[0],
                 failure.as_mut_ptr(),
             ),
             (2, 2) => try_cmpxchg16(
                 dest.cast(),
-                &mut *current.as_bytes_mut().as_mut_ptr().cast(),
+                &mut *current.as_mut_bytes().as_mut_ptr().cast(),
                 u16::from_ne_bytes(new.as_bytes().try_into().unwrap()),
                 failure.as_mut_ptr(),
             ),
             (4, 4) => try_cmpxchg32(
                 dest.cast(),
-                &mut *current.as_bytes_mut().as_mut_ptr().cast(),
+                &mut *current.as_mut_bytes().as_mut_ptr().cast(),
                 u32::from_ne_bytes(new.as_bytes().try_into().unwrap()),
                 failure.as_mut_ptr(),
             ),
             (8, 8) => try_cmpxchg64(
                 dest.cast(),
-                &mut *current.as_bytes_mut().as_mut_ptr().cast(),
+                &mut *current.as_mut_bytes().as_mut_ptr().cast(),
                 u64::from_ne_bytes(new.as_bytes().try_into().unwrap()),
                 failure.as_mut_ptr(),
             ),
@@ -403,7 +407,9 @@ pub unsafe fn try_compare_exchange_ref<T: AsBytes + FromBytes + ?Sized>(
 /// appropriate protection. For example, this routine is useful if `src` is a
 /// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
 /// some are mapped with PAGE_READWRITE/PROT_WRITE.
-pub unsafe fn try_read_volatile<T: FromBytes>(src: *const T) -> Result<T, MemoryError> {
+pub unsafe fn try_read_volatile<T: FromBytes + Immutable + KnownLayout>(
+    src: *const T,
+) -> Result<T, MemoryError> {
     let mut dest = MaybeUninit::<T>::uninit();
     let mut failure = MaybeUninit::uninit();
     // SAFETY: guaranteed by caller
@@ -448,7 +454,10 @@ pub unsafe fn try_read_volatile<T: FromBytes>(src: *const T) -> Result<T, Memory
 /// appropriate protection. For example, this routine is useful if `dest` is a
 /// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
 /// some are mapped with PAGE_READWRITE/PROT_WRITE.
-pub unsafe fn try_write_volatile<T: AsBytes>(dest: *mut T, value: &T) -> Result<(), MemoryError> {
+pub unsafe fn try_write_volatile<T: IntoBytes + Immutable + KnownLayout>(
+    dest: *mut T,
+    value: &T,
+) -> Result<(), MemoryError> {
     let mut failure = MaybeUninit::uninit();
     // SAFETY: guaranteed by caller
     let ret = unsafe {
@@ -531,7 +540,10 @@ impl SparseMapping {
     }
 
     /// Tries to read a type `T` from `offset`.
-    pub fn read_plain<T: FromBytes>(&self, offset: usize) -> Result<T, SparseMappingError> {
+    pub fn read_plain<T: FromBytes + Immutable + KnownLayout>(
+        &self,
+        offset: usize,
+    ) -> Result<T, SparseMappingError> {
         let mut obj = MaybeUninit::<T>::uninit();
         // SAFETY: `obj` is a valid target for writes.
         unsafe {

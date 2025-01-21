@@ -23,7 +23,7 @@ use hvdef::HvRepResult;
 use hvdef::HvResult;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 trait MapToHypercallResult {
     fn map_to_hypercall_result(

@@ -21,7 +21,6 @@ bitfield-struct.workspace = true
 static_assertions.workspace = true
 wchar.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 
 [lints]

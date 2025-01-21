@@ -43,8 +43,8 @@ use crate::TPM_RSA_SRK_HANDLE;
 use inspect::InspectMut;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
 use thiserror::Error;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 // The size of command and response buffers.
 // DEVNOTE: The specification only requires the size to be large
@@ -821,7 +821,7 @@ impl TpmEngineHelper {
         let mut cmd = StartupCmd::new(session_tag.into(), startup_type);
 
         self.tpm_engine
-            .execute_command(cmd.as_bytes_mut(), &mut self.reply_buffer)
+            .execute_command(cmd.as_mut_bytes(), &mut self.reply_buffer)
             .map_err(TpmCommandError::TpmExecuteCommand)?;
 
         match StartupCmd::base_validate_reply(&self.reply_buffer, session_tag) {
@@ -847,7 +847,7 @@ impl TpmEngineHelper {
         let mut cmd = SelfTestCmd::new(session_tag.into(), full_test);
 
         self.tpm_engine
-            .execute_command(cmd.as_bytes_mut(), &mut self.reply_buffer)
+            .execute_command(cmd.as_mut_bytes(), &mut self.reply_buffer)
             .map_err(TpmCommandError::TpmExecuteCommand)?;
 
         match SelfTestCmd::base_validate_reply(&self.reply_buffer, session_tag) {
@@ -884,7 +884,7 @@ impl TpmEngineHelper {
         );
 
         self.tpm_engine
-            .execute_command(cmd.as_bytes_mut(), &mut self.reply_buffer)
+            .execute_command(cmd.as_mut_bytes(), &mut self.reply_buffer)
             .map_err(TpmCommandError::TpmExecuteCommand)?;
 
         match HierarchyControlCmd::base_validate_reply(&self.reply_buffer, session_tag) {
@@ -918,7 +918,7 @@ impl TpmEngineHelper {
         );
 
         self.tpm_engine
-            .execute_command(cmd.as_bytes_mut(), &mut self.reply_buffer)
+            .execute_command(cmd.as_mut_bytes(), &mut self.reply_buffer)
             .map_err(TpmCommandError::TpmExecuteCommand)?;
 
         match ClearControlCmd::base_validate_reply(&self.reply_buffer, session_tag) {
@@ -947,7 +947,7 @@ impl TpmEngineHelper {
         );
 
         self.tpm_engine
-            .execute_command(cmd.as_bytes_mut(), &mut self.reply_buffer)
+            .execute_command(cmd.as_mut_bytes(), &mut self.reply_buffer)
             .map_err(TpmCommandError::TpmExecuteCommand)?;
 
         match ClearCmd::base_validate_reply(&self.reply_buffer, session_tag) {
@@ -1038,7 +1038,7 @@ impl TpmEngineHelper {
         );
 
         self.tpm_engine
-            .execute_command(cmd.as_bytes_mut(), &mut self.reply_buffer)
+            .execute_command(cmd.as_mut_bytes(), &mut self.reply_buffer)
             .map_err(TpmCommandError::TpmExecuteCommand)?;
 
         match ChangeSeedCmd::base_validate_reply(&self.reply_buffer, session_tag) {
@@ -1067,7 +1067,7 @@ impl TpmEngineHelper {
         let mut cmd = ReadPublicCmd::new(session_tag.into(), object_handle);
 
         self.tpm_engine
-            .execute_command(cmd.as_bytes_mut(), &mut self.reply_buffer)
+            .execute_command(cmd.as_mut_bytes(), &mut self.reply_buffer)
             .map_err(TpmCommandError::TpmExecuteCommand)?;
 
         match ReadPublicCmd::base_validate_reply(&self.reply_buffer, session_tag) {
@@ -1090,7 +1090,7 @@ impl TpmEngineHelper {
         let mut cmd = FlushContextCmd::new(flush_handle);
 
         self.tpm_engine
-            .execute_command(cmd.as_bytes_mut(), &mut self.reply_buffer)
+            .execute_command(cmd.as_mut_bytes(), &mut self.reply_buffer)
             .map_err(TpmCommandError::TpmExecuteCommand)?;
 
         match FlushContextCmd::base_validate_reply(&self.reply_buffer, cmd.header.session_tag) {
@@ -1127,7 +1127,7 @@ impl TpmEngineHelper {
         );
 
         self.tpm_engine
-            .execute_command(cmd.as_bytes_mut(), &mut self.reply_buffer)
+            .execute_command(cmd.as_mut_bytes(), &mut self.reply_buffer)
             .map_err(TpmCommandError::TpmExecuteCommand)?;
 
         match EvictControlCmd::base_validate_reply(&self.reply_buffer, session_tag) {
@@ -1153,7 +1153,7 @@ impl TpmEngineHelper {
         let mut cmd = NvReadPublicCmd::new(session_tag.into(), nv_index);
 
         self.tpm_engine
-            .execute_command(cmd.as_bytes_mut(), &mut self.reply_buffer)
+            .execute_command(cmd.as_mut_bytes(), &mut self.reply_buffer)
             .map_err(TpmCommandError::TpmExecuteCommand)?;
 
         match NvReadPublicCmd::base_validate_reply(&self.reply_buffer, session_tag) {
@@ -1187,7 +1187,7 @@ impl TpmEngineHelper {
         );
 
         self.tpm_engine
-            .execute_command(cmd.as_bytes_mut(), &mut self.reply_buffer)
+            .execute_command(cmd.as_mut_bytes(), &mut self.reply_buffer)
             .map_err(TpmCommandError::TpmExecuteCommand)?;
 
         match NvUndefineSpaceCmd::base_validate_reply(&self.reply_buffer, session_tag) {
@@ -1406,7 +1406,7 @@ impl TpmEngineHelper {
             nv_read.update_read_parameters(bytes_to_transfer, transferred_bytes);
 
             self.tpm_engine
-                .execute_command(nv_read.as_bytes_mut(), &mut self.reply_buffer)
+                .execute_command(nv_read.as_mut_bytes(), &mut self.reply_buffer)
                 .map_err(TpmCommandError::TpmExecuteCommand)?;
 
             let res = match NvReadCmd::base_validate_reply(&self.reply_buffer, session_tag) {
@@ -1615,7 +1615,6 @@ mod tests {
     use ms_tpm_20_ref::DynResult;
     use std::time::Instant;
     use tpm20proto::AlgId;
-    use zerocopy::FromZeroes;
 
     const TPM_AZURE_EK_HANDLE: ReservedHandle = ReservedHandle::new(TPM20_HT_PERSISTENT, 0x010001);
     const AUTH_VALUE: u64 = 0x7766554433221100;

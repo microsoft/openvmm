@@ -10,9 +10,11 @@ use core::fmt::Debug;
 use core::mem::size_of;
 use open_enum::open_enum;
 use static_assertions::const_assert;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 pub const HV_PAGE_SIZE: u64 = 4096;
 pub const HV_PAGE_SIZE_USIZE: usize = 4096;
@@ -95,7 +97,7 @@ pub struct HvPartitionPrivilege {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
     pub enum HvPartitionIsolationType: u8 {
         NONE = 0,
         VBS = 1,
@@ -244,7 +246,7 @@ pub struct HvIsolationConfiguration {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
     pub enum HypercallCode: u16 {
         #![allow(non_upper_case_globals)]
 
@@ -343,7 +345,7 @@ pub const HV_X64_MSR_GUEST_CRASH_CTL: u32 = 0x40000105;
 pub const HV_X64_GUEST_CRASH_PARAMETER_MSRS: usize = 5;
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
     pub enum HvError: u16 {
         #![allow(non_upper_case_globals)]
 
@@ -538,7 +540,7 @@ pub struct GuestCrashCtl {
 }
 
 #[repr(C, align(16))]
-#[derive(Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct AlignedU128([u8; 16]);
 
 impl AlignedU128 {
@@ -594,7 +596,7 @@ impl From<AlignedU128> for u128 {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
     pub enum HvMessageType: u32 {
         #![allow(non_upper_case_globals)]
 
@@ -650,7 +652,7 @@ pub const NUM_SINTS: usize = 16;
 pub const NUM_TIMERS: usize = 4;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMessageHeader {
     pub typ: HvMessageType,
     pub len: u8,
@@ -660,7 +662,7 @@ pub struct HvMessageHeader {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMessageFlags {
     pub message_pending: bool,
     #[bits(7)]
@@ -672,7 +674,7 @@ const_assert!(HV_MESSAGE_SIZE == 256);
 pub const HV_MESSAGE_PAYLOAD_SIZE: usize = 240;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMessage {
     pub header: HvMessageHeader,
     pub payload_buffer: [u8; HV_MESSAGE_PAYLOAD_SIZE],
@@ -681,7 +683,7 @@ pub struct HvMessage {
 impl Default for HvMessage {
     fn default() -> Self {
         Self {
-            header: FromZeroes::new_zeroed(),
+            header: FromZeros::new_zeroed(),
             payload_buffer: [0; 240],
         }
     }
@@ -711,7 +713,7 @@ impl HvMessage {
 
     pub fn from_bytes(b: [u8; HV_MESSAGE_SIZE]) -> Self {
         let mut msg = Self::default();
-        msg.as_bytes_mut().copy_from_slice(&b);
+        msg.as_mut_bytes().copy_from_slice(&b);
         msg
     }
 
@@ -723,7 +725,7 @@ impl HvMessage {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TimerMessagePayload {
     pub timer_index: u32,
     pub reserved: u32,
@@ -766,7 +768,7 @@ pub mod hypercall {
 
     /// The hypercall output value returned to the guest.
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     #[must_use]
     pub struct HypercallOutput {
         /// The HV_STATUS returned by the hypervisor.
@@ -798,7 +800,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvRegisterAssoc {
         pub name: HvRegisterName,
         pub pad: [u32; 3],
@@ -828,7 +830,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct MsrHypercallContents {
         pub enable: bool,
         pub locked: bool,
@@ -839,7 +841,7 @@ pub mod hypercall {
     }
 
     #[repr(C, align(8))]
-    #[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PostMessage {
         pub connection_id: u32,
         pub padding: u32,
@@ -849,7 +851,7 @@ pub mod hypercall {
     }
 
     #[repr(C, align(8))]
-    #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct SignalEvent {
         pub connection_id: u32,
         pub flag_number: u16,
@@ -857,7 +859,7 @@ pub mod hypercall {
     }
 
     #[repr(C, packed)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PostMessageDirect {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -869,7 +871,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct SignalEventDirect {
         pub target_partition: u64,
         pub target_vp: u32,
@@ -879,14 +881,14 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct SignalEventDirectOutput {
         pub newly_signaled: u8,
         pub rsvd: [u8; 7],
     }
 
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct InterruptEntry {
         pub source: HvInterruptSource,
         pub rsvd: u32,
@@ -894,7 +896,7 @@ pub mod hypercall {
     }
 
     open_enum! {
-        #[derive(AsBytes, FromBytes, FromZeroes)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
         pub enum HvInterruptSource: u32 {
             MSI = 1,
             IO_APIC = 2,
@@ -902,7 +904,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct InterruptTarget {
         pub vector: u32,
         pub flags: HvInterruptTargetFlags,
@@ -910,7 +912,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u32)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvInterruptTargetFlags {
         pub multicast: bool,
         pub processor_set: bool,
@@ -925,7 +927,7 @@ pub mod hypercall {
     pub const HV_GENERIC_SET_ALL: u64 = 1;
 
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct RetargetDeviceInterrupt {
         pub partition_id: u64,
         pub device_id: u64,
@@ -935,7 +937,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u8)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvInputVtl {
         #[bits(4)]
         pub target_vtl_value: u8,
@@ -975,7 +977,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct GetSetVpRegisters {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -1060,7 +1062,7 @@ pub mod hypercall {
     pub const HV_INTERCEPT_ACCESS_MASK_EXECUTE: u32 = 0x04;
 
     open_enum::open_enum! {
-        #[derive(AsBytes, FromBytes, FromZeroes)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
         pub enum HvInterceptType: u32 {
             #![allow(non_upper_case_globals)]
             HvInterceptTypeX64IoPort = 0x00000000,
@@ -1076,7 +1078,7 @@ pub mod hypercall {
     }
 
     #[repr(transparent)]
-    #[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes, Debug)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
     pub struct HvInterceptParameters(u64);
 
     impl HvInterceptParameters {
@@ -1114,7 +1116,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes, Debug)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
     pub struct InstallIntercept {
         pub partition_id: u64,
         pub access_type_mask: u32,
@@ -1123,7 +1125,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes, Debug)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
     pub struct AssertVirtualInterrupt {
         pub partition_id: u64,
         pub interrupt_control: HvInterruptControl,
@@ -1135,7 +1137,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct StartVirtualProcessorX64 {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -1146,7 +1148,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct InitialVpContextX64 {
         pub rip: u64,
         pub rsp: u64,
@@ -1169,7 +1171,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct StartVirtualProcessorArm64 {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -1180,7 +1182,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct InitialVpContextArm64 {
         pub pc: u64,
         pub sp_elh: u64,
@@ -1228,7 +1230,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateGvaControlFlagsX64 {
         /// Request data read access
         pub validate_read: bool,
@@ -1277,7 +1279,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateGvaControlFlagsArm64 {
         /// Request data read access
         pub validate_read: bool,
@@ -1322,7 +1324,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateVirtualAddressX64 {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -1333,7 +1335,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateVirtualAddressArm64 {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -1368,7 +1370,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateGvaResult {
         pub result_code: u32,
         pub cache_type: u8,
@@ -1378,14 +1380,14 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateVirtualAddressOutput {
         pub translation_result: TranslateGvaResult,
         pub gpa_page: u64,
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateGvaResultExX64 {
         pub result: TranslateGvaResult,
         pub reserved: u64,
@@ -1395,7 +1397,7 @@ pub mod hypercall {
     const_assert!(size_of::<TranslateGvaResultExX64>() == 0x30);
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateGvaResultExArm64 {
         pub result: TranslateGvaResult,
     }
@@ -1403,7 +1405,7 @@ pub mod hypercall {
     const_assert!(size_of::<TranslateGvaResultExArm64>() == 0x8);
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateVirtualAddressExOutputX64 {
         pub translation_result: TranslateGvaResultExX64,
         pub gpa_page: u64,
@@ -1414,7 +1416,7 @@ pub mod hypercall {
     const_assert!(size_of::<TranslateVirtualAddressExOutputX64>() == 0x40);
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateVirtualAddressExOutputArm64 {
         pub translation_result: TranslateGvaResultExArm64,
         pub gpa_page: u64,
@@ -1423,7 +1425,7 @@ pub mod hypercall {
     const_assert!(size_of::<TranslateVirtualAddressExOutputArm64>() == 0x10);
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct GetVpIndexFromApicId {
         pub partition_id: u64,
         pub target_vtl: u8,
@@ -1431,7 +1433,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct EnableVpVtlX64 {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -1441,7 +1443,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct EnableVpVtlArm64 {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -1451,7 +1453,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ModifyVtlProtectionMask {
         pub partition_id: u64,
         pub map_flags: HvMapGpaFlags,
@@ -1460,7 +1462,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct CheckSparseGpaPageVtlAccess {
         pub partition_id: u64,
         pub target_vtl: HvInputVtl,
@@ -1471,7 +1473,7 @@ pub mod hypercall {
     const_assert!(size_of::<CheckSparseGpaPageVtlAccess>() == 0x10);
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct CheckSparseGpaPageVtlAccessOutput {
         pub result_code: u8,
         pub denied_access: u8,
@@ -1494,7 +1496,7 @@ pub mod hypercall {
     pub const HV_VTL_PERMISSION_SET_SIZE: usize = 2;
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct VtlPermissionSet {
         /// VTL permissions for the GPA page, starting from VTL 1.
         pub vtl_permission_from_1: [u16; HV_VTL_PERMISSION_SET_SIZE],
@@ -1514,7 +1516,7 @@ pub mod hypercall {
         /// read access and upper bit representing host write access, hardware
         /// platforms do not support that form of isolation. Only support
         /// private or full shared in this definition.
-        #[derive(AsBytes, FromBytes, FromZeroes)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
         pub enum HostVisibilityType: u8 {
             PRIVATE = 0,
             SHARED = 3,
@@ -1534,7 +1536,7 @@ pub mod hypercall {
 
     /// Attributes for accepting pages. See [`AcceptGpaPages`]
     #[bitfield(u32)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct AcceptPagesAttributes {
         #[bits(6)]
         /// Supplies the expected memory type [`AcceptMemoryType`].
@@ -1550,7 +1552,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct AcceptGpaPages {
         /// Supplies the partition ID of the partition this request is for.
         pub partition_id: u64,
@@ -1587,7 +1589,7 @@ pub mod hypercall {
     const_assert!(size_of::<UnacceptGpaPages>() == 0x18);
 
     #[bitfield(u32)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ModifyHostVisibility {
         #[bits(2)]
         pub host_visibility: HostVisibilityType,
@@ -1596,7 +1598,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ModifySparsePageVisibility {
         pub partition_id: u64,
         pub host_visibility: ModifyHostVisibility,
@@ -1604,13 +1606,13 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct QuerySparsePageVisibility {
         pub partition_id: u64,
     }
 
     #[bitfield(u8)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct EnablePartitionVtlFlags {
         pub enable_mbec: bool,
         pub enable_supervisor_shadow_stack: bool,
@@ -1620,7 +1622,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct EnablePartitionVtl {
         pub partition_id: u64,
         pub target_vtl: u8,
@@ -1630,7 +1632,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct FlushVirtualAddressSpace {
         pub address_space: u64,
         pub flags: HvFlushFlags,
@@ -1638,7 +1640,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct FlushVirtualAddressSpaceEx {
         pub address_space: u64,
         pub flags: HvFlushFlags,
@@ -1646,13 +1648,13 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PinUnpinGpaPageRangesHeader {
         pub reserved: u64,
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvFlushFlags {
         pub all_processors: bool,
         pub all_virtual_address_spaces: bool,
@@ -1670,7 +1672,7 @@ pub mod hypercall {
         _reserved2: u64,
     }
 
-    #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     #[repr(transparent)]
     pub struct HvGvaRange(pub u64);
 
@@ -1689,7 +1691,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvGvaRangeSimple {
         /// The number of pages beyond one.
         #[bits(12)]
@@ -1700,7 +1702,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvGvaRangeExtended {
         /// The number of pages beyond one.
         #[bits(11)]
@@ -1713,7 +1715,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvGvaRangeExtendedLargePage {
         /// The number of pages beyond one.
         #[bits(11)]
@@ -1731,7 +1733,7 @@ pub mod hypercall {
         pub gva_large_page_number: u64,
     }
 
-    #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     #[repr(transparent)]
     pub struct HvGpaRange(pub u64);
 
@@ -1750,7 +1752,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvGpaRangeSimple {
         /// The number of pages beyond one.
         #[bits(12)]
@@ -1761,7 +1763,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvGpaRangeExtended {
         /// The number of pages beyond one.
         #[bits(11)]
@@ -1774,7 +1776,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvGpaRangeExtendedLargePage {
         /// The number of pages beyond one.
         #[bits(11)]
@@ -1795,7 +1797,7 @@ pub mod hypercall {
     pub const HV_HYPERCALL_MMIO_MAX_DATA_LENGTH: usize = 64;
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct MemoryMappedIoRead {
         pub gpa: u64,
         pub access_width: u32,
@@ -1803,13 +1805,13 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct MemoryMappedIoReadOutput {
         pub data: [u8; HV_HYPERCALL_MMIO_MAX_DATA_LENGTH],
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct MemoryMappedIoWrite {
         pub gpa: u64,
         pub access_width: u32,
@@ -1827,7 +1829,7 @@ macro_rules! registers {
         $(,)?
     }) => {
         open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
             pub enum $name: u32 {
         #![allow(non_upper_case_globals)]
                 $($variant = $value,)*
@@ -1942,7 +1944,7 @@ macro_rules! registers {
 /// This exists only to pass registers through layers where the architecture
 /// type has been lost. In general, you should use the arch-specific registers.
 #[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvRegisterName(pub u32);
 
 registers! {
@@ -2216,7 +2218,7 @@ registers! {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvRegisterValue(pub AlignedU128);
 
 impl HvRegisterValue {
@@ -2241,11 +2243,15 @@ impl HvRegisterValue {
     }
 
     pub fn as_table(&self) -> HvX64TableRegister {
-        HvX64TableRegister::read_from_prefix(self.as_bytes()).unwrap()
+        HvX64TableRegister::read_from_prefix(self.as_bytes())
+            .unwrap()
+            .0 // todo: zerocopy: use-rest-of-range
     }
 
     pub fn as_segment(&self) -> HvX64SegmentRegister {
-        HvX64SegmentRegister::read_from_prefix(self.as_bytes()).unwrap()
+        HvX64SegmentRegister::read_from_prefix(self.as_bytes())
+            .unwrap()
+            .0 // todo: zerocopy: use-rest-of-range
     }
 }
 
@@ -2280,7 +2286,7 @@ impl From<u128> for HvRegisterValue {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64TableRegister {
     pub pad: [u16; 3],
     pub limit: u16,
@@ -2289,18 +2295,18 @@ pub struct HvX64TableRegister {
 
 impl From<HvX64TableRegister> for HvRegisterValue {
     fn from(val: HvX64TableRegister) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap()
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // todo: zerocopy: use-rest-of-range
     }
 }
 
 impl From<HvRegisterValue> for HvX64TableRegister {
     fn from(val: HvRegisterValue) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap()
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // todo: zerocopy: use-rest-of-range
     }
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64SegmentRegister {
     pub base: u64,
     pub limit: u32,
@@ -2310,18 +2316,18 @@ pub struct HvX64SegmentRegister {
 
 impl From<HvX64SegmentRegister> for HvRegisterValue {
     fn from(val: HvX64SegmentRegister) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap()
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // todo: zerocopy: use-rest-of-range
     }
 }
 
 impl From<HvRegisterValue> for HvX64SegmentRegister {
     fn from(val: HvRegisterValue) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap()
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // todo: zerocopy: use-rest-of-range
     }
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
 pub struct HvDeliverabilityNotificationsRegister {
     /// x86_64 only.
     pub nmi_notification: bool,
@@ -2337,7 +2343,7 @@ pub struct HvDeliverabilityNotificationsRegister {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
     pub enum HvVtlEntryReason: u32 {
         /// This reason is reserved and is not used.
         RESERVED = 0,
@@ -2354,7 +2360,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvVpVtlControl {
     //
     // The hypervisor updates the entry reason with an indication as to why the
@@ -2375,7 +2381,7 @@ pub struct HvVpVtlControl {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvRegisterVsmVina {
     pub vector: u8,
     pub enabled: bool,
@@ -2386,7 +2392,7 @@ pub struct HvRegisterVsmVina {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvVpAssistPage {
     /// APIC assist for optimized EOI processing.
     pub apic_assist: u32,
@@ -2408,7 +2414,7 @@ pub struct HvVpAssistPage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvVpAssistPageActionSignalEvent {
     pub action_type: u64,
     pub target_vp: u32,
@@ -2418,7 +2424,7 @@ pub struct HvVpAssistPageActionSignalEvent {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
     pub enum HvInterceptAccessType: u8 {
         READ = 0,
         WRITE = 1,
@@ -2427,7 +2433,7 @@ open_enum! {
 }
 
 #[bitfield(u16)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64VpExecutionState {
     #[bits(2)]
     pub cpl: u8,
@@ -2446,7 +2452,7 @@ pub struct HvX64VpExecutionState {
 }
 
 #[bitfield(u16)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvArm64VpExecutionState {
     #[bits(2)]
     pub cpl: u8,
@@ -2460,7 +2466,7 @@ pub struct HvArm64VpExecutionState {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64InterceptMessageHeader {
     pub vp_index: u32,
     pub instruction_length_and_cr8: u8,
@@ -2482,7 +2488,7 @@ impl HvX64InterceptMessageHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvArm64InterceptMessageHeader {
     pub vp_index: u32,
     pub instruction_length: u8,
@@ -2494,7 +2500,7 @@ pub struct HvArm64InterceptMessageHeader {
 const_assert!(size_of::<HvArm64InterceptMessageHeader>() == 0x18);
 
 #[repr(transparent)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64IoPortAccessInfo(pub u8);
 
 impl HvX64IoPortAccessInfo {
@@ -2526,7 +2532,7 @@ impl HvX64IoPortAccessInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64IoPortInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub port_number: u16,
@@ -2543,7 +2549,7 @@ pub struct HvX64IoPortInterceptMessage {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64MemoryAccessInfo {
     pub gva_valid: bool,
     pub gva_gpa_valid: bool,
@@ -2555,7 +2561,7 @@ pub struct HvX64MemoryAccessInfo {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvArm64MemoryAccessInfo {
     pub gva_valid: bool,
     pub gva_gpa_valid: bool,
@@ -2565,7 +2571,7 @@ pub struct HvArm64MemoryAccessInfo {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
     pub enum HvCacheType: u32 {
         #![allow(non_upper_case_globals)]
         HvCacheTypeUncached = 0,
@@ -2577,7 +2583,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64MemoryInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub cache_type: HvCacheType,
@@ -2592,7 +2598,7 @@ pub struct HvX64MemoryInterceptMessage {
 const_assert!(size_of::<HvX64MemoryInterceptMessage>() == 0x50);
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvArm64MemoryInterceptMessage {
     pub header: HvArm64InterceptMessageHeader,
     pub cache_type: HvCacheType,
@@ -2608,7 +2614,7 @@ pub struct HvArm64MemoryInterceptMessage {
 const_assert!(size_of::<HvArm64MemoryInterceptMessage>() == 0x40);
 
 #[repr(C)]
-#[derive(Debug, FromBytes, FromZeroes)]
+#[derive(Debug, FromBytes)]
 pub struct HvArm64MmioInterceptMessage {
     pub header: HvArm64InterceptMessageHeader,
     pub guest_physical_address: u64,
@@ -2618,7 +2624,7 @@ pub struct HvArm64MmioInterceptMessage {
 const_assert!(size_of::<HvArm64MmioInterceptMessage>() == 0x48);
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64MsrInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub msr_number: u32,
@@ -2628,7 +2634,7 @@ pub struct HvX64MsrInterceptMessage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64SipiInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub target_vp_index: u32,
@@ -2636,7 +2642,7 @@ pub struct HvX64SipiInterceptMessage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64SynicSintDeliverableMessage {
     pub header: HvX64InterceptMessageHeader,
     pub deliverable_sints: u16,
@@ -2645,7 +2651,7 @@ pub struct HvX64SynicSintDeliverableMessage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvArm64SynicSintDeliverableMessage {
     pub header: HvArm64InterceptMessageHeader,
     pub deliverable_sints: u16,
@@ -2654,7 +2660,7 @@ pub struct HvArm64SynicSintDeliverableMessage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64InterruptionDeliverableMessage {
     pub header: HvX64InterceptMessageHeader,
     pub deliverable_type: HvX64PendingInterruptionType,
@@ -2663,7 +2669,7 @@ pub struct HvX64InterruptionDeliverableMessage {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
     pub enum HvX64PendingInterruptionType: u8 {
         HV_X64_PENDING_INTERRUPT = 0,
         HV_X64_PENDING_NMI = 2,
@@ -2675,7 +2681,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64HypercallInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub rax: u64,
@@ -2691,7 +2697,7 @@ pub struct HvX64HypercallInterceptMessage {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvArm64HypercallInterceptMessage {
     pub header: HvArm64InterceptMessageHeader,
     pub immediate: u16,
@@ -2701,7 +2707,7 @@ pub struct HvArm64HypercallInterceptMessage {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvHypercallInterceptMessageFlags {
     pub is_isolated: bool,
     #[bits(31)]
@@ -2709,7 +2715,7 @@ pub struct HvHypercallInterceptMessageFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64CpuidInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub rax: u64,
@@ -2723,7 +2729,7 @@ pub struct HvX64CpuidInterceptMessage {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64ExceptionInfo {
     pub error_code_valid: bool,
     pub software_exception: bool,
@@ -2732,7 +2738,7 @@ pub struct HvX64ExceptionInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64ExceptionInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub vector: u16,
@@ -2763,33 +2769,33 @@ pub struct HvX64ExceptionInterceptMessage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvInvalidVpRegisterMessage {
     pub vp_index: u32,
     pub reserved: u32,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64ApicEoiMessage {
     pub vp_index: u32,
     pub interrupt_vector: u32,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64UnrecoverableExceptionMessage {
     pub header: HvX64InterceptMessageHeader,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64HaltMessage {
     pub header: HvX64InterceptMessageHeader,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvArm64ResetInterceptMessage {
     pub header: HvArm64InterceptMessageHeader,
     pub reset_type: HvArm64ResetType,
@@ -2797,7 +2803,7 @@ pub struct HvArm64ResetInterceptMessage {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
     pub enum HvArm64ResetType: u32 {
         POWER_OFF = 0,
         REBOOT = 1,
@@ -2805,7 +2811,7 @@ open_enum! {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
     pub enum HvInterruptType : u32  {
         #![allow(non_upper_case_globals)]
         HvArm64InterruptTypeFixed = 0x0000,
@@ -2829,7 +2835,7 @@ open_enum! {
 /// checks as adding that will require `guest_arch` support and
 /// a large refactoring. To sum up, choosing expediency.
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvInterruptControl {
     interrupt_type_value: u32,
     pub x86_level_triggered: bool,
@@ -2950,7 +2956,7 @@ pub struct HvRegisterVsmCodePageOffsets {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvStimerState {
     pub undelivered_message_pending: u32,
     pub reserved: u32,
@@ -2961,7 +2967,7 @@ pub struct HvStimerState {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvSyntheticTimersState {
     pub timers: [HvStimerState; 4],
     pub reserved: [u64; 5],
@@ -3064,7 +3070,7 @@ pub struct HvX64PendingVirtualizationFaultEvent {
 
 /// Part of [`HvX64PendingEventMemoryIntercept`]
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64PendingEventMemoryInterceptPendingEventHeader {
     pub event_pending: bool,
     #[bits(3)]
@@ -3075,7 +3081,7 @@ pub struct HvX64PendingEventMemoryInterceptPendingEventHeader {
 
 /// Part of [`HvX64PendingEventMemoryIntercept`]
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64PendingEventMemoryInterceptAccessFlags {
     /// Indicates if the guest linear address is valid.
     pub guest_linear_address_valid: bool,
@@ -3088,7 +3094,7 @@ pub struct HvX64PendingEventMemoryInterceptAccessFlags {
 
 /// Provides information about a memory intercept.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64PendingEventMemoryIntercept {
     pub event_header: HvX64PendingEventMemoryInterceptPendingEventHeader,
     /// VTL at which the memory intercept is targeted.
@@ -3157,7 +3163,7 @@ pub struct HvX64PendingShadowIptEvent {
 }
 
 #[bitfield(u128)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64PendingEventReg0 {
     pub event_pending: bool,
     #[bits(3)]
@@ -3169,7 +3175,7 @@ pub struct HvX64PendingEventReg0 {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64PendingEvent {
     pub reg_0: HvX64PendingEventReg0,
     pub reg_1: AlignedU128,
@@ -3186,7 +3192,7 @@ impl From<HvX64PendingExceptionEvent> for HvX64PendingEvent {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64PendingInterruptionRegister {
     pub interruption_pending: bool,
     #[bits(3)]
@@ -3202,7 +3208,7 @@ pub struct HvX64PendingInterruptionRegister {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64InterruptStateRegister {
     pub interrupt_shadow: bool,
     pub nmi_masked: bool,
@@ -3211,7 +3217,7 @@ pub struct HvX64InterruptStateRegister {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvInstructionEmulatorHintsRegister {
     /// Indicates whether any secure VTL is enabled for the partition.
     pub partition_secure_vtl_enabled: bool,
@@ -3223,7 +3229,7 @@ pub struct HvInstructionEmulatorHintsRegister {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
     pub enum HvAarch64PendingEventType: u8 {
         EXCEPTION = 0,
         SYNTHETIC_EXCEPTION = 1,
@@ -3243,7 +3249,7 @@ impl HvAarch64PendingEventType {
 }
 
 #[bitfield[u8]]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvAarch64PendingEventHeader {
     #[bits(1)]
     pub event_pending: bool,
@@ -3254,7 +3260,7 @@ pub struct HvAarch64PendingEventHeader {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvAarch64PendingExceptionEvent {
     pub header: HvAarch64PendingEventHeader,
     pub _padding: [u8; 7],
@@ -3263,7 +3269,7 @@ pub struct HvAarch64PendingExceptionEvent {
 }
 
 #[bitfield[u8]]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvAarch64PendingHypercallOutputEventFlags {
     #[bits(1)]
     pub retired: u8,
@@ -3272,7 +3278,7 @@ pub struct HvAarch64PendingHypercallOutputEventFlags {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvAarch64PendingHypercallOutputEvent {
     pub header: HvAarch64PendingEventHeader,
     pub flags: HvAarch64PendingHypercallOutputEventFlags,
@@ -3282,7 +3288,7 @@ pub struct HvAarch64PendingHypercallOutputEvent {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvAarch64PendingEvent {
     pub header: HvAarch64PendingEventHeader,
     pub event_data: [u8; 15],
@@ -3290,7 +3296,7 @@ pub struct HvAarch64PendingEvent {
 }
 
 #[bitfield(u32)]
-#[derive(PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMapGpaFlags {
     pub readable: bool,
     pub writable: bool,
@@ -3315,7 +3321,7 @@ pub const HV_MAP_GPA_PERMISSIONS_ALL: HvMapGpaFlags = HvMapGpaFlags::new()
     .with_user_executable(true);
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMonitorPage {
     pub trigger_state: HvMonitorTriggerState,
     pub reserved1: u32,
@@ -3329,7 +3335,7 @@ pub struct HvMonitorPage {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMonitorPageSmall {
     pub trigger_state: HvMonitorTriggerState,
     pub reserved1: u32,
@@ -3337,14 +3343,14 @@ pub struct HvMonitorPageSmall {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMonitorTriggerGroup {
     pub pending: u32,
     pub armed: u32,
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMonitorParameter {
     pub connection_id: u32,
     pub flag_number: u16,
@@ -3352,7 +3358,7 @@ pub struct HvMonitorParameter {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMonitorTriggerState {
     #[bits(4)]
     pub group_enable: u32,
@@ -3361,7 +3367,7 @@ pub struct HvMonitorTriggerState {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvPmTimerInfo {
     #[bits(16)]
     pub port: u16,
@@ -3376,7 +3382,7 @@ pub struct HvPmTimerInfo {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64RegisterSevControl {
     pub enable_encrypted_state: bool,
     #[bits(11)]
@@ -3386,7 +3392,7 @@ pub struct HvX64RegisterSevControl {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvRegisterReferenceTsc {
     pub enable: bool,
     #[bits(11)]
@@ -3396,7 +3402,7 @@ pub struct HvRegisterReferenceTsc {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvReferenceTscPage {
     pub tsc_sequence: u32,
     pub reserved1: u32,
@@ -3410,7 +3416,7 @@ pub struct HvReferenceTscPage {
 pub const HV_REFERENCE_TSC_SEQUENCE_INVALID: u32 = 0;
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64VmgexitInterceptMessageFlags {
     pub ghcb_page_valid: bool,
     pub ghcb_request_error: bool,
@@ -3419,7 +3425,7 @@ pub struct HvX64VmgexitInterceptMessageFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64VmgexitInterceptMessageGhcbPageStandard {
     pub ghcb_protocol_version: u16,
     _reserved: [u16; 3],
@@ -3430,7 +3436,7 @@ pub struct HvX64VmgexitInterceptMessageGhcbPageStandard {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64VmgexitInterceptMessageGhcbPage {
     pub ghcb_usage: u32,
     _reserved: u32,
@@ -3438,7 +3444,7 @@ pub struct HvX64VmgexitInterceptMessageGhcbPage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64VmgexitInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub ghcb_msr: u64,
@@ -3462,7 +3468,7 @@ pub const HV_X64_REGISTER_CLASS_SEGMENT: u8 = 3;
 pub const HV_X64_REGISTER_CLASS_FLAGS: u8 = 4;
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64RegisterPage {
     pub version: u16,
     pub is_valid: u8,

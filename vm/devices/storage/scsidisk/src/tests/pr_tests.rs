@@ -22,8 +22,8 @@ use scsi::SenseKey;
 use scsi_buffers::OwnedRequestBuffers;
 use scsi_core::Request;
 use scsi_core::ScsiResult;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 const EXPECT_PARAMETER_LIST_LENGTH: usize = size_of::<scsi::ProParameterList>();
 
@@ -239,7 +239,7 @@ fn make_read_reservations_response(
         des = scsi::PriReservationDescriptor {
             type_scope: scsi::PersistentReserveTypeScope::new().with_reserve_type(ty),
             reservation_key: key.into(),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
         temp_data.extend(des.as_bytes());
     }
@@ -288,7 +288,7 @@ fn make_read_full_status_response(
             },
             relative_target_port_identifier: 0_u16.into(),
             additional_descriptor_length: 8_u32.into(),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
         temp_data.extend(header.as_bytes());
         temp_data.extend(0_u64.as_bytes());

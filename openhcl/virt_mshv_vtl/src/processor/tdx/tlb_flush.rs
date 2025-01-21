@@ -14,7 +14,7 @@ use std::collections::VecDeque;
 use std::num::Wrapping;
 use x86defs::tdx::TdGlaVmAndFlags;
 use x86defs::tdx::TdxGlaListInfo;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 pub(super) const FLUSH_GVA_LIST_SIZE: usize = 32;
 

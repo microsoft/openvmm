@@ -9,7 +9,7 @@ use super::*;
 use x86defs::snp::HvPspCpuidLeaf;
 use x86defs::snp::HvPspCpuidPage;
 use x86defs::snp::HV_PSP_CPUID_LEAF_COUNT_MAX;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 /// Tests that xfem results put into page 0 are ignored
 #[test]

@@ -194,8 +194,8 @@ pub mod impl_agnostic_tests {
     use guid::Guid;
     use ucs2::Ucs2LeSlice;
     use wchar::wchz;
-    use zerocopy::AsBytes;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
 
     pub async fn test_single_variable(nvram: &mut dyn NvramStorage) {
         let vendor = Guid::new_random();

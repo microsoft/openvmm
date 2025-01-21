@@ -12,7 +12,7 @@ use fuse::*;
 use std::fs;
 use std::os::linux::fs::MetadataExt;
 use std::path::Path;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 // Implements a file system similar to libfuse's hello_ll sample.
 // This test is excluded from CI because it requires root.

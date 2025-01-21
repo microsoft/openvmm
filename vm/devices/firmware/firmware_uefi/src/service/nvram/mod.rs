@@ -27,7 +27,7 @@ use thiserror::Error;
 use uefi_nvram_storage::InspectableNvramStorage;
 use uefi_specs::uefi::common::EfiStatus;
 use uefi_specs::uefi::nvram::EfiVariableAttributes;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 #[cfg(feature = "fuzzing")]
 pub mod spec_services;
@@ -579,7 +579,7 @@ impl UefiDevice {
 
                 let mut data = vec![0u16; command.len as usize / 2];
                 self.gm
-                    .read_at(command.address.into(), data.as_bytes_mut())?;
+                    .read_at(command.address.into(), data.as_mut_bytes())?;
 
                 tracing::trace!(
                     target: "uefi-nvram-guest-debug",

@@ -27,7 +27,7 @@ use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 #[async_test]
 async fn test_nvme_driver_direct_dma(driver: DefaultDriver) {
@@ -292,7 +292,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     // Enable the controller for keep-alive test.
     let mut dword = 0u32;
     // Read Register::CC.
-    new_nvme_ctrl.read_bar0(0x14, dword.as_bytes_mut()).unwrap();
+    new_nvme_ctrl.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
     // Set CC.EN.
     dword |= 1;
     new_nvme_ctrl.write_bar0(0x14, dword.as_bytes()).unwrap();

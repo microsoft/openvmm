@@ -30,7 +30,6 @@ walkdir.workspace = true
 which.workspace = true
 xshell.workspace = true
 zerocopy.workspace = true
-
 ci_logger.workspace = true
 clap_dyn_complete.workspace = true
 guid.workspace = true

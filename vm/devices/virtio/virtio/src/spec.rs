@@ -50,12 +50,13 @@ pub mod queue {
     use super::u64_le;
     use bitfield_struct::bitfield;
 
-    use zerocopy::AsBytes;
     use zerocopy::FromBytes;
-    use zerocopy::FromZeroes;
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct Descriptor {
         pub address: u64_le,
         pub length: u32_le,
@@ -70,7 +71,7 @@ pub mod queue {
     }
 
     #[bitfield(u16)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct DescriptorFlags {
         pub next: bool,
         pub write: bool,
@@ -113,7 +114,7 @@ pub mod queue {
     pub const USED_ELEMENT_SIZE: u64 = size_of::<UsedElement>() as u64;
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct UsedElement {
         pub id: u32_le,
         pub len: u32_le,

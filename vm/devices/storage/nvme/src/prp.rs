@@ -12,7 +12,7 @@ use crate::PAGE_SIZE;
 use crate::PAGE_SIZE64;
 use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 const PRP_PER_PAGE: usize = PAGE_SIZE / 8;
 
@@ -42,7 +42,7 @@ impl PrpRange {
             let mut next_prp_list = prp[1];
             loop {
                 let n = pfns.len().min(PRP_PER_PAGE);
-                mem.read_at(next_prp_list, pfns[..n].as_bytes_mut())
+                mem.read_at(next_prp_list, pfns[..n].as_mut_bytes())
                     .map_err(|err| NvmeError::new(spec::Status::DATA_TRANSFER_ERROR, err))?;
                 if n == pfns.len() {
                     break;

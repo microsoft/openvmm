@@ -47,8 +47,10 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::task::Waker;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 mod ioctl {
     const BASE: u8 = 0xb8;
@@ -299,7 +301,7 @@ async fn sidecar_wait_loop(
     let err = loop {
         poll_fn(|cx| fd_ready.poll_fd_ready(cx, InterestSlot::Read, PollEvents::IN)).await;
         let mut cpu = 0u32;
-        let n = match (&state.file).read(cpu.as_bytes_mut()) {
+        let n = match (&state.file).read(cpu.as_mut_bytes()) {
             Ok(n) => n,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 fd_ready.clear_fd_ready(InterestSlot::Read);
@@ -504,7 +506,10 @@ impl<'a> SidecarVp<'a> {
         Ok(output)
     }
 
-    fn set_command<T: AsBytes, S: AsBytes + FromBytes>(
+    fn set_command<
+        T: IntoBytes + Immutable + KnownLayout,
+        S: IntoBytes + FromBytes + Immutable + KnownLayout,
+    >(
         &mut self,
         command: SidecarCommand,
         input: T,
@@ -515,20 +520,20 @@ impl<'a> SidecarVp<'a> {
         let shmem = unsafe { self.shmem.as_mut() };
         shmem.command_page.command = command;
         input
-            .write_to_prefix(shmem.command_page.request_data.as_bytes_mut())
+            .write_to_prefix(shmem.command_page.request_data.as_mut_bytes())
             .unwrap();
-        S::mut_slice_from_prefix(
-            &mut shmem.command_page.request_data.as_bytes_mut()[input.as_bytes().len()..],
+        <[S]>::mut_from_prefix_with_elems(
+            &mut shmem.command_page.request_data.as_mut_bytes()[input.as_bytes().len()..],
             n,
         )
         .unwrap()
         .0
     }
 
-    fn dispatch_sync<O: FromBytes>(
+    fn dispatch_sync<O: FromBytes + Immutable + KnownLayout>(
         &mut self,
         command: SidecarCommand,
-        input: impl AsBytes,
+        input: impl IntoBytes + Immutable + KnownLayout,
     ) -> Result<&O, SidecarError> {
         self.set_command::<_, u8>(command, input, 0);
         self.run_sync()?;
@@ -586,7 +591,10 @@ impl<'a> SidecarVp<'a> {
         .await
     }
 
-    fn command_result<O: FromBytes, S: FromBytes>(
+    fn command_result<
+        O: FromBytes + Immutable + KnownLayout,
+        S: FromBytes + Immutable + KnownLayout,
+    >(
         &mut self,
         n: usize,
     ) -> Result<(&O, &[S]), SidecarError> {
@@ -604,8 +612,8 @@ impl<'a> SidecarVp<'a> {
             .request_data
             .as_bytes()
             .split_at(size_of::<O>());
-        let output = O::ref_from(output).unwrap();
-        let (slice, _) = S::slice_from_prefix(slice, n).unwrap();
+        let output = O::ref_from_bytes(output).unwrap();
+        let (slice, _) = <[S]>::ref_from_prefix_with_elems(slice, n).unwrap();
         Ok((output, slice))
     }
 }

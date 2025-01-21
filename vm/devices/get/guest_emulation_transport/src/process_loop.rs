@@ -41,10 +41,11 @@ use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
 use vmbus_ring::RingMem;
 use vpci::bus_control::VpciBusEvent;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
-use zerocopy_helpers::FromBytesExt;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Error type for GET errors
 #[derive(Debug, Error)]
@@ -118,10 +119,12 @@ fn validate_response(header: get_protocol::HeaderHostResponse) -> Result<(), Fat
 }
 
 /// Parse the HostResponse message sent from the host in `buf`.
-fn read_host_response_validated<T: FromBytes>(buf: &[u8]) -> Result<T, FatalError> {
-    let response = T::read_from(buf).ok_or_else(|| FatalError::MessageSizeHostResponse {
+fn read_host_response_validated<T: FromBytes + Immutable + KnownLayout>(
+    buf: &[u8],
+) -> Result<T, FatalError> {
+    let response = T::read_from_bytes(buf).map_err(|_| FatalError::MessageSizeHostResponse {
         len: buf.len(),
-        response: get_protocol::HeaderHostResponse::read_from(buf)
+        response: get_protocol::HeaderHostResponse::read_from_bytes(buf)
             .unwrap()
             .message_id,
     })?;
@@ -130,11 +133,11 @@ fn read_host_response_validated<T: FromBytes>(buf: &[u8]) -> Result<T, FatalErro
 }
 
 /// Parse the GuestNotification message sent from the host in `buf`.
-fn read_guest_notification<T: FromBytes>(
+fn read_guest_notification<T: FromBytes + Immutable + KnownLayout>(
     notification: get_protocol::GuestNotifications,
     buf: &[u8],
 ) -> Result<T, FatalError> {
-    T::read_from(buf).ok_or(FatalError::MessageSizeGuestNotification {
+    T::read_from_bytes(buf).map_err(|_| FatalError::MessageSizeGuestNotification {
         len: buf.len(),
         notification,
     })
@@ -602,13 +605,14 @@ impl HostRequestPipeAccess {
     /// Waits for a known, fixed-size response message from the host.
     ///
     /// The caller is responsible for validating the message ID.
-    async fn recv_response_fixed_size<T: AsBytes + FromBytes>(
+    async fn recv_response_fixed_size<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
         &mut self,
         id: HostRequests,
     ) -> Result<T, FatalError> {
         let response = self.recv_response().await;
-        let header =
-            get_protocol::HeaderHostRequest::read_from_prefix(response.as_bytes()).unwrap();
+        let header = get_protocol::HeaderHostRequest::read_from_prefix(response.as_bytes())
+            .unwrap()
+            .0; // todo: zerocopy: use-rest-of-range
         if id != header.message_id {
             return Err(FatalError::ResponseHeaderMismatchId(header.message_id, id));
         }
@@ -619,13 +623,17 @@ impl HostRequestPipeAccess {
     ///
     /// Fails if the response's message ID does not match the request's message
     /// ID.
-    async fn send_request_fixed_size<T: AsBytes + ?Sized, U: AsBytes + FromBytes>(
+    async fn send_request_fixed_size<
+        T: IntoBytes + ?Sized + Immutable + KnownLayout,
+        U: IntoBytes + FromBytes + Immutable + KnownLayout,
+    >(
         &mut self,
         data: &T,
     ) -> Result<U, FatalError> {
         self.send_message(data.as_bytes().to_vec());
-        let req_header =
-            get_protocol::HeaderHostRequest::read_from_prefix(data.as_bytes()).unwrap();
+        let req_header = get_protocol::HeaderHostRequest::read_from_prefix(data.as_bytes())
+            .unwrap()
+            .0; // todo: zerocopy: use-rest-of-range
         self.recv_response_fixed_size(req_header.message_id).await
     }
 
@@ -637,7 +645,7 @@ impl HostRequestPipeAccess {
     ///
     /// In the future, GED notifications for failures need to be added.
     /// This will require updates to both the host and openHCL.
-    async fn send_failed_save_state<T: AsBytes + ?Sized>(
+    async fn send_failed_save_state<T: IntoBytes + ?Sized + Immutable + KnownLayout>(
         &mut self,
         data: &T,
     ) -> Result<(), FatalError> {
@@ -711,7 +719,7 @@ impl<T: RingMem> ProcessLoop<T> {
 
             // The next message must be the version response.
             let mut response = get_protocol::VersionResponse::new_zeroed();
-            let len = self.read_pipe(response.as_bytes_mut()).await?;
+            let len = self.read_pipe(response.as_mut_bytes()).await?;
 
             validate_response(response.message_header)?;
 
@@ -779,8 +787,9 @@ impl<T: RingMem> ProcessLoop<T> {
                             // way to get these kinds of per-message stats is to
                             // quickly re-parse the header before sending the
                             // message down the wire.
-                            if let Some(header) =
+                            if let Ok((header, _)) =
                                 get_protocol::HeaderRaw::read_from_prefix(outgoing.as_ref())
+                            // todo: zerocopy: use-rest-of-range, zerocopy: err
                             {
                                 match header.message_type {
                                     get_protocol::MessageTypes::HOST_REQUEST => {
@@ -906,7 +915,8 @@ impl<T: RingMem> ProcessLoop<T> {
                     let len = len?;
                     let buf = &buf[..len];
                     let header = get_protocol::HeaderRaw::read_from_prefix(buf)
-                        .ok_or(FatalError::MessageSizeHeader(len))?;
+                        .map_err(|_| FatalError::MessageSizeHeader(len))?
+                        .0; // todo: zerocopy: map_err
 
                     match header.message_type {
                         get_protocol::MessageTypes::HOST_RESPONSE => {
@@ -984,9 +994,9 @@ impl<T: RingMem> ProcessLoop<T> {
         req: Rpc<I, Resp>,
         f: impl 'static + Send + FnOnce(I) -> Req,
     ) where
-        Req: AsBytes + 'static + Send + Sync,
+        Req: IntoBytes + 'static + Send + Sync + Immutable + KnownLayout,
         I: 'static + Send,
-        Resp: 'static + AsBytes + FromBytes + Send,
+        Resp: 'static + IntoBytes + FromBytes + Send + Immutable + KnownLayout,
     {
         self.push_host_request_handler(|mut access| {
             req.handle_must_succeed(move |input| async move {
@@ -1334,12 +1344,12 @@ impl<T: RingMem> ProcessLoop<T> {
 
     fn handle_modify_vtl2_settings_notification(&mut self, buf: &[u8]) -> Result<(), FatalError> {
         let (request, remaining) =
-            get_protocol::ModifyVtl2SettingsNotification::read_from_prefix_split(buf).ok_or(
+            get_protocol::ModifyVtl2SettingsNotification::read_from_prefix(buf).map_err(|_| {
                 FatalError::MessageSizeGuestNotification {
                     len: buf.len(),
                     notification: get_protocol::GuestNotifications::MODIFY_VTL2_SETTINGS,
-                },
-            )?;
+                }
+            })?; // todo: zerocopy: map_
 
         let expected_len = request.size as usize;
         if remaining.len() != expected_len {
@@ -1360,12 +1370,12 @@ impl<T: RingMem> ProcessLoop<T> {
         buf: &[u8],
     ) -> Result<(), FatalError> {
         let (request, remaining) =
-            get_protocol::ModifyVtl2SettingsRev1Notification::read_from_prefix_split(buf).ok_or(
-                FatalError::MessageSizeGuestNotification {
+            get_protocol::ModifyVtl2SettingsRev1Notification::read_from_prefix(buf).map_err(
+                |_| FatalError::MessageSizeGuestNotification {
                     len: buf.len(),
                     notification: get_protocol::GuestNotifications::MODIFY_VTL2_SETTINGS_REV1,
                 },
-            )?;
+            )?; // TODO: zerocopy: map_err
 
         let expected_len = request.size as usize;
         if remaining.len() != expected_len {
@@ -1549,7 +1559,9 @@ async fn request_device_platform_settings_v2(
     let mut result = Vec::new();
     loop {
         let buf = access.recv_response().await;
-        let header = get_protocol::HeaderHostResponse::read_from_prefix(buf.as_slice()).unwrap();
+        let header = get_protocol::HeaderHostResponse::read_from_prefix(buf.as_slice())
+            .unwrap()
+            .0; // todo: zerocopy: use-rest-of-range
 
         // Protocol wart: request is sent as a
         // `HostRequests::DEVICE_PLATFORM_SETTINGS_V2`, but the host will send
@@ -1566,13 +1578,13 @@ async fn request_device_platform_settings_v2(
         match header.message_id {
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2 => {
                 let (response, remaining) =
-                    get_protocol::DevicePlatformSettingsResponseV2::read_from_prefix_split(
+                    get_protocol::DevicePlatformSettingsResponseV2::read_from_prefix(
                         buf.as_slice(),
                     )
-                    .ok_or(FatalError::MessageSizeHostResponse {
+                    .map_err(|_| FatalError::MessageSizeHostResponse {
                         len: buf.len(),
                         response: HostRequests::DEVICE_PLATFORM_SETTINGS_V2,
-                    })?;
+                    })?; // todo: zerocopy: map_err
 
                 if response.size as usize != remaining.len() {
                     return Err(FatalError::DevicePlatformSettingsV2Payload {
@@ -1586,13 +1598,13 @@ async fn request_device_platform_settings_v2(
             }
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2_REV1 => {
                 let (response, remaining) =
-                    get_protocol::DevicePlatformSettingsResponseV2Rev1::read_from_prefix_split(
+                    get_protocol::DevicePlatformSettingsResponseV2Rev1::read_from_prefix(
                         buf.as_slice(),
                     )
-                    .ok_or(FatalError::MessageSizeGuestNotification {
+                    .map_err(|_| FatalError::MessageSizeGuestNotification {
                         len: buf.len(),
                         notification: get_protocol::GuestNotifications::MODIFY_VTL2_SETTINGS_REV1,
-                    })?;
+                    })?; // todo: zerocopy: map_err
 
                 if remaining.len() != (response.size as usize) {
                     return Err(FatalError::DevicePlatformSettingsV2Payload {
@@ -1639,13 +1651,11 @@ async fn request_vmgs_read(
     let buf = access.recv_response().await;
 
     let vmgs_buf_len = (sector_count * sector_size) as usize;
-    let (response, remaining) = get_protocol::VmgsReadResponse::read_from_prefix_split(
-        buf.as_slice(),
-    )
-    .ok_or(FatalError::MessageSizeHostResponse {
-        len: buf.len(),
-        response: HostRequests::VMGS_READ,
-    })?;
+    let (response, remaining) = get_protocol::VmgsReadResponse::read_from_prefix(buf.as_slice())
+        .map_err(|_| FatalError::MessageSizeHostResponse {
+            len: buf.len(),
+            response: HostRequests::VMGS_READ,
+        })?; // todo: zerocopy: map_err
 
     if response.message_header.message_id != HostRequests::VMGS_READ {
         return Err(FatalError::ResponseHeaderMismatchId(
@@ -1771,13 +1781,11 @@ async fn request_saved_state(
         let message_buf = access.recv_response().await;
 
         let (response_header, remaining) =
-            get_protocol::RestoreGuestVtl2StateResponse::read_from_prefix_split(
-                message_buf.as_slice(),
-            )
-            .ok_or(FatalError::MessageSizeHostResponse {
+            get_protocol::RestoreGuestVtl2StateResponse::read_from_prefix(message_buf.as_slice())
+                .map_err(|_| FatalError::MessageSizeHostResponse {
                 len: message_buf.len(),
                 response: HostRequests::RESTORE_GUEST_VTL2_STATE,
-            })?;
+            })?; // todo: zerocopy: map_err
 
         let message_id = response_header.message_header.message_id;
         if message_id != HostRequests::RESTORE_GUEST_VTL2_STATE {
@@ -1853,7 +1861,8 @@ async fn request_igvm_attest(
     let response = access.recv_response().await;
 
     // Validate the response and returns the validated data.
-    let Some(response) = get_protocol::IgvmAttestResponse::read_from_prefix(&response) else {
+    // todo: zerocopy: use error here, use rest of range
+    let Ok((response, _)) = get_protocol::IgvmAttestResponse::read_from_prefix(&response) else {
         Err(FatalError::DeserializeIgvmAttestResponse)?
     };
 

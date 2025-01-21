@@ -20,6 +20,5 @@ pal_async.workspace = true
 futures.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

@@ -22,9 +22,11 @@ use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // Effective page size for page-related operations in this crate.
 pub const PAGE_SIZE: usize = 4096;
@@ -229,7 +231,7 @@ impl AlignedHeapMemory {
     }
 
     /// Returns a mutable slice of bytes.
-    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+    pub fn as_mut_bytes(&mut self) -> &mut [u8] {
         self.as_mut()
     }
 }
@@ -1447,7 +1449,11 @@ impl GuestMemory {
     ///
     /// FUTURE: once we are on Rust 1.79, add a method specifically for atomic
     /// accesses that const asserts that the size is appropriate.
-    pub fn write_plain<T: AsBytes>(&self, gpa: u64, b: &T) -> Result<(), GuestMemoryError> {
+    pub fn write_plain<T: IntoBytes + Immutable + KnownLayout>(
+        &self,
+        gpa: u64,
+        b: &T,
+    ) -> Result<(), GuestMemoryError> {
         // Note that this is const, so the match below will compile out.
         let len = size_of::<T>();
         self.with_op(Some((gpa, len as u64)), GuestMemoryOperation::Write, || {
@@ -1483,7 +1489,7 @@ impl GuestMemory {
     }
 
     /// Attempts a sequentially-consistent compare exchange of the value at `gpa`.
-    pub fn compare_exchange<T: AsBytes + FromBytes + Copy>(
+    pub fn compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownLayout + Copy>(
         &self,
         gpa: u64,
         current: T,
@@ -1509,7 +1515,7 @@ impl GuestMemory {
                         let mut current = current;
                         let success = self.inner.imp.compare_exchange_fallback(
                             gpa,
-                            current.as_bytes_mut(),
+                            current.as_mut_bytes(),
                             new.as_bytes(),
                         )?;
 
@@ -1521,7 +1527,7 @@ impl GuestMemory {
     }
 
     /// Attempts a sequentially-consistent compare exchange of the value at `gpa`.
-    pub fn compare_exchange_bytes<T: AsBytes + FromBytes + ?Sized>(
+    pub fn compare_exchange_bytes<T: IntoBytes + FromBytes + Immutable + KnownLayout + ?Sized>(
         &self,
         gpa: u64,
         current: &mut T,
@@ -1547,7 +1553,7 @@ impl GuestMemory {
                     |current| {
                         let success = self.inner.imp.compare_exchange_fallback(
                             gpa,
-                            current.as_bytes_mut(),
+                            current.as_mut_bytes(),
                             new.as_bytes(),
                         )?;
 
@@ -1569,7 +1575,10 @@ impl GuestMemory {
     ///
     /// FUTURE: once we are on Rust 1.79, add a method specifically for atomic
     /// accesses that const asserts that the size is appropriate.
-    pub fn read_plain<T: FromBytes>(&self, gpa: u64) -> Result<T, GuestMemoryError> {
+    pub fn read_plain<T: FromBytes + Immutable + KnownLayout>(
+        &self,
+        gpa: u64,
+    ) -> Result<T, GuestMemoryError> {
         // Note that this is const, so the match below will compile out.
         let len = size_of::<T>();
         self.with_op(Some((gpa, len as u64)), GuestMemoryOperation::Read, || {
@@ -1962,15 +1971,20 @@ pub trait MemoryRead {
     fn skip(&mut self, len: usize) -> Result<&mut Self, AccessError>;
     fn len(&self) -> usize;
 
-    fn read_plain<T: AsBytes + FromBytes>(&mut self) -> Result<T, AccessError> {
-        let mut value: T = FromZeroes::new_zeroed();
-        self.read(value.as_bytes_mut())?;
+    fn read_plain<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
+        &mut self,
+    ) -> Result<T, AccessError> {
+        let mut value: T = FromZeros::new_zeroed();
+        self.read(value.as_mut_bytes())?;
         Ok(value)
     }
 
-    fn read_n<T: AsBytes + FromBytes + Copy>(&mut self, len: usize) -> Result<Vec<T>, AccessError> {
-        let mut value = vec![FromZeroes::new_zeroed(); len];
-        self.read(value.as_bytes_mut())?;
+    fn read_n<T: IntoBytes + FromBytes + Immutable + KnownLayout + Copy>(
+        &mut self,
+        len: usize,
+    ) -> Result<Vec<T>, AccessError> {
+        let mut value = vec![FromZeros::new_zeroed(); len];
+        self.read(value.as_mut_bytes())?;
         Ok(value)
     }
 

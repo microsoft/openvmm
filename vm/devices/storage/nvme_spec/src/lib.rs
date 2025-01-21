@@ -14,9 +14,10 @@ use bitfield_struct::bitfield;
 use inspect::Inspect;
 use open_enum::open_enum;
 use storage_string::AsciiString;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 type U128LE = zerocopy::U128<zerocopy::LE>;
 
@@ -126,7 +127,7 @@ pub struct Aqa {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes, Inspect)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
 pub struct Command {
     pub cdw0: Cdw0,
     pub nsid: u32,
@@ -145,7 +146,7 @@ pub struct Command {
 
 #[derive(Inspect)]
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Cdw0 {
     pub opcode: u8,
     #[bits(2)]
@@ -206,7 +207,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Completion {
     pub dw0: u32,
     pub dw1: u32,
@@ -217,7 +218,7 @@ pub struct Completion {
 }
 
 #[bitfield(u16)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CompletionStatus {
     pub phase: bool,
     /// 8 bits of status code followed by 3 bits of the status code type.
@@ -396,7 +397,7 @@ open_enum! {
 
 #[derive(Inspect)]
 #[bitfield(u16)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct OptionalAdminCommandSupport {
     pub security_send_security_receive: bool,
     pub format_nvm: bool,
@@ -414,7 +415,7 @@ pub struct OptionalAdminCommandSupport {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes, Inspect, Clone)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect, Clone)]
 pub struct IdentifyController {
     pub vid: u16,
     pub ssvid: u16,
@@ -534,7 +535,7 @@ const _: () = assert!(size_of::<IdentifyController>() == 4096);
 
 #[derive(Inspect)]
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct QueueEntrySize {
     #[bits(4)]
     pub min: u8,
@@ -544,7 +545,7 @@ pub struct QueueEntrySize {
 
 #[derive(Inspect)]
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FirmwareUpdates {
     pub ffsro: bool,
     #[bits(3)]
@@ -558,7 +559,7 @@ pub struct FirmwareUpdates {
 /// Optional asynchronous events supported
 #[derive(Inspect)]
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Oaes {
     _rsvd: u8,
     pub namespace_attribute: bool,
@@ -575,7 +576,7 @@ pub struct Oaes {
 /// Optional NVM command support
 #[derive(Inspect)]
 #[bitfield(u16)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Oncs {
     pub compare: bool,
     pub write_uncorrectable: bool,
@@ -591,7 +592,7 @@ pub struct Oncs {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes, Inspect)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
     #[inspect(debug)]
     pub enum ControllerType: u8 {
         RESERVED = 0,
@@ -603,7 +604,7 @@ open_enum! {
 
 #[derive(Inspect)]
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VolatileWriteCache {
     pub present: bool,
     #[bits(2)]

@@ -24,8 +24,8 @@ use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
 use vm_topology::processor::ProcessorTopology;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 pub mod vtl0_config;
 pub mod vtl2_config;
@@ -424,8 +424,9 @@ pub fn write_uefi_config(
     // We can only trust these tables from the host if this is not an isolated VM
     if !isolated {
         for table in &platform_config.acpi_tables {
-            let header =
-                acpi_spec::Header::ref_from_prefix(table).ok_or(Error::InvalidAcpiTableLength)?;
+            let header = acpi_spec::Header::ref_from_prefix(table)
+                .map_err(|_| Error::InvalidAcpiTableLength)? // todo: zerocopy: map_err
+                .0;
             match &header.signature {
                 b"APIC" => {
                     build_madt = false;

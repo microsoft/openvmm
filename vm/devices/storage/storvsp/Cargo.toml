@@ -56,7 +56,6 @@ tracelimit.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 criterion = { workspace = true, features = ["async"] }
 disklayer_ram.workspace = true

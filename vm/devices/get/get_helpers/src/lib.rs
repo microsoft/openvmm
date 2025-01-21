@@ -16,7 +16,7 @@ use get_protocol::TRACE_LOGGING_MESSAGE_MAX_SIZE;
 use get_protocol::TRACE_LOGGING_NAME_MAX_SIZE;
 use get_protocol::TRACE_LOGGING_TARGET_MAX_SIZE;
 use guid::Guid;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 /// Truncates the specified slice by the specified length.
 fn truncate_slice(input: &[u8], len: usize) -> &[u8] {

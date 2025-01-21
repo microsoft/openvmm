@@ -6,9 +6,10 @@
 use crate::vmx;
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 pub const TDX_SHARED_GPA_BOUNDARY_BITS: u8 = 47;
 pub const TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT: u64 = 1 << TDX_SHARED_GPA_BOUNDARY_BITS;
@@ -201,7 +202,7 @@ pub enum TdVmCallSubFunction {
 
 open_enum! {
     /// Result code for `tdcall` to the TDX module, returned in RAX.
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum TdCallResultCode: u32 {
         SUCCESS = 0x00000000,
         NON_RECOVERABLE_VCPU = 0x40000001,
@@ -391,7 +392,7 @@ pub struct TdCallResult {
 
 open_enum! {
     /// The result returned by a tdg.vm.call in r10.
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum TdVmCallR10Result: u64 {
         SUCCESS = 0,
         RETRY = 1,
@@ -552,7 +553,7 @@ impl TdxExtendedExitQualificationType {
 /// The GPR list used for TDG.VP.ENTER. Specified in the TDX specification as
 /// L2_ENTER_GUEST_STATE.
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TdxL2EnterGuestState {
     /// GPs in the usual order.
     pub gps: [u64; 16],
@@ -706,7 +707,7 @@ pub struct TdGlaVmAndFlags {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TdxVmFlags {
     #[bits(2)]
     pub invd_translations: u8,

@@ -398,14 +398,14 @@ mod tests {
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
     use test_with_tracing::test;
-    use zerocopy::AsBytes;
+    use zerocopy::IntoBytes;
 
     const SECTOR_U64: u64 = SECTOR_SIZE as u64;
     const SECTOR_USIZE: usize = SECTOR_SIZE as usize;
 
     fn check(mem: &GuestMemory, sector: u64, start: usize, count: usize, high: u8) {
         let mut buf = vec![0u32; count * SECTOR_USIZE / 4];
-        mem.read_at(start as u64 * SECTOR_U64, buf.as_bytes_mut())
+        mem.read_at(start as u64 * SECTOR_U64, buf.as_mut_bytes())
             .unwrap();
         for (i, &b) in buf.iter().enumerate() {
             let offset = sector * SECTOR_U64 + i as u64 * 4;

@@ -83,7 +83,7 @@ use vp_state::KvmVpStateAccess;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::msi::MsiAddress;
 use x86defs::msi::MsiData;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 // HACK: on certain machines, pcat spams these MSRs during boot.
 //

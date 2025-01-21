@@ -29,8 +29,8 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 // This disk supports 12-byte CDBs.
 const COMMAND_PACKET_SIZE: usize = 12;
@@ -49,8 +49,8 @@ struct Sense {
 impl Default for Sense {
     fn default() -> Self {
         Self {
-            sense_key: FromZeroes::new_zeroed(),
-            additional_sense_code: FromZeroes::new_zeroed(),
+            sense_key: FromZeros::new_zeroed(),
+            additional_sense_code: FromZeros::new_zeroed(),
             additional_sense_code_qualifier: Default::default(),
         }
     }
@@ -690,7 +690,7 @@ impl AtapiDrive {
             recommended_multi_dma_time: 0x0078,
             min_pio_cycle_time_no_flow: 0x01FC, // Taken from a real CD device
             min_pio_cycle_time_flow: 0x00B4,    // Taken from a real CD device
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         self.command_buffer.buffer[..protocol::IDENTIFY_DEVICE_BYTES].atomic_write_obj(&features);

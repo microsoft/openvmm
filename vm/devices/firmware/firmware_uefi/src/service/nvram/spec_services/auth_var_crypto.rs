@@ -8,7 +8,7 @@
 use super::ParsedAuthVar;
 use thiserror::Error;
 use uefi_nvram_specvars::signature_list;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 /// Errors that occur due to various formatting issues in the crypto objects.
 #[derive(Debug, Error)]

@@ -22,7 +22,6 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 fs-err.workspace = true
 libc.workspace = true
 nix = { workspace = true, features = ["ioctl"] }

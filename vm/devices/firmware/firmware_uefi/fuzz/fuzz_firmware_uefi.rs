@@ -101,9 +101,9 @@ fn do_fuzz(input: FuzzInput) {
 
     let var = ParsedAuthVar {
         name: &Ucs2LeVec::from(name),
-        vendor: Guid::read_from(&vendor).unwrap(),
+        vendor: Guid::read_from_bytes(&vendor).unwrap(),
         attr,
-        timestamp: EFI_TIME::read_from(&timestamp).unwrap(),
+        timestamp: EFI_TIME::read_from_bytes(&timestamp).unwrap(),
         pkcs7_data: &pkcs7_data,
         var_data: &var_data,
     };

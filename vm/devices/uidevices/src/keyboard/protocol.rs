@@ -4,9 +4,10 @@
 #![allow(dead_code)]
 
 use guid::Guid;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // f912ad6d-2b17-48ea-bd65-f927a61c7684
 pub const INTERFACE_GUID: Guid = Guid::from_static_str("f912ad6d-2b17-48ea-bd65-f927a61c7684");
@@ -25,32 +26,32 @@ pub const MESSAGE_EVENT: u32 = 3;
 pub const MESSAGE_SET_LED_INDICATORS: u32 = 4;
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageHeader {
     pub message_type: u32,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageProtocolRequest {
     pub version: u32,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageLedIndicatorsState {
     pub led_flags: u16,
     pub padding: u16,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageProtocolResponse {
     pub accepted: u32,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageKeystroke {
     pub make_code: u16,
     pub padding: u16,

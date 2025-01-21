@@ -1,0 +1,11 @@
+id: replace-use-asbytes
+language: rust
+rule:
+  pattern: use zerocopy::AsBytes;
+fix: |-
+  use zerocopy::IntoBytes;
+  use zerocopy::Immutable;
+  use zerocopy::KnownLayout;
+  use zerocopy::FromZeros;
+
+#---
