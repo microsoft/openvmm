@@ -12,7 +12,10 @@ pal_event.workspace = true
 sparse_mmap.workspace = true
 
 thiserror.workspace = true
-zerocopy.workspace = true
+# TODO: zerocopy: move dependency back to zerocopy.workspace
+# after entire workspace upgraded to 0.8.
+#zerocopy.workspace = true
+zerocopy = "0.8.14"
 
 [lints]
 workspace = true
