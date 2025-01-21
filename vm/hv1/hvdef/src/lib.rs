@@ -2971,7 +2971,7 @@ open_enum! {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, FromBytes)]
 pub struct HvX64RegisterInterceptMessageFlags {
     pub is_memory_op: bool,
     #[bits(7)]
@@ -2988,7 +2988,7 @@ pub struct HvX64RegisterInterceptMessageFlags {
 // } HV_X64_REGISTER_ACCESS_INFO, *PHV_X64_REGISTER_ACCESS_INFO;
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, FromBytes)]
 pub struct HvX64RegisterInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub flags: HvX64RegisterInterceptMessageFlags,
