@@ -67,7 +67,6 @@ use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::vmtime::VmTimeAccess;
 use x86defs::RFlags;
 use x86defs::cpuid::CpuidFunction;
-use x86defs::snp;
 use x86defs::snp::SevEventInjectInfo;
 use x86defs::snp::SevExitCode;
 use x86defs::snp::SevInvlpgbEcx;
@@ -117,7 +116,7 @@ struct ExitStats {
     vmmcall: Counter,
     xsetbv: Counter,
     excp_db: Counter,
-    cr_write: Counter,
+    secure_reg_write: Counter,
 }
 
 enum UhDirectOverlay {
@@ -271,7 +270,7 @@ impl HardwareIsolatedBacking for SnpBacked {
         this: &mut UhProcessor<'_, Self>,
         intercept_control: hvdef::HvRegisterCrInterceptControl,
     ) -> Result<(), HvError> {
-        this.backing.cvm.vtl1_cr_intercept.intercept_control = intercept_control;
+        this.backing.cvm.vtl1_reg_intercept.intercept_control = intercept_control;
         // TODO: panic if this fails?
         this.runner.set_vp_registers_hvcall(
             Vtl::Vtl1,
@@ -288,13 +287,13 @@ impl HardwareIsolatedBacking for SnpBacked {
     ) {
         match mask {
             ControlRegisterMask::Cr0(mask) => {
-                this.backing.cvm.vtl1_cr_intercept.cr0_mask = mask;
+                this.backing.cvm.vtl1_reg_intercept.cr0_mask = mask;
             }
             ControlRegisterMask::Cr4(mask) => {
-                this.backing.cvm.vtl1_cr_intercept.cr4_mask = mask;
+                this.backing.cvm.vtl1_reg_intercept.cr4_mask = mask;
             }
             ControlRegisterMask::Ia32MiscEnable(mask) => {
-                this.backing.cvm.vtl1_cr_intercept.ia32_misc_enable_mask = mask;
+                this.backing.cvm.vtl1_reg_intercept.ia32_misc_enable_mask = mask;
             }
         }
     }
@@ -879,37 +878,26 @@ impl UhProcessor<'_, SnpBacked> {
         tracing::info!(?reg, ?value, "handling write to secure register");
         if vtl == GuestVtl::Vtl0 {
             let vmsa = self.runner.vmsa(vtl);
+            let configured_intercepts = self.backing.cvm.vtl1_reg_intercept.intercept_control;
             let generate_intercept = match reg {
                 HvX64RegisterName::Cr0 => {
-                    if self
-                        .backing
-                        .cvm
-                        .vtl1_cr_intercept
-                        .intercept_control
-                        .cr0_write()
-                    {
-                        tracing::info!(?reg, "should intercept this register");
+                    if configured_intercepts.cr0_write() {
                         true
                     } else {
-                        tracing::info!(?reg, "register is changing, should intercept");
                         vmsa.cr0() ^ value != 0
                     }
                 }
                 HvX64RegisterName::Cr4 => {
-                    if self
-                        .backing
-                        .cvm
-                        .vtl1_cr_intercept
-                        .intercept_control
-                        .cr4_write()
-                    {
-                        tracing::info!(?reg, "should intercept this register");
+                    if configured_intercepts.cr4_write() {
                         true
                     } else {
-                        tracing::info!(?reg, "register is changing, should intercept");
                         vmsa.cr4() ^ value != 0
                     }
                 }
+                HvX64RegisterName::Gdtr => configured_intercepts.gdtr_write(),
+                HvX64RegisterName::Idtr => configured_intercepts.idtr_write(),
+                HvX64RegisterName::Ldtr => configured_intercepts.ldtr_write(),
+                HvX64RegisterName::Tr => configured_intercepts.tr_write(),
                 _ => unreachable!("unexpected secure register"),
             };
 
@@ -966,8 +954,6 @@ impl UhProcessor<'_, SnpBacked> {
                     intercept_message.as_bytes(),
                 );
 
-                // TODO: access_info value only valid for cr0 and cr4?
-
                 tracing::info!(?reg, "sending intercept to vtl 1 for secure register write");
 
                 self.inner.post_message(
@@ -993,7 +979,13 @@ impl UhProcessor<'_, SnpBacked> {
             HvX64RegisterName::Cr4 => {
                 vmsa.set_cr4(value);
             }
-            _ => unreachable!("unexpected secure register"),
+            _ => {
+                // If an unexpected intercept has been received, then the host
+                // must have enabled an intercept that was not desired. Since
+                // the intercept cannot correctly be emulated, this must be
+                // treated as a fatal error.
+                panic!("unexpected secure register")
+            }
         }
 
         advance_to_next_instruction(&mut vmsa);
@@ -1499,7 +1491,7 @@ impl UhProcessor<'_, SnpBacked> {
                 } else {
                     vmsa.set_event_inject(
                         SevEventInjectInfo::new()
-                            .with_interruption_type(snp::SEV_INTR_TYPE_EXCEPT)
+                            .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT)
                             .with_vector(x86defs::Exception::GENERAL_PROTECTION_FAULT.0)
                             .with_deliver_error_code(true)
                             .with_valid(true),
@@ -1510,13 +1502,13 @@ impl UhProcessor<'_, SnpBacked> {
 
             SevExitCode::EXCP_DB => &mut self.backing.exit_stats[entered_from_vtl].excp_db,
 
-            SevExitCode::CR0_WRITE | SevExitCode::CR4_WRITE => {
-                tracing::info!(?sev_error_code, "handling secure register write");
-                let mov_crx_drx = snp::MovCrxDrxInfo::from(vmsa.exit_info1());
-                let reg_name = if sev_error_code == SevExitCode::CR0_WRITE {
-                    HvX64RegisterName::Cr0
-                } else {
-                    HvX64RegisterName::Cr4
+            cr_exit_code @ (SevExitCode::CR0_WRITE | SevExitCode::CR4_WRITE) => {
+                tracing::info!(?cr_exit_code, "handling secure register write");
+                let mov_crx_drx = x86defs::snp::MovCrxDrxInfo::from(vmsa.exit_info1());
+                let reg_name = match cr_exit_code {
+                    SevExitCode::CR0_WRITE => HvX64RegisterName::Cr0,
+                    SevExitCode::CR4_WRITE => HvX64RegisterName::Cr4,
+                    _ => unreachable!(),
                 };
                 let reg_value = {
                     // TODO: is this correct, or even necessary?
@@ -1554,7 +1546,25 @@ impl UhProcessor<'_, SnpBacked> {
                     // TODO: the HCL has a debug assert, but otherwise ignores
                     // this case. Is that what we want?
                 }
-                &mut self.backing.exit_stats[entered_from_vtl].cr_write
+                &mut self.backing.exit_stats[entered_from_vtl].secure_reg_write
+            }
+
+            tr_exit_code @ (SevExitCode::GDTR_WRITE
+            | SevExitCode::IDTR_WRITE
+            | SevExitCode::LDTR_WRITE
+            | SevExitCode::TR_WRITE) => {
+                tracing::info!(?tr_exit_code, "handling secure register write");
+                let reg = match tr_exit_code {
+                    SevExitCode::GDTR_WRITE => HvX64RegisterName::Gdtr,
+                    SevExitCode::IDTR_WRITE => HvX64RegisterName::Idtr,
+                    SevExitCode::LDTR_WRITE => HvX64RegisterName::Ldtr,
+                    SevExitCode::TR_WRITE => HvX64RegisterName::Tr,
+                    _ => unreachable!(),
+                };
+
+                self.handle_secure_register_write(entered_from_vtl, reg, 0);
+
+                &mut self.backing.exit_stats[entered_from_vtl].secure_reg_write
             }
 
             _ => {
