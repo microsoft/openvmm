@@ -2745,7 +2745,13 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
             hv1_hypercall::HvExtQueryCapabilities,
             // TODO TDX: copied from SNP, enable individually as needed.
             // hv1_hypercall::HvGetVpRegisters,
+            // hv1_hypercall::HvSetVpRegisters,
             // hv1_hypercall::HvEnablePartitionVtl,
+            // hv1_hypercall::HvX64EnableVpVtl,
+            // hv1_hypercall::HvVtlCall,
+            // hv1_hypercall::HvVtlReturn,
+            // hv1_hypercall::HvModifyVtlProtectionMask,
+            // hv1_hypercall::HvX64TranslateVirtualAddress,
         ]
     );
 
@@ -3492,7 +3498,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
         _vtl: GuestVtl,
         processor_set: Option<Vec<u32>>,
     ) {
-        // TODO: Add additional checks? HCL checks that VP is active and in target VTL
+        // TODO TDX GUEST VSM: Add additional checks? HCL checks that VP is active and in target VTL
         if let Some(processors) = processor_set {
             for vp in processors {
                 if self.vp.vp_index().index() != vp {

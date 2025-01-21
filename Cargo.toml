@@ -19,7 +19,8 @@ members = [
   "openhcl/vmfirmwareigvm_dll",
   # VMM tests
   "vmm_tests/vmm_tests",
-  # hyper-v
+  # hyper-v tooling
+  "hyperv/tools/hypestv",
   # fuzzing
   "support/inspect/fuzz",
   "support/mesh/mesh_rpc/fuzz",
@@ -41,7 +42,6 @@ members = [
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
-  "hyperv/tools/hypestv",
 ]
 exclude = [
   "xsync",

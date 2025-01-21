@@ -139,9 +139,6 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             // sure that the lower VTL is executing at a known point, and only if
             // the higher VTL has not been enabled on any other VP because at that
             // point, the higher VTL should be orchestrating its own enablement.
-            //
-            // TODO GUEST_VSM: last_vtl currently always returns 0 (which is wrong),
-            // so for any VP outside of the BSP, this will fail
             if self.intercepted_vtl < GuestVtl::Vtl1 {
                 if vtl1_state.enabled_on_vp_count > 0 || vp_index != current_vp_index {
                     return Err(HvError::AccessDenied);
@@ -544,7 +541,6 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         // - validate the values being set, e.g. that addresses are canonical,
         //   that efer and pat make sense, etc. Similar validation is needed in
         //   the write_msr path.
-        // TODO GUEST VSM: add ApicBase register
 
         match HvX64RegisterName::from(reg.name) {
             HvX64RegisterName::VsmPartitionConfig => self.vp.set_vsm_partition_config(
@@ -709,7 +705,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         }
 
         // TODO GUEST VSM: interrupt rewinding
-        // TODO TDX GUEST VSM: update execution mode
+        // TODO TDX GUEST VSM: update execution mode on CR0 and EFER
     }
 }
 
