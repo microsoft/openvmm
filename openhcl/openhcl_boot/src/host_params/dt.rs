@@ -462,6 +462,7 @@ impl PartitionInfo {
                     .enable_vtl2_gpa_pool;
 
             let isolation_requirements = match params.isolation_type {
+                #[cfg(target_arch = "x86_64")]
                 // Supporting TLB flush hypercalls on TDX requires 1 page per VP
                 IsolationType::Tdx => parsed.cpus.len() as u64,
                 _ => 0,
