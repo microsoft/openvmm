@@ -13,7 +13,6 @@ use nvme::NvmeController;
 use nvme::NvmeControllerCaps;
 use nvme_driver::Namespace;
 use nvme_driver::NvmeDriver;
-use nvme_driver::NVME_TIMEOUT_FUZZER;
 use nvme_spec::nvm::DsmRange;
 use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
@@ -23,6 +22,8 @@ use std::time::Duration;
 use user_driver::emulated::DeviceSharedMemory;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
+
+const NVME_TIMEOUT_FUZZER: u64 = 10;
 
 /// Nvme driver fuzzer
 pub struct FuzzNvmeDriver {
