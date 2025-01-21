@@ -639,6 +639,7 @@ pub enum DiskCliKind {
     },
     // autocache:[key]:<kind>
     AutoCacheSqlite {
+        cache_path: String,
         key: Option<String>,
         disk: Box<DiskCliKind>,
     },
@@ -722,7 +723,10 @@ impl FromStr for DiskCliKind {
                 }
                 "autocache" => {
                     let (key, kind) = arg.split_once(':').context("expected [key]:kind")?;
+                    let cache_path = std::env::var("OPENVMM_AUTO_CACHE_PATH")
+                        .context("must set cache path via OPENVMM_AUTO_CACHE_PATH")?;
                     DiskCliKind::AutoCacheSqlite {
+                        cache_path,
                         key: (!key.is_empty()).then(|| key.to_string()),
                         disk: Box::new(kind.parse()?),
                     }

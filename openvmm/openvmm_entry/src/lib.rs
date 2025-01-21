@@ -1582,13 +1582,16 @@ fn disk_open_inner(
             }));
             disk_open_inner(disk, true, layers)?;
         }
-        DiskCliKind::AutoCacheSqlite { key, disk } => {
+        DiskCliKind::AutoCacheSqlite {
+            cache_path,
+            key,
+            disk,
+        } => {
             layers.push(LayerOrDisk::Layer(DiskLayerDescription {
                 read_cache: true,
                 write_through: false,
                 layer: SqliteAutoCacheDiskLayerHandle {
-                    cache_path: std::env::var("OPENVMM_AUTO_CACHE_PATH")
-                        .context("must set cache path environment variable")?,
+                    cache_path: cache_path.clone(),
                     cache_key: key.clone(),
                 }
                 .into_resource(),
