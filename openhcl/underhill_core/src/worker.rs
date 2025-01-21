@@ -1868,36 +1868,56 @@ async fn new_underhill_vm(
         crate::inspect_proc::periodic_telemetry_task(driver_source.simple()),
     );
 
-    let mut dma_manager = GlobalDmaManager::new();
+    let dma_pool = if let Some(shared_vis_pages_pool) = shared_vis_pages_pool.clone() {
+        // Use shared pool if available
+        Some(shared_vis_pages_pool)
+    } else if let Some(private_pool) = private_pool.clone() {
+        // Otherwise, use private pool if available
+        Some(private_pool)
+    } else {
+        // Fallback to None, which indicates LockedMemorySpawner will be used internally
+        None
+    };
+    let mut dma_manager = GlobalDmaManager::new(dma_pool);
     let nvme_manager = if env_cfg.nvme_vfio {
-        let shared_vis_pool_spawner = shared_vis_pages_pool
-            .as_ref()
-            .map(|p| p.allocator_spawner());
+        //let shared_vis_pool_spawner = shared_vis_pages_pool
+        //    .as_ref()
+        //    .map(|p| p.allocator_spawner());
 
-        let private_pool_spanwer = private_pool.as_ref().map(|p| p.allocator_spawner());
+        //let private_pool_spanwer = private_pool.as_ref().map(|p| p.allocator_spawner());
 
-        let save_restore_supported = env_cfg.nvme_keep_alive && private_pool_spanwer.is_some();
+        let save_restore_supported = env_cfg.nvme_keep_alive; //&& private_pool_spanwer.is_some();
+
         let vfio_dma_buffer_spawner = Box::new(
             move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-                shared_vis_pool_spawner
-                    .as_ref()
-                    .map(|spawner| {
-                        spawner
-                            .allocator(device_id.clone())
-                            .map(|alloc| Arc::new(alloc) as _)
-                    })
-                    .unwrap_or_else(|| {
-                        private_pool_spanwer
-                            .as_ref()
-                            .map(|spawner| {
-                                spawner
-                                    .allocator(device_id.clone())
-                                    .map(|alloc| Arc::new(alloc) as _)
-                            })
-                            .unwrap_or(Ok(Arc::new(LockedMemorySpawner) as _))
-                    })
+                // Dummy behavior: returning a dummy VfioDmaBuffer (you need to define one).
+                Ok(Arc::new(LockedMemorySpawner) as Arc<dyn VfioDmaBuffer>)  // Replace `LockedMemorySpawner` with a dummy object if necessary
             },
         );
+
+        //let vfio_dma_buffer_spawner = Box::new(
+        //    move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
+        //        shared_vis_pool_spawner
+        //            .as_ref()
+        //            .map(|spawner| {
+        //                spawner
+        //                    .allocator(device_id.clone())
+        //                    .map(|alloc| Arc::new(alloc) as _)
+        //            })
+        //            .unwrap_or_else(|| {
+        //                private_pool_spanwer
+        //                    .as_ref()
+        //                    .map(|spawner| {
+        //                        spawner
+        //                            .allocator(device_id.clone())
+        //                            .map(|alloc| Arc::new(alloc) as _)
+        //                    })
+        //                    .unwrap_or(Ok(Arc::new(LockedMemorySpawner) as _))
+        //            })
+        //    },
+        //);
+
+
 
         let manager = NvmeManager::new(
                     &driver_source,

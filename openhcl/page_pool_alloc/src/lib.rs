@@ -20,6 +20,7 @@ use inspect::Inspect;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use sparse_mmap::SparseMapping;
+use std::clone;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use thiserror::Error;
@@ -418,7 +419,7 @@ impl Drop for PagePoolHandle {
 /// [`PagePoolAllocatorSpawner::allocator`].
 ///
 /// This struct is considered the "owner" of the pool allowing for save/restore.
-#[derive(Inspect)]
+#[derive(Inspect, Clone)]
 pub struct PagePool {
     #[inspect(flatten)]
     inner: Arc<Mutex<PagePoolInner>>,

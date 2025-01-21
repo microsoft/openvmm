@@ -25,7 +25,6 @@ use pal_async::task::Task;
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
 use thiserror::Error;
 use tracing::Instrument;
 use user_driver::vfio::VfioDevice;
@@ -105,7 +104,7 @@ impl NvmeManager {
             vp_count,
             dma_buffer_spawner,
             save_restore_supported,
-            dma_manager
+            dma_manager,
         };
         let task = driver.spawn("nvme-manager", async move {
             // Restore saved data (if present) before async worker thread runs.
@@ -225,7 +224,7 @@ struct NvmeManagerWorker {
     dma_manager: GlobalDmaManager,
 }
 
-impl NvmeManagerWorker {
+impl<'a> NvmeManagerWorker {
     async fn run(&mut self, mut recv: mesh::Receiver<Request>) {
         let (join_span, nvme_keepalive) = loop {
             let Some(req) = recv.next().await else {
@@ -296,15 +295,17 @@ impl NvmeManagerWorker {
         &mut self,
         pci_id: String,
     ) -> Result<&mut nvme_driver::NvmeDriver<VfioDevice>, InnerError> {
+
+        let dma_client = self.dma_manager.create_client(pci_id.clone());
         let driver = match self.devices.entry(pci_id.to_owned()) {
             hash_map::Entry::Occupied(entry) => entry.into_mut(),
             hash_map::Entry::Vacant(entry) => {
                 let device = VfioDevice::new(
                     &self.driver_source,
                     entry.key(),
-                    (self.dma_buffer_spawner)(format!("nvme_{}", entry.key()))
+                    dma_client.get_dma_buffer_allocator(format!("nvme_{}", entry.key()))
                         .map_err(InnerError::DmaBuffer)?,
-                        self.dma_manager.create_client(pci_id.clone()),
+                        dma_client,
                 )
                 .instrument(tracing::info_span!("vfio_device_open", pci_id))
                 .await
