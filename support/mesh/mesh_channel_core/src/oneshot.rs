@@ -127,10 +127,10 @@ impl<T: MeshField> From<Port> for OneshotSender<T> {
 
 /// # Safety
 /// The caller must ensure that `value` is of type `T`.
-unsafe fn send_message<T: MeshField>(port: &Port, value: BoxedValue) {
+unsafe fn send_message<T: MeshField>(port: Port, value: BoxedValue) {
     // SAFETY: the caller ensures that `value` is of type `T`.
     let value = unsafe { value.cast::<T>() };
-    port.send_protobuf((value,));
+    port.send_protobuf_and_close((value,));
 }
 
 fn decode_message<T: MeshField>(message: Message<'_>) -> Result<BoxedValue, ChannelError> {
@@ -197,7 +197,7 @@ impl OneshotSenderCore {
                 SlotState::ReceiverRemote(port, send) => {
                     // SAFETY: `send` has been set to operate on values of type
                     // `T`, and `value` is of type `T`.
-                    unsafe { send(&port, value) };
+                    unsafe { send(port, value) };
                     None
                 }
                 SlotState::Waiting(waker) => {
@@ -438,10 +438,10 @@ impl OneshotReceiverCore {
                     let (sender, recv) = Port::new_pair();
                     // SAFETY: `send` has been set to operate on values of type
                     // `T`, the type of this slot.
-                    unsafe { send(&sender, value) };
-                    if let Some(existing) = existing {
-                        existing.bridge(sender);
-                    }
+                    unsafe { send(sender, value) };
+                    // The state of the existing port, if one is present, is
+                    // lost. This should never really matter since the sender
+                    // should already be closed.
                     recv
                 }
                 SlotState::Done => existing.unwrap_or_else(|| Port::new_pair().0),
@@ -469,7 +469,7 @@ enum SlotState {
     ReceiverRemote(Port, SendFn),
 }
 
-type SendFn = unsafe fn(&Port, BoxedValue);
+type SendFn = unsafe fn(Port, BoxedValue);
 type DecodeFn = unsafe fn(Message<'_>) -> Result<BoxedValue, ChannelError>;
 
 #[derive(Debug)]
