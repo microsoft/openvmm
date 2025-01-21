@@ -1331,6 +1331,60 @@ impl Server {
     pub fn get_version(&self) -> Option<VersionInfo> {
         self.state.get_version()
     }
+
+    pub fn get_restore_open_params(&self, offer_id: OfferId) -> Result<OpenParams, RestoreError> {
+        let channel = &self.channels[offer_id];
+
+        // Check this here to avoid doing unnecessary work.
+        match channel.restore_state {
+            RestoreState::New => {
+                // This channel was never offered, or was released by the guest during the save.
+                // This is a problem since if this was called the device expects the channel to be
+                // open.
+                return Err(RestoreError::MissingChannel(channel.offer.key()));
+            }
+            RestoreState::Restoring => {}
+            RestoreState::Unmatched => unreachable!(),
+            RestoreState::Restored => {
+                return Err(RestoreError::AlreadyRestored(channel.offer.key()))
+            }
+        }
+
+        let info = channel
+            .info
+            .ok_or_else(|| RestoreError::MissingChannel(channel.offer.key()))?;
+
+        let (request, reserved_state) = match channel.state {
+            ChannelState::Closed => {
+                return Err(RestoreError::MismatchedOpenState(channel.offer.key()));
+            }
+            ChannelState::Closing { params, .. } | ChannelState::ClosingReopen { params, .. } => {
+                (params, None)
+            }
+            ChannelState::Opening {
+                request,
+                reserved_state,
+            } => (request, reserved_state),
+            ChannelState::Open {
+                params,
+                reserved_state,
+                ..
+            } => (params, reserved_state),
+            ChannelState::ClientReleased | ChannelState::Reoffered => {
+                return Err(RestoreError::MissingChannel(channel.offer.key()));
+            }
+            ChannelState::Revoked
+            | ChannelState::ClosingClientRelease
+            | ChannelState::OpeningClientRelease => unreachable!(),
+        };
+
+        Ok(OpenParams::from_request(
+            &info,
+            &request,
+            channel.handled_monitor_id(),
+            reserved_state.map(|state| state.target),
+        ))
+    }
 }
 
 impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
@@ -1339,13 +1393,11 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     /// If this is not called for a channel but vmbus state is restored, then it
     /// is assumed that the offer is a fresh one, and the channel will be
     /// revoked and reoffered.
-    pub fn restore_channel(
-        &mut self,
-        offer_id: OfferId,
-        open: bool,
-    ) -> Result<Option<OpenParams>, RestoreError> {
+    pub fn restore_channel(&mut self, offer_id: OfferId, open: bool) -> Result<(), RestoreError> {
         let channel = &mut self.inner.channels[offer_id];
 
+        // We need to check this here as well, because get_restore_open_params may not have been
+        // called.
         match channel.restore_state {
             RestoreState::New => {
                 // This channel was never offered, or was released by the guest
@@ -1354,7 +1406,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 if open {
                     return Err(RestoreError::MissingChannel(channel.offer.key()));
                 } else {
-                    return Ok(None);
+                    return Ok(());
                 }
             }
             RestoreState::Restoring => {}
@@ -1374,15 +1426,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             }
         }
 
-        let open_params = if open {
-            let (request, reserved_state) = match channel.state {
+        if open {
+            match channel.state {
                 ChannelState::Closed => {
                     return Err(RestoreError::MismatchedOpenState(channel.offer.key()));
                 }
-                ChannelState::Closing { params, .. }
-                | ChannelState::ClosingReopen { params, .. } => {
+                ChannelState::Closing { .. } | ChannelState::ClosingReopen { .. } => {
                     self.notifier.notify(offer_id, Action::Close);
-                    (params, None)
                 }
                 ChannelState::Opening {
                     request,
@@ -1400,13 +1450,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         modify_state: ModifyState::NotModifying,
                         reserved_state,
                     };
-                    (request, reserved_state)
                 }
-                ChannelState::Open {
-                    params,
-                    reserved_state,
-                    ..
-                } => (params, reserved_state),
+                ChannelState::Open { .. } => {}
                 ChannelState::ClientReleased | ChannelState::Reoffered => {
                     return Err(RestoreError::MissingChannel(channel.offer.key()));
                 }
@@ -1414,13 +1459,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 | ChannelState::ClosingClientRelease
                 | ChannelState::OpeningClientRelease => unreachable!(),
             };
-
-            Some(OpenParams::from_request(
-                &info,
-                &request,
-                channel.handled_monitor_id(),
-                reserved_state.map(|state| state.target),
-            ))
         } else {
             match channel.state {
                 ChannelState::Closed => {}
@@ -1477,12 +1515,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 | ChannelState::ClosingClientRelease
                 | ChannelState::OpeningClientRelease => unreachable!(),
             }
-
-            None
-        };
+        }
 
         channel.restore_state = RestoreState::Restored;
-        Ok(open_params)
+        Ok(())
     }
 
     pub fn post_restore(&mut self) -> Result<(), RestoreError> {

@@ -862,23 +862,12 @@ impl ServerTask {
         open: Option<OpenResult>,
     ) -> anyhow::Result<RestoreResult> {
         let gpadls = self.server.channel_gpadls(offer_id);
-        let params = self
-            .server
-            .with_notifier(&mut self.inner)
-            .restore_channel(offer_id, open.is_some())?;
 
-        let channel = self.inner.channels.get_mut(&offer_id).unwrap();
-        for gpadl in &gpadls {
-            if let Ok(buf) =
-                MultiPagedRangeBuf::new(gpadl.request.count.into(), gpadl.request.buf.clone())
-            {
-                channel.gpadls.add(gpadl.request.id, buf);
-            }
-        }
-
-        let open_request = params
-            .zip(open)
-            .map(|(params, result)| -> anyhow::Result<_> {
+        // If the channel is opened, handle that before calling into channels so that failure can
+        // be handled before the channel is marked restored.
+        let open_request = open
+            .map(|result| -> anyhow::Result<_> {
+                let params = self.server.get_restore_open_params(offer_id)?;
                 let (_, interrupt) = self.inner.open_channel(offer_id, &params);
                 let channel = self.inner.complete_open(offer_id, Some(result))?;
                 Ok(OpenRequest::new(
@@ -892,6 +881,20 @@ impl ServerTask {
                 ))
             })
             .transpose()?;
+
+        self.server
+            .with_notifier(&mut self.inner)
+            .restore_channel(offer_id, open_request.is_some())?;
+
+        let channel = self.inner.channels.get_mut(&offer_id).unwrap();
+        for gpadl in &gpadls {
+            if let Ok(buf) =
+                MultiPagedRangeBuf::new(gpadl.request.count.into(), gpadl.request.buf.clone())
+            {
+                channel.gpadls.add(gpadl.request.id, buf);
+            }
+        }
+
         let result = RestoreResult {
             open_request,
             gpadls,
