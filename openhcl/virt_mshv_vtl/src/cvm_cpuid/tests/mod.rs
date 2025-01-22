@@ -259,7 +259,7 @@ fn populate_and_filter() {
                 .with_ibpb(true)
                 .with_ibrs(true)
                 .with_stibp(true)
-                .with_mdd(true)
+                .with_ssbd(true)
                 .with_stibp_always_on(true)
                 .with_efer_lmsle_unsupported(true)
                 .with_psfd(true)
