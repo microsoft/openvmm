@@ -42,6 +42,8 @@ use inspect::InspectMut;
 use inspect_counters::Counter;
 use parking_lot::RwLock;
 use std::num::NonZeroU64;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering;
 use thiserror::Error;
 use tlb_flush::TdxFlushState;
 use tlb_flush::TdxPartitionFlushState;
@@ -537,6 +539,8 @@ impl HardwareIsolatedBacking for TdxBacked {
 pub struct TdxBackedShared {
     cvm: UhCvmPartitionState,
     flush_state: VtlArray<RwLock<TdxPartitionFlushState>, 2>,
+    #[inspect(iter_by_index)]
+    active_vtl: Vec<AtomicU8>,
 }
 
 impl TdxBackedShared {
@@ -544,6 +548,10 @@ impl TdxBackedShared {
         Ok(Self {
             flush_state: VtlArray::from_fn(|_| RwLock::new(TdxPartitionFlushState::new())),
             cvm: params.cvm_state.unwrap(),
+            // VPs start in VTL 2.
+            active_vtl: std::iter::repeat_n(2, params.vp_count as usize)
+                .map(AtomicU8::new)
+                .collect(),
         })
     }
 }
@@ -1305,8 +1313,23 @@ impl UhProcessor<'_, TdxBacked> {
             self.backing.vtls[next_vtl].interruption_set = false;
         }
 
-        // We're about to return to a lower VTL, so do any pending flushes, unlock our
-        // TLB locks, and wait for any others we're supposed to.
+        // We're about to return to a lower VTL, so set active_vtl for other VPs,
+        // do any pending flushes, unlock our TLB locks, and wait for any others
+        // we're supposed to.
+
+        // active_vtl needs SeqCst ordering in order to ensure that, when other VPs
+        // issue a TLB flush, they always observe the correct active VTL. Otherwise
+        // they might choose to not send this VP a wake, leading to a stall, until
+        // this VP happens to exit to VTL 2 again.
+        // This needs to be set before doing local TLB flushes to ensure there is
+        // no window of time where new flush requests could be added to the queue
+        // while the active VTL is still perceived to be VTL 2, as that could result
+        // in missing a wake. This does technically leave open a small window
+        // for potential spurious wakes, but that's preferable, and will cause no
+        // problems besides a small amount of time waste.
+        self.shared.active_vtl[self.vp_index().index() as usize]
+            .store(next_vtl as u8, Ordering::SeqCst);
+
         self.do_tlb_flush(next_vtl);
         self.unlock_tlb_lock(Vtl::Vtl2);
         let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
@@ -1348,6 +1371,7 @@ impl UhProcessor<'_, TdxBacked> {
             .run()
             .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?;
 
+        self.shared.active_vtl[self.vp_index().index() as usize].store(2, Ordering::SeqCst);
         let entered_from_vtl = next_vtl;
         *self.runner.tdx_vp_entry_flags_mut() = TdxVmFlags::new();
 
@@ -3546,19 +3570,33 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
         Ok(())
     }
 
-    fn wake_processors_for_tlb_flush(&mut self, _vtl: GuestVtl, processor_set: Option<Vec<u32>>) {
-        // TODO TDX GUEST VSM: Add additional checks? HCL checks that VP is active and in target VTL
-        if let Some(processors) = processor_set {
-            for vp in processors {
-                if self.vp.vp_index().index() != vp {
-                    self.vp.partition.vps[vp as usize].wake_vtl2();
-                }
+    fn wake_processors_for_tlb_flush(&mut self, vtl: GuestVtl, processor_set: Option<Vec<u32>>) {
+        match processor_set {
+            Some(processors) => {
+                self.wake_processors_for_tlb_flush_inner(
+                    vtl,
+                    processors.into_iter().map(|x| x as usize),
+                );
             }
-        } else {
-            for vp in self.vp.partition.vps.iter() {
-                if self.vp.vp_index().index() != vp.cpu_index {
-                    vp.wake_vtl2();
-                }
+            None => self.wake_processors_for_tlb_flush_inner(vtl, 0..self.vp.partition.vps.len()),
+        }
+    }
+
+    fn wake_processors_for_tlb_flush_inner(
+        &mut self,
+        vtl: GuestVtl,
+        processors: impl Iterator<Item = usize>,
+    ) {
+        for target_vp in processors {
+            // Use SeqCst ordering to ensure that we are observing the most
+            // up-to-date value from other VPs. Otherwise we might not send a
+            // wake to a VP in a lower VTL, which could cause TLB lock holders
+            // to be stuck waiting until the target_vp happens to switch into
+            // VTL 2.
+            if self.vp.vp_index().index() as usize != target_vp
+                && self.vp.shared.active_vtl[target_vp].load(Ordering::SeqCst) == vtl as u8
+            {
+                self.vp.partition.vps[target_vp].wake_vtl2();
             }
         }
     }
