@@ -595,19 +595,27 @@ struct UhVpInner {
     #[inspect(skip)]
     vp_info: TargetVpInfo,
     cpu_index: u32,
-    /// Only modified for hardware CVMs. On other types of VMs, since VTL 2
-    /// doesn't handle EnableVpVtl, there's no obvious place to set this.
-    hcvm_vtl1_enabled: Mutex<bool>,
+    /// Only modified for hardware CVMs.
+    hcvm_vtl1_state: Mutex<UhVpCvmVtl1State>,
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
     hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<VpStartEnableVtl>>>, 2>,
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
 }
 
+#[derive(Debug, Inspect)]
+struct UhVpCvmVtl1State {
+    /// Whether VTL 1 has been enabled on the vp.
+    enabled: bool,
+    /// Whether the StartVirtualProcessor hypercall has been called for this vp.
+    started: bool,
+}
+
 #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
 #[derive(Debug, Inspect)]
 /// State for handling StartVp/EnableVpVtl hypercalls.
 pub struct VpStartEnableVtl {
+    /// True if the context is for startvp, false for enablevpvtl
     is_start: bool,
     #[inspect(skip)]
     context: hvdef::hypercall::InitialVpContextX64,

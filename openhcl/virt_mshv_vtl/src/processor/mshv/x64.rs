@@ -424,6 +424,10 @@ impl BackingPrivate for HypervisorBackedX86 {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
+
+    fn set_exit_vtl(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl) {
+        unimplemented!()
+    }
 }
 
 fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
@@ -2315,7 +2319,7 @@ mod save_restore {
                         vp_info: _,
                         cpu_index: _,
                         // Only relevant for CVMs
-                        hcvm_vtl1_enabled: _,
+                        hcvm_vtl1_state: _,
                         hv_start_enable_vtl_vp: _,
                     },
                 // Saved

@@ -154,6 +154,58 @@ impl HardwareIsolatedBacking for SnpBacked {
         &shared.cvm
     }
 
+    fn switch_vtl_state(
+        this: &mut UhProcessor<'_, Self>,
+        source_vtl: GuestVtl,
+        target_vtl: GuestVtl,
+    ) {
+        let [vmsa0, vmsa1] = this.runner.vmsas_mut();
+        let (current_vmsa, mut target_vmsa) = match (source_vtl, target_vtl) {
+            (GuestVtl::Vtl0, GuestVtl::Vtl1) => (vmsa0, vmsa1),
+            (GuestVtl::Vtl1, GuestVtl::Vtl0) => (vmsa1, vmsa0),
+            _ => unreachable!(),
+        };
+
+        target_vmsa.set_rax(current_vmsa.rax());
+        target_vmsa.set_rbx(current_vmsa.rbx());
+        target_vmsa.set_rcx(current_vmsa.rcx());
+        target_vmsa.set_rdx(current_vmsa.rdx());
+        target_vmsa.set_rbp(current_vmsa.rbp());
+        target_vmsa.set_rsi(current_vmsa.rsi());
+        target_vmsa.set_rdi(current_vmsa.rdi());
+        target_vmsa.set_r8(current_vmsa.r8());
+        target_vmsa.set_r9(current_vmsa.r9());
+        target_vmsa.set_r10(current_vmsa.r10());
+        target_vmsa.set_r11(current_vmsa.r11());
+        target_vmsa.set_r12(current_vmsa.r12());
+        target_vmsa.set_r13(current_vmsa.r13());
+        target_vmsa.set_r14(current_vmsa.r14());
+        target_vmsa.set_r15(current_vmsa.r15());
+        target_vmsa.set_xcr0(current_vmsa.xcr0());
+
+        target_vmsa.set_cr2(current_vmsa.cr2());
+
+        // DR6 not shared on AMD
+        target_vmsa.set_dr0(current_vmsa.dr0());
+        target_vmsa.set_dr1(current_vmsa.dr1());
+        target_vmsa.set_dr2(current_vmsa.dr2());
+        target_vmsa.set_dr3(current_vmsa.dr3());
+
+        target_vmsa.set_pl0_ssp(current_vmsa.pl0_ssp());
+        target_vmsa.set_pl1_ssp(current_vmsa.pl1_ssp());
+        target_vmsa.set_pl2_ssp(current_vmsa.pl2_ssp());
+        target_vmsa.set_pl3_ssp(current_vmsa.pl3_ssp());
+        target_vmsa.set_u_cet(current_vmsa.u_cet());
+
+        target_vmsa.set_x87_registers(&current_vmsa.x87_registers());
+
+        let vec_reg_count = 16;
+        for i in 0..vec_reg_count {
+            target_vmsa.set_xmm_registers(i, current_vmsa.xmm_registers(i));
+            target_vmsa.set_ymm_registers(i, current_vmsa.ymm_registers(i));
+        }
+    }
+
     fn translation_registers(
         &self,
         this: &UhProcessor<'_, Self>,
@@ -369,13 +421,13 @@ impl BackingPrivate for SnpBacked {
         // Check VTL enablement inside each block to avoid taking a lock on the hot path,
         // INIT and SIPI are quite cold.
         if init {
-            if !*this.inner.hcvm_vtl1_enabled.lock() {
+            if !this.inner.hcvm_vtl1_state.lock().enabled {
                 this.handle_init(vtl)?;
             }
         }
 
         if let Some(vector) = sipi {
-            if !*this.inner.hcvm_vtl1_enabled.lock() {
+            if !this.inner.hcvm_vtl1_state.lock().enabled {
                 this.handle_sipi(vtl, vector)?;
             }
         }
@@ -419,56 +471,6 @@ impl BackingPrivate for SnpBacked {
             .expect("requesting deliverability is not a fallable operation");
     }
 
-    fn switch_vtl(this: &mut UhProcessor<'_, Self>, source_vtl: GuestVtl, target_vtl: GuestVtl) {
-        let [vmsa0, vmsa1] = this.runner.vmsas_mut();
-        let (current_vmsa, mut target_vmsa) = match (source_vtl, target_vtl) {
-            (GuestVtl::Vtl0, GuestVtl::Vtl1) => (vmsa0, vmsa1),
-            (GuestVtl::Vtl1, GuestVtl::Vtl0) => (vmsa1, vmsa0),
-            _ => unreachable!(),
-        };
-
-        target_vmsa.set_rax(current_vmsa.rax());
-        target_vmsa.set_rbx(current_vmsa.rbx());
-        target_vmsa.set_rcx(current_vmsa.rcx());
-        target_vmsa.set_rdx(current_vmsa.rdx());
-        target_vmsa.set_rbp(current_vmsa.rbp());
-        target_vmsa.set_rsi(current_vmsa.rsi());
-        target_vmsa.set_rdi(current_vmsa.rdi());
-        target_vmsa.set_r8(current_vmsa.r8());
-        target_vmsa.set_r9(current_vmsa.r9());
-        target_vmsa.set_r10(current_vmsa.r10());
-        target_vmsa.set_r11(current_vmsa.r11());
-        target_vmsa.set_r12(current_vmsa.r12());
-        target_vmsa.set_r13(current_vmsa.r13());
-        target_vmsa.set_r14(current_vmsa.r14());
-        target_vmsa.set_r15(current_vmsa.r15());
-        target_vmsa.set_xcr0(current_vmsa.xcr0());
-
-        target_vmsa.set_cr2(current_vmsa.cr2());
-
-        // DR6 not shared on AMD
-        target_vmsa.set_dr0(current_vmsa.dr0());
-        target_vmsa.set_dr1(current_vmsa.dr1());
-        target_vmsa.set_dr2(current_vmsa.dr2());
-        target_vmsa.set_dr3(current_vmsa.dr3());
-
-        target_vmsa.set_pl0_ssp(current_vmsa.pl0_ssp());
-        target_vmsa.set_pl1_ssp(current_vmsa.pl1_ssp());
-        target_vmsa.set_pl2_ssp(current_vmsa.pl2_ssp());
-        target_vmsa.set_pl3_ssp(current_vmsa.pl3_ssp());
-        target_vmsa.set_u_cet(current_vmsa.u_cet());
-
-        target_vmsa.set_x87_registers(&current_vmsa.x87_registers());
-
-        let vec_reg_count = 16;
-        for i in 0..vec_reg_count {
-            target_vmsa.set_xmm_registers(i, current_vmsa.xmm_registers(i));
-            target_vmsa.set_ymm_registers(i, current_vmsa.ymm_registers(i));
-        }
-
-        this.backing.cvm_state_mut().exit_vtl = target_vtl;
-    }
-
     fn handle_cross_vtl_interrupts(
         this: &mut UhProcessor<'_, Self>,
         dev: &impl CpuIo,
@@ -506,7 +508,7 @@ impl BackingPrivate for SnpBacked {
 
     fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {
         let vtl0_vmsa = this.runner.vmsa(GuestVtl::Vtl0);
-        let vtl1_vmsa = if *this.inner.hcvm_vtl1_enabled.lock() {
+        let vtl1_vmsa = if this.inner.hcvm_vtl1_state.lock().enabled {
             Some(this.runner.vmsa(GuestVtl::Vtl1))
         } else {
             None
@@ -548,6 +550,10 @@ impl BackingPrivate for SnpBacked {
 
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
+    }
+
+    fn set_exit_vtl(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
+        this.backing.cvm_state_mut().exit_vtl = vtl;
     }
 }
 
