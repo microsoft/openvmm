@@ -12,7 +12,7 @@
 
 #### Flowey Build Dependencies
 
-# On Linux, install gcc and rust to build flowey. 
+# On Linux, install gcc and rust to build flowey.
 # The apt-get retries below avoid failures in CI that can be
 # intermittently caused by other processes temporarily holding
 # the necessary dpkg or apt locks.

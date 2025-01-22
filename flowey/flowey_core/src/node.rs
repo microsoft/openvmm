@@ -1793,6 +1793,14 @@ pub mod steps {
 
             /// `github.token`
             pub const GITHUB__TOKEN: GhContextVar = GhContextVar::new_secret("github.token");
+
+            /// `github.event.pull_request.head.ref`
+            pub const GITHUB__HEAD_REF: GhContextVar =
+                GhContextVar::new("github.event.pull_request.head.ref");
+
+            /// `github.event.pull_request.number`
+            pub const GITHUB__PR_NUMBER: GhContextVar =
+                GhContextVar::new("github.event.pull_request.number");
         }
 
         impl GhContextVar {
