@@ -303,7 +303,7 @@ impl NvmeManagerWorker {
                 .map_err(InnerError::Vfio)?;
 
                 let driver =
-                    nvme_driver::NvmeDriver::new(&self.driver_source, self.vp_count, device)
+                    nvme_driver::NvmeDriver::new(&self.driver_source, self.vp_count, device, None)
                         .instrument(tracing::info_span!(
                             "nvme_driver_init",
                             pci_id = entry.key()
