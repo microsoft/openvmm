@@ -333,6 +333,7 @@ impl GuestEmulationTransportClient {
                 is_servicing_scenario: json.v2.dynamic.is_servicing_scenario,
                 firmware_mode_is_pcat: json.v2.r#static.firmware_mode_is_pcat,
                 imc_enabled: json.v2.r#static.imc_enabled,
+                cxl_memory_enabled: json.v2.r#static.cxl_memory_enabled,
             },
         })
     }

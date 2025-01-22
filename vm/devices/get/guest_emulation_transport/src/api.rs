@@ -114,6 +114,7 @@ pub mod platform_settings {
         pub watchdog_enabled: bool,
         pub firmware_mode_is_pcat: bool,
         pub imc_enabled: bool,
+        pub cxl_memory_enabled: bool,
     }
 
     #[derive(Copy, Clone, Debug, Inspect)]

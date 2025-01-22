@@ -2947,6 +2947,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         nvdimm_count: _,
         watchdog_enabled: _,
         vtl2_settings: _,
+        cxl_memory_enabled: _,
     } = &dps.general;
 
     if *hibernation_enabled {
