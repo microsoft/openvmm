@@ -913,7 +913,7 @@ impl ServerTask {
             }
             VmbusRequest::Inspect(deferred) => {
                 deferred.respond(|resp| {
-                    resp.merge(&self.inner.message_port)
+                    resp.field("message_port", &self.inner.message_port)
                         .field("running", self.running)
                         .field("hvsock_requests", self.inner.hvsock_requests)
                         .field_mut_with("unstick_channels", |v| {
