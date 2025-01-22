@@ -65,6 +65,7 @@ use hvdef::GuestCrashCtl;
 use hvdef::HvAllArchRegisterName;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
+use hvdef::HvRegisterName;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmPartitionStatus;
 use hvdef::HvRepResult;
@@ -126,6 +127,8 @@ pub enum Error {
     Sidecar(#[source] NewSidecarClientError),
     #[error("failed to install {0:?} intercept: {1:?}")]
     InstallIntercept(HvInterceptType, HvError),
+    #[error("failed to query hypervisor register {0:#x?}")]
+    Register(HvRegisterName, #[source] HvError),
     #[error("failed to set vsm partition config register")]
     VsmPartitionConfig(#[source] SetVsmPartitionConfigError),
     #[error("failed to create virtual device")]
@@ -712,7 +715,10 @@ impl UhPartition {
 
     /// Returns the current hypervisor reference time, in 100ns units.
     pub fn reference_time(&self) -> u64 {
-        self.inner.hcl.reference_time()
+        self.inner
+            .hcl
+            .reference_time()
+            .expect("should not fail to get the reference time")
     }
 }
 
@@ -828,13 +834,13 @@ impl UhPartitionInner {
 
     // TODO VBS GUEST VSM: enable for aarch64
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    fn vsm_status(&self) -> HvRegisterVsmPartitionStatus {
+    fn vsm_status(&self) -> Result<HvRegisterVsmPartitionStatus, hcl::ioctl::Error> {
         // TODO: It might be possible to cache VsmPartitionStatus.
         let reg = self.hcl.get_vp_register(
             HvAllArchRegisterName::VsmPartitionStatus,
             HvInputVtl::CURRENT_VTL,
-        );
-        HvRegisterVsmPartitionStatus::from(reg.as_u64())
+        )?;
+        Ok(reg.as_u64().into())
     }
 }
 
@@ -1150,7 +1156,7 @@ impl IoApicRouting for UhPartitionInner {
 /// values used by underhill.
 fn set_vtl2_vsm_partition_config(hcl: &mut Hcl) -> Result<(), Error> {
     // Read available capabilities to determine what to enable.
-    let caps = hcl.get_vsm_capabilities();
+    let caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
     let hardware_isolated = hcl.isolation().is_hardware_isolated();
     let isolated = hcl.isolation().is_isolated();
 
@@ -1370,7 +1376,7 @@ impl<'a> UhProtoPartition<'a> {
             &params,
             #[cfg(guest_arch = "x86_64")]
             cvm_cpuid.as_ref(),
-        );
+        )?;
 
         Ok(UhProtoPartition {
             hcl,
@@ -1707,21 +1713,23 @@ impl<'a> UhProtoPartition<'a> {
 
 impl UhPartition {
     /// Gets the guest OS ID for VTL0.
-    pub fn vtl0_guest_os_id(&self) -> HvGuestOsId {
+    pub fn vtl0_guest_os_id(&self) -> Result<HvGuestOsId, Error> {
         // If Underhill is emulating the hypervisor interfaces, get this value
         // from the emulator. This happens when running under hardware isolation
         // or when configured for testing.
-        if let Some(hv) = self.inner.hv.as_ref() {
+        let id = if let Some(hv) = self.inner.hv.as_ref() {
             hv.guest_os_id(Vtl::Vtl0)
         } else {
             // Ask the hypervisor for this value.
             let reg_value = self
                 .inner
                 .hcl
-                .get_vp_register(HvAllArchRegisterName::GuestOsId, Vtl::Vtl0.into());
+                .get_vp_register(HvAllArchRegisterName::GuestOsId, Vtl::Vtl0.into())
+                .map_err(Error::Hcl)?;
 
             HvGuestOsId::from(reg_value.as_u64())
-        }
+        };
+        Ok(id)
     }
 
     /// Configures guest accesses to IO ports in `range` to go directly to the
@@ -1759,15 +1767,15 @@ impl UhProtoPartition<'_> {
         hcl: &Hcl,
         params: &UhPartitionNewParams<'_>,
         #[cfg(guest_arch = "x86_64")] cvm_cpuid: Option<&cvm_cpuid::CpuidResults>,
-    ) -> bool {
+    ) -> Result<bool, Error> {
         match params.isolation {
             IsolationType::None | IsolationType::Vbs => {}
             #[cfg(guest_arch = "x86_64")]
-            IsolationType::Tdx => return false, // TODO TDX GUEST_VSM
+            IsolationType::Tdx => return Ok(false), // TODO TDX GUEST_VSM
             #[cfg(guest_arch = "x86_64")]
             IsolationType::Snp => {
                 if !params.env_cvm_guest_vsm {
-                    return false;
+                    return Ok(false);
                 }
                 // Require RMP Query
                 let rmp_query = x86defs::cpuid::ExtendedSevFeaturesEax::from(
@@ -1780,7 +1788,7 @@ impl UhProtoPartition<'_> {
 
                 if !rmp_query {
                     tracing::info!("rmp query not supported, cannot enable vsm");
-                    return false;
+                    return Ok(false);
                 }
             }
             #[allow(unreachable_patterns)]
@@ -1799,13 +1807,14 @@ impl UhProtoPartition<'_> {
                 HvArm64RegisterName::PrivilegesAndFeaturesInfo,
                 HvInputVtl::CURRENT_VTL,
             )
+            .map_err(Error::Hcl)?
             .as_u64();
 
         if !hvdef::HvPartitionPrivilege::from(privs).access_vsm() {
-            return false;
+            return Ok(false);
         }
-        let guest_vsm_config = hcl.get_guest_vsm_partition_config();
-        guest_vsm_config.maximum_vtl() >= u8::from(GuestVtl::Vtl1)
+        let guest_vsm_config = hcl.get_guest_vsm_partition_config().map_err(Error::Hcl)?;
+        Ok(guest_vsm_config.maximum_vtl() >= u8::from(GuestVtl::Vtl1))
     }
 
     #[cfg(guest_arch = "x86_64")]

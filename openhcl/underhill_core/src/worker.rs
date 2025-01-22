@@ -787,7 +787,10 @@ impl UhVmNetworkSettings {
                 }
             };
             let p = partition.clone();
-            let get_guest_os_id = move || -> HvGuestOsId { p.vtl0_guest_os_id() };
+            let get_guest_os_id = move || -> HvGuestOsId {
+                p.vtl0_guest_os_id()
+                    .expect("cannot fail to query the guest OS ID")
+            };
 
             let mut nic_builder = netvsp::Nic::builder()
                 .limit_ring_buffer(true)

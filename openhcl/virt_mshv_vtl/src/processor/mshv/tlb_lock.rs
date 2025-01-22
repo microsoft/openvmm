@@ -63,7 +63,8 @@ impl UhProcessor<'_, HypervisorBacked> {
         let result = self
             .partition
             .hcl
-            .get_vp_register(name, HvInputVtl::CURRENT_VTL);
+            .get_vp_register(name, HvInputVtl::CURRENT_VTL)
+            .expect("failure is a misconfiguration");
         let config = hvdef::HvRegisterVsmVpSecureVtlConfig::from(result.as_u64());
         config.tlb_locked()
     }
