@@ -72,10 +72,10 @@ impl UhProcessor<'_, TdxBacked> {
     pub(super) fn do_tlb_flush(&mut self, target_vtl: GuestVtl) {
         let partition_flush_state = self.shared.flush_state[target_vtl].read();
 
-        // NOTE: It is theoretically possible that we haven't run in so long that the
-        // partition counters have wrapped all the way around and are back to
-        // our current values. However this is so extremely unlikely that we don't
-        // bother to worry about it.
+        // NOTE: It is theoretically possible that we haven't run in so long
+        // that the partition counters have wrapped all the way around u32::MAX
+        // and are back to our current values. However this is so extremely
+        // unlikely that we don't bother to worry about it.
 
         // Check first to see whether a full flush is required.
         let flush_entire_required = if self.backing.vtls[target_vtl]
@@ -136,48 +136,34 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         // The last `count_diff` addresses are the new ones.
-        // TODO: don't double copy?
-        let flush_addrs: Vec<_> = partition_flush_state
+        let mut flush_addrs = partition_flush_state
             .gva_list
-            .range(partition_flush_state.gva_list.len() - count_diff..)
-            .copied()
-            .collect();
+            .range(partition_flush_state.gva_list.len() - count_diff..);
 
-        // Any extended entry can't be handled, promote to a flush entire.
-        if flush_addrs.iter().any(|a| a.as_extended().large_page()) {
-            return false;
-        }
-
-        *gva_list_count = partition_flush_state.s.gva_list_count;
-        Self::do_flush_list(target_vtl, &flush_addrs, runner, flush_page);
-
-        true
-    }
-
-    fn do_flush_list(
-        target_vtl: GuestVtl,
-        flush_addrs: &[HvGvaRange],
-        runner: &mut ProcessorRunner<'_, Tdx>,
-        flush_page: &page_pool_alloc::PagePoolHandle,
-    ) {
         // Now we can build the TDX structs and actually call INVGLA.
-        tracing::trace!(
-            count = flush_addrs.len(),
-            ?target_vtl,
-            "flushing TLB by list"
-        );
+        tracing::trace!(count = count_diff, ?target_vtl, "flushing TLB by list");
         let mut gla_flags = TdGlaVmAndFlags::new().with_vm_index(target_vtl as u64 + 1);
 
-        if flush_addrs.len() == 1 {
+        if count_diff == 1 {
+            let gva_range = flush_addrs.next().unwrap();
+            // Any extended entry can't be handled, promote to a flush entire.
+            if gva_range.as_extended().large_page() {
+                return false;
+            }
             runner
-                .invgla(gla_flags, TdxGlaListInfo::from(flush_addrs[0].0))
-                .expect("should never fail");
+                .invgla(gla_flags, TdxGlaListInfo::from(gva_range.0))
+                .unwrap();
         } else {
             gla_flags.set_list(true);
 
             let page_mapping = flush_page.mapping().unwrap();
 
-            for (i, gva_range) in flush_addrs.iter().enumerate() {
+            for (i, gva_range) in flush_addrs.enumerate() {
+                // Any extended entry can't be handled, promote to a flush entire.
+                if gva_range.as_extended().large_page() {
+                    return false;
+                }
+
                 page_mapping
                     .write_at(i * size_of::<HvGvaRange>(), gva_range.as_bytes())
                     .unwrap();
@@ -185,11 +171,12 @@ impl UhProcessor<'_, TdxBacked> {
 
             let gla_list = TdxGlaListInfo::new()
                 .with_list_gpa(flush_page.base_pfn())
-                .with_num_entries(flush_addrs.len() as u64);
-            runner
-                .invgla(gla_flags, gla_list)
-                .expect("should never fail");
+                .with_num_entries(count_diff as u64);
+            runner.invgla(gla_flags, gla_list).unwrap();
         };
+
+        *gva_list_count = partition_flush_state.s.gva_list_count;
+        true
     }
 
     fn do_flush_entire(non_global: bool, runner: &mut ProcessorRunner<'_, Tdx>) {
