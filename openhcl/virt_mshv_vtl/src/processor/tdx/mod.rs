@@ -42,6 +42,8 @@ use inspect::InspectMut;
 use inspect_counters::Counter;
 use parking_lot::RwLock;
 use std::num::NonZeroU64;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering;
 use thiserror::Error;
 use tlb_flush::TdxFlushState;
 use tlb_flush::TdxPartitionFlushState;
@@ -536,6 +538,8 @@ impl HardwareIsolatedBacking for TdxBacked {
 pub struct TdxBackedShared {
     cvm: UhCvmPartitionState,
     flush_state: VtlArray<RwLock<TdxPartitionFlushState>, 2>,
+    #[inspect(iter_by_index)]
+    active_vtl: Vec<AtomicU8>,
 }
 
 impl TdxBackedShared {
@@ -543,6 +547,10 @@ impl TdxBackedShared {
         Ok(Self {
             flush_state: VtlArray::from_fn(|_| RwLock::new(TdxPartitionFlushState::new())),
             cvm: params.cvm_state.unwrap(),
+            // VPs start in VTL 2.
+            active_vtl: std::iter::repeat_n(2, params.vp_count as usize)
+                .map(AtomicU8::new)
+                .collect(),
         })
     }
 }
@@ -1320,12 +1328,15 @@ impl UhProcessor<'_, TdxBacked> {
         self.runner
             .tdx_vp_entry_flags_mut()
             .set_vm_index(next_vtl as u8 + 1);
+        self.shared.active_vtl[self.vp_index().index() as usize]
+            .store(next_vtl as u8, Ordering::SeqCst);
 
         let has_intercept = self
             .runner
             .run()
             .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?;
 
+        self.shared.active_vtl[self.vp_index().index() as usize].store(2, Ordering::SeqCst);
         let entered_from_vtl = next_vtl;
         *self.runner.tdx_vp_entry_flags_mut() = TdxVmFlags::new();
 
@@ -3495,21 +3506,30 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
 impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
     pub fn wake_processors_for_tlb_flush(
         &mut self,
-        _vtl: GuestVtl,
+        vtl: GuestVtl,
         processor_set: Option<Vec<u32>>,
     ) {
-        // TODO TDX GUEST VSM: Add additional checks? HCL checks that VP is active and in target VTL
-        if let Some(processors) = processor_set {
-            for vp in processors {
-                if self.vp.vp_index().index() != vp {
-                    self.vp.partition.vps[vp as usize].wake_vtl2();
-                }
+        match processor_set {
+            Some(processors) => {
+                self.wake_processors_for_tlb_flush_inner(
+                    vtl,
+                    processors.into_iter().map(|x| x as usize),
+                );
             }
-        } else {
-            for vp in self.vp.partition.vps.iter() {
-                if self.vp.vp_index().index() != vp.cpu_index {
-                    vp.wake_vtl2();
-                }
+            None => self.wake_processors_for_tlb_flush_inner(vtl, 0..self.vp.partition.vps.len()),
+        }
+    }
+
+    fn wake_processors_for_tlb_flush_inner(
+        &mut self,
+        vtl: GuestVtl,
+        processors: impl Iterator<Item = usize>,
+    ) {
+        for target_vp in processors {
+            if self.vp.vp_index().index() as usize != target_vp
+                && self.vp.shared.active_vtl[target_vp].load(Ordering::SeqCst) == vtl as u8
+            {
+                self.vp.partition.vps[target_vp].wake_vtl2();
             }
         }
     }

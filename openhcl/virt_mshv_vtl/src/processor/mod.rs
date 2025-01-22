@@ -259,6 +259,7 @@ mod private {
 
 pub struct BackingSharedParams {
     pub(crate) cvm_state: Option<crate::UhCvmPartitionState>,
+    pub(crate) vp_count: u32,
 }
 
 /// Processor backing.
