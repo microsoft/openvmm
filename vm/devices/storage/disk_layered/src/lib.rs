@@ -970,7 +970,7 @@ mod tests {
             false
         }
 
-        fn is_read_only(&self) -> bool {
+        fn is_logically_read_only(&self) -> bool {
             false
         }
 
