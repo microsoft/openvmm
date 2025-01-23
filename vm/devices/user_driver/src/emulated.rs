@@ -347,6 +347,7 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for Mapping<T> {
             .lock()
             .mmio_read(self.addr + offset as u64, &mut n)
             .unwrap();
+        println!("reading u32: offset={} value={}", offset, u32::from_ne_bytes(n));
         u32::from_ne_bytes(n)
     }
 
@@ -356,6 +357,7 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for Mapping<T> {
             .lock()
             .mmio_read(self.addr + offset as u64, &mut n)
             .unwrap();
+        println!("reading u64: offset={} value={}", offset, u64::from_ne_bytes(n));
         u64::from_ne_bytes(n)
     }
 

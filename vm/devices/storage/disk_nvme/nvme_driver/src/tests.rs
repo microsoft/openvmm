@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-
 use crate::NvmeDriver;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
+use chipset_device::pci::PciConfigSpace;
 use guid::Guid;
 use nvme::NvmeControllerCaps;
 use nvme_spec::nvm::DsmRange;
@@ -10,6 +10,7 @@ use pal_async::async_test;
 use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
+use std::fmt::Error;
 use test_with_tracing::test;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
@@ -30,6 +31,46 @@ async fn test_nvme_driver_bounce_buffer(driver: DefaultDriver) {
 #[async_test]
 async fn test_nvme_save_restore(driver: DefaultDriver) {
     test_nvme_save_restore_inner(driver).await;
+}
+
+#[async_test]
+async fn test_nvme_ioqueue(driver: DefaultDriver) {
+    const MSIX_COUNT: u16 = 2;
+    const IO_QUEUE_COUNT: u16 = 64;
+    const CPU_COUNT: u32 = 64;
+
+    let base_len = 64 << 20;
+    let payload_len = 4 << 30;
+    let mem = DeviceSharedMemory::new(base_len, payload_len);
+
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mut msi_set = MsiInterruptSet::new();
+    let mut nvme = nvme::NvmeController::new(
+        &driver_source,
+        mem.guest_memory().clone(),
+        &mut msi_set,
+        &mut ExternallyManagedMmioIntercepts,
+        NvmeControllerCaps {
+            msix_count: MSIX_COUNT,
+            max_io_queues: 2,
+            subsystem_id: Guid::new_random(),
+        },
+    );
+
+    // let queue_size: u32 = 0;
+    nvme.pci_cfg_write(0x40, 0x00000000).unwrap();
+    let mut value: u32 = 1000;
+    nvme.pci_cfg_read(0x40, &mut value).unwrap();
+    println!("VALUE BEING READ BACK IN IS {}", value);
+
+    let mut dword = 0u64;
+    nvme.write_bar0(0x00, dword.as_bytes()).unwrap();
+
+    let device = EmulatedDevice::new(nvme, msi_set, mem);
+    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device).await;
+
+
+    assert!(matches!(driver, Err(_)));
 }
 
 async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
