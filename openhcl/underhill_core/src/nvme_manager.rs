@@ -362,6 +362,7 @@ impl<'a> NvmeManagerWorker {
         self.devices = HashMap::new();
         for disk in &saved_state.nvme_disks {
             let pci_id = disk.pci_id.clone();
+            let dma_client = self.dma_manager.create_client(pci_id.clone());
             let vfio_device =
                 // This code can wait on each VFIO device until it is arrived.
                 // A potential optimization would be to delay VFIO operation
@@ -369,8 +370,9 @@ impl<'a> NvmeManagerWorker {
                 VfioDevice::restore(
                     &self.driver_source,
                     &disk.pci_id.clone(),
-                    (self.dma_buffer_spawner)(format!("nvme_{}", pci_id))
-                        .map_err(InnerError::DmaBuffer)?,
+                    dma_client.get_dma_buffer_allocator(format!("nvme_{}", pci_id))?,
+                    //(self.dma_buffer_spawner)(format!("nvme_{}", pci_id))
+                    //    .map_err(InnerError::DmaBuffer)?,
                         // manager exposed a method to get a refrance of a client based on pci_id
                     true,
                     self.dma_manager.get_client(&pci_id).unwrap(),

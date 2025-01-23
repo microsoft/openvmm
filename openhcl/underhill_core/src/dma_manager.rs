@@ -3,7 +3,7 @@
 use memory_range::MemoryRange;
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 use page_pool_alloc::PagePool;
-use user_driver::{memory::MemoryBlock, vfio::VfioDmaBuffer};
+use user_driver::{memory::MemoryBlock, vfio::{LockedMemoryAllocator, VfioDmaBuffer}};
 use user_driver::lockmem::LockedMemorySpawner;
 
 #[derive(Clone)]
@@ -93,6 +93,12 @@ impl user_driver::DmaClient for DmaClient {
         let allocator = self.dma_buffer_allocator.as_ref().unwrap();
 
         allocator.create_dma_buffer(total_size)
+    }
+
+    fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>
+    {
+        let allocator = self.dma_buffer_allocator.as_ref().unwrap();
+        allocator.restore_dma_buffer(len, base_pfn)
     }
 
 }
