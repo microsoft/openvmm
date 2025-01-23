@@ -1,0 +1,31 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "storage_tests"
+edition.workspace = true
+rust-version.workspace = true
+
+[dev-dependencies]
+chipset_device.workspace = true
+disk_backend.workspace = true
+disk_nvme.workspace = true
+disklayer_ram.workspace = true
+guestmem.workspace = true
+guid = { workspace = true, features = ["mesh", "inspect"] }
+nvme.workspace = true
+nvme_driver.workspace = true
+pal_async.workspace = true
+pci_core.workspace = true
+scsi_buffers.workspace = true
+scsi_core.workspace = true
+scsi_defs.workspace = true
+scsidisk.workspace = true
+test_with_tracing.workspace = true
+tracing.workspace = true
+user_driver.workspace = true
+vmcore.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true

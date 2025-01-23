@@ -6602,6 +6602,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "storage_tests"
+version = "0.0.0"
+dependencies = [
+ "chipset_device",
+ "disk_backend",
+ "disk_nvme",
+ "disklayer_ram",
+ "guestmem",
+ "guid",
+ "nvme",
+ "nvme_driver",
+ "pal_async",
+ "pci_core",
+ "scsi_buffers",
+ "scsi_core",
+ "scsi_defs",
+ "scsidisk",
+ "test_with_tracing",
+ "tracing",
+ "user_driver",
+ "vmcore",
+ "zerocopy 0.8.14",
+]
+
+[[package]]
 name = "storvsp"
 version = "0.0.0"
 dependencies = [
