@@ -1252,7 +1252,11 @@ impl Notifier for ServerTaskInner {
                         ChannelResponse::Open,
                     ),
                     Err(err) => {
-                        tracelimit::error_ratelimited!(?err, ?offer_id, "could not open channel",);
+                        tracelimit::error_ratelimited!(
+                            err = err.as_ref() as &dyn std::error::Error,
+                            ?offer_id,
+                            "could not open channel",
+                        );
 
                         // Return an error response to the channels module if the open_channel call
                         // failed.
