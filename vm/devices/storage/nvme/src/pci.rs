@@ -77,7 +77,6 @@ impl RegState {
     fn new() -> Self {
         Self {
             interrupt_mask: 0,
-            cap: CAP,
             cc: spec::Cc::new(),
             csts: spec::Csts::new(),
             aqa: spec::Aqa::new(),
