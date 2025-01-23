@@ -62,7 +62,7 @@ enum HclNetworkVfManagerMessage {
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
 }
 
-async fn  create_mana_device(
+async fn   create_mana_device(
     driver_source: &VmTaskDriverSource,
     pci_id: &str,
     vp_count: u32,
@@ -701,7 +701,7 @@ impl HclNetworkVFManagerWorker {
                         self.vp_count,
                         self.max_sub_channels,
                         self.dma_buffer.clone(),
-                        self.dma_manager.create_client(pci_id)
+                        Arc::new(self.dma_manager.create_client(pci_id))
                     )
                     .await
                     {
@@ -891,7 +891,7 @@ impl HclNetworkVFManager {
             vp_count,
             max_sub_channels,
             dma_buffer.clone(),
-            dma_manager.create_client(pci_id),
+            Arc::new(dma_manager.create_client(pci_id)),
         )
         .await?;
         let (mut endpoints, endpoint_controls): (Vec<_>, Vec<_>) = (0..device.num_vports())

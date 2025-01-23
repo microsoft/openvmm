@@ -5,7 +5,7 @@
 //! VFIO driver. Keeps track of all the NVMe drivers.
 
 use crate::dma_manager::GlobalDmaManager;
-use crate::dma_manager::DmaClient;
+//use crate::dma_manager::DmaClient;
 use crate::nvme_manager::save_restore::NvmeManagerSavedState;
 use crate::nvme_manager::save_restore::NvmeSavedDiskConfig;
 use crate::servicing::NvmeSavedState;
@@ -305,7 +305,7 @@ impl<'a> NvmeManagerWorker {
                     entry.key(),
                     dma_client.get_dma_buffer_allocator(format!("nvme_{}", entry.key()))
                         .map_err(InnerError::DmaBuffer)?,
-                        dma_client,
+                        Arc::new(dma_client),
                 )
                 .instrument(tracing::info_span!("vfio_device_open", pci_id))
                 .await

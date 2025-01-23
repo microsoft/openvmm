@@ -1878,7 +1878,7 @@ async fn new_underhill_vm(
         // Fallback to None, which indicates LockedMemorySpawner will be used internally
         None
     };
-    let mut dma_manager = GlobalDmaManager::new(dma_pool);
+    let dma_manager = GlobalDmaManager::new(dma_pool);
     let nvme_manager = if env_cfg.nvme_vfio {
         //let shared_vis_pool_spawner = shared_vis_pages_pool
         //    .as_ref()
@@ -1889,7 +1889,7 @@ async fn new_underhill_vm(
         let save_restore_supported = env_cfg.nvme_keep_alive; //&& private_pool_spanwer.is_some();
 
         let vfio_dma_buffer_spawner = Box::new(
-            move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
+            move |_device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
                 // Dummy behavior: returning a dummy VfioDmaBuffer (you need to define one).
                 Ok(Arc::new(LockedMemorySpawner) as Arc<dyn VfioDmaBuffer>)  // Replace `LockedMemorySpawner` with a dummy object if necessary
             },

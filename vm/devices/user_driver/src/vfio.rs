@@ -198,6 +198,10 @@ impl DeviceBacking for VfioDevice {
         }
     }
 
+    fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
+        Some(self.dma_client.clone())
+    }
+
     fn max_interrupt_count(&self) -> u32 {
         self.msix_info.count
     }

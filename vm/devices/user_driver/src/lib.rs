@@ -38,6 +38,8 @@ pub trait DeviceBacking: 'static + Send + Inspect {
     /// Returns an object that can allocate host memory to be shared with the device.
     fn host_allocator(&self) -> Self::DmaAllocator;
 
+    fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>>;
+
     /// Returns the maximum number of interrupts that can be mapped.
     fn max_interrupt_count(&self) -> u32;
 
@@ -79,7 +81,13 @@ pub trait DmaClient : Send + Sync {
     ) -> anyhow::Result<Vec<i32>>;
 
     fn get_dma_buffer_allocator(
-        &self,
+        &mut self,
         device_name: String,
     ) -> anyhow::Result<Arc<dyn VfioDmaBuffer>>;
+
+
+    fn allocate_dma_buffer(
+        &mut self,
+        total_size: usize,
+    ) -> anyhow::Result<MemoryBlock>;
 }
