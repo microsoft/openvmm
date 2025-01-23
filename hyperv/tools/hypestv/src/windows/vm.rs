@@ -237,7 +237,11 @@ impl Vm {
                     )),
                 };
                 if let Some(target) = target {
-                    if task.as_ref().is_some_and(|task| task.task.is_finished()) {
+                    if self
+                        .pv_kmsg
+                        .as_ref()
+                        .is_some_and(|task| task.task.is_finished())
+                    {
                         self.pv_kmsg = None;
                     }
                     if let Some(task) = &mut self.pv_kmsg {
