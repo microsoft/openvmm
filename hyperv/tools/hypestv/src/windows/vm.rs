@@ -398,7 +398,6 @@ impl VmInner {
                 }
 
                 writeln!(self.printer.out(), "com{port} disconnected").ok();
-                current_serial = None;
                 Ok(())
             };
 
@@ -406,7 +405,10 @@ impl VmInner {
                 .race()
                 .await;
             match event {
-                Event::TaskDone(r) => r?,
+                Event::TaskDone(r) => {
+                    r?;
+                    current_serial = None;
+                }
                 Event::Request(Some(y)) => match y {
                     IoRequest::NewTarget(new_target) => {
                         target = new_target;
