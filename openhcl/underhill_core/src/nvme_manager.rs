@@ -91,7 +91,7 @@ impl NvmeManager {
     pub fn new(
         driver_source: &VmTaskDriverSource,
         vp_count: u32,
-        dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
+        _dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
         save_restore_supported: bool,
         saved_state: Option<NvmeSavedState>,
         dma_manager: GlobalDmaManager,
@@ -102,7 +102,7 @@ impl NvmeManager {
             driver_source: driver_source.clone(),
             devices: HashMap::new(),
             vp_count,
-            dma_buffer_spawner,
+            _dma_buffer_spawner,
             save_restore_supported,
             dma_manager,
         };
@@ -216,7 +216,7 @@ struct NvmeManagerWorker {
     // TODO: Revisit this Box<fn> into maybe a trait, once we refactor DMA to a
     // central manager.
     #[inspect(skip)]
-    dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
+    _dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
     vp_count: u32,
     /// Running environment (memory layout) allows save/restore.
     save_restore_supported: bool,
@@ -371,7 +371,7 @@ impl<'a> NvmeManagerWorker {
                     &self.driver_source,
                     &disk.pci_id.clone(),
                     dma_client.get_dma_buffer_allocator(format!("nvme_{}", pci_id))?,
-                    //(self.dma_buffer_spawner)(format!("nvme_{}", pci_id))
+                    //(self._dma_buffer_spawner)(format!("nvme_{}", pci_id))
                     //    .map_err(InnerError::DmaBuffer)?,
                         // manager exposed a method to get a refrance of a client based on pci_id
                     true,

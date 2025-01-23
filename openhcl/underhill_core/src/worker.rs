@@ -743,12 +743,12 @@ impl UhVmNetworkSettings {
         driver_source: &VmTaskDriverSource,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        shared_vis_pages_pool: &Option<PagePool>,
+        _shared_vis_pages_pool: &Option<PagePool>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         tp: &AffinitizedThreadpool,
         vmbus_server: &Option<VmbusServerHandle>,
-        dma_manager: GlobalDmaManager,
+        mut dma_manager: GlobalDmaManager,
     ) -> anyhow::Result<RuntimeSavedState> {
         let instance_id = nic_config.instance_id;
         let nic_max_sub_channels = nic_config
@@ -756,6 +756,7 @@ impl UhVmNetworkSettings {
             .unwrap_or(MAX_SUBCHANNELS_PER_VNIC)
             .min(vps_count as u16);
 
+        let dma_client = dma_manager.create_client(nic_config.pci_id.clone());
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
             nic_config.instance_id,
             nic_config.pci_id,
@@ -766,10 +767,12 @@ impl UhVmNetworkSettings {
             vps_count as u32,
             nic_max_sub_channels,
             servicing_netvsp_state,
-            vfio_dma_buffer(shared_vis_pages_pool, format!("nic_{}", instance_id))
-                .context("creating vfio dma buffer")?,
+            dma_client.get_dma_buffer_allocator(format!("nic_{}", instance_id)).context("creating vfio dma buffer")?,
+            //vfio_dma_buffer(shared_vis_pages_pool, format!("nic_{}", instance_id))
+             //   .context("creating vfio dma buffer")?,
             self.dma_mode,
-            dma_manager
+            Arc::new(dma_client),
+            dma_manager,
         )
         .await?;
 
@@ -1093,18 +1096,18 @@ fn round_up_to_2mb(bytes: u64) -> u64 {
     (bytes + (2 * 1024 * 1024) - 1) & !((2 * 1024 * 1024) - 1)
 }
 
-fn vfio_dma_buffer(
-    shared_vis_pages_pool: &Option<PagePool>,
-    device_name: String,
-) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-    shared_vis_pages_pool
-        .as_ref()
-        .map(|p| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-            p.allocator(device_name)
-                .map(|alloc| Arc::new(alloc) as Arc<dyn VfioDmaBuffer>)
-        })
-        .unwrap_or(Ok(Arc::new(LockedMemorySpawner)))
-}
+//fn vfio_dma_buffer(
+//    shared_vis_pages_pool: &Option<PagePool>,
+//    device_name: String,
+//) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
+//    shared_vis_pages_pool
+//        .as_ref()
+//        .map(|p| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
+//            p.allocator(device_name)
+//                .map(|alloc| Arc::new(alloc) as Arc<dyn VfioDmaBuffer>)
+//        })
+//        .unwrap_or(Ok(Arc::new(LockedMemorySpawner)))
+//}
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 fn new_x86_topology(
