@@ -57,12 +57,6 @@ async fn test_nvme_ioqueue(driver: DefaultDriver) {
         },
     );
 
-    // let queue_size: u32 = 0;
-    nvme.pci_cfg_write(0x40, 0x00000000).unwrap();
-    let mut value: u32 = 1000;
-    nvme.pci_cfg_read(0x40, &mut value).unwrap();
-    println!("VALUE BEING READ BACK IN IS {}", value);
-
     let mut dword = 0u64;
     nvme.write_bar0(0x00, dword.as_bytes()).unwrap();
 
