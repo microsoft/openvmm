@@ -35,7 +35,7 @@ use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::DeviceBacking;
 use user_driver::DmaAllocator;
-use user_driver::HostDmaAllocator;
+//use user_driver::HostDmaAllocator;
 use vmcore::vm_task::VmTaskDriverSource;
 
 enum LinkStatus {
@@ -329,11 +329,19 @@ impl<T: DeviceBacking> Vport<T> {
         cpu: u32,
     ) -> anyhow::Result<BnicEq> {
         let mut gdma = self.inner.gdma.lock().await;
-        let mem = gdma
-            .device()
-            .host_allocator()
+
+        let dma_client = gdma.device().get_dma_client().context("Failed to get DMA client from device")?;
+        let mut dma_client = Arc::clone(&dma_client);
+
+        let mem = Arc::get_mut(&mut dma_client).expect("Failed to get mutable reference to DMA client")
             .allocate_dma_buffer(size as usize)
-            .context("failed to allocate dma buffer for eq")?;
+            .context("Failed to allocate DMA buffer")?;
+
+        //let mem = gdma
+        //    .device()
+        //    .host_allocator()
+        //    .allocate_dma_buffer(size as usize)
+        //    .context("failed to allocate dma buffer for eq")?;
 
         let gdma_region = gdma
             .create_dma_region(arena, self.inner.dev_id, mem.clone())
@@ -371,11 +379,22 @@ impl<T: DeviceBacking> Vport<T> {
         assert!(wq_size >= PAGE_SIZE as u32 && wq_size.is_power_of_two());
         assert!(cq_size >= PAGE_SIZE as u32 && cq_size.is_power_of_two());
         let mut gdma = self.inner.gdma.lock().await;
+
+        let dma_client = gdma.device().get_dma_client().context("Failed to get DMA client from device")?;
+        let mut dma_client = Arc::clone(&dma_client);
+
         let mem = Arc::new(
-            gdma.device()
-                .host_allocator()
-                .allocate_dma_buffer((wq_size + cq_size) as usize)?,
+            Arc::get_mut(&mut dma_client)
+                .ok_or_else(|| anyhow::anyhow!("Failed to get mutable reference to DMA client"))?
+                .allocate_dma_buffer((wq_size + cq_size) as usize)
+                .context("Failed to allocate DMA buffer")?,
         );
+
+        //let mem = Arc::new(
+        //    gdma.device()
+        //        .host_allocator()
+        //        .allocate_dma_buffer((wq_size + cq_size) as usize)?,
+        //);
 
         let wq_mem = mem.subblock(0, wq_size as usize);
         let cq_mem = mem.subblock(wq_size as usize, cq_size as usize);
