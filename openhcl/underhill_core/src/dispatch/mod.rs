@@ -724,26 +724,27 @@ impl LoadedVm {
             return Err(NetworkSettingsError::NetworkSettingsMissing.into());
         }
 
-        //let save_state = self
-        //    .network_settings
-        //    .as_mut()
-        //    .unwrap()
-        //    .add_network(
-        //        instance_id,
-        //        subordinate_instance_id,
-        //        max_sub_channels,
-        //        threadpool,
-        //        &self.uevent_listener,
-        //        &None, // VF getting added; no existing state
-        //        &self.shared_vis_pool,
-        //        self.partition.clone(),
-        //        &self.state_units,
-        //        &self.vmbus_server,
-        //    )
-        //    .await?;
+        let save_state = self
+            .network_settings
+            .as_mut()
+            .unwrap()
+            .add_network(
+                instance_id,
+                subordinate_instance_id,
+                max_sub_channels,
+                threadpool,
+                &self.uevent_listener,
+                &None, // VF getting added; no existing state
+                &self.shared_vis_pool,
+                self.partition.clone(),
+                &self.state_units,
+                &self.vmbus_server,
+                self.dma_manager.clone(),
+            )
+            .await?;
 
-        //self.state_units.start_stopped_units().await;
-        //self.emuplat_servicing.netvsp_state.push(save_state);
+        self.state_units.start_stopped_units().await;
+        self.emuplat_servicing.netvsp_state.push(save_state);
 
         Ok(())
     }
