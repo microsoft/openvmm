@@ -90,4 +90,6 @@ pub trait DmaClient : Send + Sync {
         &mut self,
         total_size: usize,
     ) -> anyhow::Result<MemoryBlock>;
+
+    fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }
