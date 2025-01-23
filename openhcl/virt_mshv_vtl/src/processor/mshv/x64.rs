@@ -42,7 +42,6 @@ use hvdef::HvMapGpaFlags;
 use hvdef::HvMessageType;
 use hvdef::HvRegisterValue;
 use hvdef::HvRegisterVsmPartitionConfig;
-use hvdef::HvRegisterVsmPartitionStatus;
 use hvdef::HvX64InterceptMessageHeader;
 use hvdef::HvX64InterruptStateRegister;
 use hvdef::HvX64PendingEvent;
@@ -1193,7 +1192,10 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         assert!(self.partition.isolation.is_isolated());
 
-        let status: HvRegisterVsmPartitionStatus = self.partition.vsm_status();
+        let status = self
+            .partition
+            .vsm_status()
+            .expect("cannot fail to query vsm status");
 
         let vtl1_enabled = VtlSet::from(status.enabled_vtl_set()).is_set(GuestVtl::Vtl1);
         if !vtl1_enabled {
