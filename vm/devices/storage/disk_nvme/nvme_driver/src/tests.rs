@@ -42,7 +42,7 @@ async fn test_nvme_save_restore(driver: DefaultDriver) {
 }
 
 #[async_test]
-async fn test_nvme_ioqueue(driver: DefaultDriver) {
+async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
     const MSIX_COUNT: u16 = 2;
     const IO_QUEUE_COUNT: u16 = 64;
     const CPU_COUNT: u32 = 64;
@@ -53,7 +53,7 @@ async fn test_nvme_ioqueue(driver: DefaultDriver) {
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
-    let mut nvme = nvme::NvmeController::new(
+    let nvme = nvme::NvmeController::new(
         &driver_source,
         mem.guest_memory().clone(),
         &mut msi_set,
@@ -65,7 +65,37 @@ async fn test_nvme_ioqueue(driver: DefaultDriver) {
         },
     );
 
-    let device = NvmeTestEmulatedDevice::new(nvme, msi_set, mem);
+    let device = NvmeTestEmulatedDevice::new(nvme, msi_set, mem, std::u16::MAX);
+    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device).await;
+
+    assert!(matches!(driver, Ok(_)));
+}
+
+#[async_test]
+async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
+    const MSIX_COUNT: u16 = 2;
+    const IO_QUEUE_COUNT: u16 = 64;
+    const CPU_COUNT: u32 = 64;
+
+    let base_len = 64 << 20;
+    let payload_len = 4 << 30;
+    let mem = DeviceSharedMemory::new(base_len, payload_len);
+
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mut msi_set = MsiInterruptSet::new();
+    let nvme = nvme::NvmeController::new(
+        &driver_source,
+        mem.guest_memory().clone(),
+        &mut msi_set,
+        &mut ExternallyManagedMmioIntercepts,
+        NvmeControllerCaps {
+            msix_count: MSIX_COUNT,
+            max_io_queues: IO_QUEUE_COUNT,
+            subsystem_id: Guid::new_random(),
+        },
+    );
+
+    let device = NvmeTestEmulatedDevice::new(nvme, msi_set, mem, 0);
     let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device).await;
 
     assert!(matches!(driver, Err(_)));
@@ -269,19 +299,22 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 #[derive(Inspect)]
 pub struct NvmeTestEmulatedDevice<T: InspectMut> {
     device: EmulatedDevice<T>,
+    mqes: u16,
 }
 
 #[derive(Inspect)]
 pub struct NvmeTestMapping<T> {
     mapping: Mapping<T>,
+    mqes: u16,
 }
 
 
 impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory) -> Self {
+    pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory, mqes: u16) -> Self {
         Self {
             device: EmulatedDevice::new(device, msi_set, shared_mem),
+            mqes,
         }
     }
 }
@@ -298,6 +331,7 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestE
     fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers> {
         Ok(NvmeTestMapping {
             mapping: self.device.map_bar(n).unwrap(),
+            mqes: self.mqes,
         })
     }
 
@@ -328,7 +362,7 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
     fn read_u64(&self, offset: usize) -> u64 {
         // Trying to retrieve camp
         if offset == 0 { 
-            let cap: Cap = Cap::from(self.mapping.read_u64(offset)).with_mqes_z(0);
+            let cap: Cap = Cap::from(self.mapping.read_u64(offset)).with_mqes_z(self.mqes);
             return cap.into();
         }
 
