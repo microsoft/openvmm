@@ -23,6 +23,7 @@ use winapi::um::threadpoolapiset::SetThreadpoolTimerEx;
 use winapi::um::threadpoolapiset::SetThreadpoolWaitEx;
 use winapi::um::threadpoolapiset::StartThreadpoolIo;
 use winapi::um::threadpoolapiset::SubmitThreadpoolWork;
+use winapi::um::threadpoolapiset::WaitForThreadpoolWaitCallbacks;
 use winapi::um::threadpoolapiset::PTP_WIN32_IO_CALLBACK;
 use winapi::um::winnt::PTP_TIMER_CALLBACK;
 use winapi::um::winnt::PTP_WAIT_CALLBACK;
@@ -59,10 +60,18 @@ impl TpWait {
     /// # Safety
     ///
     /// `handle` must be valid.
-    pub unsafe fn set(&self, handle: RawHandle) {
+    pub unsafe fn set_raw(&self, handle: RawHandle) {
         // SAFETY: The caller ensures this is safe when creating the object in `new`.
         unsafe {
             SetThreadpoolWaitEx(self.0.as_ptr(), handle, null_mut(), null_mut());
+        }
+    }
+
+    /// Sets the handle to wait for.
+    pub fn set(&self, handle: Option<BorrowedHandle<'_>>) {
+        // SAFETY: The caller ensures this is safe when creating the object in `new`.
+        unsafe {
+            self.set_raw(handle.map_or(null_mut(), |handle| handle.as_raw_handle()));
         }
     }
 
@@ -76,6 +85,14 @@ impl TpWait {
     /// Retrieves a pointer to the `TP_WAIT` object.
     pub fn as_ptr(&self) -> *const TP_WAIT {
         self.0.as_ptr()
+    }
+
+    /// Waits for all callbacks to complete.
+    pub fn wait_for_callbacks(&self, cancel_pending: bool) {
+        // SAFETY: The caller ensures this is safe when creating the object in `new`.
+        unsafe {
+            WaitForThreadpoolWaitCallbacks(self.0.as_ptr(), cancel_pending.into());
+        }
     }
 }
 
