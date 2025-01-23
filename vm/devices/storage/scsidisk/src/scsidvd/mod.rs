@@ -94,7 +94,7 @@ impl AsyncScsiDisk for SimpleScsiDvd {
                 ScsiOp::TEST_UNIT_READY => self.handle_test_unit_ready_iso(),
                 ScsiOp::READ | ScsiOp::READ12 | ScsiOp::READ16 => {
                     self.handle_data_cdb_async_iso(external_data, request, sector_count)
-                        .instrument(tracing::trace_span!("handle_data_cdb_async", ?op,))
+                        .instrument(tracing::info_span!("handle_data_cdb_async", ?op,))
                         .await
                 }
                 ScsiOp::GET_EVENT_STATUS => self.handle_get_event_status(external_data, request),
@@ -131,6 +131,8 @@ impl AsyncScsiDisk for SimpleScsiDvd {
                     ))
                 }
             };
+
+            tracing::info!("#### result={:?}", result);
 
             self.process_result(result, op)
         })
@@ -405,9 +407,11 @@ impl SimpleScsiDvd {
             }
 
             if let Some(disk) = media {
+                tracing::info!("#### called disk.read_vectored");
                 disk.read_vectored(&external_data.subrange(0, p.tx), p.offset)
                     .await
                     .map_err(ScsiDvdError::IoError)?;
+                tracing::info!("#### after disk.read_vectored");
             }
         }
 
@@ -2379,13 +2383,21 @@ mod tests {
     use crate::SavedSenseData;
     use crate::ScsiSaveRestore;
     use crate::ScsiSavedState;
+    use chipset_device::mmio::ExternallyManagedMmioIntercepts;
     use disk_backend::Disk;
     use disk_backend::DiskError;
     use disk_backend::DiskIo;
+    use disk_nvme::NvmeDisk;
     use guestmem::GuestMemory;
     use guestmem::MemoryWrite;
+    use guid::Guid;
     use inspect::Inspect;
+    use nvme::NvmeController;
+    use nvme::NvmeControllerCaps;
+    use nvme_driver::NvmeDriver;
     use pal_async::async_test;
+    use pal_async::DefaultDriver;
+    use pci_core::msi::MsiInterruptSet;
     use scsi::AdditionalSenseCode;
     use scsi::ScsiOp;
     use scsi::SenseKey;
@@ -2394,7 +2406,11 @@ mod tests {
     use scsi_core::save_restore::ScsiDvdSavedState;
     use scsi_core::AsyncScsiDisk;
     use scsi_core::Request;
-
+    use test_with_tracing::test;
+    use user_driver::emulated::DeviceSharedMemory;
+    use user_driver::emulated::EmulatedDevice;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
     use zerocopy::IntoBytes;
 
     #[derive(Debug)]
@@ -2502,6 +2518,61 @@ mod tests {
 
     fn new_scsi_dvd(sector_size: u32, sector_count: u64, read_only: bool) -> SimpleScsiDvd {
         let disk = TestDisk::new(sector_size, sector_count, read_only);
+        let scsi_dvd = SimpleScsiDvd::new(Some(Disk::new(disk).unwrap()));
+        let sector_shift = ISO_SECTOR_SIZE.trailing_zeros() as u8;
+        assert_eq!(scsi_dvd.sector_count(), sector_count / scsi_dvd.balancer());
+        assert_eq!(scsi_dvd.sector_shift(), sector_shift);
+        if let Media::Loaded(disk) = &*scsi_dvd.media.read() {
+            assert_eq!(disk.is_read_only(), read_only);
+            assert_eq!(disk.sector_size(), sector_size);
+        } else {
+            panic!("unexpected Media::Unloaded");
+        }
+        scsi_dvd
+    }
+
+    async fn new_scsi_dvd_nvme(
+        driver: DefaultDriver,
+        sector_size: u32,
+        sector_count: u64,
+        read_only: bool,
+    ) -> SimpleScsiDvd {
+        const MSIX_COUNT: u16 = 2;
+        const IO_QUEUE_COUNT: u16 = 64;
+        const CPU_COUNT: u32 = 64;
+
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        let base_len = 64 << 20;
+        let payload_len = 4 << 30;
+        let mem = DeviceSharedMemory::new(base_len, payload_len);
+        let mut msi_set = MsiInterruptSet::new();
+        let nvme = NvmeController::new(
+            &driver_source,
+            mem.guest_memory().clone(),
+            &mut msi_set,
+            &mut ExternallyManagedMmioIntercepts,
+            NvmeControllerCaps {
+                msix_count: MSIX_COUNT,
+                max_io_queues: IO_QUEUE_COUNT,
+                subsystem_id: Guid::new_random(),
+            },
+        );
+
+        nvme.client()
+            .add_namespace(
+                1,
+                disklayer_ram::ram_disk(sector_size as u64 * sector_count, read_only).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let device = EmulatedDevice::new(nvme, msi_set, mem);
+        let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
+            .await
+            .unwrap();
+        let namespace = driver.namespace(1).await.unwrap();
+        let disk = NvmeDisk::new(namespace);
+
         let scsi_dvd = SimpleScsiDvd::new(Some(Disk::new(disk).unwrap()));
         let sector_shift = ISO_SECTOR_SIZE.trailing_zeros() as u8;
         assert_eq!(scsi_dvd.sector_count(), sector_count / scsi_dvd.balancer());
@@ -2686,6 +2757,67 @@ mod tests {
     #[test]
     fn validate_save_restore_scsi_dvd_with_sense_data() {
         let scsi_dvd = new_scsi_dvd(512, 2048, true);
+        let mut saved_state = save_scsi_dvd(&scsi_dvd);
+        saved_state.sense_data = Some(SavedSenseData {
+            sense_key: SenseKey::UNIT_ATTENTION.0,
+            additional_sense_code: AdditionalSenseCode::OPERATING_CONDITIONS_CHANGED.0,
+            additional_sense_code_qualifier: scsi::SCSI_SENSEQ_OPERATING_DEFINITION_CHANGED,
+        });
+        restore_scsi_dvd(saved_state, &scsi_dvd);
+    }
+
+    #[async_test]
+    async fn validate_new_scsi_dvd_nvme(driver: DefaultDriver) {
+        new_scsi_dvd_nvme(driver, 512, 2048, false).await; // TODO: NVMe driver does not support read only at the moment
+    }
+
+    #[async_test]
+    async fn validate_read16_nvme(driver: DefaultDriver) {
+        let sector_size = 512;
+        let sector_count = 2048;
+        let mut scsi_dvd = new_scsi_dvd_nvme(driver, sector_size, sector_count, false).await; // TODO: NVMe driver does not support read only at the moment
+
+        let dvd_sector_size = ISO_SECTOR_SIZE as u64;
+        let dvd_sector_count = scsi_dvd.sector_count();
+        let external_data =
+            OwnedRequestBuffers::linear(0, (dvd_sector_size * dvd_sector_count) as usize, true);
+        let guest_mem = GuestMemory::allocate(4096);
+        let start_lba = 0;
+        let lba_count = 2;
+        let request = make_cdb16_request(ScsiOp::READ16, start_lba, lba_count);
+
+        println!("read disk to guest_mem2 ...");
+        check_execute_scsi(
+            &mut scsi_dvd,
+            &external_data.buffer(&guest_mem),
+            &request,
+            true,
+        )
+        .await;
+
+        println!("validate guest_mem2 ...");
+        let data = make_repeat_data_buffer(sector_count as usize, sector_size as usize);
+        assert_eq!(
+            check_guest_memory(
+                &guest_mem,
+                0,
+                &data[..(ISO_SECTOR_SIZE * lba_count) as usize],
+                sector_size as usize
+            ),
+            true
+        );
+    }
+
+    #[async_test]
+    async fn validate_save_restore_scsi_dvd_no_change_nvme(driver: DefaultDriver) {
+        let scsi_dvd = new_scsi_dvd_nvme(driver, 512, 2048, false).await; // TODO: NVMe driver does not support read only at the moment
+        let saved_state = save_scsi_dvd(&scsi_dvd);
+        restore_scsi_dvd(saved_state, &scsi_dvd);
+    }
+
+    #[async_test]
+    async fn validate_save_restore_scsi_dvd_with_sense_data_nvme(driver: DefaultDriver) {
+        let scsi_dvd = new_scsi_dvd_nvme(driver, 512, 2048, false).await; // TODO: NVMe driver does not support read only at the moment
         let mut saved_state = save_scsi_dvd(&scsi_dvd);
         saved_state.sense_data = Some(SavedSenseData {
             sense_key: SenseKey::UNIT_ATTENTION.0,
