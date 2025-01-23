@@ -64,7 +64,6 @@ pub struct NvmeController {
 struct RegState {
     #[inspect(hex)]
     interrupt_mask: u32,
-    cap: spec::Cap,
     cc: spec::Cc,
     csts: spec::Csts,
     aqa: spec::Aqa,
@@ -182,7 +181,7 @@ impl NvmeController {
 
         // Check for 64-bit registers.
         let d: Option<u64> = match spec::Register(addr & !7) {
-            spec::Register::CAP => Some(self.registers.cap.into()),
+            spec::Register::CAP => Some(CAP.into()),
             spec::Register::ASQ => Some(self.registers.asq),
             spec::Register::ACQ => Some(self.registers.acq),
             spec::Register::BPMBL => Some(0),
@@ -275,17 +274,6 @@ impl NvmeController {
                     self.registers.acq = update_reg(self.registers.acq) & PAGE_MASK;
                 } else {
                     tracelimit::warn_ratelimited!("attempt to set acq while enabled");
-                }
-                true
-            }
-            spec::Register::CAP => {
-                if data.len() == 8 {
-                    let mut array = [0u8; 8];
-                    array.copy_from_slice(&data[0..8]);
-                    let value: u64 = u64::from_le_bytes(array);
-                    self.registers.cap = value.into();
-                } else {
-                    return IoResult::Err(InvalidRegister);
                 }
                 true
             }

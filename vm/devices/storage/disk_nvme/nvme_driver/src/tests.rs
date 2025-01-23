@@ -2,18 +2,26 @@
 // Licensed under the MIT License.
 use crate::NvmeDriver;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
+use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use guid::Guid;
+use inspect::Inspect;
+use inspect::InspectMut;
 use nvme::NvmeControllerCaps;
 use nvme_spec::nvm::DsmRange;
-use pal_async::async_test;
 use pal_async::DefaultDriver;
+use pal_async::async_test;
 use pci_core::msi::MsiInterruptSet;
+use nvme_spec::Cap;
 use scsi_buffers::OwnedRequestBuffers;
-use std::fmt::Error;
 use test_with_tracing::test;
+use user_driver::DeviceRegisterIo;
+use user_driver::DeviceBacking;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
+use user_driver::emulated::EmulatedDmaAllocator;
+use user_driver::emulated::Mapping;
+use user_driver::interrupt::DeviceInterrupt;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::AsBytes;
@@ -52,17 +60,13 @@ async fn test_nvme_ioqueue(driver: DefaultDriver) {
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
             msix_count: MSIX_COUNT,
-            max_io_queues: 2,
+            max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
         },
     );
 
-    let mut dword = 0u64;
-    nvme.write_bar0(0x00, dword.as_bytes()).unwrap();
-
-    let device = EmulatedDevice::new(nvme, msi_set, mem);
+    let device = NvmeTestEmulatedDevice::new(nvme, msi_set, mem);
     let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device).await;
-
 
     assert!(matches!(driver, Err(_)));
 }
@@ -260,4 +264,82 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     // let _new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, new_device, &saved_state)
     //     .await
     //     .unwrap();
+}
+
+#[derive(Inspect)]
+pub struct NvmeTestEmulatedDevice<T: InspectMut> {
+    device: EmulatedDevice<T>,
+}
+
+#[derive(Inspect)]
+pub struct NvmeTestMapping<T> {
+    mapping: Mapping<T>,
+}
+
+
+impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
+    /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
+    pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory) -> Self {
+        Self {
+            device: EmulatedDevice::new(device, msi_set, shared_mem),
+        }
+    }
+}
+
+/// Implementation of DeviceBacking trait for NvmeTestEmulatedDevice
+impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestEmulatedDevice<T> {
+    type Registers = NvmeTestMapping<T>;
+    type DmaAllocator = EmulatedDmaAllocator;
+
+    fn id(&self) -> &str {
+        self.device.id()
+    }
+
+    fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers> {
+        Ok(NvmeTestMapping {
+            mapping: self.device.map_bar(n).unwrap(),
+        })
+    }
+
+    fn host_allocator(&self) -> Self::DmaAllocator {
+        self.device.host_allocator()
+    }
+
+    fn max_interrupt_count(&self) -> u32 {
+        self.device.max_interrupt_count()
+    }
+
+    fn map_interrupt(&mut self, msix: u32, _cpu: u32) -> anyhow::Result<DeviceInterrupt> {
+        self.device.map_interrupt(msix, _cpu)
+    }
+}
+
+
+/// Mapping wrapper to intercept calls to get Caps from the NvmeDriver
+impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
+    fn len(&self) -> usize {
+        self.mapping.len()
+    }
+
+    fn read_u32(&self, offset: usize) -> u32 {
+        self.mapping.read_u32(offset)
+    }
+
+    fn read_u64(&self, offset: usize) -> u64 {
+        // Trying to retrieve camp
+        if offset == 0 { 
+            let cap: Cap = Cap::from(self.mapping.read_u64(offset)).with_mqes_z(0);
+            return cap.into();
+        }
+
+        self.mapping.read_u64(offset)
+    }
+
+    fn write_u32(&self, offset: usize, data: u32) {
+        self.mapping.write_u32(offset, data);
+    }
+
+    fn write_u64(&self, offset: usize, data: u64) {
+        self.mapping.write_u64(offset, data);
+    }
 }
