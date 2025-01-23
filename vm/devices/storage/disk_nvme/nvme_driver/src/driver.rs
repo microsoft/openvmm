@@ -37,7 +37,6 @@ use user_driver::backoff::Backoff;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::DeviceBacking;
-use user_driver::HostDmaAllocator;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::AsBytes;

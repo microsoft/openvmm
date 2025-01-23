@@ -20,7 +20,6 @@ use inspect::Inspect;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use sparse_mmap::SparseMapping;
-use std::clone;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use thiserror::Error;

@@ -3,13 +3,13 @@
 use memory_range::MemoryRange;
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 use page_pool_alloc::PagePool;
-use user_driver::{memory::MemoryBlock, vfio::{LockedMemoryAllocator, VfioDmaBuffer}};
+use user_driver::{memory::MemoryBlock, vfio::VfioDmaBuffer};
 use user_driver::lockmem::LockedMemorySpawner;
 
 #[derive(Clone)]
 pub struct GlobalDmaManager {
-    physical_ranges: Vec<MemoryRange>,
-    bounce_buffers_manager: Vec<MemoryRange>,
+    _physical_ranges: Vec<MemoryRange>,
+    _bounce_buffers_manager: Vec<MemoryRange>,
     //clients: Mutex<Vec<Weak<DmaClient>>>,
     //client_thresholds: Mutex<Vec<(Weak<DmaClient>, usize)>>,
 
@@ -20,8 +20,8 @@ pub struct GlobalDmaManager {
 impl GlobalDmaManager {
     pub fn new(page_pool: Option<PagePool>) -> Self {
         GlobalDmaManager {
-            physical_ranges: Vec::new(),
-            bounce_buffers_manager: Vec::new(),
+            _physical_ranges: Vec::new(),
+            _bounce_buffers_manager: Vec::new(),
             //clients: Mutex::new(Vec::new()),
             //client_thresholds: Mutex::new(Vec::new()),
             page_pool,
@@ -106,7 +106,7 @@ impl user_driver::DmaClient for DmaClient {
 impl DmaClient {
     fn map_dma_ranges(
         &self,
-        ranges: i32,
+        _ranges: i32,
     ) -> anyhow::Result<Vec<i32>>
     {
         Ok(Vec::new())
