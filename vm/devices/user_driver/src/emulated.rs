@@ -11,6 +11,7 @@ use crate::memory::MemoryBlock;
 use crate::memory::PAGE_SIZE;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
+use crate::DmaClient;
 use crate::HostDmaAllocator;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
@@ -320,6 +321,10 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
         EmulatedDmaAllocator {
             shared_mem: self.shared_mem.clone(),
         }
+    }
+
+    fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
+        None
     }
 
     fn max_interrupt_count(&self) -> u32 {

@@ -3,7 +3,7 @@
 use memory_range::MemoryRange;
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 use page_pool_alloc::PagePool;
-use user_driver::vfio::VfioDmaBuffer;
+use user_driver::{memory::MemoryBlock, vfio::VfioDmaBuffer};
 use user_driver::lockmem::LockedMemorySpawner;
 
 #[derive(Clone)]
@@ -29,13 +29,14 @@ impl GlobalDmaManager {
         }
     }
 
-    pub fn create_client(&mut self, pci_id: String) -> Arc<DmaClient> {
+    pub fn create_client(&mut self, pci_id: String) -> DmaClient {
         let client = DmaClient {
-            dma_manager: Arc::new(Mutex::new(self.clone())), // Ensure `self` implements `Clone`.
+            dma_manager: Arc::new(Mutex::new(self.clone())),
+            dma_buffer_allocator: None,  // Valid now as `Option<Arc<dyn VfioDmaBuffer>>`
         };
         let arc_client = Arc::new(client);
         self.clients.insert(pci_id, arc_client.clone()); // Store the cloned `Arc` in `clients`.
-        arc_client // Return the `Arc<DmaClient>`.
+        arc_client.as_ref().clone() // Return the `Arc<DmaClient>`.
     }
 
     pub fn get_client(&self, pci_id: &str) -> Option<Arc<DmaClient>> {
@@ -59,6 +60,7 @@ impl GlobalDmaManager {
 #[derive(Clone)]
 pub struct DmaClient {
     dma_manager: Arc<Mutex<GlobalDmaManager>>,
+    dma_buffer_allocator: Option<Arc<dyn VfioDmaBuffer>>,
 }
 
 impl user_driver::DmaClient for DmaClient {
@@ -70,11 +72,27 @@ impl user_driver::DmaClient for DmaClient {
     }
 
     fn get_dma_buffer_allocator(
-        &self,
+        &mut self,
         device_name: String,
     ) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
         let manager = self.dma_manager.lock().unwrap();
-        manager.get_dma_buffer_allocator(device_name)
+        manager.get_dma_buffer_allocator(device_name).map(|allocator| {
+            self.dma_buffer_allocator = Some(allocator.clone());
+            allocator
+        })
+    }
+
+    fn allocate_dma_buffer(
+        &mut self,
+        total_size: usize,
+    ) -> anyhow::Result<MemoryBlock> {
+        if self.dma_buffer_allocator.is_none() {
+            return Err(anyhow::anyhow!("DMA buffer allocator is not set"));
+        }
+
+        let allocator = self.dma_buffer_allocator.as_ref().unwrap();
+
+        allocator.create_dma_buffer(total_size)
     }
 
 }

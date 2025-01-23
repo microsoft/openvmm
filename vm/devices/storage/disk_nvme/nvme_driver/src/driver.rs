@@ -277,6 +277,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .map_interrupt(0, 0)
             .context("failed to map interrupt 0")?;
 
+
         // Start the admin queue pair.
         let admin = QueuePair::new(
             self.driver.clone(),

@@ -51,6 +51,10 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmula
         self.device.host_allocator()
     }
 
+    fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
+        None
+    }
+
     /// Arbitrarily decide to passthrough or return arbitrary value.
     fn max_interrupt_count(&self) -> u32 {
         // Case: Fuzz response
