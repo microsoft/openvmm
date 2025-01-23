@@ -48,6 +48,7 @@ use pal_event::Event;
 pub use proxyintegration::ProxyIntegration;
 use ring::PAGE_SIZE;
 use std::collections::HashMap;
+use std::future;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -868,7 +869,7 @@ impl ServerTask {
         let open_request = open
             .map(|result| -> anyhow::Result<_> {
                 let params = self.server.get_restore_open_params(offer_id)?;
-                let (_, interrupt) = self.inner.open_channel(offer_id, &params);
+                let (_, interrupt) = self.inner.open_channel(offer_id, &params)?;
                 let channel = self.inner.complete_open(offer_id, Some(result))?;
                 Ok(OpenRequest::new(
                     params.open_data,
@@ -1236,19 +1237,32 @@ impl Notifier for ServerTaskInner {
 
         let response = match action {
             channels::Action::Open(open_params, version) => {
-                let (channel, interrupt) = self.open_channel(offer_id, &open_params);
-                handle(
-                    offer_id,
-                    channel,
-                    ChannelRequest::Open,
-                    OpenRequest::new(
-                        open_params.open_data,
-                        interrupt,
-                        version.feature_flags,
-                        channel.flags,
+                let seq = channel.seq;
+                match self.open_channel(offer_id, &open_params) {
+                    Ok((channel, interrupt)) => handle(
+                        offer_id,
+                        channel,
+                        ChannelRequest::Open,
+                        OpenRequest::new(
+                            open_params.open_data,
+                            interrupt,
+                            version.feature_flags,
+                            channel.flags,
+                        ),
+                        ChannelResponse::Open,
                     ),
-                    ChannelResponse::Open,
-                )
+                    Err(err) => {
+                        tracelimit::error_ratelimited!(?err, ?offer_id, "could not open channel",);
+
+                        // Return an error response to the channels module if the open_channel call
+                        // failed.
+                        Box::pin(future::ready((
+                            offer_id,
+                            seq,
+                            Ok(ChannelResponse::Open(None)),
+                        )))
+                    }
+                }
             }
             channels::Action::Close => {
                 if let Some(channel_bitmap) = self.channel_bitmap.as_ref() {
@@ -1492,11 +1506,27 @@ impl ServerTaskInner {
         &mut self,
         offer_id: OfferId,
         open_params: &OpenParams,
-    ) -> (&mut Channel, Interrupt) {
+    ) -> anyhow::Result<(&mut Channel, Interrupt)> {
         let channel = self
             .channels
             .get_mut(&offer_id)
             .expect("channel does not exist");
+
+        // For pre-Win8 guests, the host-to-guest event always targets vp 0 and the channel
+        // bitmap is used instead of the event flag.
+        let (target_vp, event_flag) = if self.channel_bitmap.is_some() {
+            (0, 0)
+        } else {
+            (open_params.open_data.target_vp, open_params.event_flag)
+        };
+        let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
+            (self.redirect_vtl, self.redirect_sint)
+        } else {
+            (self.vtl, SINT)
+        };
+        channel
+            .guest_event_port
+            .set(target_vtl, target_vp, target_sint, event_flag)?;
 
         let interrupt = ChannelBitmap::create_interrupt(
             &self.channel_bitmap,
@@ -1515,7 +1545,7 @@ impl ServerTaskInner {
             monitor,
             host_to_guest_interrupt: interrupt.clone(),
         };
-        (channel, interrupt)
+        Ok((channel, interrupt))
     }
 
     fn complete_open(
@@ -1546,21 +1576,6 @@ impl ServerTaskInner {
                             guest_to_host_event.0.clone(),
                         );
                     }
-                    // For pre-Win8 guests, the host-to-guest event always targets vp 0 and the channel
-                    // bitmap is used instead of the event flag.
-                    let (target_vp, event_flag) = if self.channel_bitmap.is_some() {
-                        (0, 0)
-                    } else {
-                        (open_params.open_data.target_vp, open_params.event_flag)
-                    };
-                    let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
-                        (self.redirect_vtl, self.redirect_sint)
-                    } else {
-                        (self.vtl, SINT)
-                    };
-                    channel
-                        .guest_event_port
-                        .set(target_vtl, target_vp, target_sint, event_flag)?;
                     // Always set up an event port; if V1, this will be unused.
                     let event_port = self
                         .synic
