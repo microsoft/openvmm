@@ -344,13 +344,8 @@ impl_tuple_claim!(A);
 
 /// Read a custom, user-defined secret by passing in the secret name.
 ///
-/// Example usage:
-/// ```
-/// let secret = pipeline.gh_use_secret("secret_name");
-/// let secret_readvar = ctx.get_gh_context_var().secret(secret);
-/// let secret_claimedreadvar = secret_readvar.claim(ctx);
-/// let secret_value = rt.read(secret_claimedreadvar);
-/// ```
+/// Intended usage is to get a secret using the [`crate::pipeline::Pipeline::gh_use_secret`] API
+/// and to use the returned value through the [`NodeCtx::get_gh_context_var`] API.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct GhUserSecretVar(pub(crate) String);
 
