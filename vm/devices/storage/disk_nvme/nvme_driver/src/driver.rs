@@ -400,10 +400,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         let qsize = {
             if worker.registers.cap.mqes_z() < 1 {
-                anyhow::bail!("mqes cannot be 0");
+                anyhow::bail!("bad device behavior. mqes cannot be 0");
             }
-
-            println!("mqes value is {}", worker.registers.cap.mqes_z());
 
             let io_cqsize = (QueuePair::MAX_CQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
             let io_sqsize = (QueuePair::MAX_SQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;

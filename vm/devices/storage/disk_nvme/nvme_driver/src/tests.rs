@@ -357,7 +357,7 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
     }
 
     fn read_u64(&self, offset: usize) -> u64 {
-        // Trying to retrieve camp
+        // Intercept reads to the CAP register.
         if offset == 0 { 
             let cap: Cap = Cap::from(self.mapping.read_u64(offset)).with_mqes_z(self.mqes);
             return cap.into();
