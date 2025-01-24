@@ -14,6 +14,8 @@ use pal_async::async_test;
 use pci_core::msi::MsiInterruptSet;
 use nvme_spec::Cap;
 use scsi_buffers::OwnedRequestBuffers;
+use std::sync::Arc;
+use std::sync::Mutex;
 use test_with_tracing::test;
 use user_driver::DeviceRegisterIo;
 use user_driver::DeviceBacking;
@@ -95,7 +97,12 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
         },
     );
 
-    let device = NvmeTestEmulatedDevice::new(nvme, msi_set, mem, 0);
+    let mut device = NvmeTestEmulatedDevice::new(nvme, msi_set, mem, 0);
+
+    // Setup mock response at offset 0
+    let cap: Cap = Cap::new().with_mqes_z(0);
+    device.set_mock_response_u64(Some((0, cap.into())));
+
     let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device).await;
 
     assert!(matches!(driver, Err(_)));
@@ -300,12 +307,16 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 pub struct NvmeTestEmulatedDevice<T: InspectMut> {
     device: EmulatedDevice<T>,
     mqes: u16,
+    #[inspect(debug)]
+    mocked_response_u64: Arc<Mutex<Option<(usize, u64)>>>,
 }
 
 #[derive(Inspect)]
 pub struct NvmeTestMapping<T> {
     mapping: Mapping<T>,
     mqes: u16,
+    #[inspect(debug)]
+    mocked_response_u64: Arc<Mutex<Option<(usize, u64)>>>,
 }
 
 impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
@@ -314,7 +325,13 @@ impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
         Self {
             device: EmulatedDevice::new(device, msi_set, shared_mem),
             mqes,
+            mocked_response_u64: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn set_mock_response_u64(&mut self, mapping: Option<(usize, u64)>) {
+        let mut mock_response = self.mocked_response_u64.lock().unwrap();
+        *mock_response = mapping;
     }
 }
 
@@ -331,6 +348,7 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestE
         Ok(NvmeTestMapping {
             mapping: self.device.map_bar(n).unwrap(),
             mqes: self.mqes,
+            mocked_response_u64: Arc::clone(&self.mocked_response_u64),
         })
     }
 
@@ -357,10 +375,13 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
     }
 
     fn read_u64(&self, offset: usize) -> u64 {
-        // Intercept reads to the CAP register.
-        if offset == 0 { 
-            let cap: Cap = Cap::from(self.mapping.read_u64(offset)).with_mqes_z(self.mqes);
-            return cap.into();
+        let mut mock_response = self.mocked_response_u64.lock().unwrap();
+
+        // Intercept reads to the mocked offset address
+        if let Some((mock_offset, mock_data)) = *mock_response { 
+            if mock_offset == offset {
+                return mock_data;
+            }
         }
 
         self.mapping.read_u64(offset)
