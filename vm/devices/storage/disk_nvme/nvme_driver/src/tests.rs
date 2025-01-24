@@ -67,7 +67,10 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
         },
     );
 
-    let device = NvmeTestEmulatedDevice::new(nvme, msi_set, mem, std::u16::MAX);
+    let mut device = NvmeTestEmulatedDevice::new(nvme, msi_set, mem);
+    // Setup mock response at offset 0
+    let cap: Cap = Cap::new().with_mqes_z(std::u16::MAX);
+    device.set_mock_response_u64(Some((0, cap.into())));
     let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device).await;
 
     assert!(matches!(driver, Ok(_)));
@@ -97,12 +100,10 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
         },
     );
 
-    let mut device = NvmeTestEmulatedDevice::new(nvme, msi_set, mem, 0);
-
+    let mut device = NvmeTestEmulatedDevice::new(nvme, msi_set, mem);
     // Setup mock response at offset 0
     let cap: Cap = Cap::new().with_mqes_z(0);
     device.set_mock_response_u64(Some((0, cap.into())));
-
     let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device).await;
 
     assert!(matches!(driver, Err(_)));
@@ -306,7 +307,6 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 #[derive(Inspect)]
 pub struct NvmeTestEmulatedDevice<T: InspectMut> {
     device: EmulatedDevice<T>,
-    mqes: u16,
     #[inspect(debug)]
     mocked_response_u64: Arc<Mutex<Option<(usize, u64)>>>,
 }
@@ -314,17 +314,15 @@ pub struct NvmeTestEmulatedDevice<T: InspectMut> {
 #[derive(Inspect)]
 pub struct NvmeTestMapping<T> {
     mapping: Mapping<T>,
-    mqes: u16,
     #[inspect(debug)]
     mocked_response_u64: Arc<Mutex<Option<(usize, u64)>>>,
 }
 
 impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory, mqes: u16) -> Self {
+    pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory) -> Self {
         Self {
             device: EmulatedDevice::new(device, msi_set, shared_mem),
-            mqes,
             mocked_response_u64: Arc::new(Mutex::new(None)),
         }
     }
@@ -347,7 +345,6 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestE
     fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers> {
         Ok(NvmeTestMapping {
             mapping: self.device.map_bar(n).unwrap(),
-            mqes: self.mqes,
             mocked_response_u64: Arc::clone(&self.mocked_response_u64),
         })
     }
