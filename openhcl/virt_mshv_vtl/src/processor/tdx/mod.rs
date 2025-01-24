@@ -3446,13 +3446,11 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
             let mut flush_state = self.vp.shared.flush_state[vtl].write();
 
             // If we fail to add ranges to the list for any reason then promote this request to a flush entire.
-            if Self::add_ranges_to_tlb_flush_list(
+            if let Err(()) = Self::add_ranges_to_tlb_flush_list(
                 &mut flush_state,
                 gva_ranges,
                 flags.use_extended_range_format(),
-            )
-            .is_err()
-            {
+            ) {
                 if flags.non_global_mappings_only() {
                     flush_state.s.flush_entire_non_global_counter += 1;
                 } else {
