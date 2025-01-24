@@ -173,6 +173,8 @@ pub struct ParsedBootDtInfo {
     /// VTL2 range for private pool memory.
     #[inspect(iter_by_index)]
     pub private_pool_ranges: Vec<MemoryRangeWithNode>,
+    /// The text boot log reported by the bootloader.
+    pub boot_log: String,
 }
 
 fn err_to_owned(e: fdt::parser::Error<'_>) -> anyhow::Error {
@@ -211,6 +213,7 @@ struct OpenhclInfo {
     memory_allocation_mode: MemoryAllocationMode,
     isolation: IsolationType,
     private_pool_ranges: Vec<MemoryRangeWithNode>,
+    boot_log: String,
 }
 
 fn parse_memory_openhcl(node: &Node<'_>) -> anyhow::Result<AddressRange> {
@@ -347,6 +350,12 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
     memory.sort_by_key(|r| r.range().start());
     accepted_memory.sort_by_key(|r| r.start());
 
+    let boot_log = try_find_property(node, "boot-log")
+        .context("missing boot-log")?
+        .read_str()
+        .map_err(err_to_owned)?
+        .to_string();
+
     // Report config ranges in a separate vec as well, for convenience.
     let config_ranges = memory
         .iter()
@@ -420,6 +429,7 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         memory_allocation_mode,
         isolation,
         private_pool_ranges,
+        boot_log,
     })
 }
 
@@ -514,6 +524,7 @@ impl ParsedBootDtInfo {
         let mut isolation = IsolationType::None;
         let mut vtl2_reserved_range = MemoryRange::EMPTY;
         let mut private_pool_ranges = Vec::new();
+        let mut boot_log = String::new();
 
         let parser = Parser::new(raw)
             .map_err(err_to_owned)
@@ -548,6 +559,7 @@ impl ParsedBootDtInfo {
                         memory_allocation_mode: n_memory_allocation_mode,
                         isolation: n_isolation,
                         private_pool_ranges: n_private_pool_ranges,
+                        boot_log: n_boot_log,
                     } = parse_openhcl(&child)?;
                     vtl0_mmio = n_vtl0_mmio;
                     config_ranges = n_config_ranges;
@@ -558,6 +570,7 @@ impl ParsedBootDtInfo {
                     isolation = n_isolation;
                     vtl2_reserved_range = n_vtl2_reserved_range;
                     private_pool_ranges = n_private_pool_ranges;
+                    boot_log = n_boot_log;
                 }
 
                 _ if child.name.starts_with("memory@") => {
@@ -591,6 +604,7 @@ impl ParsedBootDtInfo {
             isolation,
             vtl2_reserved_range,
             private_pool_ranges,
+            boot_log,
         })
     }
 }
@@ -795,6 +809,9 @@ mod tests {
             openhcl_builder = openhcl_builder.add_u64(p_vtl0_alias_map, data)?;
         }
 
+        let p_boot_log = openhcl_builder.add_string("boot-log")?;
+        openhcl_builder = openhcl_builder.add_str(p_boot_log, &info.boot_log)?;
+
         openhcl_builder = openhcl_builder
             .start_node("vmbus-vtl0")?
             .add_u32(p_address_cells, 2)?
@@ -962,6 +979,7 @@ mod tests {
                 range: MemoryRange::new(0x60000..0x70000),
                 vnode: 0,
             }],
+            boot_log: "hello world".to_string(),
         };
 
         let dt = build_dt(&orig_info).unwrap();

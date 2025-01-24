@@ -13,6 +13,9 @@ use underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME;
 const BOOT_LOG: &str = "OPENHCL_BOOT_LOG=";
 const SERIAL_LOGGER: &str = "com3";
 
+/// Enable boot log to be reported to usermode via the device tree.
+const REPORT_BOOT_LOG: &str = "OPENHCL_REPORT_BOOT_LOG=1";
+
 /// Enable the private VTL2 GPA pool for page allocations. This is only enabled
 /// via the command line, because in order to support the VTL2 GPA pool
 /// generically, the boot shim must read serialized data from the previous
@@ -30,6 +33,7 @@ pub struct BootCommandLineOptions {
     pub logger: Option<LoggerType>,
     pub confidential_debug: bool,
     pub enable_vtl2_gpa_pool: Option<u64>,
+    pub report_boot_log: bool,
 }
 
 /// Parse arguments from a command line.
@@ -38,6 +42,7 @@ pub fn parse_boot_command_line(cmdline: &str) -> BootCommandLineOptions {
         logger: None,
         confidential_debug: false,
         enable_vtl2_gpa_pool: None,
+        report_boot_log: false,
     };
 
     for arg in cmdline.split_whitespace() {
@@ -66,6 +71,8 @@ pub fn parse_boot_command_line(cmdline: &str) -> BootCommandLineOptions {
                     Some(num)
                 }
             });
+        } else if arg.starts_with(REPORT_BOOT_LOG) {
+            result.report_boot_log = true;
         }
     }
 
@@ -83,7 +90,8 @@ mod tests {
             BootCommandLineOptions {
                 logger: Some(LoggerType::Serial),
                 confidential_debug: false,
-                enable_vtl2_gpa_pool: None
+                enable_vtl2_gpa_pool: None,
+                report_boot_log: false,
             }
         );
 
@@ -92,7 +100,8 @@ mod tests {
             BootCommandLineOptions {
                 logger: None,
                 confidential_debug: false,
-                enable_vtl2_gpa_pool: None
+                enable_vtl2_gpa_pool: None,
+                report_boot_log: false,
             }
         );
 
@@ -101,7 +110,8 @@ mod tests {
             BootCommandLineOptions {
                 logger: None,
                 confidential_debug: false,
-                enable_vtl2_gpa_pool: None
+                enable_vtl2_gpa_pool: None,
+                report_boot_log: false,
             }
         );
 
@@ -110,7 +120,8 @@ mod tests {
             BootCommandLineOptions {
                 logger: None,
                 confidential_debug: false,
-                enable_vtl2_gpa_pool: None
+                enable_vtl2_gpa_pool: None,
+                report_boot_log: false,
             }
         );
 
@@ -119,7 +130,8 @@ mod tests {
             BootCommandLineOptions {
                 logger: None,
                 confidential_debug: false,
-                enable_vtl2_gpa_pool: None
+                enable_vtl2_gpa_pool: None,
+                report_boot_log: false,
             }
         );
 
@@ -129,7 +141,8 @@ mod tests {
             BootCommandLineOptions {
                 logger: Some(LoggerType::Serial),
                 confidential_debug: true,
-                enable_vtl2_gpa_pool: None
+                enable_vtl2_gpa_pool: None,
+                report_boot_log: false,
             }
         );
     }
@@ -142,6 +155,7 @@ mod tests {
                 logger: None,
                 confidential_debug: false,
                 enable_vtl2_gpa_pool: Some(1),
+                report_boot_log: false,
             }
         );
         assert_eq!(
@@ -150,6 +164,7 @@ mod tests {
                 logger: None,
                 confidential_debug: false,
                 enable_vtl2_gpa_pool: None,
+                report_boot_log: false,
             }
         );
         assert_eq!(
@@ -158,6 +173,7 @@ mod tests {
                 logger: None,
                 confidential_debug: false,
                 enable_vtl2_gpa_pool: None,
+                report_boot_log: false,
             }
         );
         assert_eq!(
@@ -166,6 +182,20 @@ mod tests {
                 logger: None,
                 confidential_debug: false,
                 enable_vtl2_gpa_pool: Some(1024),
+                report_boot_log: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_report_boot_log() {
+        assert_eq!(
+            parse_boot_command_line("OPENHCL_REPORT_BOOT_LOG=1"),
+            BootCommandLineOptions {
+                logger: None,
+                confidential_debug: false,
+                enable_vtl2_gpa_pool: None,
+                report_boot_log: true,
             }
         );
     }
