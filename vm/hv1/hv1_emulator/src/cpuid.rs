@@ -44,9 +44,7 @@ pub fn hv_cpuid_leaves(
             .with_access_partition_reference_tsc(true)
             .with_start_virtual_processor(true)
             .with_access_vsm(access_vsm)
-            // TODO GUEST_VSM: Not actually implemented yet, but this is
-            // needed for guest vsm bringup
-            .with_enable_extended_gva_ranges_flush_va_list(access_vsm);
+            .with_enable_extended_gva_ranges_flush_va_list(true);
 
         if hardware_isolated {
             privileges = privileges
@@ -85,10 +83,7 @@ pub fn hv_cpuid_leaves(
                 .with_privileges(privileges)
                 .with_frequency_regs_available(true)
                 .with_direct_synthetic_timers(true)
-                // TODO GUEST_VSM: flush virtual address list is not
-                // actually implemented yet, but this is needed for guest
-                // vsm bringup
-                .with_extended_gva_ranges_for_flush_virtual_address_list_available(access_vsm);
+                .with_extended_gva_ranges_for_flush_virtual_address_list_available(true);
 
             // TODO SNP
             //    .with_fast_hypercall_output_available(true);
