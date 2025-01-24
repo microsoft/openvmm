@@ -296,7 +296,7 @@ impl<'a> NvmeManagerWorker {
         pci_id: String,
     ) -> Result<&mut nvme_driver::NvmeDriver<VfioDevice>, InnerError> {
 
-        let dma_client = self.dma_manager.create_client(pci_id.clone());
+        let mut dma_client = self.dma_manager.create_client(pci_id.clone());
         let driver = match self.devices.entry(pci_id.to_owned()) {
             hash_map::Entry::Occupied(entry) => entry.into_mut(),
             hash_map::Entry::Vacant(entry) => {
@@ -362,7 +362,7 @@ impl<'a> NvmeManagerWorker {
         self.devices = HashMap::new();
         for disk in &saved_state.nvme_disks {
             let pci_id = disk.pci_id.clone();
-            let dma_client = self.dma_manager.create_client(pci_id.clone());
+            let mut dma_client = self.dma_manager.create_client(pci_id.clone());
             let vfio_device =
                 // This code can wait on each VFIO device until it is arrived.
                 // A potential optimization would be to delay VFIO operation
