@@ -42,7 +42,6 @@ use uevent::UeventListener;
 use user_driver::vfio::vfio_set_device_reset_method;
 use user_driver::vfio::PciDeviceResetMethod;
 use user_driver::vfio::VfioDevice;
-use user_driver::vfio::VfioDmaBuffer;
 use vmcore::vm_task::VmTaskDriverSource;
 use vpci::bus_control::VpciBusControl;
 use vpci::bus_control::VpciBusEvent;
@@ -67,7 +66,6 @@ async fn   create_mana_device(
     pci_id: &str,
     vp_count: u32,
     max_sub_channels: u16,
-    dma_buffer: Arc<dyn VfioDmaBuffer>,
     dma_client: Arc<dyn DmaClient>,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     // Disable FLR on vfio attach/detach; this allows faster system
@@ -92,7 +90,6 @@ async fn   create_mana_device(
             pci_id,
             vp_count,
             max_sub_channels,
-            &dma_buffer,
             dma_client.clone(),
         )
         .await
@@ -122,10 +119,9 @@ async fn try_create_mana_device(
     pci_id: &str,
     vp_count: u32,
     max_sub_channels: u16,
-    dma_buffer: &Arc<dyn VfioDmaBuffer>,
     dma_client: Arc<dyn DmaClient>,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
-    let device = VfioDevice::new(driver_source, pci_id, dma_buffer.clone(), dma_client)
+    let device = VfioDevice::new(driver_source, pci_id, dma_client)
         .await
         .context("failed to open device")?;
 
@@ -205,8 +201,6 @@ struct HclNetworkVFManagerWorker {
     vtl2_bus_control: HclVpciBusControl,
     vtl2_pci_id: String,
     #[inspect(skip)]
-    dma_buffer: Arc<dyn VfioDmaBuffer>,
-    #[inspect(skip)]
     dma_mode: GuestDmaMode,
     #[inspect(skip)]
     dma_manager: GlobalDmaManager,
@@ -224,7 +218,6 @@ impl HclNetworkVFManagerWorker {
         endpoint_controls: Vec<DisconnectableEndpointControl>,
         vp_count: u32,
         max_sub_channels: u16,
-        dma_buffer: Arc<dyn VfioDmaBuffer>,
         dma_mode: GuestDmaMode,
         dma_manager: GlobalDmaManager,
     ) -> (Self, mesh::Sender<HclNetworkVfManagerMessage>) {
@@ -255,7 +248,6 @@ impl HclNetworkVFManagerWorker {
                 vtl0_bus_control,
                 vtl2_bus_control,
                 vtl2_pci_id,
-                dma_buffer,
                 dma_mode,
                 dma_manager,
             },
@@ -700,7 +692,6 @@ impl HclNetworkVFManagerWorker {
                         &self.vtl2_pci_id,
                         self.vp_count,
                         self.max_sub_channels,
-                        self.dma_buffer.clone(),
                         Arc::new(self.dma_manager.create_client(pci_id))
                     )
                     .await
@@ -876,7 +867,6 @@ impl HclNetworkVFManager {
         vp_count: u32,
         max_sub_channels: u16,
         netvsp_state: &Option<Vec<SavedState>>,
-        dma_buffer: Arc<dyn VfioDmaBuffer>,
         dma_mode: GuestDmaMode,
         dma_client: Arc<dyn DmaClient>,
         dma_manager: GlobalDmaManager,
@@ -890,7 +880,6 @@ impl HclNetworkVFManager {
             &vtl2_pci_id,
             vp_count,
             max_sub_channels,
-            dma_buffer.clone(),
             dma_client,
         )
         .await?;
@@ -940,7 +929,6 @@ impl HclNetworkVFManager {
             endpoint_controls,
             vp_count,
             max_sub_channels,
-            dma_buffer,
             dma_mode,
             dma_manager,
         );

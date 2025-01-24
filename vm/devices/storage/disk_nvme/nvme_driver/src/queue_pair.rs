@@ -189,10 +189,6 @@ impl QueuePair {
         let mem = dma_client
             .allocate_dma_buffer(total_size)
             .context("failed to allocate memory for queues")?;
-        //let mem = device
-        //    .host_allocator()
-        //    .allocate_dma_buffer(total_size)
-        //    .context("failed to allocate memory for queues")?;
 
         assert!(sq_entries <= Self::MAX_SQ_ENTRIES);
         assert!(cq_entries <= Self::MAX_CQ_ENTRIES);

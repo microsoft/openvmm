@@ -48,10 +48,6 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmula
         self.device.map_bar(n)
     }
 
-    fn host_allocator(&self) -> Self::DmaAllocator {
-        self.device.host_allocator()
-    }
-
     fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
         None
     }

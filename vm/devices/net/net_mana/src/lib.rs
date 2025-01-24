@@ -47,6 +47,7 @@ use net_backend::TxSegment;
 use net_backend::TxSegmentType;
 use pal_async::task::Spawn;
 use safeatomic::AtomicSliceOps;
+use user_driver::DmaClient;
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
@@ -61,7 +62,7 @@ use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE32;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
-use user_driver::HostDmaAllocator;
+//use user_driver::HostDmaAllocator;
 use vmcore::slim_event::SlimEvent;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
@@ -305,7 +306,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
         let tx_max = tx_cq_size / size_of::<Cqe>() as u32;
 
         let tx_bounce_buffer = ContiguousBufferManager::new(
-            &self.vport.host_allocator().await,
+            self.vport.get_dma_client().await.unwrap(),
             if self.bounce_buffer {
                 TX_BOUNCE_BUFFER_PAGE_LIMIT
             } else {
@@ -317,7 +318,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
         let rx_bounce_buffer = if self.bounce_buffer {
             Some(
                 ContiguousBufferManager::new(
-                    &self.vport.host_allocator().await,
+                    self.vport.get_dma_client().await.unwrap(),
                     RX_BOUNCE_BUFFER_PAGE_LIMIT,
                 )
                 .context("failed to allocate rx bounce buffer")?,
@@ -1221,9 +1222,9 @@ struct ContiguousBufferManager {
 struct OutOfMemory;
 
 impl ContiguousBufferManager {
-    pub fn new<T: HostDmaAllocator>(host_allocator: &T, page_limit: u32) -> anyhow::Result<Self> {
+    pub fn new(dma_client: Arc<dyn DmaClient>, page_limit: u32) -> anyhow::Result<Self> {
         let len = PAGE_SIZE32 * page_limit;
-        let mem = host_allocator.allocate_dma_buffer(len as usize)?;
+        let mem = dma_client.allocate_dma_buffer(len as usize)?;
         Ok(Self {
             len,
             head: 0,
