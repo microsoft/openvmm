@@ -268,9 +268,8 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         }
 
         let dma_client = device.get_dma_client().context("Failed to get DMA client from device")?;
-        let mut dma_client = Arc::clone(&dma_client);
 
-        let dma_buffer = Arc::get_mut(&mut dma_client).expect("Failed to get mutable reference to DMA client")
+        let dma_buffer = dma_client
             .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
             .context("Failed to allocate DMA buffer")?;
 

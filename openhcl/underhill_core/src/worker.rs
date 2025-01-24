@@ -746,7 +746,7 @@ impl UhVmNetworkSettings {
             .unwrap_or(MAX_SUBCHANNELS_PER_VNIC)
             .min(vps_count as u16);
 
-        let dma_client = dma_manager.create_client(nic_config.pci_id.clone());
+        let mut dma_client = dma_manager.create_client(nic_config.pci_id.clone());
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
             nic_config.instance_id,
             nic_config.pci_id,
@@ -1881,6 +1881,8 @@ async fn new_underhill_vm(
         // Fallback to None, which indicates LockedMemorySpawner will be used internally
         None
     };
+
+
     let dma_manager = GlobalDmaManager::new(dma_pool);
     let nvme_manager = if env_cfg.nvme_vfio {
         //let shared_vis_pool_spawner = shared_vis_pages_pool

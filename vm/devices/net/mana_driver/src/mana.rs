@@ -331,9 +331,8 @@ impl<T: DeviceBacking> Vport<T> {
         let mut gdma = self.inner.gdma.lock().await;
 
         let dma_client = gdma.device().get_dma_client().context("Failed to get DMA client from device")?;
-        let mut dma_client = Arc::clone(&dma_client);
 
-        let mem = Arc::get_mut(&mut dma_client).expect("Failed to get mutable reference to DMA client")
+        let mem = dma_client
             .allocate_dma_buffer(size as usize)
             .context("Failed to allocate DMA buffer")?;
 
@@ -381,14 +380,10 @@ impl<T: DeviceBacking> Vport<T> {
         let mut gdma = self.inner.gdma.lock().await;
 
         let dma_client = gdma.device().get_dma_client().context("Failed to get DMA client from device")?;
-        let mut dma_client = Arc::clone(&dma_client);
 
-        let mem = Arc::new(
-            Arc::get_mut(&mut dma_client)
-                .ok_or_else(|| anyhow::anyhow!("Failed to get mutable reference to DMA client"))?
+        let mem = dma_client
                 .allocate_dma_buffer((wq_size + cq_size) as usize)
-                .context("Failed to allocate DMA buffer")?,
-        );
+                .context("Failed to allocate DMA buffer")?;
 
         //let mem = Arc::new(
         //    gdma.device()

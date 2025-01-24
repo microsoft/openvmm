@@ -185,9 +185,8 @@ impl QueuePair {
             QueuePair::SQ_SIZE + QueuePair::CQ_SIZE + QueuePair::PER_QUEUE_PAGES * PAGE_SIZE;
 
         let dma_client = device.get_dma_client().context("Failed to get DMA client from device")?;
-        let mut dma_client = Arc::clone(&dma_client);
 
-        let mem = Arc::get_mut(&mut dma_client).expect("Failed to get mutable reference to DMA client")
+        let mem = dma_client
             .allocate_dma_buffer(total_size)
             .context("failed to allocate memory for queues")?;
         //let mem = device

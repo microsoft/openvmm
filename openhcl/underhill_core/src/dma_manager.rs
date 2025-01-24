@@ -24,7 +24,7 @@ impl GlobalDmaManager {
             _bounce_buffers_manager: Vec::new(),
             //clients: Mutex::new(Vec::new()),
             //client_thresholds: Mutex::new(Vec::new()),
-            page_pool,
+            page_pool: page_pool.clone(),
             clients: HashMap::new(),
         }
     }
@@ -34,8 +34,10 @@ impl GlobalDmaManager {
             dma_manager: Arc::new(Mutex::new(self.clone())),
             dma_buffer_allocator: None,  // Valid now as `Option<Arc<dyn VfioDmaBuffer>>`
         };
+
         let arc_client = Arc::new(client);
         self.clients.insert(pci_id, arc_client.clone()); // Store the cloned `Arc` in `clients`.
+
         arc_client.as_ref().clone() // Return the `Arc<DmaClient>`.
     }
 
@@ -44,7 +46,7 @@ impl GlobalDmaManager {
     }
 
     pub fn get_dma_buffer_allocator(
-        &self,
+        &mut self,
         device_name: String,
     ) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
         self.page_pool
@@ -71,19 +73,21 @@ impl user_driver::DmaClient for DmaClient {
         self.map_dma_ranges(ranges)
     }
 
-    fn get_dma_buffer_allocator(
-        &mut self,
-        device_name: String,
-    ) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-        let manager = self.dma_manager.lock().unwrap();
-        manager.get_dma_buffer_allocator(device_name).map(|allocator| {
-            self.dma_buffer_allocator = Some(allocator.clone());
-            allocator
-        })
-    }
+    //fn get_dma_buffer_allocator(
+    //    &mut self,
+    //    device_name: String,
+    //) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
+
+    //    let mut manager = self.dma_manager.lock().unwrap();
+
+    //    manager.get_dma_buffer_allocator(device_name).map(|allocator| {
+    //        self.dma_buffer_allocator = Some(allocator.clone());
+    //        allocator
+    //    })
+    //}
 
     fn allocate_dma_buffer(
-        &mut self,
+        &self,
         total_size: usize,
     ) -> anyhow::Result<MemoryBlock> {
         if self.dma_buffer_allocator.is_none() {
@@ -113,10 +117,15 @@ impl DmaClient {
     }
 
     pub fn get_dma_buffer_allocator(
-        &self,
+        &mut self,
         device_name: String,
     ) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-        let manager = self.dma_manager.lock().unwrap();
-        manager.get_dma_buffer_allocator(device_name)
+
+        let mut manager = self.dma_manager.lock().unwrap();
+
+        manager.get_dma_buffer_allocator(device_name).map(|allocator| {
+            self.dma_buffer_allocator = Some(allocator.clone());
+            allocator
+        })
     }
 }

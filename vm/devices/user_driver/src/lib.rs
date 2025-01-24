@@ -11,7 +11,7 @@ use std::sync::Arc;
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;
 use memory::MemoryBlock;
-use vfio::VfioDmaBuffer;
+//use vfio::VfioDmaBuffer;
 
 pub mod backoff;
 pub mod emulated;
@@ -80,14 +80,14 @@ pub trait DmaClient : Send + Sync {
         ranges: i32
     ) -> anyhow::Result<Vec<i32>>;
 
-    fn get_dma_buffer_allocator(
-        &mut self,
-        device_name: String,
-    ) -> anyhow::Result<Arc<dyn VfioDmaBuffer>>;
+    //fn get_dma_buffer_allocator(
+    //    &mut self,
+    //    device_name: String,
+    //) -> anyhow::Result<Arc<dyn VfioDmaBuffer>>;
 
 
     fn allocate_dma_buffer(
-        &mut self,
+        &self,
         total_size: usize,
     ) -> anyhow::Result<MemoryBlock>;
 
