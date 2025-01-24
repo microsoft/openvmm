@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Type definitions from GitHub events and payloads. https://docs.github.com/en/webhooks/webhook-events-and-payloads
+//! Type definitions from GitHub events and payloads. <https://docs.github.com/en/webhooks/webhook-events-and-payloads>
 
 use serde::Deserialize;
 use serde::Serialize;
