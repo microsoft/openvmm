@@ -308,7 +308,6 @@ pub struct NvmeTestMapping<T> {
     mqes: u16,
 }
 
-
 impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
     pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory, mqes: u16) -> Self {
@@ -348,8 +347,6 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestE
     }
 }
 
-
-/// Mapping wrapper to intercept calls to get Caps from the NvmeDriver
 impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
     fn len(&self) -> usize {
         self.mapping.len()
