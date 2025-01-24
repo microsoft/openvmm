@@ -58,7 +58,6 @@ pub struct NvmeController {
     qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
     #[inspect(flatten, mut)]
     workers: NvmeWorkers,
-    cap: Cap,
 }
 
 #[derive(Inspect)]
@@ -104,8 +103,6 @@ pub struct NvmeControllerCaps {
     /// The subsystem ID, used as part of the subnqn field of the identify
     /// controller response.
     pub subsystem_id: Guid,
-    /// The mqes value for the controller
-    pub cap_mqes: Option(u16),
 }
 
 impl NvmeController {
@@ -158,18 +155,12 @@ impl NvmeController {
             caps.subsystem_id,
         );
 
-        let mut cap: Cap = CAP.clone();
-        if Some(mqes) = caps.mqes {
-            cap = CAP.clone().with_mqes_z(mqes);
-        }
-
         Self {
             cfg_space,
             msix,
             registers: RegState::new(),
             workers: admin,
             qe_sizes,
-            cap,
         }
     }
 
@@ -189,7 +180,7 @@ impl NvmeController {
 
         // Check for 64-bit registers.
         let d: Option<u64> = match spec::Register(addr & !7) {
-            spec::Register::CAP => Some(self.cap.into()),
+            spec::Register::CAP => Some(CAP.into()),
             spec::Register::ASQ => Some(self.registers.asq),
             spec::Register::ACQ => Some(self.registers.acq),
             spec::Register::BPMBL => Some(0),
