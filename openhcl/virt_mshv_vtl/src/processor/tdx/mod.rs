@@ -3445,21 +3445,18 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
         {
             let mut flush_state = self.vp.shared.flush_state[vtl].write();
 
-            // If there are too many provided gvas then promote this request to a flush entire.
-            // TODO TDX GUEST VSM do we need the extended check? I don't think so
-            if gva_ranges.len() > FLUSH_GVA_LIST_SIZE {
+            // If we fail to add ranges to the list for any reason then promote this request to a flush entire.
+            if Self::add_ranges_to_tlb_flush_list(
+                &mut flush_state,
+                gva_ranges,
+                flags.use_extended_range_format(),
+            )
+            .is_err()
+            {
                 if flags.non_global_mappings_only() {
                     flush_state.s.flush_entire_non_global_counter += 1;
                 } else {
                     flush_state.s.flush_entire_counter += 1;
-                }
-            } else {
-                for range in gva_ranges {
-                    if flush_state.gva_list.len() == FLUSH_GVA_LIST_SIZE {
-                        flush_state.gva_list.pop_front();
-                    }
-                    flush_state.gva_list.push_back(*range);
-                    flush_state.s.gva_list_count += 1;
                 }
             }
         }
@@ -3523,11 +3520,35 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
 }
 
 impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
-    pub fn wake_processors_for_tlb_flush(
-        &mut self,
-        _vtl: GuestVtl,
-        processor_set: Option<Vec<u32>>,
-    ) {
+    fn add_ranges_to_tlb_flush_list(
+        flush_state: &mut TdxPartitionFlushState,
+        gva_ranges: &[HvGvaRange],
+        use_extended_range_format: bool,
+    ) -> Result<(), ()> {
+        // If there are more gvas than the list size there's no point in filling the list.
+        if gva_ranges.len() > FLUSH_GVA_LIST_SIZE {
+            return Err(());
+        }
+
+        for range in gva_ranges {
+            if range.as_extended().large_page() && !use_extended_range_format {
+                // If we have not been asked to use extended ranges, but this range
+                // claims to be large pages, then what has actually happened is this
+                // range has overflowed its count field. We have no way to disambiguate
+                // this case at flush time, so we have to promote this to a flush entire.
+                return Err(());
+            }
+            if flush_state.gva_list.len() == FLUSH_GVA_LIST_SIZE {
+                flush_state.gva_list.pop_front();
+            }
+            flush_state.gva_list.push_back(*range);
+            flush_state.s.gva_list_count += 1;
+        }
+
+        Ok(())
+    }
+
+    fn wake_processors_for_tlb_flush(&mut self, _vtl: GuestVtl, processor_set: Option<Vec<u32>>) {
         // TODO TDX GUEST VSM: Add additional checks? HCL checks that VP is active and in target VTL
         if let Some(processors) = processor_set {
             for vp in processors {
