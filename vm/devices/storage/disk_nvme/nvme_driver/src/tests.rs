@@ -373,7 +373,7 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
     }
 
     fn read_u64(&self, offset: usize) -> u64 {
-        let mut mock_response = self.mocked_response_u64.lock().unwrap();
+        let mock_response = self.mocked_response_u64.lock().unwrap();
 
         // Intercept reads to the mocked offset address
         if let Some((mock_offset, mock_data)) = *mock_response { 
