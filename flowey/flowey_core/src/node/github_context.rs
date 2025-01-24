@@ -3,26 +3,15 @@
 
 //! Core types and traits used to read GitHub context variables.
 
+use crate::node::spec::GhContextVarReaderEventPullRequest;
 use crate::node::ClaimVar;
+use crate::node::GhUserSecretVar;
 use crate::node::NodeCtx;
 use crate::node::ReadVar;
 use crate::node::StepCtx;
-use crate::pipeline::GhUserSecretVar;
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
-
-#[derive(Serialize, Deserialize)]
-pub struct Head {
-    #[serde(rename = "ref")]
-    pub head_ref: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct GhContextVarReaderEventPullRequest {
-    pub head: Head,
-}
 
 pub mod state {
     pub enum Root {}
@@ -77,6 +66,7 @@ impl<S> GhContextVarReader<'_, S> {
 }
 
 impl<'a> GhContextVarReader<'a, state::Root> {
+    /// Access variables that are globally available `github.repository`, `github.workspace`, etc.
     pub fn global(self) -> GhContextVarReader<'a, state::Global> {
         GhContextVarReader {
             ctx: self.ctx,
@@ -84,6 +74,7 @@ impl<'a> GhContextVarReader<'a, state::Root> {
         }
     }
 
+    /// Access variables that are only available in the context of a GitHub event. `github.event.pull_request`, etc.
     pub fn event(self) -> GhContextVarReader<'a, state::Event> {
         GhContextVarReader {
             ctx: self.ctx,
@@ -91,30 +82,36 @@ impl<'a> GhContextVarReader<'a, state::Root> {
         }
     }
 
+    /// Access a secret
     pub fn secret(self, secret: GhUserSecretVar) -> ReadVar<String> {
         self.read_var(format!("secrets.{}", secret.0), true, false)
     }
 }
 
 impl GhContextVarReader<'_, state::Global> {
+    /// `github.repository`
     pub fn repository(self) -> ReadVar<String> {
         self.read_var("github.repository", false, false)
     }
 
+    /// `runner.temp`
     pub fn runner_temp(self) -> ReadVar<String> {
         self.read_var("runner.temp", false, false)
     }
 
+    /// `github.workspace`
     pub fn workspace(self) -> ReadVar<String> {
         self.read_var("github.workspace", false, false)
     }
 
+    /// `github.token`
     pub fn token(self) -> ReadVar<String> {
         self.read_var("github.token", true, false)
     }
 }
 
 impl GhContextVarReader<'_, state::Event> {
+    /// `github.event.pull_request`
     pub fn pull_request(self) -> ReadVar<Option<GhContextVarReaderEventPullRequest>> {
         self.read_var("github.event.pull_request", false, true)
     }

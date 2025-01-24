@@ -12,6 +12,7 @@ use crate::node::FlowArch;
 use crate::node::FlowNodeBase;
 use crate::node::FlowPlatform;
 use crate::node::FlowPlatformLinuxDistro;
+use crate::node::GhUserSecretVar;
 use crate::node::IntoRequest;
 use crate::node::NodeHandle;
 use crate::node::ReadVar;
@@ -19,7 +20,6 @@ use crate::node::WriteVar;
 use crate::patch::PatchResolver;
 use crate::patch::ResolvedPatches;
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -39,7 +39,6 @@ pub mod user_facing {
     pub use super::GhRunner;
     pub use super::GhRunnerOsLabel;
     pub use super::GhScheduleTriggers;
-    pub use super::GhUserSecretVar;
     pub use super::HostExt;
     pub use super::IntoPipeline;
     pub use super::ParameterKind;
@@ -355,9 +354,6 @@ pub struct Pipeline {
     gh_pr_triggers: Option<GhPrTriggers>,
     gh_bootstrap_template: String,
 }
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct GhUserSecretVar(pub String);
 
 impl Pipeline {
     pub fn new() -> Pipeline {

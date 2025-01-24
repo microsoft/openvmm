@@ -4,6 +4,9 @@
 //! Core types and traits used to create and work with flowey nodes.
 
 mod github_context;
+mod spec;
+
+pub use github_context::GhVarState;
 
 use self::steps::ado::AdoRuntimeVar;
 use self::steps::ado::AdoStepServices;
@@ -22,7 +25,6 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use user_facing::GhParam;
-use user_facing::GhVarState;
 
 /// Node types which are considered "user facing", and re-exported in the
 /// `flowey` crate.
@@ -43,6 +45,7 @@ pub mod user_facing {
     pub use super::FlowNode;
     pub use super::FlowPlatform;
     pub use super::FlowPlatformKind;
+    pub use super::GhUserSecretVar;
     pub use super::ImportCtx;
     pub use super::IntoRequest;
     pub use super::NodeCtx;
@@ -57,8 +60,6 @@ pub mod user_facing {
     pub use crate::flowey_request;
     pub use crate::new_flow_node;
     pub use crate::new_simple_flow_node;
-    pub use crate::node::github_context::state;
-    pub use crate::node::github_context::GhVarState;
     pub use crate::node::FlowPlatformLinuxDistro;
 
     /// Helper method to streamline request validation in cases where a value is
@@ -340,6 +341,18 @@ impl_tuple_claim!(A B C D);
 impl_tuple_claim!(A B C);
 impl_tuple_claim!(A B);
 impl_tuple_claim!(A);
+
+/// Read a custom, user-defined secret by passing in the secret name.
+///
+/// Example usage:
+/// ```
+/// let secret = pipeline.gh_use_secret("secret_name");
+/// let secret_readvar = ctx.get_gh_context_var().secret(secret);
+/// let secret_claimedreadvar = secret_readvar.claim(ctx);
+/// let secret_value = rt.read(secret_claimedreadvar);
+/// ```
+#[derive(Serialize, Deserialize, Clone)]
+pub struct GhUserSecretVar(pub(crate) String);
 
 /// Read a value from a flowey Var at runtime, returning the value written by
 /// the Var's corresponding [`WriteVar`].

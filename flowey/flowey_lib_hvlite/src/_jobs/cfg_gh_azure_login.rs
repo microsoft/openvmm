@@ -4,7 +4,6 @@
 //! Configuration for Azure Login on Github Actions using federated credentials (OpenIDConnect).
 
 use flowey::node::prelude::*;
-use flowey::pipeline::prelude::GhUserSecretVar;
 
 flowey_request! {
     #[derive(Clone)]
