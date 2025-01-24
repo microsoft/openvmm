@@ -29,12 +29,13 @@ use net_backend_resources::mac_address::MacAddress;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use user_driver::DmaClient;
 use std::sync::Arc;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::DeviceBacking;
-use user_driver::DmaAllocator;
+//use user_driver::DmaAllocator;
 //use user_driver::HostDmaAllocator;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -336,12 +337,6 @@ impl<T: DeviceBacking> Vport<T> {
             .allocate_dma_buffer(size as usize)
             .context("Failed to allocate DMA buffer")?;
 
-        //let mem = gdma
-        //    .device()
-        //    .host_allocator()
-        //    .allocate_dma_buffer(size as usize)
-        //    .context("failed to allocate dma buffer for eq")?;
-
         let gdma_region = gdma
             .create_dma_region(arena, self.inner.dev_id, mem.clone())
             .await
@@ -384,12 +379,6 @@ impl<T: DeviceBacking> Vport<T> {
         let mem = dma_client
                 .allocate_dma_buffer((wq_size + cq_size) as usize)
                 .context("Failed to allocate DMA buffer")?;
-
-        //let mem = Arc::new(
-        //    gdma.device()
-        //        .host_allocator()
-        //        .allocate_dma_buffer((wq_size + cq_size) as usize)?,
-        //);
 
         let wq_mem = mem.subblock(0, wq_size as usize);
         let cq_mem = mem.subblock(wq_size as usize, cq_size as usize);
@@ -549,9 +538,10 @@ impl<T: DeviceBacking> Vport<T> {
         vport_link_status[vport_index] = LinkStatus::Active { sender, connected };
     }
 
-    /// Returns an object that can allocate host memory to be shared with the device.
-    pub async fn host_allocator(&self) -> DmaAllocator<T> {
-        self.inner.gdma.lock().await.device().host_allocator()
+    /// Returns an object that can allocate dma memory to be shared with the device.
+    pub async fn get_dma_client(&self) -> anyhow::Result<Arc<dyn DmaClient>>
+    {
+        Ok(self.inner.gdma.lock().await.device().get_dma_client().unwrap())
     }
 }
 

@@ -316,12 +316,6 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
         })
     }
 
-    /// Returns an object that can allocate host memory to be shared with the device.
-    fn host_allocator(&self) -> Self::DmaAllocator {
-        EmulatedDmaAllocator {
-            shared_mem: self.shared_mem.clone(),
-        }
-    }
 
     fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
         None

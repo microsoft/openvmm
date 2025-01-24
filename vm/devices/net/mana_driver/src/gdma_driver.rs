@@ -273,9 +273,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
             .context("Failed to allocate DMA buffer")?;
 
-        //let dma_buffer = device
-        //    .host_allocator()
-        //    .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)?;
         let pages = dma_buffer.pfns();
 
         // Write the shared memory.

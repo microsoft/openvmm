@@ -35,9 +35,6 @@ pub trait DeviceBacking: 'static + Send + Inspect {
     /// Maps a BAR.
     fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers>;
 
-    /// Returns an object that can allocate host memory to be shared with the device.
-    fn host_allocator(&self) -> Self::DmaAllocator;
-
     fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>>;
 
     /// Returns the maximum number of interrupts that can be mapped.

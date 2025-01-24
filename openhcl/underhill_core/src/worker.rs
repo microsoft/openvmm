@@ -747,6 +747,8 @@ impl UhVmNetworkSettings {
             .min(vps_count as u16);
 
         let mut dma_client = dma_manager.create_client(nic_config.pci_id.clone());
+        dma_client.get_dma_buffer_allocator(format!("nic_{}", instance_id)).context("creating vfio dma buffer")?;
+
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
             nic_config.instance_id,
             nic_config.pci_id,
@@ -757,7 +759,6 @@ impl UhVmNetworkSettings {
             vps_count as u32,
             nic_max_sub_channels,
             servicing_netvsp_state,
-            dma_client.get_dma_buffer_allocator(format!("nic_{}", instance_id)).context("creating vfio dma buffer")?,
             //vfio_dma_buffer(shared_vis_pages_pool, format!("nic_{}", instance_id))
              //   .context("creating vfio dma buffer")?,
             self.dma_mode,
