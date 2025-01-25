@@ -1651,7 +1651,6 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, HypervisorBackedX86> {
             hv1_hypercall::HvPostMessage,
             hv1_hypercall::HvSignalEvent,
             hv1_hypercall::HvRetargetDeviceInterrupt,
-            hv1_hypercall::HvX64StartVirtualProcessor,
             hv1_hypercall::HvGetVpIndexFromApicId,
             hv1_hypercall::HvSetVpRegisters,
             hv1_hypercall::HvModifyVtlProtectionMask
