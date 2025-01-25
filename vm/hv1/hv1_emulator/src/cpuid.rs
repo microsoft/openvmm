@@ -42,10 +42,8 @@ pub fn hv_cpuid_leaves(
             .with_access_apic_msrs(true)
             .with_access_vp_runtime_msr(true)
             .with_access_partition_reference_tsc(true)
-            .with_start_virtual_processor(true)
+            .with_start_virtual_processor(hardware_isolated)
             .with_access_vsm(access_vsm)
-            // TODO GUEST_VSM: Not actually implemented yet, but this is
-            // needed for guest vsm bringup
             .with_enable_extended_gva_ranges_flush_va_list(access_vsm);
 
         if hardware_isolated {
