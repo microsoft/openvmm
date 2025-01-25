@@ -3298,6 +3298,7 @@ dependencies = [
  "arbitrary",
  "base64 0.21.7",
  "bitfield-struct",
+ "expect-test",
  "filepath",
  "futures",
  "inspect_derive",
