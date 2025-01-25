@@ -309,12 +309,16 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 pub struct NvmeTestEmulatedDevice<T: InspectMut> {
     device: EmulatedDevice<T>,
     #[inspect(debug)]
+    mocked_response_u32: Arc<Mutex<Option<(usize, u32)>>>,
+    #[inspect(debug)]
     mocked_response_u64: Arc<Mutex<Option<(usize, u64)>>>,
 }
 
 #[derive(Inspect)]
 pub struct NvmeTestMapping<T> {
     mapping: Mapping<T>,
+    #[inspect(debug)]
+    mocked_response_u32: Arc<Mutex<Option<(usize, u32)>>>,
     #[inspect(debug)]
     mocked_response_u64: Arc<Mutex<Option<(usize, u64)>>>,
 }
@@ -324,8 +328,14 @@ impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
     pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory) -> Self {
         Self {
             device: EmulatedDevice::new(device, msi_set, shared_mem),
+            mocked_response_u32: Arc::new(Mutex::new(None)),
             mocked_response_u64: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn set_mock_response_u32(&mut self, mapping: Option<(usize, u32)>) {
+        let mut mock_response = self.mocked_response_u32.lock().unwrap();
+        *mock_response = mapping;
     }
 
     pub fn set_mock_response_u64(&mut self, mapping: Option<(usize, u64)>) {
@@ -346,6 +356,7 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestE
     fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers> {
         Ok(NvmeTestMapping {
             mapping: self.device.map_bar(n).unwrap(),
+            mocked_response_u32: Arc::clone(&self.mocked_response_u32),
             mocked_response_u64: Arc::clone(&self.mocked_response_u64),
         })
     }
@@ -369,6 +380,15 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
     }
 
     fn read_u32(&self, offset: usize) -> u32 {
+        let mock_response = self.mocked_response_u32.lock().unwrap();
+
+        // Intercept reads to the mocked offset address
+        if let Some((mock_offset, mock_data)) = *mock_response { 
+            if mock_offset == offset {
+                return mock_data;
+            }
+        }
+
         self.mapping.read_u32(offset)
     }
 
