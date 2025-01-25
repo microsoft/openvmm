@@ -38,7 +38,7 @@ const fn varint_size(n: u64) -> usize {
 }
 
 /// Reads a variable-length integer, advancing `v`.
-fn read_varint(v: &mut &[u8]) -> Result<u64> {
+pub(crate) fn read_varint(v: &mut &[u8]) -> Result<u64> {
     let mut shift = 0;
     let mut r = 0;
     loop {

@@ -28,7 +28,7 @@ zerocopy.workspace = true
 prost-build = { workspace = true, optional = true }
 
 [dev-dependencies]
-diff.workspace = true
+expect-test.workspace = true
 
 [lints]
 workspace = true
