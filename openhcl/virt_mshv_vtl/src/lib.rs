@@ -655,6 +655,7 @@ impl WakeReason {
     // Convenient constants.
     const EXTINT: Self = Self::new().with_extint(true);
     const MESSAGE_QUEUES: Self = Self::new().with_message_queues(true);
+    #[cfg(guest_arch = "x86_64")]
     const HV_START_ENABLE_VP_VTL: Self = Self::new().with_hv_start_enable_vtl_vp(true); // StartVp/EnableVpVtl handling
     const INTCON: Self = Self::new().with_intcon(true);
     #[cfg(guest_arch = "x86_64")]

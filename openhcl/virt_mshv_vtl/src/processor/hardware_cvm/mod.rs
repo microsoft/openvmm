@@ -943,6 +943,45 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
     }
 }
 
+impl<T, B: HardwareIsolatedBacking>
+    hv1_hypercall::StartVirtualProcessor<hvdef::hypercall::InitialVpContextX64>
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn start_virtual_processor(
+        &mut self,
+        partition_id: u64,
+        target_vp: u32,
+        target_vtl: Vtl,
+        vp_context: &hvdef::hypercall::InitialVpContextX64,
+    ) -> HvResult<()> {
+        tracing::debug!(
+            vp_index = self.vp.vp_index().index(),
+            target_vp,
+            ?target_vtl,
+            "HvStartVirtualProcessor"
+        );
+
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err(HvError::InvalidPartitionId);
+        }
+
+        if target_vp == self.vp.vp_index().index()
+            || target_vp as usize >= self.vp.partition.vps.len()
+        {
+            return Err(HvError::InvalidVpIndex);
+        }
+
+        let target_vtl = self.target_vtl_no_higher(target_vtl)?;
+        let target_vp = &self.vp.partition.vps[target_vp as usize];
+
+        // TODO CVM GUEST VSM: probably some validation on vtl1_enabled
+        *target_vp.hv_start_enable_vtl_vp[target_vtl].lock() = Some(Box::new(*vp_context));
+        target_vp.wake(target_vtl, WakeReason::HV_START_ENABLE_VP_VTL);
+
+        Ok(())
+    }
+}
+
 impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
     for UhHypercallHandler<'_, '_, T, B>
 {
@@ -1210,6 +1249,34 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         }
 
         Ok(reprocessing_required)
+    }
+
+    pub(crate) fn hcvm_handle_vp_start_enable_vtl(
+        &mut self,
+        vtl: GuestVtl,
+    ) -> Result<(), UhRunVpError> {
+        if let Some(context) = self.inner.hv_start_enable_vtl_vp[vtl].lock().take() {
+            tracing::debug!(
+                vp_index = self.inner.cpu_index,
+                ?vtl,
+                "starting vp with initial registers"
+            );
+            hv1_emulator::hypercall::set_x86_vp_context(
+                &mut self.access_state(vtl.into()),
+                &context,
+            )
+            .map_err(UhRunVpError::State)?;
+
+            if vtl == GuestVtl::Vtl1 {
+                assert!(self.partition.isolation.is_hardware_isolated());
+                // Should have already initialized the hv emulator for this vtl
+                assert!(self.backing.hv(vtl).is_some());
+
+                // TODO CVM GUEST VSM: Revisit during AP startup if we need to exit to VTL 1 here
+            }
+        }
+
+        Ok(())
     }
 
     fn get_vsm_vp_secure_config_vtl(

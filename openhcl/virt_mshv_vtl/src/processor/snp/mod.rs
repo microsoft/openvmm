@@ -502,6 +502,13 @@ impl BackingPrivate for SnpBacked {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
+
+    fn handle_vp_start_enable_vtl_wake(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+    ) -> Result<(), UhRunVpError> {
+        this.hcvm_handle_vp_start_enable_vtl(vtl)
+    }
 }
 
 fn virt_seg_to_snp(val: SegmentRegister) -> SevSelector {
