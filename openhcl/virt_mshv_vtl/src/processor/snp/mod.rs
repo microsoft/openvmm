@@ -455,11 +455,10 @@ impl BackingPrivate for SnpBacked {
     }
 
     fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16) {
-        if this.backing.hv_sint_notifications & !sints == 0 {
+        let sints = this.backing.hv_sint_notifications | sints;
+        if this.backing.hv_sint_notifications == sints {
             return;
         }
-        this.backing.hv_sint_notifications |= sints;
-
         let notifications = HvDeliverabilityNotificationsRegister::new().with_sints(sints);
         tracing::trace!(?notifications, "setting notifications");
         this.runner
@@ -469,6 +468,8 @@ impl BackingPrivate for SnpBacked {
                 u64::from(notifications).into(),
             )
             .expect("requesting deliverability is not a fallable operation");
+
+        this.backing.hv_sint_notifications = sints;
     }
 
     fn handle_cross_vtl_interrupts(
