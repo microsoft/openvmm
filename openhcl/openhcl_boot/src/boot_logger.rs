@@ -12,6 +12,7 @@
 use crate::arch::tdx::TdxIoAccess;
 use crate::host_params::shim_params::IsolationType;
 use crate::single_threaded::SingleThreaded;
+use arrayvec::ArrayString;
 use core::cell::RefCell;
 use core::fmt;
 use core::fmt::Write;
@@ -46,12 +47,16 @@ impl Logger {
     }
 }
 
+const MAX_LOG_SIZE: usize = 4096 * 4;
+
 pub struct BootLogger {
     logger: SingleThreaded<RefCell<Logger>>,
+    memory_log: SingleThreaded<RefCell<ArrayString<MAX_LOG_SIZE>>>,
 }
 
 pub static BOOT_LOGGER: BootLogger = BootLogger {
     logger: SingleThreaded(RefCell::new(Logger::None)),
+    memory_log: SingleThreaded(RefCell::new(ArrayString::new_const())),
 };
 
 /// Initialize the boot logger. This replaces any previous init calls.
@@ -74,7 +79,23 @@ pub fn boot_logger_init(isolation_type: IsolationType, logger_type: LoggerType) 
 
 impl Write for &BootLogger {
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        if let Ok(mut memory_log) = self.memory_log.try_borrow_mut() {
+            // TODO: Use a circular buffer instead of just ignoring logs after
+            // the buffer is full. This requires some other kind of
+            // non-allocating circular buffer, as arrayvec doesn't have any such
+            // data structures.
+            let _ = memory_log.write_str(s);
+        }
+
         self.logger.borrow_mut().write_str(s)
+    }
+}
+
+impl BootLogger {
+    /// Get the current log buffer. This holds a borrow on the memory buffer, so
+    /// until this is dropped no new messages will be added.
+    pub fn log_buffer(&self) -> core::cell::Ref<'_, ArrayString<MAX_LOG_SIZE>> {
+        self.memory_log.borrow()
     }
 }
 
