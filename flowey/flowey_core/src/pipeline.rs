@@ -6,13 +6,13 @@
 use self::internal::*;
 use crate::node::steps::ado::AdoResourcesRepositoryId;
 use crate::node::user_facing::AdoRuntimeVar;
-use crate::node::user_facing::GhContextVar;
 use crate::node::user_facing::GhPermission;
 use crate::node::user_facing::GhPermissionValue;
 use crate::node::FlowArch;
 use crate::node::FlowNodeBase;
 use crate::node::FlowPlatform;
 use crate::node::FlowPlatformLinuxDistro;
+use crate::node::GhUserSecretVar;
 use crate::node::IntoRequest;
 use crate::node::NodeHandle;
 use crate::node::ReadVar;
@@ -545,8 +545,8 @@ impl Pipeline {
     ///
     /// For more information on defining secrets for use in GitHub Actions, see
     /// <https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions>
-    pub fn gh_use_secret(&mut self, secret_name: impl AsRef<str>) -> GhContextVar {
-        GhContextVar::from_secrets(secret_name)
+    pub fn gh_use_secret(&mut self, secret_name: impl AsRef<str>) -> GhUserSecretVar {
+        GhUserSecretVar(secret_name.as_ref().to_string())
     }
 
     pub fn new_job(
