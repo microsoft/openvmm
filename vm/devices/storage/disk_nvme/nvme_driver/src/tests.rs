@@ -1,30 +1,30 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::NvmeDriver;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
+use crate::NvmeDriver;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use nvme::NvmeControllerCaps;
-use nvme_spec::Cap;
 use nvme_spec::nvm::DsmRange;
-use pal_async::DefaultDriver;
+use nvme_spec::Cap;
 use pal_async::async_test;
+use pal_async::DefaultDriver;
 use parking_lot::Mutex;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
 use test_with_tracing::test;
-use user_driver::DeviceBacking;
-use user_driver::DeviceRegisterIo;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
 use user_driver::emulated::EmulatedDmaAllocator;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
+use user_driver::DeviceBacking;
+use user_driver::DeviceRegisterIo;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::AsBytes;
@@ -70,11 +70,12 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
 
     let mut device = NvmeTestEmulatedDevice::new(nvme, msi_set, mem);
     // Setup mock response at offset 0
-    let cap: Cap = Cap::new().with_mqes_z(std::u16::MAX);
+    let max_u16: u16 = 65535;
+    let cap: Cap = Cap::new().with_mqes_z(max_u16);
     device.set_mock_response_u64(Some((0, cap.into())));
     let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device).await;
 
-    assert!(matches!(driver, Ok(_)));
+    assert!(driver.is_ok());
 }
 
 #[async_test]
@@ -107,7 +108,7 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
     device.set_mock_response_u64(Some((0, cap.into())));
     let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device).await;
 
-    assert!(matches!(driver, Err(_)));
+    assert!(driver.is_err());
 }
 
 async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
@@ -333,11 +334,7 @@ impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
         }
     }
 
-    pub fn set_mock_response_u32(&mut self, mapping: Option<(usize, u32)>) {
-        let mut mock_response = self.mocked_response_u32.lock();
-        *mock_response = mapping;
-    }
-
+    // TODO: set_mock_response_u32 is intentionally not implemented to avoid dead code.
     pub fn set_mock_response_u64(&mut self, mapping: Option<(usize, u64)>) {
         let mut mock_response = self.mocked_response_u64.lock();
         *mock_response = mapping;
@@ -383,7 +380,7 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
         let mock_response = self.mocked_response_u32.lock();
 
         // Intercept reads to the mocked offset address
-        if let Some((mock_offset, mock_data)) = *mock_response { 
+        if let Some((mock_offset, mock_data)) = *mock_response {
             if mock_offset == offset {
                 return mock_data;
             }
@@ -396,7 +393,7 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
         let mock_response = self.mocked_response_u64.lock();
 
         // Intercept reads to the mocked offset address
-        if let Some((mock_offset, mock_data)) = *mock_response { 
+        if let Some((mock_offset, mock_data)) = *mock_response {
             if mock_offset == offset {
                 return mock_data;
             }
