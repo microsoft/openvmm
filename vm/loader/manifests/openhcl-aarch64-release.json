@@ -8,7 +8,7 @@
             "image": {
                 "openhcl": {
                     "memory_page_count": 12288,
-                    "command_line": "console=null OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1",
+                    "command_line": "console=null",
                     "uefi": true
                 }
             }
