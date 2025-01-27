@@ -334,12 +334,12 @@ impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
     }
 
     pub fn set_mock_response_u32(&mut self, mapping: Option<(usize, u32)>) {
-        let mut mock_response = self.mocked_response_u32.lock().unwrap();
+        let mut mock_response = self.mocked_response_u32.lock();
         *mock_response = mapping;
     }
 
     pub fn set_mock_response_u64(&mut self, mapping: Option<(usize, u64)>) {
-        let mut mock_response = self.mocked_response_u64.lock().unwrap();
+        let mut mock_response = self.mocked_response_u64.lock();
         *mock_response = mapping;
     }
 }
@@ -380,7 +380,7 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
     }
 
     fn read_u32(&self, offset: usize) -> u32 {
-        let mock_response = self.mocked_response_u32.lock().unwrap();
+        let mock_response = self.mocked_response_u32.lock();
 
         // Intercept reads to the mocked offset address
         if let Some((mock_offset, mock_data)) = *mock_response { 
@@ -393,7 +393,7 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
     }
 
     fn read_u64(&self, offset: usize) -> u64 {
-        let mock_response = self.mocked_response_u64.lock().unwrap();
+        let mock_response = self.mocked_response_u64.lock();
 
         // Intercept reads to the mocked offset address
         if let Some((mock_offset, mock_data)) = *mock_response { 
