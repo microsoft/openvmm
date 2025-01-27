@@ -1299,6 +1299,12 @@ impl UhProcessor<'_, TdxBacked> {
         // issue a TLB flush, they always observe the correct active VTL. Otherwise
         // they might choose to not send this VP a wake, leading to a stall, until
         // this VP happens to exit to VTL 2 again.
+        // This needs to be set before doing local TLB flushes to ensure there is
+        // no window of time where new flush requests could be added to the queue
+        // while the active VTL is still perceived to be VTL 2, as that could result
+        // in missing a wake. This does technically leave open a small window
+        // for potential spurious wakes, but that's preferable, and will cause no
+        // problems besides a small amount of time waste.
         self.shared.active_vtl[self.vp_index().index() as usize]
             .store(next_vtl as u8, Ordering::SeqCst);
 
