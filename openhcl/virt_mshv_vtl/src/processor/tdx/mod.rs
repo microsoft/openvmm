@@ -902,6 +902,10 @@ impl BackingPrivate for TdxBacked {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         self.untrusted_synic.as_mut()
     }
+
+    fn set_exit_vtl(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
+        this.backing.cvm_state_mut().exit_vtl = vtl;
+    }
 }
 
 impl UhProcessor<'_, TdxBacked> {
@@ -940,13 +944,13 @@ impl UhProcessor<'_, TdxBacked> {
         // Check VTL enablement inside each block to avoid taking a lock on the hot path,
         // INIT and SIPI are quite cold.
         if init {
-            if !*self.inner.hcvm_vtl1_enabled.lock() {
+            if !self.inner.hcvm_vtl1_state.lock().enabled {
                 self.handle_init(vtl)?;
             }
         }
 
         if let Some(vector) = sipi {
-            if !*self.inner.hcvm_vtl1_enabled.lock() {
+            if !self.inner.hcvm_vtl1_state.lock().enabled {
                 self.handle_sipi(vtl, vector);
             }
         }

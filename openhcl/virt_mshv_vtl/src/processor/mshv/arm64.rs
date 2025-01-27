@@ -196,6 +196,10 @@ impl BackingPrivate for HypervisorBackedArm64 {
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
     }
 
+    fn set_exit_vtl(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl) {
+        unimplemented!();
+    }
+
     fn handle_cross_vtl_interrupts(
         _this: &mut UhProcessor<'_, Self>,
         _dev: &impl CpuIo,
