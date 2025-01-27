@@ -1291,8 +1291,17 @@ impl UhProcessor<'_, TdxBacked> {
             self.backing.vtls[next_vtl].interruption_set = false;
         }
 
-        // We're about to return to a lower VTL, so do any pending flushes, unlock our
-        // TLB locks, and wait for any others we're supposed to.
+        // We're about to return to a lower VTL, so set active_vtl for other VPs,
+        // do any pending flushes, unlock our TLB locks, and wait for any others
+        // we're supposed to.
+
+        // active_vtl needs SeqCst ordering in order to ensure that, when other VPs
+        // issue a TLB flush, they always observe the correct active VTL. Otherwise
+        // they might choose to not send this VP a wake, leading to a stall, until
+        // this VP happens to exit to VTL 2 again.
+        self.shared.active_vtl[self.vp_index().index() as usize]
+            .store(next_vtl as u8, Ordering::SeqCst);
+
         self.do_tlb_flush(next_vtl);
         self.unlock_tlb_lock(Vtl::Vtl2);
         let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
@@ -1328,12 +1337,6 @@ impl UhProcessor<'_, TdxBacked> {
         self.runner
             .tdx_vp_entry_flags_mut()
             .set_vm_index(next_vtl as u8 + 1);
-
-        // active_vtl needs SeqCst ordering in order to ensure that other VPs
-        // always observe the correct active VTL. There is no 'critical section'
-        // being guarded.
-        self.shared.active_vtl[self.vp_index().index() as usize]
-            .store(next_vtl as u8, Ordering::SeqCst);
 
         let has_intercept = self
             .runner
@@ -3531,9 +3534,10 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
     ) {
         for target_vp in processors {
             // Use SeqCst ordering to ensure that we are observing the most
-            // up-to-date value from other VPs. Otherwise we might miss a wake,
-            // which could cause TLB lock holders to be stuck waiting until
-            // the target_vp happens to switch into VTL 2.
+            // up-to-date value from other VPs. Otherwise we might not send a
+            // wake to a VP in a lower VTL, which could cause TLB lock holders
+            // to be stuck waiting until the target_vp happens to switch into
+            // VTL 2.
             if self.vp.vp_index().index() as usize != target_vp
                 && self.vp.shared.active_vtl[target_vp].load(Ordering::SeqCst) == vtl as u8
             {
