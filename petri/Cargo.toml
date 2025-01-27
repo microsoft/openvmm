@@ -50,7 +50,6 @@ mesh_worker.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 pal.workspace = true
-tempfile_helpers.workspace = true
 unix_socket.workspace = true
 sparse_mmap.workspace = true
 

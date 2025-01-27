@@ -4874,7 +4874,6 @@ dependencies = [
  "smallbox",
  "socket2",
  "tempfile",
- "tempfile_helpers",
  "unicycle",
  "unix_socket",
  "winapi",
@@ -5101,7 +5100,6 @@ dependencies = [
  "sparse_mmap",
  "storvsp_resources",
  "tempfile",
- "tempfile_helpers",
  "tpm_resources",
  "tracing",
  "tracing-subscriber",
@@ -6352,13 +6350,6 @@ dependencies = [
  "redox_syscall",
  "rustix",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "tempfile_helpers"
-version = "0.0.0"
-dependencies = [
- "tempfile",
 ]
 
 [[package]]

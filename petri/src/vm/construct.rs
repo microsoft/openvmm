@@ -178,8 +178,9 @@ impl PetriVmConfig {
                     &firmware_event_send,
                     framebuffer.is_some(),
                 )?;
-                let (vtl2_vsock_listener, vtl2_vsock_path) =
-                    tempfile_helpers::with_temp_path(|path| UnixListener::bind(path))?;
+                let (vtl2_vsock_listener, vtl2_vsock_path) = tempfile::Builder::new()
+                    .make(|path| UnixListener::bind(path))?
+                    .keep()?;
                 let ged_send = Arc::new(ged_send);
                 (
                     Some(Vtl2Config {
@@ -263,8 +264,9 @@ impl PetriVmConfig {
         ));
 
         // Make a vmbus vsock path for pipette connections
-        let (vmbus_vsock_listener, vmbus_vsock_path) =
-            tempfile_helpers::with_temp_path(|path| UnixListener::bind(path))?;
+        let (vmbus_vsock_listener, vmbus_vsock_path) = tempfile::Builder::new()
+            .make(|path| UnixListener::bind(path))?
+            .keep()?;
 
         let chipset = chipset
             .build()

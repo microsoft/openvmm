@@ -132,7 +132,6 @@ sparse_mmap = { path = "support/sparse_mmap" }
 task_control = { path = "support/task_control" }
 tdx_guest_device = { path = "support/tdx_guest_device" }
 tee_call = { path = "support/tee_call" }
-tempfile_helpers = { path = "support/tempfile_helpers" }
 term = { path = "support/term" }
 test_with_tracing = { path = "support/test_with_tracing" }
 test_with_tracing_macro = { path = "support/test_with_tracing/test_with_tracing_macro" }

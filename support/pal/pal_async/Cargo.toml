@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [features]
 # Enable executor_tests module for out-of-crate executor testing.
-tests = ["dep:tempfile_helpers"]
+tests = ["dep:tempfile"]
 
 [dependencies]
 pal.workspace = true
@@ -26,7 +26,7 @@ parking_lot.workspace = true
 slab.workspace = true
 smallbox.workspace = true
 socket2 = { workspace = true, features = ["all"] }
-tempfile_helpers = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 unicycle.workspace = true
 zerocopy.workspace = true
 
@@ -65,7 +65,6 @@ features = [
 
 [dev-dependencies]
 tempfile.workspace = true
-tempfile_helpers.workspace = true
 
 [lints]
 workspace = true
