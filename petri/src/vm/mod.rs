@@ -39,6 +39,7 @@ use petri_artifacts_core::TestArtifacts;
 use petri_artifacts_vmm_test::artifacts as hvlite_artifacts;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tempfile::TempPath;
 use unix_socket::UnixListener;
 use vtl2_settings_proto::Vtl2Settings;
 
@@ -91,6 +92,9 @@ struct PetriVmResources {
     driver: DefaultDriver,
     resolver: TestArtifacts,
     output_dir: PathBuf,
+
+    // Resources that are only kept so they can be dropped at the end.
+    _vsock_temp_paths: Vec<TempPath>,
 }
 
 /// Firmware to load into the test VM.
