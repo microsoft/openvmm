@@ -256,6 +256,12 @@ impl ProxyHandle {
     }
 }
 
+impl From<OwnedHandle> for ProxyHandle {
+    fn from(value: OwnedHandle) -> Self {
+        Self(value.into())
+    }
+}
+
 pub struct VmbusProxy {
     file: OverlappedFile,
     // NOTE: This must come after `file` so that it is not released until `file`
