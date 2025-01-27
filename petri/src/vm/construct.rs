@@ -178,9 +178,7 @@ impl PetriVmConfig {
                     &firmware_event_send,
                     framebuffer.is_some(),
                 )?;
-                let (vtl2_vsock_listener, vtl2_vsock_path) = tempfile::Builder::new()
-                    .make(|path| UnixListener::bind(path))?
-                    .keep()?;
+                let (vtl2_vsock_listener, vtl2_vsock_path) = make_vsock_listener()?;
                 let ged_send = Arc::new(ged_send);
                 (
                     Some(Vtl2Config {
@@ -264,9 +262,7 @@ impl PetriVmConfig {
         ));
 
         // Make a vmbus vsock path for pipette connections
-        let (vmbus_vsock_listener, vmbus_vsock_path) = tempfile::Builder::new()
-            .make(|path| UnixListener::bind(path))?
-            .keep()?;
+        let (vmbus_vsock_listener, vmbus_vsock_path) = make_vsock_listener()?;
 
         let chipset = chipset
             .build()
@@ -397,6 +393,13 @@ impl PetriVmConfig {
             framebuffer_access,
         })
     }
+}
+
+// TODO: Figure out a way that we can keep tempfile's cleanup behavior with these
+fn make_vsock_listener() -> anyhow::Result<(UnixListener, PathBuf)> {
+    Ok(tempfile::Builder::new()
+        .make(|path| UnixListener::bind(path))?
+        .keep()?)
 }
 
 struct PetriVmConfigSetupCore<'a> {
