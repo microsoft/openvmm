@@ -1047,7 +1047,7 @@ impl MshvHvcall {
                 // This applies to both simple and rep hypercalls.
                 call_object
                     .control
-                    .set_rep_start(call_object.status.elements_processed().into());
+                    .set_rep_start(call_object.status.elements_processed());
             } else {
                 if call_object.control.rep_count() == 0 {
                     // For non-rep hypercalls, the elements processed field should be 0.
@@ -1059,10 +1059,10 @@ impl MshvHvcall {
                     assert!(
                         (call_object.status.result().is_ok()
                             && call_object.control.rep_count()
-                                == call_object.status.elements_processed().into())
+                                == call_object.status.elements_processed())
                             || (call_object.status.result().is_err()
                                 && call_object.control.rep_count()
-                                    > call_object.status.elements_processed().into())
+                                    > call_object.status.elements_processed())
                     );
                 }
 
