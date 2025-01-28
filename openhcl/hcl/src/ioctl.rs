@@ -46,6 +46,7 @@ use hvdef::HvMessage;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use hvdef::HvRegisterVsmPartitionConfig;
+use hvdef::HvStatus;
 use hvdef::HvX64RegisterName;
 use hvdef::HvX64RegisterPage;
 use hvdef::HypercallCode;
@@ -171,10 +172,9 @@ pub enum HypercallError {
 impl HypercallError {
     pub(crate) fn check(r: Result<i32, nix::Error>) -> Result<(), Self> {
         match r {
-            Ok(0) => Ok(()),
-            Ok(n) => Err(Self::Hypervisor(HvError(
-                n.try_into().expect("hypervisor result out of range"),
-            ))),
+            Ok(n) => HvStatus(n.try_into().expect("hypervisor result out of range"))
+                .result()
+                .map_err(Self::Hypervisor),
             Err(err) => Err(Self::Ioctl(IoctlError(err))),
         }
     }
@@ -1040,7 +1040,7 @@ impl MshvHvcall {
                     .map_err(HvcallError::HypercallIoctlFailed)?;
             }
 
-            if call_object.status.call_status() == HvError::Timeout.0 {
+            if call_object.status.call_status() == Err(HvError::Timeout).into() {
                 // Any hypercall can timeout, even one that doesn't have reps. Continue processing
                 // from wherever the hypervisor left off.  The rep start index isn't checked for
                 // validity, since it is only being used as an input to the untrusted hypervisor.

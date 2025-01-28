@@ -302,13 +302,13 @@ impl From<TestResult> for HypercallOutput {
         match result {
             TestResult::Simple(SimpleResult::Success) => HypercallOutput::new(),
             TestResult::Simple(SimpleResult::Failure(err)) => {
-                HypercallOutput::new().with_call_status(err.0)
+                HypercallOutput::new().with_call_status(err.into())
             }
             TestResult::Rep(RepResult::Success(rep_count)) => {
                 HypercallOutput::new().with_elements_processed(rep_count)
             }
             TestResult::Rep(RepResult::Failure(err, rep_count)) => HypercallOutput::new()
-                .with_call_status(err.0)
+                .with_call_status(err.into())
                 .with_elements_processed(rep_count),
             _ => panic!("Should not be invoked for VTL"),
         }
@@ -1371,7 +1371,7 @@ where
         let mut io = io_gen(&mut handler);
         let result = HypercallOutput::from(io.get_result());
         let control = Control::from(io.control());
-        let call_status = HvError(result.call_status());
+        let call_status = result.call_status();
 
         // Copy the output back. Note that in the case of errors the hypercall parser may not have
         // actually modified the output buffers/registers, and it is the responsibility of the test
@@ -1382,8 +1382,8 @@ where
         // that in cases where this routine does not modify the output, the hypercall parser does
         // not do so either.
         if is_timeout
-            || (call_status != HvError::InvalidHypercallInput
-                && call_status != HvError::InvalidAlignment)
+            || (call_status != HvError::InvalidHypercallInput.into()
+                && call_status != HvError::InvalidAlignment.into())
         {
             let mut output_buffer;
             let (hdr, reps) = if !params.fast {
@@ -1559,7 +1559,7 @@ fn hypercall_simple(test_params: TestParams) {
 
     check_test_result(&test_params, result, control);
 
-    let expected_output_size = if result.call_status() == 0 {
+    let expected_output_size = if result.call_status().is_ok() {
         assert_eq!(
             output.as_bytes(),
             TestController::generate_test_output::<TestOutput>().as_bytes()
@@ -1779,7 +1779,7 @@ fn hypercall_variable(test_params: TestParams) {
 
     check_test_result(&test_params, result, control);
 
-    let expected_output_size = if result.call_status() == 0 {
+    let expected_output_size = if result.call_status().is_ok() {
         assert_eq!(
             output.as_bytes(),
             TestController::generate_test_output::<TestOutput>().as_bytes()

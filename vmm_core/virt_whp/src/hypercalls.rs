@@ -199,7 +199,7 @@ impl<T: CpuIo> hv1_hypercall::SignalEventDirect for WhpHypercallExit<'_, '_, T> 
                     target_vp
                         .whp(vtl)
                         .signal_synic_event(sint, flag)
-                        .map_err(|err| match err.hv_result().map(HvError) {
+                        .map_err(|err| match err.hv_result().map(HvError::from) {
                             Some(err @ HvError::InvalidSynicState) => err,
                             _ => {
                                 tracing::error!(
