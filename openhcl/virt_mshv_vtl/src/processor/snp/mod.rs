@@ -753,33 +753,17 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpB
         Ok(())
     }
 
-    fn handle_init(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
-        assert_eq!(vtl, GuestVtl::Vtl0);
-        let vp_info = self.inner.vp_info;
-        let mut access = self.access_state(vtl.into());
-        vp::x86_init(&mut access, &vp_info).map_err(UhRunVpError::State)?;
-        Ok(())
-    }
+    fn handle_sipi(&mut self, vtl: GuestVtl, base: u64, selector: u16) -> Result<(), UhRunVpError> {
+        let mut vmsa = self.runner.vmsa_mut(vtl);
+        vmsa.set_cs(hv_seg_to_snp(&hvdef::HvX64SegmentRegister {
+            base,
+            limit: 0xffff,
+            selector,
+            attributes: 0x9b,
+        }));
+        vmsa.set_rip(0);
+        self.backing.cvm.lapics[vtl].activity = MpState::Running;
 
-    fn handle_sipi(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
-        assert_eq!(vtl, GuestVtl::Vtl0);
-        if self.backing.cvm.lapics[vtl].activity == MpState::WaitForSipi {
-            let mut vmsa = self.runner.vmsa_mut(vtl);
-            let address = (vector as u64) << 12;
-            vmsa.set_cs(hv_seg_to_snp(&hvdef::HvX64SegmentRegister {
-                base: address,
-                limit: 0xffff,
-                selector: (address >> 4) as u16,
-                attributes: 0x9b,
-            }));
-            vmsa.set_rip(0);
-            self.backing.cvm.lapics[vtl].activity = MpState::Running;
-        }
-        Ok(())
-    }
-
-    fn handle_extint(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
-        tracelimit::warn_ratelimited!(?vtl, "extint not supported");
         Ok(())
     }
 }

@@ -8,16 +8,27 @@ use crate::processor::HardwareIsolatedBacking;
 use crate::UhProcessor;
 use hcl::GuestVtl;
 use virt::vp::MpState;
+use virt::Processor;
 use virt_support_apic::ApicWork;
 
 pub(crate) trait ApicBacking<'b, B: HardwareIsolatedBacking> {
     fn vp(&mut self) -> &mut UhProcessor<'b, B>;
 
-    fn handle_init(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError>;
-    fn handle_sipi(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError>;
+    fn handle_init(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
+        let vp_info = self.vp().inner.vp_info;
+        let mut access = self.vp().access_state(vtl.into());
+        virt::vp::x86_init(&mut access, &vp_info).map_err(UhRunVpError::State)?;
+        Ok(())
+    }
+
+    fn handle_sipi(&mut self, vtl: GuestVtl, base: u64, selector: u16) -> Result<(), UhRunVpError>;
     fn handle_nmi(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError>;
     fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError>;
-    fn handle_extint(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError>;
+
+    fn handle_extint(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
+        tracelimit::warn_ratelimited!(?vtl, "extint not supported");
+        Ok(())
+    }
 }
 
 pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, B>>(
@@ -53,13 +64,19 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
     // INIT and SIPI are quite cold.
     if init {
         if !*apic_backing.vp().inner.hcvm_vtl1_enabled.lock() {
+            debug_assert_eq!(vtl, GuestVtl::Vtl0);
             apic_backing.handle_init(vtl)?;
         }
     }
 
     if let Some(vector) = sipi {
-        if !*apic_backing.vp().inner.hcvm_vtl1_enabled.lock() {
-            apic_backing.handle_sipi(vtl, vector)?;
+        if apic_backing.vp().backing.cvm_state_mut().lapics[vtl].activity == MpState::WaitForSipi {
+            if !*apic_backing.vp().inner.hcvm_vtl1_enabled.lock() {
+                debug_assert_eq!(vtl, GuestVtl::Vtl0);
+                let base = (vector as u64) << 12;
+                let selector = (vector as u16) << 8;
+                apic_backing.handle_sipi(vtl, base, selector)?;
+            }
         }
     }
 

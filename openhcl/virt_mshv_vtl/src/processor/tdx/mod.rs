@@ -1205,39 +1205,22 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
         Ok(())
     }
 
-    fn handle_init(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
-        let vp_info = self.vp.inner.vp_info;
-        {
-            let mut access = self.vp.access_state(vtl.into());
-            vp::x86_init(&mut access, &vp_info).map_err(UhRunVpError::State)?;
-        }
-        Ok(())
-    }
+    fn handle_sipi(&mut self, vtl: GuestVtl, base: u64, selector: u16) -> Result<(), UhRunVpError> {
+        self.vp
+            .write_segment(
+                vtl,
+                TdxSegmentReg::Cs,
+                SegmentRegister {
+                    base,
+                    limit: 0xffff,
+                    selector,
+                    attributes: 0x9b,
+                },
+            )
+            .unwrap();
+        self.vp.runner.tdx_enter_guest_state_mut().rip = 0;
+        self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
 
-    fn handle_sipi(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
-        if self.vp.backing.cvm.lapics[vtl].activity == MpState::WaitForSipi {
-            let address = (vector as u64) << 12;
-            self.vp
-                .write_segment(
-                    vtl,
-                    TdxSegmentReg::Cs,
-                    SegmentRegister {
-                        base: address,
-                        limit: 0xffff,
-                        selector: (address >> 4) as u16,
-                        attributes: 0x9b,
-                    },
-                )
-                .unwrap();
-            self.vp.runner.tdx_enter_guest_state_mut().rip = 0;
-            self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
-        }
-
-        Ok(())
-    }
-
-    fn handle_extint(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
-        tracelimit::warn_ratelimited!(?vtl, "extint not supported");
         Ok(())
     }
 }
