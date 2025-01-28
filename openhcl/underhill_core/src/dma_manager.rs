@@ -1,9 +1,12 @@
-//use std::sync::{Mutex, Weak};
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 use memory_range::MemoryRange;
-use std::{collections::HashMap, sync::{Arc, Mutex}};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 use user_driver::{memory::MemoryBlock, vfio::VfioDmaBuffer};
-
 
 pub struct GlobalDmaManager {
     inner: Arc<Mutex<GlobalDmaManagerInner>>,
@@ -14,17 +17,18 @@ pub struct GlobalDmaManagerInner {
     _bounce_buffers_manager: Vec<MemoryRange>,
     //clients: Mutex<Vec<Weak<DmaClient>>>,
     //client_thresholds: Mutex<Vec<(Weak<DmaClient>, usize)>>,
-
     dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
     clients: HashMap<String, Arc<DmaClient>>,
 }
 
 impl GlobalDmaManager {
-    pub fn new(dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>) -> Self {
+    pub fn new(
+        dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
+    ) -> Self {
         let inner = GlobalDmaManagerInner {
             _physical_ranges: Vec::new(),
             _bounce_buffers_manager: Vec::new(),
-            dma_buffer_spawner: dma_buffer_spawner,
+            dma_buffer_spawner,
             clients: HashMap::new(),
         };
 
@@ -33,10 +37,15 @@ impl GlobalDmaManager {
         }
     }
 
-    fn create_client_internal(inner : &Arc<Mutex<GlobalDmaManagerInner>>, pci_id: String, device_name: String) -> anyhow::Result<Arc<DmaClient>> {
-
+    fn create_client_internal(
+        inner: &Arc<Mutex<GlobalDmaManagerInner>>,
+        pci_id: String,
+        device_name: String,
+    ) -> anyhow::Result<Arc<DmaClient>> {
         let allocator = {
-            let manager_inner = inner.lock().map_err(|_| anyhow::anyhow!("Failed to lock GlobalDmaManagerInner"))?;
+            let manager_inner = inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Failed to lock GlobalDmaManagerInner"))?;
 
             // Access the page_pool and call its allocator method directly
             (manager_inner.dma_buffer_spawner)(device_name)
@@ -55,21 +64,22 @@ impl GlobalDmaManager {
         let mut inner = inner.lock().expect("Failed to lock GlobalDmaManagerInner");
         inner.clients.insert(pci_id, arc_client.clone());
 
-
         Ok(arc_client) // Return the `Arc<Mutex<DmaClient>>`
     }
 
     pub fn get_client(&self, pci_id: &str) -> Option<Arc<DmaClient>> {
-        let inner = self.inner.lock().expect("Failed to lock GlobalDmaManagerInner");
+        let inner = self
+            .inner
+            .lock()
+            .expect("Failed to lock GlobalDmaManagerInner");
         inner.clients.get(pci_id).cloned()
     }
 
     pub fn get_client_spawner(&self) -> DmaClientSpawner {
         DmaClientSpawner {
-            dma_manager_inner :self.inner.clone()
+            dma_manager_inner: self.inner.clone(),
         }
     }
-
 }
 
 pub struct DmaClient {
@@ -78,17 +88,11 @@ pub struct DmaClient {
 }
 
 impl user_driver::DmaClient for DmaClient {
-    fn map_dma_ranges(
-        &self,
-        ranges: i32,
-    ) -> anyhow::Result<Vec<i32>> {
+    fn map_dma_ranges(&self, ranges: i32) -> anyhow::Result<Vec<i32>> {
         self.map_dma_ranges(ranges)
     }
 
-    fn allocate_dma_buffer(
-        &self,
-        total_size: usize,
-    ) -> anyhow::Result<MemoryBlock> {
+    fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock> {
         if self.dma_buffer_allocator.is_none() {
             return Err(anyhow::anyhow!("DMA buffer allocator is not set"));
         }
@@ -98,20 +102,14 @@ impl user_driver::DmaClient for DmaClient {
         allocator.create_dma_buffer(total_size)
     }
 
-    fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>
-    {
+    fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock> {
         let allocator = self.dma_buffer_allocator.as_ref().unwrap();
         allocator.restore_dma_buffer(len, base_pfn)
     }
-
 }
 
 impl DmaClient {
-    fn map_dma_ranges(
-        &self,
-        _ranges: i32,
-    ) -> anyhow::Result<Vec<i32>>
-    {
+    fn map_dma_ranges(&self, _ranges: i32) -> anyhow::Result<Vec<i32>> {
         Ok(Vec::new())
     }
 }
@@ -122,7 +120,11 @@ pub struct DmaClientSpawner {
 }
 
 impl DmaClientSpawner {
-    pub fn create_client(&self, pci_id: String, device_name: String) -> anyhow::Result<Arc<DmaClient>> {
+    pub fn create_client(
+        &self,
+        pci_id: String,
+        device_name: String,
+    ) -> anyhow::Result<Arc<DmaClient>> {
         GlobalDmaManager::create_client_internal(&self.dma_manager_inner, pci_id, device_name)
     }
 }

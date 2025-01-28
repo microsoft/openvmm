@@ -1892,19 +1892,17 @@ async fn new_underhill_vm(
         },
     );
 
-
     let dma_manager = GlobalDmaManager::new(vfio_dma_buffer_spawner);
     let nvme_manager = if env_cfg.nvme_vfio {
-
         let save_restore_supported = env_cfg.nvme_keep_alive; //&& private_pool_spanwer.is_some();
 
         let manager = NvmeManager::new(
-                    &driver_source,
-                    processor_topology.vp_count(),
-                    save_restore_supported,
-                    servicing_state.nvme_state.unwrap_or(None),
-                    dma_manager.get_client_spawner().clone(),
-                );
+            &driver_source,
+            processor_topology.vp_count(),
+            save_restore_supported,
+            servicing_state.nvme_state.unwrap_or(None),
+            dma_manager.get_client_spawner().clone(),
+        );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
             manager.client().clone(),

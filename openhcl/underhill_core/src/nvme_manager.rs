@@ -292,17 +292,15 @@ impl<'a> NvmeManagerWorker {
         let driver = match self.devices.entry(pci_id.to_owned()) {
             hash_map::Entry::Occupied(entry) => entry.into_mut(),
             hash_map::Entry::Vacant(entry) => {
+                let dma_client = self
+                    .dma_client_spawner
+                    .create_client(pci_id.clone(), format!("nvme_{}", pci_id))
+                    .map_err(InnerError::DmaBuffer)?;
 
-                let dma_client = self.dma_client_spawner.create_client(pci_id.clone(), format!("nvme_{}", pci_id)).map_err(InnerError::DmaBuffer)?;
-
-                let device = VfioDevice::new(
-                    &self.driver_source,
-                    entry.key(),
-                        dma_client,
-                )
-                .instrument(tracing::info_span!("vfio_device_open", pci_id))
-                .await
-                .map_err(InnerError::Vfio)?;
+                let device = VfioDevice::new(&self.driver_source, entry.key(), dma_client)
+                    .instrument(tracing::info_span!("vfio_device_open", pci_id))
+                    .await
+                    .map_err(InnerError::Vfio)?;
 
                 let driver =
                     nvme_driver::NvmeDriver::new(&self.driver_source, self.vp_count, device)
@@ -356,7 +354,9 @@ impl<'a> NvmeManagerWorker {
         for disk in &saved_state.nvme_disks {
             let pci_id = disk.pci_id.clone();
 
-            let dma_client = self.dma_client_spawner.create_client(pci_id.clone(), format!("nvme_{}", pci_id))?;
+            let dma_client = self
+                .dma_client_spawner
+                .create_client(pci_id.clone(), format!("nvme_{}", pci_id))?;
             //dma_client.get_dma_buffer_allocator(format!("nvme_{}", pci_id))?;
             let vfio_device =
                 // This code can wait on each VFIO device until it is arrived.

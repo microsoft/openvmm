@@ -71,22 +71,15 @@ pub trait HostDmaAllocator: Send + Sync {
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }
 
-pub trait DmaClient : Send + Sync {
-    fn map_dma_ranges(
-        &self,
-        ranges: i32
-    ) -> anyhow::Result<Vec<i32>>;
+pub trait DmaClient: Send + Sync {
+    fn map_dma_ranges(&self, ranges: i32) -> anyhow::Result<Vec<i32>>;
 
     //fn get_dma_buffer_allocator(
     //    &mut self,
     //    device_name: String,
     //) -> anyhow::Result<Arc<dyn VfioDmaBuffer>>;
 
-
-    fn allocate_dma_buffer(
-        &self,
-        total_size: usize,
-    ) -> anyhow::Result<MemoryBlock>;
+    fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock>;
 
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }
