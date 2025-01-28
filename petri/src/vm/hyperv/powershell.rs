@@ -365,6 +365,7 @@ fn run_powershell(
     f: impl FnOnce(&mut Command) -> &mut Command,
 ) -> anyhow::Result<()> {
     let mut cmd = Command::new("powershell.exe");
+    cmd.arg("-NoProfile");
     f(&mut cmd);
     let cmdlet = cmd
         .get_args()
@@ -388,6 +389,7 @@ fn run_powershell_cmdlet_output(
     f: impl FnOnce(&mut Command) -> &mut Command,
 ) -> anyhow::Result<String> {
     let mut cmd = Command::new("powershell.exe");
+    cmd.arg("-NoProfile");
     cmd.arg(cmdlet);
     f(&mut cmd);
     let output = cmd
