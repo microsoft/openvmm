@@ -62,7 +62,8 @@ async fn test_gdma(driver: DefaultDriver) {
     let vport = port_config.vport;
     let buffer = Arc::new(
         gdma.device()
-            .host_allocator()
+            .get_dma_client()
+            .unwrap()
             .allocate_dma_buffer(0x5000)
             .unwrap(),
     );

@@ -40,7 +40,6 @@ use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
-use user_driver::HostDmaAllocator;
 use zerocopy::FromZeroes;
 
 /// Value for unused PRP entries, to catch/mitigate buffer size mismatches.
@@ -184,8 +183,12 @@ impl QueuePair {
     ) -> anyhow::Result<Self> {
         let total_size =
             QueuePair::SQ_SIZE + QueuePair::CQ_SIZE + QueuePair::PER_QUEUE_PAGES * PAGE_SIZE;
-        let mem = device
-            .host_allocator()
+
+        let dma_client = device
+            .get_dma_client()
+            .context("Failed to get DMA client from device")?;
+
+        let mem = dma_client
             .allocate_dma_buffer(total_size)
             .context("failed to allocate memory for queues")?;
 

@@ -11,6 +11,7 @@ use crate::interrupt::DeviceInterruptSource;
 use crate::memory::MemoryBlock;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
+use crate::DmaClient;
 use crate::HostDmaAllocator;
 use anyhow::Context;
 use futures::FutureExt;
@@ -55,13 +56,13 @@ pub struct VfioDevice {
     #[inspect(skip)]
     device: Arc<vfio_sys::Device>,
     #[inspect(skip)]
-    dma_buffer: Arc<dyn VfioDmaBuffer>,
-    #[inspect(skip)]
     msix_info: IrqInfo,
     #[inspect(skip)]
     driver_source: VmTaskDriverSource,
     #[inspect(iter_by_index)]
     interrupts: Vec<Option<InterruptState>>,
+    #[inspect(skip)]
+    dma_client: Arc<dyn DmaClient>,
 }
 
 #[derive(Inspect)]
@@ -78,9 +79,9 @@ impl VfioDevice {
     pub async fn new(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
-        dma_buffer: Arc<dyn VfioDmaBuffer>,
+        dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
-        Self::restore(driver_source, pci_id, dma_buffer, false).await
+        Self::restore(driver_source, pci_id, false, dma_client).await
     }
 
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
@@ -88,8 +89,8 @@ impl VfioDevice {
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
-        dma_buffer: Arc<dyn VfioDmaBuffer>,
         keepalive: bool,
+        dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
@@ -130,10 +131,10 @@ impl VfioDevice {
             _container: container,
             _group: group,
             device: Arc::new(device),
-            dma_buffer,
             msix_info,
             driver_source: driver_source.clone(),
             interrupts: Vec::new(),
+            dma_client,
         })
     }
 
@@ -185,10 +186,8 @@ impl DeviceBacking for VfioDevice {
         (*self).map_bar(n)
     }
 
-    fn host_allocator(&self) -> Self::DmaAllocator {
-        LockedMemoryAllocator {
-            dma_buffer: self.dma_buffer.clone(),
-        }
+    fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
+        Some(self.dma_client.clone())
     }
 
     fn max_interrupt_count(&self) -> u32 {

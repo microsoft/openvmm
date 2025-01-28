@@ -18,6 +18,7 @@ use user_driver::emulated::EmulatedDmaAllocator;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::DeviceBacking;
+use user_driver::DmaClient;
 
 /// An EmulatedDevice fuzzer that requires a working EmulatedDevice backend.
 #[derive(Inspect)]
@@ -47,8 +48,8 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmula
         self.device.map_bar(n)
     }
 
-    fn host_allocator(&self) -> Self::DmaAllocator {
-        self.device.host_allocator()
+    fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
+        None
     }
 
     /// Arbitrarily decide to passthrough or return arbitrary value.

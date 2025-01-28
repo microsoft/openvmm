@@ -6,9 +6,12 @@
 // UNSAFETY: Manual memory management around buffers and mmap.
 #![expect(unsafe_code)]
 
+use std::sync::Arc;
+
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;
 use memory::MemoryBlock;
+//use vfio::VfioDmaBuffer;
 
 pub mod backoff;
 pub mod emulated;
@@ -32,8 +35,7 @@ pub trait DeviceBacking: 'static + Send + Inspect {
     /// Maps a BAR.
     fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers>;
 
-    /// Returns an object that can allocate host memory to be shared with the device.
-    fn host_allocator(&self) -> Self::DmaAllocator;
+    fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>>;
 
     /// Returns the maximum number of interrupts that can be mapped.
     fn max_interrupt_count(&self) -> u32;
@@ -66,5 +68,18 @@ pub trait HostDmaAllocator: Send + Sync {
     /// Allocate a new block using default allocation strategy.
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
     /// Attach to a previously allocated memory block with contiguous PFNs.
+    fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
+}
+
+pub trait DmaClient: Send + Sync {
+    fn map_dma_ranges(&self, ranges: i32) -> anyhow::Result<Vec<i32>>;
+
+    //fn get_dma_buffer_allocator(
+    //    &mut self,
+    //    device_name: String,
+    //) -> anyhow::Result<Arc<dyn VfioDmaBuffer>>;
+
+    fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock>;
+
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }

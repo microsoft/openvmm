@@ -79,7 +79,7 @@ use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
-use user_driver::HostDmaAllocator;
+//use user_driver::HostDmaAllocator;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
@@ -267,9 +267,14 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             );
         }
 
-        let dma_buffer = device
-            .host_allocator()
-            .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)?;
+        let dma_client = device
+            .get_dma_client()
+            .context("Failed to get DMA client from device")?;
+
+        let dma_buffer = dma_client
+            .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
+            .context("Failed to allocate DMA buffer")?;
+
         let pages = dma_buffer.pfns();
 
         // Write the shared memory.
