@@ -4,9 +4,10 @@
 use memory_range::MemoryRange;
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::Arc
 };
 use user_driver::{memory::MemoryBlock, vfio::VfioDmaBuffer};
+use parking_lot::Mutex;
 
 pub struct GlobalDmaManager {
     inner: Arc<Mutex<GlobalDmaManagerInner>>,
@@ -42,11 +43,8 @@ impl GlobalDmaManager {
         pci_id: String,
         device_name: String,
     ) -> anyhow::Result<Arc<DmaClient>> {
+        let mut manager_inner = inner.lock();
         let allocator = {
-            let manager_inner = inner
-                .lock()
-                .map_err(|_| anyhow::anyhow!("Failed to lock GlobalDmaManagerInner"))?;
-
             // Access the page_pool and call its allocator method directly
             (manager_inner.dma_buffer_spawner)(device_name)
                 .map_err(|e| anyhow::anyhow!("Failed to get DMA buffer allocator: {:?}", e))?
@@ -61,17 +59,14 @@ impl GlobalDmaManager {
         let arc_client = Arc::new(client);
 
         // Insert the client into the clients HashMap
-        let mut inner = inner.lock().expect("Failed to lock GlobalDmaManagerInner");
-        inner.clients.insert(pci_id, arc_client.clone());
+        //let mut inner = inner.lock().expect("Failed to lock GlobalDmaManagerInner");
+        manager_inner.clients.insert(pci_id, arc_client.clone());
 
         Ok(arc_client) // Return the `Arc<Mutex<DmaClient>>`
     }
 
     pub fn get_client(&self, pci_id: &str) -> Option<Arc<DmaClient>> {
-        let inner = self
-            .inner
-            .lock()
-            .expect("Failed to lock GlobalDmaManagerInner");
+        let inner = self.inner.lock();
         inner.clients.get(pci_id).cloned()
     }
 
