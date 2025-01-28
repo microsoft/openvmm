@@ -27,6 +27,7 @@ use hcl::vmsa::VmsaWrapper;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::HypercallIo;
+use hvdef::hypercall::Control;
 use hvdef::hypercall::HvFlushFlags;
 use hvdef::hypercall::HvGvaRange;
 use hvdef::hypercall::HypercallOutput;
@@ -706,36 +707,46 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
     );
 }
 
-struct GhcbEnlightenedHypercall<'a, 'b, 'c, T> {
+struct GhcbEnlightenedHypercall<'a, 'b, T> {
     handler: UhHypercallHandler<'a, 'b, T, SnpBacked>,
-    control: &'c mut u64,
+    control: u64,
     output_gpa: u64,
     input_gpa: u64,
     result: u64,
 }
 
 impl<'a, 'b, T> hv1_hypercall::AsHandler<UhHypercallHandler<'a, 'b, T, SnpBacked>>
-    for &mut GhcbEnlightenedHypercall<'a, 'b, '_, T>
+    for &mut GhcbEnlightenedHypercall<'a, 'b, T>
 {
     fn as_handler(&mut self) -> &mut UhHypercallHandler<'a, 'b, T, SnpBacked> {
         &mut self.handler
     }
 }
 
-impl<T> HypercallIo for GhcbEnlightenedHypercall<'_, '_, '_, T> {
+impl<T> HypercallIo for GhcbEnlightenedHypercall<'_, '_, T> {
     fn advance_ip(&mut self) {
         // No-op for GHCB hypercall ABI
     }
 
     fn retry(&mut self, control: u64) {
-        // TODO SNP: If we need to support resumption of rep hypercalls,
-        // this will need the new start index.
-        *self.control = control;
-        self.set_result(HypercallOutput::from(HvError::Timeout).into())
+        // The GHCB ABI does not support automatically retrying hypercalls by
+        // updating the control and reissuing the instruction, since doing so
+        // would require the hypervisor (the normal implementor of the GHCB
+        // hypercall ABI) to be able to control the instruction pointer.
+        //
+        // Instead, explicitly return `HV_STATUS_TIMEOUT` to indicate that the
+        // guest should retry the hypercall, setting `rep_start` to the number
+        // of elements processed.
+        let control = Control::from(control);
+        self.set_result(
+            HypercallOutput::from(HvError::Timeout)
+                .with_elements_processed(control.rep_start() as u16)
+                .into(),
+        );
     }
 
     fn control(&mut self) -> u64 {
-        *self.control
+        self.control
     }
 
     fn input_gpa(&mut self) -> u64 {
@@ -883,7 +894,7 @@ impl UhProcessor<'_, SnpBacked> {
                         let overlay_base = ghcb_overlay * HV_PAGE_SIZE;
                         let x86defs::snp::GhcbHypercallParameters {
                             output_gpa,
-                            mut input_control,
+                            input_control,
                         } = guest_memory
                             .read_plain(
                                 overlay_base
@@ -898,7 +909,7 @@ impl UhProcessor<'_, SnpBacked> {
                                 trusted: false,
                                 intercepted_vtl,
                             },
-                            control: &mut input_control,
+                            control: input_control,
                             output_gpa,
                             input_gpa: overlay_base,
                             result: 0,
@@ -921,19 +932,6 @@ impl UhProcessor<'_, SnpBacked> {
                                 handler.result.as_bytes(),
                             )
                             .map_err(UhRunVpError::HypercallResult)?;
-
-                        // Write the (potentially updated) control back to the GHCB as well.
-                        guest_memory
-                            .write_at(
-                                overlay_base
-                                    + x86defs::snp::GHCB_PAGE_HYPERCALL_PARAMETERS_OFFSET as u64
-                                    + std::mem::offset_of!(
-                                        x86defs::snp::GhcbHypercallParameters,
-                                        input_control
-                                    ) as u64,
-                                input_control.as_bytes(),
-                            )
-                            .map_err(UhRunVpError::HypercallRetry)?;
                     }
                     usage => unimplemented!("ghcb usage {usage:?}"),
                 }
