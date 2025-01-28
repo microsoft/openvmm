@@ -2,66 +2,78 @@
 
 use memory_range::MemoryRange;
 use std::{collections::HashMap, sync::{Arc, Mutex}};
-use page_pool_alloc::PagePool;
 use user_driver::{memory::MemoryBlock, vfio::VfioDmaBuffer};
-use user_driver::lockmem::LockedMemorySpawner;
 
-#[derive(Clone)]
+
 pub struct GlobalDmaManager {
+    inner: Arc<Mutex<GlobalDmaManagerInner>>,
+}
+
+pub struct GlobalDmaManagerInner {
     _physical_ranges: Vec<MemoryRange>,
     _bounce_buffers_manager: Vec<MemoryRange>,
     //clients: Mutex<Vec<Weak<DmaClient>>>,
     //client_thresholds: Mutex<Vec<(Weak<DmaClient>, usize)>>,
 
-    page_pool: Option<PagePool>,
+    dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
     clients: HashMap<String, Arc<DmaClient>>,
 }
 
 impl GlobalDmaManager {
-    pub fn new(page_pool: Option<PagePool>) -> Self {
-        GlobalDmaManager {
+    pub fn new(dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>) -> Self {
+        let inner = GlobalDmaManagerInner {
             _physical_ranges: Vec::new(),
             _bounce_buffers_manager: Vec::new(),
-            //clients: Mutex::new(Vec::new()),
-            //client_thresholds: Mutex::new(Vec::new()),
-            page_pool: page_pool.clone(),
+            dma_buffer_spawner: dma_buffer_spawner,
             clients: HashMap::new(),
+        };
+
+        GlobalDmaManager {
+            inner: Arc::new(Mutex::new(inner)),
         }
     }
 
-    pub fn create_client(&mut self, pci_id: String) -> DmaClient {
-        let client = DmaClient {
-            dma_manager: Arc::new(Mutex::new(self.clone())),
-            dma_buffer_allocator: None,  // Valid now as `Option<Arc<dyn VfioDmaBuffer>>`
+    fn create_client_internal(inner : &Arc<Mutex<GlobalDmaManagerInner>>, pci_id: String, device_name: String) -> anyhow::Result<Arc<DmaClient>> {
+
+        let allocator = {
+            let manager_inner = inner.lock().map_err(|_| anyhow::anyhow!("Failed to lock GlobalDmaManagerInner"))?;
+
+            // Access the page_pool and call its allocator method directly
+            (manager_inner.dma_buffer_spawner)(device_name)
+                .map_err(|e| anyhow::anyhow!("Failed to get DMA buffer allocator: {:?}", e))?
         };
 
-        let arc_client = Arc::new(client);
-        self.clients.insert(pci_id, arc_client.clone()); // Store the cloned `Arc` in `clients`.
+        let client = DmaClient {
+            dma_manager_inner: inner.clone(),
+            dma_buffer_allocator: Some(allocator.clone()), // Set the allocator now
+        };
 
-        arc_client.as_ref().clone() // Return the `Arc<DmaClient>`.
+        // Create an Arc<DmaClient>
+        let arc_client = Arc::new(client);
+
+        // Insert the client into the clients HashMap
+        let mut inner = inner.lock().expect("Failed to lock GlobalDmaManagerInner");
+        inner.clients.insert(pci_id, arc_client.clone());
+
+
+        Ok(arc_client) // Return the `Arc<Mutex<DmaClient>>`
     }
 
     pub fn get_client(&self, pci_id: &str) -> Option<Arc<DmaClient>> {
-        self.clients.get(pci_id).cloned()
+        let inner = self.inner.lock().expect("Failed to lock GlobalDmaManagerInner");
+        inner.clients.get(pci_id).cloned()
     }
 
-    pub fn get_dma_buffer_allocator(
-        &mut self,
-        device_name: String,
-    ) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-        self.page_pool
-            .as_ref()
-            .map(|p : &PagePool| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-                p.allocator(device_name)
-                    .map(|alloc| Arc::new(alloc) as Arc<dyn VfioDmaBuffer>)
-            })
-            .unwrap_or(Ok(Arc::new(LockedMemorySpawner)))
+    pub fn get_client_spawner(&self) -> DmaClientSpawner {
+        DmaClientSpawner {
+            dma_manager_inner :self.inner.clone()
+        }
     }
+
 }
 
-#[derive(Clone)]
 pub struct DmaClient {
-    dma_manager: Arc<Mutex<GlobalDmaManager>>,
+    dma_manager_inner: Arc<Mutex<GlobalDmaManagerInner>>,
     dma_buffer_allocator: Option<Arc<dyn VfioDmaBuffer>>,
 }
 
@@ -72,19 +84,6 @@ impl user_driver::DmaClient for DmaClient {
     ) -> anyhow::Result<Vec<i32>> {
         self.map_dma_ranges(ranges)
     }
-
-    //fn get_dma_buffer_allocator(
-    //    &mut self,
-    //    device_name: String,
-    //) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-
-    //    let mut manager = self.dma_manager.lock().unwrap();
-
-    //    manager.get_dma_buffer_allocator(device_name).map(|allocator| {
-    //        self.dma_buffer_allocator = Some(allocator.clone());
-    //        allocator
-    //    })
-    //}
 
     fn allocate_dma_buffer(
         &self,
@@ -115,17 +114,15 @@ impl DmaClient {
     {
         Ok(Vec::new())
     }
+}
 
-    pub fn get_dma_buffer_allocator(
-        &mut self,
-        device_name: String,
-    ) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
+#[derive(Clone)]
+pub struct DmaClientSpawner {
+    dma_manager_inner: Arc<Mutex<GlobalDmaManagerInner>>,
+}
 
-        let mut manager = self.dma_manager.lock().unwrap();
-
-        manager.get_dma_buffer_allocator(device_name).map(|allocator| {
-            self.dma_buffer_allocator = Some(allocator.clone());
-            allocator
-        })
+impl DmaClientSpawner {
+    pub fn create_client(&self, pci_id: String, device_name: String) -> anyhow::Result<Arc<DmaClient>> {
+        GlobalDmaManager::create_client_internal(&self.dma_manager_inner, pci_id, device_name)
     }
 }

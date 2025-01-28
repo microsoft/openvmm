@@ -20,6 +20,7 @@ use crate::dispatch::vtl2_settings_worker::wait_for_mana;
 use crate::dispatch::vtl2_settings_worker::InitialControllers;
 use crate::dispatch::LoadedVm;
 use crate::dispatch::LoadedVmNetworkSettings;
+use crate::dma_manager::DmaClientSpawner;
 use crate::dma_manager::GlobalDmaManager;
 use crate::emuplat::firmware::UnderhillLogger;
 use crate::emuplat::firmware::UnderhillVsmConfig;
@@ -743,21 +744,17 @@ impl UhVmNetworkSettings {
         driver_source: &VmTaskDriverSource,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        _shared_vis_pages_pool: &Option<PagePool>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         tp: &AffinitizedThreadpool,
         vmbus_server: &Option<VmbusServerHandle>,
-        mut dma_manager: GlobalDmaManager,
+        dma_client_spawner: DmaClientSpawner,
     ) -> anyhow::Result<RuntimeSavedState> {
         let instance_id = nic_config.instance_id;
         let nic_max_sub_channels = nic_config
             .max_sub_channels
             .unwrap_or(MAX_SUBCHANNELS_PER_VNIC)
             .min(vps_count as u16);
-
-        let mut dma_client = dma_manager.create_client(nic_config.pci_id.clone());
-        dma_client.get_dma_buffer_allocator(format!("nic_{}", instance_id)).context("creating vfio dma buffer")?;
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
             nic_config.instance_id,
@@ -769,11 +766,8 @@ impl UhVmNetworkSettings {
             vps_count as u32,
             nic_max_sub_channels,
             servicing_netvsp_state,
-            //vfio_dma_buffer(shared_vis_pages_pool, format!("nic_{}", instance_id))
-             //   .context("creating vfio dma buffer")?,
             self.dma_mode,
-            Arc::new(dma_client),
-            dma_manager,
+            dma_client_spawner,
         )
         .await?;
 
@@ -884,11 +878,10 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         threadpool: &AffinitizedThreadpool,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        shared_vis_pages_pool: &Option<PagePool>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
-        dma_manager: GlobalDmaManager,
+        dma_client_spawner: DmaClientSpawner,
     ) -> anyhow::Result<RuntimeSavedState> {
         if self.vf_managers.contains_key(&instance_id) {
             return Err(NetworkSettingsError::VFManagerExists(instance_id).into());
@@ -916,12 +909,11 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
                 &driver_source,
                 uevent_listener,
                 servicing_netvsp_state,
-                shared_vis_pages_pool,
                 partition,
                 state_units,
                 threadpool,
                 vmbus_server,
-                dma_manager,
+                dma_client_spawner,
             )
             .await?;
 
@@ -1096,19 +1088,6 @@ fn build_vtl0_memory_layout(
 fn round_up_to_2mb(bytes: u64) -> u64 {
     (bytes + (2 * 1024 * 1024) - 1) & !((2 * 1024 * 1024) - 1)
 }
-
-//fn vfio_dma_buffer(
-//    shared_vis_pages_pool: &Option<PagePool>,
-//    device_name: String,
-//) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-//    shared_vis_pages_pool
-//        .as_ref()
-//        .map(|p| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-//            p.allocator(device_name)
-//                .map(|alloc| Arc::new(alloc) as Arc<dyn VfioDmaBuffer>)
-//        })
-//        .unwrap_or(Ok(Arc::new(LockedMemorySpawner)))
-//}
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 fn new_x86_topology(
@@ -1885,66 +1864,46 @@ async fn new_underhill_vm(
         crate::inspect_proc::periodic_telemetry_task(driver_source.simple()),
     );
 
-    let dma_pool = if let Some(shared_vis_pages_pool) = shared_vis_pages_pool.clone() {
-        // Use shared pool if available
-        Some(shared_vis_pages_pool)
-    } else if let Some(private_pool) = private_pool.clone() {
-        // Otherwise, use private pool if available
-        Some(private_pool)
-    } else {
-        // Fallback to None, which indicates LockedMemorySpawner will be used internally
-        None
-    };
+    let shared_vis_pool_spawner = shared_vis_pages_pool
+        .as_ref()
+        .map(|p| p.allocator_spawner());
+
+    let private_pool_spanwer = private_pool.as_ref().map(|p| p.allocator_spawner());
+
+    let vfio_dma_buffer_spawner = Box::new(
+        move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
+            shared_vis_pool_spawner
+                .as_ref()
+                .map(|spawner| {
+                    spawner
+                        .allocator(device_id.clone())
+                        .map(|alloc| Arc::new(alloc) as _)
+                })
+                .unwrap_or_else(|| {
+                    private_pool_spanwer
+                        .as_ref()
+                        .map(|spawner| {
+                            spawner
+                                .allocator(device_id.clone())
+                                .map(|alloc| Arc::new(alloc) as _)
+                        })
+                        .unwrap_or(Ok(Arc::new(LockedMemorySpawner) as _))
+                })
+        },
+    );
 
 
-    let dma_manager = GlobalDmaManager::new(dma_pool);
+    let dma_manager = GlobalDmaManager::new(vfio_dma_buffer_spawner);
     let nvme_manager = if env_cfg.nvme_vfio {
-        //let shared_vis_pool_spawner = shared_vis_pages_pool
-        //    .as_ref()
-        //    .map(|p| p.allocator_spawner());
-
-        //let private_pool_spanwer = private_pool.as_ref().map(|p| p.allocator_spawner());
 
         let save_restore_supported = env_cfg.nvme_keep_alive; //&& private_pool_spanwer.is_some();
-
-        let vfio_dma_buffer_spawner = Box::new(
-            move |_device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-                // Dummy behavior: returning a dummy VfioDmaBuffer (you need to define one).
-                Ok(Arc::new(LockedMemorySpawner) as Arc<dyn VfioDmaBuffer>)  // Replace `LockedMemorySpawner` with a dummy object if necessary
-            },
-        );
-
-        //let vfio_dma_buffer_spawner = Box::new(
-        //    move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-        //        shared_vis_pool_spawner
-        //            .as_ref()
-        //            .map(|spawner| {
-        //                spawner
-        //                    .allocator(device_id.clone())
-        //                    .map(|alloc| Arc::new(alloc) as _)
-        //            })
-        //            .unwrap_or_else(|| {
-        //                private_pool_spanwer
-        //                    .as_ref()
-        //                    .map(|spawner| {
-        //                        spawner
-        //                            .allocator(device_id.clone())
-        //                            .map(|alloc| Arc::new(alloc) as _)
-        //                    })
-        //                    .unwrap_or(Ok(Arc::new(LockedMemorySpawner) as _))
-        //            })
-        //    },
-        //);
-
-
 
         let manager = NvmeManager::new(
                     &driver_source,
                     processor_topology.vp_count(),
-                    vfio_dma_buffer_spawner,
                     save_restore_supported,
                     servicing_state.nvme_state.unwrap_or(None),
-                    dma_manager.clone(),
+                    dma_manager.get_client_spawner().clone(),
                 );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
@@ -2881,11 +2840,10 @@ async fn new_underhill_vm(
                     tp,
                     &uevent_listener,
                     &servicing_state.emuplat.netvsp_state,
-                    &shared_vis_pages_pool,
                     partition.clone(),
                     &state_units,
                     &vmbus_server,
-                    dma_manager.clone(),
+                    dma_manager.get_client_spawner().clone(),
                 )
                 .await?;
 

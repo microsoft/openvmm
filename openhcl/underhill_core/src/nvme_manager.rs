@@ -4,8 +4,7 @@
 //! Provides access to NVMe namespaces that are backed by the user-mode NVMe
 //! VFIO driver. Keeps track of all the NVMe drivers.
 
-use crate::dma_manager::GlobalDmaManager;
-//use crate::dma_manager::DmaClient;
+use crate::dma_manager::DmaClientSpawner;
 use crate::nvme_manager::save_restore::NvmeManagerSavedState;
 use crate::nvme_manager::save_restore::NvmeSavedDiskConfig;
 use crate::servicing::NvmeSavedState;
@@ -28,7 +27,6 @@ use std::sync::Arc;
 use thiserror::Error;
 use tracing::Instrument;
 use user_driver::vfio::VfioDevice;
-use user_driver::vfio::VfioDmaBuffer;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceId;
@@ -91,10 +89,9 @@ impl NvmeManager {
     pub fn new(
         driver_source: &VmTaskDriverSource,
         vp_count: u32,
-        _dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
         save_restore_supported: bool,
         saved_state: Option<NvmeSavedState>,
-        dma_manager: GlobalDmaManager,
+        dma_client_spawner: DmaClientSpawner,
     ) -> Self {
         let (send, recv) = mesh::channel();
         let driver = driver_source.simple();
@@ -102,9 +99,8 @@ impl NvmeManager {
             driver_source: driver_source.clone(),
             devices: HashMap::new(),
             vp_count,
-            _dma_buffer_spawner,
             save_restore_supported,
-            dma_manager,
+            dma_client_spawner,
         };
         let task = driver.spawn("nvme-manager", async move {
             // Restore saved data (if present) before async worker thread runs.
@@ -215,13 +211,11 @@ struct NvmeManagerWorker {
     devices: HashMap<String, nvme_driver::NvmeDriver<VfioDevice>>,
     // TODO: Revisit this Box<fn> into maybe a trait, once we refactor DMA to a
     // central manager.
-    #[inspect(skip)]
-    _dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
     vp_count: u32,
     /// Running environment (memory layout) allows save/restore.
     save_restore_supported: bool,
     #[inspect(skip)]
-    dma_manager: GlobalDmaManager,
+    dma_client_spawner: DmaClientSpawner,
 }
 
 impl<'a> NvmeManagerWorker {
@@ -295,19 +289,16 @@ impl<'a> NvmeManagerWorker {
         &mut self,
         pci_id: String,
     ) -> Result<&mut nvme_driver::NvmeDriver<VfioDevice>, InnerError> {
-
-        let mut dma_client = self.dma_manager.create_client(pci_id.clone());
-
         let driver = match self.devices.entry(pci_id.to_owned()) {
             hash_map::Entry::Occupied(entry) => entry.into_mut(),
             hash_map::Entry::Vacant(entry) => {
-                dma_client.get_dma_buffer_allocator(format!("nvme_{}", entry.key()))
-                        .map_err(InnerError::DmaBuffer)?;
+
+                let dma_client = self.dma_client_spawner.create_client(pci_id.clone(), format!("nvme_{}", pci_id)).map_err(InnerError::DmaBuffer)?;
 
                 let device = VfioDevice::new(
                     &self.driver_source,
                     entry.key(),
-                        Arc::new(dma_client),
+                        dma_client,
                 )
                 .instrument(tracing::info_span!("vfio_device_open", pci_id))
                 .await
@@ -364,8 +355,9 @@ impl<'a> NvmeManagerWorker {
         self.devices = HashMap::new();
         for disk in &saved_state.nvme_disks {
             let pci_id = disk.pci_id.clone();
-            let mut dma_client = self.dma_manager.create_client(pci_id.clone());
-            dma_client.get_dma_buffer_allocator(format!("nvme_{}", pci_id))?;
+
+            let dma_client = self.dma_client_spawner.create_client(pci_id.clone(), format!("nvme_{}", pci_id))?;
+            //dma_client.get_dma_buffer_allocator(format!("nvme_{}", pci_id))?;
             let vfio_device =
                 // This code can wait on each VFIO device until it is arrived.
                 // A potential optimization would be to delay VFIO operation
@@ -373,11 +365,8 @@ impl<'a> NvmeManagerWorker {
                 VfioDevice::restore(
                     &self.driver_source,
                     &disk.pci_id.clone(),
-                    //(self._dma_buffer_spawner)(format!("nvme_{}", pci_id))
-                    //    .map_err(InnerError::DmaBuffer)?,
-                        // manager exposed a method to get a refrance of a client based on pci_id
                     true,
-                    self.dma_manager.get_client(&pci_id).unwrap(),
+                    dma_client,
                 )
                 .instrument(tracing::info_span!("vfio_device_restore", pci_id))
                 .await?;

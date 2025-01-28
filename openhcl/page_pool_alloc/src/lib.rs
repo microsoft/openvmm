@@ -418,7 +418,7 @@ impl Drop for PagePoolHandle {
 /// [`PagePoolAllocatorSpawner::allocator`].
 ///
 /// This struct is considered the "owner" of the pool allowing for save/restore.
-#[derive(Inspect, Clone)]
+#[derive(Inspect)]
 pub struct PagePool {
     #[inspect(flatten)]
     inner: Arc<Mutex<PagePoolInner>>,
