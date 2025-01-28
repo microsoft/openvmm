@@ -83,8 +83,7 @@ enum FuzzCommand {
         /// targets.
         targets: Vec<String>,
 
-        /// The Rust toolchain to use. Defaults to 'nightly'. Specify 'default'
-        /// to use the environment's default toolchain.
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
         #[clap(long)]
         toolchain: Option<String>,
 
@@ -100,8 +99,7 @@ enum FuzzCommand {
         /// Path to specific repro case
         artifact: Option<PathBuf>,
 
-        /// The Rust toolchain to use. Defaults to 'nightly'. Specify 'default'
-        /// to use the environment's default toolchain.
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
         #[clap(long)]
         toolchain: Option<String>,
 
@@ -135,8 +133,7 @@ enum FuzzCommand {
         /// Path to input file.
         input: PathBuf,
 
-        /// The Rust toolchain to use. Defaults to 'nightly'. Specify 'default'
-        /// to use the environment's default toolchain.
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
         #[clap(long)]
         toolchain: Option<String>,
 
@@ -149,8 +146,7 @@ enum FuzzCommand {
         /// Fuzzing target to minify the corpus of.
         target: String,
 
-        /// The Rust toolchain to use. Defaults to 'nightly'. Specify 'default'
-        /// to use the environment's default toolchain.
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
         #[clap(long)]
         toolchain: Option<String>,
 
@@ -166,8 +162,7 @@ enum FuzzCommand {
         /// Path to test case file.
         test_case: PathBuf,
 
-        /// The Rust toolchain to use. Defaults to 'nightly'. Specify 'default'
-        /// to use the environment's default toolchain.
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
         #[clap(long)]
         toolchain: Option<String>,
 
@@ -188,8 +183,7 @@ enum FuzzCommand {
         #[clap(long, requires = "with_html_report")]
         only_report: bool,
 
-        /// The Rust toolchain to use. Defaults to 'nightly'. Specify 'default'
-        /// to use the environment's default toolchain.
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
         #[clap(long)]
         toolchain: Option<String>,
 
@@ -209,8 +203,7 @@ enum FuzzCommand {
         /// targets.
         target: Vec<String>,
 
-        /// The Rust toolchain to use. Defaults to 'nightly'. Specify 'default'
-        /// to use the environment's default toolchain.
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
         #[clap(long)]
         toolchain: Option<String>,
     },
