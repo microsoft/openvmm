@@ -89,7 +89,10 @@ impl CargoFuzzCommand {
             log::warn!(
                 "Running on a stable toolchain in a `cargo xtask` invocation, disabling sanitizers"
             );
-            log::warn!("To enable sanitizers, run `xtask` directly from your target directory, or switch to a nightly toolchain");
+            log::warn!(
+                "To enable sanitizers, run {} directly, or switch to a nightly toolchain",
+                std::env::current_exe()?.display()
+            );
             cmd = cmd.args(["-s", "none"]);
         } else {
             // Non-cargo invocation, sanitizers can be enabled via RUSTC_BOOTSTRAP
