@@ -338,7 +338,7 @@ enum HvcallRepInput<'a, T> {
     /// The actual elements to rep over
     Elements(&'a [T]),
     /// The elements for the rep are implied and only a count is needed
-    Count(usize),
+    Count(u16),
 }
 
 mod ioctls {
@@ -926,7 +926,7 @@ impl MshvHvcall {
                 self.hvcall_rep::<hvdef::hypercall::AcceptGpaPages, u8, u8>(
                     HypercallCode::HvCallAcceptGpaPages,
                     &header,
-                    HvcallRepInput::Count(count as usize),
+                    HvcallRepInput::Count(count as u16),
                     None,
                 )
                 .expect("kernel hypercall submission should always succeed")
@@ -1182,7 +1182,7 @@ impl MshvHvcall {
             HvcallRepInput::Elements(e) => {
                 ([input_header.as_bytes(), e.as_bytes()].concat(), e.len())
             }
-            HvcallRepInput::Count(c) => (input_header.as_bytes().to_vec(), c),
+            HvcallRepInput::Count(c) => (input_header.as_bytes().to_vec(), c.into()),
         };
 
         if input.len() > HV_PAGE_SIZE as usize {
@@ -1209,7 +1209,7 @@ impl MshvHvcall {
 
         let control = hvdef::hypercall::Control::new()
             .with_code(code.0)
-            .with_rep_count(count);
+            .with_rep_count(count as u16);
 
         let call_object = protocol::hcl_hvcall {
             control,
@@ -1273,7 +1273,7 @@ impl MshvHvcall {
 
         let control = hvdef::hypercall::Control::new()
             .with_code(code.0)
-            .with_variable_header_size(variable_input.len() / 8);
+            .with_variable_header_size((variable_input.len() / 8) as u16);
 
         let call_object = protocol::hcl_hvcall {
             control,

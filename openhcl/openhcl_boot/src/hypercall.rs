@@ -133,7 +133,7 @@ impl HvCall {
     fn dispatch_hvcall(
         &mut self,
         code: hvdef::HypercallCode,
-        rep_count: Option<usize>,
+        rep_count: Option<u16>,
     ) -> hvdef::hypercall::HypercallOutput {
         self.init_if_needed();
 
@@ -235,7 +235,7 @@ impl HvCall {
 
             let output = self.dispatch_hvcall(
                 hvdef::HypercallCode::HvCallModifyVtlProtectionMask,
-                Some(count as usize),
+                Some(count as u16),
             );
 
             output.result()?;
@@ -300,7 +300,7 @@ impl HvCall {
 
             let output = self.dispatch_hvcall(
                 hvdef::HypercallCode::HvCallAcceptGpaPages,
-                Some(count as usize),
+                Some(count as u16),
             );
 
             output.result()?;
@@ -339,7 +339,7 @@ impl HvCall {
             //         The hypercall output is validated right after the hypercall is issued.
             let r = self.dispatch_hvcall(
                 hvdef::HypercallCode::HvCallGetVpIndexFromApicId,
-                Some(hw_ids.len()),
+                Some(hw_ids.len() as u16),
             );
 
             let n = r.elements_processed() as usize;

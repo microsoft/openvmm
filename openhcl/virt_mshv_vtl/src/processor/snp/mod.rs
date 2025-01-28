@@ -26,6 +26,7 @@ use crate::WakeReason;
 use hcl::vmsa::VmsaWrapper;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
+use hv1_hypercall::HvRepResult;
 use hv1_hypercall::HypercallIo;
 use hvdef::hypercall::Control;
 use hvdef::hypercall::HvFlushFlags;
@@ -2297,7 +2298,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_,
         processor_set: Vec<u32>,
         flags: HvFlushFlags,
         gva_ranges: &[HvGvaRange],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         hv1_hypercall::FlushVirtualAddressListEx::flush_virtual_address_list_ex(
             self,
             processor_set,
@@ -2315,7 +2316,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
         processor_set: Vec<u32>,
         flags: HvFlushFlags,
         gva_ranges: &[HvGvaRange],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         self.hcvm_validate_flush_inputs(&processor_set, flags, true)
             .map_err(|e| (e, 0))?;
 

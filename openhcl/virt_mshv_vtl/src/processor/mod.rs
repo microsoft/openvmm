@@ -42,6 +42,7 @@ use crate::WakeReason;
 use hcl::ioctl;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
+use hv1_hypercall::HvRepResult;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::HvError;
 use hvdef::HvMessage;
@@ -1249,7 +1250,7 @@ impl<T, B: Backing> hv1_hypercall::GetVpIndexFromApicId for UhHypercallHandler<'
         target_vtl: Vtl,
         apic_ids: &[u32],
         vp_indices: &mut [u32],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         tracing::debug!(partition_id, ?target_vtl, "HvGetVpIndexFromApicId");
 
         if partition_id != hvdef::HV_PARTITION_ID_SELF {
@@ -1421,7 +1422,7 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::ModifySparseGpaPageHostVisibility
         partition_id: u64,
         visibility: HostVisibilityType,
         gpa_pages: &[u64],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         if partition_id != hvdef::HV_PARTITION_ID_SELF {
             return Err((HvError::AccessDenied, 0));
         }
@@ -1459,7 +1460,7 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::QuerySparseGpaPageHostVisibility
         partition_id: u64,
         gpa_pages: &[u64],
         host_visibility: &mut [HostVisibilityType],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         if partition_id != hvdef::HV_PARTITION_ID_SELF {
             return Err((HvError::AccessDenied, 0));
         }

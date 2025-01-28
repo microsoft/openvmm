@@ -68,7 +68,6 @@ use hvdef::HvMapGpaFlags;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmPartitionStatus;
-use hvdef::HvRepResult;
 use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
@@ -1240,14 +1239,14 @@ pub struct UhLateParams<'a> {
 /// Trait for CVM-related protections on guest memory.
 pub trait ProtectIsolatedMemory: Send + Sync {
     /// Changes host visibility on guest memory.
-    fn change_host_visibility(&self, shared: bool, gpns: &[u64]) -> HvRepResult;
+    fn change_host_visibility(&self, shared: bool, gpns: &[u64]) -> Result<(), (HvError, usize)>;
 
     /// Queries host visibility on guest memory.
     fn query_host_visibility(
         &self,
         gpns: &[u64],
         host_visibility: &mut [HostVisibilityType],
-    ) -> HvRepResult;
+    ) -> Result<(), (HvError, usize)>;
 
     /// Gets the default protections/permissions for VTL 0.
     fn default_vtl0_protections(&self) -> HvMapGpaFlags;
@@ -1267,7 +1266,7 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         vtl: GuestVtl,
         gpns: &[u64],
         protections: HvMapGpaFlags,
-    ) -> HvRepResult;
+    ) -> Result<(), (HvError, usize)>;
 
     /// Retrieves a protector for the hypercall code page overlay for a target
     /// VTL.
