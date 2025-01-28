@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::dispatch::vtl2_settings_worker::wait_for_pci_path;
-use crate::dma_manager::GlobalDmaManager;
+use crate::dma_manager::DmaClientSpawner;
 use crate::vpci::HclVpciBusControl;
 use user_driver::DmaClient;
 use anyhow::Context;
@@ -203,7 +203,7 @@ struct HclNetworkVFManagerWorker {
     #[inspect(skip)]
     dma_mode: GuestDmaMode,
     #[inspect(skip)]
-    dma_manager: GlobalDmaManager,
+    dma_client_spawner: DmaClientSpawner,
 }
 
 impl HclNetworkVFManagerWorker {
@@ -219,7 +219,7 @@ impl HclNetworkVFManagerWorker {
         vp_count: u32,
         max_sub_channels: u16,
         dma_mode: GuestDmaMode,
-        dma_manager: GlobalDmaManager,
+        dma_client_spawner: DmaClientSpawner,
     ) -> (Self, mesh::Sender<HclNetworkVfManagerMessage>) {
         let (tx_to_worker, worker_rx) = mesh::channel();
         let vtl0_bus_control = if save_state.hidden_vtl0.lock().unwrap_or(false) {
@@ -249,7 +249,7 @@ impl HclNetworkVFManagerWorker {
                 vtl2_bus_control,
                 vtl2_pci_id,
                 dma_mode,
-                dma_manager,
+                dma_client_spawner,
             },
             tx_to_worker,
         )
@@ -687,12 +687,21 @@ impl HclNetworkVFManagerWorker {
                         tracing::info!("VTL2 VF arrived");
                     }
                     let pci_id = self.vtl2_pci_id.clone();
+                    let dma_client_result = self.dma_client_spawner.create_client(pci_id.clone(), format!("nic_{}", pci_id));
+                    let dma_client = match dma_client_result {
+                        Ok(client) => client, // Successfully created DMA client
+                        Err(e) => {
+                            tracing::error!(?e, "Failed to create DMA client for device");
+                            return; // You can either return early or handle the error in some other way
+                        }
+                    };
+
                     let device_bound = match create_mana_device(
                         &self.driver_source,
                         &self.vtl2_pci_id,
                         self.vp_count,
                         self.max_sub_channels,
-                        Arc::new(self.dma_manager.create_client(pci_id))
+                        dma_client
                     )
                     .await
                     {
@@ -868,13 +877,13 @@ impl HclNetworkVFManager {
         max_sub_channels: u16,
         netvsp_state: &Option<Vec<SavedState>>,
         dma_mode: GuestDmaMode,
-        dma_client: Arc<dyn DmaClient>,
-        dma_manager: GlobalDmaManager,
+        dma_client_spawner: DmaClientSpawner,
     ) -> anyhow::Result<(
         Self,
         Vec<HclNetworkVFManagerEndpointInfo>,
         RuntimeSavedState,
     )> {
+        let dma_client = dma_client_spawner.create_client(vtl2_pci_id.clone(), format!("nic_{}", vtl2_pci_id))?;
         let device = create_mana_device(
             driver_source,
             &vtl2_pci_id,
@@ -930,7 +939,7 @@ impl HclNetworkVFManager {
             vp_count,
             max_sub_channels,
             dma_mode,
-            dma_manager,
+            dma_client_spawner,
         );
 
         // Queue new endpoints.
