@@ -3,6 +3,7 @@
 
 //! Common processor support for hardware-isolated partitions.
 
+pub mod apic;
 mod tlb_lock;
 
 use super::UhEmulationState;

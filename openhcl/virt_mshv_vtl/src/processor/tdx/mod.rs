@@ -60,7 +60,6 @@ use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt_support_apic::ApicClient;
-use virt_support_apic::ApicWork;
 use virt_support_apic::OffloadNotSupported;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
@@ -908,80 +907,36 @@ impl UhProcessor<'_, TdxBacked> {
     /// Returns `Ok(false)` if the APIC offload needs to be disabled and the
     /// poll retried.
     fn try_poll_apic(&mut self, vtl: GuestVtl, scan_irr: bool) -> Result<bool, UhRunVpError> {
-        // Check for interrupt requests from the host and kernel IPI offload.
-        // TODO TDX GUEST VSM supporting VTL 1 proxy irrs requires kernel changes
-        if vtl == GuestVtl::Vtl0 {
-            if let Some(irr) = self.runner.proxy_irr() {
-                // We can't put the interrupts directly on the APIC page because we might need
-                // to clear the tmr state. This can happen if a vector was previously used for a level
-                // triggered interrupt, and is now being used for an edge-triggered interrupt.
-                self.backing.cvm.lapics[vtl]
-                    .lapic
-                    .request_fixed_interrupts(irr);
-            }
-        }
+        let mut scan = TdxApicScanner {
+            processor_controls: self.backing.vtls[vtl]
+                .processor_controls
+                .with_nmi_window_exiting(false)
+                .with_interrupt_window_exiting(false),
+            vp: self,
+            tpr_threshold: 0,
+        };
 
-        let ApicWork {
-            init,
-            extint,
-            sipi,
-            nmi,
-            interrupt,
-        } = self.backing.cvm.lapics[vtl]
-            .lapic
-            .scan(&mut self.vmtime, scan_irr);
+        // TODO TDX: filter proxy IRRs by setting the `proxy_irr_blocked` field of the run page
+        hardware_cvm::apic::poll_apic_core(&mut scan, vtl, scan_irr)?;
 
-        let mut new_processor_controls = self.backing.vtls[vtl]
-            .processor_controls
-            .with_nmi_window_exiting(false)
-            .with_interrupt_window_exiting(false);
-
-        // An INIT/SIPI targeted at a VP with more than one guest VTL enabled is ignored.
-        // Check VTL enablement inside each block to avoid taking a lock on the hot path,
-        // INIT and SIPI are quite cold.
-        if init {
-            if !*self.inner.hcvm_vtl1_enabled.lock() {
-                self.handle_init(vtl)?;
-            }
-        }
-
-        if let Some(vector) = sipi {
-            if !*self.inner.hcvm_vtl1_enabled.lock() {
-                self.handle_sipi(vtl, vector);
-            }
-        }
+        let TdxApicScanner {
+            vp: _,
+            processor_controls: new_processor_controls,
+            tpr_threshold: new_tpr_threshold,
+        } = scan;
 
         // Interrupts are ignored while waiting for SIPI.
-        if self.backing.cvm.lapics[vtl].activity != MpState::WaitForSipi {
-            self.backing.cvm.lapics[vtl].nmi_pending |= nmi;
-            if self.backing.cvm.lapics[vtl].nmi_pending {
-                self.handle_nmi(vtl, &mut new_processor_controls);
-            }
-
-            if extint {
-                tracelimit::warn_ratelimited!("extint not supported");
-            }
-
-            let mut new_tpr_threshold = 0;
-            if let Some(vector) = interrupt {
-                self.handle_interrupt(
-                    vector,
-                    vtl,
-                    &mut new_processor_controls,
-                    &mut new_tpr_threshold,
-                );
-            }
-
-            if self.backing.vtls[vtl].tpr_threshold != new_tpr_threshold {
-                tracing::trace!(new_tpr_threshold, ?vtl, "setting tpr threshold");
-                self.runner.write_vmcs32(
-                    vtl,
-                    VmcsField::VMX_VMCS_TPR_THRESHOLD,
-                    !0,
-                    new_tpr_threshold.into(),
-                );
-                self.backing.vtls[vtl].tpr_threshold = new_tpr_threshold;
-            }
+        if self.backing.cvm.lapics[vtl].activity != MpState::WaitForSipi
+            && self.backing.vtls[vtl].tpr_threshold != new_tpr_threshold
+        {
+            tracing::trace!(new_tpr_threshold, ?vtl, "setting tpr threshold");
+            self.runner.write_vmcs32(
+                vtl,
+                VmcsField::VMX_VMCS_TPR_THRESHOLD,
+                !0,
+                new_tpr_threshold.into(),
+            );
+            self.backing.vtls[vtl].tpr_threshold = new_tpr_threshold;
         }
 
         if self.backing.vtls[vtl].processor_controls != new_processor_controls {
@@ -1146,80 +1101,89 @@ impl UhProcessor<'_, TdxBacked> {
                 .set_valid(false);
         }
     }
+}
 
-    fn handle_interrupt(
-        &mut self,
-        vector: u8,
-        vtl: GuestVtl,
-        processor_controls: &mut ProcessorControls,
-        tpr_threshold: &mut u8,
-    ) {
+struct TdxApicScanner<'a, 'b> {
+    vp: &'a mut UhProcessor<'b, TdxBacked>,
+    processor_controls: ProcessorControls,
+    tpr_threshold: u8,
+}
+
+impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, 'b> {
+    fn vp(&mut self) -> &mut UhProcessor<'b, TdxBacked> {
+        self.vp
+    }
+
+    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
         // Exit idle when an interrupt is received, regardless of IF
-        if self.backing.cvm.lapics[vtl].activity == MpState::Idle {
-            self.backing.cvm.lapics[vtl].activity = MpState::Running;
+        if self.vp.backing.cvm.lapics[vtl].activity == MpState::Idle {
+            self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
         }
         // If there is a higher-priority pending event of some kind, then
         // just request an exit after it has resolved, after which we will
         // try again.
-        if self.backing.vtls[vtl].interruption_information.valid()
-            && self.backing.vtls[vtl]
+        if self.vp.backing.vtls[vtl].interruption_information.valid()
+            && self.vp.backing.vtls[vtl]
                 .interruption_information
                 .interruption_type()
                 != INTERRUPT_TYPE_EXTERNAL
         {
-            processor_controls.set_interrupt_window_exiting(true);
-            return;
+            self.processor_controls.set_interrupt_window_exiting(true);
+            return Ok(());
         }
 
         // Ensure the interrupt is not blocked by RFLAGS.IF or interrupt shadow.
         let interruptibility: Interruptibility = self
+            .vp
             .runner
             .read_vmcs32(vtl, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY)
             .into();
 
-        let rflags = RFlags::from(self.runner.tdx_enter_guest_state().rflags);
+        let rflags = RFlags::from(self.vp.runner.tdx_enter_guest_state().rflags);
         if !rflags.interrupt_enable()
             || interruptibility.blocked_by_sti()
             || interruptibility.blocked_by_movss()
         {
-            processor_controls.set_interrupt_window_exiting(true);
-            return;
+            self.processor_controls.set_interrupt_window_exiting(true);
+            return Ok(());
         }
 
         let priority = vector >> 4;
-        let apic: &ApicPage = zerocopy::transmute_ref!(self.runner.tdx_apic_page());
+        let apic: &ApicPage = zerocopy::transmute_ref!(self.vp.runner.tdx_apic_page());
         if (apic.tpr.value as u8 >> 4) >= priority {
-            *tpr_threshold = priority;
-            return;
+            self.tpr_threshold = priority;
+            return Ok(());
         }
 
-        self.backing.vtls[vtl].interruption_information = InterruptionInformation::new()
+        self.vp.backing.vtls[vtl].interruption_information = InterruptionInformation::new()
             .with_valid(true)
             .with_vector(vector)
             .with_interruption_type(INTERRUPT_TYPE_EXTERNAL);
 
-        self.backing.cvm.lapics[vtl].activity = MpState::Running;
+        self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
+        Ok(())
     }
 
-    fn handle_nmi(&mut self, vtl: GuestVtl, processor_controls: &mut ProcessorControls) {
+    fn handle_nmi(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
         // Exit idle when an interrupt is received, regardless of IF
-        if self.backing.cvm.lapics[vtl].activity == MpState::Idle {
-            self.backing.cvm.lapics[vtl].activity = MpState::Running;
+        if self.vp.backing.cvm.lapics[vtl].activity == MpState::Idle {
+            self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
         }
         // If there is a higher-priority pending event of some kind, then
         // just request an exit after it has resolved, after which we will
         // try again.
-        if self.backing.vtls[vtl].interruption_information.valid()
-            && self.backing.vtls[vtl]
+        if self.vp.backing.vtls[vtl].interruption_information.valid()
+            && self.vp.backing.vtls[vtl]
                 .interruption_information
                 .interruption_type()
                 != INTERRUPT_TYPE_EXTERNAL
         {
-            processor_controls.set_nmi_window_exiting(true);
-            return;
+            self.processor_controls.set_nmi_window_exiting(true);
+            return Ok(());
         }
 
         let interruptibility: Interruptibility = self
+            .vp
             .runner
             .read_vmcs32(vtl, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY)
             .into();
@@ -1228,46 +1192,57 @@ impl UhProcessor<'_, TdxBacked> {
             || interruptibility.blocked_by_sti()
             || interruptibility.blocked_by_movss()
         {
-            processor_controls.set_nmi_window_exiting(true);
-            return;
+            self.processor_controls.set_nmi_window_exiting(true);
+            return Ok(());
         }
 
-        self.backing.vtls[vtl].interruption_information = InterruptionInformation::new()
+        self.vp.backing.vtls[vtl].interruption_information = InterruptionInformation::new()
             .with_valid(true)
             .with_vector(2)
             .with_interruption_type(INTERRUPT_TYPE_NMI);
 
-        self.backing.cvm.lapics[vtl].activity = MpState::Running;
+        self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
+        Ok(())
     }
 
     fn handle_init(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
-        let vp_info = self.inner.vp_info;
+        let vp_info = self.vp.inner.vp_info;
         {
-            let mut access = self.access_state(vtl.into());
+            let mut access = self.vp.access_state(vtl.into());
             vp::x86_init(&mut access, &vp_info).map_err(UhRunVpError::State)?;
         }
         Ok(())
     }
 
-    fn handle_sipi(&mut self, vtl: GuestVtl, vector: u8) {
-        if self.backing.cvm.lapics[vtl].activity == MpState::WaitForSipi {
+    fn handle_sipi(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
+        if self.vp.backing.cvm.lapics[vtl].activity == MpState::WaitForSipi {
             let address = (vector as u64) << 12;
-            self.write_segment(
-                vtl,
-                TdxSegmentReg::Cs,
-                SegmentRegister {
-                    base: address,
-                    limit: 0xffff,
-                    selector: (address >> 4) as u16,
-                    attributes: 0x9b,
-                },
-            )
-            .unwrap();
-            self.runner.tdx_enter_guest_state_mut().rip = 0;
-            self.backing.cvm.lapics[vtl].activity = MpState::Running;
+            self.vp
+                .write_segment(
+                    vtl,
+                    TdxSegmentReg::Cs,
+                    SegmentRegister {
+                        base: address,
+                        limit: 0xffff,
+                        selector: (address >> 4) as u16,
+                        attributes: 0x9b,
+                    },
+                )
+                .unwrap();
+            self.vp.runner.tdx_enter_guest_state_mut().rip = 0;
+            self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
         }
+
+        Ok(())
     }
 
+    fn handle_extint(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
+        tracelimit::warn_ratelimited!(?vtl, "extint not supported");
+        Ok(())
+    }
+}
+
+impl UhProcessor<'_, TdxBacked> {
     async fn run_vp_tdx(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
         let next_vtl = self.backing.cvm.exit_vtl;
 
