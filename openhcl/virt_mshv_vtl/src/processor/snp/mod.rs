@@ -735,8 +735,8 @@ impl<T> HypercallIo for GhcbEnlightenedHypercall<'_, '_, T> {
         // hypercall ABI) to be able to control the instruction pointer.
         //
         // Instead, explicitly return `HV_STATUS_TIMEOUT` to indicate that the
-        // guest should retry the hypercall, setting `rep_start` to the number
-        // of elements processed.
+        // guest should retry the hypercall after setting `rep_start` to the
+        // number of elements processed.
         let control = Control::from(control);
         self.set_result(
             HypercallOutput::from(HvError::Timeout)
