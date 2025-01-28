@@ -4,7 +4,6 @@
 use crate::dispatch::vtl2_settings_worker::wait_for_pci_path;
 use crate::dma_manager::DmaClientSpawner;
 use crate::vpci::HclVpciBusControl;
-use user_driver::DmaClient;
 use anyhow::Context;
 use async_trait::async_trait;
 use futures::lock::Mutex;
@@ -42,6 +41,7 @@ use uevent::UeventListener;
 use user_driver::vfio::vfio_set_device_reset_method;
 use user_driver::vfio::PciDeviceResetMethod;
 use user_driver::vfio::VfioDevice;
+use user_driver::DmaClient;
 use vmcore::vm_task::VmTaskDriverSource;
 use vpci::bus_control::VpciBusControl;
 use vpci::bus_control::VpciBusEvent;
@@ -61,7 +61,7 @@ enum HclNetworkVfManagerMessage {
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
 }
 
-async fn   create_mana_device(
+async fn create_mana_device(
     driver_source: &VmTaskDriverSource,
     pci_id: &str,
     vp_count: u32,
@@ -687,7 +687,9 @@ impl HclNetworkVFManagerWorker {
                         tracing::info!("VTL2 VF arrived");
                     }
                     let pci_id = self.vtl2_pci_id.clone();
-                    let dma_client_result = self.dma_client_spawner.create_client(pci_id.clone(), format!("nic_{}", pci_id));
+                    let dma_client_result = self
+                        .dma_client_spawner
+                        .create_client(pci_id.clone(), format!("nic_{}", pci_id));
                     let dma_client = match dma_client_result {
                         Ok(client) => client, // Successfully created DMA client
                         Err(e) => {
@@ -701,7 +703,7 @@ impl HclNetworkVFManagerWorker {
                         &self.vtl2_pci_id,
                         self.vp_count,
                         self.max_sub_channels,
-                        dma_client
+                        dma_client,
                     )
                     .await
                     {
@@ -883,7 +885,8 @@ impl HclNetworkVFManager {
         Vec<HclNetworkVFManagerEndpointInfo>,
         RuntimeSavedState,
     )> {
-        let dma_client = dma_client_spawner.create_client(vtl2_pci_id.clone(), format!("nic_{}", vtl2_pci_id))?;
+        let dma_client = dma_client_spawner
+            .create_client(vtl2_pci_id.clone(), format!("nic_{}", vtl2_pci_id))?;
         let device = create_mana_device(
             driver_source,
             &vtl2_pci_id,

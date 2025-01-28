@@ -7029,7 +7029,6 @@ dependencies = [
  "netvsp",
  "nvme_driver",
  "nvme_resources",
- "once_cell",
  "openhcl_attestation_protocol",
  "page_pool_alloc",
  "pal",

@@ -316,7 +316,6 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
         })
     }
 
-
     fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
         None
     }

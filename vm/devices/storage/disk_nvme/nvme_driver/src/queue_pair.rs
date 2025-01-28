@@ -184,7 +184,9 @@ impl QueuePair {
         let total_size =
             QueuePair::SQ_SIZE + QueuePair::CQ_SIZE + QueuePair::PER_QUEUE_PAGES * PAGE_SIZE;
 
-        let dma_client = device.get_dma_client().context("Failed to get DMA client from device")?;
+        let dma_client = device
+            .get_dma_client()
+            .context("Failed to get DMA client from device")?;
 
         let mem = dma_client
             .allocate_dma_buffer(total_size)

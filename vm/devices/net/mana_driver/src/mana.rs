@@ -29,12 +29,12 @@ use net_backend_resources::mac_address::MacAddress;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use user_driver::DmaClient;
 use std::sync::Arc;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::DeviceBacking;
+use user_driver::DmaClient;
 //use user_driver::DmaAllocator;
 //use user_driver::HostDmaAllocator;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -331,7 +331,10 @@ impl<T: DeviceBacking> Vport<T> {
     ) -> anyhow::Result<BnicEq> {
         let mut gdma = self.inner.gdma.lock().await;
 
-        let dma_client = gdma.device().get_dma_client().context("Failed to get DMA client from device")?;
+        let dma_client = gdma
+            .device()
+            .get_dma_client()
+            .context("Failed to get DMA client from device")?;
 
         let mem = dma_client
             .allocate_dma_buffer(size as usize)
@@ -374,11 +377,14 @@ impl<T: DeviceBacking> Vport<T> {
         assert!(cq_size >= PAGE_SIZE as u32 && cq_size.is_power_of_two());
         let mut gdma = self.inner.gdma.lock().await;
 
-        let dma_client = gdma.device().get_dma_client().context("Failed to get DMA client from device")?;
+        let dma_client = gdma
+            .device()
+            .get_dma_client()
+            .context("Failed to get DMA client from device")?;
 
         let mem = dma_client
-                .allocate_dma_buffer((wq_size + cq_size) as usize)
-                .context("Failed to allocate DMA buffer")?;
+            .allocate_dma_buffer((wq_size + cq_size) as usize)
+            .context("Failed to allocate DMA buffer")?;
 
         let wq_mem = mem.subblock(0, wq_size as usize);
         let cq_mem = mem.subblock(wq_size as usize, cq_size as usize);
@@ -539,9 +545,15 @@ impl<T: DeviceBacking> Vport<T> {
     }
 
     /// Returns an object that can allocate dma memory to be shared with the device.
-    pub async fn get_dma_client(&self) -> anyhow::Result<Arc<dyn DmaClient>>
-    {
-        Ok(self.inner.gdma.lock().await.device().get_dma_client().unwrap())
+    pub async fn get_dma_client(&self) -> anyhow::Result<Arc<dyn DmaClient>> {
+        Ok(self
+            .inner
+            .gdma
+            .lock()
+            .await
+            .device()
+            .get_dma_client()
+            .unwrap())
     }
 }
 
