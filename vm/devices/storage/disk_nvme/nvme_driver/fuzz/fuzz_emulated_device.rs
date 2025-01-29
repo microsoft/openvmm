@@ -5,6 +5,8 @@
 //! This is the primary fuzzer for the host (a.k.a device) ->
 //! openhcl attack surface. Do not sanitize any arbitrary data
 //! responses in this routine.
+use std::sync::Arc;
+
 use crate::arbitrary_data;
 
 use chipset_device::mmio::MmioIntercept;
@@ -49,7 +51,7 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmula
     }
 
     fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
-        None
+        self.device.get_dma_client()
     }
 
     /// Arbitrarily decide to passthrough or return arbitrary value.

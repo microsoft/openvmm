@@ -35,8 +35,6 @@ use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
-//use user_driver::DmaAllocator;
-//use user_driver::HostDmaAllocator;
 use vmcore::vm_task::VmTaskDriverSource;
 
 enum LinkStatus {

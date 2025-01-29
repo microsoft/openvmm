@@ -105,6 +105,7 @@ impl<T: PciConfigSpace + MmioIntercept> EmulatedDevice<T> {
         }
         device.pci_cfg_write(0x40, 0x80000000).unwrap();
 
+
         Self {
             device: Arc::new(Mutex::new(device)),
             controller,
@@ -283,6 +284,22 @@ impl HostDmaAllocator for EmulatedDmaAllocator {
     }
 }
 
+impl DmaClient for EmulatedDmaAllocator {
+    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
+        let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);
+        memory.as_slice().atomic_fill(0);
+        Ok(memory)
+    }
+
+    fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        anyhow::bail!("restore is not supported for emulated DMA")
+    }
+
+    fn map_dma_ranges(&self, _ranges: i32) -> anyhow::Result<Vec<i32>> {
+        Ok(Vec::new())
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[cfg(feature = "vfio")]
 impl crate::vfio::VfioDmaBuffer for EmulatedDmaAllocator {
@@ -317,7 +334,9 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
     }
 
     fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
-        None
+        Some(Arc::new(EmulatedDmaAllocator {
+            shared_mem: self.shared_mem.clone(),
+        }) as Arc<dyn DmaClient>)
     }
 
     fn max_interrupt_count(&self) -> u32 {

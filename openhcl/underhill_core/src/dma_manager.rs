@@ -19,7 +19,7 @@ pub struct GlobalDmaManagerInner {
     //clients: Mutex<Vec<Weak<DmaClient>>>,
     //client_thresholds: Mutex<Vec<(Weak<DmaClient>, usize)>>,
     dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
-    clients: HashMap<String, Arc<DmaClient>>,
+    clients: HashMap<String, Arc<DmaClientImpl>>,
 }
 
 impl GlobalDmaManager {
@@ -42,7 +42,7 @@ impl GlobalDmaManager {
         inner: &Arc<Mutex<GlobalDmaManagerInner>>,
         pci_id: String,
         device_name: String,
-    ) -> anyhow::Result<Arc<DmaClient>> {
+    ) -> anyhow::Result<Arc<DmaClientImpl>> {
         let mut manager_inner = inner.lock();
         let allocator = {
             // Access the page_pool and call its allocator method directly
@@ -50,7 +50,7 @@ impl GlobalDmaManager {
                 .map_err(|e| anyhow::anyhow!("Failed to get DMA buffer allocator: {:?}", e))?
         };
 
-        let client = DmaClient {
+        let client = DmaClientImpl {
             dma_manager_inner: inner.clone(),
             dma_buffer_allocator: Some(allocator.clone()), // Set the allocator now
         };
@@ -65,7 +65,7 @@ impl GlobalDmaManager {
         Ok(arc_client) // Return the `Arc<Mutex<DmaClient>>`
     }
 
-    pub fn get_client(&self, pci_id: &str) -> Option<Arc<DmaClient>> {
+    pub fn get_client(&self, pci_id: &str) -> Option<Arc<DmaClientImpl>> {
         let inner = self.inner.lock();
         inner.clients.get(pci_id).cloned()
     }
@@ -77,12 +77,12 @@ impl GlobalDmaManager {
     }
 }
 
-pub struct DmaClient {
+pub struct DmaClientImpl {
     dma_manager_inner: Arc<Mutex<GlobalDmaManagerInner>>,
     dma_buffer_allocator: Option<Arc<dyn VfioDmaBuffer>>,
 }
 
-impl user_driver::DmaClient for DmaClient {
+impl user_driver::DmaClient for DmaClientImpl {
     fn map_dma_ranges(&self, ranges: i32) -> anyhow::Result<Vec<i32>> {
         self.map_dma_ranges(ranges)
     }
@@ -103,7 +103,7 @@ impl user_driver::DmaClient for DmaClient {
     }
 }
 
-impl DmaClient {
+impl DmaClientImpl {
     fn map_dma_ranges(&self, _ranges: i32) -> anyhow::Result<Vec<i32>> {
         Ok(Vec::new())
     }
@@ -119,7 +119,7 @@ impl DmaClientSpawner {
         &self,
         pci_id: String,
         device_name: String,
-    ) -> anyhow::Result<Arc<DmaClient>> {
+    ) -> anyhow::Result<Arc<DmaClientImpl>> {
         GlobalDmaManager::create_client_internal(&self.dma_manager_inner, pci_id, device_name)
     }
 }
