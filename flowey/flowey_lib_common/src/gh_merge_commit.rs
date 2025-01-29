@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Gets the merge commit of a PR to main
+
 use flowey::node::prelude::*;
 
 flowey_request! {

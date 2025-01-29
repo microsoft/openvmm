@@ -766,6 +766,7 @@ impl IntoPipeline for CheckinGatesCli {
                             },
                             new_openhcl: ctx.use_artifact(&use_openhcl_igvm_extras_release),
                             done: ctx.new_done_handle(),
+                            pipeline_name: "[flowey] OpenVMM CI".to_string(),
                         },
                     )
                     .finish();

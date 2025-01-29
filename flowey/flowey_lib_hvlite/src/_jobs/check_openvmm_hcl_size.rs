@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Compares the size of the OpenHCL binary in the current PR with the size of the binary from the last successful merge to main.
+
 use crate::run_cargo_build::common::{CommonArch, CommonTriple};
 use flowey::node::prelude::*;
 use flowey_lib_common::{download_gh_artifact, gh_merge_commit, gh_workflow_id};
@@ -10,6 +12,7 @@ flowey_request! {
         pub target: CommonTriple,
         pub new_openhcl: ReadVar<PathBuf>,
         pub done: WriteVar<SideEffect>,
+        pub pipeline_name: String,
     }
 }
 
@@ -31,6 +34,7 @@ impl SimpleFlowNode for Node {
             target,
             new_openhcl,
             done,
+            pipeline_name,
         } = request;
 
         let xtask = ctx.reqv(|v| crate::build_xtask::Request {
@@ -53,6 +57,7 @@ impl SimpleFlowNode for Node {
             repo_path: openvmm_repo_path.clone(),
             github_commit_hash: merge_commit,
             gh_workflow_id: v,
+            pipeline_name,
         });
 
         let merge_head_artifact = ctx.reqv(|old_openhcl| download_gh_artifact::Request {

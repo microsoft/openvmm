@@ -13,7 +13,7 @@ use std::collections::HashSet;
 #[clap(about = "Verify the size of a binary hasn't changed more than allowed.")]
 pub struct VerifySize {
     /// Old binary path
-    #[clap(short, long, required(true))]
+    #[clap(short, long)]
     original: std::path::PathBuf,
 
     /// New binary path
