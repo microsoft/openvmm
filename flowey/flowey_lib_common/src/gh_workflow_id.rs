@@ -11,6 +11,7 @@ flowey_request! {
         pub repo_path: ReadVar<PathBuf>,
         pub gh_workflow_id: WriteVar<String>,
         pub pipeline_name: String,
+        pub gh_token: ReadVar<String>,
     }
 }
 
@@ -19,7 +20,9 @@ new_simple_flow_node!(struct Node);
 impl SimpleFlowNode for Node {
     type Request = Request;
 
-    fn imports(_ctx: &mut ImportCtx<'_>) {}
+    fn imports(ctx: &mut ImportCtx<'_>) {
+        ctx.import::<crate::use_gh_cli::Node>();
+    }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
@@ -27,10 +30,15 @@ impl SimpleFlowNode for Node {
             github_commit_hash,
             gh_workflow_id,
             pipeline_name,
+            gh_token,
         } = request;
 
-        let gh_token = ctx.get_gh_context_var().global().token();
         let pipeline_name = pipeline_name.clone();
+
+        ctx.req(crate::use_gh_cli::Request::WithAuth(
+            crate::use_gh_cli::GhCliAuth::AuthToken(gh_token.clone()),
+        ));
+        let gh_cli = ctx.reqv(crate::use_gh_cli::Request::Get);
 
         ctx.emit_rust_step("get action id", |ctx| {
             let gh_workflow_id = gh_workflow_id.claim(ctx);
@@ -38,19 +46,22 @@ impl SimpleFlowNode for Node {
             let gh_token = gh_token.claim(ctx);
             let repo_path = repo_path.claim(ctx);
             let pipeline_name = pipeline_name.clone();
+            let gh_cli = gh_cli.claim(ctx);
 
             move |rt| {
                 let github_commit_hash = rt.read(github_commit_hash);
             let sh = xshell::Shell::new()?;
             let gh_token = rt.read(gh_token);
             let repo_path = rt.read(repo_path);
+            let gh_cli = rt.read(gh_cli);
 
             sh.change_dir(repo_path);
             // Fetches the CI build workflow id for a given commit hash
 
             let get_action_id = |commit: String| {
                 let cmd = format!(
-                    "gh run list --commit {} -w '{}' -s 'completed' -L 1 --json databaseId --jq '.[].databaseId'",
+                    "{} run list --commit {} -w '{}' -s 'completed' -L 1 --json databaseId --jq '.[].databaseId'",
+                    gh_cli.display(),
                     commit,
                     pipeline_name
                 );
