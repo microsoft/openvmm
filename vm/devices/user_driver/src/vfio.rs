@@ -240,8 +240,8 @@ impl DeviceBacking for VfioDevice {
         (*self).map_bar(n)
     }
 
-    fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
-        Some(self.dma_client.clone())
+    fn dma_client(&self) -> anyhow::Result<Arc<dyn DmaClient>> {
+        Ok(self.dma_client.clone())
     }
 
     fn max_interrupt_count(&self) -> u32 {

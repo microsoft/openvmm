@@ -689,7 +689,7 @@ impl HclNetworkVFManagerWorker {
                     let pci_id = self.vtl2_pci_id.clone();
                     let dma_client_result = self
                         .dma_client_spawner
-                        .create_client(pci_id.clone(), format!("nic_{}", pci_id));
+                        .create_client(format!("nic_{}", pci_id));
                     let dma_client = match dma_client_result {
                         Ok(client) => client, // Successfully created DMA client
                         Err(e) => {
@@ -885,8 +885,7 @@ impl HclNetworkVFManager {
         Vec<HclNetworkVFManagerEndpointInfo>,
         RuntimeSavedState,
     )> {
-        let dma_client = dma_client_spawner
-            .create_client(vtl2_pci_id.clone(), format!("nic_{}", vtl2_pci_id))?;
+        let dma_client = dma_client_spawner.create_client(format!("nic_{}", vtl2_pci_id))?;
         let device = create_mana_device(
             driver_source,
             &vtl2_pci_id,
