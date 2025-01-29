@@ -43,7 +43,7 @@ impl SimpleFlowNode for Node {
             run_id,
         } = request;
 
-        let gh_token = ctx.get_gh_context_var(GhContextVar::GITHUB__TOKEN);
+        let gh_token = ctx.get_gh_context_var().global().token();
         ctx.req(crate::use_gh_cli::Request::WithAuth(
             crate::use_gh_cli::GhCliAuth::AuthToken(gh_token),
         ));

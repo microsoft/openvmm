@@ -1,21 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Contains [`PetriVmConfig::new`], which builds a [`PetriVmConfig`] with all
+//! Contains [`PetriVmConfigOpenVmm::new`], which builds a [`PetriVmConfigOpenVmm`] with all
 //! default settings for a given [`Firmware`] and [`MachineArch`].
 
+use super::PetriVmConfigOpenVmm;
+use super::PetriVmResourcesOpenVmm;
+use super::BOOT_NVME_INSTANCE;
+use super::BOOT_NVME_LUN;
+use super::BOOT_NVME_NSID;
+use super::SCSI_INSTANCE;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::tracing::trace_attachment;
-use crate::vm::PetriVmResources;
 use crate::Firmware;
+use crate::IsolationType;
 use crate::PcatGuest;
-use crate::PetriVmConfig;
 use crate::UefiGuest;
-use crate::BOOT_NVME_INSTANCE;
-use crate::BOOT_NVME_LUN;
-use crate::BOOT_NVME_NSID;
-use crate::SCSI_INSTANCE;
 use crate::SIZE_1_GB;
 use anyhow::Context;
 use disk_backend_resources::layer::DiskLayerHandle;
@@ -90,7 +91,7 @@ use vmbus_serial_resources::VmbusSerialDeviceHandle;
 use vmbus_serial_resources::VmbusSerialPort;
 use vtl2_settings_proto::Vtl2Settings;
 
-impl PetriVmConfig {
+impl PetriVmConfigOpenVmm {
     /// Create a new VM configuration.
     pub fn new(
         firmware: Firmware,
@@ -98,20 +99,8 @@ impl PetriVmConfig {
         resolver: TestArtifacts,
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
-        // Use the current thread name for the test name, both cargo-test and
-        // cargo-nextest set this.
-        // FUTURE: If we ever want to use petri outside a testing context this
-        // will need to be revisited.
-        let current_thread = std::thread::current();
-        let test_name = current_thread.name().context("no thread name configured")?;
-        if test_name.is_empty() {
-            anyhow::bail!("thread name is empty");
-        }
-        if test_name == "main" {
-            anyhow::bail!("thread name is 'main', not running from test thread");
-        }
-        // Windows paths can't include colons, replace them.
-        let test_name = test_name.replace("::", "__");
+        let test_name = crate::get_test_name()?;
+
         let setup = PetriVmConfigSetupCore {
             test_name: &test_name,
             arch,
@@ -170,6 +159,16 @@ impl PetriVmConfig {
 
         let (firmware_event_send, firmware_event_recv) = mesh::mpsc_channel();
 
+        let mut vsock_temp_paths = Vec::new();
+        let mut make_vsock_listener = || -> anyhow::Result<(UnixListener, PathBuf)> {
+            let (listener, temppath) = tempfile::Builder::new()
+                .make(|path| UnixListener::bind(path))?
+                .into_parts();
+            let path = temppath.to_path_buf();
+            vsock_temp_paths.push(temppath);
+            Ok((listener, path))
+        };
+
         let (with_vtl2, vtl2_vmbus, openhcl_diag_handler, ged, ged_send, mut vtl2_settings) =
             if firmware.is_openhcl() {
                 let (ged, ged_send) = setup.config_openhcl_vmbus_devices(
@@ -178,8 +177,7 @@ impl PetriVmConfig {
                     &firmware_event_send,
                     framebuffer.is_some(),
                 )?;
-                let (vtl2_vsock_listener, vtl2_vsock_path) =
-                    tempfile_helpers::with_temp_path(|path| UnixListener::bind(path))?;
+                let (vtl2_vsock_listener, vtl2_vsock_path) = make_vsock_listener()?;
                 let ged_send = Arc::new(ged_send);
                 (
                     Some(Vtl2Config {
@@ -263,8 +261,7 @@ impl PetriVmConfig {
         ));
 
         // Make a vmbus vsock path for pipette connections
-        let (vmbus_vsock_listener, vmbus_vsock_path) =
-            tempfile_helpers::with_temp_path(|path| UnixListener::bind(path))?;
+        let (vmbus_vsock_listener, vmbus_vsock_path) = make_vsock_listener()?;
 
         let chipset = chipset
             .build()
@@ -306,7 +303,11 @@ impl PetriVmConfig {
                 user_mode_hv_enlightenments: false,
                 user_mode_apic: false,
                 with_vtl2,
-                with_isolation: firmware.isolation(),
+                with_isolation: match firmware.isolation() {
+                    Some(IsolationType::Vbs) => Some(hvlite_defs::config::IsolationType::Vbs),
+                    None => None,
+                    _ => anyhow::bail!("unsupported isolation type"),
+                },
             },
             vmbus: Some(VmbusConfig {
                 vsock_listener: Some(vmbus_vsock_listener),
@@ -373,7 +374,7 @@ impl PetriVmConfig {
             arch,
             config,
 
-            resources: PetriVmResources {
+            resources: PetriVmResourcesOpenVmm {
                 serial_tasks,
                 firmware_event_recv,
                 shutdown_ic_send,
@@ -386,6 +387,7 @@ impl PetriVmConfig {
                 driver: driver.clone(),
                 resolver,
                 output_dir,
+                _vsock_temp_paths: vsock_temp_paths,
             },
 
             hvlite_log_file: hvlite_file,

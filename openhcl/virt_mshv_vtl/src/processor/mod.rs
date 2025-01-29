@@ -16,13 +16,14 @@ cfg_if::cfg_if! {
 
         use crate::VtlCrash;
         use hvdef::HvX64RegisterName;
-        use hvdef::HvX64SegmentRegister;
         use virt::state::StateElement;
         use virt::vp::AccessVpState;
         use virt::vp::MpState;
         use virt::x86::MsrError;
         use virt_support_apic::LocalApic;
         use virt_support_x86emu::translate::TranslationRegisters;
+        use bitvec::prelude::BitArray;
+        use bitvec::prelude::Lsb0;
     } else if #[cfg(guest_arch = "aarch64")] {
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
@@ -187,7 +188,7 @@ mod private {
 
     pub trait BackingPrivate: 'static + Sized + InspectMut + Sized {
         type HclBacking: hcl::ioctl::Backing;
-        type EmulationCache: Default;
+        type EmulationCache;
         type Shared;
 
         fn shared(shared: &BackingShared) -> &Self::Shared;
@@ -934,6 +935,13 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                     }
                 }
             }
+
+            #[cfg(guest_arch = "x86_64")]
+            if wake_reasons.update_proxy_irr_filter() {
+                // update `proxy_irr_blocked` filter
+                debug_assert!(self.partition.isolation.is_hardware_isolated());
+                self.update_proxy_irr_filter(vtl);
+            }
         }
 
         Ok(wake_reasons_vtl.map(|w| w.intcon()).into())
@@ -967,8 +975,23 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     fn write_msr(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
         if msr & 0xf0000000 == 0x40000000 {
             if let Some(hv) = self.backing.hv_mut(vtl).as_mut() {
+                // If updated is Synic MSR, then check if its proxy or previous was proxy
+                // in either case, we need to update the `proxy_irr_blocked`
+                let mut irr_filter_update = false;
+                if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
+                    let sint_curr =
+                        HvSynicSint::from(hv.synic.sint((msr - hvdef::HV_X64_MSR_SINT0) as u8));
+                    let sint_new = HvSynicSint::from(value);
+                    if sint_curr.proxy() || sint_new.proxy() {
+                        irr_filter_update = true;
+                    }
+                }
                 let r = hv.msr_write(msr, value);
                 if !matches!(r, Err(MsrError::Unknown)) {
+                    // Check if proxy filter update was required (in case of SINT writes)
+                    if irr_filter_update {
+                        self.update_proxy_irr_filter(vtl);
+                    }
                     return r;
                 }
             }
@@ -1029,24 +1052,21 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         devices: &D,
         interruption_pending: bool,
         vtl: GuestVtl,
+        cache: T::EmulationCache,
     ) -> Result<(), VpHaltReason<UhRunVpError>>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>:
             virt_support_x86emu::emulate::EmulatorSupport<Error = UhRunVpError>,
     {
         let guest_memory = &self.partition.gm[vtl];
-        virt_support_x86emu::emulate::emulate(
-            &mut UhEmulationState {
-                vp: &mut *self,
-                interruption_pending,
-                devices,
-                vtl,
-                cache: T::EmulationCache::default(),
-            },
-            guest_memory,
+        let mut emulation_state = UhEmulationState {
+            vp: &mut *self,
+            interruption_pending,
             devices,
-        )
-        .await
+            vtl,
+            cache,
+        };
+        virt_support_x86emu::emulate::emulate(&mut emulation_state, guest_memory, devices).await
     }
 
     /// Emulates an instruction due to a memory access exit.
@@ -1056,6 +1076,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         devices: &D,
         intercept_state: &aarch64emu::InterceptState,
         vtl: GuestVtl,
+        cache: T::EmulationCache,
     ) -> Result<(), VpHaltReason<UhRunVpError>>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>:
@@ -1068,7 +1089,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 interruption_pending: intercept_state.interruption_pending,
                 devices,
                 vtl,
-                cache: T::EmulationCache::default(),
+                cache,
             },
             intercept_state,
             guest_memory,
@@ -1128,6 +1149,28 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
         self.request_sint_notifications(vtl, pending_sints);
     }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn update_proxy_irr_filter(&mut self, vtl: GuestVtl) {
+        let mut irr_bits: BitArray<[u32; 8], Lsb0> = BitArray::new(Default::default());
+
+        // Get all not masked && proxy SINT vectors
+        if let Some(hv) = self.backing.hv(vtl).as_ref() {
+            for sint in 0..NUM_SINTS as u8 {
+                let sint_msr = hv.synic.sint(sint);
+                let hv_sint = HvSynicSint::from(sint_msr);
+                if hv_sint.proxy() && !hv_sint.masked() {
+                    irr_bits.set(hv_sint.vector() as usize, true);
+                }
+            }
+        }
+
+        // Get all device vectors
+        self.partition.fill_device_vectors(vtl, &mut irr_bits);
+
+        // Update `proxy_irr_blocked` filter in run page
+        self.runner.update_proxy_irr_filter(&irr_bits.into_inner());
+    }
 }
 
 fn signal_mnf(dev: &impl CpuIo, connection_id: u32) {
@@ -1156,25 +1199,11 @@ async fn yield_now() {
     .await;
 }
 
-#[cfg(guest_arch = "x86_64")]
-fn from_seg(reg: HvX64SegmentRegister) -> x86defs::SegmentRegister {
-    x86defs::SegmentRegister {
-        base: reg.base,
-        limit: reg.limit,
-        selector: reg.selector,
-        attributes: reg.attributes.into(),
-    }
-}
-
 struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing> {
     vp: &'a mut UhProcessor<'b, U>,
     interruption_pending: bool,
     devices: &'a T,
     vtl: GuestVtl,
-    #[cfg_attr(
-        guest_arch = "x86_64",
-        expect(dead_code, reason = "not used yet in x86_64")
-    )]
     cache: U::EmulationCache,
 }
 

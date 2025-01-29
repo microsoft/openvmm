@@ -34,7 +34,6 @@ use thiserror::Error;
 
 /// A disk layer backed by RAM, which lazily infers its topology from the layer
 /// it is being stacked on-top of
-#[derive(Inspect)]
 #[non_exhaustive]
 pub struct LazyRamDiskLayer {}
 
@@ -215,7 +214,7 @@ impl LayerIo for RamDiskLayer {
         SECTOR_SIZE
     }
 
-    fn is_read_only(&self) -> bool {
+    fn is_logically_read_only(&self) -> bool {
         false
     }
 

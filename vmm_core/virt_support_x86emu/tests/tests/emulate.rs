@@ -11,7 +11,9 @@ use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::EmulatorSupport;
 use x86defs::cpuid::Vendor;
-use x86emu::CpuState;
+use x86defs::RFlags;
+use x86emu::Gp;
+use x86emu::Segment;
 
 struct MockSupport {
     state: CpuState,
@@ -30,12 +32,42 @@ impl EmulatorSupport for MockSupport {
         Vendor::INTEL
     }
 
-    fn state(&mut self) -> Result<CpuState, Self::Error> {
-        Ok(self.state.clone())
+    fn gp(&mut self, reg: Gp) -> u64 {
+        self.state.gps[reg as usize]
+    }
+    fn set_gp(&mut self, reg: Gp, v: u64) {
+        self.state.gps[reg as usize] = v;
+    }
+    fn rip(&mut self) -> u64 {
+        self.state.rip
+    }
+    fn set_rip(&mut self, v: u64) {
+        self.state.rip = v;
     }
 
-    fn set_state(&mut self, state: CpuState) -> Result<(), Self::Error> {
-        self.state = state;
+    fn segment(&mut self, reg: Segment) -> x86defs::SegmentRegister {
+        self.state.segs[reg as usize]
+    }
+
+    fn efer(&mut self) -> u64 {
+        self.state.efer
+    }
+    fn cr0(&mut self) -> u64 {
+        self.state.cr0
+    }
+    fn rflags(&mut self) -> RFlags {
+        self.state.rflags
+    }
+    fn set_rflags(&mut self, v: RFlags) {
+        self.state.rflags = v;
+    }
+    fn xmm(&mut self, _reg: usize) -> u128 {
+        todo!()
+    }
+    fn set_xmm(&mut self, _reg: usize, _v: u128) -> Result<(), Self::Error> {
+        todo!()
+    }
+    fn flush(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -77,14 +109,6 @@ impl EmulatorSupport for MockSupport {
 
     /// Generates an event (exception, guest nested page fault, etc.) in the guest.
     fn inject_pending_event(&mut self, _event_info: hvdef::HvX64PendingEvent) {
-        todo!()
-    }
-
-    fn get_xmm(&mut self, _reg: usize) -> Result<u128, Self::Error> {
-        todo!()
-    }
-
-    fn set_xmm(&mut self, _reg: usize, _value: u128) -> Result<(), Self::Error> {
         todo!()
     }
 
@@ -131,7 +155,7 @@ async fn basic_mov() {
 
     emulate(&mut support, &gm, &MockCpu).await.unwrap();
 
-    assert_eq!(support.state.gps[CpuState::RAX], TEST_VALUE);
+    assert_eq!(support.gp(Gp::RAX), TEST_VALUE);
 }
 
 #[async_test]
@@ -163,7 +187,7 @@ async fn not_enough_bytes() {
 
     emulate(&mut support, &gm, &MockCpu).await.unwrap();
 
-    assert_eq!(support.state.gps[CpuState::RAX], TEST_VALUE);
+    assert_eq!(support.gp(Gp::RAX), TEST_VALUE);
 }
 
 #[async_test]

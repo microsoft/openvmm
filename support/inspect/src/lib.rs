@@ -1605,6 +1605,7 @@ macro_rules! hexbincount {
 
 /// Wrapper around `T` that implements [`Inspect`] by writing a value with
 /// [`ValueFlags::hex`].
+#[derive(Clone, Copy)]
 pub struct AsHex<T>(pub T);
 
 hexbincount!(AsHex, into_hex, u8, u16, u32, u64, usize);
@@ -2165,12 +2166,18 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use core::time::Duration;
+    use expect_test::expect;
+    use expect_test::Expect;
     use futures::FutureExt;
     use pal_async::async_test;
     use pal_async::timer::Instant;
     use pal_async::timer::PolledTimer;
     use pal_async::DefaultDriver;
-    use std::println;
+
+    fn expected_node(node: Node, expect: Expect) -> Node {
+        expect.assert_eq(&node.to_string());
+        node
+    }
 
     async fn inspect_async(
         driver: &DefaultDriver,
@@ -2189,10 +2196,33 @@ mod tests {
         result.results()
     }
 
+    async fn inspect_async_expect(
+        driver: &DefaultDriver,
+        path: &str,
+        depth: Option<usize>,
+        timeout: Duration,
+        obj: impl InspectMut,
+        expect: Expect,
+    ) -> Node {
+        expected_node(
+            inspect_async(driver, path, depth, timeout, obj).await,
+            expect,
+        )
+    }
+
     fn inspect_sync(path: &str, depth: Option<usize>, obj: impl InspectMut) -> Node {
         let mut result = InspectionBuilder::new(path).depth(depth).inspect(obj);
         result.resolve().now_or_never();
         result.results()
+    }
+
+    fn inspect_sync_expect(
+        path: &str,
+        depth: Option<usize>,
+        obj: impl InspectMut,
+        expect: Expect,
+    ) -> Node {
+        expected_node(inspect_sync(path, depth, obj), expect)
     }
 
     #[derive(Default)]
@@ -2229,21 +2259,20 @@ mod tests {
                 },
             ],
         };
-        let node = inspect_sync("", None, &f);
-        assert_eq!(
-            node.to_string(),
-            r#"{0: {xx: 3, xy: false}, 1: {xx: 5, xy: true}, xx: 1, xy: true}"#
+        let node = inspect_sync_expect(
+            "",
+            None,
+            &f,
+            expect!("{0: {xx: 3, xy: false}, 1: {xx: 5, xy: true}, xx: 1, xy: true}"),
         );
-        assert_eq!(
-            node.json().to_string(),
-            r#"{"0":{"xx":3,"xy":false},"1":{"xx":5,"xy":true},"xx":1,"xy":true}"#
-        );
-        println!("{:#}", node);
+        let expected_json =
+            expect!([r#"{"0":{"xx":3,"xy":false},"1":{"xx":5,"xy":true},"xx":1,"xy":true}"#]);
+        expected_json.assert_eq(&node.json().to_string());
     }
 
     #[async_test]
     async fn test_deferred(driver: DefaultDriver) {
-        let r = inspect_async(
+        inspect_async_expect(
             &driver,
             "",
             None,
@@ -2252,14 +2281,14 @@ mod tests {
                 let foo = req.defer();
                 std::thread::spawn(|| foo.inspect(&Foo::default()));
             }),
+            expect!("{xx: 0, xy: false}"),
         )
         .await;
-        assert_eq!(r.to_string(), r#"{xx: 0, xy: false}"#);
     }
 
     #[async_test]
     async fn test_dropped(driver: DefaultDriver) {
-        let r = inspect_async(
+        inspect_async_expect(
             &driver,
             "",
             None,
@@ -2267,9 +2296,9 @@ mod tests {
             adhoc(|req| {
                 drop(req.defer());
             }),
+            expect!("error (unresolved)"),
         )
         .await;
-        assert_eq!(r.to_string(), "error (unresolved)");
     }
 
     #[test]
@@ -2281,34 +2310,22 @@ mod tests {
                 });
             });
         });
-        assert_eq!(inspect_sync("a", None, &mut obj).to_string(), "1");
-        assert_eq!(inspect_sync("///a", None, &mut obj).to_string(), "1");
-        assert_eq!(
-            inspect_sync("b", None, &mut obj).to_string(),
-            r#"{c: 2, d: 2, e: {}}"#
-        );
-        assert_eq!(inspect_sync("b/c", None, &mut obj).to_string(), "2");
-        assert_eq!(inspect_sync("b////c", None, &mut obj).to_string(), "2");
-        assert_eq!(
-            inspect_sync("b/c/", None, &mut obj).to_string(),
-            "error (not a directory)"
-        );
-        assert_eq!(
-            inspect_sync("b/c/x", None, &mut obj).to_string(),
-            "error (not a directory)"
-        );
-        assert_eq!(inspect_sync("b/e", None, &mut obj).to_string(), "{}");
-        assert_eq!(inspect_sync("b/e/", None, &mut obj).to_string(), "{}");
-        assert_eq!(inspect_sync("b/e///", None, &mut obj).to_string(), "{}");
-        assert_eq!(
-            inspect_sync("b/f", None, &mut obj).to_string(),
-            "error (not found)"
-        );
+        inspect_sync_expect("a", None, &mut obj, expect!("1"));
+        inspect_sync_expect("///a", None, &mut obj, expect!("1"));
+        inspect_sync_expect("b", None, &mut obj, expect!("{c: 2, d: 2, e: {}}"));
+        inspect_sync_expect("b/c", None, &mut obj, expect!("2"));
+        inspect_sync_expect("b////c", None, &mut obj, expect!("2"));
+        inspect_sync_expect("b/c/", None, &mut obj, expect!("error (not a directory)"));
+        inspect_sync_expect("b/c/x", None, &mut obj, expect!("error (not a directory)"));
+        inspect_sync_expect("b/e", None, &mut obj, expect!("{}"));
+        inspect_sync_expect("b/e/", None, &mut obj, expect!("{}"));
+        inspect_sync_expect("b/e///", None, &mut obj, expect!("{}"));
+        inspect_sync_expect("b/f", None, &mut obj, expect!("error (not found)"));
     }
 
     #[async_test]
     async fn test_timeout(driver: DefaultDriver) {
-        let r = inspect_async(
+        inspect_async_expect(
             &driver,
             "",
             None,
@@ -2320,9 +2337,9 @@ mod tests {
                     foo.inspect(&Foo::default())
                 });
             }),
+            expect!("error (unresolved)"),
         )
         .await;
-        assert_eq!(r.to_string(), "error (unresolved)");
     }
 
     #[test]
@@ -2335,16 +2352,10 @@ mod tests {
                 .field("b", 2);
         });
 
-        assert_eq!(
-            inspect_sync("", None, &mut obj).to_string(),
-            r#"{a: 1, b: 2}"#
-        );
-        assert_eq!(inspect_sync("a", None, &mut obj).to_string(), "1");
-        assert_eq!(inspect_sync("b", None, &mut obj).to_string(), "2");
-        assert_eq!(
-            inspect_sync("c", None, &mut obj).to_string(),
-            "error (not found)"
-        );
+        inspect_sync_expect("", None, &mut obj, expect!("{a: 1, b: 2}"));
+        inspect_sync_expect("a", None, &mut obj, expect!("1"));
+        inspect_sync_expect("b", None, &mut obj, expect!("2"));
+        inspect_sync_expect("c", None, &mut obj, expect!("error (not found)"));
     }
 
     #[test]
@@ -2365,14 +2376,13 @@ mod tests {
                 });
         });
 
-        assert_eq!(
-            inspect_sync("", None, &mut obj).to_string(),
-            r#"{a: 2, x: {b: 4, c: {y: 4}, d: {y: 5}}}"#
+        inspect_sync_expect(
+            "",
+            None,
+            &mut obj,
+            expect!("{a: 2, x: {b: 4, c: {y: 4}, d: {y: 5}}}"),
         );
-        assert_eq!(
-            inspect_sync("x", None, &mut obj).to_string(),
-            r#"{b: 4, c: {y: 4}, d: {y: 5}}"#
-        );
+        inspect_sync_expect("x", None, &mut obj, expect!("{b: 4, c: {y: 4}, d: {y: 5}}"));
     }
 
     #[test]
@@ -2441,25 +2451,10 @@ mod tests {
             req.respond().field("x/a/b", 1).field("x/a/c", 2);
         });
 
-        assert_eq!(
-            inspect_sync("", None, &mut obj).to_string(),
-            r#"{x: {a: {b: 1, c: 2}}}"#
-        );
-
-        assert_eq!(
-            inspect_sync("x/a", None, &mut obj).to_string(),
-            r#"{b: 1, c: 2}"#
-        );
-
-        assert_eq!(
-            inspect_sync("x", Some(0), &mut obj).to_string(),
-            r#"{a: _}"#
-        );
-
-        assert_eq!(
-            inspect_sync("x", Some(2), &mut obj).to_string(),
-            r#"{a: {b: 1, c: 2}}"#
-        );
+        inspect_sync_expect("", None, &mut obj, expect!("{x: {a: {b: 1, c: 2}}}"));
+        inspect_sync_expect("x/a", None, &mut obj, expect!("{b: 1, c: 2}"));
+        inspect_sync_expect("x", Some(0), &mut obj, expect!("{a: _}"));
+        inspect_sync_expect("x", Some(2), &mut obj, expect!("{a: {b: 1, c: 2}}"));
     }
 
     #[test]
@@ -2479,18 +2474,18 @@ mod tests {
                 .field("1d/2b/3b", 0);
         });
 
-        fn inspect(p: &str, d: Option<usize>, obj: &mut impl InspectMut) -> String {
-            inspect_sync(p, d, obj).to_string()
-        }
-
-        assert_eq!(inspect("1d", Some(0), &mut obj), "{2a: 0, 2b: _}");
-        assert_eq!(
-            inspect("", Some(0), &mut obj),
-            "{1a: 0, 1b: 0, 1c: 0, 1d: _}"
+        inspect_sync_expect("1d", Some(0), &mut obj, expect!("{2a: 0, 2b: _}"));
+        inspect_sync_expect(
+            "",
+            Some(0),
+            &mut obj,
+            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: _}"),
         );
-        assert_eq!(
-            inspect("", Some(1), &mut obj),
-            "{1a: 0, 1b: 0, 1c: 0, 1d: {2a: 0, 2b: _}}"
+        inspect_sync_expect(
+            "",
+            Some(1),
+            &mut obj,
+            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: {2a: 0, 2b: _}}"),
         );
     }
 
@@ -2499,10 +2494,7 @@ mod tests {
         let mut obj = adhoc(|req| {
             req.respond().hex("a", 0x1234);
         });
-        assert_eq!(
-            inspect_sync("", Some(0), &mut obj).to_string(),
-            r#"{a: 0x1234}"#
-        );
+        inspect_sync_expect("", Some(0), &mut obj, expect!("{a: 0x1234}"));
     }
 
     #[test]
@@ -2510,10 +2502,7 @@ mod tests {
         let mut obj = adhoc(|req| {
             req.respond().binary("a", 0b1001000110100);
         });
-        assert_eq!(
-            inspect_sync("", Some(0), &mut obj).to_string(),
-            r#"{a: 0b1001000110100}"#
-        );
+        inspect_sync_expect("", Some(0), &mut obj, expect!("{a: 0b1001000110100}"));
     }
 
     #[test]
@@ -2546,17 +2535,19 @@ mod tests {
 
         let diff = new.since(&old, Duration::from_secs(2));
 
-        assert_eq!(
-            diff.to_string(),
-            "{c: 50, d: {1_c: true, 2: true, 3: 50, 4_b: true, 4_c: true}, f: 600}"
+        expected_node(
+            diff,
+            expect!("{c: 50, d: {1_c: true, 2: true, 3: 50, 4_b: true, 4_c: true}, f: 600}"),
         );
     }
 
     #[test]
     fn test_bytes() {
-        assert_eq!(
-            inspect_sync("", Some(1), &AsBytes([0xab, 0xcd, 0xef]),).to_string(),
-            "<abcdef>"
+        inspect_sync_expect(
+            "",
+            Some(1),
+            &AsBytes([0xab, 0xcd, 0xef]),
+            expect!("<abcdef>"),
         );
     }
 
@@ -2595,29 +2586,33 @@ mod tests {
             path: &str,
             sensitivity: Option<SensitivityLevel>,
             obj: impl InspectMut,
-        ) -> String {
+        ) -> Node {
             let mut result = InspectionBuilder::new(path)
                 .sensitivity(sensitivity)
                 .inspect(obj);
             result.resolve().now_or_never();
-            result.results().to_string()
+            result.results()
         }
 
-        assert_eq!(
+        expected_node(
             inspect_sync("", Some(SensitivityLevel::Safe), &mut obj),
-            "{1a: 0, 1d: {2b: {}}}"
+            expect!("{1a: 0, 1d: {2b: {}}}"),
         );
-        assert_eq!(
+        expected_node(
             inspect_sync("", Some(SensitivityLevel::Unspecified), &mut obj),
-            "{1a: 0, 1b: 0, 1d: {2b: {3b: 0}}}"
+            expect!("{1a: 0, 1b: 0, 1d: {2b: {3b: 0}}}"),
         );
-        assert_eq!(
+        expected_node(
             inspect_sync("", Some(SensitivityLevel::Sensitive), &mut obj),
-            "{1a: 0, 1b: 0, 1c: 0, 1d: {2a: 0, 2b: {3a: {4a: 0}, 3b: 0}}, 1e: 0}"
+            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: {2a: 0, 2b: {3a: {4a: 0}, 3b: 0}}, 1e: 0}"),
         );
-        assert_eq!(
+        expected_node(
             inspect_sync("", None, &mut obj),
-            inspect_sync("", Some(SensitivityLevel::Sensitive), &mut obj)
+            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: {2a: 0, 2b: {3a: {4a: 0}, 3b: 0}}, 1e: 0}"),
+        );
+        expected_node(
+            inspect_sync("", Some(SensitivityLevel::Sensitive), &mut obj),
+            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: {2a: 0, 2b: {3a: {4a: 0}, 3b: 0}}, 1e: 0}"),
         );
     }
 
@@ -2719,9 +2714,13 @@ mod tests {
             tr2: Tr2(()),
         };
 
-        assert_eq!(
-            inspect_sync("", None, &mut obj).to_string(),
-            r#"{bin: 0b11, debug: "()", dec: 5, display: "10", hex: 0x4, inner: {val: 3}, inner_mut: {val: "hi"}, minute: "07", t: {val: 1}, t2: {val: 2}, tr1: 0xa, tr2: "()", val: 8, var: "bar_baz"}"#
+        inspect_sync_expect(
+            "",
+            None,
+            &mut obj,
+            expect!([
+                r#"{bin: 0b11, debug: "()", dec: 5, display: "10", hex: 0x4, inner: {val: 3}, inner_mut: {val: "hi"}, minute: "07", t: {val: 1}, t2: {val: 2}, tr1: 0xa, tr2: "()", val: 8, var: "bar_baz"}"#
+            ]),
         );
     }
 
@@ -2744,7 +2743,7 @@ mod tests {
             C,
         }
 
-        assert_eq!(inspect_sync("", None, &UnitEnum::B).to_string(), r#""b""#);
+        inspect_sync_expect("", None, &UnitEnum::B, expect!([r#""b""#]));
 
         #[allow(dead_code)]
         #[derive(Inspect)]
@@ -2754,9 +2753,11 @@ mod tests {
             B(#[inspect(rename = "y")] bool),
         }
 
-        assert_eq!(
-            inspect_sync("", None, &TaggedEnum::B(true)).to_string(),
-            r#"{tag: "b", y: true}"#
+        inspect_sync_expect(
+            "",
+            None,
+            &TaggedEnum::B(true),
+            expect!([r#"{tag: "b", y: true}"#]),
         );
 
         #[allow(dead_code)]
@@ -2771,15 +2772,14 @@ mod tests {
             C(u32),
         }
 
-        assert_eq!(
-            inspect_sync("", None, &ExternallyTaggedEnum::B(true)).to_string(),
-            r#"{b: {y: true}}"#
+        inspect_sync_expect(
+            "",
+            None,
+            &ExternallyTaggedEnum::B(true),
+            expect!("{b: {y: true}}"),
         );
 
-        assert_eq!(
-            inspect_sync("", None, &ExternallyTaggedEnum::C(5)).to_string(),
-            r#"{c: 5}"#
-        );
+        inspect_sync_expect("", None, &ExternallyTaggedEnum::C(5), expect!("{c: 5}"));
 
         #[allow(dead_code)]
         #[derive(Inspect)]
@@ -2789,10 +2789,7 @@ mod tests {
             B(#[inspect(rename = "y")] bool),
         }
 
-        assert_eq!(
-            inspect_sync("", None, &UntaggedEnum::B(true)).to_string(),
-            r#"{y: true}"#
-        );
+        inspect_sync_expect("", None, &UntaggedEnum::B(true), expect!("{y: true}"));
     }
 
     #[test]
@@ -2810,9 +2807,11 @@ mod tests {
             }
         }
 
-        assert_eq!(
-            inspect_sync("", None, &Foo { x: 2, y: 5 }).to_string(),
-            r#"{sum: 7, x: 2, y: 5}"#
+        inspect_sync_expect(
+            "",
+            None,
+            &Foo { x: 2, y: 5 },
+            expect!("{sum: 7, x: 2, y: 5}"),
         );
     }
 
@@ -2851,12 +2850,12 @@ mod tests {
             path: &str,
             sensitivity: Option<SensitivityLevel>,
             obj: impl Inspect,
-        ) -> String {
+        ) -> Node {
             let mut result = InspectionBuilder::new(path)
                 .sensitivity(sensitivity)
                 .inspect(&obj);
             result.resolve().now_or_never();
-            result.results().to_string()
+            result.results()
         }
 
         let obj = Foo {
@@ -2872,20 +2871,20 @@ mod tests {
             },
         };
 
-        assert_eq!(
+        expected_node(
             inspect_sync("", Some(SensitivityLevel::Safe), &obj),
-            "{a: 0, d: {b: {}}}"
+            expect!("{a: 0, d: {b: {}}}"),
         );
-        assert_eq!(
+        expected_node(
             inspect_sync("", Some(SensitivityLevel::Unspecified), &obj),
-            "{a: 0, b: 0, d: {b: {b: 0}}}"
+            expect!("{a: 0, b: 0, d: {b: {b: 0}}}"),
         );
-        assert_eq!(
+        let node = expected_node(
             inspect_sync("", Some(SensitivityLevel::Sensitive), &obj),
-            "{a: 0, b: 0, c: 0, d: {a: 0, b: {a: {a: 0}, b: 0}}}"
+            expect!("{a: 0, b: 0, c: 0, d: {a: 0, b: {a: {a: 0}, b: 0}}}"),
         );
         assert_eq!(
-            inspect_sync("", None, &obj),
+            node,
             inspect_sync("", Some(SensitivityLevel::Sensitive), &obj)
         );
     }

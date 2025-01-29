@@ -131,6 +131,8 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub always_relay_host_mmio: bool,
     #[serde(default)]
     pub imc_enabled: bool,
+    #[serde(default)]
+    pub cxl_memory_enabled: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

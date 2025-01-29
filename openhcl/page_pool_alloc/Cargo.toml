@@ -3,15 +3,16 @@
 
 [package]
 name = "page_pool_alloc"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
-vfio = ["user_driver/vfio"]
+# Enable mapping support, using the MshvVtlLow.
+hcl_mapping = ["hcl"]
+# Enable user_driver vfio trait support.
+vfio = ["hcl_mapping", "user_driver/vfio"]
 
 [dependencies]
-hcl.workspace = true
-
 user_driver.workspace = true
 hvdef.workspace = true
 sparse_mmap.workspace = true
@@ -26,6 +27,9 @@ parking_lot.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+hcl = { workspace = true, optional = true}
 
 [lints]
 workspace = true

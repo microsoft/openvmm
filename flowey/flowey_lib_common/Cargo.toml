@@ -3,7 +3,7 @@
 
 [package]
 name = "flowey_lib_common"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

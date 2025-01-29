@@ -39,7 +39,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -49,7 +49,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -57,7 +57,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -181,7 +181,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 0 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 0 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 0 flowey_lib_common::git_checkout 3
@@ -229,7 +229,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -239,7 +239,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -247,7 +247,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -327,7 +327,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 1 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 1 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 1 flowey_lib_common::git_checkout 3
@@ -432,7 +432,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -442,7 +442,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -450,7 +450,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -589,7 +589,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 10 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 10 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 10 flowey_lib_common::git_checkout 3
@@ -856,7 +856,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -866,7 +866,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -874,7 +874,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -1005,7 +1005,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 11 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 11 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 11 flowey_lib_common::git_checkout 3
@@ -1271,7 +1271,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -1281,7 +1281,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -1289,7 +1289,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -1420,7 +1420,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 12 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 12 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 12 flowey_lib_common::git_checkout 3
@@ -1859,7 +1859,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -1869,7 +1869,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -1877,7 +1877,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -2006,7 +2006,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 13 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 13 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 13 flowey_lib_common::git_checkout 3
@@ -2470,7 +2470,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 14 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 14 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 14 flowey_lib_common::git_checkout 3
@@ -2550,7 +2550,7 @@ jobs:
       run: flowey e 14 flowey_lib_hvlite::build_xtask 0
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 14 'flowey_lib_common::download_gh_artifact:0:flowey_lib_common/src/download_gh_artifact.rs:46:28' --is-secret --update-from-file {0} --is-raw-string
+      shell: flowey v 14 'flowey_lib_common::download_gh_artifact:0:flowey_core/src/node/github_context.rs:42:41' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: create gh cache dir
       run: flowey e 14 flowey_lib_common::download_gh_cli 0
@@ -2585,16 +2585,13 @@ jobs:
       run: flowey e 14 flowey_lib_common::use_gh_cli 0
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 14 'flowey_lib_common::gh_workflow_id:0:flowey_lib_common/src/gh_workflow_id.rs:28:28' --is-secret --update-from-file {0} --is-raw-string
+      shell: flowey v 14 'flowey_lib_common::gh_workflow_id:0:flowey_core/src/node/github_context.rs:42:41' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
-    - run: ${{ github.event.pull_request.head.ref }}
-      shell: flowey v 14 'flowey_lib_common::gh_merge_commit:0:flowey_lib_common/src/gh_merge_commit.rs:26:28' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.event.pull_request.head.ref'
-    - run: ${{ github.event.pull_request.number }}
-      shell: flowey v 14 'flowey_lib_common::gh_merge_commit:1:flowey_lib_common/src/gh_merge_commit.rs:27:29' --update-from-file {0} --is-raw-string
-      name: 🌼 Read from 'github.event.pull_request.number'
+    - run: ${{ toJSON(github.event.pull_request) }}
+      shell: flowey v 14 'flowey_lib_common::gh_merge_commit:0:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0}
+      name: 🌼 Read from 'github.event.pull_request'
     - name: get merge commit
-      run: flowey e 14 flowey_lib_common::gh_merge_commit 2
+      run: flowey e 14 flowey_lib_common::gh_merge_commit 1
       shell: bash
     - name: get action id
       run: flowey e 14 flowey_lib_common::gh_workflow_id 1
@@ -2628,7 +2625,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -2638,7 +2635,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -2646,7 +2643,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -2733,7 +2730,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 15 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 15 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 15 flowey_lib_common::git_checkout 3
@@ -2953,7 +2950,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -2963,7 +2960,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -2971,7 +2968,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -3099,7 +3096,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 16 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 16 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 16 flowey_lib_common::git_checkout 3
@@ -3326,7 +3323,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -3336,7 +3333,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -3344,7 +3341,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -3431,7 +3428,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 17 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 17 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 17 flowey_lib_common::git_checkout 3
@@ -3697,7 +3694,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -3707,7 +3704,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -3715,7 +3712,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -3837,7 +3834,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 18 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 18 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 18 flowey_lib_common::git_checkout 3
@@ -4118,7 +4115,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 19 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 19 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 19 flowey_lib_common::git_checkout 3
@@ -4131,6 +4128,9 @@ jobs:
       shell: bash
     - name: move MSVM.fd into its magic folder
       run: flowey.exe e 19 flowey_lib_hvlite::init_openvmm_magicpath_uefi_mu_msvm 0
+      shell: bash
+    - name: init hyperv tests
+      run: flowey.exe e 19 flowey_lib_hvlite::init_hyperv_tests 0
       shell: bash
     - name: 🌼 write_into Var
       run: flowey.exe e 19 flowey_lib_hvlite::run_cargo_nextest_run 0
@@ -4336,7 +4336,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -4346,7 +4346,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -4354,7 +4354,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -4434,7 +4434,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 2 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 2 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 2 flowey_lib_common::git_checkout 3
@@ -4686,7 +4686,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 20 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 20 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 20 flowey_lib_common::git_checkout 3
@@ -4699,6 +4699,9 @@ jobs:
       shell: bash
     - name: move MSVM.fd into its magic folder
       run: flowey.exe e 20 flowey_lib_hvlite::init_openvmm_magicpath_uefi_mu_msvm 0
+      shell: bash
+    - name: init hyperv tests
+      run: flowey.exe e 20 flowey_lib_hvlite::init_hyperv_tests 0
       shell: bash
     - name: 🌼 write_into Var
       run: flowey.exe e 20 flowey_lib_hvlite::run_cargo_nextest_run 0
@@ -5047,7 +5050,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 21 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 21 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 21 flowey_lib_common::git_checkout 3
@@ -5263,11 +5266,61 @@ jobs:
     - job6
     if: github.event.pull_request.draft == false
     steps:
-    - name: 🌼🥾 Download bootstrapped flowey
-      uses: actions/download-artifact@v4
+    - run: echo "injected!"
+      name: 🌼🥾 Bootstrap flowey
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
+        . "$HOME/.cargo/env"
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        rustup show
+      if: runner.os == 'Linux'
+      name: rustup (Linux)
+      shell: bash
+    - run: |
+        set -x
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
+        ./rustup-init.exe -y --default-toolchain=1.84.0
+        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+      if: runner.os == 'Windows' && runner.arch == 'X64'
+      name: rustup (Windows X64)
+      shell: bash
+    - run: |
+        set -x
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
+        ./rustup-init.exe -y --default-toolchain=1.84.0
+        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      name: rustup (Windows ARM64)
+      shell: bash
+    - uses: actions/checkout@v4
       with:
-        name: _internal-flowey-bootstrap-x86_64-windows-uid-13
-        path: ${{ runner.temp }}/bootstrapped-flowey
+        path: flowey_bootstrap
+    - name: Build flowey
+      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target aarch64-pc-windows-msvc --profile flowey-ci
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Stage flowey artifact
+      run: |
+        mkdir ./flowey_bootstrap_temp
+        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+        mv target/aarch64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Copy flowey artifact
+      run: |
+        OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+        mkdir -p $OutDirNormal
+        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Cleanup staged flowey artifact
+      run: rm -rf ./flowey_bootstrap_temp
+      working-directory: flowey_bootstrap
+      shell: bash
     - name: 🌼📦 Download aarch64-guest_test_uefi
       uses: actions/download-artifact@v4
       with:
@@ -5301,6 +5354,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -5404,7 +5466,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 22 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 22 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 22 flowey_lib_common::git_checkout 3
@@ -5417,6 +5479,9 @@ jobs:
       shell: bash
     - name: move MSVM.fd into its magic folder
       run: flowey.exe e 22 flowey_lib_hvlite::init_openvmm_magicpath_uefi_mu_msvm 0
+      shell: bash
+    - name: init hyperv tests
+      run: flowey.exe e 22 flowey_lib_hvlite::init_hyperv_tests 0
       shell: bash
     - name: 🌼 write_into Var
       run: flowey.exe e 22 flowey_lib_hvlite::run_cargo_nextest_run 0
@@ -5622,7 +5687,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -5632,7 +5697,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -5640,7 +5705,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -5718,7 +5783,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 23 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 23 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 23 flowey_lib_common::git_checkout 3
@@ -5730,7 +5795,7 @@ jobs:
       run: flowey e 23 flowey_lib_common::install_rust 0
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 23 'flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm:2:flowey_lib_hvlite/src/_jobs/test_local_flowey_build_igvm.rs:32:28' --is-secret --update-from-file {0} --is-raw-string
+      shell: flowey v 23 'flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm:2:flowey_core/src/node/github_context.rs:42:41' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: test cargo xflowey build-igvm x64 --install-missing-deps
       run: flowey e 23 flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm 1
@@ -5813,7 +5878,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -5823,7 +5888,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -5831,7 +5896,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -5909,7 +5974,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 3 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 3 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 3 flowey_lib_common::git_checkout 3
@@ -6003,7 +6068,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -6013,7 +6078,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -6021,7 +6086,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -6099,7 +6164,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 4 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 4 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 4 flowey_lib_common::git_checkout 3
@@ -6204,7 +6269,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -6214,7 +6279,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -6222,7 +6287,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -6319,7 +6384,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 5 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 5 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 5 flowey_lib_common::git_checkout 3
@@ -6504,7 +6569,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -6514,7 +6579,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -6522,7 +6587,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -6647,7 +6712,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 6 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 6 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 6 flowey_lib_common::git_checkout 3
@@ -6774,14 +6839,6 @@ jobs:
       with:
         name: aarch64-windows-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmm-tests-archive/
-    - name: 🌼🧼 Redact bootstrap var db
-      run: rm $AgentTempDirNormal/bootstrapped-flowey/job6.json
-      shell: bash
-    - name: 🌼🥾 Publish bootstrapped flowey
-      uses: actions/upload-artifact@v4
-      with:
-        name: _internal-flowey-bootstrap-x86_64-windows-uid-13
-        path: ${{ runner.temp }}/bootstrapped-flowey
   job7:
     name: build artifacts (not for VMM tests) [x64-windows]
     runs-on:
@@ -6799,7 +6856,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -6809,7 +6866,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -6817,7 +6874,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -6914,7 +6971,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 7 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 7 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 7 flowey_lib_common::git_checkout 3
@@ -7102,7 +7159,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -7112,7 +7169,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -7120,7 +7177,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -7245,7 +7302,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 8 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 8 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 8 flowey_lib_common::git_checkout 3
@@ -7398,7 +7455,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.84.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -7408,7 +7465,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -7416,7 +7473,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.84.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -7553,7 +7610,7 @@ jobs:
       name: checkout repo hvlite
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 9 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 9 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 9 flowey_lib_common::git_checkout 3

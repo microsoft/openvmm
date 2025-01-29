@@ -31,8 +31,20 @@ use zerocopy::FromBytes;
 
 /// An interface to write a doorbell value to signal the device.
 pub trait Doorbell: Send + Sync {
+    /// Returns the maximum page number.
+    fn page_count(&self) -> u32;
     /// Write a doorbell value at page `page`, offset `address`.
     fn write(&self, page: u32, address: u32, value: u64);
+}
+
+struct NullDoorbell;
+
+impl Doorbell for NullDoorbell {
+    fn page_count(&self) -> u32 {
+        0
+    }
+
+    fn write(&self, _page: u32, _address: u32, _value: u64) {}
 }
 
 /// A single GDMA doorbell page.
@@ -43,12 +55,27 @@ pub struct DoorbellPage {
 }
 
 impl DoorbellPage {
-    /// Returns a doorbell page at `doorbell_id` the doorbell region.
-    pub fn new(doorbell: Arc<dyn Doorbell>, doorbell_id: u32) -> Self {
+    pub(crate) fn null() -> Self {
         Self {
+            doorbell: Arc::new(NullDoorbell),
+            doorbell_id: 0,
+        }
+    }
+
+    /// Returns a doorbell page at `doorbell_id` the doorbell region.
+    pub fn new(doorbell: Arc<dyn Doorbell>, doorbell_id: u32) -> anyhow::Result<Self> {
+        let page_count = doorbell.page_count();
+        if doorbell_id >= page_count {
+            anyhow::bail!(
+                "doorbell id {} exceeds page count {}",
+                doorbell_id,
+                page_count
+            );
+        }
+        Ok(Self {
             doorbell,
             doorbell_id,
-        }
+        })
     }
 
     /// Writes a doorbell value.

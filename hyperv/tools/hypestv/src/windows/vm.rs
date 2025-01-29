@@ -184,6 +184,9 @@ impl Vm {
                     )),
                 };
                 if let Some(target) = target {
+                    if task.as_ref().is_some_and(|task| task.task.is_finished()) {
+                        *task = None;
+                    }
                     if let Some(task) = task {
                         task.mode = mode;
                         task.req.send(IoRequest::NewTarget(target));
@@ -192,7 +195,7 @@ impl Vm {
                         let inner = self.inner.clone();
                         let t = self.inner.driver.spawn("serial", async move {
                             if let Err(err) = inner.handle_serial(recv, target, port).await {
-                                writeln!(inner.printer.out(), "COM{port} failed: {:#}", err).ok();
+                                writeln!(inner.printer.out(), "com{port} failed: {:#}", err).ok();
                             }
                         });
                         *task = Some(SerialTask { task: t, mode, req });
@@ -234,6 +237,13 @@ impl Vm {
                     )),
                 };
                 if let Some(target) = target {
+                    if self
+                        .pv_kmsg
+                        .as_ref()
+                        .is_some_and(|task| task.task.is_finished())
+                    {
+                        self.pv_kmsg = None;
+                    }
                     if let Some(task) = &mut self.pv_kmsg {
                         task.mode = mode;
                         task.req.send(IoRequest::NewTarget(target));
@@ -392,7 +402,6 @@ impl VmInner {
                 }
 
                 writeln!(self.printer.out(), "com{port} disconnected").ok();
-                current_serial = None;
                 Ok(())
             };
 
@@ -400,7 +409,10 @@ impl VmInner {
                 .race()
                 .await;
             match event {
-                Event::TaskDone(r) => r?,
+                Event::TaskDone(r) => {
+                    r?;
+                    current_serial = None;
+                }
                 Event::Request(Some(y)) => match y {
                     IoRequest::NewTarget(new_target) => {
                         target = new_target;
@@ -468,15 +480,22 @@ impl VmInner {
                                 }
                             }
                         }
+                        Err(err) if err.kind() == std::io::ErrorKind::ConnectionReset => {
+                            break;
+                        }
                         Err(err) => {
-                            eprintln!("kmsg failure: {:#}", anyhow::Error::from(err));
+                            writeln!(
+                                self.printer.out(),
+                                "kmsg failure: {:#}",
+                                anyhow::Error::from(err)
+                            )
+                            .ok();
                             return Ok(());
                         }
                     }
                 }
 
                 writeln!(self.printer.out(), "kmsg disconnected").ok();
-                current = None;
                 Ok(())
             };
 
@@ -484,7 +503,10 @@ impl VmInner {
                 .race()
                 .await;
             match event {
-                Event::TaskDone(r) => r?,
+                Event::TaskDone(r) => {
+                    current = None;
+                    r?;
+                }
                 Event::Request(Some(y)) => match y {
                     IoRequest::NewTarget(new_target) => {
                         target = new_target;

@@ -19,7 +19,8 @@ members = [
   "openhcl/vmfirmwareigvm_dll",
   # VMM tests
   "vmm_tests/vmm_tests",
-  # hyper-v
+  # hyper-v tooling
+  "hyperv/tools/hypestv",
   # fuzzing
   "support/inspect/fuzz",
   "support/mesh/mesh_rpc/fuzz",
@@ -30,6 +31,7 @@ members = [
   "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
   "vm/devices/storage/scsi_buffers/fuzz",
+  "vm/devices/storage/storvsp/fuzz",
   "vm/vmcore/guestmem/fuzz",
   "vm/x86/x86emu/fuzz",
   # in-guest test bins
@@ -40,7 +42,6 @@ members = [
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
-  "hyperv/tools/hypestv",
 ]
 exclude = [
   "xsync",
@@ -48,7 +49,8 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.82"
+rust-version = "1.84"
+edition = "2021"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
@@ -130,7 +132,6 @@ sparse_mmap = { path = "support/sparse_mmap" }
 task_control = { path = "support/task_control" }
 tdx_guest_device = { path = "support/tdx_guest_device" }
 tee_call = { path = "support/tee_call" }
-tempfile_helpers = { path = "support/tempfile_helpers" }
 term = { path = "support/term" }
 test_with_tracing = { path = "support/test_with_tracing" }
 test_with_tracing_macro = { path = "support/test_with_tracing/test_with_tracing_macro" }
@@ -395,12 +396,12 @@ criterion = { version = "0.5", default-features = false }
 crossterm = "0.27"
 ctrlc = "3.4.0"
 der = "0.7"
-diff = "0.1"
 dirs = "5.0"
 elfcore = "1.1.5"
 embed-resource = "2.4.2"
 env_logger = "0.10"
 event-listener = "5.3"
+expect-test = "1.5"
 fatfs = { version = "0.3.6", default-features = false }
 filepath = "0.1"
 fs-err = "2.9"
@@ -587,10 +588,8 @@ nonstandard_style = { level = "deny", priority = -2 }
 rust_2018_idioms = { level = "deny", priority = -2 }
 
 rust-2024-compatibility = { level = "warn", priority = -1 }
-# TODO: Fix all of the below, https://github.com/microsoft/openvmm/issues/288
 edition_2024_expr_fragment_specifier = "allow"
-impl_trait_overcaptures = "allow"
-deprecated-safe-2024 = "allow"
+# TODO: Fix all of the below, https://github.com/microsoft/openvmm/issues/288
 tail-expr-drop-order = "allow"
 if-let-rescope = "allow"
 
@@ -602,9 +601,6 @@ unsafe_op_in_unsafe_fn = "forbid"
 
 # TODO: Needed for xshell compatibility, fixed in v0.2.7
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(trick_rust_analyzer_into_highlighting_interpolated_bits)'] }
-
-# TODO: Remove when we update to Rust 1.84, needed for if-let-rescope
-unknown_lints = "allow"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"

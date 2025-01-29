@@ -1,96 +1,59 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Code managing the lifetime of a `PetriVm`. All VMs live the same lifecycle:
-//! * A `PetriVmConfig` is built for the given firmware and architecture in `construct`.
-//! * The configuration is optionally modified from the defaults using the helpers in `modify`.
-//! * The `PetriVm` is started by the code in `start`.
-//! * The VM is interacted with through the methods in `runtime`.
-//! * The VM is either shut down by the code in `runtime`, or gets dropped and cleaned up automatically.
+/// Hyper-V VM management
+#[cfg(windows)]
+pub mod hyperv;
+/// OpenVMM VM management
+pub mod openvmm;
 
-mod construct;
-mod modify;
-mod runtime;
-mod start;
-
-pub use runtime::PetriVm;
-
-use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
-use crate::openhcl_diag::OpenHclDiagHandler;
-use framebuffer::FramebufferAccess;
-use fs_err::File;
-use get_resources::ged::FirmwareEvent;
-use guid::Guid;
-use hvlite_defs::config::Config;
-use hvlite_defs::config::IsolationType;
-use hyperv_ic_resources::shutdown::ShutdownRpc;
-use mesh::MpscReceiver;
-use mesh::Sender;
-use pal_async::socket::PolledSocket;
-use pal_async::task::Task;
-use pal_async::DefaultDriver;
+use anyhow::Context;
+use async_trait::async_trait;
 use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactHandle;
 use petri_artifacts_core::AsArtifactHandle;
 use petri_artifacts_core::ErasedArtifactHandle;
-use petri_artifacts_core::TestArtifacts;
 use petri_artifacts_vmm_test::artifacts as hvlite_artifacts;
-use std::path::PathBuf;
-use std::sync::Arc;
-use unix_socket::UnixListener;
-use vtl2_settings_proto::Vtl2Settings;
-
-/// The instance guid used for all of our SCSI drives.
-pub(crate) const SCSI_INSTANCE: Guid =
-    Guid::from_static_str("27b553e8-8b39-411b-a55f-839971a7884f");
-
-/// The instance guid for the NVMe controller automatically added for boot media.
-pub(crate) const BOOT_NVME_INSTANCE: Guid =
-    Guid::from_static_str("92bc8346-718b-449a-8751-edbf3dcd27e4");
-
-/// The namespace ID for the NVMe controller automatically added for boot media.
-pub(crate) const BOOT_NVME_NSID: u32 = 37;
-
-/// The LUN ID for the NVMe controller automatically added for boot media.
-pub(crate) const BOOT_NVME_LUN: u32 = 1;
+use pipette_client::PipetteClient;
+use vmm_core_defs::HaltReason;
 
 /// Configuration state for a test VM.
-pub struct PetriVmConfig {
-    // Direct configuration related information.
-    firmware: Firmware,
-    arch: MachineArch,
-    config: Config,
-
-    // Runtime resources
-    resources: PetriVmResources,
-
-    // Logging
-    hvlite_log_file: File,
-
-    // Resources that are only used during startup.
-    ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
-    vtl2_settings: Option<Vtl2Settings>,
-    framebuffer_access: Option<FramebufferAccess>,
+///
+/// R is the type of the struct used to interact with the VM once it is created
+#[async_trait]
+pub trait PetriVmConfig: Send {
+    /// Build and boot the requested VM. Does not configure and start pipette.
+    /// Should only be used for testing platforms that pipette does not support.
+    async fn run_without_agent(self: Box<Self>) -> anyhow::Result<Box<dyn PetriVm>>;
+    /// Run the VM, configuring pipette to automatically start, but do not wait
+    /// for it to connect. This is useful for tests where the first boot attempt
+    /// is expected to not succeed, but pipette functionality is still desired.
+    async fn run_with_lazy_pipette(self: Box<Self>) -> anyhow::Result<Box<dyn PetriVm>>;
+    /// Run the VM, launching pipette and returning a client to it.
+    async fn run(self: Box<Self>) -> anyhow::Result<(Box<dyn PetriVm>, PipetteClient)>;
 }
 
-/// Various channels and resources used to interact with the VM while it is running.
-struct PetriVmResources {
-    serial_tasks: Vec<Task<anyhow::Result<()>>>,
-    firmware_event_recv: MpscReceiver<FirmwareEvent>,
-    shutdown_ic_send: Sender<ShutdownRpc>,
-    expected_boot_event: Option<FirmwareEvent>,
-    ged_send: Option<Arc<Sender<get_resources::ged::GuestEmulationRequest>>>,
-    pipette_listener: PolledSocket<UnixListener>,
-    vtl2_pipette_listener: Option<PolledSocket<UnixListener>>,
-    openhcl_diag_handler: Option<OpenHclDiagHandler>,
-    linux_direct_serial_agent: Option<LinuxDirectSerialAgent>,
-
-    // Externally injected management stuff also needed at runtime.
-    driver: DefaultDriver,
-    resolver: TestArtifacts,
-    output_dir: PathBuf,
+/// A running VM that tests can interact with.
+#[async_trait]
+pub trait PetriVm: Send {
+    /// Wait for the VM to halt, returning the reason for the halt.
+    async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason>;
+    /// Wait for the VM to halt, returning the reason for the halt,
+    /// and cleanly tear down the VM.
+    async fn wait_for_teardown(self: Box<Self>) -> anyhow::Result<HaltReason>;
+    /// Test that we are able to inspect OpenHCL.
+    async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()>;
+    /// Wait for a connection from a pipette agent running in the guest.
+    /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
+    async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient>;
+    /// Wait for VTL 2 to report that it is ready to respond to commands.
+    /// Will fail if the VM is not running OpenHCL.
+    ///
+    /// This should only be necessary if you're doing something manual. All
+    /// Petri-provided methods will wait for VTL 2 to be ready automatically.
+    async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()>;
 }
 
 /// Firmware to load into the test VM.
@@ -320,9 +283,31 @@ impl BootImageConfig<boot_image_type::Iso> {
     }
 }
 
-impl PetriVmConfig {
-    /// Get the OS that the VM will boot into.
-    pub fn os_flavor(&self) -> OsFlavor {
-        self.firmware.os_flavor()
+/// Isolation type
+#[derive(Debug, Clone, Copy)]
+pub enum IsolationType {
+    /// VBS
+    Vbs,
+    /// SNP
+    Snp,
+    /// TDX
+    Tdx,
+}
+
+/// Generates a name for the petri test based on the thread name
+pub fn get_test_name() -> anyhow::Result<String> {
+    // Use the current thread name for the test name, both cargo-test and
+    // cargo-nextest set this.
+    // FUTURE: If we ever want to use petri outside a testing context this
+    // will need to be revisited.
+    let current_thread = std::thread::current();
+    let test_name = current_thread.name().context("no thread name configured")?;
+    if test_name.is_empty() {
+        anyhow::bail!("thread name is empty");
     }
+    if test_name == "main" {
+        anyhow::bail!("thread name is 'main', not running from test thread");
+    }
+    // Windows paths can't include colons, replace them.
+    Ok(test_name.replace("::", "__"))
 }

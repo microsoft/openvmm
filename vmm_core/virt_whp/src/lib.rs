@@ -1642,7 +1642,7 @@ mod aarch64 {
             &self,
             vp: VpIndex,
             vtl: Vtl,
-        ) -> impl hv1_emulator::RequestInterrupt {
+        ) -> impl hv1_emulator::RequestInterrupt + use<> {
             let _ = (vp, vtl);
             move |_vec, _auto_eoi| todo!("TODO-aarch64")
         }

@@ -21,7 +21,7 @@ use zerocopy::FromZeroes;
     mesh(package = "msguid")
 )]
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect), inspect(display))]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct Guid {
     #[cfg_attr(feature = "mesh", mesh(1))]
     pub data1: u32,
@@ -168,7 +168,7 @@ impl std::fmt::Debug for Guid {
 
 /// An error parsing a GUID.
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum ParseError {
     #[error("invalid GUID length")]
     Length,

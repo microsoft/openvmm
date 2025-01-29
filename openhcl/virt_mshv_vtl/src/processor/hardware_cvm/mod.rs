@@ -3,6 +3,7 @@
 
 //! Common processor support for hardware-isolated partitions.
 
+pub mod apic;
 mod tlb_lock;
 
 use super::UhEmulationState;
@@ -139,9 +140,6 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             // sure that the lower VTL is executing at a known point, and only if
             // the higher VTL has not been enabled on any other VP because at that
             // point, the higher VTL should be orchestrating its own enablement.
-            //
-            // TODO GUEST_VSM: last_vtl currently always returns 0 (which is wrong),
-            // so for any VP outside of the BSP, this will fail
             if self.intercepted_vtl < GuestVtl::Vtl1 {
                 if vtl1_state.enabled_on_vp_count > 0 || vp_index != current_vp_index {
                     return Err(HvError::AccessDenied);
@@ -544,7 +542,6 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         // - validate the values being set, e.g. that addresses are canonical,
         //   that efer and pat make sense, etc. Similar validation is needed in
         //   the write_msr path.
-        // TODO GUEST VSM: add ApicBase register
 
         match HvX64RegisterName::from(reg.name) {
             HvX64RegisterName::VsmPartitionConfig => self.vp.set_vsm_partition_config(
@@ -709,7 +706,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         }
 
         // TODO GUEST VSM: interrupt rewinding
-        // TODO TDX GUEST VSM: update execution mode
+        // TODO TDX GUEST VSM: update execution mode on CR0 and EFER
     }
 }
 
@@ -723,6 +720,18 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         multicast: bool,
         target_processors: &[u32],
     ) -> HvResult<()> {
+        // Before dispatching retarget_device_interrupt, add the device vector
+        // to partition global device vector table and issue `proxy_irr_blocked`
+        // filter wake request to other VPs
+        self.vp.partition.request_proxy_irr_filter_update(
+            self.intercepted_vtl,
+            vector as u8,
+            self.vp.vp_index().index(),
+        );
+
+        // Update `proxy_irr_blocked` for this VP itself
+        self.vp.update_proxy_irr_filter(self.intercepted_vtl);
+
         self.vp.partition.hcl.retarget_device_interrupt(
             device_id,
             hvdef::hypercall::InterruptEntry {

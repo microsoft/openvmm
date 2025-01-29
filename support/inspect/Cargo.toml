@@ -3,7 +3,7 @@
 
 [package]
 name = "inspect"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -40,6 +40,7 @@ parking_lot.workspace = true
 thiserror = { workspace = true, optional = true }
 
 [dev-dependencies]
+expect-test.workspace = true
 futures.workspace = true
 inspect_derive.workspace = true
 pal_async.workspace = true

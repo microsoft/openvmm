@@ -25,7 +25,7 @@ impl SimpleFlowNode for Node {
             gh_workflow_id,
         } = request;
 
-        let gh_token = ctx.get_gh_context_var(GhContextVar::GITHUB__TOKEN);
+        let gh_token = ctx.get_gh_context_var().global().token();
 
         ctx.emit_rust_step("get action id", |ctx| {
             let gh_workflow_id = gh_workflow_id.claim(ctx);

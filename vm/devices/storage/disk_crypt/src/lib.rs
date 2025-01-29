@@ -130,24 +130,28 @@ impl DiskIo for CryptDisk {
         // TODO: use a pool with a maximum size, or consider using memory
         // from the global bounce buffer (which could be pre-pinned to avoid
         // extra copies).
-        let mem = GuestMemory::allocate(buffers.len());
+        let mut mem = GuestMemory::allocate(buffers.len());
+        let buf = mem.inner_buf_mut().unwrap();
         let staged = OwnedRequestBuffers::linear(0, buffers.len(), true);
-        let staged = staged.buffer(&mem);
 
         // Encrypt the data a sector at a time.
         let mut ctx = self.cipher.encrypt().map_err(crypto_error)?;
         let mut reader = buffers.reader();
-        let mut writer = staged.writer();
-        let mut buf = vec![0; self.sector_size() as usize];
-        for i in 0..buffers.len() >> self.inner.sector_shift() {
-            reader.read(&mut buf)?;
-            ctx.cipher((sector + i as u64).into(), &mut buf)
-                .map_err(crypto_error)?;
-            writer.write(&buf)?;
+        let sector_size = self.inner.sector_size() as usize;
+        let mut offset = 0;
+        let mut tweak = sector;
+        while offset < buffers.len() {
+            let this_buf = &mut buf[offset..][..sector_size];
+            reader.read(this_buf)?;
+            ctx.cipher(tweak.into(), this_buf).map_err(crypto_error)?;
+            offset += sector_size;
+            tweak += 1;
         }
 
         // Write the encrypted data.
-        self.inner.write_vectored(&staged, sector, fua).await?;
+        self.inner
+            .write_vectored(&staged.buffer(&mem), sector, fua)
+            .await?;
         Ok(())
     }
 
@@ -185,4 +189,43 @@ impl DiskIo for CryptDisk {
 
 fn crypto_error(err: block_crypto::Error) -> DiskError {
     DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, err))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::CryptDisk;
+    use disk_backend::Disk;
+    use guestmem::GuestMemory;
+    use pal_async::async_test;
+    use scsi_buffers::OwnedRequestBuffers;
+
+    #[async_test]
+    async fn test_basic_read_write() {
+        let key = [[0u8; 32], [1; 32]];
+        let disk = CryptDisk::new(
+            disk_crypt_resources::Cipher::XtsAes256,
+            key.as_flattened(),
+            disklayer_ram::ram_disk(0x200000, false).unwrap(),
+        )
+        .unwrap();
+        let disk = Disk::new(disk).unwrap();
+        let buffers = OwnedRequestBuffers::linear(0, 0x10000, true);
+        let mut mem = GuestMemory::allocate(0x10000);
+        let pattern = {
+            let mut acc = 3u32;
+            (0..0x10000)
+                .map(|_| {
+                    acc = acc.wrapping_mul(7);
+                    acc as u8
+                })
+                .collect::<Vec<_>>()
+        };
+        mem.inner_buf_mut().unwrap().copy_from_slice(&pattern);
+        disk.write_vectored(&buffers.buffer(&mem), 10, false)
+            .await
+            .unwrap();
+        mem.inner_buf_mut().unwrap().fill(0);
+        disk.read_vectored(&buffers.buffer(&mem), 10).await.unwrap();
+        assert_eq!(mem.inner_buf_mut().unwrap(), &pattern);
+    }
 }

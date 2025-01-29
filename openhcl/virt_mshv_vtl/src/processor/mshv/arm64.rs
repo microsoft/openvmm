@@ -306,7 +306,9 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             Self::intercepted_vtl(&message.header).map_err(|UnsupportedGuestVtl(vtl)| {
                 VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl(vtl))
             })?;
-        self.emulate(dev, &intercept_state, intercepted_vtl).await?;
+        let cache = UhCpuStateCache::default();
+        self.emulate(dev, &intercept_state, intercepted_vtl, cache)
+            .await?;
         Ok(())
     }
 

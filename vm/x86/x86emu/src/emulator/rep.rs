@@ -117,12 +117,12 @@ impl<T: Cpu> Emulator<'_, T> {
 
         let count_reg = sized_rcx(op_kind);
         let requested = if rep.is_some() {
-            self.state.get_gp(count_reg)
+            self.cpu.gp(count_reg.into())
         } else {
             1
         };
         let size = instr.memory_size().size();
-        let delta = if !self.state.rflags.direction() {
+        let delta = if !self.cpu.rflags().direction() {
             size
         } else {
             size.wrapping_neg()
@@ -140,8 +140,10 @@ impl<T: Cpu> Emulator<'_, T> {
 
     fn rep_again(&mut self, rep_state: &mut RepState) -> bool {
         if rep_state.rep.is_some() {
-            self.state
-                .set_gp(rep_state.count_reg, rep_state.requested - rep_state.done);
+            self.cpu.set_gp(
+                rep_state.count_reg.into(),
+                rep_state.requested - rep_state.done,
+            );
         }
         if rep_state.is_done() || rep_state.done == MAX_REP_LOOPS {
             return false;
@@ -162,7 +164,7 @@ impl<T: Cpu> Emulator<'_, T> {
         while self.rep_again(&mut rep) {
             let data = &mut [0; 4][..rep.size];
             let offset = self.memory_op_offset(instr, 1);
-            let io_register = self.state.get_gp(instr.op0_register()) as u16;
+            let io_register = self.cpu.gp(instr.op0_register().into()) as u16;
 
             self.read_memory(
                 instr.memory_segment(),
@@ -173,7 +175,7 @@ impl<T: Cpu> Emulator<'_, T> {
             .await?;
             self.write_io(io_register, data).await?;
 
-            self.state.set_gp(rsi, offset.wrapping_add(rep.delta));
+            self.cpu.set_gp(rsi.into(), offset.wrapping_add(rep.delta));
         }
         rep.check_done()?;
         Ok(())
@@ -187,14 +189,14 @@ impl<T: Cpu> Emulator<'_, T> {
         let rdi = sized_rdi(instr.op0_kind());
         while self.rep_again(&mut rep) {
             let offset = self.memory_op_offset(instr, 0);
-            let io_register = self.state.get_gp(instr.op1_register()) as u16;
+            let io_register = self.cpu.gp(instr.op1_register().into()) as u16;
 
             let data = &mut [0; 4][..rep.size];
             self.read_io(io_register, data).await?;
             self.write_memory(Register::ES, offset, AlignmentMode::Standard, data)
                 .await?;
 
-            self.state.set_gp(rdi, offset.wrapping_add(rep.delta));
+            self.cpu.set_gp(rdi.into(), offset.wrapping_add(rep.delta));
         }
         rep.check_done()?;
         Ok(())
@@ -220,9 +222,9 @@ impl<T: Cpu> Emulator<'_, T> {
             )
             .await?;
 
-            self.state
-                .set_gp(instr.op0_register(), u64::from_le_bytes(data));
-            self.state.set_gp(rsi, offset.wrapping_add(rep.delta));
+            self.cpu
+                .set_gp(instr.op0_register().into(), u64::from_le_bytes(data));
+            self.cpu.set_gp(rsi.into(), offset.wrapping_add(rep.delta));
         }
         rep.check_done()?;
         Ok(())
@@ -239,7 +241,7 @@ impl<T: Cpu> Emulator<'_, T> {
         let rdi = sized_rdi(instr.op0_kind());
         while self.rep_again(&mut rep) {
             let offset = self.memory_op_offset(instr, 0);
-            let data = self.state.get_gp(instr.op1_register()).to_le_bytes();
+            let data = self.cpu.gp(instr.op1_register().into()).to_le_bytes();
             self.write_memory(
                 Register::ES,
                 offset,
@@ -248,7 +250,7 @@ impl<T: Cpu> Emulator<'_, T> {
             )
             .await?;
 
-            self.state.set_gp(rdi, offset.wrapping_add(rep.delta));
+            self.cpu.set_gp(rdi.into(), offset.wrapping_add(rep.delta));
         }
         rep.check_done()?;
         Ok(())
@@ -280,8 +282,10 @@ impl<T: Cpu> Emulator<'_, T> {
             self.write_memory(Register::ES, di_offset, AlignmentMode::Standard, data)
                 .await?;
 
-            self.state.set_gp(rsi, si_offset.wrapping_add(rep.delta));
-            self.state.set_gp(rdi, di_offset.wrapping_add(rep.delta));
+            self.cpu
+                .set_gp(rsi.into(), si_offset.wrapping_add(rep.delta));
+            self.cpu
+                .set_gp(rdi.into(), di_offset.wrapping_add(rep.delta));
         }
         rep.check_done()?;
         Ok(())
@@ -325,20 +329,18 @@ impl<T: Cpu> Emulator<'_, T> {
             right = u64::from_le_bytes(data_right);
             rep.update_zero(left == right);
 
-            self.state.set_gp(rsi, si_offset.wrapping_add(rep.delta));
-            self.state.set_gp(rdi, di_offset.wrapping_add(rep.delta));
+            self.cpu
+                .set_gp(rsi.into(), si_offset.wrapping_add(rep.delta));
+            self.cpu
+                .set_gp(rdi.into(), di_offset.wrapping_add(rep.delta));
         }
 
         rep.check_done()?;
         if rep.requested != 0 {
-            let result = super::arith::CmpOp::op(left, right, self.state.rflags);
-            super::arith::CmpOp::update_flags(
-                &mut self.state.rflags,
-                rep.size,
-                result,
-                left,
-                right,
-            );
+            let mut rflags = self.cpu.rflags();
+            let result = super::arith::CmpOp::op(left, right, rflags);
+            super::arith::CmpOp::update_flags(&mut rflags, rep.size, result, left, right);
+            self.cpu.set_rflags(rflags);
         }
         Ok(())
     }
@@ -351,7 +353,7 @@ impl<T: Cpu> Emulator<'_, T> {
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
         let mut rep = self.rep_op(instr, instr.op1_kind(), true)?;
-        let rax = self.state.get_gp(instr.op0_register());
+        let rax = self.cpu.gp(instr.op0_register().into());
         let rdi = sized_rdi(instr.op1_kind());
         let mut memval = 0;
         while self.rep_again(&mut rep) {
@@ -369,19 +371,16 @@ impl<T: Cpu> Emulator<'_, T> {
             memval = u64::from_le_bytes(data);
             rep.update_zero(memval == rax);
 
-            self.state.set_gp(rdi, di_offset.wrapping_add(rep.delta));
+            self.cpu
+                .set_gp(rdi.into(), di_offset.wrapping_add(rep.delta));
         }
 
         rep.check_done()?;
         if rep.requested != 0 {
-            let result = super::arith::CmpOp::op(rax, memval, self.state.rflags);
-            super::arith::CmpOp::update_flags(
-                &mut self.state.rflags,
-                rep.size,
-                result,
-                rax,
-                memval,
-            );
+            let mut rflags = self.cpu.rflags();
+            let result = super::arith::CmpOp::op(rax, memval, rflags);
+            super::arith::CmpOp::update_flags(&mut rflags, rep.size, result, rax, memval);
+            self.cpu.set_rflags(rflags);
         }
         Ok(())
     }

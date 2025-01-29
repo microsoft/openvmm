@@ -61,43 +61,35 @@ impl<T: Cpu> Emulator<'_, T> {
         let count = Op::mod_count(masked_count, operand_bit_size);
 
         let right = self.op_value(instr, 1).await?;
+        let mut rflags = self.cpu.rflags();
 
         if count == 0 {
             if Op::ZERO_SHIFT_UPDATES_CARRY && masked_count != 0 {
                 // left is unchanged, so left is the result
-                self.state.rflags.set_carry(Op::carry_flag(
-                    left,
-                    right,
-                    left,
-                    count,
-                    operand_bit_size,
-                ));
+                rflags.set_carry(Op::carry_flag(left, right, left, count, operand_bit_size));
+                self.cpu.set_rflags(rflags);
             }
             // flags unchanged
             return Ok(());
         }
-
-        let result = Op::op(left, right, count, self.state.rflags, operand_bit_size);
+        let result = Op::op(left, right, count, rflags, operand_bit_size);
         let carry = Op::carry_flag(left, right, result, count, operand_bit_size);
 
         self.write_op_0(instr, result).await?;
 
         if Op::UPDATE_SZP {
-            update_flags_szp(&mut self.state.rflags, operand_size, result);
+            update_flags_szp(&mut rflags, operand_size, result);
         }
 
-        self.state.rflags.set_carry(carry);
+        rflags.set_carry(carry);
 
         if (Op::MASKED_COUNT_UPDATES_OF && masked_count == 1)
             || (!Op::MASKED_COUNT_UPDATES_OF && count == 1)
         {
-            self.state.rflags.set_overflow(Op::overflow_flag(
-                left,
-                result,
-                carry,
-                operand_bit_size,
-            ));
+            rflags.set_overflow(Op::overflow_flag(left, result, carry, operand_bit_size));
         }
+
+        self.cpu.set_rflags(rflags);
 
         Ok(())
     }

@@ -787,7 +787,10 @@ impl UhVmNetworkSettings {
                 }
             };
             let p = partition.clone();
-            let get_guest_os_id = move || -> HvGuestOsId { p.vtl0_guest_os_id() };
+            let get_guest_os_id = move || -> HvGuestOsId {
+                p.vtl0_guest_os_id()
+                    .expect("cannot fail to query the guest OS ID")
+            };
 
             let mut nic_builder = netvsp::Nic::builder()
                 .limit_ring_buffer(true)
@@ -1533,8 +1536,7 @@ async fn new_underhill_vm(
     };
 
     // Enable the private pool which supports persisting ranges across servicing
-    // for DMA devices that support save restore. Today, this is only used for
-    // NVMe.
+    // for DMA devices that support save restore.
     let mut private_pool = if !runtime_params.private_pool_ranges().is_empty() {
         use vmcore::save_restore::SaveRestore;
 
@@ -1773,7 +1775,11 @@ async fn new_underhill_vm(
         vmtime: &vmtime_source,
         isolated_memory_protector: gm.isolated_memory_protector()?,
         shared_vis_pages_pool: shared_vis_pages_pool.as_ref().map(|p| {
-            p.allocator("partition".into())
+            p.allocator("partition-shared".into())
+                .expect("partition name should be unique")
+        }),
+        private_vis_pages_pool: private_pool.as_ref().map(|p| {
+            p.allocator("partition-private".into())
                 .expect("partition name should be unique")
         }),
     };
@@ -1870,7 +1876,7 @@ async fn new_underhill_vm(
 
         let private_pool_spanwer = private_pool.as_ref().map(|p| p.allocator_spawner());
 
-        let save_restore_supported = env_cfg.nvme_keep_alive;
+        let save_restore_supported = env_cfg.nvme_keep_alive && private_pool_spanwer.is_some();
         let vfio_dma_buffer_spawner = Box::new(
             move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
                 shared_vis_pool_spawner
@@ -2572,15 +2578,19 @@ async fn new_underhill_vm(
         // If VTOM is present (CVM scenario), accesses to physical device and PCI config space may
         // occur below or above vTOM, but only within MMIO regions. Forward both to the host.
         let vtom = vtom.unwrap_or(0);
-        let mut untrusted_mmio_ranges: Vec<_> = mem_layout.mmio().to_vec();
-        if vtom > 0 {
-            untrusted_mmio_ranges.extend(
-                mem_layout
-                    .mmio()
-                    .iter()
-                    .map(|range| MemoryRange::new((range.start() + vtom)..(range.end() + vtom))),
-            );
-        }
+        let untrusted_mmio_ranges =
+            if cfg!(guest_arch = "aarch64") && vtom == 0 {
+                // By default on aarch64 send all MMIO accesses to the host.
+                None
+            } else {
+                let mut untrusted_mmio_ranges: Vec<_> = mem_layout.mmio().to_vec();
+                if vtom > 0 {
+                    untrusted_mmio_ranges.extend(mem_layout.mmio().iter().map(|range| {
+                        MemoryRange::new((range.start() + vtom)..(range.end() + vtom))
+                    }));
+                }
+                Some(untrusted_mmio_ranges)
+            };
 
         Arc::new(CloseableMutex::new(FallbackMmioDevice {
             partition: Arc::downgrade(&partition),
@@ -3112,6 +3122,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         nvdimm_count: _,
         watchdog_enabled: _,
         vtl2_settings: _,
+        cxl_memory_enabled: _,
     } = &dps.general;
 
     if *hibernation_enabled {
@@ -3365,30 +3376,42 @@ impl chipset::pm::PmTimerAssist for UnderhillPmTimerAssist {
 // MmioIntercept traits.
 struct FallbackMmioDevice {
     partition: std::sync::Weak<UhPartition>,
-    mmio_ranges: Vec<MemoryRange>,
+    mmio_ranges: Option<Vec<MemoryRange>>,
 }
 
 impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> chipset_device::io::IoResult {
-        data.fill(!0);
-        if let Some(partition) = self.partition.upgrade() {
-            if self.mmio_ranges.iter().any(|range| {
+        let Some(partition) = self.partition.upgrade() else {
+            return chipset_device::io::IoResult::Ok;
+        };
+
+        if let Some(mmio_ranges) = &self.mmio_ranges {
+            data.fill(!0);
+            if mmio_ranges.iter().any(|range| {
                 range.contains_addr(addr) && range.contains_addr(addr + data.len() as u64 - 1)
             }) {
                 partition.host_mmio_read(addr, data);
             }
+        } else {
+            partition.host_mmio_read(addr, data);
         }
 
         chipset_device::io::IoResult::Ok
     }
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> chipset_device::io::IoResult {
-        if let Some(partition) = self.partition.upgrade() {
-            if self.mmio_ranges.iter().any(|range| {
+        let Some(partition) = self.partition.upgrade() else {
+            return chipset_device::io::IoResult::Ok;
+        };
+
+        if let Some(mmio_ranges) = &self.mmio_ranges {
+            if mmio_ranges.iter().any(|range| {
                 range.contains_addr(addr) && range.contains_addr(addr + data.len() as u64 - 1)
             }) {
                 partition.host_mmio_write(addr, data);
             }
+        } else {
+            partition.host_mmio_write(addr, data);
         }
 
         chipset_device::io::IoResult::Ok

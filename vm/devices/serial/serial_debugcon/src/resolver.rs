@@ -25,7 +25,7 @@ declare_static_async_resolver! {
 }
 
 /// An error resolving a [`SerialDebugconDeviceHandle`].
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 #[derive(Debug, Error)]
 pub enum ResolveDebugconError {
     #[error("failed to resolve io backend")]

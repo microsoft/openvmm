@@ -888,12 +888,12 @@ impl ReadySet {
 /// future with a span, and wrapping its error with something more informative.
 ///
 /// `operation` and `name` are used in tracing and error construction.
-fn state_change<I: 'static, R: 'static + Send>(
+fn state_change<I: 'static, R: 'static + Send, Req: FnOnce(Rpc<I, R>) -> StateRequest>(
     name: Arc<str>,
     unit: &Unit,
-    request: impl FnOnce(Rpc<I, R>) -> StateRequest,
+    request: Req,
     input: Option<I>,
-) -> impl Future<Output = Result<Option<R>, UnitRecvError>> {
+) -> impl Future<Output = Result<Option<R>, UnitRecvError>> + use<I, R, Req> {
     let send = unit.send.clone();
 
     async move {

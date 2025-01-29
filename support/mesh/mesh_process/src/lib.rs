@@ -161,6 +161,7 @@ async fn node_from_environment() -> anyhow::Result<Option<NodeResult>> {
     // current edition), either this function and its callers need to become
     // `unsafe`, or we need to avoid using the environment to propagate the
     // invitation so that we can avoid this call.
+    #[expect(deprecated_safe_2024)]
     std::env::remove_var(INVITATION_ENV_NAME);
 
     let invitation: Invitation = mesh::payload::decode(

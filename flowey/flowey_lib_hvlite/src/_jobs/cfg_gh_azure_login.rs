@@ -8,9 +8,9 @@ use flowey::node::prelude::*;
 flowey_request! {
     #[derive(Clone)]
     pub struct Params {
-        pub client_id: GhContextVar,
-        pub tenant_id: GhContextVar,
-        pub subscription_id: GhContextVar,
+        pub client_id: GhUserSecretVar,
+        pub tenant_id: GhUserSecretVar,
+        pub subscription_id: GhUserSecretVar,
     }
 }
 
@@ -34,9 +34,9 @@ impl SimpleFlowNode for Node {
             return Ok(());
         }
 
-        let client_id = ctx.get_gh_context_var(client_id);
-        let tenant_id = ctx.get_gh_context_var(tenant_id);
-        let subscription_id = ctx.get_gh_context_var(subscription_id);
+        let client_id = ctx.get_gh_context_var().secret(client_id);
+        let tenant_id = ctx.get_gh_context_var().secret(tenant_id);
+        let subscription_id = ctx.get_gh_context_var().secret(subscription_id);
         let (open_id_connect, write_open_id_connect) = ctx.new_secret_var();
 
         ctx.emit_rust_step("Create OpenIDConnect Credentials", |ctx| {

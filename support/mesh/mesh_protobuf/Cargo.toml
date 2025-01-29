@@ -3,7 +3,7 @@
 
 [package]
 name = "mesh_protobuf"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -28,7 +28,7 @@ zerocopy.workspace = true
 prost-build = { workspace = true, optional = true }
 
 [dev-dependencies]
-diff.workspace = true
+expect-test.workspace = true
 
 [lints]
 workspace = true

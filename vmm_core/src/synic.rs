@@ -4,6 +4,7 @@
 use hvdef::HvError;
 use hvdef::HvResult;
 use hvdef::Vtl;
+use inspect::Inspect;
 use parking_lot::Mutex;
 use std::collections::hash_map;
 use std::collections::HashMap;
@@ -14,6 +15,8 @@ use virt::Synic;
 use virt::VpIndex;
 use vmcore::monitor::MonitorId;
 use vmcore::synic::EventPort;
+use vmcore::synic::GuestEventPort;
+use vmcore::synic::GuestMessagePort;
 use vmcore::synic::MessagePort;
 use vmcore::synic::SynicMonitorAccess;
 use vmcore::synic::SynicPortAccess;
@@ -138,13 +141,24 @@ impl SynicPortAccess for SynicPorts {
         }))
     }
 
-    fn post_message(&self, vtl: Vtl, vp: u32, sint: u8, typ: u32, payload: &[u8]) {
-        self.partition
-            .post_message(vtl, VpIndex::new(vp), sint, typ, payload)
+    fn new_guest_message_port(
+        &self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+    ) -> Result<Box<(dyn GuestMessagePort)>, vmcore::synic::HypervisorError> {
+        Ok(Box::new(DirectGuestMessagePort {
+            partition: Arc::clone(&self.partition),
+            vtl,
+            vp: VpIndex::new(vp),
+            sint,
+        }))
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn vmcore::synic::GuestEventPort> {
-        self.partition.new_guest_event_port()
+    fn new_guest_event_port(
+        &self,
+    ) -> Result<Box<(dyn GuestEventPort)>, vmcore::synic::HypervisorError> {
+        Ok(self.partition.new_guest_event_port())
     }
 
     fn prefer_os_events(&self) -> bool {
@@ -205,5 +219,30 @@ impl Debug for PortType {
             Self::Message(_) => "Port::Message",
             Self::Event(_) => "Port::Event",
         })
+    }
+}
+
+struct DirectGuestMessagePort {
+    partition: Arc<dyn Synic>,
+    vtl: Vtl,
+    vp: VpIndex,
+    sint: u8,
+}
+
+impl GuestMessagePort for DirectGuestMessagePort {
+    fn post_message(&mut self, typ: u32, payload: &[u8]) {
+        self.partition
+            .post_message(self.vtl, self.vp, self.sint, typ, payload)
+    }
+
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
+        self.vp = VpIndex::new(vp);
+        Ok(())
+    }
+}
+
+impl Inspect for DirectGuestMessagePort {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        req.respond().field("message_port_vp", self.vp.index());
     }
 }

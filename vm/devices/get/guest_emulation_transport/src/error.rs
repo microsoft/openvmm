@@ -11,7 +11,7 @@ use thiserror::Error;
 pub struct VmgsIoError(pub(crate) get_protocol::VmgsIoStatus);
 
 /// Error while fetching Device Platform Settings
-#[allow(missing_docs)] // self-explanatory fields
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum DevicePlatformSettingsError {
     #[error("unknown secure boot template type: {0:?}")]
@@ -65,7 +65,7 @@ pub struct GuestStateProtectionByIdError(pub(crate) u32, pub(crate) u32);
 pub struct SaveRestoreOperationFailure {}
 
 /// Error while invoking an IgvmAttestRequest
-#[allow(missing_docs)] // self-explanatory fields
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum IgvmAttestError {
     #[error("`agent_data` size {input_size} was larger than expected {expected_size}")]

@@ -399,8 +399,12 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         let max_io_queues = allocated_io_queue_count.min(requested_io_queue_count);
 
         let qsize = {
-            let io_cqsize = QueuePair::MAX_CQ_ENTRIES.min(worker.registers.cap.mqes_z() + 1);
-            let io_sqsize = QueuePair::MAX_SQ_ENTRIES.min(worker.registers.cap.mqes_z() + 1);
+            if worker.registers.cap.mqes_z() < 1 {
+                anyhow::bail!("bad device behavior. mqes cannot be 0");
+            }
+
+            let io_cqsize = (QueuePair::MAX_CQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
+            let io_sqsize = (QueuePair::MAX_SQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
 
             // Some hardware (such as ASAP) require that the sq and cq have the same size.
             io_cqsize.min(io_sqsize)
@@ -452,7 +456,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         drop(self);
     }
 
-    fn reset(&mut self) -> impl 'static + Send + std::future::Future<Output = ()> {
+    fn reset(&mut self) -> impl Send + std::future::Future<Output = ()> + use<T> {
         let driver = self.driver.clone();
         let mut task = std::mem::take(&mut self.task).unwrap();
         async move {

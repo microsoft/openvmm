@@ -3,7 +3,7 @@
 
 [package]
 name = "guest_emulation_log"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

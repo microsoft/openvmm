@@ -6,7 +6,7 @@
 //! These structures are defined in the Linux kernel and can be found in the kernel docs under
 //! [`The Linux/x86 Boot Protocol`](https://www.kernel.org/doc/html/latest/x86/boot.html).
 
-#![allow(missing_docs)]
+#![expect(missing_docs)]
 
 use static_assertions::const_assert_eq;
 use zerocopy::AsBytes;

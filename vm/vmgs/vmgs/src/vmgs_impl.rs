@@ -1217,7 +1217,7 @@ impl Vmgs {
 
             // Initialize a new extended file table.
             let new_extended_file_table = VmgsExtendedFileTable::new_zeroed();
-            // Write the extende file table to the newly allocated space
+            // Write the extended file table to the newly allocated space
             self.write_file_internal(
                 FileId::EXTENDED_FILE_TABLE,
                 new_extended_file_table.as_bytes(),
@@ -1625,7 +1625,7 @@ fn compute_crc32(buf: &[u8]) -> u32 {
 }
 
 #[cfg(feature = "save_restore")]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub mod save_restore {
     use super::*;
 

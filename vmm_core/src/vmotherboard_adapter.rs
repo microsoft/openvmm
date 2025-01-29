@@ -13,7 +13,7 @@ use virt::VpIndex;
 use vmm_core_defs::HaltReason;
 use vmotherboard::Chipset;
 
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 #[derive(Clone)]
 pub struct ChipsetPlusSynic {
     pub synic_ports: Arc<SynicPorts>,
@@ -21,7 +21,7 @@ pub struct ChipsetPlusSynic {
 }
 
 impl ChipsetPlusSynic {
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     pub fn new(synic_ports: Arc<SynicPorts>, chipset: Arc<Chipset>) -> Self {
         Self {
             synic_ports,

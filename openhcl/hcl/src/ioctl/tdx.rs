@@ -285,8 +285,8 @@ impl ProcessorRunner<'_, Tdx> {
         tdcall_vp_wr(
             &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
             field_code,
-            !0,
             value.into(),
+            !0,
         )
         .map(Into::into)
     }

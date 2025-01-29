@@ -29,6 +29,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 use uevent::UeventListener;
+use vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX;
 use vfio_sys::IommuType;
 use vfio_sys::IrqInfo;
 use vmcore::vm_task::VmTaskDriver;
@@ -62,6 +63,8 @@ pub struct VfioDevice {
     driver_source: VmTaskDriverSource,
     #[inspect(iter_by_index)]
     interrupts: Vec<Option<InterruptState>>,
+    #[inspect(skip)]
+    config_space: vfio_sys::RegionInfo,
 }
 
 #[derive(Inspect)]
@@ -125,16 +128,68 @@ impl VfioDevice {
             anyhow::bail!("unsupported: kernel does not support dynamic msix allocation");
         }
 
-        Ok(Self {
+        let config_space = device.region_info(VFIO_PCI_CONFIG_REGION_INDEX)?;
+        let this = Self {
             pci_id: pci_id.into(),
             _container: container,
             _group: group,
             device: Arc::new(device),
             dma_buffer,
             msix_info,
+            config_space,
             driver_source: driver_source.clone(),
             interrupts: Vec::new(),
-        })
+        };
+
+        // Ensure bus master enable and memory space enable are set, and that
+        // INTx is disabled.
+        this.enable_device().context("failed to enable device")?;
+        Ok(this)
+    }
+
+    fn enable_device(&self) -> anyhow::Result<()> {
+        let offset = pci_core::spec::cfg_space::HeaderType00::STATUS_COMMAND.0;
+        let status_command = self.read_config(offset)?;
+        let command = pci_core::spec::cfg_space::Command::from(status_command as u16);
+
+        let command = command
+            .with_bus_master(true)
+            .with_intx_disable(true)
+            .with_mmio_enabled(true);
+
+        let status_command = (status_command & 0xffff0000) | u16::from(command) as u32;
+        self.write_config(offset, status_command)?;
+        Ok(())
+    }
+
+    pub fn read_config(&self, offset: u16) -> anyhow::Result<u32> {
+        if offset as u64 > self.config_space.size - 4 {
+            anyhow::bail!("invalid config offset");
+        }
+
+        let mut buf = [0u8; 4];
+        self.device
+            .as_ref()
+            .as_ref()
+            .read_at(&mut buf, self.config_space.offset + offset as u64)
+            .context("failed to read config")?;
+
+        Ok(u32::from_ne_bytes(buf))
+    }
+
+    pub fn write_config(&self, offset: u16, data: u32) -> anyhow::Result<()> {
+        if offset as u64 > self.config_space.size - 4 {
+            anyhow::bail!("invalid config offset");
+        }
+
+        let buf = data.to_ne_bytes();
+        self.device
+            .as_ref()
+            .as_ref()
+            .write_at(&buf, self.config_space.offset + offset as u64)
+            .context("failed to write config")?;
+
+        Ok(())
     }
 
     /// Maps PCI BAR[n] to VA space.
@@ -148,6 +203,7 @@ impl VfioDevice {
         Ok(MappedRegionWithFallback {
             device: self.device.clone(),
             mapping,
+            len: info.size as usize,
             offset: info.offset,
             read_fallback: SharedCounter::new(),
             write_fallback: SharedCounter::new(),
@@ -167,6 +223,7 @@ pub struct MappedRegionWithFallback {
     #[inspect(skip)]
     mapping: vfio_sys::MappedRegion,
     offset: u64,
+    len: usize,
     read_fallback: SharedCounter,
     write_fallback: SharedCounter,
 }
@@ -333,6 +390,10 @@ fn set_irq_affinity(irq: u32, cpu: u32) -> std::io::Result<()> {
 }
 
 impl DeviceRegisterIo for vfio_sys::MappedRegion {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
     fn read_u32(&self, offset: usize) -> u32 {
         self.read_u32(offset)
     }
@@ -403,6 +464,10 @@ impl MappedRegionWithFallback {
 }
 
 impl DeviceRegisterIo for MappedRegionWithFallback {
+    fn len(&self) -> usize {
+        self.len
+    }
+
     fn read_u32(&self, offset: usize) -> u32 {
         self.read_from_mapping(offset).unwrap_or_else(|_| {
             let mut buf = [0u8; 4];
