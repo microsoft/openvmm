@@ -3,6 +3,7 @@
 
 //! Integration tests for x86_64 OpenHCL servicing.
 
+use get_protocol::SaveGuestVtl2StateFlags;
 use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::ArtifactHandle;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
@@ -12,6 +13,7 @@ use vmm_test_macros::openvmm_test;
 async fn openhcl_servicing_core(
     config: PetriVmConfigOpenVmm,
     new_openhcl: ArtifactHandle<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+    flags: SaveGuestVtl2StateFlags,
 ) -> anyhow::Result<()> {
     let (mut vm, agent) = config.run().await?;
 
@@ -20,7 +22,7 @@ async fn openhcl_servicing_core(
     // Test that inspect serialization works with the old version.
     vm.test_inspect_openhcl().await?;
 
-    vm.restart_openhcl(new_openhcl).await?;
+    vm.restart_openhcl(new_openhcl, flags).await?;
 
     agent.ping().await?;
 
@@ -36,7 +38,24 @@ async fn openhcl_servicing_core(
 /// Test servicing an OpenHCL VM from the current version to itself.
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn openhcl_servicing(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    openhcl_servicing_core(config, LATEST_LINUX_DIRECT_TEST_X64).await
+    openhcl_servicing_core(
+        config,
+        LATEST_LINUX_DIRECT_TEST_X64,
+        SaveGuestVtl2StateFlags::new().with_enable_nvme_keepalive(false),
+    )
+    .await
+}
+
+/// Test servicing an OpenHCL VM from the current version to itself
+/// with VF keepalive support.
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn openhcl_servicing_keepalive(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+    openhcl_servicing_core(
+        config,
+        LATEST_LINUX_DIRECT_TEST_X64,
+        SaveGuestVtl2StateFlags::new().with_enable_nvme_keepalive(true),
+    )
+    .await
 }
 
 // TODO: add tests with guest workloads while doing servicing.

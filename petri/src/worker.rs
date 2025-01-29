@@ -59,9 +59,10 @@ impl Worker {
     pub(crate) async fn restart_openhcl(
         &self,
         send: &mesh::Sender<get_resources::ged::GuestEmulationRequest>,
+        flags: get_protocol::SaveGuestVtl2StateFlags,
         file: std::fs::File,
     ) -> anyhow::Result<()> {
-        hvlite_helpers::underhill::service_underhill(&self.rpc, send, file).await
+        hvlite_helpers::underhill::service_underhill(&self.rpc, send, flags, file).await
     }
 
     pub(crate) async fn inspect_all(&self) -> String {

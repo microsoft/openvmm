@@ -334,7 +334,7 @@ enum TestTask {
 impl TestGedClient {
     pub async fn test_save_guest_vtl2_state(&mut self) {
         self.sender
-            .call_failable(GuestEmulationRequest::SaveGuestVtl2State, ())
+            .call_failable(GuestEmulationRequest::SaveGuestVtl2State, 0)
             .await
             .expect("no failure");
     }

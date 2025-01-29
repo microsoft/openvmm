@@ -160,7 +160,7 @@ pub mod ged {
         /// Wait for VTL2 to start VTL0.
         WaitForVtl0Start(Rpc<(), Result<(), Vtl0StartError>>),
         /// Save VTL2 state.
-        SaveGuestVtl2State(Rpc<(), Result<(), SaveRestoreError>>),
+        SaveGuestVtl2State(Rpc<u64, Result<(), SaveRestoreError>>),
         /// Update the VTL2 settings.
         ModifyVtl2Settings(Rpc<Vec<u8>, Result<(), ModifyVtl2SettingsError>>),
     }

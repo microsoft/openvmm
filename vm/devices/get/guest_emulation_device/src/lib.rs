@@ -316,7 +316,7 @@ pub struct GedChannel<T: RingMem = GpadlRingMem> {
 }
 
 struct InProgressSave {
-    rpc: Rpc<(), Result<(), SaveRestoreError>>,
+    rpc: Rpc<u64, Result<(), SaveRestoreError>>,
     buffer: Vec<u8>,
 }
 

@@ -23,6 +23,7 @@ ttrpc = []
 [dependencies]
 chipset_resources.workspace = true
 debug_worker_defs.workspace = true
+get_protocol.workspace = true
 vmotherboard.workspace = true
 diag_client.workspace = true
 hvlite_defs.workspace = true
