@@ -282,8 +282,6 @@ pub struct UnderhillEnvCfg {
     // TODO MCR: support closed-source configuration logic for MCR device
     pub mcr: bool,
 
-    /// Enable an APIC emulator.
-    pub emulate_apic: bool,
     /// Enable the shared visibility pool. This is enabled by default on
     /// hardware isolated platforms, but can be enabled for testing. Hardware
     /// devices will use the shared pool for DMA if enabled.
@@ -1740,8 +1738,6 @@ async fn new_underhill_vm(
         vmm_core::cpuid::hyperv_cpuid_leaves(extended_ioapic_rte).collect::<Vec<_>>()
     };
 
-    let emulate_apic = cfg!(guest_arch = "x86_64") && (env_cfg.emulate_apic || hardware_isolated);
-
     let (crash_notification_send, crash_notification_recv) = mesh::channel();
 
     let state_units = StateUnits::new();
@@ -1771,7 +1767,6 @@ async fn new_underhill_vm(
         #[cfg(guest_arch = "x86_64")]
         cpuid,
         crash_notification_send,
-        emulate_apic,
         vmtime: &vmtime_source,
         isolated_memory_protector: gm.isolated_memory_protector()?,
         shared_vis_pages_pool: shared_vis_pages_pool.as_ref().map(|p| {

@@ -1052,10 +1052,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
                 // description. However, for full correctness this should be
                 // extended to check for all overlay pages.
                 let overlay_page = hvdef::hypercall::MsrHypercallContents::from(
-                    self.vp
-                        .backing
-                        .hv(target_vtl)
-                        .expect("has an hv emulator")
+                    self.vp.backing.cvm_state_mut().hv[target_vtl]
                         .msr_read(hvdef::HV_X64_MSR_HYPERCALL)
                         .unwrap(),
                 )

@@ -14,7 +14,6 @@ const MAX_CPUS: usize = 2048;
 /// Provides the values for the synthetic hypervisor cpuid leaves.
 pub fn hv_cpuid_leaves(
     topology: &ProcessorTopology<X86Topology>,
-    emulate_apic: bool,
     isolation: IsolationType,
     access_vsm: bool,
     hv_version: [u32; 4],
@@ -124,15 +123,12 @@ pub fn hv_cpuid_leaves(
                 .with_use_apic_msrs(use_apic_msrs);
 
             if hardware_isolated {
-                enlightenments =
-                    enlightenments.with_use_hypercall_for_remote_flush_and_local_flush_entire(true);
+                enlightenments = enlightenments
+                    .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
+                    .with_long_spin_wait_count(0xffffffff); // no spin wait notifications;
 
                 // TODO HCVM:
                 //    .with_use_synthetic_cluster_ipi(true);
-
-                if emulate_apic {
-                    enlightenments.set_long_spin_wait_count(0xffffffff); // no spin wait notifications
-                }
             };
             split_u128(enlightenments.into())
         }),

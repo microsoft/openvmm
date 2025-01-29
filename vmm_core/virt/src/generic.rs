@@ -231,8 +231,6 @@ pub struct Vtl2Config {
     ///
     /// Accesses before memory is mapped is determined by the specified config.
     pub late_map_vtl0_memory: Option<LateMapVtl0MemoryConfig>,
-    /// Defer VTL0 APIC emulation to VTL2.
-    pub vtl2_emulates_apic: bool,
 }
 
 /// Hypervisor configuration.

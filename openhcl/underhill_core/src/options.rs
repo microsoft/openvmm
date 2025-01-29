@@ -89,10 +89,6 @@ pub struct Options {
     /// MCR Device Enable
     pub mcr: bool, // TODO MCR: support closed-source ENV vars
 
-    /// (OPENHCL_EMULATE_APIC=1)
-    /// Enable an APIC emulator.
-    pub emulate_apic: bool,
-
     /// (OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1)
     /// Enable the shared visibility pool. This is enabled by default on
     /// hardware isolated platforms, but can be enabled for testing. Hardware
@@ -192,7 +188,6 @@ impl Options {
         let vtl0_starts_paused = parse_legacy_env_bool("OPENHCL_VTL0_STARTS_PAUSED");
         let serial_wait_for_rts = parse_legacy_env_bool("OPENHCL_SERIAL_WAIT_FOR_RTS");
         let nvme_vfio = parse_legacy_env_bool("OPENHCL_NVME_VFIO");
-        let emulate_apic = parse_legacy_env_bool("OPENHCL_EMULATE_APIC");
         let mcr = parse_legacy_env_bool("OPENHCL_MCR_DEVICE");
         let enable_shared_visibility_pool =
             parse_legacy_env_bool("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL");
@@ -250,7 +245,6 @@ impl Options {
             force_load_vtl0_image,
             nvme_vfio,
             mcr,
-            emulate_apic,
             enable_shared_visibility_pool,
             cvm_guest_vsm,
             hide_isolation,

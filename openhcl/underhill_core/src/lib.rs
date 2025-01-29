@@ -315,7 +315,6 @@ async fn launch_workers(
         force_load_vtl0_image: opt.force_load_vtl0_image,
         nvme_vfio: opt.nvme_vfio,
         mcr: opt.mcr,
-        emulate_apic: opt.emulate_apic,
         enable_shared_visibility_pool: opt.enable_shared_visibility_pool,
         cvm_guest_vsm: opt.cvm_guest_vsm,
         halt_on_guest_halt: opt.halt_on_guest_halt,

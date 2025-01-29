@@ -1275,7 +1275,6 @@ fn vm_config_from_command_line(
                         Some(LateMapVtl0MemoryPolicy::InjectException)
                     }
                 },
-                vtl2_emulates_apic: opt.vtl2_emulates_apic,
             }),
             with_isolation,
             user_mode_hv_enlightenments: opt.no_enlightenments,
