@@ -53,9 +53,7 @@ use virt_support_aarch64emu::emulate::EmuTranslateResult;
 use virt_support_aarch64emu::emulate::EmulatorSupport;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
-use zerocopy::Immutable;
 use zerocopy::IntoBytes;
-use zerocopy::KnownLayout;
 
 /// A backing for hypervisor-backed partitions (non-isolated and
 /// software-isolated).
@@ -164,7 +162,8 @@ impl BackingPrivate for HypervisorBackedArm64 {
                     let message = hvdef::HvArm64ResetInterceptMessage::ref_from_prefix(
                         this.runner.exit_message().payload(),
                     )
-                    .unwrap();
+                    .unwrap()
+                    .0; // todo: zerocopy: err, use-rest-of-range
                     match message.reset_type {
                         HvArm64ResetType::POWER_OFF => return Err(VpHaltReason::PowerOff),
                         HvArm64ResetType::REBOOT => return Err(VpHaltReason::Reset),
@@ -236,7 +235,8 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
         let message = hvdef::HvArm64SynicSintDeliverableMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
         )
-        .unwrap();
+        .unwrap()
+        .0; // todo: zerocopy: err, use-rest-of-range
 
         tracing::trace!(
             deliverable_sints = message.deliverable_sints,
@@ -261,7 +261,8 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
         let message = hvdef::HvArm64HypercallInterceptMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
         )
-        .unwrap();
+        .unwrap()
+        .0; // todo: zerocopy: err, use-rest-of-range
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "hypercall");
 
@@ -293,8 +294,9 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
         let message = hvdef::HvArm64MemoryInterceptMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
         )
-        .unwrap();
-        // tracing::trace!(msg = %format_args!("{:x?}", message), "mmio");
+        .unwrap()
+        .0; // todo: zerocopy: err, use-rest-of-range
+            // tracing::trace!(msg = %format_args!("{:x?}", message), "mmio");
 
         let intercept_state = InterceptState {
             instruction_bytes: message.instruction_bytes,
@@ -322,6 +324,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             self.runner.exit_message().payload(),
         )
         .unwrap()
+        .0 // todo: zerocopy: err, use-rest-of-range
         .guest_physical_address;
 
         if self.partition.is_gpa_lower_vtl_ram(gpa) {
@@ -523,10 +526,9 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
             HvMessageType::HvMessageTypeGpaIntercept
             | HvMessageType::HvMessageTypeUnmappedGpa
             | HvMessageType::HvMessageTypeUnacceptedGpa => {
-                let message =
-                    hvdef::HvArm64MemoryInterceptMessage::ref_from_prefix(message.payload())
-                        .unwrap();
-                Some(message.guest_physical_address)
+                hvdef::HvArm64MemoryInterceptMessage::ref_from_prefix(message.payload())
+                    .ok()
+                    .map(|v| v.0.guest_physical_address) // todo: zerocopy: err, use-rest-of-range
             }
             _ => None,
         }
@@ -543,7 +545,9 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
 
         let message = hvdef::HvArm64MemoryInterceptMessage::ref_from_prefix(
             self.vp.runner.exit_message().payload(),
-        )?;
+        )
+        .ok()?
+        .0; // todo: zerocopy: err, use-rest-of-range
 
         if !message.memory_access_info.gva_gpa_valid() {
             tracing::trace!(?message.guest_virtual_address, ?message.guest_physical_address, "gva gpa not valid {:?}", self.vp.runner.exit_message().payload());

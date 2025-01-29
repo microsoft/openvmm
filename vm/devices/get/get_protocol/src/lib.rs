@@ -162,7 +162,7 @@ open_enum! {
 }
 
 pub use header::*;
-// UNSAFETY: The unsafe manual impl of AsBytes for HeaderGeneric
+// UNSAFETY: The unsafe manual impl of IntoBytes for HeaderGeneric
 #[expect(unsafe_code)]
 pub mod header {
     use super::MessageTypes;

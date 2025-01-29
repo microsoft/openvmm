@@ -56,9 +56,7 @@ use tracing_helpers::ErrorValueExt;
 use unicycle::FuturesUnordered;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
-use zerocopy::Immutable;
 use zerocopy::IntoBytes;
-use zerocopy::KnownLayout;
 
 type InvitationMap =
     Arc<Mutex<HashMap<NodeId, (RemoteNodeHandle, mesh_channel::OneshotSender<()>)>>>;
@@ -559,7 +557,8 @@ impl AlpcNode {
                         .expect("port must exist");
 
                     match protocol::PacketHeader::read_from_prefix(buf) {
-                        Some(header) => match header.packet_type {
+                        Ok((header, _)) => match header.packet_type {
+                            // todo: zerocopy: use-rest-of-range
                             protocol::PacketType::EVENT => {
                                 local_node.event(
                                     connection.handle.id(),
@@ -578,7 +577,8 @@ impl AlpcNode {
                                 tracing::error!(node = ?local_id, ?packet_type, "unknown packet type");
                             }
                         },
-                        None => {
+                        Err(_) => {
+                            // todo: zerocopy: err
                             tracing::error!(node = ?local_id, "invalid message");
                         }
                     }

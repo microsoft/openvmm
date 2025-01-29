@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A generic, read-only PCI Capability (backed by an [`AsBytes`] type).
+//! A generic, read-only PCI Capability (backed by an [`IntoBytes`] type).
 
 use super::PciCapability;
 use inspect::Inspect;
