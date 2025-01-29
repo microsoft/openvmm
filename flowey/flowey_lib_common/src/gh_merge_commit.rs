@@ -38,7 +38,7 @@ impl SimpleFlowNode for Node {
                 let pr_event = rt.read(pr_event).expect("PR event not found");
 
                 let head_ref = pr_event.head.head_ref;
-                let pr_number = pr_event.number;
+                let pr_number = pr_event.number.to_string();
 
                 sh.change_dir(repo_path);
 

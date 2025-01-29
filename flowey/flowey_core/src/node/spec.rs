@@ -15,5 +15,5 @@ pub struct Head {
 #[derive(Serialize, Deserialize)]
 pub struct GhContextVarReaderEventPullRequest {
     pub head: Head,
-    pub number: String,
+    pub number: u32,
 }

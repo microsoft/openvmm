@@ -81,9 +81,6 @@ impl SimpleFlowNode for Node {
                     crate::build_xtask::XtaskOutput::WindowsBin { exe, .. } => exe,
                 };
 
-                let sh = xshell::Shell::new()?;
-                sh.change_dir(rt.read(openvmm_repo_path));
-
                 let old_openhcl = rt.read(old_openhcl);
                 let new_openhcl = rt.read(new_openhcl);
 
@@ -101,6 +98,8 @@ impl SimpleFlowNode for Node {
                     CommonArch::Aarch64 => new_openhcl.join("openhcl-aarch64/openhcl"),
                 };
 
+                let sh = xshell::Shell::new()?;
+                sh.change_dir(rt.read(openvmm_repo_path));
                 xshell::cmd!(
                     sh,
                     "{xtask} verify-size --original {old_path} --new {new_path}"

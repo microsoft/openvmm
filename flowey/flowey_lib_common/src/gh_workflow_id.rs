@@ -49,8 +49,12 @@ impl SimpleFlowNode for Node {
             // Fetches the CI build workflow id for a given commit hash
 
             let get_action_id = |commit: String| {
-            let cmd = format!("gh run list --commit {} -w '{}' -s 'completed' -L 1 --json databaseId --jq '.[].databaseId'", commit, pipeline_name);
-            sh.cmd(cmd).env("GITHUB_TOKEN", gh_token.clone()).read()
+                let cmd = format!(
+                    "gh run list --commit {} -w '{}' -s 'completed' -L 1 --json databaseId --jq '.[].databaseId'",
+                    commit,
+                    pipeline_name
+                );
+                sh.cmd(cmd).env("GITHUB_TOKEN", gh_token.clone()).read()
             };
 
             let mut github_commit_hash = github_commit_hash.clone();

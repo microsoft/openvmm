@@ -17,7 +17,7 @@ pub struct VerifySize {
     original: std::path::PathBuf,
 
     /// New binary path
-    #[clap(short, long, required(true))]
+    #[clap(short, long)]
     new: std::path::PathBuf,
 }
 
