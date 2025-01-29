@@ -1166,6 +1166,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
 
     fn handle_nmi(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
         // Exit idle when an interrupt is received, regardless of IF
+        // TODO: Investigate lifting more activity management into poll_apic_core
         if self.vp.backing.cvm.lapics[vtl].activity == MpState::Idle {
             self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
         }
