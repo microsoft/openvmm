@@ -48,6 +48,8 @@ use virt::vp::AccessVpState;
 use virt::vp::MpState;
 use virt::x86::MsrError;
 use virt::x86::MsrErrorExt;
+use virt::x86::SegmentRegister;
+use virt::x86::TableRegister;
 use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -69,7 +71,6 @@ use x86defs::snp::SevStatusMsr;
 use x86defs::snp::SevVmsa;
 use x86defs::snp::Vmpl;
 use x86defs::RFlags;
-use x86defs::SegmentRegister;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
@@ -502,7 +503,7 @@ impl BackingPrivate for SnpBacked {
     }
 }
 
-fn hv_seg_to_snp(val: &hvdef::HvX64SegmentRegister) -> SevSelector {
+fn virt_seg_to_snp(val: SegmentRegister) -> SevSelector {
     SevSelector {
         selector: val.selector,
         attrib: (val.attributes & 0xFF) | ((val.attributes >> 4) & 0xF00),
@@ -511,7 +512,7 @@ fn hv_seg_to_snp(val: &hvdef::HvX64SegmentRegister) -> SevSelector {
     }
 }
 
-fn hv_table_to_snp(val: &hvdef::HvX64TableRegister) -> SevSelector {
+fn virt_table_to_snp(val: TableRegister) -> SevSelector {
     SevSelector {
         limit: val.limit as u32,
         base: val.base,
@@ -753,14 +754,9 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpB
         Ok(())
     }
 
-    fn handle_sipi(&mut self, vtl: GuestVtl, base: u64, selector: u16) -> Result<(), UhRunVpError> {
+    fn handle_sipi(&mut self, vtl: GuestVtl, cs: SegmentRegister) -> Result<(), UhRunVpError> {
         let mut vmsa = self.runner.vmsa_mut(vtl);
-        vmsa.set_cs(hv_seg_to_snp(&hvdef::HvX64SegmentRegister {
-            base,
-            limit: 0xffff,
-            selector,
-            attributes: 0x9b,
-        }));
+        vmsa.set_cs(virt_seg_to_snp(cs));
         vmsa.set_rip(0);
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
 
@@ -1460,7 +1456,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         vmsa.set_rip(v);
     }
 
-    fn segment(&mut self, index: x86emu::Segment) -> SegmentRegister {
+    fn segment(&mut self, index: x86emu::Segment) -> x86defs::SegmentRegister {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         match index {
             x86emu::Segment::ES => from_seg(hv_seg_from_snp(&vmsa.es())),
@@ -1749,16 +1745,16 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         vmsa.set_r15(r15);
         vmsa.set_rip(rip);
         vmsa.set_rflags(rflags);
-        vmsa.set_cs(hv_seg_to_snp(&cs.into()));
-        vmsa.set_ds(hv_seg_to_snp(&ds.into()));
-        vmsa.set_es(hv_seg_to_snp(&es.into()));
-        vmsa.set_fs(hv_seg_to_snp(&fs.into()));
-        vmsa.set_gs(hv_seg_to_snp(&gs.into()));
-        vmsa.set_ss(hv_seg_to_snp(&ss.into()));
-        vmsa.set_tr(hv_seg_to_snp(&tr.into()));
-        vmsa.set_ldtr(hv_seg_to_snp(&ldtr.into()));
-        vmsa.set_gdtr(hv_table_to_snp(&gdtr.into()));
-        vmsa.set_idtr(hv_table_to_snp(&idtr.into()));
+        vmsa.set_cs(virt_seg_to_snp(cs));
+        vmsa.set_ds(virt_seg_to_snp(ds));
+        vmsa.set_es(virt_seg_to_snp(es));
+        vmsa.set_fs(virt_seg_to_snp(fs));
+        vmsa.set_gs(virt_seg_to_snp(gs));
+        vmsa.set_ss(virt_seg_to_snp(ss));
+        vmsa.set_tr(virt_seg_to_snp(tr));
+        vmsa.set_ldtr(virt_seg_to_snp(ldtr));
+        vmsa.set_gdtr(virt_table_to_snp(gdtr));
+        vmsa.set_idtr(virt_table_to_snp(idtr));
         vmsa.set_cr0(cr0);
         vmsa.set_cr2(cr2);
         vmsa.set_cr3(cr3);

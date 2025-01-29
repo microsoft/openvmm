@@ -8,6 +8,7 @@ use crate::processor::HardwareIsolatedBacking;
 use crate::UhProcessor;
 use hcl::GuestVtl;
 use virt::vp::MpState;
+use virt::x86::SegmentRegister;
 use virt::Processor;
 use virt_support_apic::ApicWork;
 
@@ -21,7 +22,7 @@ pub(crate) trait ApicBacking<'b, B: HardwareIsolatedBacking> {
         Ok(())
     }
 
-    fn handle_sipi(&mut self, vtl: GuestVtl, base: u64, selector: u16) -> Result<(), UhRunVpError>;
+    fn handle_sipi(&mut self, vtl: GuestVtl, cs: SegmentRegister) -> Result<(), UhRunVpError>;
     fn handle_nmi(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError>;
     fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError>;
 
@@ -75,7 +76,15 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
                 debug_assert_eq!(vtl, GuestVtl::Vtl0);
                 let base = (vector as u64) << 12;
                 let selector = (vector as u16) << 8;
-                apic_backing.handle_sipi(vtl, base, selector)?;
+                apic_backing.handle_sipi(
+                    vtl,
+                    SegmentRegister {
+                        base,
+                        limit: 0xffff,
+                        selector,
+                        attributes: 0x9b,
+                    },
+                )?;
             }
         }
     }

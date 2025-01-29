@@ -1205,19 +1205,8 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
         Ok(())
     }
 
-    fn handle_sipi(&mut self, vtl: GuestVtl, base: u64, selector: u16) -> Result<(), UhRunVpError> {
-        self.vp
-            .write_segment(
-                vtl,
-                TdxSegmentReg::Cs,
-                SegmentRegister {
-                    base,
-                    limit: 0xffff,
-                    selector,
-                    attributes: 0x9b,
-                },
-            )
-            .unwrap();
+    fn handle_sipi(&mut self, vtl: GuestVtl, cs: SegmentRegister) -> Result<(), UhRunVpError> {
+        self.vp.write_segment(vtl, TdxSegmentReg::Cs, cs).unwrap();
         self.vp.runner.tdx_enter_guest_state_mut().rip = 0;
         self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
 
