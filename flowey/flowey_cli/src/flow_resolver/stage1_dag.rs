@@ -780,7 +780,7 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
         uses: &str,
         with: BTreeMap<String, ClaimedGhParam>,
         condvar: Option<String>,
-        outputs: BTreeMap<String, Vec<(String, bool, bool)>>,
+        outputs: BTreeMap<String, Vec<GhVarState>>,
         permissions: BTreeMap<GhPermission, GhPermissionValue>,
         mut gh_to_rust: Vec<GhVarState>,
         mut rust_to_gh: Vec<GhVarState>,
@@ -808,7 +808,7 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
                     let new_gh_var_name = fresh_yaml_var();
                     rust_to_gh.push(GhVarState {
                         backing_var: backing_var.clone(),
-                        raw_name: new_gh_var_name.clone(),
+                        raw_name: Some(new_gh_var_name.clone()),
                         is_object: false,
                         is_secret,
                     });
@@ -821,10 +821,10 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
             for output in output_vars {
                 let gh_context_var_name = format!("steps.{step_id}.outputs.{name}");
                 gh_to_rust.push(GhVarState {
-                    backing_var: output.0,
-                    raw_name: gh_context_var_name,
-                    is_secret: output.1,
-                    is_object: output.2,
+                    backing_var: output.backing_var,
+                    raw_name: Some(gh_context_var_name),
+                    is_secret: output.is_secret,
+                    is_object: output.is_object,
                 });
             }
         }

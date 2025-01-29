@@ -844,7 +844,7 @@ fn resolve_flow_as_github_yaml_steps(
                         gh_var_state.is_secret,
                         None,
                         !gh_var_state.is_object,
-                        Some(gh_var_state.raw_name.clone()),
+                        gh_var_state.raw_name.clone(),
                     );
                     writeln!(cmd, r#"{set_gh_env_var}"#)?;
 
@@ -855,7 +855,9 @@ fn resolve_flow_as_github_yaml_steps(
                         "name".into(),
                         serde_yaml::Value::String(format!(
                             "🌼 Write to '{}'",
-                            gh_var_state.raw_name
+                            gh_var_state
+                                .raw_name
+                                .expect("couldn't get raw_name for variable")
                         )),
                     );
 
@@ -893,10 +895,15 @@ fn resolve_flow_as_github_yaml_steps(
                         !gh_var_state.is_object,
                         None,
                     );
+
+                    let raw_name = gh_var_state
+                        .raw_name
+                        .expect("couldn't get raw name for variable");
+
                     let cmd = if gh_var_state.is_object {
-                        format!(r#"${{{{ toJSON({}) }}}}"#, gh_var_state.raw_name)
+                        format!(r#"${{{{ toJSON({}) }}}}"#, raw_name)
                     } else {
-                        format!(r#"${{{{ {} }}}}"#, gh_var_state.raw_name)
+                        format!(r#"${{{{ {} }}}}"#, raw_name)
                     };
 
                     let mut map = serde_yaml::Mapping::new();
@@ -904,10 +911,7 @@ fn resolve_flow_as_github_yaml_steps(
                     map.insert("shell".into(), write_rust_var.into());
                     map.insert(
                         "name".into(),
-                        serde_yaml::Value::String(format!(
-                            "🌼 Read from '{}'",
-                            gh_var_state.raw_name
-                        )),
+                        serde_yaml::Value::String(format!("🌼 Read from '{}'", raw_name)),
                     );
                     if condvar.is_some() {
                         map.insert("if".into(), "${{ fromJSON(env.FLOWEY_CONDITION) }}".into());

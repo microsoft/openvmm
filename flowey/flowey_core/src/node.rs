@@ -698,7 +698,7 @@ pub trait NodeCtxBackend {
         uses: &str,
         with: BTreeMap<String, ClaimedGhParam>,
         condvar: Option<String>,
-        outputs: BTreeMap<String, Vec<(String, bool, bool)>>,
+        outputs: BTreeMap<String, Vec<GhVarState>>,
         permissions: BTreeMap<GhPermission, GhPermissionValue>,
         gh_to_rust: Vec<GhVarState>,
         rust_to_gh: Vec<GhVarState>,
@@ -1145,7 +1145,12 @@ impl<'ctx> NodeCtx<'ctx> {
                             let var = var.claim(&mut StepCtx {
                                 backend: self.backend.clone(),
                             });
-                            (var.backing_var, var.is_secret, false)
+                            GhVarState {
+                                raw_name: None,
+                                backing_var: var.backing_var,
+                                is_secret: var.is_secret,
+                                is_object: false,
+                            }
                         })
                         .collect(),
                 )

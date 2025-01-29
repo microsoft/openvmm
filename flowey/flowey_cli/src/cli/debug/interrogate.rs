@@ -169,7 +169,7 @@ impl flowey_core::node::NodeCtxBackend for InterrogateCtx {
         _uses: &str,
         _with: BTreeMap<String, ClaimedGhParam>,
         _condvar: Option<String>,
-        _outputs: BTreeMap<String, Vec<(String, bool, bool)>>,
+        _outputs: BTreeMap<String, Vec<GhVarState>>,
         _permissions: BTreeMap<GhPermission, GhPermissionValue>,
         _gh_to_rust: Vec<GhVarState>,
         _rust_to_gh: Vec<GhVarState>,

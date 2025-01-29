@@ -21,7 +21,7 @@ pub mod state {
 
 #[derive(Clone)]
 pub struct GhVarState {
-    pub raw_name: String,
+    pub raw_name: Option<String>,
     pub backing_var: String,
     pub is_secret: bool,
     pub is_object: bool,
@@ -44,7 +44,7 @@ impl<S> GhContextVarReader<'_, S> {
             backend: self.ctx.backend.clone(),
         });
         let var_state = GhVarState {
-            raw_name: var_name.as_ref().to_string(),
+            raw_name: Some(var_name.as_ref().to_string()),
             backing_var: write_var.backing_var,
             is_secret: write_var.is_secret,
             is_object,
