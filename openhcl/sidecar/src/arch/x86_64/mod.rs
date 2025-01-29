@@ -216,7 +216,7 @@ impl Write for CommandErrorWriter<'_> {
     }
 }
 
-fn hypercall(code: HypercallCode, rep_count: u16) -> Result<(), HvError> {
+fn hypercall(code: HypercallCode, rep_count: usize) -> Result<(), HvError> {
     let control = hvdef::hypercall::Control::new()
         .with_code(code.0)
         .with_rep_count(rep_count);

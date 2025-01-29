@@ -1209,7 +1209,7 @@ impl MshvHvcall {
 
         let control = hvdef::hypercall::Control::new()
             .with_code(code.0)
-            .with_rep_count(count as u16);
+            .with_rep_count(count);
 
         let call_object = protocol::hcl_hvcall {
             control,
@@ -1273,7 +1273,7 @@ impl MshvHvcall {
 
         let control = hvdef::hypercall::Control::new()
             .with_code(code.0)
-            .with_variable_header_size((variable_input.len() / 8) as u16);
+            .with_variable_header_size(variable_input.len() / 8);
 
         let call_object = protocol::hcl_hvcall {
             control,

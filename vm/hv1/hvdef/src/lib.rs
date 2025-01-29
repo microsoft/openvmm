@@ -738,19 +738,19 @@ pub mod hypercall {
         pub fast: bool,
         /// The variable header size, in qwords.
         #[bits(10)]
-        pub variable_header_size: u16,
+        pub variable_header_size: usize,
         #[bits(4)]
         _rsvd0: u8,
         /// Specifies that the hypercall should be handled by the L0 hypervisor in a nested environment.
         pub nested: bool,
         /// The element count for rep hypercalls.
         #[bits(12)]
-        pub rep_count: u16,
+        pub rep_count: usize,
         #[bits(4)]
         _rsvd1: u8,
         /// The first element to start processing in a rep hypercall.
         #[bits(12)]
-        pub rep_start: u16,
+        pub rep_start: usize,
         #[bits(4)]
         _rsvd2: u8,
     }
@@ -764,7 +764,7 @@ pub mod hypercall {
         pub call_status: u16,
         pub rsvd: u16,
         #[bits(12)]
-        pub elements_processed: u16,
+        pub elements_processed: usize,
         #[bits(20)]
         pub rsvd2: u32,
     }

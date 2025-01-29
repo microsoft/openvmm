@@ -133,7 +133,7 @@ impl HvCall {
     fn dispatch_hvcall(
         &mut self,
         code: hvdef::HypercallCode,
-        rep_count: Option<u16>,
+        rep_count: Option<usize>,
     ) -> hvdef::hypercall::HypercallOutput {
         self.init_if_needed();
 
@@ -222,25 +222,25 @@ impl HvCall {
         let mut current_page = range.start_4k_gpn();
         while current_page < range.end_4k_gpn() {
             let remaining_pages = range.end_4k_gpn() - current_page;
-            let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64);
+            let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64) as usize;
 
             header.write_to_prefix(Self::input_page().buffer.as_mut_slice());
 
             let mut input_offset = HEADER_SIZE;
             for i in 0..count {
-                let page_num = current_page + i;
+                let page_num = current_page + i as u64;
                 page_num.write_to_prefix(&mut Self::input_page().buffer[input_offset..]);
                 input_offset += size_of::<u64>();
             }
 
             let output = self.dispatch_hvcall(
                 hvdef::HypercallCode::HvCallModifyVtlProtectionMask,
-                Some(count as u16),
+                Some(count),
             );
 
             output.result()?;
 
-            current_page += count;
+            current_page += count as u64;
         }
 
         Ok(())
@@ -294,18 +294,16 @@ impl HvCall {
             };
 
             let remaining_pages = range.end_4k_gpn() - current_page;
-            let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64);
+            let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64) as usize;
 
             header.write_to_prefix(Self::input_page().buffer.as_mut_slice());
 
-            let output = self.dispatch_hvcall(
-                hvdef::HypercallCode::HvCallAcceptGpaPages,
-                Some(count as u16),
-            );
+            let output =
+                self.dispatch_hvcall(hvdef::HypercallCode::HvCallAcceptGpaPages, Some(count));
 
             output.result()?;
 
-            current_page += count;
+            current_page += count as u64;
         }
 
         Ok(())
@@ -339,7 +337,7 @@ impl HvCall {
             //         The hypercall output is validated right after the hypercall is issued.
             let r = self.dispatch_hvcall(
                 hvdef::HypercallCode::HvCallGetVpIndexFromApicId,
-                Some(hw_ids.len() as u16),
+                Some(hw_ids.len()),
             );
 
             let n = r.elements_processed() as usize;

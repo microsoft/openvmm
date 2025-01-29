@@ -206,7 +206,7 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
                     return Err(HypercallParseError::InvalidControl(control).into());
                 }
 
-                let input_size = input_size + control.variable_header_size() as usize * 8;
+                let input_size = input_size + control.variable_header_size() * 8;
                 (input_size, 0, output_size, 0)
             }
             HypercallData::Rep {
@@ -223,10 +223,10 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
                 }
 
                 let input_len = header_size
-                    + control.variable_header_size() as usize * 8
-                    + input_element_size * control.rep_count() as usize;
-                let output_start = output_element_size * control.rep_start() as usize;
-                let output_len = output_element_size * control.rep_count() as usize;
+                    + control.variable_header_size() * 8
+                    + input_element_size * control.rep_count();
+                let output_start = output_element_size * control.rep_start();
+                let output_len = output_element_size * control.rep_count();
                 (input_len, output_start, output_len, output_element_size)
             }
         };
@@ -281,7 +281,7 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
             // For simple hypercalls, on success write back all output. On failure (and timeout,
             // which is handled as a failure), nothing is written back.
             let output_end = if out_elem_size > 0 {
-                out_elem_size * ret.elements_processed() as usize
+                out_elem_size * ret.elements_processed()
             } else if ret.call_status() == 0 {
                 output_len
             } else {
@@ -337,7 +337,7 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
             // For simple hypercalls, on success write back all output. On failure (and timeout,
             // which is handled as a failure), nothing is written back.
             let output_end = if out_elem_size > 0 {
-                out_elem_size * ret.elements_processed() as usize
+                out_elem_size * ret.elements_processed()
             } else if ret.call_status() == 0 {
                 output_len
             } else {
@@ -577,12 +577,12 @@ where
         let input = if size_of::<In>() == 0 {
             &[]
         } else {
-            &In::slice_from(rest).unwrap()[params.control.rep_start() as usize..]
+            &In::slice_from(rest).unwrap()[params.control.rep_start()..]
         };
         let output = if size_of::<Out>() == 0 {
             &mut []
         } else {
-            &mut Out::mut_slice_from(params.output).unwrap()[params.control.rep_start() as usize..]
+            &mut Out::mut_slice_from(params.output).unwrap()[params.control.rep_start()..]
         };
 
         (header.into_ref(), input, output)
@@ -598,10 +598,10 @@ where
             Ok(()) => HypercallOutput::SUCCESS.with_elements_processed(control.rep_count()),
             Err((e, reps)) => {
                 assert!(
-                    control.rep_start() as usize + reps < control.rep_count() as usize,
+                    control.rep_start() + reps < control.rep_count(),
                     "more reps processed than requested"
                 );
-                HypercallOutput::from(e).with_elements_processed(control.rep_start() + reps as u16)
+                HypercallOutput::from(e).with_elements_processed(control.rep_start() + reps)
             }
         }
     }
@@ -631,16 +631,16 @@ where
     pub fn parse(params: HypercallParameters<'_>) -> (&Hdr, &[u64], &[In], &mut [Out]) {
         let (header, rest) = Ref::<_, Hdr>::new_from_prefix(params.input).unwrap();
         let (var_header, rest) =
-            u64::slice_from_prefix(rest, params.control.variable_header_size() as usize).unwrap();
+            u64::slice_from_prefix(rest, params.control.variable_header_size()).unwrap();
         let input = if size_of::<In>() == 0 {
             &[]
         } else {
-            &In::slice_from(rest).unwrap()[params.control.rep_start() as usize..]
+            &In::slice_from(rest).unwrap()[params.control.rep_start()..]
         };
         let output = if size_of::<Out>() == 0 {
             &mut []
         } else {
-            &mut Out::mut_slice_from(params.output).unwrap()[params.control.rep_start() as usize..]
+            &mut Out::mut_slice_from(params.output).unwrap()[params.control.rep_start()..]
         };
         (header.into_ref(), var_header, input, output)
     }
@@ -655,10 +655,10 @@ where
             Ok(()) => HypercallOutput::SUCCESS.with_elements_processed(control.rep_count()),
             Err((e, reps)) => {
                 assert!(
-                    control.rep_start() as usize + reps < control.rep_count() as usize,
+                    control.rep_start() + reps < control.rep_count(),
                     "more reps processed than requested"
                 );
-                HypercallOutput::from(e).with_elements_processed(control.rep_start() + reps as u16)
+                HypercallOutput::from(e).with_elements_processed(control.rep_start() + reps)
             }
         }
     }

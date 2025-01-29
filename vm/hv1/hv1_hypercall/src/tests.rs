@@ -305,11 +305,11 @@ impl From<TestResult> for HypercallOutput {
                 HypercallOutput::new().with_call_status(err.0)
             }
             TestResult::Rep(RepResult::Success(rep_count)) => {
-                HypercallOutput::new().with_elements_processed(rep_count as u16)
+                HypercallOutput::new().with_elements_processed(rep_count)
             }
             TestResult::Rep(RepResult::Failure(err, rep_count)) => HypercallOutput::new()
                 .with_call_status(err.0)
-                .with_elements_processed(rep_count as u16),
+                .with_elements_processed(rep_count),
             _ => panic!("Should not be invoked for VTL"),
         }
     }
@@ -1168,7 +1168,7 @@ fn check_test_result(test_params: &TestParams, result: HypercallOutput, control:
             _ => 0,
         };
 
-        assert_eq!(control.rep_start() as usize, reps);
+        assert_eq!({ control.rep_start() }, reps);
     }
 }
 
@@ -1297,9 +1297,9 @@ where
         Control::new()
             .with_code(call_code.0)
             .with_fast(params.fast)
-            .with_rep_start(ctrl.reps.unwrap_or((0, 0)).0.try_into().unwrap())
-            .with_rep_count(input_reps.len().try_into().unwrap())
-            .with_variable_header_size((var_header.len() / 8).try_into().unwrap())
+            .with_rep_start(ctrl.reps.unwrap_or((0, 0)).0)
+            .with_rep_count(input_reps.len())
+            .with_variable_header_size(var_header.len() / 8)
     });
 
     println!("input control: {:?}", input_control);
