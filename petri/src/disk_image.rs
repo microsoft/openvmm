@@ -21,7 +21,7 @@ pub fn build_agent_image(
     arch: MachineArch,
     os_flavor: OsFlavor,
     resolver: &TestArtifacts,
-) -> anyhow::Result<std::fs::File> {
+) -> anyhow::Result<tempfile::NamedTempFile> {
     match os_flavor {
         OsFlavor::Windows => {
             // Windows doesn't use cloud-init, so we only need pipette
@@ -82,9 +82,10 @@ enum PathOrBinary<'a> {
 fn build_disk_image(
     volume_label: &[u8; 11],
     files: &[(&str, PathOrBinary<'_>)],
-) -> anyhow::Result<std::fs::File> {
-    let mut file = tempfile::tempfile().context("failed to make temp file")?;
-    file.set_len(64 * 1024 * 1024)
+) -> anyhow::Result<tempfile::NamedTempFile> {
+    let mut file = tempfile::NamedTempFile::new()?;
+    file.as_file()
+        .set_len(64 * 1024 * 1024)
         .context("failed to set file size")?;
 
     let partition_range =

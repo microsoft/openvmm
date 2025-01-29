@@ -24,6 +24,11 @@ cfg_if::cfg_if!(
         use processor::tdx::TdxBackedShared;
         use std::arch::x86_64::CpuidResult;
         use virt::CpuidLeaf;
+        use bitvec::prelude::BitArray;
+        use bitvec::prelude::Lsb0;
+        /// Bitarray type for representing IRR bits in a x86-64 APIC
+        /// Each bit represent the 256 possible vectors.
+        type IrrBitmap = BitArray<[u32; 8], Lsb0>;
     } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
         pub use crate::processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
         use hvdef::HvArm64RegisterName;
@@ -60,6 +65,7 @@ use hvdef::GuestCrashCtl;
 use hvdef::HvAllArchRegisterName;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
+use hvdef::HvRegisterName;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmPartitionStatus;
 use hvdef::HvRepResult;
@@ -121,6 +127,8 @@ pub enum Error {
     Sidecar(#[source] NewSidecarClientError),
     #[error("failed to install {0:?} intercept: {1:?}")]
     InstallIntercept(HvInterceptType, HvError),
+    #[error("failed to query hypervisor register {0:#x?}")]
+    Register(HvRegisterName, #[source] HvError),
     #[error("failed to set vsm partition config register")]
     VsmPartitionConfig(#[source] SetVsmPartitionConfigError),
     #[error("failed to create virtual device")]
@@ -219,10 +227,18 @@ struct UhPartitionInner {
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(skip)]
     shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
+    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[inspect(skip)]
+    private_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
     #[inspect(with = "inspect::AtomicMut")]
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
     backing_shared: BackingShared,
+    intercept_debug_exceptions: bool,
+    #[cfg(guest_arch = "x86_64")]
+    // N.B For now, only one device vector table i.e. for VTL0 only
+    #[inspect(with = "|x| inspect::iter_by_index(x.read().into_inner().map(inspect::AsHex))")]
+    device_vector_table: RwLock<IrrBitmap>,
 }
 
 #[derive(Inspect)]
@@ -628,7 +644,8 @@ struct WakeReason {
     message_queues: bool,
     hv_start_enable_vtl_vp: bool,
     intcon: bool,
-    #[bits(28)]
+    update_proxy_irr_filter: bool,
+    #[bits(27)]
     _reserved: u32,
 }
 
@@ -638,6 +655,8 @@ impl WakeReason {
     const MESSAGE_QUEUES: Self = Self::new().with_message_queues(true);
     const HV_START_ENABLE_VP_VTL: Self = Self::new().with_hv_start_enable_vtl_vp(true); // StartVp/EnableVpVtl handling
     const INTCON: Self = Self::new().with_intcon(true);
+    #[cfg(guest_arch = "x86_64")]
+    const UPDATE_PROXY_IRR_FILTER: Self = Self::new().with_update_proxy_irr_filter(true);
 }
 
 /// Immutable access to useful bits of Partition state.
@@ -696,7 +715,10 @@ impl UhPartition {
 
     /// Returns the current hypervisor reference time, in 100ns units.
     pub fn reference_time(&self) -> u64 {
-        self.inner.hcl.reference_time()
+        self.inner
+            .hcl
+            .reference_time()
+            .expect("should not fail to get the reference time")
     }
 }
 
@@ -749,6 +771,39 @@ impl UhPartitionInner {
         self.vps.get(index.index() as usize)
     }
 
+    /// For requester VP to issue `proxy_irr_blocked` update to other VPs
+    #[cfg(guest_arch = "x86_64")]
+    fn request_proxy_irr_filter_update(&self, vtl: GuestVtl, device_vector: u8, req_vp_index: u32) {
+        tracing::debug!(
+            ?vtl,
+            device_vector,
+            req_vp_index,
+            "request_proxy_irr_filter_update"
+        );
+
+        // Add given vector to partition global device vector table (VTL0 only for now)
+        {
+            let mut device_vector_table = self.device_vector_table.write();
+            device_vector_table.set(device_vector as usize, true);
+        }
+
+        // Wake all other VPs for their `proxy_irr_blocked` filter update
+        for vp in self.vps.iter() {
+            if vp.cpu_index != req_vp_index {
+                vp.wake(vtl, WakeReason::UPDATE_PROXY_IRR_FILTER);
+            }
+        }
+    }
+
+    /// Get current partition global device irr vectors (VTL0 for now)
+    #[cfg(guest_arch = "x86_64")]
+    fn fill_device_vectors(&self, _vtl: GuestVtl, irr_vectors: &mut IrrBitmap) {
+        let device_vector_table = self.device_vector_table.read();
+        for idx in device_vector_table.iter_ones() {
+            irr_vectors.set(idx, true);
+        }
+    }
+
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
         let mut wake_vps = false;
         resp.field_mut(
@@ -779,13 +834,13 @@ impl UhPartitionInner {
 
     // TODO VBS GUEST VSM: enable for aarch64
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    fn vsm_status(&self) -> HvRegisterVsmPartitionStatus {
+    fn vsm_status(&self) -> Result<HvRegisterVsmPartitionStatus, hcl::ioctl::Error> {
         // TODO: It might be possible to cache VsmPartitionStatus.
         let reg = self.hcl.get_vp_register(
             HvAllArchRegisterName::VsmPartitionStatus,
             HvInputVtl::CURRENT_VTL,
-        );
-        HvRegisterVsmPartitionStatus::from(reg.as_u64())
+        )?;
+        Ok(reg.as_u64().into())
     }
 }
 
@@ -982,7 +1037,13 @@ impl vmcore::synic::GuestEventPort for UhEventPort {
         *self.params.lock() = None;
     }
 
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) {
+    fn set(
+        &mut self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Result<(), vmcore::synic::HypervisorError> {
         let vtl = GuestVtl::try_from(vtl).expect("higher vtl not configured");
         *self.params.lock() = Some(UhEventPortParams {
             vp: VpIndex::new(vp),
@@ -990,6 +1051,8 @@ impl vmcore::synic::GuestEventPort for UhEventPort {
             flag,
             vtl,
         });
+
+        Ok(())
     }
 }
 
@@ -1093,7 +1156,7 @@ impl IoApicRouting for UhPartitionInner {
 /// values used by underhill.
 fn set_vtl2_vsm_partition_config(hcl: &mut Hcl) -> Result<(), Error> {
     // Read available capabilities to determine what to enable.
-    let caps = hcl.get_vsm_capabilities();
+    let caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
     let hardware_isolated = hcl.isolation().is_hardware_isolated();
     let isolated = hcl.isolation().is_isolated();
 
@@ -1170,6 +1233,8 @@ pub struct UhLateParams<'a> {
     pub isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     /// Allocator for shared visibility pages.
     pub shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
+    /// Allocator for private visibility pages.
+    pub private_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
 }
 
 /// Trait for CVM-related protections on guest memory.
@@ -1311,7 +1376,7 @@ impl<'a> UhProtoPartition<'a> {
             &params,
             #[cfg(guest_arch = "x86_64")]
             cvm_cpuid.as_ref(),
-        );
+        )?;
 
         Ok(UhProtoPartition {
             hcl,
@@ -1343,10 +1408,10 @@ impl<'a> UhProtoPartition<'a> {
         let is_hardware_isolated = isolation.is_hardware_isolated();
 
         // Intercept Debug Exceptions
-        // TODO TDX: This currently works on TDX because all Underhill TDs today
-        // have the debug policy bit set, allowing the hypervisor to install the
-        // intercept on behalf of the guest. In the future, Underhill should
-        // register for these intercepts itself.
+        // On TDX because all OpenHCL TDs today have the debug policy bit set,
+        // OpenHCL registers for the intercepts itself.
+        // However, on non-TDX platforms hypervisor installs the
+        // intercept on behalf of the guest.
         if params.intercept_debug_exceptions {
             if !cfg!(feature = "gdb") {
                 return Err(Error::InvalidDebugConfiguration);
@@ -1354,13 +1419,15 @@ impl<'a> UhProtoPartition<'a> {
 
             cfg_if::cfg_if! {
                 if #[cfg(guest_arch = "x86_64")] {
-                    let debug_exception_vector = 0x1;
-                    hcl.register_intercept(
-                        HvInterceptType::HvInterceptTypeException,
-                        HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-                        HvInterceptParameters::new_exception(debug_exception_vector),
-                    )
-                    .map_err(|err| Error::InstallIntercept(HvInterceptType::HvInterceptTypeException, err))?;
+                    if isolation != IsolationType::Tdx {
+                        let debug_exception_vector = 0x1;
+                        hcl.register_intercept(
+                            HvInterceptType::HvInterceptTypeException,
+                            HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                            HvInterceptParameters::new_exception(debug_exception_vector),
+                        )
+                        .map_err(|err| Error::InstallIntercept(HvInterceptType::HvInterceptTypeException, err))?;
+                    }
                 } else {
                     return Err(Error::InvalidDebugConfiguration);
                 }
@@ -1606,9 +1673,13 @@ impl<'a> UhProtoPartition<'a> {
             guest_vsm: RwLock::new(vsm_state),
             isolated_memory_protector: late_params.isolated_memory_protector.clone(),
             shared_vis_pages_pool: late_params.shared_vis_pages_pool,
+            private_vis_pages_pool: late_params.private_vis_pages_pool,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
             backing_shared: BackingShared::new(isolation, BackingSharedParams { cvm_state })?,
+            #[cfg(guest_arch = "x86_64")]
+            device_vector_table: RwLock::new(IrrBitmap::new(Default::default())),
+            intercept_debug_exceptions: params.intercept_debug_exceptions,
         });
 
         if cfg!(guest_arch = "x86_64") {
@@ -1642,21 +1713,23 @@ impl<'a> UhProtoPartition<'a> {
 
 impl UhPartition {
     /// Gets the guest OS ID for VTL0.
-    pub fn vtl0_guest_os_id(&self) -> HvGuestOsId {
+    pub fn vtl0_guest_os_id(&self) -> Result<HvGuestOsId, Error> {
         // If Underhill is emulating the hypervisor interfaces, get this value
         // from the emulator. This happens when running under hardware isolation
         // or when configured for testing.
-        if let Some(hv) = self.inner.hv.as_ref() {
+        let id = if let Some(hv) = self.inner.hv.as_ref() {
             hv.guest_os_id(Vtl::Vtl0)
         } else {
             // Ask the hypervisor for this value.
             let reg_value = self
                 .inner
                 .hcl
-                .get_vp_register(HvAllArchRegisterName::GuestOsId, Vtl::Vtl0.into());
+                .get_vp_register(HvAllArchRegisterName::GuestOsId, Vtl::Vtl0.into())
+                .map_err(Error::Hcl)?;
 
             HvGuestOsId::from(reg_value.as_u64())
-        }
+        };
+        Ok(id)
     }
 
     /// Configures guest accesses to IO ports in `range` to go directly to the
@@ -1694,15 +1767,15 @@ impl UhProtoPartition<'_> {
         hcl: &Hcl,
         params: &UhPartitionNewParams<'_>,
         #[cfg(guest_arch = "x86_64")] cvm_cpuid: Option<&cvm_cpuid::CpuidResults>,
-    ) -> bool {
+    ) -> Result<bool, Error> {
         match params.isolation {
             IsolationType::None | IsolationType::Vbs => {}
             #[cfg(guest_arch = "x86_64")]
-            IsolationType::Tdx => return false, // TODO TDX GUEST_VSM
+            IsolationType::Tdx => return Ok(false), // TODO TDX GUEST_VSM
             #[cfg(guest_arch = "x86_64")]
             IsolationType::Snp => {
                 if !params.env_cvm_guest_vsm {
-                    return false;
+                    return Ok(false);
                 }
                 // Require RMP Query
                 let rmp_query = x86defs::cpuid::ExtendedSevFeaturesEax::from(
@@ -1715,7 +1788,7 @@ impl UhProtoPartition<'_> {
 
                 if !rmp_query {
                     tracing::info!("rmp query not supported, cannot enable vsm");
-                    return false;
+                    return Ok(false);
                 }
             }
             #[allow(unreachable_patterns)]
@@ -1734,13 +1807,14 @@ impl UhProtoPartition<'_> {
                 HvArm64RegisterName::PrivilegesAndFeaturesInfo,
                 HvInputVtl::CURRENT_VTL,
             )
+            .map_err(Error::Hcl)?
             .as_u64();
 
         if !hvdef::HvPartitionPrivilege::from(privs).access_vsm() {
-            return false;
+            return Ok(false);
         }
-        let guest_vsm_config = hcl.get_guest_vsm_partition_config();
-        guest_vsm_config.maximum_vtl() >= u8::from(GuestVtl::Vtl1)
+        let guest_vsm_config = hcl.get_guest_vsm_partition_config().map_err(Error::Hcl)?;
+        Ok(guest_vsm_config.maximum_vtl() >= u8::from(GuestVtl::Vtl1))
     }
 
     #[cfg(guest_arch = "x86_64")]

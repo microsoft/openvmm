@@ -1,13 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Methods to interact with a running [`PetriVm`].
+//! Methods to interact with a running [`PetriVmOpenVmm`].
 
-use super::PetriVmResources;
+use super::PetriVmResourcesOpenVmm;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::worker::Worker;
+use crate::PetriVm;
 use crate::ShutdownKind;
 use anyhow::Context;
+use async_trait::async_trait;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use hvlite_defs::rpc::PulseSaveRestoreError;
@@ -36,13 +38,36 @@ use vmm_core_defs::HaltReason;
 // DEVNOTE: Really the PetriVmInner is the actual VM and channels that we interact
 // with. This struct exists as a wrapper to provide error handling, such as not
 // hanging indefinitely when waiting on certain channels if the VM crashes.
-pub struct PetriVm {
+pub struct PetriVmOpenVmm {
     inner: PetriVmInner,
     halt: PetriVmHaltReceiver,
 }
 
+#[async_trait]
+impl PetriVm for PetriVmOpenVmm {
+    async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
+        Self::wait_for_halt(self).await
+    }
+
+    async fn wait_for_teardown(self: Box<Self>) -> anyhow::Result<HaltReason> {
+        Self::wait_for_teardown(*self).await
+    }
+
+    async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()> {
+        Self::test_inspect_openhcl(self).await
+    }
+
+    async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
+        Self::wait_for_agent(self).await
+    }
+
+    async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()> {
+        Self::wait_for_vtl2_ready(self).await
+    }
+}
+
 pub(super) struct PetriVmInner {
-    pub(super) resources: PetriVmResources,
+    pub(super) resources: PetriVmResourcesOpenVmm,
     pub(super) mesh: Mesh,
     pub(super) worker: Arc<Worker>,
     pub(super) watchdog_tasks: Vec<Task<()>>,
@@ -54,7 +79,7 @@ struct PetriVmHaltReceiver {
     already_received: Option<Result<HaltReason, RecvError>>,
 }
 
-// Wrap a PetriVmInner function in [`PetriVm::wait_for_halt_or_internal`] to
+// Wrap a PetriVmInner function in [`PetriVmOpenVmm::wait_for_halt_or_internal`] to
 // provide better error handling.
 macro_rules! petri_vm_fn {
     ($(#[$($attrss:tt)*])* $vis:vis async fn $fn_name:ident (&mut self $(,$arg:ident: $ty:ty)*) $(-> $ret:ty)?) => {
@@ -65,7 +90,7 @@ macro_rules! petri_vm_fn {
     };
 }
 
-impl PetriVm {
+impl PetriVmOpenVmm {
     pub(super) fn new(inner: PetriVmInner, halt_notif: Receiver<HaltReason>) -> Self {
         Self {
             inner,

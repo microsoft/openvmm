@@ -645,6 +645,8 @@ pub fn write_uefi_config(
             flags.set_enable_imc_when_isolated(platform_config.general.imc_enabled);
         }
 
+        flags.set_cxl_memory_enabled(platform_config.general.cxl_memory_enabled);
+
         // Some settings do not depend on host config
 
         // All OpenHCL vTPMs must opt-in to these settings

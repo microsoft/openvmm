@@ -1266,6 +1266,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     watchdog_enabled: false,
                     always_relay_host_mmio: false,
                     imc_enabled: false,
+                    cxl_memory_enabled: false,
                 },
                 dynamic: get_protocol::dps_json::HclDevicePlatformSettingsV2Dynamic {
                     is_servicing_scenario: state.save_restore_buf.is_some(),

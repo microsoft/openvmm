@@ -53,6 +53,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::artifact_pipette::resolve::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_vhds::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
+        ctx.import::<crate::init_hyperv_tests::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
@@ -172,13 +173,13 @@ impl SimpleFlowNode for Node {
             }
             arch => anyhow::bail!("unsupported arch {arch}"),
         };
-        let pre_run_deps =
-            vec![
-                ctx.reqv(|v| crate::init_openvmm_magicpath_uefi_mu_msvm::Request {
-                    arch: mu_msvm_arch,
-                    done: v,
-                }),
-            ];
+        let pre_run_deps = vec![
+            ctx.reqv(|v| crate::init_openvmm_magicpath_uefi_mu_msvm::Request {
+                arch: mu_msvm_arch,
+                done: v,
+            }),
+            ctx.reqv(crate::init_hyperv_tests::Request),
+        ];
 
         let (test_log_path, get_test_log_path) = ctx.new_var();
         let (openhcl_dump_path, get_openhcl_dump_path) = ctx.new_var();

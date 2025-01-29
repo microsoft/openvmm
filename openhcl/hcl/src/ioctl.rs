@@ -99,6 +99,15 @@ pub enum Error {
     SetVpRegister(#[source] nix::Error),
     #[error("hcl_get_vp_register")]
     GetVpRegister(#[source] nix::Error),
+    #[error("failed to get VP register {reg:#x?} from hypercall")]
+    GetVpRegisterHypercall {
+        #[cfg(guest_arch = "x86_64")]
+        reg: HvX64RegisterName,
+        #[cfg(guest_arch = "aarch64")]
+        reg: HvArm64RegisterName,
+        #[source]
+        err: HvError,
+    },
     #[error("hcl_request_interrupt")]
     RequestInterrupt(#[source] HvError),
     #[error("hcl_cancel_vp failed")]
@@ -1345,13 +1354,12 @@ impl MshvHvcall {
         Ok(())
     }
 
-    /// Get a single VP register for the given VTL via hypercall. The call will
-    /// panic if the hypercall fails.
+    /// Get a single VP register for the given VTL via hypercall.
     fn get_vp_register_for_vtl_inner(
         &self,
         target_vtl: HvInputVtl,
         name: HvRegisterName,
-    ) -> HvRegisterValue {
+    ) -> Result<HvRegisterValue, Error> {
         let header = hvdef::hypercall::GetSetVpRegisters {
             partition_id: HV_PARTITION_ID_SELF,
             vp_index: HV_VP_INDEX_SELF,
@@ -1373,10 +1381,15 @@ impl MshvHvcall {
         };
 
         // Status must be success with 1 rep completed
-        status.result().unwrap();
+        status
+            .result()
+            .map_err(|err| Error::GetVpRegisterHypercall {
+                reg: name.into(),
+                err,
+            })?;
         assert_eq!(status.elements_processed(), 1);
 
-        output[0]
+        Ok(output[0])
     }
 
     /// Get a single VP register for the given VTL via hypercall. Only a select
@@ -1386,7 +1399,7 @@ impl MshvHvcall {
         &self,
         vtl: HvInputVtl,
         name: HvX64RegisterName,
-    ) -> HvRegisterValue {
+    ) -> Result<HvRegisterValue, Error> {
         match vtl.target_vtl().unwrap() {
             None | Some(Vtl::Vtl2) => {
                 assert!(matches!(
@@ -1428,7 +1441,7 @@ impl MshvHvcall {
         &self,
         vtl: HvInputVtl,
         name: HvArm64RegisterName,
-    ) -> HvRegisterValue {
+    ) -> Result<HvRegisterValue, Error> {
         match vtl.target_vtl().unwrap() {
             None | Some(Vtl::Vtl2) => {
                 assert!(matches!(
@@ -1590,7 +1603,12 @@ impl HclVp {
         isolation_type: IsolationType,
     ) -> Result<Self, Error> {
         let fd = &hcl.mshv_vtl.file;
-        let run = MappedPage::new(fd, vp as i64).map_err(|e| Error::MmapVp(e, None))?;
+        let run: MappedPage<hcl_run> =
+            MappedPage::new(fd, vp as i64).map_err(|e| Error::MmapVp(e, None))?;
+        // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
+        // so we know we have exclusive access. Initializing to block all vectors by default
+        let proxy_irr_blocked = unsafe { &mut *addr_of_mut!((*run.0.as_ptr()).proxy_irr_blocked) };
+        proxy_irr_blocked.fill(0xFFFFFFFF);
 
         let backing = match isolation_type {
             IsolationType::None | IsolationType::Vbs => BackingState::Mshv {
@@ -1803,7 +1821,7 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
                     reg.value = self
                         .hcl
                         .mshv_hvcall
-                        .get_vp_register_for_vtl(vtl.into(), reg.name.into());
+                        .get_vp_register_for_vtl(vtl.into(), reg.name.into())?;
                 }
             }
         }
@@ -1854,6 +1872,23 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
                 }
             }
             Some(r)
+        }
+    }
+
+    /// Update the `proxy_irr_blocked` in run page
+    pub fn update_proxy_irr_filter(&mut self, irr_filter: &[u32; 8]) {
+        // SAFETY: `proxy_irr_blocked` is accessed by current VP only, but could
+        // be concurrently accessed by kernel too, hence accessing as Atomic
+        let proxy_irr_blocked = unsafe {
+            &mut *(addr_of_mut!((*self.run.as_ptr()).proxy_irr_blocked).cast::<[AtomicU32; 8]>())
+        };
+
+        // `irr_filter` bitmap has bits set for all allowed vectors (i.e. SINT and device interrupts)
+        // Replace current `proxy_irr_blocked` with the given `irr_filter` bitmap.
+        // By default block all (i.e. set all), and only allow (unset) given vectors from `irr_filter`.
+        for (filter, irr) in proxy_irr_blocked.iter_mut().zip(irr_filter.iter()) {
+            filter.store(!irr, Ordering::Relaxed);
+            tracing::debug!(irr, "update_proxy_irr_filter");
         }
     }
 
@@ -2378,8 +2413,6 @@ impl Hcl {
     }
 
     fn hvcall_signal_event_direct(&self, vp: u32, sint: u8, flag: u16) -> Result<bool, Error> {
-        assert!(!self.isolation.is_hardware_isolated());
-
         let signal_event_input = hvdef::hypercall::SignalEventDirect {
             target_partition: HV_PARTITION_ID_SELF,
             target_vp: vp,
@@ -2417,7 +2450,6 @@ impl Hcl {
     ) -> Result<(), HvError> {
         tracing::trace!(vp, sint, "posting message");
 
-        assert!(!self.isolation.is_hardware_isolated());
         let post_message = hvdef::hypercall::PostMessageDirect {
             partition_id: HV_PARTITION_ID_SELF,
             vp_index: vp,
@@ -2461,9 +2493,10 @@ impl Hcl {
     }
 
     /// Gets the current hypervisor reference time.
-    pub fn reference_time(&self) -> u64 {
-        self.get_vp_register(HvAllArchRegisterName::TimeRefCount, HvInputVtl::CURRENT_VTL)
-            .as_u64()
+    pub fn reference_time(&self) -> Result<u64, Error> {
+        Ok(self
+            .get_vp_register(HvAllArchRegisterName::TimeRefCount, HvInputVtl::CURRENT_VTL)?
+            .as_u64())
     }
 
     /// Get a single VP register for the given VTL via hypercall. Only a select
@@ -2473,7 +2506,7 @@ impl Hcl {
         &self,
         name: impl Into<HvX64RegisterName>,
         vtl: HvInputVtl,
-    ) -> HvRegisterValue {
+    ) -> Result<HvRegisterValue, Error> {
         self.mshv_hvcall.get_vp_register_for_vtl(vtl, name.into())
     }
 
@@ -2484,7 +2517,7 @@ impl Hcl {
         &self,
         name: impl Into<HvArm64RegisterName>,
         vtl: HvInputVtl,
-    ) -> HvRegisterValue {
+    ) -> Result<HvRegisterValue, Error> {
         self.mshv_hvcall.get_vp_register_for_vtl(vtl, name.into())
     }
 
@@ -2780,16 +2813,16 @@ impl Hcl {
     }
 
     /// Read the vsm capabilities register for VTL2.
-    pub fn get_vsm_capabilities(&self) -> hvdef::HvRegisterVsmCapabilities {
+    pub fn get_vsm_capabilities(&self) -> Result<hvdef::HvRegisterVsmCapabilities, Error> {
         let caps = hvdef::HvRegisterVsmCapabilities::from(
             self.get_vp_register(
                 HvAllArchRegisterName::VsmCapabilities,
                 HvInputVtl::CURRENT_VTL,
-            )
+            )?
             .as_u64(),
         );
 
-        match self.isolation {
+        let caps = match self.isolation {
             IsolationType::None | IsolationType::Vbs => caps,
             // TODO SNP: Return actions may be useful, but with alternate injection many of these need
             // cannot actually be processed by the hypervisor without returning to VTL2.
@@ -2801,7 +2834,8 @@ impl Hcl {
             IsolationType::Tdx => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available()),
-        }
+        };
+        Ok(caps)
     }
 
     /// Set the [`hvdef::HvRegisterVsmPartitionConfig`] register.
@@ -2821,14 +2855,16 @@ impl Hcl {
     }
 
     /// Get the [`hvdef::HvRegisterGuestVsmPartitionConfig`] register
-    pub fn get_guest_vsm_partition_config(&self) -> hvdef::HvRegisterGuestVsmPartitionConfig {
-        hvdef::HvRegisterGuestVsmPartitionConfig::from(
+    pub fn get_guest_vsm_partition_config(
+        &self,
+    ) -> Result<hvdef::HvRegisterGuestVsmPartitionConfig, Error> {
+        Ok(hvdef::HvRegisterGuestVsmPartitionConfig::from(
             self.get_vp_register(
                 HvAllArchRegisterName::GuestVsmPartitionConfig,
                 HvInputVtl::CURRENT_VTL,
-            )
+            )?
             .as_u64(),
-        )
+        ))
     }
 
     /// Configure guest VSM.

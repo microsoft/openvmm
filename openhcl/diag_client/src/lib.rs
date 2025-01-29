@@ -125,6 +125,7 @@ pub mod hyperv {
         let path = match port {
             ComPortAccessInfo::PortNumber(num) => {
                 let output = Command::new("powershell.exe")
+                    .arg("-NoProfile")
                     .arg(format!(
                         r#"$x = Get-VMComPort "{vm}" -Number {num} -ErrorAction Stop; $x.Path"#,
                     ))

@@ -328,8 +328,15 @@ impl GuestEventPort for HvfEventPort {
         *self.params.write() = None;
     }
 
-    fn set(&mut self, _vtl: Vtl, vp: u32, sint: u8, flag: u16) {
+    fn set(
+        &mut self,
+        _vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Result<(), vmcore::synic::HypervisorError> {
         *self.params.write() = Some((VpIndex::new(vp), sint, flag));
+        Ok(())
     }
 }
 

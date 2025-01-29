@@ -30,7 +30,9 @@ use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
+use disk_backend_resources::layer::SqliteAutoCacheDiskLayerHandle;
 use disk_backend_resources::layer::SqliteDiskLayerHandle;
+use disk_backend_resources::DiskLayerDescription;
 use floppy_resources::FloppyDiskConfig;
 use framebuffer::FramebufferAccess;
 use framebuffer::FRAMEBUFFER_SIZE;
@@ -126,6 +128,7 @@ use vm_manifest_builder::MachineArch;
 use vm_manifest_builder::VmChipsetResult;
 use vm_manifest_builder::VmManifestBuilder;
 use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::DiskLayerHandleKind;
 use vm_resource::kind::NetEndpointHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
@@ -1445,46 +1448,82 @@ impl NicConfig {
     }
 }
 
+enum LayerOrDisk {
+    Layer(DiskLayerDescription),
+    Disk(Resource<DiskHandleKind>),
+}
+
 fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource<DiskHandleKind>> {
-    let disk_type = match disk_cli {
+    let mut layers = Vec::new();
+    disk_open_inner(disk_cli, read_only, &mut layers)?;
+    if layers.len() == 1 && matches!(layers[0], LayerOrDisk::Disk(_)) {
+        let LayerOrDisk::Disk(disk) = layers.pop().unwrap() else {
+            unreachable!()
+        };
+        Ok(disk)
+    } else {
+        Ok(Resource::new(disk_backend_resources::LayeredDiskHandle {
+            layers: layers
+                .into_iter()
+                .map(|layer| match layer {
+                    LayerOrDisk::Layer(layer) => layer,
+                    LayerOrDisk::Disk(disk) => DiskLayerDescription {
+                        layer: DiskLayerHandle(disk).into_resource(),
+                        read_cache: false,
+                        write_through: false,
+                    },
+                })
+                .collect(),
+        }))
+    }
+}
+
+fn disk_open_inner(
+    disk_cli: &DiskCliKind,
+    read_only: bool,
+    layers: &mut Vec<LayerOrDisk>,
+) -> anyhow::Result<()> {
+    fn layer<T: IntoResource<DiskLayerHandleKind>>(layer: T) -> LayerOrDisk {
+        LayerOrDisk::Layer(layer.into_resource().into())
+    }
+    fn disk<T: IntoResource<DiskHandleKind>>(disk: T) -> LayerOrDisk {
+        LayerOrDisk::Disk(disk.into_resource())
+    }
+    match disk_cli {
         &DiskCliKind::Memory(len) => {
-            Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
-                RamDiskLayerHandle { len: Some(len) },
-            ))
+            layers.push(layer(RamDiskLayerHandle { len: Some(len) }));
         }
-        DiskCliKind::File(path) => open_disk_type(path, read_only)
-            .with_context(|| format!("failed to open {}", path.display()))?,
-        DiskCliKind::Blob { kind, url } => Resource::new(disk_backend_resources::BlobDiskHandle {
-            url: url.to_owned(),
-            format: match kind {
-                cli_args::BlobKind::Flat => disk_backend_resources::BlobDiskFormat::Flat,
-                cli_args::BlobKind::Vhd1 => disk_backend_resources::BlobDiskFormat::FixedVhd1,
-            },
-        }),
+        DiskCliKind::File(path) => layers.push(LayerOrDisk::Disk(
+            open_disk_type(path, read_only)
+                .with_context(|| format!("failed to open {}", path.display()))?,
+        )),
+        DiskCliKind::Blob { kind, url } => {
+            layers.push(disk(disk_backend_resources::BlobDiskHandle {
+                url: url.to_owned(),
+                format: match kind {
+                    cli_args::BlobKind::Flat => disk_backend_resources::BlobDiskFormat::Flat,
+                    cli_args::BlobKind::Vhd1 => disk_backend_resources::BlobDiskFormat::FixedVhd1,
+                },
+            }))
+        }
         DiskCliKind::MemoryDiff(inner) => {
-            Resource::new(disk_backend_resources::LayeredDiskHandle {
-                layers: vec![
-                    RamDiskLayerHandle { len: None }.into_resource().into(),
-                    DiskLayerHandle(disk_open(inner, true)?)
-                        .into_resource()
-                        .into(),
-                ],
-            })
+            layers.push(layer(RamDiskLayerHandle { len: None }));
+            disk_open_inner(inner, true, layers)?;
         }
-        DiskCliKind::PersistentReservationsWrapper(inner) => Resource::new(
+        DiskCliKind::PersistentReservationsWrapper(inner) => layers.push(disk(
             disk_backend_resources::DiskWithReservationsHandle(disk_open(inner, read_only)?),
-        ),
+        )),
         DiskCliKind::Crypt {
-            disk,
+            disk: inner,
             cipher,
             key_file,
-        } => Resource::new(disk_crypt_resources::DiskCryptHandle {
-            disk: disk_open(disk, read_only)?,
+        } => layers.push(disk(disk_crypt_resources::DiskCryptHandle {
+            disk: disk_open(inner, read_only)?,
             cipher: match cipher {
                 cli_args::DiskCipher::XtsAes256 => disk_crypt_resources::Cipher::XtsAes256,
             },
             key: fs_err::read(key_file).context("failed to read key file")?,
-        }),
+        })),
         DiskCliKind::Sqlite {
             path,
             create_with_len,
@@ -1505,17 +1544,15 @@ fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource
                 _ => {}
             }
 
-            Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
-                SqliteDiskLayerHandle {
-                    dbhd_path: path.display().to_string(),
-                    format_dbhd: create_with_len.map(|len| {
-                        disk_backend_resources::layer::SqliteDiskLayerFormatParams {
-                            logically_read_only: false,
-                            len: Some(len),
-                        }
-                    }),
-                },
-            ))
+            layers.push(layer(SqliteDiskLayerHandle {
+                dbhd_path: path.display().to_string(),
+                format_dbhd: create_with_len.map(|len| {
+                    disk_backend_resources::layer::SqliteDiskLayerFormatParams {
+                        logically_read_only: false,
+                        len: Some(len),
+                    }
+                }),
+            }));
         }
         DiskCliKind::SqliteDiff { path, create, disk } => {
             // FUTURE: this code should be responsible for opening
@@ -1534,28 +1571,35 @@ fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource
                 _ => {}
             }
 
-            Resource::new(disk_backend_resources::LayeredDiskHandle {
-                layers: vec![
-                    SqliteDiskLayerHandle {
-                        dbhd_path: path.display().to_string(),
-                        format_dbhd: create.then_some(
-                            disk_backend_resources::layer::SqliteDiskLayerFormatParams {
-                                logically_read_only: false,
-                                len: None,
-                            },
-                        ),
-                    }
-                    .into_resource()
-                    .into(),
-                    DiskLayerHandle(disk_open(disk, true)?)
-                        .into_resource()
-                        .into(),
-                ],
-            })
+            layers.push(layer(SqliteDiskLayerHandle {
+                dbhd_path: path.display().to_string(),
+                format_dbhd: create.then_some(
+                    disk_backend_resources::layer::SqliteDiskLayerFormatParams {
+                        logically_read_only: false,
+                        len: None,
+                    },
+                ),
+            }));
+            disk_open_inner(disk, true, layers)?;
         }
-    };
-
-    Ok(disk_type)
+        DiskCliKind::AutoCacheSqlite {
+            cache_path,
+            key,
+            disk,
+        } => {
+            layers.push(LayerOrDisk::Layer(DiskLayerDescription {
+                read_cache: true,
+                write_through: false,
+                layer: SqliteAutoCacheDiskLayerHandle {
+                    cache_path: cache_path.clone(),
+                    cache_key: key.clone(),
+                }
+                .into_resource(),
+            }));
+            disk_open_inner(disk, read_only, layers)?;
+        }
+    }
+    Ok(())
 }
 
 fn do_main() -> anyhow::Result<()> {

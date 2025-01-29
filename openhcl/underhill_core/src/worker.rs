@@ -787,7 +787,10 @@ impl UhVmNetworkSettings {
                 }
             };
             let p = partition.clone();
-            let get_guest_os_id = move || -> HvGuestOsId { p.vtl0_guest_os_id() };
+            let get_guest_os_id = move || -> HvGuestOsId {
+                p.vtl0_guest_os_id()
+                    .expect("cannot fail to query the guest OS ID")
+            };
 
             let mut nic_builder = netvsp::Nic::builder()
                 .limit_ring_buffer(true)
@@ -1533,8 +1536,7 @@ async fn new_underhill_vm(
     };
 
     // Enable the private pool which supports persisting ranges across servicing
-    // for DMA devices that support save restore. Today, this is only used for
-    // NVMe.
+    // for DMA devices that support save restore.
     let mut private_pool = if !runtime_params.private_pool_ranges().is_empty() {
         use vmcore::save_restore::SaveRestore;
 
@@ -1773,7 +1775,11 @@ async fn new_underhill_vm(
         vmtime: &vmtime_source,
         isolated_memory_protector: gm.isolated_memory_protector()?,
         shared_vis_pages_pool: shared_vis_pages_pool.as_ref().map(|p| {
-            p.allocator("partition".into())
+            p.allocator("partition-shared".into())
+                .expect("partition name should be unique")
+        }),
+        private_vis_pages_pool: private_pool.as_ref().map(|p| {
+            p.allocator("partition-private".into())
                 .expect("partition name should be unique")
         }),
     };
@@ -3116,6 +3122,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         nvdimm_count: _,
         watchdog_enabled: _,
         vtl2_settings: _,
+        cxl_memory_enabled: _,
     } = &dps.general;
 
     if *hibernation_enabled {

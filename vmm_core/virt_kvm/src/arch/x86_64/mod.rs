@@ -1284,12 +1284,20 @@ impl GuestEventPort for KvmGuestEventPort {
         *self.params.lock() = None;
     }
 
-    fn set(&mut self, _vtl: Vtl, vp: u32, sint: u8, flag: u16) {
+    fn set(
+        &mut self,
+        _vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Result<(), vmcore::synic::HypervisorError> {
         *self.params.lock() = Some(KvmEventPortParams {
             vp: VpIndex::new(vp),
             sint,
             flag,
         });
+
+        Ok(())
     }
 }
 

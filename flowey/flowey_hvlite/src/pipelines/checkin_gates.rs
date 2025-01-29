@@ -938,10 +938,19 @@ impl IntoPipeline for CheckinGatesCli {
                 if matches!(
                     target.as_triple().operating_system,
                     target_lexicon::OperatingSystem::Linux
-                ) {
+                ) || matches!(target.common_arch(), Some(CommonArch::Aarch64))
+                {
                     // - OpenHCL is not supported on KVM
+                    // - OpenHCL is not currently supported on our ARM64 test runners
+                    expr = format!("{expr} and not test(openhcl)")
+                }
+
+                if matches!(
+                    target.as_triple().operating_system,
+                    target_lexicon::OperatingSystem::Linux
+                ) {
                     // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
-                    expr = format!("{expr} and not test(openhcl) and not test(pcat_x64)")
+                    expr = format!("{expr} and not test(pcat_x64)")
                 }
 
                 Some(expr)

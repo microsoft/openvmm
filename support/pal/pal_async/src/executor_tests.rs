@@ -169,10 +169,13 @@ pub async fn socket_tests(driver: impl Driver) {
 
     // accept/connect
     {
-        let (listener, path) =
-            tempfile_helpers::with_temp_path(|path| UnixListener::bind(path)).unwrap();
-        let mut l = PolledSocket::new(&driver, listener).unwrap();
-        let _c = PolledSocket::connect_unix(&driver, &path).await.unwrap();
+        let listener = tempfile::Builder::new()
+            .make(|path| UnixListener::bind(path))
+            .unwrap();
+        let mut l = PolledSocket::new(&driver, listener.as_file()).unwrap();
+        let _c = PolledSocket::connect_unix(&driver, listener.path())
+            .await
+            .unwrap();
         let _s = l.accept().await.unwrap();
     }
 

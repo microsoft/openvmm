@@ -1,14 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Methods to start a [`PetriVmConfig`] and produce a running [`PetriVm`].
+//! Methods to start a [`PetriVmConfigOpenVmm`] and produce a running [`PetriVmOpenVmm`].
 
+use super::PetriVmConfigOpenVmm;
+use super::PetriVmOpenVmm;
 use crate::disk_image::build_agent_image;
 use crate::tracing::trace_attachment;
 use crate::worker::Worker;
 use crate::Firmware;
-use crate::PetriVm;
-use crate::PetriVmConfig;
 use anyhow::Context;
 use diag_client::DiagClient;
 use disk_backend_resources::FileDiskHandle;
@@ -41,8 +41,8 @@ use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
 use vm_resource::IntoResource;
 
-impl PetriVmConfig {
-    async fn run_core(self) -> anyhow::Result<PetriVm> {
+impl PetriVmConfigOpenVmm {
+    async fn run_core(self) -> anyhow::Result<PetriVmOpenVmm> {
         let Self {
             firmware,
             arch,
@@ -90,7 +90,7 @@ impl PetriVmConfig {
             &resources.driver,
         )?;
 
-        let mut vm = PetriVm::new(
+        let mut vm = PetriVmOpenVmm::new(
             super::runtime::PetriVmInner {
                 resources,
                 mesh,
@@ -122,12 +122,12 @@ impl PetriVmConfig {
 
     /// Build and boot the requested VM. Does not configure and start pipette.
     /// Should only be used for testing platforms that pipette does not support.
-    pub async fn run_without_agent(self) -> anyhow::Result<PetriVm> {
+    pub async fn run_without_agent(self) -> anyhow::Result<PetriVmOpenVmm> {
         self.run_core().await
     }
 
     /// Run the VM, launching pipette and returning a client to it.
-    pub async fn run(self) -> anyhow::Result<(PetriVm, PipetteClient)> {
+    pub async fn run(self) -> anyhow::Result<(PetriVmOpenVmm, PipetteClient)> {
         let mut vm = self.run_with_lazy_pipette().await?;
         let client = vm.wait_for_agent().await?;
         Ok((vm, client))
@@ -136,7 +136,7 @@ impl PetriVmConfig {
     /// Run the VM, configuring pipette to automatically start, but do not wait
     /// for it to connect. This is useful for tests where the first boot attempt
     /// is expected to not succeed, but pipette functionality is still desired.
-    pub async fn run_with_lazy_pipette(mut self) -> anyhow::Result<PetriVm> {
+    pub async fn run_with_lazy_pipette(mut self) -> anyhow::Result<PetriVmOpenVmm> {
         const CIDATA_SCSI_INSTANCE: Guid =
             Guid::from_static_str("766e96f8-2ceb-437e-afe3-a93169e48a7b");
 
@@ -166,7 +166,7 @@ impl PetriVmConfig {
                     device: SimpleScsiDiskHandle {
                         read_only: true,
                         parameters: Default::default(),
-                        disk: FileDiskHandle(agent_disk).into_resource(),
+                        disk: FileDiskHandle(agent_disk.into_file()).into_resource(),
                     }
                     .into_resource(),
                 }],
@@ -180,7 +180,7 @@ impl PetriVmConfig {
             // location at runtime.
             let mut imc_hive_file = tempfile::tempfile().context("failed to create temp file")?;
             imc_hive_file
-                .write_all(include_bytes!("../../guest-bootstrap/imc.hiv"))
+                .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
                 .context("failed to write imc hive")?;
 
             // Add the IMC device.
@@ -217,7 +217,7 @@ impl PetriVmConfig {
                         device: SimpleScsiDiskHandle {
                             read_only: true,
                             parameters: Default::default(),
-                            disk: FileDiskHandle(uh_agent_disk).into_resource(),
+                            disk: FileDiskHandle(uh_agent_disk.into_file()).into_resource(),
                         }
                         .into_resource(),
                     }],

@@ -7,6 +7,7 @@ use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::pipeline::CheckMode;
 use crate::pipeline_resolver::generic::ResolvedPipelineJob;
 use anyhow::Context;
+use flowey_core::node::FlowArch;
 use flowey_core::node::FlowPlatform;
 use petgraph::visit::EdgeRef;
 use serde::Serialize;
@@ -56,17 +57,18 @@ pub(crate) fn job_flowey_bootstrap_source(
     // the first traversal builds a list of all ancestors of a give node
     let mut ancestors = BTreeMap::<
         petgraph::prelude::NodeIndex,
-        BTreeSet<(petgraph::prelude::NodeIndex, FlowPlatform)>,
+        BTreeSet<(petgraph::prelude::NodeIndex, FlowPlatform, FlowArch)>,
     >::new();
     for idx in order {
         for ancestor_idx in graph
             .edges_directed(*idx, petgraph::Direction::Incoming)
             .map(|e| e.source())
         {
-            ancestors
-                .entry(*idx)
-                .or_default()
-                .insert((ancestor_idx, graph[ancestor_idx].platform));
+            ancestors.entry(*idx).or_default().insert((
+                ancestor_idx,
+                graph[ancestor_idx].platform,
+                graph[ancestor_idx].arch,
+            ));
 
             if let Some(set) = ancestors.get(&ancestor_idx).cloned() {
                 ancestors.get_mut(idx).unwrap().extend(&set);
@@ -81,8 +83,8 @@ pub(crate) fn job_flowey_bootstrap_source(
 
         let mut elect_bootstrap = None;
 
-        for (ancestor_idx, platform) in ancestors {
-            if platform != graph[*idx].platform {
+        for (ancestor_idx, platform, arch) in ancestors {
+            if platform != graph[*idx].platform || arch != graph[*idx].arch {
                 continue;
             }
 

@@ -14,7 +14,6 @@ use super::super::vp_state::UhVpStateAccess;
 use super::super::BackingPrivate;
 use super::super::UhEmulationState;
 use super::super::UhRunVpError;
-use crate::processor::from_seg;
 use crate::processor::LapicState;
 use crate::processor::SidecarExitReason;
 use crate::processor::SidecarRemoveExit;
@@ -43,7 +42,6 @@ use hvdef::HvMapGpaFlags;
 use hvdef::HvMessageType;
 use hvdef::HvRegisterValue;
 use hvdef::HvRegisterVsmPartitionConfig;
-use hvdef::HvRegisterVsmPartitionStatus;
 use hvdef::HvX64InterceptMessageHeader;
 use hvdef::HvX64InterruptStateRegister;
 use hvdef::HvX64PendingEvent;
@@ -1170,7 +1168,10 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         assert!(self.partition.isolation.is_isolated());
 
-        let status: HvRegisterVsmPartitionStatus = self.partition.vsm_status();
+        let status = self
+            .partition
+            .vsm_status()
+            .expect("cannot fail to query vsm status");
 
         let vtl1_enabled = VtlSet::from(status.enabled_vtl_set()).is_set(GuestVtl::Vtl1);
         if !vtl1_enabled {
@@ -1300,6 +1301,15 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             rip: header.rip,
             rflags: header.rflags.into(),
         }
+    }
+}
+
+fn from_seg(reg: hvdef::HvX64SegmentRegister) -> SegmentRegister {
+    SegmentRegister {
+        base: reg.base,
+        limit: reg.limit,
+        selector: reg.selector,
+        attributes: reg.attributes.into(),
     }
 }
 

@@ -13,7 +13,7 @@ pub use device_dma::PagePoolDmaBuffer;
 
 #[cfg(all(feature = "vfio", target_os = "linux"))]
 use anyhow::Context;
-#[cfg(all(feature = "vfio", target_os = "linux"))]
+#[cfg(all(feature = "hcl_mapping", target_os = "linux"))]
 use hcl::ioctl::MshvVtlLow;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
@@ -623,9 +623,7 @@ impl PagePoolAllocator {
         })
     }
 
-    // TODO: Feature gate this in the future to remove the always dependency on
-    // MshvVtlLow.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "hcl_mapping", target_os = "linux"))]
     fn create_mapping(
         base_pfn: u64,
         page_count: u64,
@@ -657,7 +655,7 @@ impl PagePoolAllocator {
         Ok(mapping)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(all(feature = "hcl_mapping", target_os = "linux")))]
     fn create_mapping(
         _base_pfn: u64,
         _page_count: u64,
@@ -763,6 +761,7 @@ impl PagePoolAllocator {
     /// The same as [`Self::alloc`], but also creates an associated mapping for
     /// the allocation so the user can use the mapping via
     /// [`PagePoolHandle::mapping`].
+    #[cfg(all(feature = "hcl_mapping", target_os = "linux"))]
     pub fn alloc_with_mapping(
         &self,
         size_pages: NonZeroU64,

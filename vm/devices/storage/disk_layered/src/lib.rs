@@ -35,8 +35,10 @@ use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
 use disk_backend::UnmapBehavior;
+use guestmem::GuestMemory;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
+use scsi_buffers::OwnedRequestBuffers;
 use scsi_buffers::RequestBuffers;
 use std::convert::Infallible;
 use std::future::Future;
@@ -111,9 +113,6 @@ pub enum InvalidLayer {
     /// Read caching was requested but is not supported.
     #[error("read caching was requested but is not supported")]
     ReadCacheNotSupported,
-    /// Caching was requested but the layer is read only.
-    #[error("caching was requested but the layer is read only")]
-    ReadOnlyCache,
     /// The sector size is invalid.
     #[error("sector size {0} is invalid")]
     InvalidSectorSize(u32),
@@ -202,9 +201,6 @@ impl LayeredDisk {
                 // perform some layer validation prior to attaching subsequent layers
                 if read_cache && !layer_meta.can_read_cache {
                     return Err(layer_error(InvalidLayer::ReadCacheNotSupported));
-                }
-                if (read_cache || write_through) && layer_meta.read_only {
-                    return Err(layer_error(InvalidLayer::ReadOnlyCache));
                 }
                 if !layer_meta.sector_size.is_power_of_two() {
                     return Err(layer_error(InvalidLayer::InvalidSectorSize(
@@ -411,7 +407,7 @@ impl<T: LayerIo> DynLayerIo for T {
     }
 }
 
-trait DynLayerAttach: Send + Sync + Inspect {
+trait DynLayerAttach: Send + Sync {
     fn attach(
         self: Box<Self>,
         lower_layer_metadata: Option<DiskLayerMetadata>,
@@ -439,7 +435,7 @@ impl<T: LayerAttach> DynLayerAttach for T {
                         physical_sector_size: backing.physical_sector_size(),
                         unmap_behavior: backing.unmap_behavior(),
                         optimal_unmap_sectors: backing.optimal_unmap_sectors(),
-                        read_only: backing.is_read_only(),
+                        read_only: backing.is_logically_read_only(),
                         can_read_cache,
                     },
                     backing: Box::new(backing),
@@ -456,7 +452,7 @@ impl<T: LayerAttach> DynLayerAttach for T {
 /// which are pre-initialized with a fixed set of metadata) can simply implement
 /// `LayerIo` directly, and leverage the blanket-impl of `impl<T: LayerIo>
 /// LayerAttach for T` which simply returns `Self` during the state transition.
-pub trait LayerAttach: 'static + Send + Sync + Inspect {
+pub trait LayerAttach: 'static + Send + Sync {
     /// Error returned if on attach failure.
     type Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>;
     /// Object implementating [`LayerIo`] after being attached.
@@ -519,8 +515,11 @@ pub trait LayerIo: 'static + Send + Sync + Inspect {
     /// committed to disk.
     fn is_fua_respected(&self) -> bool;
 
-    /// Returns true if the layer is read only.
-    fn is_read_only(&self) -> bool;
+    /// Returns true if the layer is logically read only.
+    ///
+    /// If this returns true, the layer might still be writable via
+    /// `write_no_overwrite`, used to populate the layer as a read cache.
+    fn is_logically_read_only(&self) -> bool;
 
     /// Issues an asynchronous flush operation to the disk.
     fn sync_cache(&self) -> impl Future<Output = Result<(), DiskError>> + Send;
@@ -652,9 +651,11 @@ impl DiskIo for LayeredDisk {
         buffers: &RequestBuffers<'_>,
         sector: u64,
     ) -> Result<(), DiskError> {
+        let mut bounce_buffers = None::<(OwnedRequestBuffers, GuestMemory)>;
         let sector_count = buffers.len() >> self.sector_shift;
         let mut bitmap = Bitmap::new(sector, sector_count);
         let mut bits_set = 0;
+        let mut populate_cache = Vec::new();
         // FUTURE: queue the reads to the layers in parallel.
         'done: for (i, layer) in self.layers.iter().enumerate() {
             if bits_set == sector_count {
@@ -677,22 +678,34 @@ impl DiskIo for LayeredDisk {
 
                 let sectors = end - range.start_sector();
 
-                let buffers = buffers.subrange(
+                let this_buffers = if let Some((bounce_buffers, mem)) = &bounce_buffers {
+                    &bounce_buffers.buffer(mem)
+                } else {
+                    buffers
+                };
+                let this_buffers = this_buffers.subrange(
                     range.start_sector_within_bitmap() << self.sector_shift,
                     (sectors as usize) << self.sector_shift,
                 );
 
                 layer
                     .backing
-                    .read(&buffers, range.start_sector(), range.view(sectors))
+                    .read(&this_buffers, range.start_sector(), range.view(sectors))
                     .await?;
 
                 bits_set += range.set_count();
 
-                // TODO: populate read cache(s). Note that we need to detect
-                // this will be necessary before performing the read and bounce
-                // buffer into a stable buffer in case the bufferes are in guest
-                // memory (which could be mutated by the guest or other IOs).
+                if range.set_count() as u64 != range.len() && layer.read_cache {
+                    // Allocate bounce buffers to read into to ensure that we get a stable
+                    // copy of the data to populate the cache.
+                    bounce_buffers.get_or_insert_with(|| {
+                        let mem = GuestMemory::allocate(buffers.len());
+                        let owned_buf = OwnedRequestBuffers::linear(0, buffers.len(), true);
+                        (owned_buf, mem)
+                    });
+
+                    populate_cache.extend(range.unset_iter().map(|range| (layer, range)));
+                }
             }
         }
         if bits_set != sector_count {
@@ -702,6 +715,44 @@ impl DiskIo for LayeredDisk {
                     .subrange(range.start_sector_within_bitmap() << self.sector_shift, len)
                     .writer()
                     .zero(len)?;
+            }
+        }
+        if !populate_cache.is_empty() {
+            let (bounce_buffers, mem) = bounce_buffers.unwrap();
+            let bounce_buffers = bounce_buffers.buffer(&mem);
+            for &(layer, ref range) in &populate_cache {
+                assert!(layer.read_cache);
+                let offset = ((range.start - sector) as usize) << self.sector_shift;
+                let len = ((range.end - range.start) as usize) << self.sector_shift;
+                if let Err(err) = layer
+                    .backing
+                    .write(
+                        &bounce_buffers.subrange(offset, len),
+                        range.start,
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    tracelimit::warn_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        sector = range.start,
+                        count = range.end - range.start,
+                        "failed to populate read cache",
+                    );
+                }
+            }
+            let mut mem = mem.into_inner_buf().ok().unwrap();
+            for (_, range) in populate_cache {
+                // Write this bounced range back to the original buffer. This
+                // might be redundant in the presence of multiple cache layers,
+                // but this is the simplest implementation.
+                let offset = ((range.start - sector) as usize) << self.sector_shift;
+                let len = ((range.end - range.start) as usize) << self.sector_shift;
+                buffers
+                    .subrange(offset, len)
+                    .writer()
+                    .write(&mem.as_bytes()[offset..][..len])?;
             }
         }
         Ok(())
@@ -812,7 +863,7 @@ impl LayerIo for DiskAsLayer {
         self.0.is_fua_respected()
     }
 
-    fn is_read_only(&self) -> bool {
+    fn is_logically_read_only(&self) -> bool {
         self.0.is_read_only()
     }
 
@@ -852,5 +903,245 @@ impl LayerIo for DiskAsLayer {
 
     fn unmap_behavior(&self) -> UnmapBehavior {
         self.0.unmap_behavior()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::DiskLayer;
+    use crate::LayerConfiguration;
+    use crate::LayerIo;
+    use crate::LayeredDisk;
+    use crate::SectorMarker;
+    use crate::WriteNoOverwrite;
+    use disk_backend::DiskIo;
+    use disk_backend::UnmapBehavior;
+    use guestmem::GuestMemory;
+    use guestmem::MemoryRead as _;
+    use guestmem::MemoryWrite;
+    use inspect::Inspect;
+    use pal_async::async_test;
+    use parking_lot::Mutex;
+    use scsi_buffers::OwnedRequestBuffers;
+    use std::collections::btree_map::Entry;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    #[derive(Inspect)]
+    #[inspect(skip)]
+    struct TestLayer {
+        sectors: Mutex<BTreeMap<u64, Data>>,
+        sector_count: u64,
+    }
+
+    impl TestLayer {
+        fn new(sector_count: u64) -> Self {
+            Self {
+                sectors: Mutex::new(BTreeMap::new()),
+                sector_count,
+            }
+        }
+    }
+
+    struct Data(Box<[u8]>);
+
+    impl LayerIo for Arc<TestLayer> {
+        fn layer_type(&self) -> &str {
+            "test"
+        }
+
+        fn sector_count(&self) -> u64 {
+            self.sector_count
+        }
+
+        fn sector_size(&self) -> u32 {
+            512
+        }
+
+        fn disk_id(&self) -> Option<[u8; 16]> {
+            None
+        }
+
+        fn physical_sector_size(&self) -> u32 {
+            512
+        }
+
+        fn is_fua_respected(&self) -> bool {
+            false
+        }
+
+        fn is_logically_read_only(&self) -> bool {
+            false
+        }
+
+        async fn sync_cache(&self) -> Result<(), disk_backend::DiskError> {
+            Ok(())
+        }
+
+        async fn read(
+            &self,
+            buffers: &scsi_buffers::RequestBuffers<'_>,
+            sector: u64,
+            mut marker: SectorMarker<'_>,
+        ) -> Result<(), disk_backend::DiskError> {
+            let sector_count = buffers.len() / self.sector_size() as usize;
+            let sectors = self.sectors.lock();
+            for i in sector..sector + sector_count as u64 {
+                let Some(data) = sectors.get(&i) else {
+                    continue;
+                };
+                let offset = ((i - sector) * self.sector_size() as u64) as usize;
+                buffers
+                    .subrange(offset, self.sector_size() as usize)
+                    .writer()
+                    .write(&data.0)?;
+                marker.set(i);
+            }
+            Ok(())
+        }
+
+        async fn write(
+            &self,
+            buffers: &scsi_buffers::RequestBuffers<'_>,
+            sector: u64,
+            _fua: bool,
+        ) -> Result<(), disk_backend::DiskError> {
+            let sector_count = buffers.len() / self.sector_size() as usize;
+            let mut sectors = self.sectors.lock();
+            for i in sector..sector + sector_count as u64 {
+                let offset = ((i - sector) * self.sector_size() as u64) as usize;
+                let mut data = Data(vec![0; self.sector_size() as usize].into());
+                buffers
+                    .subrange(offset, self.sector_size() as usize)
+                    .reader()
+                    .read(&mut data.0)?;
+                sectors.insert(i, data);
+            }
+            Ok(())
+        }
+
+        async fn unmap(
+            &self,
+            sector: u64,
+            count: u64,
+            _block_level_only: bool,
+            next_is_zero: bool,
+        ) -> Result<(), disk_backend::DiskError> {
+            if !next_is_zero {
+                return Ok(());
+            }
+            let mut sectors = self.sectors.lock();
+            let mut next_sector = sector;
+            let end = sector + count;
+            while next_sector < end {
+                let Some((&sector, _)) = sectors.range_mut(next_sector..).next() else {
+                    break;
+                };
+                if sector >= end {
+                    break;
+                }
+                sectors.remove(&sector);
+                next_sector = sector + 1;
+            }
+            Ok(())
+        }
+
+        fn unmap_behavior(&self) -> UnmapBehavior {
+            UnmapBehavior::Unspecified
+        }
+
+        fn write_no_overwrite(&self) -> Option<impl WriteNoOverwrite> {
+            Some(self)
+        }
+    }
+
+    impl WriteNoOverwrite for Arc<TestLayer> {
+        async fn write_no_overwrite(
+            &self,
+            buffers: &scsi_buffers::RequestBuffers<'_>,
+            sector: u64,
+        ) -> Result<(), disk_backend::DiskError> {
+            let sector_count = buffers.len() / self.sector_size() as usize;
+            let mut sectors = self.sectors.lock();
+            for i in sector..sector + sector_count as u64 {
+                let Entry::Vacant(entry) = sectors.entry(i) else {
+                    continue;
+                };
+                let offset = ((i - sector) * self.sector_size() as u64) as usize;
+                let mut data = Data(vec![0; self.sector_size() as usize].into());
+                buffers
+                    .subrange(offset, self.sector_size() as usize)
+                    .reader()
+                    .read(&mut data.0)?;
+                entry.insert(data);
+            }
+            Ok(())
+        }
+    }
+
+    #[async_test]
+    async fn test_read_cache() {
+        const SIZE: u64 = 2048;
+        let bottom = Arc::new(TestLayer::new(SIZE));
+        let pattern = |i: u64| {
+            let mut acc = (i + 1) * 3;
+            Data(
+                (0..512)
+                    .map(|_| {
+                        acc = acc.wrapping_mul(7);
+                        acc as u8
+                    })
+                    .collect::<Vec<_>>()
+                    .into(),
+            )
+        };
+        bottom
+            .sectors
+            .lock()
+            .extend((0..SIZE).map(|i| (i, pattern(i))));
+
+        let cache = Arc::new(TestLayer::new(SIZE));
+        let cache_cfg = LayerConfiguration {
+            layer: DiskLayer::new(cache.clone()),
+            read_cache: true,
+            write_through: false,
+        };
+        let bottom_cfg = LayerConfiguration {
+            layer: DiskLayer::new(bottom),
+            read_cache: false,
+            write_through: false,
+        };
+        let disk = LayeredDisk::new(false, vec![cache_cfg, bottom_cfg])
+            .await
+            .unwrap();
+
+        let mut mem = GuestMemory::allocate(0x10000);
+        let buffers = OwnedRequestBuffers::linear(0, 0x10000, true);
+
+        for i in [0, 2, 4, 6, 8, 0, 2, 4, 6, 8] {
+            disk.read_vectored(&buffers.buffer(&mem).subrange(0, 512), i)
+                .await
+                .unwrap();
+
+            assert_eq!(mem.inner_buf_mut().unwrap()[..512], pattern(i).0[..]);
+        }
+
+        assert_eq!(cache.sectors.lock().len(), 5);
+
+        mem.inner_buf_mut().unwrap().fill(0);
+
+        disk.read_vectored(&buffers.buffer(&mem).subrange(0, 15 * 512), 1)
+            .await
+            .unwrap();
+
+        assert_eq!(cache.sectors.lock().len(), 16);
+
+        for i in 0..15 {
+            assert_eq!(
+                mem.inner_buf_mut().unwrap()[i as usize * 512..][..512],
+                pattern(i + 1).0[..],
+                "{i}"
+            );
+        }
     }
 }

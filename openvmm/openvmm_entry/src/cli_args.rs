@@ -637,6 +637,12 @@ pub enum DiskCliKind {
         create: bool,
         disk: Box<DiskCliKind>,
     },
+    // autocache:[key]:<kind>
+    AutoCacheSqlite {
+        cache_path: String,
+        key: Option<String>,
+        disk: Box<DiskCliKind>,
+    },
     // prwrap:<kind>
     PersistentReservationsWrapper(Box<DiskCliKind>),
     // file:<path>
@@ -713,6 +719,16 @@ impl FromStr for DiskCliKind {
                             create: false,
                             disk,
                         },
+                    }
+                }
+                "autocache" => {
+                    let (key, kind) = arg.split_once(':').context("expected [key]:kind")?;
+                    let cache_path = std::env::var("OPENVMM_AUTO_CACHE_PATH")
+                        .context("must set cache path via OPENVMM_AUTO_CACHE_PATH")?;
+                    DiskCliKind::AutoCacheSqlite {
+                        cache_path,
+                        key: (!key.is_empty()).then(|| key.to_string()),
+                        disk: Box::new(kind.parse()?),
                     }
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),

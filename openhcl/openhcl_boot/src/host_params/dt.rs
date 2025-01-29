@@ -461,7 +461,17 @@ impl PartitionInfo {
                 crate::cmdline::parse_boot_command_line(storage.cmdline.as_str())
                     .enable_vtl2_gpa_pool;
 
-            max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0))
+            let isolation_requirements = match params.isolation_type {
+                #[cfg(target_arch = "x86_64")]
+                // Supporting TLB flush hypercalls on TDX requires 1 page per VP
+                IsolationType::Tdx => parsed.cpus.len() as u64,
+                _ => 0,
+            };
+
+            max(
+                dt_page_count.unwrap_or(0) + isolation_requirements,
+                cmdline_page_count.unwrap_or(0),
+            )
         };
         if vtl2_gpa_pool_size != 0 {
             // Reserve the specified number of pages for the pool. Use the used

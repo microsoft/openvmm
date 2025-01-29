@@ -64,7 +64,7 @@ impl AsyncResolveResource<DiskHandleKind, LayeredDiskHandle> for LayeredDiskReso
             .into_iter()
             .enumerate()
             .map(|(i, desc)| {
-                let this_read_only = read_only && !desc.write_through && !desc.read_cache;
+                let this_read_only = read_only && !desc.read_cache;
                 if !desc.write_through {
                     read_only = true;
                 }

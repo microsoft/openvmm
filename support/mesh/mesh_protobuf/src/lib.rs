@@ -571,6 +571,7 @@ mod tests {
     use crate::encoding::BorrowedCowField;
     use crate::encoding::OwningCowField;
     use crate::encoding::VecField;
+    use crate::protobuf::read_varint;
     use crate::DecodeError;
     use crate::FieldDecode;
     use crate::FieldEncode;
@@ -580,14 +581,86 @@ mod tests {
     use alloc::vec;
     use core::convert::Infallible;
     use core::error::Error;
+    use core::fmt::Write;
     use core::num::NonZeroU32;
     use core::time::Duration;
+    use expect_test::expect;
+    use expect_test::Expect;
     use mesh_derive::Protobuf;
     use std::prelude::rust_2021::*;
     use std::println;
 
+    pub(crate) fn as_expect_str(v: &[u8]) -> String {
+        let cooked = parsed_expect_str(v).unwrap_or_else(|e| alloc::format!("PARSE ERROR: {e}\n"));
+        let raw = hex_str(v);
+        alloc::format!("{cooked}raw: {raw}")
+    }
+
+    fn hex_str(v: &[u8]) -> String {
+        v.iter()
+            .map(|x| alloc::format!("{x:02x}"))
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    fn parsed_expect_str(mut v: &[u8]) -> Result<String, crate::Error> {
+        let mut s = String::new();
+        while !v.is_empty() {
+            let key = read_varint(&mut v)?;
+            let wire_type = (key & 7) as u32;
+            let field_number = (key >> 3) as u32;
+            write!(s, "{field_number}: ").ok();
+            match wire_type {
+                0 => {
+                    let n = read_varint(&mut v)?;
+                    writeln!(s, "varint {n}").ok();
+                }
+                1 => {
+                    let n = u64::from_le_bytes(
+                        v.get(..8)
+                            .ok_or(DecodeError::EofFixed64)?
+                            .try_into()
+                            .unwrap(),
+                    );
+                    writeln!(s, "fixed64 {n}").ok();
+                    v = &v[8..];
+                }
+                2 => {
+                    let len = read_varint(&mut v)? as usize;
+                    let data = v.get(..len).ok_or(DecodeError::EofByteArray)?;
+                    if !data.is_empty() && data.iter().all(|&x| matches!(x, 0x20..=0x7e)) {
+                        let data = core::str::from_utf8(data).unwrap();
+                        writeln!(s, "string \"{data}\"").ok();
+                    } else {
+                        let data = hex_str(data);
+                        writeln!(s, "bytes <{data}>").ok();
+                    }
+                    v = &v[len..];
+                }
+                5 => {
+                    let n = u32::from_le_bytes(
+                        v.get(..4)
+                            .ok_or(DecodeError::EofFixed32)?
+                            .try_into()
+                            .unwrap(),
+                    );
+                    writeln!(s, "fixed32 {n}").ok();
+                    v = &v[4..];
+                }
+                n => Err(DecodeError::UnknownWireType(n))?,
+            }
+        }
+        if s.is_empty() {
+            writeln!(s, "empty").ok();
+        }
+        Ok(s)
+    }
+
+    /// Asserts that a type roundtrips through encoding and decoding without
+    /// verifying the actual contents. This is useful for types that have
+    /// a non-deterministic order (e.g., `HashMap`).
     #[track_caller]
-    fn assert_roundtrips<T>(t: T)
+    fn assert_roundtrips_nondeterministic<T>(t: T) -> Vec<u8>
     where
         T: crate::DefaultEncoding + Clone + Eq + core::fmt::Debug,
         T::Encoding:
@@ -598,46 +671,152 @@ mod tests {
         println!("{v:x?}");
         let t2 = decode::<T>(&v).unwrap();
         assert_eq!(t, t2);
+        v
     }
 
     #[track_caller]
-    fn assert_field_roundtrips<T>(t: T)
+    fn assert_roundtrips<T>(t: T, expect: Expect)
+    where
+        T: crate::DefaultEncoding + Clone + Eq + core::fmt::Debug,
+        T::Encoding:
+            crate::MessageEncode<T, NoResources> + for<'a> crate::MessageDecode<'a, T, NoResources>,
+    {
+        let v = assert_roundtrips_nondeterministic(t);
+        expect.assert_eq(&as_expect_str(&v));
+    }
+
+    #[track_caller]
+    fn assert_field_roundtrips<T>(t: T, expect: Expect)
     where
         T: crate::DefaultEncoding + Clone + Eq + core::fmt::Debug,
         T::Encoding: FieldEncode<T, NoResources> + for<'a> FieldDecode<'a, T, NoResources>,
     {
-        assert_roundtrips((t,));
+        assert_roundtrips((t,), expect);
     }
 
     #[test]
     fn test_field() {
-        assert_field_roundtrips(5u32);
-        assert_field_roundtrips(true);
-        assert_field_roundtrips("hi".to_string());
-        assert_field_roundtrips(5u128);
-        assert_field_roundtrips(());
-        assert_field_roundtrips((1, 2));
-        assert_field_roundtrips(("foo".to_string(), "bar".to_string()));
-        assert_field_roundtrips([1, 2, 3]);
-        assert_field_roundtrips(["abc".to_string(), "def".to_string()]);
-        assert_field_roundtrips(Some(5));
-        assert_field_roundtrips(Option::<u32>::None);
-        assert_field_roundtrips(vec![1, 2, 3]);
-        assert_field_roundtrips(vec!["abc".to_string(), "def".to_string()]);
-        assert_field_roundtrips(Some(Some(true)));
-        assert_field_roundtrips(Some(Option::<bool>::None));
-        assert_field_roundtrips(vec![None, Some(true), None]);
+        assert_field_roundtrips(
+            5u32,
+            expect!([r#"
+                1: varint 5
+                raw: 0805"#]),
+        );
+        assert_field_roundtrips(
+            true,
+            expect!([r#"
+                1: varint 1
+                raw: 0801"#]),
+        );
+        assert_field_roundtrips(
+            "hi".to_string(),
+            expect!([r#"
+                1: string "hi"
+                raw: 0a026869"#]),
+        );
+        assert_field_roundtrips(
+            5u128,
+            expect!([r#"
+                1: bytes <05000000000000000000000000000000>
+                raw: 0a1005000000000000000000000000000000"#]),
+        );
+        assert_field_roundtrips(
+            (),
+            expect!([r#"
+                empty
+                raw: "#]),
+        );
+        assert_field_roundtrips(
+            (1, 2),
+            expect!([r#"
+                1: bytes <08021004>
+                raw: 0a0408021004"#]),
+        );
+        assert_field_roundtrips(
+            ("foo".to_string(), "bar".to_string()),
+            expect!([r#"
+                1: bytes <0a03666f6f1203626172>
+                raw: 0a0a0a03666f6f1203626172"#]),
+        );
+        assert_field_roundtrips(
+            [1, 2, 3],
+            expect!([r#"
+                1: bytes <020406>
+                raw: 0a03020406"#]),
+        );
+        assert_field_roundtrips(
+            ["abc".to_string(), "def".to_string()],
+            expect!([r#"
+                1: bytes <0a036162630a03646566>
+                raw: 0a0a0a036162630a03646566"#]),
+        );
+        assert_field_roundtrips(
+            Some(5),
+            expect!([r#"
+                1: varint 10
+                raw: 080a"#]),
+        );
+        assert_field_roundtrips(
+            Option::<u32>::None,
+            expect!([r#"
+                empty
+                raw: "#]),
+        );
+        assert_field_roundtrips(
+            vec![1, 2, 3],
+            expect!([r#"
+                1: bytes <020406>
+                raw: 0a03020406"#]),
+        );
+        assert_field_roundtrips(
+            vec!["abc".to_string(), "def".to_string()],
+            expect!([r#"
+                1: string "abc"
+                1: string "def"
+                raw: 0a036162630a03646566"#]),
+        );
+        assert_field_roundtrips(
+            Some(Some(true)),
+            expect!([r#"
+                1: bytes <0801>
+                raw: 0a020801"#]),
+        );
+        assert_field_roundtrips(
+            Some(Option::<bool>::None),
+            expect!([r#"
+                1: bytes <>
+                raw: 0a00"#]),
+        );
+        assert_field_roundtrips(
+            vec![None, Some(true), None],
+            expect!([r#"
+                1: bytes <>
+                1: bytes <0801>
+                1: bytes <>
+                raw: 0a000a0208010a00"#]),
+        );
         #[cfg(feature = "std")]
-        assert_field_roundtrips(std::collections::HashMap::from_iter([(5u32, 6u32), (4, 2)]));
-        assert_field_roundtrips(BTreeMap::from_iter([
-            ("hi".to_owned(), 6u32),
-            ("hmm".to_owned(), 2),
-        ]));
+        assert_roundtrips_nondeterministic((std::collections::HashMap::from_iter([
+            (5u32, 6u32),
+            (4, 2),
+        ]),));
+        assert_field_roundtrips(
+            BTreeMap::from_iter([("hi".to_owned(), 6u32), ("hmm".to_owned(), 2)]),
+            expect!([r#"
+                1: bytes <0a0268691006>
+                1: bytes <0a03686d6d1002>
+                raw: 0a060a02686910060a070a03686d6d1002"#]),
+        );
     }
 
     #[test]
     fn test_nonzero() {
-        assert_field_roundtrips(NonZeroU32::new(1).unwrap());
+        assert_field_roundtrips(
+            NonZeroU32::new(1).unwrap(),
+            expect!([r#"
+                1: varint 1
+                raw: 0801"#]),
+        );
         assert_eq!(encode((5u32,)), encode((NonZeroU32::new(5).unwrap(),)));
         assert_eq!(
             decode::<(NonZeroU32,)>(&encode((Some(0u32),)))
@@ -665,7 +844,14 @@ mod tests {
             z: "alphabet".to_owned(),
             w: None,
         };
-        assert_roundtrips(foo);
+        assert_roundtrips(
+            foo,
+            expect!([r#"
+                1: varint 5
+                2: varint 104824
+                3: string "alphabet"
+                raw: 080510f8b2061a08616c706861626574"#]),
+        );
     }
 
     #[test]
@@ -691,7 +877,14 @@ mod tests {
                 b: 5,
             }),
         };
-        assert_roundtrips(foo);
+        assert_roundtrips(
+            foo,
+            expect!([r#"
+                1: varint 5
+                2: varint 104824
+                3: bytes <08011005>
+                raw: 080510f8b2061a0408011005"#]),
+        );
     }
 
     #[test]
@@ -703,10 +896,30 @@ mod tests {
             C { x: bool, y: u32 },
         }
 
-        assert_roundtrips(Foo::A);
-        assert_roundtrips(Foo::B(12, "hi".to_owned()));
-        assert_roundtrips(Foo::C { x: true, y: 0 });
-        assert_roundtrips(Foo::C { x: false, y: 0 });
+        assert_roundtrips(
+            Foo::A,
+            expect!([r#"
+                1: bytes <>
+                raw: 0a00"#]),
+        );
+        assert_roundtrips(
+            Foo::B(12, "hi".to_owned()),
+            expect!([r#"
+                2: bytes <080c12026869>
+                raw: 1206080c12026869"#]),
+        );
+        assert_roundtrips(
+            Foo::C { x: true, y: 0 },
+            expect!([r#"
+                3: bytes <0801>
+                raw: 1a020801"#]),
+        );
+        assert_roundtrips(
+            Foo::C { x: false, y: 0 },
+            expect!([r#"
+                3: bytes <>
+                raw: 1a00"#]),
+        );
     }
 
     #[test]
@@ -729,7 +942,24 @@ mod tests {
             vec_of_vec32: vec![vec![1, 2, 3], vec![4, 5, 6]],
             vec_of_vec_no_pack: vec![vec![(64,), (65,)], vec![(66,), (67,)]],
         };
-        assert_roundtrips(foo);
+        assert_roundtrips(
+            foo,
+            expect!([r#"
+                1: bytes <0102030405>
+                2: string "abcdefg"
+                3: bytes <0801>
+                3: bytes <0802>
+                3: bytes <0803>
+                3: bytes <0804>
+                3: bytes <0805>
+                4: string "abc"
+                4: string "def"
+                5: bytes <0a03010203>
+                5: bytes <0a03040506>
+                6: bytes <0a0208400a020841>
+                6: bytes <0a0208420a020843>
+                raw: 0a0501020304051207616263646566671a0208011a0208021a0208031a0208041a020805220361626322036465662a050a030102032a050a0304050632080a0208400a02084132080a0208420a020843"#]),
+        );
     }
 
     struct NoPackU32;
@@ -833,7 +1063,20 @@ mod tests {
             vb: vec![Bar(1), Bar(2)],
             e: Enum::B(Some(1), b"abc".to_vec()),
         };
-        assert_roundtrips(foo.clone());
+        assert_roundtrips(
+            foo.clone(),
+            expect!([r#"
+                1: varint 1
+                2: varint 2
+                3: string "abc"
+                4: varint 1
+                5: bytes <010203>
+                6: string "xyz"
+                7: bytes <0801>
+                7: bytes <0802>
+                8: bytes <120708011203616263>
+                raw: 080110021a0361626320012a03010203320378797a3a0208013a0208024209120708011203616263"#]),
+        );
         let foo2 = Foo {
             x: 3,
             y: 4,
@@ -844,7 +1087,20 @@ mod tests {
             vb: vec![Bar(3), Bar(4), Bar(5)],
             e: Enum::B(None, b"def".to_vec()),
         };
-        assert_roundtrips(foo2.clone());
+        assert_roundtrips(
+            foo2.clone(),
+            expect!([r#"
+                1: varint 3
+                2: varint 4
+                3: string "def"
+                5: bytes <040506>
+                6: string "uvw"
+                7: bytes <0803>
+                7: bytes <0804>
+                7: bytes <0805>
+                8: bytes <12051203646566>
+                raw: 080310041a036465662a0304050632037576773a0208033a0208043a020805420712051203646566"#]),
+        );
         let foo3 = Foo {
             x: 3,
             y: 4,
@@ -855,7 +1111,23 @@ mod tests {
             vb: vec![Bar(1), Bar(2), Bar(3), Bar(4), Bar(5)],
             e: Enum::B(Some(1), b"abcdef".to_vec()),
         };
-        assert_roundtrips(foo3.clone());
+        assert_roundtrips(
+            foo3.clone(),
+            expect!([r#"
+                1: varint 3
+                2: varint 4
+                3: string "def"
+                4: varint 1
+                5: bytes <010203040506>
+                6: string "xyzuvw"
+                7: bytes <0801>
+                7: bytes <0802>
+                7: bytes <0803>
+                7: bytes <0804>
+                7: bytes <0805>
+                8: bytes <120a08011206616263646566>
+                raw: 080310041a0364656620012a06010203040506320678797a7576773a0208013a0208023a0208033a0208043a020805420c120a08011206616263646566"#]),
+        );
         let foo = super::merge(foo, &<SerializedMessage>::from_message(foo2).data).unwrap();
         assert_eq!(foo, foo3);
     }
@@ -868,10 +1140,16 @@ mod tests {
             #[mesh(encoding = "mesh_protobuf::encoding::VarintField")]
             int32: i32,
         }
-        assert_roundtrips(Foo {
-            int32: -1,
-            sint32: -1,
-        });
+        assert_roundtrips(
+            Foo {
+                int32: -1,
+                sint32: -1,
+            },
+            expect!([r#"
+                1: varint 1
+                2: varint 18446744073709551615
+                raw: 080110ffffffffffffffffff01"#]),
+        );
         assert_eq!(
             &encode(Foo {
                 sint32: -1,
@@ -883,13 +1161,48 @@ mod tests {
 
     #[test]
     fn test_array() {
-        assert_field_roundtrips([1, 2, 3]);
-        assert_field_roundtrips(["a".to_string(), "b".to_string(), "c".to_string()]);
-        assert_field_roundtrips([vec![1, 2, 3], vec![4, 5, 6]]);
-        assert_field_roundtrips([vec![1u8, 2]]);
-        assert_field_roundtrips([[0_u8, 1], [2, 3]]);
-        assert_field_roundtrips([Vec::<()>::new()]);
-        assert_field_roundtrips([vec!["abc".to_string()]]);
+        assert_field_roundtrips(
+            [1, 2, 3],
+            expect!([r#"
+                1: bytes <020406>
+                raw: 0a03020406"#]),
+        );
+        assert_field_roundtrips(
+            ["a".to_string(), "b".to_string(), "c".to_string()],
+            expect!([r#"
+                1: bytes <0a01610a01620a0163>
+                raw: 0a090a01610a01620a0163"#]),
+        );
+        assert_field_roundtrips(
+            [vec![1, 2, 3], vec![4, 5, 6]],
+            expect!([r#"
+                1: bytes <0a050a030204060a050a03080a0c>
+                raw: 0a0e0a050a030204060a050a03080a0c"#]),
+        );
+        assert_field_roundtrips(
+            [vec![1u8, 2]],
+            expect!([r#"
+                1: bytes <0a020102>
+                raw: 0a040a020102"#]),
+        );
+        assert_field_roundtrips(
+            [[0_u8, 1], [2, 3]],
+            expect!([r#"
+                1: bytes <0a0200010a020203>
+                raw: 0a080a0200010a020203"#]),
+        );
+        assert_field_roundtrips(
+            [Vec::<()>::new()],
+            expect!([r#"
+                1: bytes <0a00>
+                raw: 0a020a00"#]),
+        );
+        assert_field_roundtrips(
+            [vec!["abc".to_string()]],
+            expect!([r#"
+                1: bytes <0a050a03616263>
+                raw: 0a070a050a03616263"#]),
+        );
     }
 
     #[test]
@@ -980,7 +1293,12 @@ mod tests {
         #[derive(Debug, Default, Clone, PartialEq, Eq, Protobuf)]
         struct Inner(u32);
 
-        assert_roundtrips(Message(Default::default(), Inner(1)));
+        assert_roundtrips(
+            Message(Default::default(), Inner(1)),
+            expect!([r#"
+                2: bytes <0801>
+                raw: 12020801"#]),
+        );
     }
 
     #[test]
@@ -1002,7 +1320,12 @@ mod tests {
         #[mesh(transparent)]
         struct GenericStruct<T>(T);
 
-        assert_roundtrips(TupleStruct(Inner(5)));
+        assert_roundtrips(
+            TupleStruct(Inner(5)),
+            expect!([r#"
+                1: varint 5
+                raw: 0805"#]),
+        );
         assert_eq!(encode(TupleStruct(Inner(5))), encode(Inner(5)));
         assert_eq!(encode(NamedStruct { x: Inner(5) }), encode(Inner(5)));
         assert_eq!(encode(GenericStruct(Inner(5))), encode(Inner(5)));
@@ -1017,7 +1340,12 @@ mod tests {
         #[derive(Protobuf, Copy, Clone, PartialEq, Eq, Debug)]
         struct Outer<T>(T);
 
-        assert_roundtrips(Outer(Inner(5)));
+        assert_roundtrips(
+            Outer(Inner(5)),
+            expect!([r#"
+                1: varint 5
+                raw: 0805"#]),
+        );
         assert_eq!(encode(Outer(Inner(5))), encode(Outer(5u32)));
     }
 
@@ -1035,13 +1363,43 @@ mod tests {
             VecNoPack(Vec<(u32,)>),
         }
 
-        assert_roundtrips(Foo::Bar(0));
+        assert_roundtrips(
+            Foo::Bar(0),
+            expect!([r#"
+                1: varint 0
+                raw: 0800"#]),
+        );
         assert_eq!(encode(Foo::Bar(0)), encode((Some(0),)));
-        assert_roundtrips(Foo::Option(Some(5)));
-        assert_roundtrips(Foo::Option(None));
-        assert_roundtrips(Foo::Vec(vec![]));
-        assert_roundtrips(Foo::Vec(vec![5]));
-        assert_roundtrips(Foo::VecNoPack(vec![(5,)]));
+        assert_roundtrips(
+            Foo::Option(Some(5)),
+            expect!([r#"
+                2: bytes <0805>
+                raw: 12020805"#]),
+        );
+        assert_roundtrips(
+            Foo::Option(None),
+            expect!([r#"
+                2: bytes <>
+                raw: 1200"#]),
+        );
+        assert_roundtrips(
+            Foo::Vec(vec![]),
+            expect!([r#"
+                3: bytes <>
+                raw: 1a00"#]),
+        );
+        assert_roundtrips(
+            Foo::Vec(vec![5]),
+            expect!([r#"
+                3: bytes <0a0105>
+                raw: 1a030a0105"#]),
+        );
+        assert_roundtrips(
+            Foo::VecNoPack(vec![(5,)]),
+            expect!([r#"
+                4: bytes <0a020805>
+                raw: 22040a020805"#]),
+        );
     }
 
     #[test]
@@ -1103,10 +1461,31 @@ mod tests {
 
     #[test]
     fn test_duration() {
-        assert_roundtrips(Duration::ZERO);
-        assert_roundtrips(Duration::from_secs(1));
-        assert_roundtrips(Duration::from_secs(1) + Duration::from_nanos(10000));
-        assert_roundtrips(Duration::from_secs(1) - Duration::from_nanos(10000));
+        assert_roundtrips(
+            Duration::ZERO,
+            expect!([r#"
+                empty
+                raw: "#]),
+        );
+        assert_roundtrips(
+            Duration::from_secs(1),
+            expect!([r#"
+                1: varint 1
+                raw: 0801"#]),
+        );
+        assert_roundtrips(
+            Duration::from_secs(1) + Duration::from_nanos(10000),
+            expect!([r#"
+                1: varint 1
+                2: varint 10000
+                raw: 080110904e"#]),
+        );
+        assert_roundtrips(
+            Duration::from_secs(1) - Duration::from_nanos(10000),
+            expect!([r#"
+                2: varint 999990000
+                raw: 10f0c5eadc03"#]),
+        );
         decode::<Duration>(&encode((-1i64 as u64, 0u32))).unwrap_err();
         assert_eq!(
             decode::<Duration>(&encode((1u64, 1u32))).unwrap(),

@@ -36,6 +36,8 @@ zerocopy.workspace = true
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 disklayer_ram.workspace = true
 disk_backend.workspace = true
+get_protocol.workspace = true
+vmgs_format.workspace = true
 
 [lints]
 workspace = true

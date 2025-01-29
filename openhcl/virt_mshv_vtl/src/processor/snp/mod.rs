@@ -3,7 +3,6 @@
 
 //! Processor support for SNP partitions.
 
-use super::from_seg;
 use super::hardware_cvm;
 use super::private::BackingParams;
 use super::vp_state;
@@ -27,6 +26,7 @@ use hcl::vmsa::VmsaWrapper;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::HypercallIo;
+use hvdef::hypercall::Control;
 use hvdef::hypercall::HvFlushFlags;
 use hvdef::hypercall::HvGvaRange;
 use hvdef::hypercall::HypercallOutput;
@@ -48,11 +48,12 @@ use virt::vp::AccessVpState;
 use virt::vp::MpState;
 use virt::x86::MsrError;
 use virt::x86::MsrErrorExt;
+use virt::x86::SegmentRegister;
+use virt::x86::TableRegister;
 use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt_support_apic::ApicClient;
-use virt_support_apic::ApicWork;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
@@ -70,7 +71,6 @@ use x86defs::snp::SevStatusMsr;
 use x86defs::snp::SevVmsa;
 use x86defs::snp::Vmpl;
 use x86defs::RFlags;
-use x86defs::SegmentRegister;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
@@ -218,7 +218,7 @@ impl HardwareIsolatedBacking for SnpBacked {
             efer: vmsa.efer(),
             cr3: vmsa.cr3(),
             rflags: vmsa.rflags(),
-            ss: from_seg(hv_seg_from_snp(&vmsa.ss())),
+            ss: virt_seg_from_snp(vmsa.ss()).into(),
             encryption_mode: virt_support_x86emu::translate::EncryptionMode::Vtom(
                 this.partition.caps.vtom.unwrap(),
             ),
@@ -394,61 +394,10 @@ impl BackingPrivate for SnpBacked {
         vtl: GuestVtl,
         scan_irr: bool,
     ) -> Result<(), UhRunVpError> {
-        // Check for interrupt requests from the host.
-        // TODO SNP GUEST VSM supporting VTL 1 proxy irrs requires kernel changes
-        if vtl == GuestVtl::Vtl0 {
-            if let Some(irr) = this.runner.proxy_irr() {
-                // TODO SNP: filter proxy IRRs.
-                this.backing.cvm.lapics[vtl]
-                    .lapic
-                    .request_fixed_interrupts(irr);
-            }
-        }
-
         // Clear any pending interrupt.
         this.runner.vmsa_mut(vtl).v_intr_cntrl_mut().set_irq(false);
 
-        let ApicWork {
-            init,
-            extint,
-            sipi,
-            nmi,
-            interrupt,
-        } = this.backing.cvm.lapics[vtl]
-            .lapic
-            .scan(&mut this.vmtime, scan_irr);
-
-        // An INIT/SIPI targeted at a VP with more than one guest VTL enabled is ignored.
-        // Check VTL enablement inside each block to avoid taking a lock on the hot path,
-        // INIT and SIPI are quite cold.
-        if init {
-            if !*this.inner.hcvm_vtl1_enabled.lock() {
-                this.handle_init(vtl)?;
-            }
-        }
-
-        if let Some(vector) = sipi {
-            if !*this.inner.hcvm_vtl1_enabled.lock() {
-                this.handle_sipi(vtl, vector)?;
-            }
-        }
-
-        // Interrupts are ignored while waiting for SIPI.
-        if this.backing.cvm.lapics[vtl].activity != MpState::WaitForSipi {
-            if nmi {
-                this.handle_nmi(vtl);
-            }
-
-            if let Some(vector) = interrupt {
-                this.handle_interrupt(vtl, vector);
-            }
-
-            if extint {
-                tracelimit::warn_ratelimited!("extint not supported");
-            }
-        }
-
-        Ok(())
+        hardware_cvm::apic::poll_apic_core(this, vtl, scan_irr)
     }
 
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {
@@ -456,11 +405,10 @@ impl BackingPrivate for SnpBacked {
     }
 
     fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16) {
-        if this.backing.hv_sint_notifications & !sints == 0 {
+        let sints = this.backing.hv_sint_notifications | sints;
+        if this.backing.hv_sint_notifications == sints {
             return;
         }
-        this.backing.hv_sint_notifications |= sints;
-
         let notifications = HvDeliverabilityNotificationsRegister::new().with_sints(sints);
         tracing::trace!(?notifications, "setting notifications");
         this.runner
@@ -470,6 +418,8 @@ impl BackingPrivate for SnpBacked {
                 u64::from(notifications).into(),
             )
             .expect("requesting deliverability is not a fallable operation");
+
+        this.backing.hv_sint_notifications = sints;
     }
 
     fn handle_cross_vtl_interrupts(
@@ -554,7 +504,7 @@ impl BackingPrivate for SnpBacked {
     }
 }
 
-fn hv_seg_to_snp(val: &hvdef::HvX64SegmentRegister) -> SevSelector {
+fn virt_seg_to_snp(val: SegmentRegister) -> SevSelector {
     SevSelector {
         selector: val.selector,
         attrib: (val.attributes & 0xFF) | ((val.attributes >> 4) & 0xF00),
@@ -563,7 +513,7 @@ fn hv_seg_to_snp(val: &hvdef::HvX64SegmentRegister) -> SevSelector {
     }
 }
 
-fn hv_table_to_snp(val: &hvdef::HvX64TableRegister) -> SevSelector {
+fn virt_table_to_snp(val: TableRegister) -> SevSelector {
     SevSelector {
         limit: val.limit as u32,
         base: val.base,
@@ -571,8 +521,8 @@ fn hv_table_to_snp(val: &hvdef::HvX64TableRegister) -> SevSelector {
     }
 }
 
-fn hv_seg_from_snp(selector: &SevSelector) -> hvdef::HvX64SegmentRegister {
-    hvdef::HvX64SegmentRegister {
+fn virt_seg_from_snp(selector: SevSelector) -> SegmentRegister {
+    SegmentRegister {
         base: selector.base,
         limit: selector.limit,
         selector: selector.selector,
@@ -580,11 +530,10 @@ fn hv_seg_from_snp(selector: &SevSelector) -> hvdef::HvX64SegmentRegister {
     }
 }
 
-fn hv_table_from_snp(selector: &SevSelector) -> hvdef::HvX64TableRegister {
-    hvdef::HvX64TableRegister {
+fn virt_table_from_snp(selector: SevSelector) -> TableRegister {
+    TableRegister {
         limit: selector.limit as u16,
         base: selector.base,
-        ..FromZeroes::new_zeroed()
     }
 }
 
@@ -706,36 +655,46 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
     );
 }
 
-struct GhcbEnlightenedHypercall<'a, 'b, 'c, T> {
+struct GhcbEnlightenedHypercall<'a, 'b, T> {
     handler: UhHypercallHandler<'a, 'b, T, SnpBacked>,
-    control: &'c mut u64,
+    control: u64,
     output_gpa: u64,
     input_gpa: u64,
     result: u64,
 }
 
 impl<'a, 'b, T> hv1_hypercall::AsHandler<UhHypercallHandler<'a, 'b, T, SnpBacked>>
-    for &mut GhcbEnlightenedHypercall<'a, 'b, '_, T>
+    for &mut GhcbEnlightenedHypercall<'a, 'b, T>
 {
     fn as_handler(&mut self) -> &mut UhHypercallHandler<'a, 'b, T, SnpBacked> {
         &mut self.handler
     }
 }
 
-impl<T> HypercallIo for GhcbEnlightenedHypercall<'_, '_, '_, T> {
+impl<T> HypercallIo for GhcbEnlightenedHypercall<'_, '_, T> {
     fn advance_ip(&mut self) {
         // No-op for GHCB hypercall ABI
     }
 
     fn retry(&mut self, control: u64) {
-        // TODO SNP: If we need to support resumption of rep hypercalls,
-        // this will need the new start index.
-        *self.control = control;
-        self.set_result(HypercallOutput::from(HvError::Timeout).into())
+        // The GHCB ABI does not support automatically retrying hypercalls by
+        // updating the control and reissuing the instruction, since doing so
+        // would require the hypervisor (the normal implementor of the GHCB
+        // hypercall ABI) to be able to control the instruction pointer.
+        //
+        // Instead, explicitly return `HV_STATUS_TIMEOUT` to indicate that the
+        // guest should retry the hypercall after setting `rep_start` to the
+        // number of elements processed.
+        let control = Control::from(control);
+        self.set_result(
+            HypercallOutput::from(HvError::Timeout)
+                .with_elements_processed(control.rep_start() as u16)
+                .into(),
+        );
     }
 
     fn control(&mut self) -> u64 {
-        *self.control
+        self.control
     }
 
     fn input_gpa(&mut self) -> u64 {
@@ -775,17 +734,22 @@ impl<T> HypercallIo for GhcbEnlightenedHypercall<'_, '_, '_, T> {
     }
 }
 
-impl UhProcessor<'_, SnpBacked> {
-    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) {
+impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpBacked> {
+    fn vp(&mut self) -> &mut UhProcessor<'b, SnpBacked> {
+        self
+    }
+
+    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
         let mut vmsa = self.runner.vmsa_mut(vtl);
         vmsa.v_intr_cntrl_mut().set_vector(vector);
         vmsa.v_intr_cntrl_mut().set_priority((vector >> 4).into());
         vmsa.v_intr_cntrl_mut().set_ignore_tpr(false);
         vmsa.v_intr_cntrl_mut().set_irq(true);
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
+        Ok(())
     }
 
-    fn handle_nmi(&mut self, vtl: GuestVtl) {
+    fn handle_nmi(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
         // TODO SNP: support virtual NMI injection
         // For now, just inject an NMI and hope for the best.
         // Don't forget to update handle_cross_vtl_interrupts if this code changes.
@@ -797,33 +761,20 @@ impl UhProcessor<'_, SnpBacked> {
                 .with_valid(true),
         );
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
-    }
-
-    fn handle_init(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
-        assert_eq!(vtl, GuestVtl::Vtl0);
-        let vp_info = self.inner.vp_info;
-        let mut access = self.access_state(vtl.into());
-        vp::x86_init(&mut access, &vp_info).map_err(UhRunVpError::State)?;
         Ok(())
     }
 
-    fn handle_sipi(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
-        assert_eq!(vtl, GuestVtl::Vtl0);
-        if self.backing.cvm.lapics[vtl].activity == MpState::WaitForSipi {
-            let mut vmsa = self.runner.vmsa_mut(vtl);
-            let address = (vector as u64) << 12;
-            vmsa.set_cs(hv_seg_to_snp(&hvdef::HvX64SegmentRegister {
-                base: address,
-                limit: 0xffff,
-                selector: (address >> 4) as u16,
-                attributes: 0x9b,
-            }));
-            vmsa.set_rip(0);
-            self.backing.cvm.lapics[vtl].activity = MpState::Running;
-        }
+    fn handle_sipi(&mut self, vtl: GuestVtl, cs: SegmentRegister) -> Result<(), UhRunVpError> {
+        let mut vmsa = self.runner.vmsa_mut(vtl);
+        vmsa.set_cs(virt_seg_to_snp(cs));
+        vmsa.set_rip(0);
+        self.backing.cvm.lapics[vtl].activity = MpState::Running;
+
         Ok(())
     }
+}
 
+impl UhProcessor<'_, SnpBacked> {
     fn handle_synic_deliverable_exit(&mut self) {
         let message = hvdef::HvX64SynicSintDeliverableMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
@@ -883,7 +834,7 @@ impl UhProcessor<'_, SnpBacked> {
                         let overlay_base = ghcb_overlay * HV_PAGE_SIZE;
                         let x86defs::snp::GhcbHypercallParameters {
                             output_gpa,
-                            mut input_control,
+                            input_control,
                         } = guest_memory
                             .read_plain(
                                 overlay_base
@@ -898,7 +849,7 @@ impl UhProcessor<'_, SnpBacked> {
                                 trusted: false,
                                 intercepted_vtl,
                             },
-                            control: &mut input_control,
+                            control: input_control,
                             output_gpa,
                             input_gpa: overlay_base,
                             result: 0,
@@ -921,19 +872,6 @@ impl UhProcessor<'_, SnpBacked> {
                                 handler.result.as_bytes(),
                             )
                             .map_err(UhRunVpError::HypercallResult)?;
-
-                        // Write the (potentially updated) control back to the GHCB as well.
-                        guest_memory
-                            .write_at(
-                                overlay_base
-                                    + x86defs::snp::GHCB_PAGE_HYPERCALL_PARAMETERS_OFFSET as u64
-                                    + std::mem::offset_of!(
-                                        x86defs::snp::GhcbHypercallParameters,
-                                        input_control
-                                    ) as u64,
-                                input_control.as_bytes(),
-                            )
-                            .map_err(UhRunVpError::HypercallRetry)?;
                     }
                     usage => unimplemented!("ghcb usage {usage:?}"),
                 }
@@ -1515,16 +1453,17 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         vmsa.set_rip(v);
     }
 
-    fn segment(&mut self, index: x86emu::Segment) -> SegmentRegister {
+    fn segment(&mut self, index: x86emu::Segment) -> x86defs::SegmentRegister {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         match index {
-            x86emu::Segment::ES => from_seg(hv_seg_from_snp(&vmsa.es())),
-            x86emu::Segment::CS => from_seg(hv_seg_from_snp(&vmsa.cs())),
-            x86emu::Segment::SS => from_seg(hv_seg_from_snp(&vmsa.ss())),
-            x86emu::Segment::DS => from_seg(hv_seg_from_snp(&vmsa.ds())),
-            x86emu::Segment::FS => from_seg(hv_seg_from_snp(&vmsa.fs())),
-            x86emu::Segment::GS => from_seg(hv_seg_from_snp(&vmsa.gs())),
+            x86emu::Segment::ES => virt_seg_from_snp(vmsa.es()),
+            x86emu::Segment::CS => virt_seg_from_snp(vmsa.cs()),
+            x86emu::Segment::SS => virt_seg_from_snp(vmsa.ss()),
+            x86emu::Segment::DS => virt_seg_from_snp(vmsa.ds()),
+            x86emu::Segment::FS => virt_seg_from_snp(vmsa.fs()),
+            x86emu::Segment::GS => virt_seg_from_snp(vmsa.gs()),
         }
+        .into()
     }
 
     fn efer(&mut self) -> u64 {
@@ -1728,16 +1667,16 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
             r15: vmsa.r15(),
             rip: vmsa.rip(),
             rflags: vmsa.rflags(),
-            cs: hv_seg_from_snp(&vmsa.cs()).into(),
-            ds: hv_seg_from_snp(&vmsa.ds()).into(),
-            es: hv_seg_from_snp(&vmsa.es()).into(),
-            fs: hv_seg_from_snp(&vmsa.fs()).into(),
-            gs: hv_seg_from_snp(&vmsa.gs()).into(),
-            ss: hv_seg_from_snp(&vmsa.ss()).into(),
-            tr: hv_seg_from_snp(&vmsa.tr()).into(),
-            ldtr: hv_seg_from_snp(&vmsa.ldtr()).into(),
-            gdtr: hv_table_from_snp(&vmsa.gdtr()).into(),
-            idtr: hv_table_from_snp(&vmsa.idtr()).into(),
+            cs: virt_seg_from_snp(vmsa.cs()),
+            ds: virt_seg_from_snp(vmsa.ds()),
+            es: virt_seg_from_snp(vmsa.es()),
+            fs: virt_seg_from_snp(vmsa.fs()),
+            gs: virt_seg_from_snp(vmsa.gs()),
+            ss: virt_seg_from_snp(vmsa.ss()),
+            tr: virt_seg_from_snp(vmsa.tr()),
+            ldtr: virt_seg_from_snp(vmsa.ldtr()),
+            gdtr: virt_table_from_snp(vmsa.gdtr()),
+            idtr: virt_table_from_snp(vmsa.idtr()),
             cr0: vmsa.cr0(),
             cr2: vmsa.cr2(),
             cr3: vmsa.cr3(),
@@ -1804,16 +1743,16 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         vmsa.set_r15(r15);
         vmsa.set_rip(rip);
         vmsa.set_rflags(rflags);
-        vmsa.set_cs(hv_seg_to_snp(&cs.into()));
-        vmsa.set_ds(hv_seg_to_snp(&ds.into()));
-        vmsa.set_es(hv_seg_to_snp(&es.into()));
-        vmsa.set_fs(hv_seg_to_snp(&fs.into()));
-        vmsa.set_gs(hv_seg_to_snp(&gs.into()));
-        vmsa.set_ss(hv_seg_to_snp(&ss.into()));
-        vmsa.set_tr(hv_seg_to_snp(&tr.into()));
-        vmsa.set_ldtr(hv_seg_to_snp(&ldtr.into()));
-        vmsa.set_gdtr(hv_table_to_snp(&gdtr.into()));
-        vmsa.set_idtr(hv_table_to_snp(&idtr.into()));
+        vmsa.set_cs(virt_seg_to_snp(cs));
+        vmsa.set_ds(virt_seg_to_snp(ds));
+        vmsa.set_es(virt_seg_to_snp(es));
+        vmsa.set_fs(virt_seg_to_snp(fs));
+        vmsa.set_gs(virt_seg_to_snp(gs));
+        vmsa.set_ss(virt_seg_to_snp(ss));
+        vmsa.set_tr(virt_seg_to_snp(tr));
+        vmsa.set_ldtr(virt_seg_to_snp(ldtr));
+        vmsa.set_gdtr(virt_table_to_snp(gdtr));
+        vmsa.set_idtr(virt_table_to_snp(idtr));
         vmsa.set_cr0(cr0);
         vmsa.set_cr2(cr2);
         vmsa.set_cr3(cr3);

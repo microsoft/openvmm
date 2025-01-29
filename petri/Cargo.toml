@@ -14,6 +14,7 @@ petri_artifacts_core.workspace = true
 petri_artifacts_vmm_test.workspace = true
 chipset_resources.workspace = true
 diag_client.workspace = true
+disk_vhd1.workspace = true
 hvlite_defs.workspace = true
 hvlite_helpers.workspace = true
 hvlite_pcat_locator.workspace = true
@@ -42,6 +43,7 @@ vm_resource.workspace = true
 vmgs_format.workspace = true
 vmm_core_defs.workspace = true
 vmotherboard.workspace = true
+vmsocket.workspace = true
 
 guid.workspace = true
 inspect = { workspace = true, features = ["initiate"] }
@@ -50,11 +52,11 @@ mesh_worker.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 pal.workspace = true
-tempfile_helpers.workspace = true
 unix_socket.workspace = true
 sparse_mmap.workspace = true
 
 anyhow.workspace = true
+async-trait.workspace = true
 fatfs = { workspace = true, features = ["std", "alloc"] }
 fs-err.workspace = true
 fscommon.workspace = true

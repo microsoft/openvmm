@@ -9,6 +9,7 @@ use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
+use flowey_core::node::GhVarState;
 use flowey_core::node::NodeHandle;
 use flowey_core::pipeline::HostExt;
 use flowey_core::pipeline::PipelineBackendHint;
@@ -168,10 +169,10 @@ impl flowey_core::node::NodeCtxBackend for InterrogateCtx {
         _uses: &str,
         _with: BTreeMap<String, ClaimedGhParam>,
         _condvar: Option<String>,
-        _outputs: BTreeMap<String, Vec<(String, bool)>>,
+        _outputs: BTreeMap<String, Vec<GhVarState>>,
         _permissions: BTreeMap<GhPermission, GhPermissionValue>,
-        _gh_to_rust: Vec<(String, String, bool)>,
-        _rust_to_gh: Vec<(String, String, bool)>,
+        _gh_to_rust: Vec<GhVarState>,
+        _rust_to_gh: Vec<GhVarState>,
     ) {
         println!("[step][yaml]    # {}", label);
         self.idx_tracker += 1;

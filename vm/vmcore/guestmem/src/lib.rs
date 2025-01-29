@@ -219,6 +219,19 @@ impl AlignedHeapMemory {
     pub fn len(&self) -> usize {
         self.pages.len() * PAGE_SIZE
     }
+
+    /// Returns an immutable slice of bytes.
+    ///
+    /// This must take `&mut self` since the buffer is mutable via interior
+    /// mutability with just `&self`.
+    pub fn as_bytes(&mut self) -> &[u8] {
+        self.as_mut()
+    }
+
+    /// Returns a mutable slice of bytes.
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+        self.as_mut()
+    }
 }
 
 impl Deref for AlignedHeapMemory {

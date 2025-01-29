@@ -56,3 +56,18 @@ pub struct SqliteDiskLayerHandle {
 impl ResourceId<DiskLayerHandleKind> for SqliteDiskLayerHandle {
     const ID: &'static str = "sqlite";
 }
+
+/// A handle for a disk layer that automatically selects a dbhd file to use as a
+/// cache for lower layers.
+#[derive(MeshPayload)]
+pub struct SqliteAutoCacheDiskLayerHandle {
+    /// Path to the root directory for the cache.
+    pub cache_path: String,
+    /// The key to use to select the cache file. If `None`, use the next layer's
+    /// disk ID.
+    pub cache_key: Option<String>,
+}
+
+impl ResourceId<DiskLayerHandleKind> for SqliteAutoCacheDiskLayerHandle {
+    const ID: &'static str = "sqlite-autocache";
+}

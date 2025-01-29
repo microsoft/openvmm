@@ -4,7 +4,9 @@
 //! Resource resolver for sqlite-backed disk layers.
 
 use super::SqliteDiskLayer;
+use crate::auto_cache::AutoCacheSqliteDiskLayer;
 use crate::FormatOnAttachSqliteDiskLayer;
+use disk_backend_resources::layer::SqliteAutoCacheDiskLayerHandle;
 use disk_backend_resources::layer::SqliteDiskLayerFormatParams;
 use disk_backend_resources::layer::SqliteDiskLayerHandle;
 use disk_layered::resolve::ResolveDiskLayerParameters;
@@ -18,7 +20,8 @@ pub struct SqliteDiskLayerResolver;
 
 declare_static_resolver!(
     SqliteDiskLayerResolver,
-    (DiskLayerHandleKind, SqliteDiskLayerHandle)
+    (DiskLayerHandleKind, SqliteDiskLayerHandle),
+    (DiskLayerHandleKind, SqliteAutoCacheDiskLayerHandle)
 );
 
 impl ResolveResource<DiskLayerHandleKind, SqliteDiskLayerHandle> for SqliteDiskLayerResolver {
@@ -41,17 +44,40 @@ impl ResolveResource<DiskLayerHandleKind, SqliteDiskLayerHandle> for SqliteDiskL
         }) = format_dbhd
         {
             ResolvedDiskLayer::new(FormatOnAttachSqliteDiskLayer::new(
-                dbhd_path,
+                dbhd_path.into(),
                 input.read_only,
                 crate::IncompleteFormatParams {
                     logically_read_only,
                     len,
                 },
-            )?)
+            ))
         } else {
-            ResolvedDiskLayer::new(SqliteDiskLayer::new(dbhd_path, input.read_only, None)?)
+            ResolvedDiskLayer::new(SqliteDiskLayer::new(
+                dbhd_path.as_ref(),
+                input.read_only,
+                None,
+            )?)
         };
 
         Ok(layer)
+    }
+}
+
+impl ResolveResource<DiskLayerHandleKind, SqliteAutoCacheDiskLayerHandle>
+    for SqliteDiskLayerResolver
+{
+    type Output = ResolvedDiskLayer;
+    type Error = anyhow::Error;
+
+    fn resolve(
+        &self,
+        rsrc: SqliteAutoCacheDiskLayerHandle,
+        input: ResolveDiskLayerParameters<'_>,
+    ) -> Result<Self::Output, Self::Error> {
+        Ok(ResolvedDiskLayer::new(AutoCacheSqliteDiskLayer::new(
+            rsrc.cache_path.into(),
+            rsrc.cache_key,
+            input.read_only,
+        )))
     }
 }

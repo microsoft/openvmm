@@ -20,7 +20,7 @@ impl PipetteSender {
 
     /// A wrapper around [`mesh::Sender::call`] that will sleep for 5 seconds on failure,
     /// allowing any additional work occurring on the system to hopefully complete.
-    /// See also [`petri::PetriVm::wait_for_halt_or`]
+    /// See also [`petri::PetriVmOpenVmm::wait_for_halt_or`]
     pub(crate) async fn call<F, I, R>(&self, f: F, input: I) -> Result<R, RpcError>
     where
         F: FnOnce(Rpc<I, R>) -> PipetteRequest,
@@ -37,7 +37,7 @@ impl PipetteSender {
 
     /// A wrapper around [`mesh::Sender::call_failable`] that will sleep for 5 seconds on failure,
     /// allowing any additional work occurring on the system to hopefully complete.
-    /// See also [`petri::PetriVm::wait_for_halt_or`]
+    /// See also [`petri::PetriVmOpenVmm::wait_for_halt_or`]
     pub(crate) async fn call_failable<F, I, T, E>(&self, f: F, input: I) -> Result<T, RpcError<E>>
     where
         F: FnOnce(Rpc<I, Result<T, E>>) -> PipetteRequest,

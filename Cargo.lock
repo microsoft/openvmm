@@ -1058,12 +1058,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diff"
-version = "0.1.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1242,8 +1236,11 @@ dependencies = [
  "futures",
  "guestmem",
  "inspect",
+ "pal_async",
+ "parking_lot",
  "scsi_buffers",
  "thiserror 2.0.0",
+ "tracelimit",
  "vm_resource",
 ]
 
@@ -1367,6 +1364,7 @@ dependencies = [
  "disk_backend",
  "disk_backend_resources",
  "disk_layered",
+ "fs-err",
  "futures",
  "guestmem",
  "inspect",
@@ -1377,6 +1375,12 @@ dependencies = [
  "tracing",
  "vm_resource",
 ]
+
+[[package]]
+name = "dissimilar"
+version = "1.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59f8e79d1fbf76bdfbde321e902714bf6c49df88a7dda6fc682fc2979226962d"
 
 [[package]]
 name = "either"
@@ -1516,6 +1520,16 @@ checksum = "0f214dc438f977e6d4e3500aaa277f5ad94ca83fbbd9b1a15713ce2344ccc5a1"
 dependencies = [
  "event-listener",
  "pin-project-lite",
+]
+
+[[package]]
+name = "expect-test"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63af43ff4431e848fb47472a920f14fa71c24de13255a5692e93d4e90302acb0"
+dependencies = [
+ "dissimilar",
+ "once_cell",
 ]
 
 [[package]]
@@ -3285,6 +3299,7 @@ dependencies = [
  "arbitrary",
  "base64 0.21.7",
  "bitfield-struct",
+ "expect-test",
  "filepath",
  "futures",
  "inspect_derive",
@@ -3842,7 +3857,7 @@ dependencies = [
 name = "mesh_protobuf"
 version = "0.0.0"
 dependencies = [
- "diff",
+ "expect-test",
  "fs-err",
  "heck",
  "mesh_derive",
@@ -4870,7 +4885,6 @@ dependencies = [
  "smallbox",
  "socket2",
  "tempfile",
- "tempfile_helpers",
  "unicycle",
  "unix_socket",
  "winapi",
@@ -5058,9 +5072,11 @@ name = "petri"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chipset_resources",
  "diag_client",
  "disk_backend_resources",
+ "disk_vhd1",
  "fatfs",
  "framebuffer",
  "fs-err",
@@ -5097,7 +5113,6 @@ dependencies = [
  "sparse_mmap",
  "storvsp_resources",
  "tempfile",
- "tempfile_helpers",
  "tpm_resources",
  "tracing",
  "tracing-subscriber",
@@ -5113,6 +5128,7 @@ dependencies = [
  "vmgs_format",
  "vmm_core_defs",
  "vmotherboard",
+ "vmsocket",
  "vtl2_settings_proto",
 ]
 
@@ -5206,6 +5222,7 @@ dependencies = [
  "mesh_remote",
  "pal_async",
  "pipette_protocol",
+ "socket2",
  "tracing",
  "tracing-subscriber",
  "unicycle",
@@ -6351,13 +6368,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tempfile_helpers"
-version = "0.0.0"
-dependencies = [
- "tempfile",
-]
-
-[[package]]
 name = "term"
 version = "0.0.0"
 dependencies = [
@@ -6918,6 +6928,7 @@ dependencies = [
  "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
+ "get_protocol",
  "getrandom",
  "guest_emulation_transport",
  "guid",
@@ -6933,6 +6944,7 @@ dependencies = [
  "time",
  "tracing",
  "vmgs",
+ "vmgs_format",
  "zerocopy",
 ]
 
