@@ -62,7 +62,6 @@ use user_driver::memory::PAGE_SIZE32;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
-//use user_driver::HostDmaAllocator;
 use vmcore::slim_event::SlimEvent;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
