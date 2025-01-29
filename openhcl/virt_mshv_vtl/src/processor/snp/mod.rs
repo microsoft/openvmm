@@ -741,7 +741,7 @@ impl<T> HypercallIo for GhcbEnlightenedHypercall<'_, '_, T> {
         let control = Control::from(control);
         self.set_result(
             HypercallOutput::from(HvError::Timeout)
-                .with_elements_processed(control.rep_start() as u16)
+                .with_elements_processed(control.rep_start())
                 .into(),
         );
     }
