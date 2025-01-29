@@ -29,7 +29,6 @@ use winapi::shared::ntdef::LUID;
 use winapi::shared::winerror;
 use winapi::um::winnt::DEVICE_POWER_STATE;
 use winerror::ERROR_BAD_PATHNAME;
-use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;

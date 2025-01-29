@@ -32,7 +32,6 @@ use winapi::shared::ntdef;
 use winapi::shared::ntstatus;
 use winapi::um::winnt;
 use zerocopy::FromBytes;
-use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;

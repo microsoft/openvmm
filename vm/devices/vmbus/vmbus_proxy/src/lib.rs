@@ -30,10 +30,7 @@ use winapi::shared::winerror::ERROR_CANCELLED;
 use winapi::um::ioapiset::DeviceIoControl;
 use winapi::um::winnt::GENERIC_ALL;
 use winapi::um::winnt::SYNCHRONIZE;
-use zerocopy::FromZeros;
-use zerocopy::Immutable;
 use zerocopy::IntoBytes;
-use zerocopy::KnownLayout;
 
 pub mod vmbusioctl {
     #![allow(
@@ -97,7 +94,7 @@ mod proxyioctl {
     use winapi::um::winioctl::FILE_READ_ACCESS;
     use winapi::um::winioctl::FILE_WRITE_ACCESS;
     use winapi::um::winioctl::METHOD_BUFFERED;
-    use zerocopy::FromZeros;
+    
     use zerocopy::Immutable;
     use zerocopy::IntoBytes;
     use zerocopy::KnownLayout;

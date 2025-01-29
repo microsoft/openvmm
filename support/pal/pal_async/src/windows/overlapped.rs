@@ -27,7 +27,6 @@ use winapi::um::ioapiset::CancelIoEx;
 use winapi::um::ioapiset::DeviceIoControl;
 use winapi::um::minwinbase::OVERLAPPED;
 use zerocopy::FromBytes;
-use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;

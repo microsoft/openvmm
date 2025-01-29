@@ -45,7 +45,6 @@ use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use hvdef::HvResult;
 use zerocopy::FromBytes;
-use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;

@@ -20,7 +20,7 @@ pub trait AsAtomicBytes: IntoBytes + FromBytes + Immutable + KnownLayout {
     /// Casts the type to a slice of atomic bytes.
     fn as_atomic_bytes(&mut self) -> &[AtomicU8] {
         // SAFETY: IntoBytes guarantees that Self can be cast to a byte slice.
-        // And since we have exclusive ownership of self + Immutable + KnownLayout, it should be safe to
+        // And since we have exclusive ownership of self, it should be safe to
         // cast to an atomic byte slice (which can then be used by multiple
         // threads safely).
         // FromBytes guarantees that any value then assigned to these bytes
@@ -63,7 +63,7 @@ unsafe impl Atomic for atomic::AtomicI64 {}
 pub trait AtomicSliceOps {
     /// # Safety
     /// The caller must ensure that `dest..dest+len` is a
-    /// [valid](core::ptr#safety + Immutable + KnownLayout) target for writes.
+    /// [valid](core::ptr#safety) target for writes.
     unsafe fn atomic_read_ptr(&self, dest: *mut u8, len: usize);
 
     /// # Safety
