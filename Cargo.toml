@@ -435,12 +435,8 @@ iced-x86 = { version = "1.17", default-features = false, features = [
   "no_d3now",
 ] }
 ignore = "0.4"
-#igvm = "0.3.3"
-igvm = {git = "https://github.com/microsoft/igvm", branch = "main"}
-#igvm_defs = { version = "0.3.3", default-features = false, features = [
-#  "unstable",
-#] }
-igvm_defs = {git = "https://github.com/microsoft/igvm", branch = "main", default-features = false, features = [ "unstable" ]}
+igvm = {git = "https://github.com/microsoft/igvm", rev = "365065d7e31da0a0116e7934de3ecd85f00bab70"}
+igvm_defs = {git = "https://github.com/microsoft/igvm", rev = "365065d7e31da0a0116e7934de3ecd85f00bab70", default-features = false, features = [ "unstable" ]}
 image = { version = "0.24", default-features = false }
 io-uring = "0.6"
 kvm-bindings = "0.7"
