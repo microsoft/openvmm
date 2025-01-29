@@ -105,7 +105,6 @@ impl<T: PciConfigSpace + MmioIntercept> EmulatedDevice<T> {
         }
         device.pci_cfg_write(0x40, 0x80000000).unwrap();
 
-
         Self {
             device: Arc::new(Mutex::new(device)),
             controller,
@@ -294,10 +293,6 @@ impl DmaClient for EmulatedDmaAllocator {
     fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
         anyhow::bail!("restore is not supported for emulated DMA")
     }
-
-    fn map_dma_ranges(&self, _ranges: i32) -> anyhow::Result<Vec<i32>> {
-        Ok(Vec::new())
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -333,8 +328,8 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
         })
     }
 
-    fn get_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
-        Some(Arc::new(EmulatedDmaAllocator {
+    fn dma_client(&self) -> anyhow::Result<Arc<dyn DmaClient>> {
+        Ok(Arc::new(EmulatedDmaAllocator {
             shared_mem: self.shared_mem.clone(),
         }) as Arc<dyn DmaClient>)
     }

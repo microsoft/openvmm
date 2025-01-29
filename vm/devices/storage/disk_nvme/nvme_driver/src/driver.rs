@@ -591,7 +591,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         let dma_client = worker
             .device
-            .get_dma_client()
+            .dma_client()
             .context("Failed to get DMA client from device")?;
 
         // Restore the admin queue pair.

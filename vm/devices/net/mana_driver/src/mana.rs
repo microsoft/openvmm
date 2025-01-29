@@ -331,7 +331,7 @@ impl<T: DeviceBacking> Vport<T> {
 
         let dma_client = gdma
             .device()
-            .get_dma_client()
+            .dma_client()
             .context("Failed to get DMA client from device")?;
 
         let mem = dma_client
@@ -377,7 +377,7 @@ impl<T: DeviceBacking> Vport<T> {
 
         let dma_client = gdma
             .device()
-            .get_dma_client()
+            .dma_client()
             .context("Failed to get DMA client from device")?;
 
         let mem = dma_client
@@ -543,15 +543,8 @@ impl<T: DeviceBacking> Vport<T> {
     }
 
     /// Returns an object that can allocate dma memory to be shared with the device.
-    pub async fn get_dma_client(&self) -> anyhow::Result<Arc<dyn DmaClient>> {
-        Ok(self
-            .inner
-            .gdma
-            .lock()
-            .await
-            .device()
-            .get_dma_client()
-            .unwrap())
+    pub async fn dma_client(&self) -> anyhow::Result<Arc<dyn DmaClient>> {
+        Ok(self.inner.gdma.lock().await.device().dma_client().unwrap())
     }
 }
 

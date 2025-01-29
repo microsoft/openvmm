@@ -218,7 +218,7 @@ struct NvmeManagerWorker {
     dma_client_spawner: DmaClientSpawner,
 }
 
-impl<'a> NvmeManagerWorker {
+impl NvmeManagerWorker {
     async fn run(&mut self, mut recv: mesh::Receiver<Request>) {
         let (join_span, nvme_keepalive) = loop {
             let Some(req) = recv.next().await else {
@@ -294,7 +294,7 @@ impl<'a> NvmeManagerWorker {
             hash_map::Entry::Vacant(entry) => {
                 let dma_client = self
                     .dma_client_spawner
-                    .create_client(pci_id.clone(), format!("nvme_{}", pci_id))
+                    .create_client(format!("nvme_{}", pci_id))
                     .map_err(InnerError::DmaBuffer)?;
 
                 let device = VfioDevice::new(&self.driver_source, entry.key(), dma_client)
@@ -356,8 +356,7 @@ impl<'a> NvmeManagerWorker {
 
             let dma_client = self
                 .dma_client_spawner
-                .create_client(pci_id.clone(), format!("nvme_{}", pci_id))?;
-            //dma_client.get_dma_buffer_allocator(format!("nvme_{}", pci_id))?;
+                .create_client(format!("nvme_{}", pci_id))?;
             let vfio_device =
                 // This code can wait on each VFIO device until it is arrived.
                 // A potential optimization would be to delay VFIO operation
