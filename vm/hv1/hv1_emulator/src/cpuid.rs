@@ -41,7 +41,7 @@ pub fn hv_cpuid_leaves(
             .with_access_apic_msrs(true)
             .with_access_vp_runtime_msr(true)
             .with_access_partition_reference_tsc(true)
-            .with_start_virtual_processor(hardware_isolated)
+            .with_start_virtual_processor(true)
             .with_access_vsm(access_vsm)
             .with_enable_extended_gva_ranges_flush_va_list(true);
 
