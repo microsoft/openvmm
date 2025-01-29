@@ -3,7 +3,6 @@
 
 //! Processor support for SNP partitions.
 
-use super::from_seg;
 use super::hardware_cvm;
 use super::private::BackingParams;
 use super::vp_state;
@@ -218,7 +217,7 @@ impl HardwareIsolatedBacking for SnpBacked {
             efer: vmsa.efer(),
             cr3: vmsa.cr3(),
             rflags: vmsa.rflags(),
-            ss: from_seg(hv_seg_from_snp(&vmsa.ss())),
+            ss: virt_seg_from_snp(vmsa.ss()).into(),
             encryption_mode: virt_support_x86emu::translate::EncryptionMode::Vtom(
                 this.partition.caps.vtom.unwrap(),
             ),
@@ -520,8 +519,8 @@ fn virt_table_to_snp(val: TableRegister) -> SevSelector {
     }
 }
 
-fn hv_seg_from_snp(selector: &SevSelector) -> hvdef::HvX64SegmentRegister {
-    hvdef::HvX64SegmentRegister {
+fn virt_seg_from_snp(selector: SevSelector) -> SegmentRegister {
+    SegmentRegister {
         base: selector.base,
         limit: selector.limit,
         selector: selector.selector,
@@ -529,11 +528,10 @@ fn hv_seg_from_snp(selector: &SevSelector) -> hvdef::HvX64SegmentRegister {
     }
 }
 
-fn hv_table_from_snp(selector: &SevSelector) -> hvdef::HvX64TableRegister {
-    hvdef::HvX64TableRegister {
+fn virt_table_from_snp(selector: SevSelector) -> TableRegister {
+    TableRegister {
         limit: selector.limit as u16,
         base: selector.base,
-        ..FromZeroes::new_zeroed()
     }
 }
 
@@ -1459,13 +1457,14 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
     fn segment(&mut self, index: x86emu::Segment) -> x86defs::SegmentRegister {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         match index {
-            x86emu::Segment::ES => from_seg(hv_seg_from_snp(&vmsa.es())),
-            x86emu::Segment::CS => from_seg(hv_seg_from_snp(&vmsa.cs())),
-            x86emu::Segment::SS => from_seg(hv_seg_from_snp(&vmsa.ss())),
-            x86emu::Segment::DS => from_seg(hv_seg_from_snp(&vmsa.ds())),
-            x86emu::Segment::FS => from_seg(hv_seg_from_snp(&vmsa.fs())),
-            x86emu::Segment::GS => from_seg(hv_seg_from_snp(&vmsa.gs())),
+            x86emu::Segment::ES => virt_seg_from_snp(vmsa.es()),
+            x86emu::Segment::CS => virt_seg_from_snp(vmsa.cs()),
+            x86emu::Segment::SS => virt_seg_from_snp(vmsa.ss()),
+            x86emu::Segment::DS => virt_seg_from_snp(vmsa.ds()),
+            x86emu::Segment::FS => virt_seg_from_snp(vmsa.fs()),
+            x86emu::Segment::GS => virt_seg_from_snp(vmsa.gs()),
         }
+        .into()
     }
 
     fn efer(&mut self) -> u64 {
@@ -1669,16 +1668,16 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
             r15: vmsa.r15(),
             rip: vmsa.rip(),
             rflags: vmsa.rflags(),
-            cs: hv_seg_from_snp(&vmsa.cs()).into(),
-            ds: hv_seg_from_snp(&vmsa.ds()).into(),
-            es: hv_seg_from_snp(&vmsa.es()).into(),
-            fs: hv_seg_from_snp(&vmsa.fs()).into(),
-            gs: hv_seg_from_snp(&vmsa.gs()).into(),
-            ss: hv_seg_from_snp(&vmsa.ss()).into(),
-            tr: hv_seg_from_snp(&vmsa.tr()).into(),
-            ldtr: hv_seg_from_snp(&vmsa.ldtr()).into(),
-            gdtr: hv_table_from_snp(&vmsa.gdtr()).into(),
-            idtr: hv_table_from_snp(&vmsa.idtr()).into(),
+            cs: virt_seg_from_snp(vmsa.cs()),
+            ds: virt_seg_from_snp(vmsa.ds()),
+            es: virt_seg_from_snp(vmsa.es()),
+            fs: virt_seg_from_snp(vmsa.fs()),
+            gs: virt_seg_from_snp(vmsa.gs()),
+            ss: virt_seg_from_snp(vmsa.ss()),
+            tr: virt_seg_from_snp(vmsa.tr()),
+            ldtr: virt_seg_from_snp(vmsa.ldtr()),
+            gdtr: virt_table_from_snp(vmsa.gdtr()),
+            idtr: virt_table_from_snp(vmsa.idtr()),
             cr0: vmsa.cr0(),
             cr2: vmsa.cr2(),
             cr3: vmsa.cr3(),

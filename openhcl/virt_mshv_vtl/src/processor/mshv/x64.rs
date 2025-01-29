@@ -14,7 +14,6 @@ use super::super::vp_state::UhVpStateAccess;
 use super::super::BackingPrivate;
 use super::super::UhEmulationState;
 use super::super::UhRunVpError;
-use crate::processor::from_seg;
 use crate::processor::LapicState;
 use crate::processor::SidecarExitReason;
 use crate::processor::SidecarRemoveExit;
@@ -1302,6 +1301,15 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             rip: header.rip,
             rflags: header.rflags.into(),
         }
+    }
+}
+
+fn from_seg(reg: hvdef::HvX64SegmentRegister) -> SegmentRegister {
+    SegmentRegister {
+        base: reg.base,
+        limit: reg.limit,
+        selector: reg.selector,
+        attributes: reg.attributes.into(),
     }
 }
 

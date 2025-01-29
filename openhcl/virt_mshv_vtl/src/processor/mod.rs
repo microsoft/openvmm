@@ -16,7 +16,6 @@ cfg_if::cfg_if! {
 
         use crate::VtlCrash;
         use hvdef::HvX64RegisterName;
-        use hvdef::HvX64SegmentRegister;
         use virt::state::StateElement;
         use virt::vp::AccessVpState;
         use virt::vp::MpState;
@@ -1198,16 +1197,6 @@ async fn yield_now() {
         }
     })
     .await;
-}
-
-#[cfg(guest_arch = "x86_64")]
-fn from_seg(reg: HvX64SegmentRegister) -> x86defs::SegmentRegister {
-    x86defs::SegmentRegister {
-        base: reg.base,
-        limit: reg.limit,
-        selector: reg.selector,
-        attributes: reg.attributes.into(),
-    }
 }
 
 struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing> {
