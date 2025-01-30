@@ -81,7 +81,7 @@ impl VpSpawner {
     where
         for<'a> virt_mshv_vtl::UhProcessor<'a, T>: vmcore::save_restore::ProtobufSaveRestore,
     {
-        let thread: underhill_threadpool::Thread = underhill_threadpool::Thread::current().unwrap();
+        let thread = underhill_threadpool::Thread::current().unwrap();
         // TODO propagate this error back earlier. This is easiest if
         // set_idle_task is fixed to take a non-Send fn.
         let mut vp = thread.with_driver(|driver| {
