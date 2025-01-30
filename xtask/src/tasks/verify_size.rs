@@ -4,6 +4,7 @@
 // Copyright (C) Microsoft Corporation. All rights reserved.
 
 use crate::Xtask;
+use anyhow::Context;
 use object::read::Object;
 use object::read::ObjectSection;
 use std::collections::HashSet;
@@ -78,21 +79,15 @@ impl Xtask for VerifySize {
         let original = fs_err::read(&self.original)?;
         let new = fs_err::read(&self.new)?;
 
-        let original_elf = object::File::parse(&*original).or_else(|e| {
-            anyhow::bail!(
-                r#"Unable to parse target file "{}". Error: "{}""#,
-                &self.original.display(),
-                e
-            )
-        })?;
+        let original_elf = object::File::parse(&*original).context(format!(
+            r#"Unable to parse target file "{}"."#,
+            &self.original.display()
+        ))?;
 
-        let new_elf = object::File::parse(&*new).or_else(|e| {
-            anyhow::bail!(
-                r#"Unable to parse target file "{}". Error: "{}""#,
-                &self.new.display(),
-                e
-            )
-        })?;
+        let new_elf = object::File::parse(&*new).context(format!(
+            r#"Unable to parse target file "{}"."#,
+            &self.new.display(),
+        ))?;
 
         println!("Verifying size for {}:", (&self.new.display()));
         let total_diff = verify_sections_size(&new_elf, &original_elf)?;
