@@ -351,7 +351,7 @@ thread_local! {
 
 /// Calls `f` with the current task metadata, if there is a current task.
 pub fn with_current_task_metadata<F: FnOnce(Option<&TaskMetadata>) -> R, R>(f: F) -> R {
-    CURRENT_TASK.with(|task| task.borrow(|task| f(task)))
+    CURRENT_TASK.with(|task| task.borrow(f))
 }
 
 impl<T: ?Sized + Spawn> Spawn for &'_ T {
