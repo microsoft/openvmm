@@ -27,6 +27,7 @@ flowey_request! {
         pub igvm_files: Vec<OpenhclIgvmBuildParams>,
         pub artifact_dir_openhcl_igvm: ReadVar<PathBuf>,
         pub artifact_dir_openhcl_igvm_extras: ReadVar<PathBuf>,
+        pub artifact_openhcl_verify_size_baseline: ReadVar<PathBuf>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -39,6 +40,7 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe_extras::publish::Node>();
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe::publish::Node>();
+        ctx.import::<crate::artifact_openvmm_hcl_sizecheck::publish::Node>();
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
     }
 
@@ -47,11 +49,13 @@ impl SimpleFlowNode for Node {
             igvm_files,
             artifact_dir_openhcl_igvm,
             artifact_dir_openhcl_igvm_extras,
+            artifact_openhcl_verify_size_baseline,
             done,
         } = request;
 
         let mut built_igvm_files = Vec::new();
         let mut built_extras = Vec::new();
+        let mut built_openvmm_hcl_files = Vec::new();
 
         for OpenhclIgvmBuildParams {
             profile,
@@ -92,6 +96,8 @@ impl SimpleFlowNode for Node {
                         }
                     }),
             );
+
+            built_openvmm_hcl_files.push((recipe, read_built_openvmm_hcl));
         }
 
         let mut did_publish = Vec::new();
@@ -111,6 +117,14 @@ impl SimpleFlowNode for Node {
                 done: v,
             }
         }));
+
+        did_publish.push(ctx.reqv(
+            |v| crate::artifact_openvmm_hcl_sizecheck::publish::Request {
+                done: v,
+                openhcl_builds: built_openvmm_hcl_files,
+                artifact_dir: artifact_openhcl_verify_size_baseline,
+            },
+        ));
 
         ctx.emit_side_effect_step(did_publish, [done]);
 

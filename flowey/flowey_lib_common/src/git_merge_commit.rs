@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Gets the merge commit of a PR to main
+//! Gets the merge commit of a PR to base branch
 
 use flowey::node::prelude::*;
 
@@ -9,6 +9,7 @@ flowey_request! {
     pub struct Request {
         pub repo_path: ReadVar<PathBuf>,
         pub merge_commit: WriteVar<String>,
+        pub base_branch: String,
     }
 }
 
@@ -23,16 +24,17 @@ impl SimpleFlowNode for Node {
         let Request {
             repo_path,
             merge_commit,
+            base_branch,
         } = request;
 
         let pr_event = ctx.get_gh_context_var().event().pull_request();
 
-        ctx.emit_rust_step("get merge commit", |ctx| {
+        ctx.emit_rust_step("get merge commit", move |ctx| {
             let merge_commit = merge_commit.claim(ctx);
             let pr_event = pr_event.claim(ctx);
             let repo_path = repo_path.claim(ctx);
 
-            |rt| {
+            move |rt| {
                 let sh = xshell::Shell::new()?;
                 let repo_path = rt.read(repo_path);
                 let pr_event = rt.read(pr_event).expect("PR event not found");
@@ -43,9 +45,10 @@ impl SimpleFlowNode for Node {
                 sh.change_dir(repo_path);
 
                 // TODO: Make this work for non-main PRs
-                xshell::cmd!(sh, "git fetch origin main").run()?;
+                xshell::cmd!(sh, "git fetch origin {base_branch}").run()?;
                 xshell::cmd!(sh, "git fetch origin pull/{pr_number}/head:{head_ref}").run()?;
-                let commit = xshell::cmd!(sh, "git merge-base {head_ref} origin/main").read()?;
+                let commit =
+                    xshell::cmd!(sh, "git merge-base {head_ref} origin/{base_branch}").read()?;
                 rt.write(merge_commit, &commit);
 
                 Ok(())

@@ -4,22 +4,22 @@
 //! Compares the size of the OpenHCL binary in the current PR with the size of the binary from the last successful merge to main.
 
 use crate::artifact_openhcl_igvm_from_recipe_extras;
-use crate::artifact_openhcl_igvm_from_recipe_extras::OpenhclIgvmExtras;
 use crate::build_openhcl_igvm_from_recipe;
-use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe::X64;
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
+use crate::build_openvmm_hcl;
+use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile::OpenvmmHclShip;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::download_gh_artifact;
-use flowey_lib_common::gh_merge_commit;
 use flowey_lib_common::gh_workflow_id;
+use flowey_lib_common::git_merge_commit;
 
 flowey_request! {
     pub struct Request {
         pub target: CommonTriple,
         pub done: WriteVar<SideEffect>,
-        pub artifact_dir_openhcl_igvm_extras: ReadVar<PathBuf>,
         pub pipeline_name: String,
     }
 }
@@ -33,9 +33,10 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_xtask::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<download_gh_artifact::Node>();
-        ctx.import::<gh_merge_commit::Node>();
+        ctx.import::<git_merge_commit::Node>();
         ctx.import::<gh_workflow_id::Node>();
         ctx.import::<build_openhcl_igvm_from_recipe::Node>();
+        ctx.import::<build_openvmm_hcl::Node>();
         ctx.import::<artifact_openhcl_igvm_from_recipe_extras::publish::Node>();
     }
 
@@ -44,7 +45,6 @@ impl SimpleFlowNode for Node {
             target,
             done,
             pipeline_name,
-            artifact_dir_openhcl_igvm_extras,
         } = request;
 
         let xtask = ctx.reqv(|v| crate::build_xtask::Request {
@@ -53,53 +53,29 @@ impl SimpleFlowNode for Node {
         });
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
-        let (read_built_openvmm_hcl, built_openvmm_hcl) = ctx.new_var();
-        let (read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();
-        let (read_built_openhcl_igvm, built_openhcl_igvm) = ctx.new_var();
-
         let gh_token = ctx.get_gh_context_var().global().token();
 
-        ctx.req(build_openhcl_igvm_from_recipe::Request {
-            profile: OpenvmmHclShip,
-            recipe: X64,
-            custom_target: Some(target.clone()),
-            built_sidecar: None,
-            built_openvmm_hcl,
-            built_openhcl_boot,
-            built_openhcl_igvm,
+        let built_openvmm_hcl = ctx.reqv(|v| build_openvmm_hcl::Request {
+            build_params: OpenvmmHclBuildParams {
+                target: target.clone(),
+                profile: OpenvmmHclShip,
+                features: (OpenhclIgvmRecipe::X64)
+                    .recipe_details(OpenvmmHclShip)
+                    .openvmm_hcl_features,
+                no_split_dbg_info: false,
+            },
+            openvmm_hcl_output: v,
         });
-
-        let built_extras = read_built_openvmm_hcl
-            .zip(ctx, read_built_openhcl_boot)
-            .zip(ctx, read_built_openhcl_igvm.clone())
-            .map(ctx, {
-                let recipe = X64;
-                |((openvmm_hcl_bin, openhcl_boot), openhcl_igvm)| OpenhclIgvmExtras {
-                    recipe,
-                    openvmm_hcl_bin,
-                    openhcl_map: openhcl_igvm.igvm_map,
-                    openhcl_boot,
-                    sidecar: None,
-                }
-            });
-
-        let published =
-            ctx.reqv(
-                |done| artifact_openhcl_igvm_from_recipe_extras::publish::Request {
-                    extras: vec![built_extras],
-                    artifact_dir: artifact_dir_openhcl_igvm_extras,
-                    done,
-                },
-            );
 
         let file_name = match target.common_arch().unwrap() {
             CommonArch::X86_64 => "x64-openhcl-igvm-extras",
             CommonArch::Aarch64 => "aarch64-openhcl-igvm-extras",
         };
 
-        let merge_commit = ctx.reqv(|v| gh_merge_commit::Request {
+        let merge_commit = ctx.reqv(|v| git_merge_commit::Request {
             repo_path: openvmm_repo_path.clone(),
             merge_commit: v,
+            base_branch: "main".into(),
         });
 
         let merge_run_id = ctx.reqv(|v| gh_workflow_id::Request {
@@ -123,7 +99,7 @@ impl SimpleFlowNode for Node {
             let xtask = xtask.claim(ctx);
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
             let old_openhcl = merge_head_artifact.claim(ctx);
-            let new_openhcl = read_built_openvmm_hcl.claim(ctx);
+            let new_openhcl = built_openvmm_hcl.claim(ctx);
 
             move |rt| {
                 let xtask = match rt.read(xtask) {
@@ -156,7 +132,7 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        ctx.emit_side_effect_step(vec![published, comparison], [done]);
+        ctx.emit_side_effect_step(vec![comparison], [done]);
 
         Ok(())
     }

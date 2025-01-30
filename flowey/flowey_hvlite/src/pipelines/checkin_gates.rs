@@ -629,6 +629,8 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm"));
             let (pub_openhcl_igvm_extras_dev, _use_openhcl_igvm_extras_dev) =
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras"));
+            let (pub_openhcl_baseline, _use_openhcl_baseline) =
+                pipeline.new_artifact(format!("{arch_tag}-openhcl-baseline"));
             // also build pipette musl on this job, as until we land the
             // refactor that allows building musl without the full openhcl
             // toolchain, it would require pulling in all the openhcl
@@ -694,6 +696,8 @@ impl IntoPipeline for CheckinGatesCli {
                         artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm_dev),
                         artifact_dir_openhcl_igvm_extras: ctx
                             .publish_artifact(pub_openhcl_igvm_extras_dev),
+                        artifact_openhcl_verify_size_baseline: ctx
+                            .publish_artifact(pub_openhcl_baseline),
                         done: ctx.new_done_handle(),
                     }
                 })
@@ -711,11 +715,7 @@ impl IntoPipeline for CheckinGatesCli {
 
             all_jobs.push(job.finish());
 
-            if arch == CommonArch::X86_64 && !release {
-                // emit openvmm verify-size job
-                let (pub_openhcl_igvm_extras_ship, _use_openhcl_igvm_extras_ship) =
-                    pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras-ship"));
-
+            if arch == CommonArch::X86_64 && matches!(config, PipelineConfig::Pr) {
                 let job = pipeline
                     .new_job(
                         FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -732,9 +732,7 @@ impl IntoPipeline for CheckinGatesCli {
                                 platform: CommonPlatform::LinuxMusl,
                             },
                             done: ctx.new_done_handle(),
-                            pipeline_name: "[flowey] OpenVMM CI".into(),
-                            artifact_dir_openhcl_igvm_extras: ctx
-                                .publish_artifact(pub_openhcl_igvm_extras_ship),
+                            pipeline_name: "openvmm-ci.yaml".into(),
                         },
                     )
                     .finish();

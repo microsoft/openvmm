@@ -1285,6 +1285,8 @@ jobs:
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-pipette"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-pipette" | flowey v 12 'artifact_publish_from_aarch64-linux-musl-pipette' --update-from-stdin --is-raw-string
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-openhcl-baseline"
+        echo "$AgentTempDirNormal/publish_artifacts/aarch64-openhcl-baseline" | flowey v 12 'artifact_publish_from_aarch64-openhcl-baseline' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-openhcl-igvm"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-openhcl-igvm" | flowey v 12 'artifact_publish_from_aarch64-openhcl-igvm' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-openhcl-igvm-extras"
@@ -1564,6 +1566,9 @@ jobs:
     - name: copying OpenHCL igvm extras to artifact dir
       run: flowey e 12 flowey_lib_common::copy_to_artifact_dir 0
       shell: bash
+    - name: copying openhcl builds to publish dir
+      run: flowey e 12 flowey_lib_hvlite::artifact_openvmm_hcl_sizecheck::publish 0
+      shell: bash
     - name: inject cross env
       run: flowey e 12 flowey_lib_hvlite::init_cross_build 2
       shell: bash
@@ -1596,6 +1601,11 @@ jobs:
       with:
         name: aarch64-linux-musl-pipette
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-pipette/
+    - name: 🌼📦 Publish aarch64-openhcl-baseline
+      uses: actions/upload-artifact@v4
+      with:
+        name: aarch64-openhcl-baseline
+        path: ${{ runner.temp }}/publish_artifacts/aarch64-openhcl-baseline/
     - name: 🌼📦 Publish aarch64-openhcl-igvm
       uses: actions/upload-artifact@v4
       with:
@@ -1700,6 +1710,8 @@ jobs:
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-pipette"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-pipette" | flowey v 13 'artifact_publish_from_x64-linux-musl-pipette' --update-from-stdin --is-raw-string
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-openhcl-baseline"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-openhcl-baseline" | flowey v 13 'artifact_publish_from_x64-openhcl-baseline' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm"
         echo "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm" | flowey v 13 'artifact_publish_from_x64-openhcl-igvm' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm-extras"
@@ -2144,6 +2156,9 @@ jobs:
     - name: copying OpenHCL igvm extras to artifact dir
       run: flowey e 13 flowey_lib_common::copy_to_artifact_dir 0
       shell: bash
+    - name: copying openhcl builds to publish dir
+      run: flowey e 13 flowey_lib_hvlite::artifact_openvmm_hcl_sizecheck::publish 0
+      shell: bash
     - name: inject cross env
       run: flowey e 13 flowey_lib_hvlite::init_cross_build 2
       shell: bash
@@ -2176,6 +2191,11 @@ jobs:
       with:
         name: x64-linux-musl-pipette
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-pipette/
+    - name: 🌼📦 Publish x64-openhcl-baseline
+      uses: actions/upload-artifact@v4
+      with:
+        name: x64-openhcl-baseline
+        path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-baseline/
     - name: 🌼📦 Publish x64-openhcl-igvm
       uses: actions/upload-artifact@v4
       with:
