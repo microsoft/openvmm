@@ -442,7 +442,7 @@ impl LoadedVm {
         capabilities_flags: SaveGuestVtl2StateFlags,
         threadpool: &AffinitizedThreadpool,
     ) -> anyhow::Result<bool> {
-        if let Some(TestScenarioConfig::TestScenarioServicingSaveStuck) = self.test_configuration {
+        if let Some(TestScenarioConfig::ServicingSaveStuck) = self.test_configuration {
             tracing::info!("Test configuration SERVICING_SAVE_STUCK is set. Waiting indefinitely.");
             let mut timer = PolledTimer::new(threadpool.current_driver());
             loop {
@@ -455,7 +455,7 @@ impl LoadedVm {
             .handle_servicing_inner(correlation_id, deadline, capabilities_flags)
             .await
             .and_then(|state| {
-                if let Some(TestScenarioConfig::TestScenarioServicingSaveFail) =
+                if let Some(TestScenarioConfig::ServicingSaveFail) =
                     self.test_configuration
                 {
                     tracing::info!(

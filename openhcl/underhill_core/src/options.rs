@@ -13,11 +13,11 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-#[derive(Copy, Clone, Debug, PartialEq, MeshPayload)]
+#[derive(Clone, Debug, MeshPayload)]
 pub enum TestScenarioConfig {
-    TestScenarioServicingSaveFail,
-    TestScenarioServicingRestoreStuck,
-    TestScenarioServicingSaveStuck,
+    ServicingSaveFail,
+    ServicingRestoreStuck,
+    ServicingSaveStuck,
 }
 
 impl std::str::FromStr for TestScenarioConfig {
@@ -25,9 +25,9 @@ impl std::str::FromStr for TestScenarioConfig {
 
     fn from_str(s: &str) -> Result<TestScenarioConfig, anyhow::Error> {
         match s {
-            "SERVICING_SAVE_FAIL" => Ok(TestScenarioConfig::TestScenarioServicingSaveFail),
-            "SERVICING_RESTORE_STUCK" => Ok(TestScenarioConfig::TestScenarioServicingRestoreStuck),
-            "SERVICING_SAVE_STUCK" => Ok(TestScenarioConfig::TestScenarioServicingSaveStuck),
+            "SERVICING_SAVE_FAIL" => Ok(TestScenarioConfig::ServicingSaveFail),
+            "SERVICING_RESTORE_STUCK" => Ok(TestScenarioConfig::ServicingRestoreStuck),
+            "SERVICING_SAVE_STUCK" => Ok(TestScenarioConfig::ServicingSaveStuck),
             _ => Err(anyhow::anyhow!("Invalid test config: {}", s)),
         }
     }

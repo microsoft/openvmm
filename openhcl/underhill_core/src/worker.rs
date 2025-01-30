@@ -499,7 +499,7 @@ impl UnderhillVmWorker {
                 "cannot have saved state from two different sources"
             );
 
-            if let Some(TestScenarioConfig::TestScenarioServicingRestoreStuck) =
+            if let Some(TestScenarioConfig::ServicingRestoreStuck) =
                 params.env_cfg.test_configuration
             {
                 tracing::info!(
