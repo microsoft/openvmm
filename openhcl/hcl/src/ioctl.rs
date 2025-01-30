@@ -1896,13 +1896,17 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
     /// the masked interrupts always exit to user-space, and cannot
     /// be injected in the kernel. Interrupts matching this condition
     /// will be left on the proxy_irr field.
-    pub fn proxy_irr_exit_mut(&mut self) -> &mut [u32; 8] {
+    pub fn proxy_irr_exit_mut(&mut self, vtl: GuestVtl) -> &mut [u32; 8] {
+        // We only support proxying interrupts for VTL 0 today.
+        assert_eq!(vtl, GuestVtl::Vtl0);
         // SAFETY: The `proxy_irr_exit` field of the run page will not be concurrently updated.
         unsafe { &mut (*self.run.as_ptr()).proxy_irr_exit }
     }
 
     /// Gets the current offload_flags from the run page.
-    pub fn offload_flags_mut(&mut self) -> &mut hcl_intr_offload_flags {
+    pub fn offload_flags_mut(&mut self, vtl: GuestVtl) -> &mut hcl_intr_offload_flags {
+        // We only support interrupt offloading for VTL 0 today.
+        assert_eq!(vtl, GuestVtl::Vtl0);
         // SAFETY: The `offload_flags` field of the run page will not be concurrently updated.
         unsafe { &mut (*self.run.as_ptr()).offload_flags }
     }

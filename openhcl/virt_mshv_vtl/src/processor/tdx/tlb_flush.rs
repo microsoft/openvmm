@@ -102,7 +102,7 @@ impl UhProcessor<'_, TdxBacked> {
         // flush counters to indicate that a complete flush has been accomplished.
         if flush_entire_required {
             *self_flush_state = partition_flush_state.s.clone();
-            Self::do_flush_entire(false, &mut self.runner);
+            Self::do_flush_entire(target_vtl, false, &mut self.runner);
         }
         // If no flush entire is required, then check to see whether a full
         // non-global flush is required.
@@ -111,7 +111,7 @@ impl UhProcessor<'_, TdxBacked> {
         {
             self_flush_state.flush_entire_non_global_counter =
                 partition_flush_state.s.flush_entire_non_global_counter;
-            Self::do_flush_entire(true, &mut self.runner);
+            Self::do_flush_entire(target_vtl, true, &mut self.runner);
         }
     }
 
@@ -179,8 +179,12 @@ impl UhProcessor<'_, TdxBacked> {
         true
     }
 
-    fn do_flush_entire(non_global: bool, runner: &mut ProcessorRunner<'_, Tdx>) {
-        let vp_flags = runner.tdx_vp_entry_flags_mut();
+    fn do_flush_entire(
+        target_vtl: GuestVtl,
+        non_global: bool,
+        runner: &mut ProcessorRunner<'_, Tdx>,
+    ) {
+        let vp_flags = runner.tdx_vp_entry_flags_mut(target_vtl);
 
         if !non_global {
             // TODO: Track EPT invalidations separately.

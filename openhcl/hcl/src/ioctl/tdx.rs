@@ -78,7 +78,9 @@ impl MshvVtl {
 impl ProcessorRunner<'_, Tdx> {
     /// Gets a reference to the TDX VP context that is unioned inside the run
     /// page.
-    fn tdx_vp_context(&self) -> &tdx_vp_context {
+    fn tdx_vp_context(&self, vtl: GuestVtl) -> &tdx_vp_context {
+        // TODO TDX GUEST VSM: Currently VTL 0 only
+        assert_eq!(vtl, GuestVtl::Vtl0);
         // SAFETY: the VP context will not be concurrently accessed by the
         // processor while this VP is in VTL2. This is a TDX partition so the
         // context union should be interpreted as a `tdx_vp_context`.
@@ -87,7 +89,9 @@ impl ProcessorRunner<'_, Tdx> {
 
     /// Gets a mutable reference to the TDX VP context that is unioned inside
     /// the run page.
-    fn tdx_vp_context_mut(&mut self) -> &mut tdx_vp_context {
+    fn tdx_vp_context_mut(&mut self, vtl: GuestVtl) -> &mut tdx_vp_context {
+        // TODO TDX GUEST VSM: Currently VTL 0 only
+        assert_eq!(vtl, GuestVtl::Vtl0);
         // SAFETY: the VP context will not be concurrently accessed by the
         // processor while this VP is in VTL2. This is a TDX partition so the
         // context union should be interpreted as a `tdx_vp_context`.
@@ -95,52 +99,56 @@ impl ProcessorRunner<'_, Tdx> {
     }
 
     /// Gets a reference to the TDX enter guest state.
-    pub fn tdx_enter_guest_state(&self) -> &TdxL2EnterGuestState {
-        &self.tdx_vp_context().gpr_list
+    pub fn tdx_enter_guest_state(&self, vtl: GuestVtl) -> &TdxL2EnterGuestState {
+        &self.tdx_vp_context(vtl).gpr_list
     }
 
     /// Gets a mutable reference to the TDX enter guest state.
-    pub fn tdx_enter_guest_state_mut(&mut self) -> &mut TdxL2EnterGuestState {
-        &mut self.tdx_vp_context_mut().gpr_list
+    pub fn tdx_enter_guest_state_mut(&mut self, vtl: GuestVtl) -> &mut TdxL2EnterGuestState {
+        &mut self.tdx_vp_context_mut(vtl).gpr_list
     }
 
     /// Gets a reference to the tdx exit info from a VP.ENTER call.
-    pub fn tdx_vp_enter_exit_info(&self) -> &tdx_tdg_vp_enter_exit_info {
-        &self.tdx_vp_context().exit_info
+    pub fn tdx_vp_enter_exit_info(&self, vtl: GuestVtl) -> &tdx_tdg_vp_enter_exit_info {
+        &self.tdx_vp_context(vtl).exit_info
     }
 
     /// Gets a reference to the tdx APIC page.
-    pub fn tdx_apic_page(&self) -> &[u32; 1024] {
+    pub fn tdx_apic_page(&self, vtl: GuestVtl) -> &[u32; 1024] {
+        // We only offload VTL 0 today.
+        assert_eq!(vtl, GuestVtl::Vtl0);
         // SAFETY: the APIC page will not be concurrently accessed by the processor
         // while this VP is in VTL2.
         unsafe { &*self.state.apic.as_ptr() }
     }
 
     /// Gets a mutable reference to the tdx APIC page.
-    pub fn tdx_apic_page_mut(&mut self) -> &mut [u32; 1024] {
+    pub fn tdx_apic_page_mut(&mut self, vtl: GuestVtl) -> &mut [u32; 1024] {
+        // We only offload VTL 0 today.
+        assert_eq!(vtl, GuestVtl::Vtl0);
         // SAFETY: the APIC page will not be concurrently accessed by the processor
         // while this VP is in VTL2.
         unsafe { &mut *self.state.apic.as_ptr() }
     }
 
     /// Gets a reference to TDX VP specific state.
-    pub fn tdx_vp_state(&self) -> &tdx_vp_state {
-        &self.tdx_vp_context().vp_state
+    pub fn tdx_vp_state(&self, vtl: GuestVtl) -> &tdx_vp_state {
+        &self.tdx_vp_context(vtl).vp_state
     }
 
     /// Gets a mutable reference to TDX VP specific state
-    pub fn tdx_vp_state_mut(&mut self) -> &mut tdx_vp_state {
-        &mut self.tdx_vp_context_mut().vp_state
+    pub fn tdx_vp_state_mut(&mut self, vtl: GuestVtl) -> &mut tdx_vp_state {
+        &mut self.tdx_vp_context_mut(vtl).vp_state
     }
 
     /// Gets a reference to the TDX VP entry flags.
-    pub fn tdx_vp_entry_flags(&self) -> &TdxVmFlags {
-        &self.tdx_vp_context().entry_rcx
+    pub fn tdx_vp_entry_flags(&self, vtl: GuestVtl) -> &TdxVmFlags {
+        &self.tdx_vp_context(vtl).entry_rcx
     }
 
     /// Gets a mutable reference to the TDX VP entry flags.
-    pub fn tdx_vp_entry_flags_mut(&mut self) -> &mut TdxVmFlags {
-        &mut self.tdx_vp_context_mut().entry_rcx
+    pub fn tdx_vp_entry_flags_mut(&mut self, vtl: GuestVtl) -> &mut TdxVmFlags {
+        &mut self.tdx_vp_context_mut(vtl).entry_rcx
     }
 
     fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
@@ -302,13 +310,13 @@ impl ProcessorRunner<'_, Tdx> {
     }
 
     /// Gets the FPU state for the VP.
-    pub fn fx_state(&self) -> &x86defs::xsave::Fxsave {
-        &self.tdx_vp_context().fx_state
+    pub fn fx_state(&self, vtl: GuestVtl) -> &x86defs::xsave::Fxsave {
+        &self.tdx_vp_context(vtl).fx_state
     }
 
     /// Sets the FPU state for the VP.
-    pub fn fx_state_mut(&mut self) -> &mut x86defs::xsave::Fxsave {
-        &mut self.tdx_vp_context_mut().fx_state
+    pub fn fx_state_mut(&mut self, vtl: GuestVtl) -> &mut x86defs::xsave::Fxsave {
+        &mut self.tdx_vp_context_mut(vtl).fx_state
     }
 }
 
