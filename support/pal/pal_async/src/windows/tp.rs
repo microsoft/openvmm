@@ -72,7 +72,7 @@ thread_local! {
 fn wake_locally(f: impl FnOnce()) {
     DEFERRED_RUNNABLE.with(|slot| {
         let deferred = Cell::new(None);
-        slot.lend(&deferred, || f());
+        slot.lend(&deferred, f);
         if let Some(runnable) = deferred.into_inner() {
             runnable.schedule();
         }
