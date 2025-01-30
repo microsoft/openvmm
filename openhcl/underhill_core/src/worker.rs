@@ -94,6 +94,7 @@ use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationV
 use page_pool_alloc::PagePool;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
+use pal_async::timer::PolledTimer;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use parking_lot::Mutex;
@@ -168,6 +169,8 @@ use vmotherboard::BaseChipsetBuilder;
 use vmotherboard::BaseChipsetBuilderOutput;
 use vmotherboard::ChipsetDeviceHandle;
 use zerocopy::FromZeroes;
+
+use crate::options::TestScenarioConfig;
 
 pub(crate) const PM_BASE: u16 = 0x400;
 pub(crate) const SYSTEM_IRQ_ACPI: u32 = 9;
@@ -302,7 +305,7 @@ pub struct UnderhillEnvCfg {
     pub nvme_keep_alive: bool,
 
     /// test configuration
-    pub test_configuration: Option<String>,
+    pub test_configuration: Option<TestScenarioConfig>,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -497,14 +500,15 @@ impl UnderhillVmWorker {
                 "cannot have saved state from two different sources"
             );
 
-            if let Some(config) = &params.env_cfg.test_configuration {
-                if config == "SERVICING_RESTORE_STUCK" {
-                    tracing::info!(
+            if let Some(TestScenarioConfig::TestScenarioServicingRestoreStuck) =
+                params.env_cfg.test_configuration
+            {
+                tracing::info!(
                         "Test configuration SERVICING_RESTORE_STUCK is set. Waiting indefinitely in restore"
                     );
-                    loop {
-                        std::thread::sleep(Duration::from_secs(1));
-                    }
+                let mut timer = PolledTimer::new(&early_init_driver);
+                loop {
+                    timer.sleep(Duration::from_secs(1)).await;
                 }
             }
 

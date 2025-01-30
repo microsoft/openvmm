@@ -7,10 +7,31 @@
 
 use anyhow::bail;
 use anyhow::Context;
+use mesh::MeshPayload;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::PathBuf;
+
+#[derive(Copy, Clone, Debug, PartialEq, MeshPayload)]
+pub enum TestScenarioConfig {
+    TestScenarioServicingSaveFail,
+    TestScenarioServicingRestoreStuck,
+    TestScenarioServicingSaveStuck,
+}
+
+impl std::str::FromStr for TestScenarioConfig {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<TestScenarioConfig, anyhow::Error> {
+        match s {
+            "SERVICING_SAVE_FAIL" => Ok(TestScenarioConfig::TestScenarioServicingSaveFail),
+            "SERVICING_RESTORE_STUCK" => Ok(TestScenarioConfig::TestScenarioServicingRestoreStuck),
+            "SERVICING_SAVE_STUCK" => Ok(TestScenarioConfig::TestScenarioServicingSaveStuck),
+            _ => Err(anyhow::anyhow!("Invalid test config: {}", s)),
+        }
+    }
+}
 
 // We've made our own parser here instead of using something like clap in order
 // to save on compiled file size. We don't need all the features a crate can provide.
@@ -120,10 +141,10 @@ pub struct Options {
     /// (OPENHCL_NVME_KEEP_ALIVE=1) Enable nvme keep alive when servicing.
     pub nvme_keep_alive: bool,
 
-    /// (OPENHCL_TEST_CONFIG=\<string\>)
+    /// (OPENHCL_TEST_CONFIG=\<TestScenarioConfig\>)
     /// Test configurations are designed to replicate specific behaviors and
     /// conditions in order to simulate various test scenarios.
-    pub test_configuration: Option<String>,
+    pub test_configuration: Option<TestScenarioConfig>,
 }
 
 impl Options {
@@ -153,6 +174,10 @@ impl Options {
                 )
             })
         };
+
+        // Reads an environment variable strings.
+        let parse_env_string =
+            |name: &str| -> Option<&OsString> { env.get::<OsStr>(name.as_ref()) };
 
         fn parse_bool(value: Option<&OsString>) -> bool {
             value
@@ -208,8 +233,17 @@ impl Options {
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
         let nvme_keep_alive = parse_env_bool("OPENHCL_NVME_KEEP_ALIVE");
-        let test_configuration =
-            legacy_openhcl_env("OPENHCL_TEST_CONFIG").map(|x| x.to_string_lossy().into_owned());
+        let test_configuration = parse_env_string("OPENHCL_TEST_CONFIG").and_then(|x| {
+            x.to_string_lossy()
+                .parse::<TestScenarioConfig>()
+                .inspect_err(|e| {
+                    tracing::warn!(
+                        "Failed to parse OPENHCL_TEST_CONFIG: {}. No test will be simulated.",
+                        e
+                    )
+                })
+                .ok()
+        });
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
