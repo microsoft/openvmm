@@ -340,7 +340,7 @@ impl HvCall {
                 Some(hw_ids.len()),
             );
 
-            let n = r.elements_processed() as usize;
+            let n = r.elements_processed();
             output.extend(
                 u32::slice_from(&Self::output_page().buffer[..n * 4])
                     .unwrap()
