@@ -329,6 +329,13 @@ impl BackingPrivate for HypervisorBackedX86 {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
+
+    fn handle_vp_start_enable_vtl_wake(
+        _this: &mut UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+    ) -> Result<(), UhRunVpError> {
+        unimplemented!()
+    }
 }
 
 fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {

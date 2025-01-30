@@ -242,9 +242,7 @@ mod private {
         fn handle_vp_start_enable_vtl_wake(
             _this: &mut UhProcessor<'_, Self>,
             _vtl: GuestVtl,
-        ) -> Result<(), UhRunVpError> {
-            Ok(())
-        }
+        ) -> Result<(), UhRunVpError>;
 
         fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
 
