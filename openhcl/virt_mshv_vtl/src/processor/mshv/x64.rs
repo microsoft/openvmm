@@ -76,10 +76,9 @@ use zerocopy::FromZeroes;
 /// software-isolated).
 #[derive(InspectMut)]
 pub struct HypervisorBackedX86 {
-    // TODO WHP GUEST VSM: To be completely correct here, when emulating the APICs
-    // we would need two sets of deliverability notifications too. However currently
-    // we don't support VTL 1 on WHP, and on the hypervisor we don't emulate the APIC,
-    // so this can wait.
+    // TODO WHP GUEST VSM: To be completely correct here we would need two sets of
+    // deliverability notifications too. However currently we don't support VTL 1
+    // on WHP so this can wait.
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
     deliverability_notifications: HvDeliverabilityNotificationsRegister,
     /// Next set of deliverability notifications. See register definition for details.
@@ -1316,7 +1315,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 
     fn lapic_base_address(&self) -> Option<u64> {
-        unimplemented!()
+        None
     }
 
     fn lapic_read(&mut self, _address: u64, _data: &mut [u8]) {
