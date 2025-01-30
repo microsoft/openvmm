@@ -625,7 +625,7 @@ impl IntoPipeline for CheckinGatesCli {
                 OpenvmmHclBuildProfile::Debug
             };
 
-            let (pub_openhcl_igvm_dev, use_openhcl_igvm_dev) =
+            let (pub_openhcl_igvm, use_openhcl_igvm) =
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm"));
             let (pub_openhcl_igvm_extras_dev, _use_openhcl_igvm_extras_dev) =
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras"));
@@ -642,7 +642,7 @@ impl IntoPipeline for CheckinGatesCli {
             match arch {
                 CommonArch::X86_64 => {
                     vmm_tests_artifacts_windows_x86.use_openhcl_igvm_files =
-                        Some(use_openhcl_igvm_dev.clone());
+                        Some(use_openhcl_igvm.clone());
                     vmm_tests_artifacts_windows_x86.use_pipette_linux_musl =
                         Some(use_pipette_linux_musl.clone());
                     vmm_tests_artifacts_linux_x86.use_pipette_linux_musl =
@@ -650,7 +650,7 @@ impl IntoPipeline for CheckinGatesCli {
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_windows_aarch64.use_openhcl_igvm_files =
-                        Some(use_openhcl_igvm_dev.clone());
+                        Some(use_openhcl_igvm.clone());
                     vmm_tests_artifacts_windows_aarch64.use_pipette_linux_musl =
                         Some(use_pipette_linux_musl.clone());
                 }
@@ -693,7 +693,7 @@ impl IntoPipeline for CheckinGatesCli {
                                 ))),
                             })
                             .collect(),
-                        artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm_dev),
+                        artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
                         artifact_dir_openhcl_igvm_extras: ctx
                             .publish_artifact(pub_openhcl_igvm_extras_dev),
                         artifact_openhcl_verify_size_baseline: ctx

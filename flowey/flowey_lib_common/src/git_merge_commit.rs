@@ -44,7 +44,6 @@ impl SimpleFlowNode for Node {
 
                 sh.change_dir(repo_path);
 
-                // TODO: Make this work for non-main PRs
                 xshell::cmd!(sh, "git fetch origin {base_branch}").run()?;
                 xshell::cmd!(sh, "git fetch origin pull/{pr_number}/head:{head_ref}").run()?;
                 let commit =

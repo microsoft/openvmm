@@ -67,6 +67,10 @@ impl SimpleFlowNode for Node {
 
                 xshell::cmd!(sh, "{gh_cli} run download {run_id} -R {repo_owner}/{repo_name} --pattern {file_name}").run()?;
 
+                if !out_dir.join(file_name).exists() {
+                    anyhow::bail!("Failed to download artifact");
+                }
+
                 rt.write(path, &out_dir);
                 Ok(())
             }
