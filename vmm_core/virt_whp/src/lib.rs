@@ -920,7 +920,6 @@ impl WhpPartitionInner {
                 if !hv_config.offload_enlightenments || proto_config.user_mode_apic {
                     cpuid.extend(hv1_emulator::cpuid::hv_cpuid_leaves(
                         proto_config.processor_topology,
-                        proto_config.user_mode_apic,
                         IsolationType::None,
                         false,
                         [0; 4],
