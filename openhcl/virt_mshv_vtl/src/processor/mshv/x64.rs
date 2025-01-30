@@ -76,9 +76,8 @@ use zerocopy::FromZeroes;
 /// software-isolated).
 #[derive(InspectMut)]
 pub struct HypervisorBackedX86 {
-    // TODO WHP GUEST VSM: To be completely correct here we would need two sets of
-    // deliverability notifications too. However currently we don't support VTL 1
-    // on WHP so this can wait.
+    // VTL0 only, used for synic message and extint readiness notifications.
+    // We do not currently support synic message ports or extint interrupts for VTL1.
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
     deliverability_notifications: HvDeliverabilityNotificationsRegister,
     /// Next set of deliverability notifications. See register definition for details.
