@@ -79,15 +79,16 @@ impl Xtask for VerifySize {
         let original = fs_err::read(&self.original)?;
         let new = fs_err::read(&self.new)?;
 
-        let original_elf = object::File::parse(&*original).context(format!(
-            r#"Unable to parse target file "{}"."#,
-            &self.original.display()
-        ))?;
+        let original_elf = object::File::parse(&*original).with_context(|| {
+            format!(
+                r#"Unable to parse target file "{}"."#,
+                &self.original.display()
+            )
+        })?;
 
-        let new_elf = object::File::parse(&*new).context(format!(
-            r#"Unable to parse target file "{}"."#,
-            &self.new.display(),
-        ))?;
+        let new_elf = object::File::parse(&*new).with_context(|| {
+            format!(r#"Unable to parse target file "{}"."#, &self.new.display(),)
+        })?;
 
         println!("Verifying size for {}:", (&self.new.display()));
         let total_diff = verify_sections_size(&new_elf, &original_elf)?;
