@@ -22,6 +22,7 @@ pal_event.workspace = true
 
 ntapi = { workspace = true, features = ["impl-default"] }
 socket2 = { workspace = true, features = ["all"] }
+windows-core.workspace = true
 widestring.workspace = true
 
 [target.'cfg(windows)'.dependencies.winapi]
@@ -43,12 +44,18 @@ features = [
     "securitybaseapi",
     "std",
     "synchapi",
-    "threadpoolapiset",
     "winbase",
     "winerror",
     "winioctl",
     "winnt",
     "winsock2",
+]
+
+[target.'cfg(windows)'.dependencies.windows]
+workspace = true
+features = [
+    "Foundation",
+    "Win32_System_Threading"
 ]
 
 [target.'cfg(unix)'.dependencies]
