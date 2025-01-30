@@ -167,9 +167,10 @@ impl HvCall {
             rsvd: [0; 3],
         };
 
+        // PANIC: Infallable, since the hypercall header is less than the size of a page
         header
             .write_to_prefix(Self::input_page().buffer.as_mut_slice())
-            .unwrap(); // PANIC: Infallable, since the hypercall header is less than the size of a page
+            .unwrap();
 
         let reg = hvdef::hypercall::HvRegisterAssoc {
             name,
@@ -177,8 +178,9 @@ impl HvCall {
             value,
         };
 
+        // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
         reg.write_to_prefix(&mut Self::input_page().buffer[HEADER_SIZE..])
-            .unwrap(); // PANIC: Infallable, since the hypercall parameter is less than the size of a page
+            .unwrap();
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallSetVpRegisters, Some(1));
 
@@ -199,11 +201,13 @@ impl HvCall {
             rsvd: [0; 3],
         };
 
+        // PANIC: Infallable, since the hypercall header is less than the size of a page
         header
             .write_to_prefix(Self::input_page().buffer.as_mut_slice())
-            .unwrap(); // PANIC: Infallable, since the hypercall header is less than the size of a page
+            .unwrap();
+        // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
         name.write_to_prefix(&mut Self::input_page().buffer[HEADER_SIZE..])
-            .unwrap(); // PANIC: Infallable, since the hypercall payload is less than the size of a page
+            .unwrap();
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallGetVpRegisters, Some(1));
         output.result()?;
@@ -231,16 +235,18 @@ impl HvCall {
             let remaining_pages = range.end_4k_gpn() - current_page;
             let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64);
 
+            // PANIC: Infallable, since the hypercall header is less than the size of a page
             header
                 .write_to_prefix(Self::input_page().buffer.as_mut_slice())
-                .unwrap(); // PANIC: Infallable, since the hypercall header is less than the size of a page
+                .unwrap();
 
             let mut input_offset = HEADER_SIZE;
             for i in 0..count {
                 let page_num = current_page + i;
+                // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
                 page_num
                     .write_to_prefix(&mut Self::input_page().buffer[input_offset..])
-                    .unwrap(); // PANIC: Infallable, since the hypercall data is less than the size of a page
+                    .unwrap();
                 input_offset += size_of::<u64>();
             }
 
@@ -270,9 +276,10 @@ impl HvCall {
             vp_vtl_context: zerocopy::FromZeros::new_zeroed(),
         };
 
+        // PANIC: Infallable, since the hypercall header is less than the size of a page
         header
             .write_to_prefix(Self::input_page().buffer.as_mut_slice())
-            .unwrap(); // PANIC: Infallable, since the hypercall header is less than the size of a page
+            .unwrap();
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallEnableVpVtl, None);
         match output.result() {
@@ -309,9 +316,10 @@ impl HvCall {
             let remaining_pages = range.end_4k_gpn() - current_page;
             let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64);
 
+            // PANIC: Infallable, since the hypercall header is less than the size of a page
             header
                 .write_to_prefix(Self::input_page().buffer.as_mut_slice())
-                .unwrap(); // PANIC: Infallable, since the hypercall header is less than the size of a page
+                .unwrap();
 
             let output = self.dispatch_hvcall(
                 hvdef::HypercallCode::HvCallAcceptGpaPages,
@@ -347,12 +355,17 @@ impl HvCall {
         const MAX_PER_CALL: usize = 512;
 
         for hw_ids in hw_ids.chunks(MAX_PER_CALL) {
+            // PANIC: Infallable, since the hypercall header is less than the size of a page
             header
                 .write_to_prefix(Self::input_page().buffer.as_mut_slice())
-                .unwrap(); // PANIC: Infallable, since the hypercall header is less than the size of a page
+                .unwrap();
+            // PANIC: Infallable, since the hypercall parameters are chunked to be less
+            // than the remaining size (after the header) of the input page.
+            // todo: This is *not true* for aarch64, where the hw_ids are u64s. Tracked via
+            // https://github.com/microsoft/openvmm/issues/745
             hw_ids
                 .write_to_prefix(&mut Self::input_page().buffer[header.as_bytes().len()..])
-                .unwrap(); // PANIC: Infallable, since the hypercall parameters are less than the size of a page
+                .unwrap();
 
             // SAFETY: The input header and rep slice are the correct types for this hypercall.
             //         The hypercall output is validated right after the hypercall is issued.

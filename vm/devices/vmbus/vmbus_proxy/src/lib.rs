@@ -94,7 +94,6 @@ mod proxyioctl {
     use winapi::um::winioctl::FILE_READ_ACCESS;
     use winapi::um::winioctl::FILE_WRITE_ACCESS;
     use winapi::um::winioctl::METHOD_BUFFERED;
-
     use zerocopy::Immutable;
     use zerocopy::IntoBytes;
     use zerocopy::KnownLayout;
