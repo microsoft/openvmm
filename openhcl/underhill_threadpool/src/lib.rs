@@ -12,6 +12,7 @@
 #![expect(unsafe_code)]
 
 use inspect::Inspect;
+use loan_cell::LoanCell;
 use pal::unix::affinity::CpuSet;
 use pal_async::fd::FdReadyDriver;
 use pal_async::task::Runnable;
@@ -30,7 +31,6 @@ use pal_uring::IoUringPool;
 use pal_uring::PoolClient;
 use pal_uring::Timer;
 use parking_lot::Mutex;
-use std::cell::Cell;
 use std::future::poll_fn;
 use std::io;
 use std::marker::PhantomData;
@@ -217,11 +217,7 @@ impl ThreadpoolBuilder {
                 // Store the current thread's driver so that spawned tasks can
                 // find it via `Thread::current()`.
                 CURRENT_THREADPOOL_CPU.with(|current| {
-                    current.set(std::ptr::from_ref(&driver));
-                });
-                pool.run();
-                CURRENT_THREADPOOL_CPU.with(|current| {
-                    current.set(std::ptr::null());
+                    current.lend(&driver, || pool.run());
                 });
                 drop(driver);
             })?;
@@ -368,14 +364,20 @@ impl Thread {
     /// Returns a new driver for the current CPU.
     pub fn current() -> Option<Self> {
         let inner = CURRENT_THREADPOOL_CPU.with(|current| {
-            let p = current.get();
-            // SAFETY: the `ThreadpoolDriver` is on the current thread's stack
-            // and so is guaranteed to be valid. And since `Thread` is not
-            // `Send` or `Sync`, this reference cannot be accessed after the
-            // driver has been dropped, since any task that can construct a
-            // `Thread` will have been completed by that time. So it's OK for
-            // this reference to live as long as `Thread`.
-            (!p.is_null()).then(|| unsafe { &*p })
+            current.borrow(|current| {
+                // SAFETY: since the `ThreadpoolDriver` is loaned at the bottom
+                // of the thread stack, and because `Thread` is not `Send` or
+                // `Sync`, it is impossible for this reference to be accessed
+                // after the driver has been dropped, since any task that can
+                // construct a `Thread` will have been completed by that time.
+                // So it's OK for this reference to live as long as `Thread`.
+                unsafe {
+                    Some(std::mem::transmute::<
+                        &ThreadpoolDriver,
+                        &'static ThreadpoolDriver,
+                    >(current?))
+                }
+            })
         })?;
         Some(Self {
             driver: inner,
@@ -468,7 +470,7 @@ pub enum SetAffinityError {
 }
 
 thread_local! {
-    static CURRENT_THREADPOOL_CPU: Cell<*const ThreadpoolDriver> = const { Cell::new(std::ptr::null()) };
+    static CURRENT_THREADPOOL_CPU: LoanCell<ThreadpoolDriver> = const { LoanCell::new() };
 }
 
 impl SpawnLocal for Thread {
