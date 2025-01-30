@@ -119,6 +119,11 @@ pub struct Options {
 
     /// (OPENHCL_NVME_KEEP_ALIVE=1) Enable nvme keep alive when servicing.
     pub nvme_keep_alive: bool,
+
+    /// (OPENHCL_TEST_CONFIG=\<string\>)
+    /// Test configurations are designed to replicate specific behaviors and
+    /// conditions in order to simulate various test scenarios.
+    pub test_configuration: Option<String>,
 }
 
 impl Options {
@@ -203,6 +208,8 @@ impl Options {
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
         let nvme_keep_alive = parse_env_bool("OPENHCL_NVME_KEEP_ALIVE");
+        let test_configuration =
+            legacy_openhcl_env("OPENHCL_TEST_CONFIG").map(|x| x.to_string_lossy().into_owned());
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -257,6 +264,7 @@ impl Options {
             halt_on_guest_halt,
             no_sidecar_hotplug,
             nvme_keep_alive,
+            test_configuration,
         })
     }
 

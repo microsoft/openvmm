@@ -300,6 +300,9 @@ pub struct UnderhillEnvCfg {
     pub hide_isolation: bool,
     /// Enable nvme keep alive.
     pub nvme_keep_alive: bool,
+
+    /// test configuration
+    pub test_configuration: Option<String>,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -493,6 +496,17 @@ impl UnderhillVmWorker {
                 servicing_state.is_none(),
                 "cannot have saved state from two different sources"
             );
+
+            if let Some(config) = &params.env_cfg.test_configuration {
+                if config == "SERVICING_RESTORE_STUCK" {
+                    tracing::info!(
+                        "Test configuration SERVICING_RESTORE_STUCK is set. Waiting indefinitely in restore"
+                    );
+                    loop {
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                }
+            }
 
             tracing::info!("VTL2 restart, getting servicing state from the host");
 
@@ -3066,6 +3080,7 @@ async fn new_underhill_vm(
         shared_vis_pool: shared_vis_pages_pool,
         private_pool,
         nvme_keep_alive: env_cfg.nvme_keep_alive,
+        test_configuration: env_cfg.test_configuration,
     };
 
     Ok(loaded_vm)

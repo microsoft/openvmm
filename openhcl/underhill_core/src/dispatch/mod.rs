@@ -179,6 +179,7 @@ pub(crate) struct LoadedVm {
     pub shared_vis_pool: Option<PagePool>,
     pub private_pool: Option<PagePool>,
     pub nvme_keep_alive: bool,
+    pub test_configuration: Option<String>,
 }
 
 pub struct LoadedVmState<T> {
@@ -433,11 +434,32 @@ impl LoadedVm {
         deadline: std::time::Instant,
         capabilities_flags: SaveGuestVtl2StateFlags,
     ) -> anyhow::Result<bool> {
+        if let Some(config) = &self.test_configuration {
+            if config == "SERVICING_SAVE_STUCK" {
+                tracing::info!(
+                    "Test configuration SERVICING_SAVE_STUCK is set. Waiting indefinitely."
+                );
+                loop {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            }
+        }
+
         let running = self.state_units.is_running();
         let success = match self
             .handle_servicing_inner(correlation_id, deadline, capabilities_flags)
             .await
-        {
+            .and_then(|state| {
+                if let Some(config) = &self.test_configuration {
+                    if config == "SERVICING_SAVE_FAIL" {
+                        tracing::info!(
+                            "Test configuration SERVICING_SAVE_FAIL is set. Failing the save."
+                        );
+                        return Err(anyhow::anyhow!("Simulated servicing save failure"));
+                    }
+                }
+                Ok(state)
+            }) {
             Ok(state) => {
                 self.get_client
                     .send_servicing_state(mesh::payload::encode(state))
