@@ -94,11 +94,14 @@ impl<T: ?Sized> LoanCell<T> {
     /// Borrows the lent value for the duration of `f`. If no value is currently
     /// lent, `f` is called with `None`.
     pub fn borrow<R>(&self, f: impl FnOnce(Option<&T>) -> R) -> R {
-        // SAFETY: the inner value is alive as long as the corresponding `loan`
-        // call is running, and the value is only dropped when the function
-        // passed to `loan` returns. Since `LoadCell` is not `Sync`, this cannot
-        // happen while `f` is running.
-        let v = unsafe { self.0.get().map(|v| v.as_ref()) };
+        let v = self.0.get().map(|v| {
+            // SAFETY: the inner value is alive as long as the corresponding
+            // `lend` call is running, and the value is only dropped when the
+            // function passed to `lend` returns. Since `LoanCell` is not
+            // `Sync`, and so `lend` must be running on the same thread as this
+            // call, this cannot happen while `f` is running.
+            unsafe { v.as_ref() }
+        });
         f(v)
     }
 }
