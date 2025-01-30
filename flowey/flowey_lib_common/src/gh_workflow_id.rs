@@ -43,7 +43,6 @@ impl SimpleFlowNode for Node {
         ctx.emit_rust_step("get action id", |ctx| {
             let gh_workflow_id = gh_workflow_id.claim(ctx);
             let github_commit_hash = github_commit_hash.claim(ctx);
-            let gh_token = gh_token.claim(ctx);
             let repo_path = repo_path.claim(ctx);
             let pipeline_name = pipeline_name.clone();
             let gh_cli = gh_cli.claim(ctx);
@@ -51,7 +50,6 @@ impl SimpleFlowNode for Node {
             move |rt| {
                 let github_commit_hash = rt.read(github_commit_hash);
                 let sh = xshell::Shell::new()?;
-                let gh_token = rt.read(gh_token);
                 let repo_path = rt.read(repo_path);
                 let gh_cli = rt.read(gh_cli);
 
@@ -59,23 +57,7 @@ impl SimpleFlowNode for Node {
 
                 // Fetches the CI build workflow id for a given commit hash
                 let get_action_id = |commit: String| {
-                    sh.cmd(gh_cli.clone())
-                        .arg("run")
-                        .arg("list")
-                        .arg("--commit")
-                        .arg(commit)
-                        .arg("-w")
-                        .arg(&pipeline_name)
-                        .arg("-s")
-                        .arg("completed")
-                        .arg("-L")
-                        .arg("1")
-                        .arg("--json")
-                        .arg("databaseId")
-                        .arg("--jq")
-                        .arg(".[].databaseId")
-                        .env("GITHUB_TOKEN", gh_token.clone())
-                        .read()
+                    xshell::cmd!(sh, "{gh_cli} run list --commit {commit} -w {pipeline_name} -s 'completed' -L 1 --json databaseId --jq '.[].databaseId'").read()
                 };
 
                 let mut github_commit_hash = github_commit_hash.clone();
