@@ -11,6 +11,7 @@ use hvdef::HvRegisterValue;
 use hvdef::Vtl;
 use virt::state::HvRegisterState;
 use whp::abi::WHV_REGISTER_VALUE;
+use zerocopy::FromZeros;
 
 pub struct WhpVpStateAccess<'a, 'b> {
     run: &'a mut WhpProcessor<'b>,
@@ -75,9 +76,7 @@ mod x86 {
     use virt::x86::vp;
     use virt::x86::vp::AccessVpState;
     use zerocopy::FromZeros;
-    use zerocopy::Immutable;
     use zerocopy::IntoBytes;
-    use zerocopy::KnownLayout;
 
     impl AccessVpState for WhpVpStateAccess<'_, '_> {
         type Error = Error;

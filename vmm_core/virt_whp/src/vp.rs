@@ -25,10 +25,7 @@ use virt::io::CpuIo;
 use virt::vp::AccessVpState;
 use virt::StopVp;
 use virt::VpHaltReason;
-use zerocopy::FromZeros;
-use zerocopy::Immutable;
 use zerocopy::IntoBytes;
-use zerocopy::KnownLayout;
 
 #[derive(Debug, Error)]
 pub enum WhpRunVpError {
@@ -598,9 +595,7 @@ mod x86 {
     use x86defs::cpuid::CpuidFunction;
     use x86defs::X86X_MSR_APIC_BASE;
     use zerocopy::FromZeros;
-    use zerocopy::Immutable;
     use zerocopy::IntoBytes;
-    use zerocopy::KnownLayout;
 
     // HACK: on certain machines, Windows booting from the PCAT BIOS spams these
     // MSRs during boot.

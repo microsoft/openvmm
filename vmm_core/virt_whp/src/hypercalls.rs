@@ -723,9 +723,7 @@ mod x86 {
     use whp::RegisterValue;
     use zerocopy::FromBytes;
     use zerocopy::FromZeros;
-    use zerocopy::Immutable;
     use zerocopy::IntoBytes;
-    use zerocopy::KnownLayout;
 
     pub(super) struct WhpHypercallRegisters<'a> {
         info: whp::abi::WHV_HYPERCALL_CONTEXT,
@@ -1082,8 +1080,8 @@ mod x86 {
                                         match HvVpAssistPageActionSignalEvent::read_from_prefix(
                                             &actions[offset..],
                                         ) {
-                                            Some(v) => v,
-                                            None => break,
+                                            Ok((v, _)) => v,
+                                            Err(_) => break, // todo: zerocopy: err
                                         };
 
                                     if let Err(err) = self.handle_action_signal_event(&signal_event)
