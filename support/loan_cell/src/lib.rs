@@ -68,7 +68,7 @@ impl<T: ?Sized> LoanCell<T> {
     }
 
     /// Lends `value` for the lifetime of `f`. `f` or any function it calls can
-    /// access the loaned value via `LoanCell::with`.
+    /// access the loaned value via [`LoanCell::borrow`].
     ///
     /// If a value is already lent, it is replaced with `value` for the duration
     /// of `f` and restored afterwards.
@@ -81,12 +81,14 @@ impl<T: ?Sized> LoanCell<T> {
             }
         }
 
-        // SAFETY: `value` cannot be null.
-        // FUTURE: use `NonNull::from_ref` when it becomes stable.
-        let value = unsafe { NonNull::new_unchecked(core::ptr::from_ref(value).cast_mut()) };
-        let old = self.0.replace(Some(value));
+        let old = self.0.replace(Some(value.into()));
         let _guard = RestoreOnDrop(self, old);
         f()
+    }
+
+    /// Returns `true` if a value is currently lent.
+    pub fn is_lent(&self) -> bool {
+        self.0.get().is_some()
     }
 
     /// Borrows the lent value for the duration of `f`. If no value is currently
