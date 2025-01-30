@@ -10,6 +10,7 @@ use self::vtl2_settings_worker::DeviceInterfaces;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::EmuplatServicing;
 use crate::nvme_manager::NvmeManager;
+use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
 use crate::servicing::NvmeSavedState;
@@ -70,8 +71,6 @@ use vmotherboard::ChipsetDevices;
 use vtl2_settings_worker::handle_vtl2_config_rpc;
 use vtl2_settings_worker::Vtl2ConfigNicRpc;
 use vtl2_settings_worker::Vtl2SettingsWorker;
-
-use crate::options::TestScenarioConfig;
 
 #[derive(MeshPayload)]
 pub enum UhVmRpc {
