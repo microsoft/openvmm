@@ -724,7 +724,6 @@ mod x86 {
     use zerocopy::FromBytes;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
-
     pub(super) struct WhpHypercallRegisters<'a> {
         info: whp::abi::WHV_HYPERCALL_CONTEXT,
         rip: u64,
@@ -1694,6 +1693,7 @@ mod aarch64 {
     use virt_support_aarch64emu::translate::TranslateFlags;
     use virt_support_aarch64emu::translate::TranslationRegisters;
     use whp::RegisterValue;
+    use zerocopy::FromZeros;
 
     pub(super) struct WhpHypercallRegisters<'a> {
         message: hvdef::HvArm64HypercallInterceptMessage,
