@@ -242,7 +242,7 @@ impl PollWait for Wait {
                 drop(state);
                 // SAFETY: handle is valid
                 unsafe {
-                    self.tp_wait.set_raw(Some(self.handle.0));
+                    self.tp_wait.set_raw(self.handle.0);
                 }
                 Poll::Pending
             }

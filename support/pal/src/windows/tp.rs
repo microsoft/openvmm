@@ -58,15 +58,15 @@ impl TpWait {
     /// # Safety
     ///
     /// `handle` must be valid.
-    pub unsafe fn set_raw(&self, handle: Option<RawHandle>) -> bool {
+    pub unsafe fn set_raw(&self, handle: RawHandle) -> bool {
         // SAFETY: The caller ensures this is safe when creating the object in `new`.
-        unsafe { SetThreadpoolWaitEx(self.0, handle.map(HANDLE), None, None).as_bool() }
+        unsafe { SetThreadpoolWaitEx(self.0, Some(HANDLE(handle)), None, None).as_bool() }
     }
 
     /// Sets the handle to wait for.
-    pub fn set(&self, handle: Option<BorrowedHandle<'_>>) -> bool {
+    pub fn set(&self, handle: BorrowedHandle<'_>) -> bool {
         // SAFETY: The caller ensures this is safe when creating the object in `new`.
-        unsafe { self.set_raw(handle.map(|handle| handle.as_raw_handle())) }
+        unsafe { self.set_raw(handle.as_raw_handle()) }
     }
 
     /// Cancels the current wait. Returns true if the wait was previously
