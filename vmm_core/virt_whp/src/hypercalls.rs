@@ -1835,7 +1835,8 @@ mod aarch64 {
                         self.current_whp()
                             .get_registers(&[reg], &mut value)
                             .map_err(|err| {
-                                err.hv_result().map_or(HvError::InvalidParameter, HvError)
+                                err.hv_result()
+                                    .map_or(HvError::InvalidParameter, HvError::from)
                             })?;
                         unsafe {
                             std::mem::transmute::<whp::abi::WHV_REGISTER_VALUE, HvRegisterValue>(
@@ -1863,7 +1864,10 @@ mod aarch64 {
                 };
                 self.current_whp()
                     .set_registers(&[reg], &[value])
-                    .map_err(|err| err.hv_result().map_or(HvError::InvalidParameter, HvError))?;
+                    .map_err(|err| {
+                        err.hv_result()
+                            .map_or(HvError::InvalidParameter, HvError::from)
+                    })?;
 
                 Ok(())
             } else {
