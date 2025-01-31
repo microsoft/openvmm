@@ -9,7 +9,6 @@ rust-version.workspace = true
 [dependencies]
 disk_backend_resources.workspace = true
 disk_vhd1.workspace = true
-get_protocol.workspace = true
 get_resources.workspace = true
 hvlite_defs.workspace = true
 vm_resource.workspace = true

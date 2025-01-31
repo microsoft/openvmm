@@ -3,9 +3,9 @@
 
 //! Integration tests for x86_64 OpenHCL servicing.
 
-use get_protocol::SaveGuestVtl2StateFlags;
 use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::ArtifactHandle;
+use petri::OpenHclServicingFlags;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
@@ -13,7 +13,7 @@ use vmm_test_macros::openvmm_test;
 async fn openhcl_servicing_core(
     config: PetriVmConfigOpenVmm,
     new_openhcl: ArtifactHandle<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
-    flags: SaveGuestVtl2StateFlags,
+    flags: OpenHclServicingFlags,
 ) -> anyhow::Result<()> {
     let (mut vm, agent) = config.run().await?;
 
@@ -41,7 +41,7 @@ async fn openhcl_servicing(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::E
     openhcl_servicing_core(
         config,
         LATEST_LINUX_DIRECT_TEST_X64,
-        SaveGuestVtl2StateFlags::new().with_enable_nvme_keepalive(false),
+        OpenHclServicingFlags::default(),
     )
     .await
 }
@@ -53,7 +53,9 @@ async fn openhcl_servicing_keepalive(config: PetriVmConfigOpenVmm) -> Result<(),
     openhcl_servicing_core(
         config,
         LATEST_LINUX_DIRECT_TEST_X64,
-        SaveGuestVtl2StateFlags::new().with_enable_nvme_keepalive(true),
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+        },
     )
     .await
 }

@@ -15,7 +15,6 @@ vmm_test_petri_support.workspace = true
 petri_artifacts_common.workspace = true
 petri.workspace = true
 
-get_protocol.workspace = true
 hvlite_defs.workspace = true
 vtl2_settings_proto.workspace = true
 disk_backend_resources.workspace = true

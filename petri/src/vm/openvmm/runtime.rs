@@ -6,13 +6,13 @@
 use super::PetriVmResourcesOpenVmm;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::worker::Worker;
+use crate::OpenHclServicingFlags;
 use crate::PetriVm;
 use crate::ShutdownKind;
 use anyhow::Context;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
-use get_protocol::SaveGuestVtl2StateFlags;
 use hvlite_defs::rpc::PulseSaveRestoreError;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::rpc::RpcError;
@@ -176,7 +176,7 @@ impl PetriVmOpenVmm {
         pub async fn restart_openhcl(
             &mut self,
             new_openhcl: ArtifactHandle<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
-            flags: SaveGuestVtl2StateFlags
+            flags: OpenHclServicingFlags
         ) -> anyhow::Result<()>
     );
     petri_vm_fn!(
@@ -350,7 +350,7 @@ impl PetriVmInner {
     async fn restart_openhcl(
         &self,
         new_openhcl: ArtifactHandle<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
-        flags: SaveGuestVtl2StateFlags,
+        flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()> {
         let ged_send = self
             .resources
