@@ -234,7 +234,10 @@ impl<'a> WhpProcessor<'a> {
             self.vp
                 .whp(vtl)
                 .post_synic_message(sint, message.as_bytes())
-                .map_err(|err| err.hv_result().map_or(HvError::InvalidParameter, HvError))
+                .map_err(|err| {
+                    err.hv_result()
+                        .map_or(HvError::InvalidParameter, HvError::from)
+                })
         }
     }
 

@@ -147,7 +147,7 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
     /// Complete hypercall handling.
     fn complete(&mut self, output: Option<HypercallOutput>) {
         if let Some(output) = output {
-            if output.call_status() == HvError::Timeout.0 {
+            if output.call_status() == Err(HvError::Timeout).into() {
                 self.handler.retry(
                     self.control
                         .with_rep_start(output.elements_processed())
@@ -284,7 +284,7 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
             // which is handled as a failure), nothing is written back.
             let output_end = if out_elem_size > 0 {
                 out_elem_size * ret.elements_processed()
-            } else if ret.call_status() == 0 {
+            } else if ret.call_status().is_ok() {
                 output_len
             } else {
                 0
@@ -340,7 +340,7 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
             // which is handled as a failure), nothing is written back.
             let output_end = if out_elem_size > 0 {
                 out_elem_size * ret.elements_processed()
-            } else if ret.call_status() == 0 {
+            } else if ret.call_status().is_ok() {
                 output_len
             } else {
                 0
@@ -356,7 +356,7 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
             ret
         };
 
-        if ret.call_status() == 0 {
+        if ret.call_status().is_ok() {
             debug_assert_eq!(ret.elements_processed(), control.rep_count());
         }
 

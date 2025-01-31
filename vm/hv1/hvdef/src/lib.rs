@@ -344,146 +344,246 @@ pub const HV_X64_MSR_GUEST_CRASH_CTL: u32 = 0x40000105;
 
 pub const HV_X64_GUEST_CRASH_PARAMETER_MSRS: usize = 5;
 
-open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-    pub enum HvError: u16 {
-        #![allow(non_upper_case_globals)]
+/// A hypervisor status code.
+///
+/// The non-success status codes are defined in [`HvError`].
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct HvStatus(pub u16);
 
-        InvalidHypercallCode = 0x0002,
-        InvalidHypercallInput = 0x0003,
-        InvalidAlignment = 0x0004,
-        InvalidParameter = 0x0005,
-        AccessDenied = 0x0006,
-        InvalidPartitionState = 0x0007,
-        OperationDenied = 0x0008,
-        UnknownProperty = 0x0009,
-        PropertyValueOutOfRange = 0x000A,
-        InsufficientMemory = 0x000B,
-        PartitionTooDeep = 0x000C,
-        InvalidPartitionId = 0x000D,
-        InvalidVpIndex = 0x000E,
-        NotFound = 0x0010,
-        InvalidPortId = 0x0011,
-        InvalidConnectionId = 0x0012,
-        InsufficientBuffers = 0x0013,
-        NotAcknowledged = 0x0014,
-        InvalidVpState = 0x0015,
-        Acknowledged = 0x0016,
-        InvalidSaveRestoreState = 0x0017,
-        InvalidSynicState = 0x0018,
-        ObjectInUse = 0x0019,
-        InvalidProximityDomainInfo = 0x001A,
-        NoData = 0x001B,
-        Inactive = 0x001C,
-        NoResources = 0x001D,
-        FeatureUnavailable = 0x001E,
-        PartialPacket = 0x001F,
-        ProcessorFeatureNotSupported = 0x0020,
-        ProcessorCacheLineFlushSizeIncompatible = 0x0030,
-        InsufficientBuffer = 0x0033,
-        IncompatibleProcessor = 0x0037,
-        InsufficientDeviceDomains = 0x0038,
-        CpuidFeatureValidationError = 0x003C,
-        CpuidXsaveFeatureValidationError = 0x003D,
-        ProcessorStartupTimeout = 0x003E,
-        SmxEnabled = 0x003F,
-        InvalidLpIndex = 0x0041,
-        InvalidRegisterValue = 0x0050,
-        InvalidVtlState = 0x0051,
-        NxNotDetected = 0x0055,
-        InvalidDeviceId = 0x0057,
-        InvalidDeviceState = 0x0058,
-        PendingPageRequests = 0x0059,
-        PageRequestInvalid = 0x0060,
-        KeyAlreadyExists = 0x0065,
-        DeviceAlreadyInDomain = 0x0066,
-        InvalidCpuGroupId = 0x006F,
-        InvalidCpuGroupState = 0x0070,
-        OperationFailed = 0x0071,
-        NotAllowedWithNestedVirtActive = 0x0072,
-        InsufficientRootMemory = 0x0073,
-        EventBufferAlreadyFreed = 0x0074,
-        Timeout = 0x0078,
-        VtlAlreadyEnabled = 0x0086,
-        UnknownRegisterName = 0x0087,
+impl HvStatus {
+    /// The success status code.
+    pub const SUCCESS: Self = Self(0);
+
+    /// Returns `Ok(())` if this is `HvStatus::SUCCESS`, otherwise returns an
+    /// `Err(err)` where `err` is the corresponding `HvError`.
+    pub fn result(self) -> HvResult<()> {
+        if let Ok(err) = self.0.try_into() {
+            Err(HvError(err))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Returns true if this is `HvStatus::SUCCESS`.
+    pub fn is_ok(self) -> bool {
+        self == Self::SUCCESS
+    }
+
+    /// Returns true if this is not `HvStatus::SUCCESS`.
+    pub fn is_err(self) -> bool {
+        self != Self::SUCCESS
+    }
+
+    const fn from_bits(bits: u16) -> Self {
+        Self(bits)
+    }
+
+    const fn into_bits(self) -> u16 {
+        self.0
+    }
+}
+
+impl From<Result<(), HvError>> for HvStatus {
+    fn from(err: Result<(), HvError>) -> Self {
+        err.err().map_or(Self::SUCCESS, |err| Self(err.0.get()))
+    }
+}
+
+impl Debug for HvStatus {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.result() {
+            Ok(()) => f.write_str("Success"),
+            Err(err) => Debug::fmt(&err, f),
+        }
+    }
+}
+
+/// An [`HvStatus`] value representing an error.
+//
+// DEVNOTE: use `NonZeroU16` to get a niche optimization, since 0 is reserved
+// for success.
+#[derive(Copy, Clone, PartialEq, Eq, AsBytes)]
+#[repr(transparent)]
+pub struct HvError(core::num::NonZeroU16);
+
+impl From<core::num::NonZeroU16> for HvError {
+    fn from(err: core::num::NonZeroU16) -> Self {
+        Self(err)
+    }
+}
+
+impl Debug for HvError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.debug_name() {
+            Some(name) => f.pad(name),
+            None => Debug::fmt(&self.0.get(), f),
+        }
     }
 }
 
 impl core::fmt::Display for HvError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let error_str = match *self {
-            HvError::InvalidHypercallCode => "Invalid hypercall code",
-            HvError::InvalidHypercallInput => "Invalid hypercall input",
-            HvError::InvalidAlignment => "Invalid alignment",
-            HvError::InvalidParameter => "Invalid parameter",
-            HvError::AccessDenied => "Access denied",
-            HvError::InvalidPartitionState => "Invalid partition state",
-            HvError::OperationDenied => "Operation denied",
-            HvError::UnknownProperty => "Unknown property",
-            HvError::PropertyValueOutOfRange => "Property value out of range",
-            HvError::InsufficientMemory => "Insufficient memory",
-            HvError::PartitionTooDeep => "Partition too deep",
-            HvError::InvalidPartitionId => "Invalid partition ID",
-            HvError::InvalidVpIndex => "Invalid VP index",
-            HvError::NotFound => "Not found",
-            HvError::InvalidPortId => "Invalid port ID",
-            HvError::InvalidConnectionId => "Invalid connection ID",
-            HvError::InsufficientBuffers => "Insufficient buffers",
-            HvError::NotAcknowledged => "Not acknowledged",
-            HvError::InvalidVpState => "Invalid VP state",
-            HvError::Acknowledged => "Acknowledged",
-            HvError::InvalidSaveRestoreState => "Invalid save restore state",
-            HvError::InvalidSynicState => "Invalid SynIC state",
-            HvError::ObjectInUse => "Object in use",
-            HvError::InvalidProximityDomainInfo => "Invalid proximity domain info",
-            HvError::NoData => "No data",
-            HvError::Inactive => "Inactive",
-            HvError::NoResources => "No resources",
-            HvError::FeatureUnavailable => "Feature unavailable",
-            HvError::PartialPacket => "Partial packet",
-            HvError::ProcessorFeatureNotSupported => "Processor feature not supported",
-            HvError::ProcessorCacheLineFlushSizeIncompatible => {
-                "Processor cache line flush size incompatible"
-            }
-            HvError::InsufficientBuffer => "Insufficient buffer",
-            HvError::IncompatibleProcessor => "Incompatible processor",
-            HvError::InsufficientDeviceDomains => "Insufficient device domains",
-            HvError::CpuidFeatureValidationError => "CPUID feature validation error",
-            HvError::CpuidXsaveFeatureValidationError => "CPUID XSAVE feature validation error",
-            HvError::ProcessorStartupTimeout => "Processor startup timeout",
-            HvError::SmxEnabled => "SMX enabled",
-            HvError::InvalidLpIndex => "Invalid LP index",
-            HvError::InvalidRegisterValue => "Invalid register value",
-            HvError::InvalidVtlState => "Invalid VTL state",
-            HvError::NxNotDetected => "NX not detected",
-            HvError::InvalidDeviceId => "Invalid device ID",
-            HvError::InvalidDeviceState => "Invalid device state",
-            HvError::PendingPageRequests => "Pending page requests",
-            HvError::PageRequestInvalid => "Page request invalid",
-            HvError::KeyAlreadyExists => "Key already exists",
-            HvError::DeviceAlreadyInDomain => "Device already in domain",
-            HvError::InvalidCpuGroupId => "Invalid CPU group ID",
-            HvError::InvalidCpuGroupState => "Invalid CPU group state",
-            HvError::OperationFailed => "Operation failed",
-            HvError::NotAllowedWithNestedVirtActive => {
-                "Not allowed with nested virtualization active"
-            }
-            HvError::InsufficientRootMemory => "Insufficient root memory",
-            HvError::EventBufferAlreadyFreed => "Event buffer already freed",
-            HvError::Timeout => "The specified timeout expired before the operation completed.",
-            HvError::VtlAlreadyEnabled => {
-                "The VTL specified for the operation is already in an enabled state."
-            }
-            other => return write!(f, "Hypervisor error {:#06x}", other.0),
-        };
-        f.write_str(error_str)
+        match self.doc_str() {
+            Some(s) => f.write_str(s),
+            None => write!(f, "Hypervisor error {:#06x}", self.0),
+        }
     }
 }
 
 impl core::error::Error for HvError {}
 
-/// Hypervisor result type for simple hypercalls, or code where only an HV_STATUS is to be returned.
-/// The error is an `HvError` and the success value `T` is the output data of the hypercall.
+macro_rules! hv_error {
+    ($ty:ty, $(#[doc = $doc:expr] $ident:ident = $val:expr),* $(,)?) => {
+
+        #[allow(non_upper_case_globals)]
+        impl $ty {
+            $(
+                #[doc = $doc]
+                pub const $ident: Self = Self(core::num::NonZeroU16::new($val).unwrap());
+            )*
+
+            fn debug_name(&self) -> Option<&'static str> {
+                Some(match self.0.get() {
+                    $(
+                        $val => stringify!($ident),
+                    )*
+                    _ => return None,
+                })
+            }
+
+            fn doc_str(&self) -> Option<&'static str> {
+                Some(match self.0.get() {
+                    $(
+                        $val => $doc,
+                    )*
+                    _ => return None,
+                })
+            }
+        }
+    };
+}
+
+// DEVNOTE: the doc comments here are also used as the runtime error strings.
+hv_error! {
+    HvError,
+    /// Invalid hypercall code
+    InvalidHypercallCode = 0x0002,
+    /// Invalid hypercall input
+    InvalidHypercallInput = 0x0003,
+    /// Invalid alignment
+    InvalidAlignment = 0x0004,
+    /// Invalid parameter
+    InvalidParameter = 0x0005,
+    /// Access denied
+    AccessDenied = 0x0006,
+    /// Invalid partition state
+    InvalidPartitionState = 0x0007,
+    /// Operation denied
+    OperationDenied = 0x0008,
+    /// Unknown property
+    UnknownProperty = 0x0009,
+    /// Property value out of range
+    PropertyValueOutOfRange = 0x000A,
+    /// Insufficient memory
+    InsufficientMemory = 0x000B,
+    /// Partition too deep
+    PartitionTooDeep = 0x000C,
+    /// Invalid partition ID
+    InvalidPartitionId = 0x000D,
+    /// Invalid VP index
+    InvalidVpIndex = 0x000E,
+    /// Not found
+    NotFound = 0x0010,
+    /// Invalid port ID
+    InvalidPortId = 0x0011,
+    /// Invalid connection ID
+    InvalidConnectionId = 0x0012,
+    /// Insufficient buffers
+    InsufficientBuffers = 0x0013,
+    /// Not acknowledged
+    NotAcknowledged = 0x0014,
+    /// Invalid VP state
+    InvalidVpState = 0x0015,
+    /// Acknowledged
+    Acknowledged = 0x0016,
+    /// Invalid save restore state
+    InvalidSaveRestoreState = 0x0017,
+    /// Invalid SynIC state
+    InvalidSynicState = 0x0018,
+    /// Object in use
+    ObjectInUse = 0x0019,
+    /// Invalid proximity domain info
+    InvalidProximityDomainInfo = 0x001A,
+    /// No data
+    NoData = 0x001B,
+    /// Inactive
+    Inactive = 0x001C,
+    /// No resources
+    NoResources = 0x001D,
+    /// Feature unavailable
+    FeatureUnavailable = 0x001E,
+    /// Partial packet
+    PartialPacket = 0x001F,
+    /// Processor feature not supported
+    ProcessorFeatureNotSupported = 0x0020,
+    /// Processor cache line flush size incompatible
+    ProcessorCacheLineFlushSizeIncompatible = 0x0030,
+    /// Insufficient buffer
+    InsufficientBuffer = 0x0033,
+    /// Incompatible processor
+    IncompatibleProcessor = 0x0037,
+    /// Insufficient device domains
+    InsufficientDeviceDomains = 0x0038,
+    /// CPUID feature validation error
+    CpuidFeatureValidationError = 0x003C,
+    /// CPUID XSAVE feature validation error
+    CpuidXsaveFeatureValidationError = 0x003D,
+    /// Processor startup timeout
+    ProcessorStartupTimeout = 0x003E,
+    /// SMX enabled
+    SmxEnabled = 0x003F,
+    /// Invalid LP index
+    InvalidLpIndex = 0x0041,
+    /// Invalid register value
+    InvalidRegisterValue = 0x0050,
+    /// Invalid VTL state
+    InvalidVtlState = 0x0051,
+    /// NX not detected
+    NxNotDetected = 0x0055,
+    /// Invalid device ID
+    InvalidDeviceId = 0x0057,
+    /// Invalid device state
+    InvalidDeviceState = 0x0058,
+    /// Pending page requests
+    PendingPageRequests = 0x0059,
+    /// Page request invalid
+    PageRequestInvalid = 0x0060,
+    /// Key already exists
+    KeyAlreadyExists = 0x0065,
+    /// Device already in domain
+    DeviceAlreadyInDomain = 0x0066,
+    /// Invalid CPU group ID
+    InvalidCpuGroupId = 0x006F,
+    /// Invalid CPU group state
+    InvalidCpuGroupState = 0x0070,
+    /// Operation failed
+    OperationFailed = 0x0071,
+    /// Not allowed with nested virtualization active
+    NotAllowedWithNestedVirtActive = 0x0072,
+    /// Insufficient root memory
+    InsufficientRootMemory = 0x0073,
+    /// Event buffer already freed
+    EventBufferAlreadyFreed = 0x0074,
+    /// The specified timeout expired before the operation completed.
+    Timeout = 0x0078,
+    /// The VTL specified for the operation is already in an enabled state.
+    VtlAlreadyEnabled = 0x0086,
+    /// Unknown register name
+    UnknownRegisterName = 0x0087,
+}
+
+/// A useful result type for hypervisor operations.
 pub type HvResult<T> = Result<T, HvError>;
 
 #[repr(u8)]
@@ -762,8 +862,8 @@ pub mod hypercall {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     #[must_use]
     pub struct HypercallOutput {
-        /// The HV_STATUS returned by the hypervisor.
-        pub call_status: u16,
+        #[bits(16)]
+        pub call_status: HvStatus,
         pub rsvd: u16,
         #[bits(12)]
         pub elements_processed: usize,
@@ -773,7 +873,7 @@ pub mod hypercall {
 
     impl From<HvError> for HypercallOutput {
         fn from(e: HvError) -> Self {
-            Self::new().with_call_status(e.0)
+            Self::new().with_call_status(Err(e).into())
         }
     }
 
@@ -782,11 +882,7 @@ pub mod hypercall {
         pub const SUCCESS: Self = Self::new();
 
         pub fn result(&self) -> Result<(), HvError> {
-            if self.call_status() == 0 {
-                Ok(())
-            } else {
-                Err(HvError(self.call_status()))
-            }
+            self.call_status().result()
         }
     }
 

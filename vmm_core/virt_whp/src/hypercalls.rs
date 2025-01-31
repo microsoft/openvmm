@@ -199,7 +199,7 @@ impl<T: CpuIo> hv1_hypercall::SignalEventDirect for WhpHypercallExit<'_, '_, T> 
                     target_vp
                         .whp(vtl)
                         .signal_synic_event(sint, flag)
-                        .map_err(|err| match err.hv_result().map(HvError) {
+                        .map_err(|err| match err.hv_result().map(HvError::from) {
                             Some(err @ HvError::InvalidSynicState) => err,
                             _ => {
                                 tracing::error!(
@@ -1834,7 +1834,8 @@ mod aarch64 {
                         self.current_whp()
                             .get_registers(&[reg], &mut value)
                             .map_err(|err| {
-                                err.hv_result().map_or(HvError::InvalidParameter, HvError)
+                                err.hv_result()
+                                    .map_or(HvError::InvalidParameter, HvError::from)
                             })?;
                         unsafe {
                             std::mem::transmute::<whp::abi::WHV_REGISTER_VALUE, HvRegisterValue>(
@@ -1862,7 +1863,10 @@ mod aarch64 {
                 };
                 self.current_whp()
                     .set_registers(&[reg], &[value])
-                    .map_err(|err| err.hv_result().map_or(HvError::InvalidParameter, HvError))?;
+                    .map_err(|err| {
+                        err.hv_result()
+                            .map_or(HvError::InvalidParameter, HvError::from)
+                    })?;
 
                 Ok(())
             } else {
