@@ -688,12 +688,8 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(|ctx| {
-                    let publish_baseline_artifact =
-                        if let Some(baseline_artifact) = pub_openhcl_baseline {
-                            Some(ctx.publish_artifact(baseline_artifact))
-                        } else {
-                            None
-                        };
+                    let publish_baseline_artifact = pub_openhcl_baseline
+                        .map(|baseline_artifact| ctx.publish_artifact(baseline_artifact));
 
                     flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
                         igvm_files: igvm_recipes
