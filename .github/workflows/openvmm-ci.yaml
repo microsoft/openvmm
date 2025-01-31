@@ -152,7 +152,7 @@ jobs:
     - name: unpack mdbook-mermaid
       run: flowey e 0 flowey_lib_common::download_mdbook_mermaid 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 0 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -170,7 +170,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey v 0 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -187,7 +187,7 @@ jobs:
     - name: install Rust
       run: flowey e 0 flowey_lib_common::install_rust 0
       shell: bash
-    - name: build HvLite guide (mdbook)
+    - name: build OpenVMM guide (mdbook)
       run: flowey e 0 flowey_lib_hvlite::build_guide 1
       shell: bash
     - name: 🌼 write_into Var
@@ -298,7 +298,7 @@ jobs:
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-rustdoc"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-rustdoc" | flowey.exe v 1 'artifact_publish_from_x64-windows-rustdoc' --update-from-stdin --is-raw-string
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 1 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -316,7 +316,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey.exe v 1 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -558,7 +558,7 @@ jobs:
     - name: unpack Microsoft.WSL.LxUtil.AARCH64.zip
       run: flowey e 10 flowey_lib_hvlite::download_lxutil 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 10 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -576,7 +576,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey v 10 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -921,7 +921,7 @@ jobs:
     - name: unpack Microsoft.WSL.LxUtil.x64.zip
       run: flowey e 11 flowey_lib_hvlite::download_lxutil 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 11 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -939,7 +939,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar5 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey v 11 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -1337,7 +1337,7 @@ jobs:
     - name: report common cargo flags
       run: flowey e 12 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 12 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -1355,7 +1355,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey v 12 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -1752,7 +1752,7 @@ jobs:
     - name: report common cargo flags
       run: flowey e 13 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 13 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -1770,7 +1770,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey v 13 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -2295,7 +2295,7 @@ jobs:
     - name: report common cargo flags
       run: flowey.exe e 14 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 14 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -2313,7 +2313,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey.exe v 14 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -2661,7 +2661,7 @@ jobs:
     - name: unpack Microsoft.WSL.LxUtil.AARCH64.zip
       run: flowey e 15 flowey_lib_hvlite::download_lxutil 1
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 15 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -2679,7 +2679,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey v 15 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -2993,7 +2993,7 @@ jobs:
     - name: report common cargo flags
       run: flowey e 16 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 16 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -3011,7 +3011,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey v 16 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -3399,7 +3399,7 @@ jobs:
     - name: installing cargo-nextest
       run: flowey.exe e 17 flowey_lib_common::download_cargo_nextest 1
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 17 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -3417,7 +3417,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey.exe v 17 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -3680,7 +3680,7 @@ jobs:
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 18 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 18 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -3698,7 +3698,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar5 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey.exe v 18 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -4042,7 +4042,7 @@ jobs:
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 19 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 19 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -4060,7 +4060,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar5 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey.exe v 19 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -4361,7 +4361,7 @@ jobs:
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-rustdoc"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-rustdoc" | flowey v 2 'artifact_publish_from_x64-linux-rustdoc' --update-from-stdin --is-raw-string
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 2 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -4379,7 +4379,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey v 2 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -4623,7 +4623,7 @@ jobs:
     - name: unpack mu_msvm package (x64)
       run: flowey e 20 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 20 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -4641,7 +4641,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar5 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey v 20 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -5039,7 +5039,7 @@ jobs:
     - name: unpack mu_msvm package (aarch64)
       run: flowey.exe e 21 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 21 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -5057,7 +5057,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar5 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey.exe v 21 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -5356,7 +5356,7 @@ jobs:
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 22 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -5374,7 +5374,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey v 22 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -5567,7 +5567,7 @@ jobs:
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 4 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -5585,7 +5585,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey.exe v 4 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -5757,7 +5757,7 @@ jobs:
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 5 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -5775,7 +5775,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey v 5 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -5977,7 +5977,7 @@ jobs:
     - name: report common cargo flags
       run: flowey.exe e 6 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 6 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -5995,7 +5995,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey.exe v 6 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -6305,7 +6305,7 @@ jobs:
     - name: unpack Microsoft.WSL.LxUtil.AARCH64.zip
       run: flowey.exe e 7 flowey_lib_hvlite::download_lxutil 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 7 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -6323,7 +6323,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey.exe v 7 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -6564,7 +6564,7 @@ jobs:
     - name: report common cargo flags
       run: flowey.exe e 8 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 8 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -6582,7 +6582,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey.exe v 8 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
@@ -6895,7 +6895,7 @@ jobs:
     - name: unpack Microsoft.WSL.LxUtil.x64.zip
       run: flowey.exe e 9 flowey_lib_hvlite::download_lxutil 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 9 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -6913,7 +6913,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
       shell: flowey.exe v 9 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
