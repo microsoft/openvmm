@@ -236,7 +236,7 @@ impl Options {
         let test_configuration = parse_env_string("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()
                 .parse::<TestScenarioConfig>()
-                .inspect_err(|e| {
+                .map_err (|e| {
                     tracing::warn!(
                         "Failed to parse OPENHCL_TEST_CONFIG: {}. No test will be simulated.",
                         e

@@ -95,7 +95,6 @@ use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationV
 use page_pool_alloc::PagePool;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
-use pal_async::timer::PolledTimer;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use parking_lot::Mutex;
@@ -106,6 +105,7 @@ use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use std::collections::HashMap;
 use std::ffi::CString;
+use std::future;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -505,10 +505,7 @@ impl UnderhillVmWorker {
                 tracing::info!(
                         "Test configuration SERVICING_RESTORE_STUCK is set. Waiting indefinitely in restore"
                     );
-                let mut timer = PolledTimer::new(&early_init_driver);
-                loop {
-                    timer.sleep(Duration::from_secs(1)).await;
-                }
+                future::pending::<()>().await;
             }
 
             tracing::info!("VTL2 restart, getting servicing state from the host");
