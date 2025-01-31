@@ -499,12 +499,11 @@ impl UnderhillVmWorker {
                 "cannot have saved state from two different sources"
             );
 
-            if let Some(TestScenarioConfig::ServicingRestoreStuck) =
-                params.env_cfg.test_configuration
-            {
+            if let Some(TestScenarioConfig::RestoreStuck) = params.env_cfg.test_configuration {
                 tracing::info!(
-                        "Test configuration SERVICING_RESTORE_STUCK is set. Waiting indefinitely in restore"
-                    );
+                    "Test configuration SERVICING_RESTORE_STUCK is set."
+                    "Waiting indefinitely in restore."
+                );
                 future::pending::<()>().await;
             }
 

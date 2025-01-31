@@ -49,7 +49,6 @@ use socket2::Socket;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
-use std::future;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::instrument;
@@ -253,7 +252,7 @@ impl LoadedVm {
                 message = save_request_recv.select_next_some() => Event::ServicingRequest(message),
                 message = async {
                     if self.shutdown_relay.is_none() {
-                        future::pending::<()>().await;
+                        std::future::pending::<()>().await;
                     }
                     let (recv, _) = self.shutdown_relay.as_mut().unwrap();
                     recv.select_next_some().await
@@ -436,9 +435,9 @@ impl LoadedVm {
         deadline: std::time::Instant,
         capabilities_flags: SaveGuestVtl2StateFlags,
     ) -> anyhow::Result<bool> {
-        if let Some(TestScenarioConfig::ServicingSaveStuck) = self.test_configuration {
+        if let Some(TestScenarioConfig::SaveStuck) = self.test_configuration {
             tracing::info!("Test configuration SERVICING_SAVE_STUCK is set. Waiting indefinitely.");
-            future::pending::<()>().await;
+            std::future::pending::<()>().await;
         }
 
         let running = self.state_units.is_running();
@@ -446,7 +445,7 @@ impl LoadedVm {
             .handle_servicing_inner(correlation_id, deadline, capabilities_flags)
             .await
             .and_then(|state| {
-                if let Some(TestScenarioConfig::ServicingSaveFail) = self.test_configuration {
+                if let Some(TestScenarioConfig::SaveFail) = self.test_configuration {
                     tracing::info!(
                         "Test configuration SERVICING_SAVE_FAIL is set. Failing the save."
                     );

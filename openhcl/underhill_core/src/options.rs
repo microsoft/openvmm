@@ -15,9 +15,9 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug, MeshPayload)]
 pub enum TestScenarioConfig {
-    ServicingSaveFail,
-    ServicingRestoreStuck,
-    ServicingSaveStuck,
+    SaveFail,
+    RestoreStuck,
+    SaveStuck,
 }
 
 impl std::str::FromStr for TestScenarioConfig {
@@ -25,9 +25,9 @@ impl std::str::FromStr for TestScenarioConfig {
 
     fn from_str(s: &str) -> Result<TestScenarioConfig, anyhow::Error> {
         match s {
-            "SERVICING_SAVE_FAIL" => Ok(TestScenarioConfig::ServicingSaveFail),
-            "SERVICING_RESTORE_STUCK" => Ok(TestScenarioConfig::ServicingRestoreStuck),
-            "SERVICING_SAVE_STUCK" => Ok(TestScenarioConfig::ServicingSaveStuck),
+            "SERVICING_SAVE_FAIL" => Ok(TestScenarioConfig::SaveFail),
+            "SERVICING_RESTORE_STUCK" => Ok(TestScenarioConfig::RestoreStuck),
+            "SERVICING_SAVE_STUCK" => Ok(TestScenarioConfig::SaveStuck),
             _ => Err(anyhow::anyhow!("Invalid test config: {}", s)),
         }
     }
@@ -236,7 +236,7 @@ impl Options {
         let test_configuration = parse_env_string("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()
                 .parse::<TestScenarioConfig>()
-                .map_err (|e| {
+                .map_err(|e| {
                     tracing::warn!(
                         "Failed to parse OPENHCL_TEST_CONFIG: {}. No test will be simulated.",
                         e
