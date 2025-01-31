@@ -294,7 +294,7 @@ pub enum IsolationType {
     Tdx,
 }
 
-/// Flags controling servicing behavior.
+/// Flags controlling servicing behavior.
 #[derive(Default)]
 pub struct OpenHclServicingFlags {
     /// Preserve DMA memory for NVMe devices if supported.
