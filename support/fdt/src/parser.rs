@@ -174,7 +174,7 @@ impl<'a> Parser<'a> {
     pub fn read_total_size(buf: &[u8]) -> Result<usize, Error<'a>> {
         let header = spec::Header::read_from_prefix(buf)
             .map_err(|_| Error(ErrorKind::NoHeader))?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         if u32::from(header.magic) != spec::MAGIC {
             Err(Error(ErrorKind::HeaderMagic))
@@ -191,7 +191,7 @@ impl<'a> Parser<'a> {
 
         let header = spec::Header::read_from_prefix(buf)
             .map_err(|_| Error(ErrorKind::NoHeader))?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         if u32::from(header.magic) != spec::MAGIC {
             return Err(Error(ErrorKind::HeaderMagic));
@@ -218,7 +218,7 @@ impl<'a> Parser<'a> {
             .ok_or(Error(ErrorKind::MemoryReservationBlock))?;
         loop {
             let (entry, rest) = spec::ReserveEntry::read_from_prefix(mem_rsvmap)
-                .map_err(|_| Error(ErrorKind::MemoryReservationBlockEnd))?; // todo: zerocopy: map_err
+                .map_err(|_| Error(ErrorKind::MemoryReservationBlockEnd))?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
             if u64::from(entry.address) == 0 && u64::from(entry.size) == 0 {
                 break;
@@ -361,7 +361,7 @@ impl Display for ParseTokenError {
 
 /// Read to the next token from `buf`, returning `(token, remaining_buffer)`.
 fn read_token(buf: &[u8]) -> Result<(ParsedToken<'_>, &[u8]), ParseTokenError> {
-    let (token, rest) = U32b::read_from_prefix(buf).map_err(|_| ParseTokenError::BufLen)?; // todo: zerocopy: map_err
+    let (token, rest) = U32b::read_from_prefix(buf).map_err(|_| ParseTokenError::BufLen)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
     let token = u32::from(token);
     match token {
         spec::BEGIN_NODE => {
@@ -383,7 +383,7 @@ fn read_token(buf: &[u8]) -> Result<(ParsedToken<'_>, &[u8]), ParseTokenError> {
         spec::PROP => {
             // Read the property header
             let (header, rest) = spec::PropHeader::read_from_prefix(rest)
-                .map_err(|_| ParseTokenError::PropHeader)?; // todo: zerocopy: map_err
+                .map_err(|_| ParseTokenError::PropHeader)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             let len = u32::from(header.len) as usize;
             let align_up_len = (len + 4 - 1) & !(4 - 1);
 
@@ -637,10 +637,10 @@ impl<'a> Property<'a> {
         // read types that are greater than 4 bytes, we must bound T to accept
         // unaligned types so LayoutVerified does not apply alignment and read
         // incorrect values.
-        // todo: zerocopy: review carefully! (manual)
+        // TODO: zerocopy: review carefully! (manual) (https://github.com/microsoft/openvmm/issues/759)
         <[T]>::ref_from_bytes(self.data)
             .map_err(|_| {
-                // todo: zerocopy: map_err
+                // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 Error(ErrorKind::PropertyDataTypeBuffer {
                     node_name: self.node_name,
                     prop_name: self.name,
@@ -682,7 +682,7 @@ impl<'a> Property<'a> {
     pub fn as_64_list(&self) -> Result<impl Iterator<Item = u64> + use<'a>, Error<'a>> {
         Ok(<[U64b]>::ref_from_bytes(self.data)
             .map_err(|_| {
-                // todo: zerocopy: map_err
+                // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 Error(ErrorKind::PropertyDataTypeBuffer {
                     node_name: self.node_name,
                     prop_name: self.name,
@@ -726,7 +726,7 @@ impl<'a> MemoryReserveIter<'a> {
         }
 
         let (entry, rest) = spec::ReserveEntry::read_from_prefix(self.memory_reservations)
-            .map_err(|_| ErrorKind::MemoryReservationBlock)?; // todo: zerocopy: map_err
+            .map_err(|_| ErrorKind::MemoryReservationBlock)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         if u64::from(entry.address) == 0 && u64::from(entry.size) == 0 {
             return Ok(None);

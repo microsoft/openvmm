@@ -454,7 +454,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     ) -> Result<(), Error> {
         let header = get_protocol::HeaderRaw::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         if header.message_version != get_protocol::MessageVersions::HEADER_VERSION_1 {
             return Err(Error::HeaderVersion(header.message_version));
@@ -605,7 +605,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     fn handle_bios_boot_finalize(&mut self, message_buf: &[u8]) -> Result<(), Error> {
         let msg = get_protocol::BiosBootFinalizeRequest::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::trace!(?msg, "Bios Boot Finalize request");
 
@@ -666,7 +666,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     ) -> Result<(), Error> {
         let message = get_protocol::VmgsReadRequest::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let (status, payload) = if let Some(vmgs) = &mut state.vmgs {
             let len = message.sector_count as u64 * vmgs.disk.sector_size() as u64;
@@ -717,7 +717,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
     ) -> Result<(), Error> {
         let (message, rest) = get_protocol::VmgsWriteRequest::read_from_prefix(message_buf)
-            .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err
+            .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let status = if let Some(vmgs) = &mut state.vmgs {
             let len = message.sector_count as u64 * vmgs.disk.sector_size() as u64;
@@ -792,7 +792,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             &message_buf.as_bytes()[..size_of::<get_protocol::GuestStateProtectionRequest>()],
         )
         .map_err(|_| Error::MessageTooSmall)?
-        .0; // todo: zerocopy: err
+        .0; // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         let mut response = get_protocol::GuestStateProtectionResponse::new_zeroed();
         response.message_header = HeaderGeneric::new(HostRequests::GUEST_STATE_PROTECTION);
@@ -819,7 +819,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     fn handle_igvm_attest(&mut self, message_buf: &[u8]) -> Result<(), Error> {
         let request = IgvmAttestRequest::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         // Request sanitization (match GED behavior)
         if request.agent_data_length as usize > request.agent_data.len()
@@ -831,7 +831,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
         let request_payload = IgvmAttestRequestHeader::read_from_prefix(&request.report)
             .map_err(|_| Error::MessageTooSmall)?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let response = match request_payload.request_type {
             IgvmAttestRequestType::AK_CERT_REQUEST => {
@@ -874,7 +874,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let save = self.save.as_mut().ok_or(Error::InvalidSequence)?;
         let (request_header, remaining) =
             get_protocol::SaveGuestVtl2StateRequest::read_from_prefix(message_buf)
-                .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err
+                .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let r = match request_header.save_status {
             get_protocol::GuestVtl2SaveRestoreStatus::MORE_DATA => {
                 save.buffer.extend_from_slice(remaining);
@@ -927,7 +927,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             if let Some(framebuffer_control) = state.framebuffer_control.as_mut() {
                 let message = get_protocol::MapFramebufferRequest::read_from_prefix(message_buf)
                     .map_err(|_| Error::MessageTooSmall)?
-                    .0; // todo: zerocopy: map_err
+                    .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 let gpa = message.gpa;
                 tracing::debug!("Received map framebuffer request from guest {:#x}", gpa);
                 framebuffer_control.map(gpa).await;
@@ -966,7 +966,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     fn handle_create_ram_gpa_range(&mut self, message_buf: &[u8]) -> Result<(), Error> {
         let request = get_protocol::CreateRamGpaRangeRequest::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::info!(?request, "create ram gpa range request");
 
@@ -982,7 +982,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     fn handle_reset_ram_gpa_range(&mut self, message_buf: &[u8]) -> Result<(), Error> {
         let _request = get_protocol::ResetRamGpaRangeRequest::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let response = get_protocol::ResetRamGpaRangeResponse::new();
         self.channel
             .try_send(response.as_bytes())
@@ -1043,7 +1043,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     ) -> Result<(), Error> {
         let msg = get_protocol::EventLogNotification::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         tracing::trace!("[Event Log] {:?}", msg);
         let event = match msg.event_log_id {
             get_protocol::EventLogId::BOOT_SUCCESS => GuestEvent::BootSuccess,
@@ -1093,7 +1093,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let message =
             get_protocol::RestoreGuestVtl2StateHostNotification::read_from_prefix(message_buf)
                 .map_err(|_| Error::MessageTooSmall)?
-                .0; // todo: zerocopy: map_err
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let success = match message.status {
             get_protocol::GuestVtl2SaveRestoreStatus::SUCCESS => true,
             get_protocol::GuestVtl2SaveRestoreStatus::FAILURE => false,
@@ -1110,7 +1110,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     ) -> Result<(), Error> {
         let (message, remaining) =
             get_protocol::StartVtl0CompleteNotification::read_from_prefix(message_buf)
-                .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err
+                .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let expected_len = message.result_document_size as usize;
         if remaining.len() != expected_len {
             return Err(Error::InvalidFieldValue);
@@ -1141,7 +1141,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     fn handle_vtl_crash(&mut self, message_buf: &[u8]) -> Result<(), Error> {
         let msg = get_protocol::VtlCrashNotification::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         tracing::info!("Guest has reported a system crash {msg:x?}");
         Ok(())
     }
@@ -1152,7 +1152,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
     ) -> Result<(), Error> {
         let (msg, remaining) = get_protocol::TripleFaultNotification::read_from_prefix(message_buf)
-            .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err
+            .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let expected_len = msg.register_count as usize * size_of::<RegisterState>();
         if remaining.len() != expected_len {
             return Err(Error::InvalidFieldValue);
@@ -1169,7 +1169,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     fn handle_modify_vtl2_settings_completed(&mut self, message_buf: &[u8]) -> Result<(), Error> {
         let (msg, remaining) =
             get_protocol::ModifyVtl2SettingsCompleteNotification::read_from_prefix(message_buf)
-                .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err
+                .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let modify = self.modify.take().ok_or(Error::InvalidSequence)?;
         let r = match msg.modify_status {

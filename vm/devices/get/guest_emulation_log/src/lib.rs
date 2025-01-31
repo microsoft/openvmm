@@ -184,7 +184,7 @@ impl<T: RingMem + Unpin> GelChannel<T> {
 
             let (header, buffer) =
                 get_protocol::TraceLoggingNotificationHeader::read_from_prefix(buffer)
-                    .map_err(|_| Error::InvalidPayloadSize(n))?; // TODO: zerocopy: map_err
+                    .map_err(|_| Error::InvalidPayloadSize(n))?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
             let message = buffer
                 .get(

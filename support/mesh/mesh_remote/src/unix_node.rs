@@ -644,7 +644,7 @@ async fn run_receive(
         let buf = &buf[..len];
         let header = protocol::PacketHeader::read_from_prefix(buf)
             .map_err(|_| ReceiveError::NoHeader)?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         match header.packet_type {
             protocol::PacketType::EVENT => {
                 local_node.event(remote_id, &buf[size_of_val(&header)..], &mut fds);
@@ -653,7 +653,7 @@ async fn run_receive(
             protocol::PacketType::RELEASE_FDS => {
                 let release_fds = protocol::ReleaseFds::read_from_prefix(buf)
                     .map_err(|_| ReceiveError::BadReleaseFds)?
-                    .0; // todo: zerocopy: map_err
+                    .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 let _ = send.unbounded_send(SenderCommand::ReleaseFds {
                     count: release_fds.count as usize,
                 });

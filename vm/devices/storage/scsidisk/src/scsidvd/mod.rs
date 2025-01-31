@@ -332,7 +332,7 @@ impl SimpleScsiDvd {
     ) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::CdbInquiry::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         let allocation_length = cdb.allocation_length.get() as usize;
 
@@ -421,7 +421,7 @@ impl SimpleScsiDvd {
     ) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::CdbGetEventStatusNotification::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let allocation_length = cdb.event_list_length.get() as usize;
         let mut pending_medium_event = IsoMediumEvent::None;
 
@@ -703,7 +703,7 @@ impl SimpleScsiDvd {
     ) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::CdbGetConfiguration::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let request_type = cdb.flags.request_type();
         let starting_feature = cdb.starting_feature.get() as usize;
         let allocation_length = cdb.allocation_length.get() as usize;
@@ -816,7 +816,7 @@ impl SimpleScsiDvd {
     ) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::CdbReadToc::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let allocation_length = cdb.allocation_length.get() as usize;
         let format = cdb.format2 & 0x0f;
         let msf = cdb.flag1.msf();
@@ -911,7 +911,7 @@ impl SimpleScsiDvd {
     async fn handle_start_stop_unit(&self, request: &Request) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::StartStop::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let start = cdb.flag.start();
         let load_eject = cdb.flag.load_eject();
 
@@ -979,7 +979,7 @@ impl SimpleScsiDvd {
     ) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::CdbRequestSense::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let allocation_length = cdb.allocation_length as usize;
         let new_sense_data =
             SenseData::new(SenseKey::NO_SENSE, AdditionalSenseCode::NO_SENSE, 0x00);
@@ -1005,7 +1005,7 @@ impl SimpleScsiDvd {
     ) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::ModeSense10::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let page_code = cdb.flags2.page_code();
         let allocation_length = cdb.allocation_length.get() as usize;
         let pc = cdb.flags2.pc() << 6;
@@ -1078,7 +1078,7 @@ impl SimpleScsiDvd {
     fn handle_medium_removal_iso(&self, request: &Request) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::CdbMediaRemoval::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         // prevent/allow media removal based on the Persistent/Prevent bits
         let mut media_state = self.media_state.lock();
@@ -1094,7 +1094,7 @@ impl SimpleScsiDvd {
     ) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::ModeSelect10::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         let sp_bit = cdb.flags.spbit();
         let request_length = cdb.parameter_list_length.get() as usize;
@@ -1152,7 +1152,7 @@ impl SimpleScsiDvd {
                     + size_of::<scsi::ModeReadWriteRecoveryPage>()],
         )
         .unwrap()
-        .0; // todo: zerocopy: from-prefix (read_from_prefix): use-rest-of-range, zerocopy: err
+        .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
         match mode_page_error_recovery.page_code {
             scsi::MODE_PAGE_ERROR_RECOVERY => {
                 // ModePageErrorRecovery = (PMODE_READ_WRITE_RECOVERY_PAGE) (Buffer + sizeof (MODE_PARAMETER_HEADER10));
@@ -1183,7 +1183,7 @@ impl SimpleScsiDvd {
     ) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::CdbReadTrackInformation::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let number_type = cdb.flag.number_type();
         let open = cdb.flag.open();
         let logical_track_number = cdb.logical_track_number.get() as usize;
@@ -1278,7 +1278,7 @@ impl SimpleScsiDvd {
     ) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::CdbReadDVDStructure::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let media_type = cdb.media_type;
         let layer = cdb.layer;
         let allocation_length = cdb.allocation_length.get() as usize;
@@ -1387,7 +1387,7 @@ impl SimpleScsiDvd {
     ) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::CdbGetPerformance::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let data_type = cdb.data_type;
         let write = cdb.flags.write();
         let tolerance = cdb.flags.tolerance();
@@ -1481,7 +1481,7 @@ impl SimpleScsiDvd {
     ) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::CdbMechStatus::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let allocation_length = cdb.allocation_length.get() as usize;
 
         if allocation_length > external_data.len() {
@@ -1511,7 +1511,7 @@ impl SimpleScsiDvd {
     ) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::CdbReadBufferCapacity::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let block_info = cdb.flags.block_info();
         let allocation_length = cdb.allocation_length.get() as usize;
 
@@ -1542,7 +1542,7 @@ impl SimpleScsiDvd {
     ) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::CdbReadDiscInformation::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let data_type = cdb.flags.data_type();
         let allocation_length = cdb.allocation_length.get() as usize;
 
@@ -1595,7 +1595,7 @@ impl SimpleScsiDvd {
     ) -> Result<usize, ScsiDvdError> {
         let cdb = scsi::CdbSetStreaming::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let parameter_list_length = usize::from(cdb.parameter_list_length);
         let mut buffer = vec![0; parameter_list_length];
 
@@ -1628,7 +1628,7 @@ impl SimpleScsiDvd {
         let performance_descriptor =
             scsi::SetStreamingPerformanceDescriptor::read_from_prefix(&buffer[..])
                 .unwrap()
-                .0; // todo: zerocopy: use-rest-of-range
+                .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         // If RDD bit is set to one, it shall indicate that the drive is to return to its
         // default performance settings and the remaining fields in this descriptor shall be ignored.
@@ -2089,21 +2089,21 @@ impl SimpleScsiDvd {
     ) -> Result<RequestParametersIso, ScsiDvdError> {
         let (len, offset) = match op {
             ScsiOp::READ => {
-                let cdb = scsi::Cdb10::read_from_prefix(&request.cdb[..]).unwrap().0; // todo: zerocopy: use-rest-of-range
+                let cdb = scsi::Cdb10::read_from_prefix(&request.cdb[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 (
                     cdb.transfer_blocks.get() as u64,
                     cdb.logical_block.get() as u64,
                 )
             }
             ScsiOp::READ12 => {
-                let cdb = scsi::Cdb12::read_from_prefix(&request.cdb[..]).unwrap().0; // todo: zerocopy: use-rest-of-range
+                let cdb = scsi::Cdb12::read_from_prefix(&request.cdb[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 (
                     cdb.transfer_blocks.get() as u64,
                     cdb.logical_block.get() as u64,
                 )
             }
             ScsiOp::READ16 => {
-                let cdb = scsi::Cdb16::read_from_prefix(&request.cdb[..]).unwrap().0; // todo: zerocopy: use-rest-of-range
+                let cdb = scsi::Cdb16::read_from_prefix(&request.cdb[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 (cdb.transfer_blocks.get() as u64, cdb.logical_block.get())
             }
             _ => unreachable!(),

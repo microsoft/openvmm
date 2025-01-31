@@ -1793,7 +1793,7 @@ mod aarch64 {
                     | HvMessageType::HvMessageTypeGpaIntercept => {
                         self.handle_memory_access(
                             dev,
-                            FromBytes::ref_from_prefix(message).unwrap().0, // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                            FromBytes::ref_from_prefix(message).unwrap().0, // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                             exit,
                         )
                         .await?;
@@ -1802,21 +1802,21 @@ mod aarch64 {
                     HvMessageType::HvMessageTypeSynicSintDeliverable => {
                         self.handle_sint_deliverable(
                             FromBytes::ref_from_prefix(message).unwrap().0,
-                        ); // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                        ); // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                         &mut self.state.exits.sint_deliverable
                     }
                     HvMessageType::HvMessageTypeHypercallIntercept => {
                         crate::hypercalls::WhpHypercallExit::handle(
                             self,
                             dev,
-                            FromBytes::ref_from_prefix(message).unwrap().0, // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                            FromBytes::ref_from_prefix(message).unwrap().0, // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                         );
                         &mut self.state.exits.hypercall
                     }
                     HvMessageType::HvMessageTypeArm64ResetIntercept => {
                         return Err(
                             self.handle_reset(FromBytes::ref_from_prefix(message).unwrap().0)
-                        ); // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                        ); // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                     }
                     reason => {
                         return Err(VpHaltReason::Hypervisor(WhpRunVpError::UnknownExit(reason)));

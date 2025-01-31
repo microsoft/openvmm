@@ -323,7 +323,7 @@ impl GuestCrashDevice {
                         match header.message_type {
                             crash::MessageType::REQUEST_NIX_DUMP_WRITE_V1 => {
                                 let request = crash::DumpWriteRequestV1::read_from_prefix(message)
-                                    .map_err(|_| anyhow!("truncated message"))? // todo: zerocopy: anyhow!
+                                    .map_err(|_| anyhow!("truncated message"))? // TODO: zerocopy: anyhow! (https://github.com/microsoft/openvmm/issues/759)
                                     .0;
                                 *payload = Some((request.offset, request.size));
                             }

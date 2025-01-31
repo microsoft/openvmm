@@ -149,7 +149,7 @@ struct ImageDataDirectory {
 }
 
 fn pe_get_entry_point_offset(pe32_data: &[u8]) -> Option<u32> {
-    let dos_header = ImageDosHeader::read_from_prefix(pe32_data).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+    let dos_header = ImageDosHeader::read_from_prefix(pe32_data).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
     let nt_headers_offset = if dos_header.e_magic == IMAGE_DOS_SIGNATURE {
         // DOS image header is present, so read the PE header after the DOS image header.
         dos_header.e_lfanew as usize
@@ -160,19 +160,19 @@ fn pe_get_entry_point_offset(pe32_data: &[u8]) -> Option<u32> {
 
     let signature = u32::read_from_prefix(&pe32_data[nt_headers_offset..])
         .ok()?
-        .0; // todo: zerocopy: use-rest-of-range, option-to-error
+        .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
     // Calculate the entry point relative to the start of the image.
     // AddressOfEntryPoint is common for PE32 & PE32+
     if signature as u16 == TE_IMAGE_HEADER_SIGNATURE {
         let te = TeImageHeader::read_from_prefix(&pe32_data[nt_headers_offset..])
             .ok()?
-            .0; // todo: zerocopy: use-rest-of-range, option-to-error
+            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
         Some(te.address_of_entry_point + size_of_val(&te) as u32 - te.stripped_size as u32)
     } else if signature == IMAGE_NT_SIGNATURE {
         let pe = ImageNtHeaders32::read_from_prefix(&pe32_data[nt_headers_offset..])
             .ok()?
-            .0; // todo: zerocopy: use-rest-of-range, option-to-error
+            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
         Some(pe.optional_header.address_of_entry_point)
     } else {
         None
@@ -224,7 +224,7 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
     // Expect a firmware volume header for SEC volume.
     let fvh = EFI_FIRMWARE_VOLUME_HEADER::read_from_prefix(&image[image_offset as usize..])
         .ok()?
-        .0; // todo: zerocopy: use-rest-of-range, option-to-error
+        .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
     if fvh.signature != EFI_FVH_SIGNATURE {
         return None;
     }
@@ -243,7 +243,7 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
         }
         let fh = EFI_FFS_FILE_HEADER::read_from_prefix(&image[image_offset as usize..])
             .ok()?
-            .0; // todo: zerocopy: use-rest-of-range, option-to-error
+            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
         if fh.typ == EFI_FV_FILETYPE_SECURITY_CORE {
             sec_core_file_header = Some(fh);
             break;
@@ -276,7 +276,7 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
 
         let sh = EFI_COMMON_SECTION_HEADER::read_from_prefix(&image[image_offset as usize..])
             .ok()?
-            .0; // todo: zerocopy: use-rest-of-range, option-to-error
+            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
         if sh.typ == EFI_SECTION_PE32 {
             let pe_offset = pe_get_entry_point_offset(
                 &image[image_offset as usize + size_of::<EFI_COMMON_SECTION_HEADER>()..],

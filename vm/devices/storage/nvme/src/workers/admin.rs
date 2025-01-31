@@ -562,7 +562,7 @@ impl AdminHandler {
         let buf = buf.as_mut_bytes();
         match spec::Cns(cdw10.cns()) {
             spec::Cns::CONTROLLER => {
-                let id = spec::IdentifyController::mut_from_prefix(buf).unwrap().0; // todo: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range
+                let id = spec::IdentifyController::mut_from_prefix(buf).unwrap().0; // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 *id = self.identify_controller();
 
                 write!(

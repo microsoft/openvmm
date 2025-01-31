@@ -205,7 +205,7 @@ impl<'a> Iterator for MultiPagedRangeIter<'a> {
         }
         let hdr = GpaRange::read_from_prefix(self.buf[0].as_bytes())
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let page_count = ((hdr.offset + hdr.len) as usize).div_ceil(PAGE_SIZE); // N.B. already validated
         let (this, rest) = self.buf.split_at(page_count + 1);
         let range = PagedRange::new(hdr.offset as usize, hdr.len as usize, &this[1..]).unwrap();

@@ -2294,7 +2294,7 @@ mod tests {
         ide_device.io_read(IdeIoPort::PRI_DATA.0, data).unwrap();
         let features = protocol::IdeFeatures::read_from_prefix(&data[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let ex_features = protocol::IdeFeatures {
             config_bits: 0x85C0,
             serial_no: *b"                    ",
@@ -2340,7 +2340,7 @@ mod tests {
         ide_device.io_read(IdeIoPort::PRI_DATA.0, data).unwrap();
         let features = protocol::IdeFeatures::read_from_prefix(&data[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         let total_chs_sectors: u32 =
             geometry.sectors_per_track * geometry.cylinder_count * geometry.head_count;

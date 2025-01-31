@@ -93,7 +93,7 @@ fn main() -> anyhow::Result<()> {
             let image = fs_err::read(file_path).context("reading input file")?;
             let fixed_header = IGVM_FIXED_HEADER::read_from_prefix(image.as_bytes())
                 .expect("Invalid fixed header")
-                .0; // todo: zerocopy: use-rest-of-range
+                .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
             let igvm_data = IgvmFile::new_from_binary(&image, None).expect("should be valid");
             println!("Total file size: {} bytes\n", fixed_header.total_file_size);

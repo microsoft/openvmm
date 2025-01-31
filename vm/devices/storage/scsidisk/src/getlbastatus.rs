@@ -93,7 +93,7 @@ impl SimpleScsiDisk {
     ) -> Result<usize, ScsiError> {
         let cdb = scsi::GetLbaStatus::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         // Validate the request parameters.
         let start_lba = cdb.start_lba.get();

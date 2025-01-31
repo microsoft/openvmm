@@ -22,7 +22,7 @@ pub struct ReleaseFds {
 }
 
 open_enum::open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
    pub enum PacketType: u8 {
         EVENT = 1,
         RELEASE_FDS = 2,

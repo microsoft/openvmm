@@ -201,7 +201,7 @@ open_enum! {
     /// Encryption algorithm used to encrypt VMGS file
     #[cfg_attr(feature = "inspect", derive(Inspect))]
     #[cfg_attr(feature = "inspect", inspect(debug))]
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum EncryptionAlgorithm: u16 {
         /// No encryption algorithm
         NONE = 0,

@@ -576,7 +576,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             admin: None, // Updated below.
             identify: Some(Arc::new(
                 spec::IdentifyController::read_from_bytes(saved_state.identify_ctrl.as_bytes())
-                    .map_err(|_| RestoreError::InvalidData)?, // todo: zerocopy: map_err
+                    .map_err(|_| RestoreError::InvalidData)?, // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             )),
             driver: driver.clone(),
             io_issuers,

@@ -257,7 +257,7 @@ fn get_hv_vp_register(
     hypercall(HypercallCode::HvCallGetVpRegisters, 1)?;
     // SAFETY: the output is not concurrently accessed.
     let output = unsafe { &*addr_space::hypercall_output() };
-    Ok(HvRegisterValue::read_from_prefix(output).unwrap().0) // todo: zerocopy: use-rest-of-range
+    Ok(HvRegisterValue::read_from_prefix(output).unwrap().0) // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 }
 
 fn set_hv_vp_register(

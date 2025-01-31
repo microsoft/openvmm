@@ -311,12 +311,12 @@ impl TargetInfo {
 
     /// Interprets a 64 bit value as the `TargetInfo` struct.
     pub fn from_u64(value: &u64) -> &Self {
-        Self::ref_from_prefix(value.as_bytes()).unwrap().0 // todo: zerocopy: ref-from-prefix: use-rest-of-range
+        Self::ref_from_prefix(value.as_bytes()).unwrap().0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     /// Represents the `TargetInfo` struct as a 64 bit number.
     pub fn as_u64(&self) -> &u64 {
-        u64::ref_from_prefix(self.as_bytes()).unwrap().0 // todo: zerocopy: ref-from-prefix: use-rest-of-range
+        u64::ref_from_prefix(self.as_bytes()).unwrap().0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 }
 

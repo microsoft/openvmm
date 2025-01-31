@@ -558,7 +558,7 @@ impl AlpcNode {
 
                     match protocol::PacketHeader::read_from_prefix(buf) {
                         Ok((header, _)) => match header.packet_type {
-                            // todo: zerocopy: use-rest-of-range
+                            // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                             protocol::PacketType::EVENT => {
                                 local_node.event(
                                     connection.handle.id(),
@@ -578,7 +578,7 @@ impl AlpcNode {
                             }
                         },
                         Err(_) => {
-                            // todo: zerocopy: err
+                            // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
                             tracing::error!(node = ?local_id, "invalid message");
                         }
                     }

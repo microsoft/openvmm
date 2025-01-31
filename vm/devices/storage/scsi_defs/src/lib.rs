@@ -18,7 +18,7 @@ type U32BE = zerocopy::byteorder::U32<zerocopy::byteorder::BigEndian>;
 type U64BE = zerocopy::byteorder::U64<zerocopy::byteorder::BigEndian>;
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum ScsiOp: u8 {
         TEST_UNIT_READY = 0x00,
         REZERO_UNIT = 0x01,
@@ -595,7 +595,7 @@ impl SenseData {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum SenseKey: u8 {
         NO_SENSE = 0x00,
         RECOVERED_ERROR = 0x01,
@@ -617,7 +617,7 @@ open_enum! {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum SenseDataErrorCode: u8 {
         FIXED_CURRENT = 0x70,
         FIXED_DEFERRED = 0x71,
@@ -627,7 +627,7 @@ open_enum! {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum AdditionalSenseCode: u8 {
         NO_SENSE = 0x00,
         NO_SEEK_COMPLETE = 0x02,
@@ -713,7 +713,7 @@ pub const SCSI_SENSEQ_INCOMPATIBLE_FORMAT: u8 = 0x02;
 pub const SCSI_SENSEQ_OPERATING_DEFINITION_CHANGED: u8 = 0x02;
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub enum ScsiStatus: u8 {
         GOOD = 0x00,

@@ -197,7 +197,7 @@ fn nvme_reservation_report(
 
     let report_header = nvm::ReservationReportExtended::read_from_prefix(&*buffer)
         .unwrap()
-        .0; // todo: zerocopy: use-rest-of-range
+        .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     let mut controllers = Vec::new();
 
     // Return all controllers or none so caller can set correct buffer size and call again
@@ -212,7 +212,7 @@ fn nvme_reservation_report(
                 let controller =
                     nvm::RegisteredControllerExtended::read_from_prefix(&buffer[source..])
                         .unwrap()
-                        .0; // todo: zerocopy: use-rest-of-range
+                        .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 tracing::debug!(controller = ?controller, "nvme_reservation_report");
                 controllers.push(controller);
                 source += source_step;
@@ -268,7 +268,7 @@ pub fn nvme_identify_namespace_data(
         &cmd,
     )?;
 
-    let data = nvm::IdentifyNamespace::read_from_prefix(buffer).unwrap().0; // todo: zerocopy: use-rest-of-range
+    let data = nvm::IdentifyNamespace::read_from_prefix(buffer).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     tracing::trace!(?data, "nvme_identify_namespace_data");
     Ok(data)
 }
@@ -293,7 +293,7 @@ pub fn nvme_identify_controller_data(file: &fs::File) -> io::Result<nvme_spec::I
 
     let data = nvme_spec::IdentifyController::read_from_prefix(buffer)
         .unwrap()
-        .0; // todo: zerocopy: use-rest-of-range
+        .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     tracing::trace!(?data, "nvme_identify_controller_data");
     Ok(data)
 }

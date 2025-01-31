@@ -273,19 +273,19 @@ impl VmbfsChannel {
 
         let buf = &self.buf[..n];
         let (header, buf) =
-            protocol::MessageHeader::read_from_prefix(buf).map_err(|_| DeviceError::TooShort)?; // TODO: zerocopy: map_err
+            protocol::MessageHeader::read_from_prefix(buf).map_err(|_| DeviceError::TooShort)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let request = match header.message_type {
             protocol::MessageType::VERSION_REQUEST => {
                 let version = protocol::VersionRequest::read_from_prefix(buf)
                     .map_err(|_| DeviceError::TooShort)?
-                    .0; // todo: zerocopy: map_err
+                    .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 Request::Version(version.requested_version)
             }
             protocol::MessageType::GET_FILE_INFO_REQUEST => Request::GetFileInfo(parse_path(buf)?),
             protocol::MessageType::READ_FILE_REQUEST => {
                 let (read, buf) = protocol::ReadFileRequest::read_from_prefix(buf)
-                    .map_err(|_| DeviceError::TooShort)?; // TODO: zerocopy: map_err
+                    .map_err(|_| DeviceError::TooShort)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 Request::ReadFile {
                     byte_count: read.byte_count,
                     offset: read.offset.get(),
@@ -301,7 +301,7 @@ impl VmbfsChannel {
 }
 
 fn parse_path(buf: &[u8]) -> Result<String, DeviceError> {
-    let buf = <[u16]>::ref_from_bytes(buf).map_err(|_| DeviceError::Unaligned)?; // todo: zerocopy: map_err
+    let buf = <[u16]>::ref_from_bytes(buf).map_err(|_| DeviceError::Unaligned)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
     if buf.contains(&0) {
         return Err(DeviceError::NullTerminatorInPath);
     }

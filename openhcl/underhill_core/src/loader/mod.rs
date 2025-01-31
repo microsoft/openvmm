@@ -425,7 +425,7 @@ pub fn write_uefi_config(
     if !isolated {
         for table in &platform_config.acpi_tables {
             let header = acpi_spec::Header::ref_from_prefix(table)
-                .map_err(|_| Error::InvalidAcpiTableLength)? // todo: zerocopy: map_err
+                .map_err(|_| Error::InvalidAcpiTableLength)? // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 .0;
             match &header.signature {
                 b"APIC" => {

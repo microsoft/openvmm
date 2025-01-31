@@ -57,19 +57,19 @@ async fn recv_packet(reader: &mut impl AsyncRecv) -> Result<Request, Error> {
     let n = reader.recv(&mut buf).await.map_err(Error::Io)?;
     let buf = &buf[..n];
     let (header, buf) =
-        protocol::MessageHeader::read_from_prefix(buf).map_err(|_| Error::BadPacket)?; // TODO: zerocopy: map_err
+        protocol::MessageHeader::read_from_prefix(buf).map_err(|_| Error::BadPacket)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
     let request = match header.message_type {
         protocol::MESSAGE_PROTOCOL_REQUEST => {
             let message = protocol::MessageProtocolRequest::read_from_prefix(buf)
                 .map_err(|_| Error::BadPacket)?
-                .0; // todo: zerocopy: map_err
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             Request::ProtocolRequest(message.version)
         }
         protocol::MESSAGE_SET_LED_INDICATORS => {
             // We don't have any actual LEDs to set, so check the message for validity but ignore its contents.
             let _message = protocol::MessageLedIndicatorsState::read_from_prefix(buf)
                 .map_err(|_| Error::BadPacket)?
-                .0; // todo: zerocopy: map_err
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             Request::SetLedIndicators
         }
         typ => return Err(Error::UnknownMessageType(typ)),
@@ -331,13 +331,13 @@ mod tests {
             return None;
         }
         let packet = &packet[..n];
-        let (header, rest) = protocol::MessageHeader::read_from_prefix(packet).unwrap(); // TODO: zerocopy: unwrap
+        let (header, rest) = protocol::MessageHeader::read_from_prefix(packet).unwrap(); // TODO: zerocopy: unwrap (https://github.com/microsoft/openvmm/issues/759)
         Some(match header.message_type {
             protocol::MESSAGE_PROTOCOL_RESPONSE => {
                 Packet::ProtocolResponse(FromBytes::read_from_prefix(rest).unwrap().0)
-                // todo: zerocopy: use-rest-of-range
+                // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             }
-            protocol::MESSAGE_EVENT => Packet::Event(FromBytes::read_from_prefix(rest).unwrap().0), // todo: zerocopy: use-rest-of-range
+            protocol::MESSAGE_EVENT => Packet::Event(FromBytes::read_from_prefix(rest).unwrap().0), // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             _ => panic!("unknown packet type {}", header.message_type),
         })
     }

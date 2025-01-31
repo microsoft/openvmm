@@ -44,7 +44,7 @@ pub struct Event {
 }
 
 open_enum::open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum EventType: u8 {
         MESSAGE = 1,
         CLOSE_PORT = 2,

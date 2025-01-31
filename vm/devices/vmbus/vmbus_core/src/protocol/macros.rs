@@ -37,7 +37,7 @@ macro_rules! vmbus_message_enum {
                     (None, FeatureFlags::new())
                 };
 
-                // todo: zerocopy: use Result returned by `read_from_prefix` in the returned `MessageTooSmall` error.
+                // TODO: zerocopy: use Result returned by `read_from_prefix` in the returned `MessageTooSmall` error. (https://github.com/microsoft/openvmm/issues/759)
                 let (header, data) = MessageHeader::read_from_prefix(data).map_err(|_| ParseError::MessageTooSmall(None))?;
 
                 let message = match header.message_type {
@@ -45,7 +45,7 @@ macro_rules! vmbus_message_enum {
                         $($open_enum_name::$name
                             if vmbus_message_enum!(@create_conditions $type version features data $min_version $($condition_name:$condition_value)*) =>
                         {
-                            // todo: zerocopy: use Result returned by `read_from_prefix` in the returned `MessageTooSmall` error.
+                            // TODO: zerocopy: use Result returned by `read_from_prefix` in the returned `MessageTooSmall` error. (https://github.com/microsoft/openvmm/issues/759)
                             let (message, remaining) = $type::read_from_prefix(data).map_err(|_| ParseError::MessageTooSmall(Some(header.message_type)))?;
 
                             Self::$type(message, remaining)

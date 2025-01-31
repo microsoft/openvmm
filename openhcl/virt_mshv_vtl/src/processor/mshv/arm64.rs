@@ -163,7 +163,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
                         this.runner.exit_message().payload(),
                     )
                     .unwrap()
-                    .0; // todo: zerocopy: err, use-rest-of-range
+                    .0; // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                     match message.reset_type {
                         HvArm64ResetType::POWER_OFF => return Err(VpHaltReason::PowerOff),
                         HvArm64ResetType::REBOOT => return Err(VpHaltReason::Reset),
@@ -243,7 +243,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             self.runner.exit_message().payload(),
         )
         .unwrap()
-        .0; // todo: zerocopy: err, use-rest-of-range
+        .0; // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::trace!(
             deliverable_sints = message.deliverable_sints,
@@ -269,7 +269,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             self.runner.exit_message().payload(),
         )
         .unwrap()
-        .0; // todo: zerocopy: err, use-rest-of-range
+        .0; // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "hypercall");
 
@@ -302,7 +302,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             self.runner.exit_message().payload(),
         )
         .unwrap()
-        .0; // todo: zerocopy: err, use-rest-of-range
+        .0; // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             // tracing::trace!(msg = %format_args!("{:x?}", message), "mmio");
 
         let intercept_state = InterceptState {
@@ -331,7 +331,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             self.runner.exit_message().payload(),
         )
         .unwrap()
-        .0 // todo: zerocopy: err, use-rest-of-range
+        .0 // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         .guest_physical_address;
 
         if self.partition.is_gpa_lower_vtl_ram(gpa) {
@@ -535,7 +535,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
             | HvMessageType::HvMessageTypeUnacceptedGpa => {
                 hvdef::HvArm64MemoryInterceptMessage::ref_from_prefix(message.payload())
                     .ok()
-                    .map(|v| v.0.guest_physical_address) // todo: zerocopy: err, use-rest-of-range
+                    .map(|v| v.0.guest_physical_address) // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             }
             _ => None,
         }
@@ -554,7 +554,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
             self.vp.runner.exit_message().payload(),
         )
         .ok()?
-        .0; // todo: zerocopy: err, use-rest-of-range
+        .0; // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         if !message.memory_access_info.gva_gpa_valid() {
             tracing::trace!(?message.guest_virtual_address, ?message.guest_physical_address, "gva gpa not valid {:?}", self.vp.runner.exit_message().payload());

@@ -57,7 +57,7 @@ pub struct ShimParamsRaw {
 
 open_enum! {
     /// Possible isolation types supported by the shim.
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum SupportedIsolationType: u32 {
         // Starting from 1 for consistency with None usually being 0, but
         // the IGVM file for None and Vbs will likely be the same, so None will

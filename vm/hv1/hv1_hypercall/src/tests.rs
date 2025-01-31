@@ -334,7 +334,7 @@ struct TestController {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     enum TestHypercallCode: u16 {
         #![allow(non_upper_case_globals)]
         CallSimpleNoOutput = 0x1001,

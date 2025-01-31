@@ -86,19 +86,19 @@ async fn recv_packet(reader: &mut (impl AsyncRecv + Unpin)) -> Result<Request, E
 
     let buf = &buf[..n];
     let (header, buf) =
-        protocol::MessageHeader::read_from_prefix(buf).map_err(|_| Error::BadPacket)?; // TODO: zerocopy: map_err
+        protocol::MessageHeader::read_from_prefix(buf).map_err(|_| Error::BadPacket)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
     let request = match header.message_type {
         protocol::SYNTHHID_PROTOCOL_REQUEST => {
             let message = protocol::MessageProtocolRequest::read_from_prefix(buf)
                 .map_err(|_| Error::BadPacket)?
-                .0; // todo: zerocopy: map_err
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             Request::ProtocolRequest(message.version)
         }
         protocol::SYNTHHID_INIT_DEVICE_INFO_ACK => {
             // We don't need the message contents, but we do still want to ensure it's valid.
             let _message = protocol::MessageDeviceInfoAck::read_from_prefix(buf)
                 .map_err(|_| Error::BadPacket)?
-                .0; // todo: zerocopy: map_err
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             Request::DeviceInfoAck
         }
         typ => return Err(Error::UnknownMessageType(typ)),
@@ -427,15 +427,15 @@ mod tests {
             return None;
         }
         let packet = &packet[..n];
-        let (header, rest) = protocol::MessageHeader::read_from_prefix(packet).unwrap(); // TODO: zerocopy: unwrap
+        let (header, rest) = protocol::MessageHeader::read_from_prefix(packet).unwrap(); // TODO: zerocopy: unwrap (https://github.com/microsoft/openvmm/issues/759)
         Some(match header.message_type {
             protocol::SYNTHHID_PROTOCOL_RESPONSE => {
                 Packet::ProtocolResponse(FromBytes::read_from_prefix(rest).unwrap().0)
-                // todo: zerocopy: use-rest-of-range
+                // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             }
             protocol::SYNTHHID_INIT_DEVICE_INFO => {
                 Packet::DeviceInfo(FromBytes::read_from_prefix(rest).unwrap().0)
-                // todo: zerocopy: use-rest-of-range
+                // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             }
             _ => panic!("unknown packet type {}", header.message_type),
         })

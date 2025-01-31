@@ -797,7 +797,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         while i < packets.len() {
             if let Some(cqe) = self.rx_cq.pop() {
                 let rx = self.posted_rx.pop_front().unwrap();
-                let rx_oob = ManaRxcompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // todo: zerocopy: use-rest-of-range
+                let rx_oob = ManaRxcompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 match rx_oob.cqe_hdr.cqe_type() {
                     CQE_RX_OKAY => {
                         let ip_checksum = if rx_oob.flags.rx_iphdr_csum_succeed() {
@@ -902,7 +902,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         let mut i = 0;
         while i < done.len() {
             let id = if let Some(cqe) = self.tx_cq.pop() {
-                let tx_oob = ManaTxCompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // todo: zerocopy: use-rest-of-range
+                let tx_oob = ManaTxCompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 match tx_oob.cqe_hdr.cqe_type() {
                     CQE_TX_OKAY => {
                         self.stats.tx_packets += 1;

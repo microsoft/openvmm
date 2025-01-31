@@ -371,13 +371,13 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             tracing::debug!(event_type = eqe.params.event_type(), "got init eqe");
             match eqe.params.event_type() {
                 GDMA_EQE_HWC_INIT_EQ_ID_DB => {
-                    let data = HwcInitEqIdDb::read_from_prefix(&eqe.data[..]).unwrap().0; // todo: zerocopy: use-rest-of-range
+                    let data = HwcInitEqIdDb::read_from_prefix(&eqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                     eq.set_id(data.eq_id().into());
                     eq.set_doorbell(DoorbellPage::new(bar0.clone(), data.doorbell().into())?);
                     db_id = Some(data.doorbell());
                 }
                 GDMA_EQE_HWC_INIT_DATA => {
-                    let data = HwcInitTypeData::read_from_prefix(&eqe.data[..]).unwrap().0; // todo: zerocopy: use-rest-of-range
+                    let data = HwcInitTypeData::read_from_prefix(&eqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                     match data.ty() {
                         HWC_INIT_DATA_CQID => cq_id = Some(data.value()),
                         HWC_INIT_DATA_RQID => rq_id = Some(data.value()),
@@ -790,7 +790,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 GDMA_EQE_COMPLETION => self.cq_armed = false,
                 GDMA_EQE_TEST_EVENT => self.test_events += 1,
                 GDMA_EQE_HWC_RECONFIG_DATA => {
-                    let data = EqeDataReconfig::read_from_prefix(&eqe.data[..]).unwrap().0; // todo: zerocopy: use-rest-of-range
+                    let data = EqeDataReconfig::read_from_prefix(&eqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                     let mut value: [u8; 4] = [0; 4];
                     value[0..3].copy_from_slice(&data.data);
                     let value: u32 = u32::from_le_bytes(value);

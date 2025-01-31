@@ -1080,7 +1080,7 @@ mod x86 {
                                             &actions[offset..],
                                         ) {
                                             Ok((v, _)) => v,
-                                            Err(_) => break, // todo: zerocopy: err
+                                            Err(_) => break, // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
                                         };
 
                                     if let Err(err) = self.handle_action_signal_event(&signal_event)

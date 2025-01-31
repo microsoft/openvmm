@@ -21,14 +21,14 @@ pub const MAX_READ_SIZE: usize =
     MAX_MESSAGE_SIZE - size_of::<MessageHeader>() - size_of::<ReadFileResponse>();
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum Version: u32 {
         WIN10 = 0x00010000,
     }
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum MessageType: u32 {
         INVALID = 0,
         VERSION_REQUEST = 1,
@@ -65,7 +65,7 @@ pub struct VersionRequest {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum VersionStatus: u32 {
         SUPPORTED = 0,
         UNSUPPORTED = 1,
@@ -85,7 +85,7 @@ pub struct GetFileInfoRequest {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum Status: u32 {
         SUCCESS = 0,
         NOT_FOUND = 1,

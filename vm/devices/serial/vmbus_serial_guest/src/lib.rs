@@ -227,7 +227,7 @@ impl VmbusSerialDriver {
         let n = self.pipe.as_mut().recv(&mut buf).await?;
         let response = protocol::VersionRequestResponse::read_from_prefix(&buf[..n])
             .map_err(|_| ErrorInner::TruncatedMessage)?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let host_response = response
             .header
@@ -305,7 +305,7 @@ impl VmbusSerialDriver {
     fn handle_message(&mut self, buf: &[u8]) -> Result<(), ErrorInner> {
         let header = protocol::Header::read_from_prefix(buf)
             .map_err(|_| ErrorInner::TruncatedMessage)?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         if header.message_version != MessageVersions::HEADER_VERSION_1 {
             return Err(ErrorInner::InvalidMessageVersion(header.message_version));
         }
@@ -314,7 +314,7 @@ impl VmbusSerialDriver {
                 HostRequests::GET_RX_DATA => {
                     let response = protocol::RxDataResponse::read_from_prefix(buf)
                         .map_err(|_| ErrorInner::TruncatedMessage)?
-                        .0; // todo: zerocopy: map_err
+                        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                     let b = response
                         .buffer
@@ -339,7 +339,7 @@ impl VmbusSerialDriver {
                 GuestNotifications::SET_MODEM_STATUS => {
                     let status = protocol::SetModumStatusMessage::read_from_prefix(buf)
                         .map_err(|_| ErrorInner::TruncatedMessage)?
-                        .0; // todo: zerocopy: map_err
+                        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                     self.connected = status.is_connected != 0;
                 }

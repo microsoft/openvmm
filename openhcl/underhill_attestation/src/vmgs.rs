@@ -98,7 +98,7 @@ pub async fn read_key_protector(
             // read_from_prefix expects input bytes to be larger than or equal to size_of::<Self>()
             KeyProtector::read_from_prefix(&data[..])
                 .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))
-                .map(|k| k.0) // todo: zerocopy: map_err
+                .map(|k| k.0) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         }
         Err(vmgs::Error::FileInfoAllocated) => Ok(KeyProtector::new_zeroed()),
         Err(vmgs_err) => Err(ReadFromVmgsError::ReadFromVmgs { vmgs_err, file_id }),
@@ -128,13 +128,13 @@ pub async fn read_key_protector_by_id(
     let file_id = FileId::VM_UNIQUE_ID;
     match vmgs.read_file(file_id).await {
         Ok(data) => match KeyProtectorById::read_from_prefix(&data[..])
-            .ok() // todo: zerocopy: ok
+            .ok() // TODO: zerocopy: ok (https://github.com/microsoft/openvmm/issues/759)
             .map(|k| k.0)
         {
             Some(key_protector_by_id) => Ok(key_protector_by_id),
             None => {
                 let id_guid = Guid::read_from_prefix(&data[..])
-                    .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))? // todo: zerocopy: map_err
+                    .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))? // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                     .0;
 
                 Ok(KeyProtectorById {
@@ -195,7 +195,7 @@ pub async fn read_security_profile(vmgs: &mut Vmgs) -> Result<SecurityProfile, R
             // read_from_prefix expects input bytes to be larger than or equal to size_of::<Self>()
             Ok(SecurityProfile::read_from_prefix(&data[..])
                 .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))?
-                .0) // todo: zerocopy: map_err
+                .0) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         }
         Err(vmgs::Error::FileInfoAllocated) => Ok(SecurityProfile::new_zeroed()),
         Err(vmgs_err) => Err(ReadFromVmgsError::ReadFromVmgs { file_id, vmgs_err })?,
@@ -224,7 +224,7 @@ pub async fn read_hardware_key_protector(
 
     HardwareKeyProtector::read_from_prefix(&data)
         .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))
-        .map(|k| k.0) // todo: zerocopy: map_err
+        .map(|k| k.0) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 }
 
 /// Write Key Protector Id (current Id) to the VMGS file.
@@ -263,7 +263,7 @@ pub async fn read_guest_secret_key(vmgs: &mut Vmgs) -> Result<GuestSecretKey, Re
             // read_from_prefix expects input bytes to be larger than or equal to size_of::<Self>()
             Ok(GuestSecretKey::read_from_prefix(&data[..])
                 .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))?
-                .0) // todo: zerocopy: map_err
+                .0) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         }
         Err(vmgs::Error::FileInfoAllocated) => Err(ReadFromVmgsError::EntryNotFound(file_id)),
         Err(vmgs_err) => Err(ReadFromVmgsError::ReadFromVmgs { file_id, vmgs_err }),

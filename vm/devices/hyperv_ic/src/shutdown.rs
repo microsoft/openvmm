@@ -209,14 +209,14 @@ impl ShutdownChannel {
                 let (_result, buf) = read_response(&mut self.pipe).await?;
                 let (message, rest) =
                     hyperv_ic_protocol::NegotiateMessage::read_from_prefix(buf.as_slice())
-                        .map_err(|_| Error::TruncatedMessage)?; // todo: zerocopy: map_err
+                        .map_err(|_| Error::TruncatedMessage)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 if message.framework_version_count != 1 || message.message_version_count != 1 {
                     return Err(Error::NoSupportedVersions);
                 }
                 let [framework_version, message_version] =
                     <[hyperv_ic_protocol::Version; 2]>::read_from_prefix(rest)
                         .map_err(|_| Error::TruncatedMessage)?
-                        .0; // todo: zerocopy: map_err
+                        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                 self.state = ChannelState::Ready {
                     framework_version,
@@ -294,7 +294,7 @@ async fn read_response(pipe: &mut MessagePipe<GpadlRingMem>) -> Result<(u32, Vec
     let n = pipe.recv(&mut buf).await.map_err(Error::Ring)?;
     let buf = &buf[..n];
     let (header, rest) =
-        hyperv_ic_protocol::Header::read_from_prefix(buf).map_err(|_| Error::TruncatedMessage)?; // TODO: zerocopy: map_err
+        hyperv_ic_protocol::Header::read_from_prefix(buf).map_err(|_| Error::TruncatedMessage)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
     if header.transaction_id != 0 || !header.flags.transaction() || !header.flags.response() {
         return Err(Error::InvalidVersionResponse);

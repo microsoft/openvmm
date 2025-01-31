@@ -107,7 +107,7 @@ pub const STATUS_TOKEN_RING_OPEN_ERROR: Status = 0xC0011000;
 //
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum Oid: u32 {
         OID_GEN_SUPPORTED_LIST = 0x00010101,
         OID_GEN_HARDWARE_STATUS = 0x00010102,
@@ -746,7 +746,7 @@ pub struct MessageHeader {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum NdisObjectType: u8 {
         DEFAULT = 0x80,
         RSS_CAPABILITIES = 0x88,
@@ -1020,7 +1020,7 @@ pub struct NdisOffloadParameters {
 pub const NDIS_SIZEOF_OFFLOAD_PARAMETERS_REVISION_1: usize = 20;
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum OffloadParametersChecksum: u8 {
         NO_CHANGE = 0,
         TX_RX_DISABLED = 1,
@@ -1043,7 +1043,7 @@ impl OffloadParametersChecksum {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum OffloadParametersSimple: u8 {
         NO_CHANGE = 0,
         DISABLED = 1,
@@ -1073,7 +1073,7 @@ pub struct RndisConfigParameterInfo {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum NdisParameterType: u32 {
         INTEGER = 0,
         HEX_INTEGER = 1,

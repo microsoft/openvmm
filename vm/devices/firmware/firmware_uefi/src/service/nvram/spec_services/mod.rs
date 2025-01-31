@@ -710,7 +710,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                 };
 
                 // extract EFI_VARIABLE_AUTHENTICATION_2 header
-                // todo: zerocopy: err
+                // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
                 let auth_hdr =
                     match EFI_VARIABLE_AUTHENTICATION_2::read_from_prefix(data.as_slice()).ok() {
                         Some((hdr, _)) => hdr,

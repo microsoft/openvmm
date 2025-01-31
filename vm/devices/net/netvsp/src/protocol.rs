@@ -205,7 +205,7 @@ pub const MESSAGE6_MAX: u32 = MESSAGE6_TYPE_PD_POST_BATCH;
 */
 
 open_enum::open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum Status: u32 {
         NONE = 0,
         SUCCESS = 1,
@@ -458,7 +458,7 @@ pub struct Message4SendVfAssociation {
 // in NVSP_4_MESSAGE_SWITCH_DATA_PATH structure
 //
 open_enum::open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum DataPath: u32 {
         SYNTHETIC = 0,
         VF = 1,
@@ -504,7 +504,7 @@ pub struct Message5OidQueryExComplete {
 // primary channel's channel close callback.
 //
 open_enum::open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum SubchannelOperation: u32 {
         NONE = 0,
         ALLOCATE = 1,

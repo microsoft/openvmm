@@ -49,7 +49,7 @@ pub mod structs {
     use zerocopy::KnownLayout;
 
     open_enum! {
-        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub enum AsptStructType: u16 {
             ASP_GLOBAL_REGISTERS = 0,
             SEV_MAILBOX_REGISTERS = 1,

@@ -346,7 +346,7 @@ fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
         HvMessageType::HvMessageTypeX64IoPortIntercept => {
             let message = hvdef::HvX64IoPortInterceptMessage::ref_from_prefix(message.payload())
                 .unwrap()
-                .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             SidecarRemoveExit::Io {
                 port: message.port_number,
                 write: message.header.intercept_access_type == HvInterceptAccessType::WRITE,
@@ -355,7 +355,7 @@ fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
         HvMessageType::HvMessageTypeUnmappedGpa | HvMessageType::HvMessageTypeGpaIntercept => {
             let message = hvdef::HvX64MemoryInterceptMessage::ref_from_prefix(message.payload())
                 .unwrap()
-                .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             SidecarRemoveExit::Mmio {
                 gpa: message.guest_physical_address,
                 write: message.header.intercept_access_type == HvInterceptAccessType::WRITE,
@@ -364,7 +364,7 @@ fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
         HvMessageType::HvMessageTypeHypercallIntercept => {
             let message = hvdef::HvX64HypercallInterceptMessage::ref_from_prefix(message.payload())
                 .unwrap()
-                .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             let is_64bit = message.header.execution_state.cr0_pe()
                 && message.header.execution_state.efer_lma();
             let control = if is_64bit {
@@ -379,7 +379,7 @@ fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
         HvMessageType::HvMessageTypeX64CpuidIntercept => {
             let message = hvdef::HvX64CpuidInterceptMessage::ref_from_prefix(message.payload())
                 .unwrap()
-                .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             SidecarRemoveExit::Cpuid {
                 leaf: message.rax as u32,
                 subleaf: message.rcx as u32,
@@ -388,7 +388,7 @@ fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
         HvMessageType::HvMessageTypeMsrIntercept => {
             let message = hvdef::HvX64MsrInterceptMessage::ref_from_prefix(message.payload())
                 .unwrap()
-                .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             SidecarRemoveExit::Msr {
                 msr: message.msr_number,
                 value: (message.header.intercept_access_type == HvInterceptAccessType::WRITE)
@@ -429,7 +429,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                                 vp.runner.exit_message().payload(),
                             )
                             .unwrap()
-                            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro
+                            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro (https://github.com/microsoft/openvmm/issues/759)
                             .header
                         }
                         &HvMessageType::HvMessageTypeUnmappedGpa
@@ -438,7 +438,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                                 vp.runner.exit_message().payload(),
                             )
                             .unwrap()
-                            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro
+                            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro (https://github.com/microsoft/openvmm/issues/759)
                             .header
                         }
                         &HvMessageType::HvMessageTypeUnacceptedGpa => {
@@ -446,7 +446,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                                 vp.runner.exit_message().payload(),
                             )
                             .unwrap()
-                            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro
+                            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro (https://github.com/microsoft/openvmm/issues/759)
                             .header
                         }
                         &HvMessageType::HvMessageTypeHypercallIntercept => {
@@ -454,7 +454,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                                 vp.runner.exit_message().payload(),
                             )
                             .unwrap()
-                            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro
+                            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro (https://github.com/microsoft/openvmm/issues/759)
                             .header
                         }
                         &HvMessageType::HvMessageTypeSynicSintDeliverable => {
@@ -462,7 +462,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                                 vp.runner.exit_message().payload(),
                             )
                             .unwrap()
-                            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro
+                            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro (https://github.com/microsoft/openvmm/issues/759)
                             .header
                         }
                         &HvMessageType::HvMessageTypeX64InterruptionDeliverable => {
@@ -470,7 +470,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                                 vp.runner.exit_message().payload(),
                             )
                             .unwrap()
-                            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro
+                            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro (https://github.com/microsoft/openvmm/issues/759)
                             .header
                         }
                         &HvMessageType::HvMessageTypeX64CpuidIntercept => {
@@ -478,7 +478,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                                 vp.runner.exit_message().payload(),
                             )
                             .unwrap()
-                            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro
+                            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro (https://github.com/microsoft/openvmm/issues/759)
                             .header
                         }
                         &HvMessageType::HvMessageTypeMsrIntercept => {
@@ -486,7 +486,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                                 vp.runner.exit_message().payload(),
                             )
                             .unwrap()
-                            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro
+                            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro (https://github.com/microsoft/openvmm/issues/759)
                             .header
                         }
                         &HvMessageType::HvMessageTypeUnrecoverableException => {
@@ -494,7 +494,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                                 vp.runner.exit_message().payload(),
                             )
                             .unwrap()
-                            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro
+                            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro (https://github.com/microsoft/openvmm/issues/759)
                             .header
                         }
                         &HvMessageType::HvMessageTypeX64Halt => {
@@ -502,7 +502,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                                 vp.runner.exit_message().payload(),
                             )
                             .unwrap()
-                            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro
+                            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro (https://github.com/microsoft/openvmm/issues/759)
                             .header
                         }
                         &HvMessageType::HvMessageTypeExceptionIntercept => {
@@ -510,7 +510,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                                 vp.runner.exit_message().payload(),
                             )
                             .unwrap()
-                            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro
+                            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: erro (https://github.com/microsoft/openvmm/issues/759)
                             .header
                         }
                         reason => unreachable!("unknown exit reason: {:#x?}", reason),
@@ -537,7 +537,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             self.vp.runner.exit_message().payload(),
         )
         .unwrap()
-        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
+        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         assert_eq!(
             message.deliverable_type,
@@ -578,7 +578,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             self.vp.runner.exit_message().payload(),
         )
         .unwrap()
-        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
+        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::trace!(
             deliverable_sints = message.deliverable_sints,
@@ -608,7 +608,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             self.vp.runner.exit_message().payload(),
         )
         .unwrap()
-        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
+        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "hypercall");
 
@@ -638,7 +638,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             self.vp.runner.exit_message().payload(),
         )
         .unwrap()
-        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
+        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "mmio");
 
@@ -689,7 +689,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             self.vp.runner.exit_message().payload(),
         )
         .unwrap()
-        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
+        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "io_port");
 
@@ -726,7 +726,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             self.vp.runner.exit_message().payload(),
         )
         .unwrap()
-        .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
+        .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
         .guest_physical_address;
 
         if self.vp.partition.is_gpa_lower_vtl_ram(gpa) {
@@ -753,7 +753,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             self.vp.runner.exit_message().payload(),
         )
         .unwrap()
-        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
+        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         let default_result = [
             message.default_result_rax as u32,
@@ -784,7 +784,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             self.vp.runner.exit_message().payload(),
         )
         .unwrap()
-        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
+        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
         let rip = next_rip(&message.header);
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "msr");
@@ -832,7 +832,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         let message =
             hvdef::HvX64ApicEoiMessage::ref_from_prefix(self.vp.runner.exit_message().payload())
                 .unwrap()
-                .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
+                .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "eoi");
 
@@ -851,7 +851,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             self.vp.runner.exit_message().payload(),
         )
         .unwrap()
-        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
+        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         match x86defs::Exception(message.vector as u8) {
             x86defs::Exception::DEBUG if cfg!(feature = "gdb") => {
@@ -1021,7 +1021,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         let message = self.runner.exit_message();
         let header = HvX64InterceptMessageHeader::ref_from_prefix(message.payload())
             .unwrap()
-            .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+            .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         MshvEmulationCache {
             rsp: rsp.as_u64(),
@@ -1110,7 +1110,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
                 let message = self.vp.runner.exit_message();
                 let header = HvX64InterceptMessageHeader::ref_from_prefix(message.payload())
                     .unwrap()
-                    .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                    .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 from_seg(header.cs_segment)
             }
             x86emu::Segment::ES => self.cache.es,
@@ -1146,14 +1146,14 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
                 let message =
                     hvdef::HvX64MemoryInterceptMessage::ref_from_prefix(message.payload())
                         .unwrap()
-                        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 &message.instruction_bytes[..message.instruction_byte_count as usize]
             }
             HvMessageType::HvMessageTypeX64IoPortIntercept => {
                 let message =
                     hvdef::HvX64IoPortInterceptMessage::ref_from_prefix(message.payload())
                         .unwrap()
-                        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 &message.instruction_bytes[..message.instruction_byte_count as usize]
             }
             _ => unreachable!(),
@@ -1169,7 +1169,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
                 let message =
                     hvdef::HvX64MemoryInterceptMessage::ref_from_prefix(message.payload())
                         .unwrap()
-                        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 Some(message.guest_physical_address)
             }
             _ => None,
@@ -1189,7 +1189,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             self.vp.runner.exit_message().payload(),
         )
         .unwrap()
-        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
+        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         if !message.memory_access_info.gva_gpa_valid() {
             tracing::trace!(?message.guest_virtual_address, ?message.guest_physical_address, "gva gpa not valid {:?}", self.vp.runner.exit_message().payload());

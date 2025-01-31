@@ -286,7 +286,7 @@ open_enum! {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum ReservationType: u8 {
         WRITE_EXCLUSIVE = 1,
         EXCLUSIVE_ACCESS = 2,

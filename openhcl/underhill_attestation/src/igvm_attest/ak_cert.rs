@@ -34,7 +34,7 @@ pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
         .map_err(|_| AkCertError::SizeTooSmall {
             size: response.len(),
             minimum_size: HEADER_SIZE,
-        })? // todo: zerocopy: map_err
+        })? // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         .0;
 
     let size = header.data_size as usize;

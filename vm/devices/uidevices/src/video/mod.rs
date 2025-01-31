@@ -76,18 +76,18 @@ enum Request {
 
 fn parse_packet(buf: &[u8]) -> Result<Request, Error> {
     let (header, buf) =
-        Ref::<_, protocol::MessageHeader>::from_prefix(buf).map_err(|_| Error::InvalidPacket)?; // todo: zerocopy: map_err
+        Ref::<_, protocol::MessageHeader>::from_prefix(buf).map_err(|_| Error::InvalidPacket)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
     let request = match header.typ.to_ne() {
         protocol::MESSAGE_VERSION_REQUEST => {
             let message = protocol::VersionRequestMessage::ref_from_prefix(buf)
                 .map_err(|_| Error::InvalidPacket)?
-                .0; // todo: zerocopy: map_err
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             Request::Version(message.version)
         }
         protocol::MESSAGE_VRAM_LOCATION => {
             let message = protocol::VramLocationMessage::ref_from_prefix(buf)
                 .map_err(|_| Error::InvalidPacket)?
-                .0; // todo: zerocopy: map_err
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             let address = if message.is_vram_gpa_address_specified != 0 {
                 Some(message.vram_gpa_address.into())
             } else {
@@ -101,7 +101,7 @@ fn parse_packet(buf: &[u8]) -> Result<Request, Error> {
         protocol::MESSAGE_SITUATION_UPDATE => {
             let message = protocol::SituationUpdateMessage::ref_from_prefix(buf)
                 .map_err(|_| Error::InvalidPacket)?
-                .0; // todo: zerocopy: map_err
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             Request::SituationUpdate {
                 user_context: message.user_context.into(),
                 situation: message.video_output,
@@ -110,7 +110,7 @@ fn parse_packet(buf: &[u8]) -> Result<Request, Error> {
         protocol::MESSAGE_POINTER_POSITION => {
             let message = protocol::PointerPositionMessage::ref_from_prefix(buf)
                 .map_err(|_| Error::InvalidPacket)?
-                .0; // todo: zerocopy: map_err
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             Request::PointerPosition {
                 is_visible: message.is_visible != 0,
                 x: message.image_x.into(),
@@ -118,18 +118,18 @@ fn parse_packet(buf: &[u8]) -> Result<Request, Error> {
             }
         }
         protocol::MESSAGE_POINTER_SHAPE => {
-            //let message = protocol::PointerShapeMessage::from_bytes(buf).map_err(|_| Error::InvalidPacket)?; // todo: zerocopy: map_err
+            //let message = protocol::PointerShapeMessage::from_bytes(buf).map_err(|_| Error::InvalidPacket)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             Request::PointerShape
         }
         protocol::MESSAGE_DIRT => {
             let (message, buf) = Ref::<_, protocol::DirtMessage>::from_prefix(buf)
-                .map_err(|_| Error::InvalidPacket)?; // todo: zerocopy: map_err
+                .map_err(|_| Error::InvalidPacket)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             Request::Dirt(
                 <[protocol::Rectangle]>::ref_from_prefix_with_elems(
                     buf,
                     message.dirt_count as usize,
                 )
-                .map_err(|_| Error::InvalidPacket)? // todo: zerocopy: map_err
+                .map_err(|_| Error::InvalidPacket)? // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 .0
                 .into(),
             )
@@ -138,7 +138,7 @@ fn parse_packet(buf: &[u8]) -> Result<Request, Error> {
         protocol::MESSAGE_SUPPORTED_RESOLUTIONS_REQUEST => {
             let message = protocol::SupportedResolutionsRequestMessage::ref_from_prefix(buf)
                 .map_err(|_| Error::InvalidPacket)?
-                .0; // todo: zerocopy: map_err
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             Request::SupportedResolutions {
                 maximum_count: message.maximum_resolution_count,
             }

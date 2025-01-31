@@ -231,7 +231,7 @@ impl Vmgs {
 
         let file_table = VmgsFileTable::ref_from_prefix(&file_table_buffer)
             .unwrap()
-            .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+            .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         let file_control_blocks =
             initialize_file_metadata(file_table, version, storage.block_capacity())?;
@@ -1067,7 +1067,7 @@ impl Vmgs {
         // Update the cached extended file table
         let extended_file_table =
             VmgsExtendedFileTable::read_from_prefix(extended_file_table_buffer.as_bytes())
-                .map_err(|_| anyhow!("Invalid decrypted extended file table"))? // todo: zerocopy: use result
+                .map_err(|_| anyhow!("Invalid decrypted extended file table"))? // TODO: zerocopy: use result (https://github.com/microsoft/openvmm/issues/759)
                 .0;
         for (file_id, fcb) in self.fcbs.iter_mut() {
             fcb.attributes = extended_file_table.entries[*file_id].attributes;
@@ -1385,11 +1385,11 @@ async fn read_headers_inner(storage: &mut VmgsStorage) -> Result<(VmgsHeader, Vm
         .map_err(Error::ReadDisk)?;
 
     // first_two_blocks will contain enough bytes to read the first two headers
-    let header_1 = VmgsHeader::read_from_prefix(&first_two_blocks).unwrap().0; // todo: zerocopy: use-rest-of-range
+    let header_1 = VmgsHeader::read_from_prefix(&first_two_blocks).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     let header_2 =
         VmgsHeader::read_from_prefix(&first_two_blocks[storage.aligned_header_size() as usize..])
             .unwrap()
-            .0; // todo: zerocopy: from-prefix (read_from_prefix): use-rest-of-range
+            .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     Ok((header_1, header_2))
 }
 

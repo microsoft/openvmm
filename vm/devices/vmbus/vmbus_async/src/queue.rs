@@ -266,7 +266,7 @@ impl<T: RingMem> DataPacket<'_, T> {
             .map(|range| {
                 let range_data = TransferPageRange::read_from_prefix(range.as_bytes())
                     .unwrap()
-                    .0; // todo: zerocopy: use-rest-of-range
+                    .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 let sub_range = transfer_buf
                     .subrange(
                         range_data.byte_offset as usize,

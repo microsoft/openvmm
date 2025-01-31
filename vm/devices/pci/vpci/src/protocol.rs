@@ -23,7 +23,7 @@ pub const MMIO_PAGE_CONFIG_SPACE: u64 = 0x1000;
 pub const MMIO_PAGE_MASK: u64 = !0xfff;
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum MessageType: u32 {
         BUS_RELATIONS = 0x42490000,
         QUERY_BUS_RELATIONS = 0x42490001,
@@ -55,7 +55,7 @@ open_enum! {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum ResourceType: u8 {
         NULL = 0,
         PORT = 1,
@@ -72,7 +72,7 @@ pub const GUID_VPCI_VSP_CHANNEL_TYPE: Guid =
     Guid::from_static_str("44C4F61D-4444-4400-9D52-802E27EDE19F");
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum ProtocolVersion: u32 {
         WIN8 = 0x00010000,
         WIN10 = 0x00010001,
@@ -92,7 +92,7 @@ pub struct QueryProtocolVersion {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum Status: u32 {
         SUCCESS = 0,
         REVISION_MISMATCH = 0xC0000059,
@@ -298,26 +298,26 @@ impl MsiResource {
     pub fn remapped(&self) -> &MsiResourceRemapped {
         MsiResourceRemapped::ref_from_prefix(self.resource_data.as_bytes())
             .unwrap()
-            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range
+            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     pub fn remapped_mut(&mut self) -> &mut MsiResourceRemapped {
         MsiResourceRemapped::mut_from_prefix(self.resource_data.as_mut_bytes())
             .unwrap()
             .0
-    } // todo: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range
+    } // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
     pub fn descriptor(&self) -> &MsiResourceDescriptor {
         MsiResourceDescriptor::ref_from_prefix(self.resource_data.as_bytes())
             .unwrap()
-            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range
+            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     pub fn descriptor_mut(&mut self) -> &mut MsiResourceDescriptor {
         MsiResourceDescriptor::mut_from_prefix(self.resource_data.as_mut_bytes())
             .unwrap()
             .0
-    } // todo: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range
+    } // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 }
 
 // >= VPCI_PROTOCOL_VERSION_RS1
@@ -348,26 +348,26 @@ impl MsiResource2 {
     pub fn remapped(&self) -> &MsiResourceRemapped {
         MsiResourceRemapped::ref_from_prefix(self.resource_data.as_bytes())
             .unwrap()
-            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range
+            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     pub fn remapped_mut(&mut self) -> &mut MsiResourceRemapped {
         MsiResourceRemapped::mut_from_prefix(self.resource_data.as_mut_bytes())
             .unwrap()
             .0
-    } // todo: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range
+    } // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
     pub fn descriptor(&self) -> &MsiResourceDescriptor2 {
         MsiResourceDescriptor2::ref_from_prefix(self.resource_data.as_bytes())
             .unwrap()
-            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range
+            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     pub fn descriptor_mut(&mut self) -> &mut MsiResourceDescriptor2 {
         MsiResourceDescriptor2::mut_from_prefix(self.resource_data.as_mut_bytes())
             .unwrap()
             .0
-    } // todo: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range
+    } // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 }
 
 #[repr(C)]
@@ -397,26 +397,26 @@ impl MsiResource3 {
     pub fn remapped(&self) -> &MsiResourceRemapped {
         MsiResourceRemapped::ref_from_prefix(self.resource_data.as_bytes())
             .unwrap()
-            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range
+            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     pub fn remapped_mut(&mut self) -> &mut MsiResourceRemapped {
         MsiResourceRemapped::mut_from_prefix(self.resource_data.as_mut_bytes())
             .unwrap()
             .0
-    } // todo: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range
+    } // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
     pub fn descriptor(&self) -> &MsiResourceDescriptor3 {
         MsiResourceDescriptor3::ref_from_prefix(self.resource_data.as_bytes())
             .unwrap()
-            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range
+            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     pub fn descriptor_mut(&mut self) -> &mut MsiResourceDescriptor3 {
         MsiResourceDescriptor3::mut_from_prefix(self.resource_data.as_mut_bytes())
             .unwrap()
             .0
-    } // todo: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range
+    } // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 }
 
 pub const MAX_SUPPORTED_INTERRUPT_MESSAGES: u32 = 494; // 500 resources minus 6 for the BARs.
@@ -484,7 +484,7 @@ pub struct DevicePowerChange {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum DevicePowerState: u32 {
         D0 = 1,
         D3 = 4,

@@ -265,7 +265,7 @@ impl<'a> MadtParser<'a> {
     pub fn new(table: &'a [u8]) -> Result<Self, ParserError> {
         let header = crate::Header::read_from_prefix(table)
             .map_err(|_| ParserError)?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         if (header.length.get() as usize) < size_of::<Madt>() {
             return Err(ParserError);
         }
@@ -355,9 +355,9 @@ pub struct MadtIter<'a> {
 
 impl MadtIter<'_> {
     fn parse(&mut self) -> Result<Option<MadtEntry>, ParserError> {
-        // todo: zerocopy: map_err
+        // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         while let Ok((header, _)) = MadtEntryHeader::read_from_prefix(self.entries) {
-            // todo: zerocopy: ok
+            // TODO: zerocopy: ok (https://github.com/microsoft/openvmm/issues/759)
             if self.entries.len() < header.length as usize {
                 return Err(ParserError);
             }
@@ -366,11 +366,11 @@ impl MadtIter<'_> {
             let entry = match header.typ {
                 MadtType::APIC => {
                     MadtEntry::Apic(FromBytes::read_from_prefix(buf).map_err(|_| ParserError)?.0)
-                    // todo: zerocopy: map_err
+                    // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 }
                 MadtType::X2APIC => {
                     MadtEntry::X2Apic(FromBytes::read_from_prefix(buf).map_err(|_| ParserError)?.0)
-                    // todo: zerocopy: map_err
+                    // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 }
                 _ => continue,
             };

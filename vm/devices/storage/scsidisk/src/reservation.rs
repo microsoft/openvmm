@@ -287,7 +287,7 @@ impl SimpleScsiDisk {
     ) -> Result<usize, ScsiError> {
         let cdb = scsi::PersistentReserveIn::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let allocation_length = cdb.allocation_length.get() as usize;
         if allocation_length > external_data.len() {
             tracelimit::error_ratelimited!(
@@ -343,7 +343,7 @@ impl SimpleScsiDisk {
     ) -> Result<usize, ScsiError> {
         let cdb = scsi::PersistentReserveOut::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let service_action = cdb.service_action.service_action();
         const EXPECT_PARAMETER_LIST_LENGTH: usize = size_of::<scsi::ProParameterList>();
 

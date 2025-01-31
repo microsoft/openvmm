@@ -155,7 +155,7 @@ pub struct setup_header {
     pub handover_offset: u32_ne,
 }
 
-// TODO: zerocopy doesn't support const new methods, so define them as u32 for now.
+// TODO: zerocopy doesn't support const new methods, so define them as u32 for now. (https://github.com/microsoft/openvmm/issues/759)
 pub const E820_RAM: u32 = 1;
 pub const E820_RESERVED: u32 = 2;
 pub const E820_ACPI: u32 = 3;

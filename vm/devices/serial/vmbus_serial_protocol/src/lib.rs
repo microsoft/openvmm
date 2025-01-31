@@ -48,7 +48,7 @@ const fn make_version(major: u16, minor: u16) -> u32 {
 
 open_enum! {
     /// Protocol versions.
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum ProtocolVersions: u32 {
         /// Represents the MANGANESE protocol version.
         MANGANESE = make_version(1, 0),
@@ -57,7 +57,7 @@ open_enum! {
 
 open_enum! {
     /// Header message versions.
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum MessageVersions: u8 {
         /// Invalid version.
         INVALID          = 0,
@@ -68,7 +68,7 @@ open_enum! {
 
 open_enum! {
     /// Enum for the different message types.
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum MessageTypes: u8 {
         /// Invalid message type.
         INVALID            = 0,
@@ -86,7 +86,7 @@ open_enum! {
 open_enum! {
     /// Enum for the different host notification messages.
     /// These are aysynchronous messages sent by the HCL to the Host.
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HostNotifications: u8 {
         /// Invalid message.
         INVALID           = 0,
@@ -100,7 +100,7 @@ open_enum! {
 open_enum! {
     /// Enum for the different guest notification messages.
     /// These are asynchronous messages sent by the Host to the HCL.
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum GuestNotifications: u8 {
         /// Invalid message.
         INVALID           = 0,
@@ -119,7 +119,7 @@ open_enum! {
     /// These are synchronous messages sent by the HCL to the host.
     /// Note that the host response shares the same enum.
     /// (Each request has a response of the same ID)
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HostRequests: u16 {
         /// Invalid message.
         INVALID     = 0,

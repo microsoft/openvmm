@@ -119,7 +119,7 @@ impl ShutdownGuestChannel {
     }
 
     async fn handle_host_message(&mut self, buf: &[u8], ic: &ShutdownGuestIc) {
-        // todo: zerocopy: err
+        // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
         let (header, rest) = match hyperv_ic_protocol::Header::read_from_prefix(buf).ok() {
             Some((h, r)) => (h, r),
             None => {
@@ -163,7 +163,7 @@ impl ShutdownGuestChannel {
         let mut next_version;
         let mut latest_version = None;
         for _ in 0..count {
-            // todo: zerocopy: err
+            // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
             (next_version, rest) = match hyperv_ic_protocol::Version::read_from_prefix(rest).ok() {
                 Some((n, r)) => (n, r),
                 None => {
@@ -196,7 +196,7 @@ impl ShutdownGuestChannel {
         msg: &[u8],
     ) -> Result<(), Error> {
         let (prefix, rest) = hyperv_ic_protocol::NegotiateMessage::read_from_prefix(msg)
-            .map_err(|_| Error::TruncatedMessage)?; // TODO: zerocopy: map_err
+            .map_err(|_| Error::TruncatedMessage)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let (latest_framework_version, rest) = Self::find_latest_supported_version(
             rest,
             prefix.framework_version_count as usize,
@@ -273,7 +273,7 @@ impl ShutdownGuestChannel {
 
         let message = hyperv_ic_protocol::shutdown::ShutdownMessage::read_from_prefix(buf)
             .map_err(|_| Error::TruncatedMessage)?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let shutdown_type = if message.flags.restart() {
             ShutdownType::Reboot
         } else if message.flags.hibernate() {

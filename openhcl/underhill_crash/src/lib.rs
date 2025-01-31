@@ -115,7 +115,7 @@ async fn read_message<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
 ) -> anyhow::Result<T> {
     let mut message = T::new_zeroed();
     pipe.recv_exact(message.as_mut_bytes()).await?;
-    let header = Header::read_from_prefix(message.as_bytes()).unwrap().0; // todo: zerocopy: use-rest-of-range
+    let header = Header::read_from_prefix(message.as_bytes()).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     check_header(&header)?;
     Ok(message)
 }
@@ -528,7 +528,7 @@ impl<'a> DumpStreamer<'a> {
             let phnum = std::cmp::min(phnum_remaining, max);
             let phdrs_size = phnum * size_of::<Elf64_Phdr>();
             self.read(&mut buf[..phdrs_size], true).await;
-            // todo: zerocopy: review carefully!
+            // TODO: zerocopy: review carefully! (https://github.com/microsoft/openvmm/issues/759)
             let phdrs: &mut [Elf64_Phdr] =
                 <[Elf64_Phdr]>::mut_from_bytes(&mut buf[..phdrs_size]).unwrap();
 

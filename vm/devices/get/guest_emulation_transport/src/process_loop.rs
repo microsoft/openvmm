@@ -612,7 +612,7 @@ impl HostRequestPipeAccess {
         let response = self.recv_response().await;
         let header = get_protocol::HeaderHostRequest::read_from_prefix(response.as_bytes())
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         if id != header.message_id {
             return Err(FatalError::ResponseHeaderMismatchId(header.message_id, id));
         }
@@ -633,7 +633,7 @@ impl HostRequestPipeAccess {
         self.send_message(data.as_bytes().to_vec());
         let req_header = get_protocol::HeaderHostRequest::read_from_prefix(data.as_bytes())
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         self.recv_response_fixed_size(req_header.message_id).await
     }
 
@@ -789,7 +789,7 @@ impl<T: RingMem> ProcessLoop<T> {
                             // message down the wire.
                             if let Ok((header, _)) =
                                 get_protocol::HeaderRaw::read_from_prefix(outgoing.as_ref())
-                            // todo: zerocopy: use-rest-of-range, zerocopy: err
+                            // TODO: zerocopy: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
                             {
                                 match header.message_type {
                                     get_protocol::MessageTypes::HOST_REQUEST => {
@@ -916,7 +916,7 @@ impl<T: RingMem> ProcessLoop<T> {
                     let buf = &buf[..len];
                     let header = get_protocol::HeaderRaw::read_from_prefix(buf)
                         .map_err(|_| FatalError::MessageSizeHeader(len))?
-                        .0; // todo: zerocopy: map_err
+                        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                     match header.message_type {
                         get_protocol::MessageTypes::HOST_RESPONSE => {
@@ -1349,7 +1349,7 @@ impl<T: RingMem> ProcessLoop<T> {
                     len: buf.len(),
                     notification: get_protocol::GuestNotifications::MODIFY_VTL2_SETTINGS,
                 }
-            })?; // todo: zerocopy: map_
+            })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let expected_len = request.size as usize;
         if remaining.len() != expected_len {
@@ -1375,7 +1375,7 @@ impl<T: RingMem> ProcessLoop<T> {
                     len: buf.len(),
                     notification: get_protocol::GuestNotifications::MODIFY_VTL2_SETTINGS_REV1,
                 },
-            )?; // TODO: zerocopy: map_err
+            )?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let expected_len = request.size as usize;
         if remaining.len() != expected_len {
@@ -1561,7 +1561,7 @@ async fn request_device_platform_settings_v2(
         let buf = access.recv_response().await;
         let header = get_protocol::HeaderHostResponse::read_from_prefix(buf.as_slice())
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         // Protocol wart: request is sent as a
         // `HostRequests::DEVICE_PLATFORM_SETTINGS_V2`, but the host will send
@@ -1584,7 +1584,7 @@ async fn request_device_platform_settings_v2(
                     .map_err(|_| FatalError::MessageSizeHostResponse {
                         len: buf.len(),
                         response: HostRequests::DEVICE_PLATFORM_SETTINGS_V2,
-                    })?; // todo: zerocopy: map_err
+                    })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                 if response.size as usize != remaining.len() {
                     return Err(FatalError::DevicePlatformSettingsV2Payload {
@@ -1604,7 +1604,7 @@ async fn request_device_platform_settings_v2(
                     .map_err(|_| FatalError::MessageSizeGuestNotification {
                         len: buf.len(),
                         notification: get_protocol::GuestNotifications::MODIFY_VTL2_SETTINGS_REV1,
-                    })?; // todo: zerocopy: map_err
+                    })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                 if remaining.len() != (response.size as usize) {
                     return Err(FatalError::DevicePlatformSettingsV2Payload {
@@ -1655,7 +1655,7 @@ async fn request_vmgs_read(
         .map_err(|_| FatalError::MessageSizeHostResponse {
             len: buf.len(),
             response: HostRequests::VMGS_READ,
-        })?; // todo: zerocopy: map_err
+        })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
     if response.message_header.message_id != HostRequests::VMGS_READ {
         return Err(FatalError::ResponseHeaderMismatchId(
@@ -1785,7 +1785,7 @@ async fn request_saved_state(
                 .map_err(|_| FatalError::MessageSizeHostResponse {
                 len: message_buf.len(),
                 response: HostRequests::RESTORE_GUEST_VTL2_STATE,
-            })?; // todo: zerocopy: map_err
+            })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let message_id = response_header.message_header.message_id;
         if message_id != HostRequests::RESTORE_GUEST_VTL2_STATE {
@@ -1861,7 +1861,7 @@ async fn request_igvm_attest(
     let response = access.recv_response().await;
 
     // Validate the response and returns the validated data.
-    // todo: zerocopy: use error here, use rest of range
+    // TODO: zerocopy: use error here, use rest of range (https://github.com/microsoft/openvmm/issues/759)
     let Ok((response, _)) = get_protocol::IgvmAttestResponse::read_from_prefix(&response) else {
         Err(FatalError::DeserializeIgvmAttestResponse)?
     };

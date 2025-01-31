@@ -909,7 +909,7 @@ pub mod protocol {
             // `Reply::deserialize` guarantees this should not fail
             let header = ReplyHeader::ref_from_prefix(self.as_bytes())
                 .expect("unexpected response size")
-                .0; // todo: zerocopy: error
+                .0; // TODO: zerocopy: error (https://github.com/microsoft/openvmm/issues/759)
             header.base_validation(session_tag, self.payload_size() as u32)
         }
         fn deserialize(bytes: &[u8]) -> Option<Self>;
@@ -962,7 +962,7 @@ pub mod protocol {
                 return None;
             }
 
-            let size: u16 = u16_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // todo: zerocopy: simplify
+            let size: u16 = u16_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
             if size as usize > MAX_DIGEST_BUFFER_SIZE {
                 return None;
             }
@@ -1034,7 +1034,7 @@ pub mod protocol {
                 return None;
             }
 
-            let count: u32 = u32_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // todo: zerocopy: simplify
+            let count: u32 = u32_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
             if count > 5 {
                 return None;
             }
@@ -1174,12 +1174,12 @@ pub mod protocol {
                 return None;
             }
 
-            let scheme = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let scheme = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             let hash_alg = if scheme != AlgIdEnum::NULL.into() {
                 start = end;
                 end += size_of::<AlgId>();
-                AlgId::read_from_prefix(&bytes[start..end]).ok()?.0 // todo: zerocopy: use-rest-of-range, option-to-error
+                AlgId::read_from_prefix(&bytes[start..end]).ok()?.0 // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
             } else {
                 AlgId::new(0)
             };
@@ -1243,16 +1243,16 @@ pub mod protocol {
                 return None;
             }
 
-            let algorithm = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let algorithm = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             let (key_bits, mode) = if algorithm != AlgIdEnum::NULL.into() {
                 start = end;
                 end += size_of::<u16_be>();
-                let key_bits = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // todo: zerocopy: simplify
+                let key_bits = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
                 start = end;
                 end += size_of::<AlgId>();
-                let mode = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+                let mode = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
                 (key_bits, mode)
             } else {
@@ -1327,7 +1327,7 @@ pub mod protocol {
             let scheme = TpmtRsaScheme::deserialize(&bytes[start..])?;
             end += scheme.payload_size();
 
-            // todo: zerocopy: as of zerocopy 0.8 this can be simplified with `read_from_bytes`....ok()?, to avoid
+            // TODO: zerocopy: as of zerocopy 0.8 this can be simplified with `read_from_bytes`....ok()?, to avoid (https://github.com/microsoft/openvmm/issues/759)
             // manual size checks. Leaving this code as-is to reduce risk of the 0.7 -> 0.8 move.
             start = end;
             end += size_of::<u16_be>();
@@ -1336,7 +1336,7 @@ pub mod protocol {
             }
             let key_bits = u16_be::read_from_bytes(&bytes[start..end]).ok()?;
 
-            // todo: zerocopy: as of zerocopy 0.8 this can be simplified with `read_from_bytes`....ok()?, to avoid
+            // TODO: zerocopy: as of zerocopy 0.8 this can be simplified with `read_from_bytes`....ok()?, to avoid (https://github.com/microsoft/openvmm/issues/759)
             // manual size checks. Leaving this code as-is to reduce risk of the 0.7 -> 0.8 move.
             start = end;
             end += size_of::<u32_be>();
@@ -1420,21 +1420,21 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let r#type = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let r#type = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<AlgId>();
             if bytes.len() < end {
                 return None;
             }
-            let name_alg = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let name_alg = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<TpmaObject>();
             if bytes.len() < end {
                 return None;
             }
-            let object_attributes: u32 = u32_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // todo: zerocopy: simplify
+            let object_attributes: u32 = u32_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let auth_policy = Tpm2bBuffer::deserialize(&bytes[start..])?;
@@ -1508,7 +1508,7 @@ pub mod protocol {
                 return None;
             }
 
-            let size = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // todo: zerocopy: simplify
+            let size = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let public_area = TpmtPublic::deserialize(&bytes[start..])?;
@@ -1563,7 +1563,7 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let parent_name_alg = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let parent_name_alg = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let parent_name = Tpm2bBuffer::deserialize(&bytes[start..])?;
@@ -1619,7 +1619,7 @@ pub mod protocol {
                 return None;
             }
 
-            let size = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // todo: zerocopy: simplify
+            let size = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let creation_data = TpmsCreationData::deserialize(&bytes[start..])?;
@@ -1656,14 +1656,14 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let tag = SessionTag::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let tag = SessionTag::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<ReservedHandle>();
             if bytes.len() < end {
                 return None;
             }
-            let hierarchy = ReservedHandle::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let hierarchy = ReservedHandle::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let digest = Tpm2bBuffer::deserialize(&bytes[start..])?;
@@ -1735,21 +1735,21 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let nv_index: u32 = u32_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // todo: zerocopy: simplify
+            let nv_index: u32 = u32_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<AlgId>();
             if bytes.len() < end {
                 return None;
             }
-            let name_alg = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let name_alg = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<TpmaNv>();
             if bytes.len() < end {
                 return None;
             }
-            let attributes: u32 = u32_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // todo: zerocopy: simplify
+            let attributes: u32 = u32_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let auth_policy = Tpm2bBuffer::deserialize(&bytes[start..])?;
@@ -1760,7 +1760,7 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let data_size = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // todo: zerocopy: simplify
+            let data_size = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             Some(Self {
                 nv_index: nv_index.into(),
@@ -1822,7 +1822,7 @@ pub mod protocol {
                 return None;
             }
 
-            let size = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // todo: zerocopy: simplify
+            let size = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let nv_public = TpmsNvPublic::deserialize(&bytes[start..])?;
@@ -1885,7 +1885,7 @@ pub mod protocol {
         type Command = ClearControlCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Some(Self::read_from_prefix(bytes).ok()?.0) // todo: zerocopy: tpm better error?
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -1936,7 +1936,7 @@ pub mod protocol {
         type Command = ClearCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Some(Self::read_from_prefix(bytes).ok()?.0) // todo: zerocopy: tpm better error?
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -1986,7 +1986,7 @@ pub mod protocol {
         type Command = StartupCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Some(Self::read_from_prefix(bytes).ok()?.0) // todo: zerocopy: tpm better error?
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2026,7 +2026,7 @@ pub mod protocol {
         type Command = SelfTestCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Some(Self::read_from_prefix(bytes).ok()?.0) // todo: zerocopy: tpm better error?
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2084,7 +2084,7 @@ pub mod protocol {
         type Command = HierarchyControlCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Some(Self::read_from_prefix(bytes).ok()?.0) // todo: zerocopy: tpm better error?
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2119,7 +2119,7 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let hash = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let hash = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<u8>();
@@ -2249,7 +2249,7 @@ pub mod protocol {
         type Command = PcrAllocateCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Some(Self::read_from_prefix(bytes).ok()?.0) // todo: zerocopy: tpm better error?
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2301,7 +2301,7 @@ pub mod protocol {
         type Command = ChangeSeedCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Some(Self::read_from_prefix(bytes).ok()?.0) // todo: zerocopy: option-to-error
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: option-to-error (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2420,7 +2420,7 @@ pub mod protocol {
         fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let mut end = size_of::<ReplyHeader>();
-            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             // Handle the command failure.
             if header.size.get() as usize == end {
@@ -2431,11 +2431,11 @@ pub mod protocol {
 
             start = end;
             end += size_of::<ReservedHandle>();
-            let object_handle = ReservedHandle::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let object_handle = ReservedHandle::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<u32_be>();
-            let param_size = u32_be::read_from_bytes(&bytes[start..end]).ok()?; // todo: zerocopy: simplify
+            let param_size = u32_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let out_public = Tpm2bPublic::deserialize(&bytes[start..])?;
@@ -2461,7 +2461,7 @@ pub mod protocol {
             end += size_of::<common::ReplyAuth>();
             let auth = common::ReplyAuth::read_from_prefix(&bytes[start..end])
                 .ok()?
-                .0; // todo: zerocopy: use-rest-of-range, option-to-error
+                .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             if header.size.get() as usize != end {
                 return None;
@@ -2533,7 +2533,7 @@ pub mod protocol {
         type Command = FlushContextCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Some(Self::read_from_prefix(bytes).ok()?.0) // todo: zerocopy: tpm better error?
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2589,7 +2589,7 @@ pub mod protocol {
         type Command = EvictControlCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Some(Self::read_from_prefix(bytes).ok()?.0) // todo: zerocopy: error-to-option
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: error-to-option (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2635,7 +2635,7 @@ pub mod protocol {
             let mut start = 0;
             let mut end = size_of::<ReplyHeader>();
 
-            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             // Handle the command failure.
             if header.size.get() as usize == end {
@@ -2767,7 +2767,7 @@ pub mod protocol {
         type Command = NvDefineSpaceCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Some(Self::read_from_prefix(bytes).ok()?.0) // todo: zerocopy: tpm better error?
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2819,7 +2819,7 @@ pub mod protocol {
         type Command = NvUndefineSpaceCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Some(Self::read_from_prefix(bytes).ok()?.0) // todo: zerocopy: tpm better error?
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2865,7 +2865,7 @@ pub mod protocol {
             let mut start = 0;
             let mut end = size_of::<ReplyHeader>();
 
-            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             // Handle the command failure.
             if header.size.get() as usize == end {
@@ -3016,7 +3016,7 @@ pub mod protocol {
         type Command = NvWriteCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Some(Self::read_from_prefix(bytes).ok()?.0) // todo: zerocopy: tpm better error?
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -3071,7 +3071,7 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let header = CmdHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let header = CmdHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             if header.command_code != CommandCodeEnum::NV_Read.into() {
                 return None;
@@ -3082,21 +3082,21 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let auth_handle = ReservedHandle::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let auth_handle = ReservedHandle::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<u32_be>();
             if bytes.len() < end {
                 return None;
             }
-            let nv_index = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let nv_index = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<u32_be>();
             if bytes.len() < end {
                 return None;
             }
-            let auth_size = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let auth_size = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             // Skip authorization area
             end += auth_size.get() as usize;
@@ -3106,14 +3106,14 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let size = u16_be::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let size = u16_be::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<u16_be>();
             if bytes.len() < end {
                 return None;
             }
-            let offset = u16_be::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let offset = u16_be::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             Some(Self {
                 header,
@@ -3149,7 +3149,7 @@ pub mod protocol {
             let mut start = 0;
             let mut end = size_of::<ReplyHeader>();
 
-            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             // Handle the command failure.
             if header.size.get() as usize == end {
@@ -3166,7 +3166,7 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let parameter_size = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let parameter_size = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let data = Tpm2bBuffer::deserialize(&bytes[start..])?;
@@ -3179,7 +3179,7 @@ pub mod protocol {
             }
             let auth = common::ReplyAuth::read_from_prefix(&bytes[start..end])
                 .ok()?
-                .0; // todo: zerocopy: use-rest-of-range, option-to-error
+                .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             if header.size.get() as usize != end {
                 return None;
@@ -3350,7 +3350,7 @@ pub mod protocol {
             let mut start = 0;
             let mut end = size_of::<ReplyHeader>();
 
-            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             // Handle the command failure.
             if header.size.get() as usize == end {
@@ -3367,7 +3367,7 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let parameter_size = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let parameter_size = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
             let expected_auth_start = end + parameter_size.get() as usize;
 
             start = end;
@@ -3384,7 +3384,7 @@ pub mod protocol {
             }
             let auth = common::ReplyAuth::read_from_prefix(&bytes[start..end])
                 .ok()?
-                .0; // todo: zerocopy: use-rest-of-range, option-to-error
+                .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             if header.size.get() as usize != end {
                 return None;
@@ -3498,7 +3498,7 @@ pub mod protocol {
             let mut start = 0;
             let mut end = size_of::<ReplyHeader>();
 
-            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             // Handle the command failure.
             if header.size.get() as usize == end {
@@ -3516,14 +3516,14 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let object_handle = ReservedHandle::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let object_handle = ReservedHandle::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<u32_be>();
             if bytes.len() < end {
                 return None;
             }
-            let parameter_size = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // todo: zerocopy: use-rest-of-range, option-to-error
+            let parameter_size = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
             let expected_auth_start = end + parameter_size.get() as usize;
 
             start = end;
@@ -3540,7 +3540,7 @@ pub mod protocol {
             }
             let auth = common::ReplyAuth::read_from_prefix(&bytes[start..end])
                 .ok()?
-                .0; // todo: zerocopy: use-rest-of-range, option-to-error
+                .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             if header.size.get() as usize != end {
                 return None;

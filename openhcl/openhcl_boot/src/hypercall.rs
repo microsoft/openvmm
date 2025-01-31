@@ -213,7 +213,7 @@ impl HvCall {
         output.result()?;
         let value = hvdef::HvRegisterValue::read_from_prefix(&Self::output_page().buffer)
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         Ok(value)
     }
 
@@ -373,7 +373,7 @@ impl HvCall {
             );
 
             let n = r.elements_processed();
-            //todo: zerocopy: review carefully!
+            //TODO: zerocopy: review carefully! (https://github.com/microsoft/openvmm/issues/759)
             output.extend(
                 <[u32]>::ref_from_bytes(&Self::output_page().buffer[..n * 4])
                     .unwrap()

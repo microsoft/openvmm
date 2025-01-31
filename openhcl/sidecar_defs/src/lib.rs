@@ -186,7 +186,7 @@ const _: () = assert!(size_of::<CommandPage>() == PAGE_SIZE);
 
 open_enum! {
     /// The sidecar command.
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum SidecarCommand: u32 {
         /// No command.
         NONE = 0,

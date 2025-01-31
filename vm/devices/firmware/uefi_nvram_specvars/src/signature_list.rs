@@ -250,7 +250,7 @@ impl<'a> ParseSignatureLists<'a> {
             },
             buf,
         ) = EFI_SIGNATURE_LIST::read_from_prefix(self.buf)
-            .map_err(|_| ParseError::InvalidHeader)?; // TODO: zerocopy: map_err
+            .map_err(|_| ParseError::InvalidHeader)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let expected_data_len = signature_list_size as usize - size_of::<EFI_SIGNATURE_LIST>();
         if buf.len() < expected_data_len {
@@ -314,7 +314,7 @@ impl<'a> ParseSignatureX509<'a> {
         }
 
         let (header, buf) = EFI_SIGNATURE_DATA::read_from_prefix(self.buf)
-            .map_err(|_| ParseError::X509InvalidHeader)?; // TODO: zerocopy: map_err
+            .map_err(|_| ParseError::X509InvalidHeader)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let val: Cow<'a, [u8]> = buf.into();
         let res = SignatureData::new_x509(header.signature_owner, val);
@@ -360,7 +360,7 @@ impl<'a> ParseSignatureSha256<'a> {
         }
 
         let (header, buf) =
-            EFI_SIGNATURE_DATA::read_from_prefix(self.buf).expect("buf size validated in `new`"); // TODO: zerocopy: map_err
+            EFI_SIGNATURE_DATA::read_from_prefix(self.buf).expect("buf size validated in `new`"); // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let expected_data_len = 32;
         assert!(buf.len() >= expected_data_len, "validated in new()");

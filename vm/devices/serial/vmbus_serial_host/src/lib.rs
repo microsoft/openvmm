@@ -372,7 +372,7 @@ impl<T: RingMem + Unpin> SerialChannel<T> {
         // Extract header from read buf.
         let header = protocol::Header::read_from_prefix(buf)
             .map_err(|_| Error::MessageSizeHeader(buf.len()))?
-            .0; // todo: zerocopy: map_err
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::trace!("read header {:?}", &header);
 
@@ -415,7 +415,7 @@ impl<T: RingMem + Unpin> SerialChannel<T> {
             HostNotifications::TX_DATA_AVAILABLE => {
                 let message = protocol::TxDataAvailableMessage::read_from_prefix(buf)
                     .map_err(|_| {
-                        // todo: zerocopy: map_err
+                        // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                         Error::MessageSizeHostNotification {
                             len: buf.len(),
                             notification,

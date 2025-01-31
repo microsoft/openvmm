@@ -1452,7 +1452,7 @@ impl<'a, T: zerocopy::FromBytes + Immutable + KnownLayout, R> FieldDecode<'a, T,
     for ZeroCopyEncoding
 {
     fn read_field(item: &mut InplaceOption<'_, T>, reader: FieldReader<'a, '_, R>) -> Result<()> {
-        item.set(T::read_from_bytes(reader.bytes()?).map_err(|_| Error::new(InvalidZeroCopySize))?); // todo: zerocopy: better use error here
+        item.set(T::read_from_bytes(reader.bytes()?).map_err(|_| Error::new(InvalidZeroCopySize))?); // TODO: zerocopy: better use error here (https://github.com/microsoft/openvmm/issues/759)
         Ok(())
     }
 

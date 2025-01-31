@@ -710,7 +710,7 @@ pub struct Xsave {
 impl Xsave {
     fn normalize(&mut self) {
         let (mut fxsave, data) = Ref::<_, Fxsave>::from_prefix(self.data.as_mut_bytes()).unwrap();
-        let header = XsaveHeader::mut_from_prefix(data).unwrap().0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+        let header = XsaveHeader::mut_from_prefix(data).unwrap().0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         // Clear the mxcsr mask since it's ignored in the restore process and
         // will only cause xsave comparisons to fail.
@@ -779,7 +779,7 @@ impl Xsave {
             let header =
                 XsaveHeader::mut_from_prefix(&mut this.data.as_mut_bytes()[XSAVE_LEGACY_LEN..])
                     .unwrap()
-                    .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                    .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
             // Just enable supervisor states that were possible when the
             // hypervisor had the bug. Future ones will only be supported by
@@ -866,7 +866,7 @@ impl Xsave {
     /// Since this does not include `xstate_bv`, fields for disabled features
     /// will be set to their default values.
     pub fn fxsave(&self) -> Fxsave {
-        let mut fxsave = Fxsave::read_from_prefix(self.data.as_bytes()).unwrap().0; // todo: zerocopy: use-rest-of-range
+        let mut fxsave = Fxsave::read_from_prefix(self.data.as_bytes()).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let header = self.xsave_header();
         if header.xstate_bv & XFEATURE_X87 == 0 {
             fxsave.fcw = INIT_FCW;
@@ -880,7 +880,7 @@ impl Xsave {
     fn xsave_header(&self) -> &XsaveHeader {
         XsaveHeader::ref_from_prefix(&self.data.as_bytes()[XSAVE_LEGACY_LEN..])
             .unwrap()
-            .0 // todo: zerocopy: ref-from-prefix: use-rest-of-range
+            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 }
 
@@ -956,7 +956,7 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Xsave {
         *XsaveHeader::mut_from_prefix(&mut data[XSAVE_LEGACY_LEN..])
             .unwrap()
             .0 = XsaveHeader {
-            // todo: zerocopy: ref-from-prefix: use-rest-of-range
+            // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             xstate_bv: 0,
             xcomp_bv: XCOMP_COMPRESSED | caps.xsave.features | caps.xsave.supervisor_features,
             reserved: [0; 6],

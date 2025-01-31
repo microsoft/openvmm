@@ -295,7 +295,7 @@ pub const HWC_INIT_DATA_PDID: u8 = 8;
 pub const HWC_INIT_DATA_GPA_MKEY: u8 = 9;
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum GdmaRequestType : u32 {
         GDMA_VERIFY_VF_DRIVER_VERSION = 1,
         GDMA_QUERY_MAX_RESOURCES = 2,
@@ -334,7 +334,7 @@ pub struct GdmaDevId {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum GdmaDevType: u16 {
         GDMA_DEVICE_NONE = 0,
         GDMA_DEVICE_HWC = 1,
@@ -560,7 +560,7 @@ pub struct GdmaCreateQueueReq {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum GdmaQueueType: u32 {
         GDMA_SQ = 1,
         GDMA_RQ = 2,

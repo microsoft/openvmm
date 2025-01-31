@@ -46,7 +46,7 @@ mod format {
     use static_assertions::const_assert_eq;
 
     open_enum! {
-        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub enum NvramHeaderType: u32 {
             VARIABLE = 0,
         }
@@ -168,8 +168,8 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         self.in_memory.clear();
         self.nvram_buf = nvram_buf;
         let mut buf = self.nvram_buf.as_slice();
-        // todo: zerocopy: error propagation
-        // todo: zerocopy: review carefully! manual fixup
+        // TODO: zerocopy: error propagation (https://github.com/microsoft/openvmm/issues/759)
+        // TODO: zerocopy: review carefully! manual fixup (https://github.com/microsoft/openvmm/issues/759)
         while let Ok((header, _)) = format::NvramHeader::read_from_prefix(buf) {
             if buf.len() < header.length as usize {
                 return Err(NvramStorageError::Load(
@@ -202,8 +202,8 @@ impl<S: StorageBackend> HclCompatNvram<S> {
 
             let (var_header, var_name, var_data) = {
                 let (var_header, var_length_data) =
-                    // todo: zerocopy: error propagation
-                    // todo: zerocopy: manual fix - review carefully!
+                    // TODO: zerocopy: error propagation (https://github.com/microsoft/openvmm/issues/759)
+                    // TODO: zerocopy: manual fix - review carefully! (https://github.com/microsoft/openvmm/issues/759)
                     format::NvramVariable::read_from_prefix(entry_buf).map_err(|_| NvramStorageError::Load("variable entry too short".into()))?;
 
                 if var_length_data.len()

@@ -141,7 +141,7 @@ struct VirtioNetHeaderGso {
 
 // These correspond to VIRTIO_NET_HDR_GSO_ values.
 open_enum::open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     enum VirtioNetHeaderGsoProtocol: u8 {
         NONE = 0,
         TCPV4 = 1,

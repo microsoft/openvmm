@@ -788,7 +788,7 @@ impl UhProcessor<'_, SnpBacked> {
             self.runner.exit_message().payload(),
         )
         .unwrap()
-        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
+        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::trace!(
             deliverable_sints = message.deliverable_sints,
@@ -810,7 +810,7 @@ impl UhProcessor<'_, SnpBacked> {
             self.runner.exit_message().payload(),
         )
         .unwrap()
-        .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
+        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         let ghcb_msr = x86defs::snp::GhcbMsr::from(message.ghcb_msr);
         tracing::trace!(?ghcb_msr, "vmgexit intercept");
@@ -1190,7 +1190,7 @@ impl UhProcessor<'_, SnpBacked> {
                         let exception_message =
                             hvdef::HvX64ExceptionInterceptMessage::ref_from_prefix(payload)
                                 .unwrap()
-                                .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err
+                                .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
                         exception_message.vector
                             == x86defs::Exception::SEV_VMM_COMMUNICATION.0 as u16
@@ -1204,7 +1204,7 @@ impl UhProcessor<'_, SnpBacked> {
                         let gpa_message: &hvdef::HvX64MemoryInterceptMessage =
                             hvdef::HvX64MemoryInterceptMessage::ref_from_prefix(payload)
                                 .unwrap()
-                                .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                                .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
                         // Only the page numbers need to match.
                         (gpa_message.guest_physical_address >> hvdef::HV_PAGE_SHIFT)

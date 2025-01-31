@@ -485,8 +485,8 @@ where
     /// Parses the hypercall parameters to input and output types.
     pub fn parse(params: HypercallParameters<'_>) -> (&In, &mut Out) {
         (
-            FromBytes::ref_from_prefix(params.input).unwrap().0, // todo: zerocopy: ref-from-prefix: use-rest-of-range, err
-            FromBytes::mut_from_prefix(params.output).unwrap().0, // todo: zerocopy: mut-from-prefix: use-rest-of-range, err
+            FromBytes::ref_from_prefix(params.input).unwrap().0, // TODO: zerocopy: ref-from-prefix: use-rest-of-range, err
+            FromBytes::mut_from_prefix(params.output).unwrap().0, // TODO: zerocopy: mut-from-prefix: use-rest-of-range, err
         )
     }
 
@@ -528,8 +528,8 @@ where
         let (input, rest) = Ref::<_, In>::from_prefix(params.input).unwrap();
         (
             Ref::into_ref(input),
-            <[u64]>::ref_from_bytes(rest).unwrap(), //todo: zerocopy: err
-            Out::mut_from_prefix(params.output).unwrap().0, //todo: zerocopy: err
+            <[u64]>::ref_from_bytes(rest).unwrap(), //TODO: zerocopy: err
+            Out::mut_from_prefix(params.output).unwrap().0, //TODO: zerocopy: err
         )
     }
 
@@ -579,15 +579,15 @@ where
         let input = if size_of::<In>() == 0 {
             &[]
         } else {
-            // todo: zerocopy: review carefully!
-            // todo: zerocopy: err
+            // TODO: zerocopy: review carefully!
+            // TODO: zerocopy: err
             &<[In]>::ref_from_bytes(rest).unwrap()[params.control.rep_start()..]
         };
         let output = if size_of::<Out>() == 0 {
             &mut []
         } else {
-            // todo: zerocopy: review carefully!
-            // todo: zerocopy: err
+            // TODO: zerocopy: review carefully!
+            // TODO: zerocopy: err
             &mut <[Out]>::mut_from_prefix_with_elems(
                 params.output,
                 params.output.len() / size_of::<Out>(),
@@ -648,13 +648,13 @@ where
             &[]
         } else {
             &<[In]>::ref_from_bytes(rest).unwrap()[params.control.rep_start()..]
-            // todo: zerocopy: review carefully!
+            // TODO: zerocopy: review carefully!
         };
         let output = if size_of::<Out>() == 0 {
             &mut []
         } else {
-            // todo: zerocopy: review carefully!
-            // todo: zerocopy: err
+            // TODO: zerocopy: review carefully!
+            // TODO: zerocopy: err
             &mut <[Out]>::mut_from_prefix_with_elems(
                 params.output,
                 params.output.len() / size_of::<Out>(),

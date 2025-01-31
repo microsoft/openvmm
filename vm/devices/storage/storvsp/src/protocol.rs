@@ -45,7 +45,7 @@ pub const VERSION_BLUE: u16 = version(6, 0);
 pub const VERSION_THRESHOLD: u16 = version(6, 2);
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub enum NtStatus: u32 {
         SUCCESS = 0x0000_0000,
@@ -79,7 +79,7 @@ pub struct Packet {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub enum Operation: u32 {
         COMPLETE_IO = 1,

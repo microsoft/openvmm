@@ -406,7 +406,7 @@ impl Namespace {
 
             let header = nvm::ReservationReportExtended::read_from_prefix(&data[..])
                 .unwrap()
-                .0; // todo: zerocopy: use-rest-of-range
+                .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             let len = size_of_val(&header)
                 + header.report.regctl.get() as usize
                     * size_of::<nvm::RegisteredControllerExtended>();

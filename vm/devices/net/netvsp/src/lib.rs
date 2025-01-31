@@ -3521,7 +3521,7 @@ fn read_ndis_object<T: IntoBytes + FromBytes + Debug + Immutable + KnownLayout>(
     validate_ndis_object_header(
         &rndisprot::NdisObjectHeader::read_from_prefix(buffer.as_bytes())
             .unwrap()
-            .0, // todo: zerocopy: use-rest-of-range
+            .0, // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         sent_size,
         object_type,
         min_revision,

@@ -628,7 +628,7 @@ impl ScsiCommandQueue {
             ScsiOp::INQUIRY => {
                 let cdb = scsi::CdbInquiry::ref_from_prefix(&request.payload)
                     .unwrap()
-                    .0; // todo: zerocopy: ref-from-prefix: use-rest-of-range
+                    .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 if external_data.len() < cdb.allocation_length.get() as usize
                     || request.data_in != protocol::SCSI_IOCTL_DATA_IN
                     || (cdb.allocation_length.get() as usize) < size_of::<scsi::InquiryDataHeader>()

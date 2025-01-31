@@ -1160,7 +1160,7 @@ impl MmioIntercept for Tpm {
                     let cmd_header = tpm20proto::protocol::common::CmdHeader::ref_from_prefix(
                         &self.command_buffer,
                     )
-                    .ok() // todo: zerocopy: err
+                    .ok() // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
                     .and_then(|(cmd_header, _)| cmd_header.command_code.into_enum());
 
                     tracing::debug!(
@@ -1192,7 +1192,7 @@ impl MmioIntercept for Tpm {
                         response_code = ?tpm20proto::protocol::common::ReplyHeader::ref_from_prefix(
                         &self.tpm_engine_helper.reply_buffer,
                         )
-                        .map(|(reply, _)| reply.response_code), // todo: zerocopy: manual: review carefully!
+                        .map(|(reply, _)| reply.response_code), // TODO: zerocopy: manual: review carefully! (https://github.com/microsoft/openvmm/issues/759)
                         "response code from guest tpm cmd",
                     );
 
@@ -1242,7 +1242,7 @@ mod io_port_interface {
 
     open_enum::open_enum! {
         /// I/O port command definitions
-        #[derive(Inspect, IntoBytes, Immutable, KnownLayout, FromBytes, )]
+        #[derive(Inspect, IntoBytes, Immutable, KnownLayout, FromBytes)]
         #[inspect(debug)]
         pub enum TpmIoCommand: u32 {
             /// It can be used for engine vs. guest version negotiation. Not used.
@@ -1282,7 +1282,7 @@ mod io_port_interface {
         /// Table 2: Physical Presence Interface Operation Summary for TPM 2.0
         ///
         /// Part of the Physical Presence Interface Specification - TCG PC Client Platform
-        #[derive(Inspect, IntoBytes, Immutable, KnownLayout, FromBytes, )]
+        #[derive(Inspect, IntoBytes, Immutable, KnownLayout, FromBytes)]
         #[inspect(debug)]
         pub enum PpiOperation: u32 {
             NO_OP = 0,
@@ -1331,7 +1331,7 @@ mod persist_restore {
     }
 
     pub(crate) fn deserialize_ppi_state(buf: Vec<u8>) -> Option<PpiState> {
-        let saved = state::PersistedPpiState::read_from_bytes(buf.as_bytes()).ok()?; // todo: zerocopy: map_err
+        let saved = state::PersistedPpiState::read_from_bytes(buf.as_bytes()).ok()?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let state::PersistedPpiState {
             pending_ppi_operation,
             in_query_ppi_operation,

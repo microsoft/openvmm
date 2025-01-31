@@ -202,7 +202,7 @@ impl HwControl {
             let queues = self.state.queues.clone();
             let tx_oob = HwcTxOob::read_from_prefix(sqe.oob())
                 .map_err(|_| anyhow!("reading tx oob"))?
-                .0; // todo: zerocopy: map_err, use-rest-of-range, use error details in the returned `anyhow!`
+                .0; // TODO: zerocopy: map_err, use-rest-of-range, use error details in the returned `anyhow!` (https://github.com/microsoft/openvmm/issues/759)
             if tx_oob.flags3.vscq_id() != self.cq_id {
                 anyhow::bail!(
                     "mismatched cq id: {} != {}",

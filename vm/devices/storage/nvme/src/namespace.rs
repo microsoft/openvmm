@@ -40,7 +40,7 @@ impl Namespace {
     }
 
     pub fn identify(&self, buf: &mut [u8]) {
-        let id = nvm::IdentifyNamespace::mut_from_prefix(buf).unwrap().0; // todo: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range
+        let id = nvm::IdentifyNamespace::mut_from_prefix(buf).unwrap().0; // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let size = self.disk.sector_count();
 
         let rescap = if let Some(pr) = self.disk.pr() {
@@ -71,7 +71,7 @@ impl Namespace {
     pub fn namespace_id_descriptor(&self, buf: &mut [u8]) {
         let id = nvm::NamespaceIdentificationDescriptor::mut_from_prefix(buf)
             .unwrap()
-            .0; // todo: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range
+            .0; // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let mut nid = [0u8; 0x10];
         if let Some(guid) = self.disk.disk_id() {
             nid = guid;
@@ -182,7 +182,7 @@ impl Namespace {
             nvm::NvmOpcode::DSM => {
                 let cdw10 = nvm::Cdw10Dsm::from(command.cdw10);
                 let cdw11 = nvm::Cdw11Dsm::from(command.cdw11);
-                // todo: zerocopy: manual: review carefully!
+                // TODO: zerocopy: manual: review carefully! (https://github.com/microsoft/openvmm/issues/759)
                 let mut dsm_ranges =
                     <[nvm::DsmRange]>::new_box_zeroed_with_elems(cdw10.nr_z() as usize + 1)
                         .unwrap();

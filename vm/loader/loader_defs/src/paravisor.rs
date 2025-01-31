@@ -111,7 +111,7 @@ pub const PARAVISOR_LOCAL_MAP_SIZE: u64 = 0x200000;
 
 open_enum! {
     /// Underhill command line policy.
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum CommandLinePolicy : u16 {
         /// Use the static command line encoded only.
         STATIC = 0,

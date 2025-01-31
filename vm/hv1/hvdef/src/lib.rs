@@ -97,7 +97,7 @@ pub struct HvPartitionPrivilege {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvPartitionIsolationType: u8 {
         NONE = 0,
         VBS = 1,
@@ -246,7 +246,7 @@ pub struct HvIsolationConfiguration {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HypercallCode: u16 {
         #![allow(non_upper_case_globals)]
 
@@ -345,7 +345,7 @@ pub const HV_X64_MSR_GUEST_CRASH_CTL: u32 = 0x40000105;
 pub const HV_X64_GUEST_CRASH_PARAMETER_MSRS: usize = 5;
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvError: u16 {
         #![allow(non_upper_case_globals)]
 
@@ -590,7 +590,7 @@ impl From<AlignedU128> for u128 {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvMessageType: u32 {
         #![allow(non_upper_case_globals)]
 
@@ -887,7 +887,7 @@ pub mod hypercall {
     }
 
     open_enum! {
-        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub enum HvInterruptSource: u32 {
             MSI = 1,
             IO_APIC = 2,
@@ -1053,7 +1053,7 @@ pub mod hypercall {
     pub const HV_INTERCEPT_ACCESS_MASK_EXECUTE: u32 = 0x04;
 
     open_enum::open_enum! {
-        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub enum HvInterceptType: u32 {
             #![allow(non_upper_case_globals)]
             HvInterceptTypeX64IoPort = 0x00000000,
@@ -1507,7 +1507,7 @@ pub mod hypercall {
         /// read access and upper bit representing host write access, hardware
         /// platforms do not support that form of isolation. Only support
         /// private or full shared in this definition.
-        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub enum HostVisibilityType: u8 {
             PRIVATE = 0,
             SHARED = 3,
@@ -1820,7 +1820,7 @@ macro_rules! registers {
         $(,)?
     }) => {
         open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
             pub enum $name: u32 {
         #![allow(non_upper_case_globals)]
                 $($variant = $value,)*
@@ -2236,13 +2236,13 @@ impl HvRegisterValue {
     pub fn as_table(&self) -> HvX64TableRegister {
         HvX64TableRegister::read_from_prefix(self.as_bytes())
             .unwrap()
-            .0 // todo: zerocopy: use-rest-of-range
+            .0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     pub fn as_segment(&self) -> HvX64SegmentRegister {
         HvX64SegmentRegister::read_from_prefix(self.as_bytes())
             .unwrap()
-            .0 // todo: zerocopy: use-rest-of-range
+            .0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 }
 
@@ -2286,13 +2286,13 @@ pub struct HvX64TableRegister {
 
 impl From<HvX64TableRegister> for HvRegisterValue {
     fn from(val: HvX64TableRegister) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap().0 // todo: zerocopy: use-rest-of-range
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 }
 
 impl From<HvRegisterValue> for HvX64TableRegister {
     fn from(val: HvRegisterValue) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap().0 // todo: zerocopy: use-rest-of-range
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 }
 
@@ -2307,13 +2307,13 @@ pub struct HvX64SegmentRegister {
 
 impl From<HvX64SegmentRegister> for HvRegisterValue {
     fn from(val: HvX64SegmentRegister) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap().0 // todo: zerocopy: use-rest-of-range
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 }
 
 impl From<HvRegisterValue> for HvX64SegmentRegister {
     fn from(val: HvRegisterValue) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap().0 // todo: zerocopy: use-rest-of-range
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 }
 
@@ -2334,7 +2334,7 @@ pub struct HvDeliverabilityNotificationsRegister {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvVtlEntryReason: u32 {
         /// This reason is reserved and is not used.
         RESERVED = 0,
@@ -2415,7 +2415,7 @@ pub struct HvVpAssistPageActionSignalEvent {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvInterceptAccessType: u8 {
         READ = 0,
         WRITE = 1,
@@ -2562,7 +2562,7 @@ pub struct HvArm64MemoryAccessInfo {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvCacheType: u32 {
         #![allow(non_upper_case_globals)]
         HvCacheTypeUncached = 0,
@@ -2660,7 +2660,7 @@ pub struct HvX64InterruptionDeliverableMessage {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvX64PendingInterruptionType: u8 {
         HV_X64_PENDING_INTERRUPT = 0,
         HV_X64_PENDING_NMI = 2,
@@ -2794,7 +2794,7 @@ pub struct HvArm64ResetInterceptMessage {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvArm64ResetType: u32 {
         POWER_OFF = 0,
         REBOOT = 1,
@@ -2802,7 +2802,7 @@ open_enum! {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvInterruptType : u32  {
         #![allow(non_upper_case_globals)]
         HvArm64InterruptTypeFixed = 0x0000,
@@ -3220,7 +3220,7 @@ pub struct HvInstructionEmulatorHintsRegister {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvAarch64PendingEventType: u8 {
         EXCEPTION = 0,
         SYNTHETIC_EXCEPTION = 1,

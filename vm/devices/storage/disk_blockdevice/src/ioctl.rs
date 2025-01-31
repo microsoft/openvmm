@@ -47,7 +47,7 @@ ioctl_none_bad!(blk_eject_ioctl, 0x5309);
 ioctl_write_int_bad!(blk_lockdoor_ioctl, 0x5329);
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     enum BlkStatus: u8 {
         BLK_STS_OK = 0,
         BLK_STS_NOTSUPP = 1,

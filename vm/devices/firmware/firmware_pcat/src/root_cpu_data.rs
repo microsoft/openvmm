@@ -175,7 +175,7 @@ const MAX_SMBIOS_STRING_TABLE_LENGTH: usize =
 /// reSearch query: `SMBIOS_CPU_INFO_STRINGS_LEGACY`
 #[repr(C, packed)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Clone, Copy)]
-// todo: zerocopy: remove `pub(crate)` once this issue is resolved: https://github.com/google/zerocopy/issues/2177
+// TODO: zerocopy: remove `pub(crate)` once this issue is resolved: https://github.com/google/zerocopy/issues/2177 (https://github.com/microsoft/openvmm/issues/759)
 pub(crate) struct SmbiosCpuInfoStringsLegacy {
     string_table: [u8; MAX_SMBIOS_STRING_TABLE_LEGACY_LENGTH],
 }

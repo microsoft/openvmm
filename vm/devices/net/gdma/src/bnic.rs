@@ -521,7 +521,7 @@ impl TxRxTask {
             ManaTxOob::read_from_prefix(oob).unwrap().0
         } else {
             ManaTxOob {
-                // todo: zerocopy: use details from SizeError in the returned context
+                // TODO: zerocopy: use details from SizeError in the returned context (https://github.com/microsoft/openvmm/issues/759)
                 s_oob: ManaTxShortOob::read_from_prefix(oob)
                     .map_err(|_| anyhow!("oob too small"))?
                     .0,

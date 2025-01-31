@@ -407,7 +407,7 @@ fn get_vp_registers(command_page: &mut CommandPage) {
     } = FromBytes::mut_from_bytes(request).unwrap();
 
     let Ok((regs, _)) = <[HvRegisterAssoc]>::mut_from_prefix_with_elems(regs, count.into()) else {
-        // todo: zerocopy: err
+        // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
         set_error(
             command_page,
             format_args!("invalid register name count: {count}"),
@@ -458,7 +458,7 @@ fn set_vp_registers(command_page: &mut CommandPage) {
     } = FromBytes::mut_from_bytes(request).unwrap();
 
     let Ok((assoc, _)) = <[HvRegisterAssoc]>::ref_from_prefix_with_elems(regs, count.into()) else {
-        // todo: zerocopy: err
+        // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
         set_error(
             command_page,
             format_args!("invalid register count: {count}"),
@@ -496,7 +496,7 @@ fn translate_gva(command_page: &mut CommandPage) {
     let TranslateGvaRequest { gvn, control_flags } =
         FromBytes::read_from_prefix(command_page.request_data.as_bytes())
             .unwrap()
-            .0; // todo: zerocopy: use-rest-of-range, zerocopy: err
+            .0; // TODO: zerocopy: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
     {
         // SAFETY: the input page is not concurrently accessed.
         let input = unsafe { &mut *addr_space::hypercall_input() };
@@ -517,7 +517,7 @@ fn translate_gva(command_page: &mut CommandPage) {
         Ok(()) => {
             // SAFETY: the output is not concurrently accessed
             let output = unsafe { &*addr_space::hypercall_output() };
-            (HvError(0), FromBytes::read_from_prefix(output).unwrap().0) // todo: zerocopy: use-rest-of-range
+            (HvError(0), FromBytes::read_from_prefix(output).unwrap().0) // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         }
         Err(err) => (err, FromZeros::new_zeroed()),
     };

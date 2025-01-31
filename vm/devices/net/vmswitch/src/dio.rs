@@ -227,7 +227,7 @@ impl DioQueue {
 
         let (buf_index, offset) = self.state.in_next_full;
         let buf = &self.state.in_buf[buf_index][offset..];
-        let (header, data) = DioNicPacketHeader::read_from_prefix(buf).unwrap(); // TODO: zerocopy: unwrap
+        let (header, data) = DioNicPacketHeader::read_from_prefix(buf).unwrap(); // TODO: zerocopy: unwrap (https://github.com/microsoft/openvmm/issues/759)
         let len = header.len as usize;
         let r = f(&data[..len]);
         if header.next != 0 {

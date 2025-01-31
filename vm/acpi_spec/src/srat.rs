@@ -243,7 +243,7 @@ pub fn parse_srat<'a>(
 ) -> Result<(&'a crate::Header, &'a SratHeader), ParseSratError> {
     let raw_srat_len = raw_srat.len();
     let (acpi_header, buf) = Ref::<_, crate::Header>::from_prefix(raw_srat)
-        .map_err(|_| ParseSratError::MissingAcpiHeader)?; // todo: zerocopy: map_err
+        .map_err(|_| ParseSratError::MissingAcpiHeader)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
     if acpi_header.signature != *b"SRAT" {
         return Err(ParseSratError::InvalidSignature(acpi_header.signature));
@@ -257,19 +257,19 @@ pub fn parse_srat<'a>(
     }
 
     let (srat_header, mut buf) =
-        Ref::<_, SratHeader>::from_prefix(buf).map_err(|_| ParseSratError::MissingFixedHeader)?; // todo: zerocopy: map_err
+        Ref::<_, SratHeader>::from_prefix(buf).map_err(|_| ParseSratError::MissingFixedHeader)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
     while !buf.is_empty() {
         buf = match SratType(buf[0]) {
             SratType::APIC => {
                 let (apic, rest) =
-                    Ref::<_, SratApic>::from_prefix(buf).map_err(|_| ParseSratError::BadApic)?; // todo: zerocopy: map_err
+                    Ref::<_, SratApic>::from_prefix(buf).map_err(|_| ParseSratError::BadApic)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 on_apic(Ref::into_ref(apic));
                 rest
             }
             SratType::MEMORY => {
                 let (mem, rest) = Ref::<_, SratMemory>::from_prefix(buf)
-                    .map_err(|_| ParseSratError::BadMemory)?; // todo: zerocopy: map_err
+                    .map_err(|_| ParseSratError::BadMemory)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 on_memory(Ref::into_ref(mem));
                 rest
             }

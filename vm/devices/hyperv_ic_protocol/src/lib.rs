@@ -41,7 +41,7 @@ impl Display for Version {
 
 open_enum! {
     /// Type of message
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum MessageType: u16 {
         /// Initial version negotiation between host and guest.
         VERSION_NEGOTIATION = 0,
@@ -136,7 +136,7 @@ pub mod heartbeat {
     }
 
     open_enum! {
-        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         /// Current state of guest.
         pub enum ApplicationState: u32 {
             /// Guest is in an unknown state.

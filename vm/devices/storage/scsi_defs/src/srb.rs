@@ -33,7 +33,7 @@ impl SrbStatusAndFlags {
 }
 
 open_enum! {
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, )]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum SrbStatus: u8 {
         PENDING = 0x00,
         SUCCESS = 0x01,
