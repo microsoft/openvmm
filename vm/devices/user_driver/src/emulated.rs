@@ -328,10 +328,10 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
         })
     }
 
-    fn dma_client(&self) -> anyhow::Result<Arc<dyn DmaClient>> {
-        Ok(Arc::new(EmulatedDmaAllocator {
+    fn dma_client(&self) -> Arc<dyn DmaClient> {
+        Arc::new(EmulatedDmaAllocator {
             shared_mem: self.shared_mem.clone(),
-        }) as Arc<dyn DmaClient>)
+        }) as Arc<dyn DmaClient>
     }
 
     fn max_interrupt_count(&self) -> u32 {

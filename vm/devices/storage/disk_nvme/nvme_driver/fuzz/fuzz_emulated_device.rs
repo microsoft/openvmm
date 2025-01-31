@@ -50,8 +50,8 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmula
         self.device.map_bar(n)
     }
 
-    fn dma_client(&self) -> anyhow::Result<Arc<dyn DmaClient>> {
-        Ok(self.device.dma_client())
+    fn dma_client(&self) -> Arc<dyn DmaClient> {
+        self.device.dma_client()
     }
 
     /// Arbitrarily decide to passthrough or return arbitrary value.

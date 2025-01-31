@@ -329,10 +329,7 @@ impl<T: DeviceBacking> Vport<T> {
     ) -> anyhow::Result<BnicEq> {
         let mut gdma = self.inner.gdma.lock().await;
 
-        let dma_client = gdma
-            .device()
-            .dma_client()
-            .context("Failed to get DMA client from device")?;
+        let dma_client = gdma.device().dma_client();
 
         let mem = dma_client
             .allocate_dma_buffer(size as usize)
@@ -375,10 +372,7 @@ impl<T: DeviceBacking> Vport<T> {
         assert!(cq_size >= PAGE_SIZE as u32 && cq_size.is_power_of_two());
         let mut gdma = self.inner.gdma.lock().await;
 
-        let dma_client = gdma
-            .device()
-            .dma_client()
-            .context("Failed to get DMA client from device")?;
+        let dma_client = gdma.device().dma_client();
 
         let mem = dma_client
             .allocate_dma_buffer((wq_size + cq_size) as usize)
@@ -543,8 +537,8 @@ impl<T: DeviceBacking> Vport<T> {
     }
 
     /// Returns an object that can allocate dma memory to be shared with the device.
-    pub async fn dma_client(&self) -> anyhow::Result<Arc<dyn DmaClient>> {
-        Ok(self.inner.gdma.lock().await.device().dma_client().unwrap())
+    pub async fn dma_client(&self) -> Arc<dyn DmaClient> {
+        self.inner.gdma.lock().await.device().dma_client()
     }
 }
 

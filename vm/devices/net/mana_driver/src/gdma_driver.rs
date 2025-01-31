@@ -266,9 +266,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             );
         }
 
-        let dma_client = device
-            .dma_client()
-            .context("Failed to get DMA client from device")?;
+        let dma_client = device.dma_client();
 
         let dma_buffer = dma_client
             .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
