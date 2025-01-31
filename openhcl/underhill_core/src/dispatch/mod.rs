@@ -10,6 +10,7 @@ use self::vtl2_settings_worker::DeviceInterfaces;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::EmuplatServicing;
 use crate::nvme_manager::NvmeManager;
+use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
 use crate::servicing::ServicingState;
@@ -177,6 +178,7 @@ pub(crate) struct LoadedVm {
 
     pub shared_vis_pool: Option<PagePool>,
     pub private_pool: Option<PagePool>,
+    pub test_configuration: Option<TestScenarioConfig>,
 }
 
 pub struct LoadedVmState<T> {
@@ -431,11 +433,24 @@ impl LoadedVm {
         deadline: std::time::Instant,
         capabilities_flags: SaveGuestVtl2StateFlags,
     ) -> anyhow::Result<bool> {
+        if let Some(TestScenarioConfig::SaveStuck) = self.test_configuration {
+            tracing::info!("Test configuration SERVICING_SAVE_STUCK is set. Waiting indefinitely.");
+            std::future::pending::<()>().await;
+        }
+
         let running = self.state_units.is_running();
         let success = match self
             .handle_servicing_inner(correlation_id, deadline, capabilities_flags)
             .await
-        {
+            .and_then(|state| {
+                if let Some(TestScenarioConfig::SaveFail) = self.test_configuration {
+                    tracing::info!(
+                        "Test configuration SERVICING_SAVE_FAIL is set. Failing the save."
+                    );
+                    return Err(anyhow::anyhow!("Simulated servicing save failure"));
+                }
+                Ok(state)
+            }) {
             Ok(state) => {
                 self.get_client
                     .send_servicing_state(mesh::payload::encode(state))

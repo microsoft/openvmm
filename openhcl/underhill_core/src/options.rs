@@ -7,7 +7,28 @@
 
 use anyhow::bail;
 use anyhow::Context;
+use mesh::MeshPayload;
 use std::path::PathBuf;
+
+#[derive(Clone, Debug, MeshPayload)]
+pub enum TestScenarioConfig {
+    SaveFail,
+    RestoreStuck,
+    SaveStuck,
+}
+
+impl std::str::FromStr for TestScenarioConfig {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<TestScenarioConfig, anyhow::Error> {
+        match s {
+            "SERVICING_SAVE_FAIL" => Ok(TestScenarioConfig::SaveFail),
+            "SERVICING_RESTORE_STUCK" => Ok(TestScenarioConfig::RestoreStuck),
+            "SERVICING_SAVE_STUCK" => Ok(TestScenarioConfig::SaveStuck),
+            _ => Err(anyhow::anyhow!("Invalid test config: {}", s)),
+        }
+    }
+}
 
 // We've made our own parser here instead of using something like clap in order
 // to save on compiled file size. We don't need all the features a crate can provide.
@@ -109,6 +130,11 @@ pub struct Options {
     /// (OPENHCL_NO_SIDECAR_HOTPLUG=1) Leave sidecar VPs remote even if they
     /// hit exits.
     pub no_sidecar_hotplug: bool,
+
+    /// (OPENHCL_TEST_CONFIG=\<TestScenarioConfig\>)
+    /// Test configurations are designed to replicate specific behaviors and
+    /// conditions in order to simulate various test scenarios.
+    pub test_configuration: Option<TestScenarioConfig>,
 }
 
 impl Options {
@@ -122,6 +148,10 @@ impl Options {
                     name.strip_prefix("OPENHCL_").unwrap_or(name)
                 ))
             })
+        }
+
+        fn parse_env_string(name: &str) -> Option<std::ffi::OsString> {
+            std::env::var_os(name)
         }
 
         fn parse_bool(value: Option<std::ffi::OsString>) -> bool {
@@ -176,6 +206,17 @@ impl Options {
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
+        let test_configuration = parse_env_string("OPENHCL_TEST_CONFIG").and_then(|x| {
+            x.to_string_lossy()
+                .parse::<TestScenarioConfig>()
+                .map_err(|e| {
+                    tracing::warn!(
+                        "Failed to parse OPENHCL_TEST_CONFIG: {}. No test will be simulated.",
+                        e
+                    )
+                })
+                .ok()
+        });
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -228,6 +269,7 @@ impl Options {
             cvm_guest_vsm,
             halt_on_guest_halt,
             no_sidecar_hotplug,
+            test_configuration,
         })
     }
 

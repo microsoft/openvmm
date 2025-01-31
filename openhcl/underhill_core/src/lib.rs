@@ -322,6 +322,7 @@ async fn launch_workers(
         halt_on_guest_halt: opt.halt_on_guest_halt,
         no_sidecar_hotplug: opt.no_sidecar_hotplug,
         gdbstub: opt.gdbstub,
+        test_configuration: opt.test_configuration,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =
