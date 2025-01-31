@@ -11,6 +11,7 @@ rust-version.workspace = true
 tests = ["dep:tempfile"]
 
 [dependencies]
+loan_cell.workspace = true
 pal.workspace = true
 unix_socket.workspace = true
 pal_event.workspace = true

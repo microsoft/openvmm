@@ -210,7 +210,7 @@ impl GuestEventPort for OffloadedGuestEventPortNoTrigger {
                                 vpref.ensure_vtl_runnable(vtl);
                             }
                         }
-                        Err(err) => match err.hv_result().map(HvError) {
+                        Err(err) => match err.hv_result().map(HvError::from) {
                             Some(err @ HvError::InvalidSynicState) => {
                                 tracing::debug!(
                                     vp = vp.index(),

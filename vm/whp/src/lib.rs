@@ -20,6 +20,8 @@ use std::alloc::Layout;
 use std::ffi::c_void;
 use std::fmt;
 use std::fmt::Debug;
+use std::num::NonZeroI32;
+use std::num::NonZeroU16;
 use std::os::windows::prelude::*;
 use std::ptr::null;
 use std::ptr::null_mut;
@@ -160,20 +162,26 @@ pub struct SyntheticProcessorFeatures {
 }
 
 #[derive(Clone, Eq, PartialEq)]
-pub struct WHvError(i32);
+pub struct WHvError(NonZeroI32);
 
 impl WHvError {
-    pub const WHV_E_UNKNOWN_CAPABILITY: Self = Self(api::WHV_E_UNKNOWN_CAPABILITY);
+    pub const WHV_E_UNKNOWN_CAPABILITY: Self =
+        Self(NonZeroI32::new(api::WHV_E_UNKNOWN_CAPABILITY).unwrap());
+
+    const WHV_E_INSUFFICIENT_BUFFER: Self =
+        Self(NonZeroI32::new(api::WHV_E_INSUFFICIENT_BUFFER).unwrap());
+
+    const ERROR_BAD_PATHNAME: Self = Self(NonZeroI32::new(ERROR_BAD_PATHNAME as i32).unwrap());
 
     pub fn code(&self) -> i32 {
-        self.0
+        self.0.get()
     }
 
     /// Returns the underlying hypervisor error code, if there is one.
-    pub fn hv_result(&self) -> Option<u16> {
-        if self.0 & 0x3fff0000 == 0x00350000 {
+    pub fn hv_result(&self) -> Option<NonZeroU16> {
+        if self.0.get() & 0x3fff0000 == 0x00350000 {
             // This is a hypervisor facility code.
-            Some(self.0 as u16)
+            Some(NonZeroU16::new(self.0.get() as u16).unwrap())
         } else {
             None
         }
@@ -182,7 +190,7 @@ impl WHvError {
 
 impl fmt::Display for WHvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&std::io::Error::from_raw_os_error(self.0), f)
+        fmt::Display::fmt(&std::io::Error::from_raw_os_error(self.0.get()), f)
     }
 }
 
@@ -196,7 +204,7 @@ impl std::error::Error for WHvError {}
 
 impl From<WHvError> for std::io::Error {
     fn from(err: WHvError) -> Self {
-        std::io::Error::from_raw_os_error(err.0)
+        std::io::Error::from_raw_os_error(err.0.get())
     }
 }
 
@@ -301,7 +309,7 @@ fn check_hresult(hr: i32) -> Result<()> {
     if hr >= 0 {
         Ok(())
     } else {
-        Err(WHvError(hr))
+        Err(WHvError(NonZeroI32::new(hr).unwrap()))
     }
 }
 
@@ -965,7 +973,7 @@ impl VpciResource {
                     let mut path16: Vec<_> = path.encode_utf16().collect();
                     path16.push(0);
                     if path16.len() > sriov.PnpInstanceId.len() {
-                        return Err(WHvError(ERROR_BAD_PATHNAME as i32));
+                        return Err(WHvError::ERROR_BAD_PATHNAME);
                     }
                     sriov.PnpInstanceId[..path16.len()].copy_from_slice(&path16);
                     std::slice::from_raw_parts(
@@ -1316,7 +1324,7 @@ impl Device<'_> {
                 &mut size,
             ))
             .unwrap_err();
-            if err != WHvError(api::WHV_E_INSUFFICIENT_BUFFER) {
+            if err != WHvError::WHV_E_INSUFFICIENT_BUFFER {
                 return Err(err);
             }
             let layout = Layout::from_size_align(
@@ -1512,7 +1520,7 @@ impl<'a> Processor<'a> {
                         r.set_len(n as usize);
                         break;
                     }
-                    Err(WHvError(api::WHV_E_INSUFFICIENT_BUFFER)) => {
+                    Err(WHvError::WHV_E_INSUFFICIENT_BUFFER) => {
                         r.reserve(n as usize);
                     }
                     Err(err) => return Err(err),

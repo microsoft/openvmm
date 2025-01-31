@@ -221,6 +221,13 @@ impl BackingPrivate for HypervisorBackedArm64 {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
+
+    fn handle_vp_start_enable_vtl_wake(
+        _this: &mut UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+    ) -> Result<(), UhRunVpError> {
+        unimplemented!()
+    }
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {
@@ -705,7 +712,6 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, HypervisorBackedArm64> {
             hv1_hypercall::HvPostMessage,
             hv1_hypercall::HvSignalEvent,
             hv1_hypercall::HvRetargetDeviceInterrupt,
-            hv1_hypercall::HvX64StartVirtualProcessor,
             hv1_hypercall::HvGetVpIndexFromApicId,
         ]
     );

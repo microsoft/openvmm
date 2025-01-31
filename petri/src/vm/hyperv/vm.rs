@@ -43,6 +43,12 @@ impl HyperVVM {
             ps_mod,
         };
 
+        // Delete the VM if it already exists
+        if hvc::hvc_list()?.contains(&vm.name) {
+            hvc::hvc_ensure_off(name)?;
+            powershell::run_remove_vm(name)?;
+        }
+
         powershell::run_new_vm(powershell::HyperVNewVMArgs {
             name,
             generation: Some(generation),
@@ -122,6 +128,7 @@ impl HyperVVM {
 
     fn remove_inner(&mut self) -> anyhow::Result<()> {
         if !self.destroyed {
+            hvc::hvc_ensure_off(&self.name)?;
             powershell::run_remove_vm(&self.name)?;
             self.destroyed = true;
         }

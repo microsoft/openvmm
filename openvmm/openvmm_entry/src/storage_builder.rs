@@ -262,7 +262,7 @@ impl StorageBuilder {
         luns.push(Lun {
             location,
             device_id: Guid::new_random().to_string(),
-            vendor_id: "HvLite".to_string(),
+            vendor_id: "OpenVMM".to_string(),
             product_id: "Disk".to_string(),
             product_revision_level: "1.0".to_string(),
             serial_number: "0".to_string(),

@@ -183,7 +183,6 @@ impl PetriVmConfigOpenVmm {
                     Some(Vtl2Config {
                         vtl0_alias_map: false, // TODO: enable when OpenVMM supports it for DMA
                         late_map_vtl0_memory: Some(LateMapVtl0MemoryPolicy::InjectException),
-                        vtl2_emulates_apic: false,
                     }),
                     Some(VmbusConfig {
                         vsock_listener: Some(vtl2_vsock_listener),
@@ -868,7 +867,7 @@ impl PetriVmConfigSetupCore<'_> {
                         luns: vec![vtl2_settings_proto::Lun {
                             location: BOOT_NVME_LUN,
                             device_id: Guid::new_random().to_string(),
-                            vendor_id: "HvLite".to_string(),
+                            vendor_id: "OpenVMM".to_string(),
                             product_id: "Disk".to_string(),
                             product_revision_level: "1.0".to_string(),
                             serial_number: "0".to_string(),

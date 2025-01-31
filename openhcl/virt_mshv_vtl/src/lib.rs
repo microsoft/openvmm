@@ -68,7 +68,6 @@ use hvdef::HvMapGpaFlags;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmPartitionStatus;
-use hvdef::HvRepResult;
 use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
@@ -206,13 +205,15 @@ struct UhPartitionInner {
     crash_notification_send: mesh::Sender<VtlCrash>,
     monitor_page: MonitorPage,
     software_devices: Option<ApicSoftwareDevices>,
+    /// The emulated local APIC set. This is only present for
+    /// hardware-isolated VMs.
     lapic: Option<VtlArray<LocalApicSet, 2>>,
     #[inspect(skip)]
     vmtime: VmTimeSource,
     isolation: IsolationType,
     hide_isolation: bool,
     /// The emulated hypervisor state. This is only present for
-    /// hardware-isolated VMs (and for software VMs in test environments).
+    /// hardware-isolated VMs.
     hv: Option<GlobalHv>,
     /// The synic state used for untrusted SINTs, that is, the SINTs for which
     /// the guest thinks it is interacting directly with the untrusted
@@ -653,6 +654,7 @@ impl WakeReason {
     // Convenient constants.
     const EXTINT: Self = Self::new().with_extint(true);
     const MESSAGE_QUEUES: Self = Self::new().with_message_queues(true);
+    #[cfg(guest_arch = "x86_64")]
     const HV_START_ENABLE_VP_VTL: Self = Self::new().with_hv_start_enable_vtl_vp(true); // StartVp/EnableVpVtl handling
     const INTCON: Self = Self::new().with_intcon(true);
     #[cfg(guest_arch = "x86_64")]
@@ -1222,8 +1224,6 @@ pub struct UhLateParams<'a> {
     /// The CPUID leaves to expose to the guest.
     #[cfg(guest_arch = "x86_64")]
     pub cpuid: Vec<CpuidLeaf>,
-    /// Whether to emulate the APIC.
-    pub emulate_apic: bool,
     /// The mesh sender to use for crash notifications.
     // FUTURE: remove mesh dependency from this layer.
     pub crash_notification_send: mesh::Sender<VtlCrash>,
@@ -1240,14 +1240,14 @@ pub struct UhLateParams<'a> {
 /// Trait for CVM-related protections on guest memory.
 pub trait ProtectIsolatedMemory: Send + Sync {
     /// Changes host visibility on guest memory.
-    fn change_host_visibility(&self, shared: bool, gpns: &[u64]) -> HvRepResult;
+    fn change_host_visibility(&self, shared: bool, gpns: &[u64]) -> Result<(), (HvError, usize)>;
 
     /// Queries host visibility on guest memory.
     fn query_host_visibility(
         &self,
         gpns: &[u64],
         host_visibility: &mut [HostVisibilityType],
-    ) -> HvRepResult;
+    ) -> Result<(), (HvError, usize)>;
 
     /// Gets the default protections/permissions for VTL 0.
     fn default_vtl0_protections(&self) -> HvMapGpaFlags;
@@ -1267,7 +1267,7 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         vtl: GuestVtl,
         gpns: &[u64],
         protections: HvMapGpaFlags,
-    ) -> HvRepResult;
+    ) -> Result<(), (HvError, usize)>;
 
     /// Retrieves a protector for the hypercall code page overlay for a target
     /// VTL.
@@ -1548,7 +1548,6 @@ impl<'a> UhProtoPartition<'a> {
         let cpuid = UhPartition::construct_cpuid_results(
             &late_params.cpuid,
             params.topology,
-            late_params.emulate_apic,
             // Note: currently, guest_vsm_available can only set to true for
             // hardware-isolated VMs. There aren't any other scenarios at the
             // moment that will require underhill to expose vsm support through
@@ -1572,7 +1571,7 @@ impl<'a> UhProtoPartition<'a> {
         let cpuid = Mutex::new(cpuid);
 
         #[cfg(guest_arch = "x86_64")]
-        let lapic = late_params.emulate_apic.then(|| {
+        let lapic = is_hardware_isolated.then(|| {
             VtlArray::from_fn(|_| {
                 LocalApicSet::builder()
                     .x2apic_capable(caps.x2apic)
@@ -1848,7 +1847,6 @@ impl UhPartition {
     fn construct_cpuid_results(
         initial_cpuid: &[CpuidLeaf],
         topology: &ProcessorTopology<vm_topology::processor::x86::X86Topology>,
-        emulate_apic: bool,
         access_vsm: bool,
         vtom: Option<u64>,
         isolation: IsolationType,
@@ -1856,14 +1854,13 @@ impl UhPartition {
     ) -> CpuidLeafSet {
         let mut cpuid = CpuidLeafSet::new(Vec::new());
 
-        if emulate_apic || isolation.is_hardware_isolated() {
+        if isolation.is_hardware_isolated() {
             // Get the hypervisor version from the host. This is just for
             // reporting purposes, so it is safe even if the hypervisor is not
             // trusted.
             let hv_version = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_VERSION, 0);
             cpuid.extend(&hv1_emulator::cpuid::hv_cpuid_leaves(
                 topology,
-                emulate_apic,
                 if hide_isolation {
                     IsolationType::None
                 } else {

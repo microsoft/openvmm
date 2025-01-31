@@ -25,6 +25,7 @@ use crate::WakeReason;
 use hcl::vmsa::VmsaWrapper;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
+use hv1_hypercall::HvRepResult;
 use hv1_hypercall::HypercallIo;
 use hvdef::hypercall::Control;
 use hvdef::hypercall::HvFlushFlags;
@@ -502,6 +503,13 @@ impl BackingPrivate for SnpBacked {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
+
+    fn handle_vp_start_enable_vtl_wake(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+    ) -> Result<(), UhRunVpError> {
+        this.hcvm_handle_vp_start_enable_vtl(vtl)
+    }
 }
 
 fn virt_seg_to_snp(val: SegmentRegister) -> SevSelector {
@@ -688,7 +696,7 @@ impl<T> HypercallIo for GhcbEnlightenedHypercall<'_, '_, T> {
         let control = Control::from(control);
         self.set_result(
             HypercallOutput::from(HvError::Timeout)
-                .with_elements_processed(control.rep_start() as u16)
+                .with_elements_processed(control.rep_start())
                 .into(),
         );
     }
@@ -2238,7 +2246,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_,
         processor_set: Vec<u32>,
         flags: HvFlushFlags,
         gva_ranges: &[HvGvaRange],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         hv1_hypercall::FlushVirtualAddressListEx::flush_virtual_address_list_ex(
             self,
             processor_set,
@@ -2256,7 +2264,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
         processor_set: Vec<u32>,
         flags: HvFlushFlags,
         gva_ranges: &[HvGvaRange],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         self.hcvm_validate_flush_inputs(&processor_set, flags, true)
             .map_err(|e| (e, 0))?;
 

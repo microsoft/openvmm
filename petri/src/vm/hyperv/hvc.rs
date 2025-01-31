@@ -10,9 +10,9 @@ pub fn hvc_start(vm: &str) -> anyhow::Result<()> {
     run_hvc(|cmd| cmd.arg("start").arg(vm))
 }
 
-// pub fn hvc_kill(vm: &str) -> anyhow::Result<()> {
-//     run_hvc(|cmd| cmd.arg("kill").arg(vm))
-// }
+pub fn hvc_kill(vm: &str) -> anyhow::Result<()> {
+    run_hvc(|cmd| cmd.arg("kill").arg(vm))
+}
 
 /// HyperV VM state as reported by hvc
 pub enum VmState {
@@ -59,9 +59,22 @@ pub fn hvc_state(vm: &str) -> VmState {
     )
 }
 
+pub fn hvc_list() -> anyhow::Result<Vec<String>> {
+    let output = hvc_output(|cmd| cmd.arg("list").arg("-q"))?;
+    Ok(output.lines().map(|l| l.to_owned()).collect())
+}
+
 pub fn hvc_wait_for_power_off(vm: &str) -> anyhow::Result<()> {
     while !matches!(hvc_state(vm), VmState::Off) {
         std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
+    Ok(())
+}
+
+pub fn hvc_ensure_off(vm: &str) -> anyhow::Result<()> {
+    if !matches!(hvc_state(vm), VmState::Off) {
+        hvc_kill(vm)?;
     }
 
     Ok(())

@@ -38,7 +38,7 @@ impl FlowNode for Node {
         let rust_is_installed = ctx.reqv(flowey_lib_common::install_rust::Request::EnsureInstalled);
 
         for Request { built_guide } in requests {
-            ctx.emit_rust_step("build HvLite guide (mdbook)", |ctx| {
+            ctx.emit_rust_step("build OpenVMM guide (mdbook)", |ctx| {
                 // rust must be installed to build the `mdbook-openvmm-shim`
                 rust_is_installed.clone().claim(ctx);
                 let mdbook_bin = mdbook_bin.clone().claim(ctx);

@@ -23,7 +23,6 @@ use inspect::Inspect;
 use std::sync::atomic::Ordering;
 use virt::io::CpuIo;
 use virt::irqcon::MsiRequest;
-use virt::state::StateElement;
 use virt::x86::vp;
 use virt::x86::vp::hv_apic_nmi_pending;
 use virt::x86::vp::set_hv_apic_nmi_pending;
@@ -75,12 +74,6 @@ impl WhpPartitionInner {
                         .unwrap();
                 }
             }
-            LocalApicKind::InVtl2 => tracing::warn!(
-                ?vp_index,
-                ?vtl,
-                index,
-                "local int received with vtl2 emulated apic"
-            ),
         }
     }
 
@@ -123,9 +116,6 @@ impl WhpPartitionInner {
                         vp.ensure_vtl_runnable(vtl);
                     }
                 }
-            }
-            LocalApicKind::InVtl2 => {
-                tracing::warn!(?vtl, ?request, "interrupt received with vtl2 emulated apic")
             }
         }
 
@@ -227,7 +217,6 @@ impl WhpProcessor<'_> {
                 activity.nmi_pending = hv_apic_nmi_pending(&apic);
                 activity
             }
-            LocalApicKind::InVtl2 => self.vp.get_register_state(Vtl::Vtl2)?,
         };
         Ok(activity)
     }
@@ -276,7 +265,6 @@ impl WhpProcessor<'_> {
                 set_hv_apic_nmi_pending(&mut apic, value.nmi_pending);
                 self.vp.whp(vtl).set_apic(&apic).for_op("set apic state")?;
             }
-            LocalApicKind::InVtl2 => {}
         }
         Ok(())
     }
@@ -298,9 +286,6 @@ impl WhpProcessor<'_> {
                 // Clear the non-architectural NMI pending bit.
                 set_hv_apic_nmi_pending(&mut apic, false);
                 vp::Apic::from_page(apic_base, &apic[..1024].try_into().unwrap())
-            }
-            LocalApicKind::InVtl2 => {
-                vp::Apic::at_reset(&self.vp.partition.caps, &self.inner.vp_info)
             }
         };
 
@@ -328,7 +313,6 @@ impl WhpProcessor<'_> {
                 set_hv_apic_nmi_pending(&mut apic, nmi_pending);
                 self.vp.whp(vtl).set_apic(&apic).for_op("set apic state")?;
             }
-            LocalApicKind::InVtl2 => {}
         }
 
         Ok(())

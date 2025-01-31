@@ -10,8 +10,8 @@
 use core::sync::atomic::AtomicU32;
 use core::sync::atomic::AtomicU8;
 use hvdef::hypercall::HvInputVtl;
-use hvdef::HvError;
 use hvdef::HvMessage;
+use hvdef::HvStatus;
 use open_enum::open_enum;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
@@ -214,7 +214,7 @@ pub struct GetSetVpRegisterRequest {
     /// Reserved.
     pub rsvd: u8,
     /// The hypervisor result.
-    pub result: HvError,
+    pub status: HvStatus,
     /// Reserved.
     pub rsvd2: [u8; 10],
     /// Alignment field.
@@ -243,7 +243,7 @@ pub struct TranslateGvaRequest {
 #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
 pub struct TranslateGvaResponse {
     /// The hypervisor result.
-    pub result: HvError,
+    pub status: HvStatus,
     /// Reserved.
     pub rsvd: [u16; 7],
     /// The output of the translation.

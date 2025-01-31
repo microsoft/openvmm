@@ -23,7 +23,7 @@ use core::sync::atomic::Ordering::Release;
 use hvdef::hypercall::HvInputVtl;
 use hvdef::hypercall::HvRegisterAssoc;
 use hvdef::hypercall::TranslateVirtualAddressX64;
-use hvdef::HvError;
+use hvdef::HvStatus;
 use hvdef::HvVtlEntryReason;
 use hvdef::HvX64RegisterName;
 use hvdef::HypercallCode;
@@ -400,7 +400,7 @@ fn get_vp_registers(command_page: &mut CommandPage) {
         count,
         target_vtl,
         rsvd: _,
-        ref mut result,
+        ref mut status,
         rsvd2: _,
         regs: [],
     } = FromBytes::mut_from(request).unwrap();
@@ -413,7 +413,7 @@ fn get_vp_registers(command_page: &mut CommandPage) {
         return;
     };
 
-    *result = HvError(0);
+    *status = HvStatus::SUCCESS;
     for &mut HvRegisterAssoc {
         name,
         pad: _,
@@ -434,7 +434,7 @@ fn get_vp_registers(command_page: &mut CommandPage) {
         match r {
             Ok(v) => *value = v,
             Err(err) => {
-                *result = err;
+                *status = Err(err).into();
                 break;
             }
         };
@@ -450,7 +450,7 @@ fn set_vp_registers(command_page: &mut CommandPage) {
         count,
         target_vtl,
         rsvd: _,
-        ref mut result,
+        ref mut status,
         rsvd2: _,
         regs: [],
     } = FromBytes::mut_from(request).unwrap();
@@ -463,7 +463,7 @@ fn set_vp_registers(command_page: &mut CommandPage) {
         return;
     };
 
-    *result = HvError(0);
+    *status = HvStatus::SUCCESS;
     for &HvRegisterAssoc {
         name,
         value,
@@ -482,8 +482,8 @@ fn set_vp_registers(command_page: &mut CommandPage) {
             set_hv_vp_register(target_vtl, name, value)
         };
 
-        if let Err(err) = r {
-            *result = err;
+        if r.is_err() {
+            *status = r.into();
             break;
         }
     }
@@ -509,17 +509,16 @@ fn translate_gva(command_page: &mut CommandPage) {
     }
 
     let result = hypercall(HypercallCode::HvCallTranslateVirtualAddressEx, 0);
-    let (result, output) = match result {
-        Ok(()) => {
-            // SAFETY: the output is not concurrently accessed
-            let output = unsafe { &*addr_space::hypercall_output() };
-            (HvError(0), FromBytes::read_from_prefix(output).unwrap())
-        }
-        Err(err) => (err, FromZeroes::new_zeroed()),
+    let output = if result.is_ok() {
+        // SAFETY: the output is not concurrently accessed
+        let output = unsafe { &*addr_space::hypercall_output() };
+        FromBytes::read_from_prefix(output).unwrap()
+    } else {
+        FromZeroes::new_zeroed()
     };
 
     TranslateGvaResponse {
-        result,
+        status: result.into(),
         rsvd: [0; 7],
         output,
     }
