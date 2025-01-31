@@ -145,7 +145,7 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
     /// Complete hypercall handling.
     fn complete(&mut self, output: Option<HypercallOutput>) {
         if let Some(output) = output {
-            if output.call_status() == HvError::Timeout.into() {
+            if output.call_status() == Err(HvError::Timeout).into() {
                 self.handler.retry(
                     self.control
                         .with_rep_start(output.elements_processed())

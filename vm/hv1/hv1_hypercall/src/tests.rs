@@ -302,13 +302,13 @@ impl From<TestResult> for HypercallOutput {
         match result {
             TestResult::Simple(SimpleResult::Success) => HypercallOutput::new(),
             TestResult::Simple(SimpleResult::Failure(err)) => {
-                HypercallOutput::new().with_call_status(err.into())
+                HypercallOutput::new().with_call_status(Err(err).into())
             }
             TestResult::Rep(RepResult::Success(rep_count)) => {
                 HypercallOutput::new().with_elements_processed(rep_count)
             }
             TestResult::Rep(RepResult::Failure(err, rep_count)) => HypercallOutput::new()
-                .with_call_status(err.into())
+                .with_call_status(Err(err).into())
                 .with_elements_processed(rep_count),
             _ => panic!("Should not be invoked for VTL"),
         }
@@ -1382,8 +1382,8 @@ where
         // that in cases where this routine does not modify the output, the hypercall parser does
         // not do so either.
         if is_timeout
-            || (call_status != HvError::InvalidHypercallInput.into()
-                && call_status != HvError::InvalidAlignment.into())
+            || (call_status != Err(HvError::InvalidHypercallInput).into()
+                && call_status != Err(HvError::InvalidAlignment).into())
         {
             let mut output_buffer;
             let (hdr, reps) = if !params.fast {

@@ -869,9 +869,9 @@ pub mod hypercall {
         pub rsvd2: u32,
     }
 
-    impl From<Result<(), HvError>> for HypercallOutput {
-        fn from(e: Result<(), HvError>) -> Self {
-            Self::new().with_call_status(e.into())
+    impl From<HvError> for HypercallOutput {
+        fn from(e: HvError) -> Self {
+            Self::new().with_call_status(Err(e).into())
         }
     }
 
