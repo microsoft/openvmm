@@ -2125,11 +2125,14 @@ jobs:
     - name: get action id
       run: flowey e 13 flowey_lib_common::gh_workflow_id 0
       shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
+      shell: bash
     - name: download artifacts from github actions run
       run: flowey e 13 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: binary size comparison
-      run: flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
+      run: flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 2
       shell: bash
     - name: 'validate cache entry: gh-cli'
       run: flowey e 13 flowey_lib_common::cache 3

@@ -9,10 +9,16 @@ flowey_request! {
     pub struct Request {
         pub github_commit_hash: ReadVar<String>,
         pub repo_path: ReadVar<PathBuf>,
-        pub gh_workflow_id: WriteVar<String>,
         pub pipeline_name: String,
         pub gh_token: ReadVar<String>,
+        pub gh_workflow: WriteVar<GithubWorkflow>,
     }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct GithubWorkflow {
+    pub id: String,
+    pub commit: String,
 }
 
 new_simple_flow_node!(struct Node);
@@ -28,7 +34,7 @@ impl SimpleFlowNode for Node {
         let Request {
             repo_path,
             github_commit_hash,
-            gh_workflow_id,
+            gh_workflow,
             pipeline_name,
             gh_token,
         } = request;
@@ -41,7 +47,7 @@ impl SimpleFlowNode for Node {
         let gh_cli = ctx.reqv(crate::use_gh_cli::Request::Get);
 
         ctx.emit_rust_step("get action id", |ctx| {
-            let gh_workflow_id = gh_workflow_id.claim(ctx);
+            let gh_workflow = gh_workflow.claim(ctx);
             let github_commit_hash = github_commit_hash.claim(ctx);
             let repo_path = repo_path.claim(ctx);
             let pipeline_name = pipeline_name.clone();
@@ -57,7 +63,17 @@ impl SimpleFlowNode for Node {
 
                 // Fetches the CI build workflow id for a given commit hash
                 let get_action_id = |commit: String| {
-                    xshell::cmd!(sh, "{gh_cli} run list --commit {commit} -w {pipeline_name} -s 'completed' -L 1 --json databaseId --jq '.[].databaseId'").read()
+                    xshell::cmd!(
+                        sh,
+                        "{gh_cli} run list
+                        --commit {commit}
+                        -w {pipeline_name}
+                        -s completed
+                        -L 1
+                        --json databaseId
+                        --jq .[].databaseId"
+                    )
+                    .read()
                 };
 
                 let mut github_commit_hash = github_commit_hash.clone();
@@ -77,12 +93,16 @@ impl SimpleFlowNode for Node {
                     loop_count += 1;
                 }
 
-                if let Ok(id) = action_id {
-                    print!("Got action id: {}", id);
-                    rt.write(gh_workflow_id, &id);
-                } else {
-                    anyhow::bail!("Failed to get action id");
-                }
+                let id = action_id.context("failed to get action id")?;
+
+                println!("Got action id {id}, commit {github_commit_hash}");
+                rt.write(
+                    gh_workflow,
+                    &GithubWorkflow {
+                        id,
+                        commit: github_commit_hash,
+                    },
+                );
 
                 Ok(())
             }

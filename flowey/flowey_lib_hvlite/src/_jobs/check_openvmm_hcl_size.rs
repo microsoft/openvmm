@@ -78,20 +78,21 @@ impl SimpleFlowNode for Node {
             base_branch: "main".into(),
         });
 
-        let merge_run_id = ctx.reqv(|v| gh_workflow_id::Request {
+        let merge_run = ctx.reqv(|v| gh_workflow_id::Request {
             repo_path: openvmm_repo_path.clone(),
             github_commit_hash: merge_commit,
-            gh_workflow_id: v,
+            gh_workflow: v,
             pipeline_name,
             gh_token: gh_token.clone(),
         });
 
+        let run_id = merge_run.map(ctx, |r| r.id);
         let merge_head_artifact = ctx.reqv(|old_openhcl| download_gh_artifact::Request {
             repo_owner: "microsoft".into(),
             repo_name: "openvmm".into(),
             file_name: file_name.into(),
             path: old_openhcl,
-            run_id: merge_run_id,
+            run_id,
             gh_token: gh_token.clone(),
         });
 
@@ -100,6 +101,7 @@ impl SimpleFlowNode for Node {
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
             let old_openhcl = merge_head_artifact.claim(ctx);
             let new_openhcl = built_openvmm_hcl.claim(ctx);
+            let merge_run = merge_run.claim(ctx);
 
             move |rt| {
                 let xtask = match rt.read(xtask) {
@@ -109,6 +111,7 @@ impl SimpleFlowNode for Node {
 
                 let old_openhcl = rt.read(old_openhcl);
                 let new_openhcl = rt.read(new_openhcl);
+                let merge_run = rt.read(merge_run);
 
                 let arch = target.common_arch().unwrap();
 
@@ -119,6 +122,11 @@ impl SimpleFlowNode for Node {
                     CommonArch::Aarch64 => old_openhcl.join("openhcl-aarch64/openhcl"),
                 };
                 let new_path = new_openhcl.bin;
+
+                println!(
+                    "comparing HEAD to merge commit {} and workflow {}",
+                    merge_run.commit, merge_run.id
+                );
 
                 let sh = xshell::Shell::new()?;
                 sh.change_dir(rt.read(openvmm_repo_path));
