@@ -23,7 +23,6 @@ use crate::UhCvmVpState;
 use crate::UhPartitionInner;
 use crate::WakeReason;
 use hcl::vmsa::VmsaWrapper;
-use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::HvRepResult;
 use hv1_hypercall::HypercallIo;
@@ -225,6 +224,56 @@ impl HardwareIsolatedBacking for SnpBacked {
             ),
         }
     }
+
+    fn poll_apic(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        scan_irr: bool,
+    ) -> Result<(), UhRunVpError> {
+        // Clear any pending interrupt.
+        this.runner.vmsa_mut(vtl).v_intr_cntrl_mut().set_irq(false);
+
+        hardware_cvm::apic::poll_apic_core(this, vtl, scan_irr)
+    }
+
+    fn handle_cross_vtl_interrupts(
+        this: &mut UhProcessor<'_, Self>,
+        dev: &impl CpuIo,
+    ) -> Result<bool, UhRunVpError> {
+        this.hcvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
+            let vmsa = this.runner.vmsa_mut(vtl);
+            if vmsa.event_inject().valid()
+                && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
+            {
+                return true;
+            }
+
+            if (check_rflags && !RFlags::from_bits(vmsa.rflags()).interrupt_enable())
+                || vmsa.v_intr_cntrl().intr_shadow()
+                || !vmsa.v_intr_cntrl().irq()
+            {
+                return false;
+            }
+
+            let vmsa_priority = vmsa.v_intr_cntrl().priority() as u32;
+            let lapic = &mut this.backing.cvm.lapics[vtl].lapic;
+            let ppr = lapic
+                .access(&mut SnpApicClient {
+                    partition: this.partition,
+                    vmsa,
+                    dev,
+                    vmtime: &this.vmtime,
+                    vtl,
+                })
+                .get_ppr();
+            let ppr_priority = ppr >> 4;
+            vmsa_priority > ppr_priority
+        })
+    }
+
+    fn untrusted_synic(&mut self) -> Option<&mut ProcessorSynic> {
+        None
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.
@@ -390,17 +439,6 @@ impl BackingPrivate for SnpBacked {
         this.run_vp_snp(dev).await
     }
 
-    fn poll_apic(
-        this: &mut UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-        scan_irr: bool,
-    ) -> Result<(), UhRunVpError> {
-        // Clear any pending interrupt.
-        this.runner.vmsa_mut(vtl).v_intr_cntrl_mut().set_irq(false);
-
-        hardware_cvm::apic::poll_apic_core(this, vtl, scan_irr)
-    }
-
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {
         unreachable!("extint managed through software apic")
     }
@@ -421,41 +459,6 @@ impl BackingPrivate for SnpBacked {
             .expect("requesting deliverability is not a fallable operation");
 
         this.backing.hv_sint_notifications = sints;
-    }
-
-    fn handle_cross_vtl_interrupts(
-        this: &mut UhProcessor<'_, Self>,
-        dev: &impl CpuIo,
-    ) -> Result<bool, UhRunVpError> {
-        this.hcvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
-            let vmsa = this.runner.vmsa_mut(vtl);
-            if vmsa.event_inject().valid()
-                && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
-            {
-                return true;
-            }
-
-            if (check_rflags && !RFlags::from_bits(vmsa.rflags()).interrupt_enable())
-                || vmsa.v_intr_cntrl().intr_shadow()
-                || !vmsa.v_intr_cntrl().irq()
-            {
-                return false;
-            }
-
-            let vmsa_priority = vmsa.v_intr_cntrl().priority() as u32;
-            let lapic = &mut this.backing.cvm.lapics[vtl].lapic;
-            let ppr = lapic
-                .access(&mut SnpApicClient {
-                    partition: this.partition,
-                    vmsa,
-                    dev,
-                    vmtime: &this.vmtime,
-                    vtl,
-                })
-                .get_ppr();
-            let ppr_priority = ppr >> 4;
-            vmsa_priority > ppr_priority
-        })
     }
 
     fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {
@@ -488,20 +491,21 @@ impl BackingPrivate for SnpBacked {
         });
     }
 
-    fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
-        Some(&self.cvm.hv[vtl])
+    fn process_interrupts(
+        this: &mut UhProcessor<'_, Self>,
+        dev: &impl CpuIo,
+        first_scan_irr: bool,
+        scan_irr: VtlArray<bool, 2>,
+    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+        this.hcvm_process_interrupts(dev, first_scan_irr, scan_irr)
     }
 
-    fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
+    fn synic(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorSynic> {
+        Some(&mut self.cvm.hv[vtl].synic)
+    }
+
+    fn hv(&mut self, vtl: GuestVtl) -> Option<&mut hv1_emulator::hv::ProcessorVtlHv> {
         Some(&mut self.cvm.hv[vtl])
-    }
-
-    fn untrusted_synic(&self) -> Option<&ProcessorSynic> {
-        None
-    }
-
-    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
-        None
     }
 }
 

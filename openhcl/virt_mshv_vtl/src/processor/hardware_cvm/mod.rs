@@ -11,6 +11,7 @@ use super::UhProcessor;
 use super::UhRunVpError;
 use crate::processor::HardwareIsolatedBacking;
 use crate::processor::UhHypercallHandler;
+use crate::processor::VpHaltReason;
 use crate::validate_vtl_gpa_flags;
 use crate::GuestVsmState;
 use crate::GuestVsmVtl1State;
@@ -37,6 +38,7 @@ use virt::Processor;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::translate::TranslateCachingInfo;
 use virt_support_x86emu::translate::TranslationRegisters;
+use vtl_array::VtlArray;
 use zerocopy::FromZeroes;
 
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
@@ -1087,6 +1089,98 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
 }
 
 impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
+    pub(crate) fn hcvm_process_interrupts(
+        &mut self,
+        dev: &impl CpuIo,
+        first_scan_irr: bool,
+        scan_irr: VtlArray<bool, 2>,
+    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+        if self.backing.untrusted_synic().is_some() {
+            self.update_synic(GuestVtl::Vtl0, true);
+        }
+
+        for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
+            self.update_synic(vtl, false);
+
+            B::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
+                .map_err(VpHaltReason::Hypervisor)?;
+        }
+
+        B::handle_cross_vtl_interrupts(self, dev).map_err(VpHaltReason::InvalidVmState)
+    }
+
+    fn update_synic(&mut self, vtl: GuestVtl, untrusted_synic: bool) {
+        loop {
+            let hv = &mut self.backing.cvm_state_mut().hv[vtl];
+
+            let ref_time_now = hv.ref_time_now();
+            let synic = if untrusted_synic {
+                debug_assert_eq!(vtl, GuestVtl::Vtl0);
+                self.backing.untrusted_synic().unwrap()
+            } else {
+                &mut hv.synic
+            };
+            let (ready_sints, next_ref_time) = synic.scan(
+                ref_time_now,
+                &self.partition.gm[vtl],
+                &mut self
+                    .partition
+                    .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
+            );
+            if let Some(next_ref_time) = next_ref_time {
+                // Convert from reference timer basis to vmtime basis via
+                // difference of programmed timer and current reference time.
+                let ref_diff = next_ref_time.saturating_sub(ref_time_now);
+                let timeout = self
+                    .vmtime
+                    .now()
+                    .wrapping_add(duration_from_100ns(ref_diff));
+                self.vmtime.set_timeout_if_before(timeout);
+            }
+            if ready_sints == 0 {
+                break;
+            }
+            self.hcvm_deliver_synic_messages(vtl, ready_sints);
+            // Loop around to process the synic again.
+        }
+    }
+
+    fn hcvm_deliver_synic_messages(&mut self, vtl: GuestVtl, sints: u16) {
+        let proxied_sints = self.backing.cvm_state_mut().hv[vtl].synic.proxied_sints();
+        let pending_sints =
+            self.inner.message_queues[vtl].post_pending_messages(sints, |sint, message| {
+                if proxied_sints & (1 << sint) != 0 {
+                    if let Some(synic) = self.backing.untrusted_synic().as_mut() {
+                        synic.post_message(
+                            &self.partition.gm[vtl],
+                            sint,
+                            message,
+                            &mut self
+                                .partition
+                                .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
+                        )
+                    } else {
+                        self.partition.hcl.post_message_direct(
+                            self.inner.vp_info.base.vp_index.index(),
+                            sint,
+                            message,
+                        )
+                    }
+                } else {
+                    self.backing.cvm_state_mut().hv[vtl].synic.post_message(
+                        &self.partition.gm[vtl],
+                        sint,
+                        message,
+                        &mut self
+                            .partition
+                            .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
+                    )
+                }
+            });
+
+        self.request_sint_notifications(vtl, pending_sints);
+    }
+
     fn set_vsm_partition_config(
         &mut self,
         value: HvRegisterVsmPartitionConfig,
@@ -1332,4 +1426,9 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport for UhEmulationSt
     fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
         Ok(self.vp.backing.translation_registers(self.vp, self.vtl))
     }
+}
+
+fn duration_from_100ns(n: u64) -> std::time::Duration {
+    const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
+    std::time::Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
 }

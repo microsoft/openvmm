@@ -25,7 +25,6 @@ use hcl::ioctl;
 use hcl::ioctl::aarch64::MshvArm64;
 use hcl::GuestVtl;
 use hcl::UnsupportedGuestVtl;
-use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
 use hvdef::hypercall;
 use hvdef::HvAarch64PendingEvent;
@@ -176,14 +175,6 @@ impl BackingPrivate for HypervisorBackedArm64 {
         Ok(())
     }
 
-    fn poll_apic(
-        _this: &mut UhProcessor<'_, Self>,
-        _vtl: GuestVtl,
-        _scan_irr: bool,
-    ) -> Result<(), UhRunVpError> {
-        Ok(())
-    }
-
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
         this.backing
             .next_deliverability_notifications
@@ -196,29 +187,23 @@ impl BackingPrivate for HypervisorBackedArm64 {
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
     }
 
-    fn handle_cross_vtl_interrupts(
+    fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
+
+    fn process_interrupts(
         _this: &mut UhProcessor<'_, Self>,
         _dev: &impl CpuIo,
-    ) -> Result<bool, UhRunVpError> {
-        // TODO WHP ARM GUEST VSM
+        _first_scan_irr: bool,
+        scan_irr: vtl_array::VtlArray<bool, 2>,
+    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+        assert!(scan_irr.iter().all(|&x| !x));
         Ok(false)
     }
 
-    fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
-
-    fn hv(&self, _vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
+    fn synic(&mut self, _vtl: GuestVtl) -> Option<&mut ProcessorSynic> {
         None
     }
 
-    fn hv_mut(&mut self, _vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
-        None
-    }
-
-    fn untrusted_synic(&self) -> Option<&ProcessorSynic> {
-        None
-    }
-
-    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
+    fn hv(&mut self, _vtl: GuestVtl) -> Option<&mut hv1_emulator::hv::ProcessorVtlHv> {
         None
     }
 }

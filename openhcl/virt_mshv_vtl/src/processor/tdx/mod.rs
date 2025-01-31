@@ -25,7 +25,6 @@ use hcl::ioctl::tdx::Tdx;
 use hcl::ioctl::ProcessorRunner;
 use hcl::protocol::hcl_intr_offload_flags;
 use hcl::protocol::tdx_tdg_vp_enter_exit_info;
-use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::AsHandler;
 use hv1_hypercall::HvRepResult;
@@ -530,6 +529,40 @@ impl HardwareIsolatedBacking for TdxBacked {
             ),
         }
     }
+
+    fn poll_apic(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        scan_irr: bool,
+    ) -> Result<(), UhRunVpError> {
+        if !this.try_poll_apic(vtl, scan_irr)? {
+            // We only offload VTL 0 today.
+            assert_eq!(vtl, GuestVtl::Vtl0);
+            tracing::info!("disabling APIC offload due to auto EOI");
+            let page = zerocopy::transmute_mut!(this.runner.tdx_apic_page_mut());
+            let (irr, isr) = pull_apic_offload(page);
+
+            this.backing.cvm.lapics[vtl]
+                .lapic
+                .disable_offload(&irr, &isr);
+            this.set_apic_offload(vtl, false);
+            this.try_poll_apic(vtl, false)?;
+        }
+
+        Ok(())
+    }
+
+    fn handle_cross_vtl_interrupts(
+        this: &mut UhProcessor<'_, Self>,
+        _dev: &impl CpuIo,
+    ) -> Result<bool, UhRunVpError> {
+        // TODO TDX GUEST VSM
+        this.hcvm_handle_cross_vtl_interrupts(|_this, _vtl, _check_rflags| false)
+    }
+
+    fn untrusted_synic(&mut self) -> Option<&mut ProcessorSynic> {
+        self.untrusted_synic.as_mut()
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
@@ -845,28 +878,6 @@ impl BackingPrivate for TdxBacked {
         this.run_vp_tdx(dev).await
     }
 
-    fn poll_apic(
-        this: &mut UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-        scan_irr: bool,
-    ) -> Result<(), UhRunVpError> {
-        if !this.try_poll_apic(vtl, scan_irr)? {
-            // We only offload VTL 0 today.
-            assert_eq!(vtl, GuestVtl::Vtl0);
-            tracing::info!("disabling APIC offload due to auto EOI");
-            let page = zerocopy::transmute_mut!(this.runner.tdx_apic_page_mut());
-            let (irr, isr) = pull_apic_offload(page);
-
-            this.backing.cvm.lapics[vtl]
-                .lapic
-                .disable_offload(&irr, &isr);
-            this.set_apic_offload(vtl, false);
-            this.try_poll_apic(vtl, false)?;
-        }
-
-        Ok(())
-    }
-
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {
         unreachable!("extint managed through software apic")
     }
@@ -879,28 +890,21 @@ impl BackingPrivate for TdxBacked {
         }
     }
 
-    fn handle_cross_vtl_interrupts(
+    fn process_interrupts(
         this: &mut UhProcessor<'_, Self>,
-        _dev: &impl CpuIo,
-    ) -> Result<bool, UhRunVpError> {
-        // TODO TDX GUEST VSM
-        this.hcvm_handle_cross_vtl_interrupts(|_this, _vtl, _check_rflags| false)
+        dev: &impl CpuIo,
+        first_scan_irr: bool,
+        scan_irr: VtlArray<bool, 2>,
+    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+        this.hcvm_process_interrupts(dev, first_scan_irr, scan_irr)
     }
 
-    fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
-        Some(&self.cvm.hv[vtl])
+    fn synic(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorSynic> {
+        Some(&mut self.cvm.hv[vtl].synic)
     }
 
-    fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
+    fn hv(&mut self, vtl: GuestVtl) -> Option<&mut hv1_emulator::hv::ProcessorVtlHv> {
         Some(&mut self.cvm.hv[vtl])
-    }
-
-    fn untrusted_synic(&self) -> Option<&ProcessorSynic> {
-        self.untrusted_synic.as_ref()
-    }
-
-    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
-        self.untrusted_synic.as_mut()
     }
 }
 

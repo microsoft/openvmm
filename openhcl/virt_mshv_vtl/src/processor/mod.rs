@@ -16,6 +16,7 @@ cfg_if::cfg_if! {
 
         use crate::VtlCrash;
         use hvdef::HvX64RegisterName;
+        use hv1_emulator::synic::ProcessorSynic;
         use virt::state::StateElement;
         use virt::vp::AccessVpState;
         use virt::vp::MpState;
@@ -64,7 +65,6 @@ use std::marker::PhantomData;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::task::Poll;
-use std::time::Duration;
 use virt::io::CpuIo;
 use virt::Processor;
 use virt::StopVp;
@@ -214,13 +214,6 @@ mod private {
             stop: &mut StopVp<'_>,
         ) -> impl Future<Output = Result<(), VpHaltReason<UhRunVpError>>>;
 
-        /// Process any pending APIC work.
-        fn poll_apic(
-            this: &mut UhProcessor<'_, Self>,
-            vtl: GuestVtl,
-            scan_irr: bool,
-        ) -> Result<(), UhRunVpError>;
-
         /// Requests the VP to exit when an external interrupt is ready to be
         /// delivered.
         ///
@@ -233,20 +226,19 @@ mod private {
         /// This is used for hypervisor-managed and untrusted SINTs.
         fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
-        /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
-        /// Returns whether interrupt reprocessing is required.
-        fn handle_cross_vtl_interrupts(
+        fn process_interrupts(
             this: &mut UhProcessor<'_, Self>,
             dev: &impl CpuIo,
-        ) -> Result<bool, UhRunVpError>;
+            first_scan_irr: bool,
+            scan_irr: VtlArray<bool, 2>,
+        ) -> Result<bool, VpHaltReason<UhRunVpError>>;
 
         fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
 
-        fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv>;
-        fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv>;
+        fn synic(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorSynic>;
 
-        fn untrusted_synic(&self) -> Option<&ProcessorSynic>;
-        fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
+        // TODO: Delete this
+        fn hv(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv>;
     }
 }
 
@@ -279,6 +271,22 @@ pub trait HardwareIsolatedBacking: Backing {
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
     ) -> TranslationRegisters;
+
+    /// Process any pending APIC work.
+    fn poll_apic(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        scan_irr: bool,
+    ) -> Result<(), UhRunVpError>;
+
+    /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
+    /// Returns whether interrupt reprocessing is required.
+    fn handle_cross_vtl_interrupts(
+        this: &mut UhProcessor<'_, Self>,
+        dev: &impl CpuIo,
+    ) -> Result<bool, UhRunVpError>;
+
+    fn untrusted_synic(&mut self) -> Option<&mut ProcessorSynic>;
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
@@ -439,11 +447,6 @@ pub enum ProcessorError {
     NotSupported,
 }
 
-fn duration_from_100ns(n: u64) -> Duration {
-    const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
-    Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
-}
-
 impl<T: Backing> UhProcessor<'_, T> {
     fn inspect_extra(&mut self, resp: &mut inspect::Response<'_>) {
         resp.child("stats", |req| {
@@ -471,42 +474,6 @@ impl<T: Backing> UhProcessor<'_, T> {
         );
 
         T::inspect_extra(self, resp);
-    }
-
-    fn update_synic(&mut self, vtl: GuestVtl, untrusted_synic: bool) {
-        loop {
-            let hv = self.backing.hv_mut(vtl).unwrap();
-
-            let ref_time_now = hv.ref_time_now();
-            let synic = if untrusted_synic {
-                debug_assert_eq!(vtl, GuestVtl::Vtl0);
-                self.backing.untrusted_synic_mut().unwrap()
-            } else {
-                &mut hv.synic
-            };
-            let (ready_sints, next_ref_time) = synic.scan(
-                ref_time_now,
-                &self.partition.gm[vtl],
-                &mut self
-                    .partition
-                    .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
-            );
-            if let Some(next_ref_time) = next_ref_time {
-                // Convert from reference timer basis to vmtime basis via
-                // difference of programmed timer and current reference time.
-                let ref_diff = next_ref_time.saturating_sub(ref_time_now);
-                let timeout = self
-                    .vmtime
-                    .now()
-                    .wrapping_add(duration_from_100ns(ref_diff));
-                self.vmtime.set_timeout_if_before(timeout);
-            }
-            if ready_sints == 0 {
-                break;
-            }
-            self.deliver_synic_messages(vtl, ready_sints);
-            // Loop around to process the synic again.
-        }
     }
 
     #[cfg(guest_arch = "x86_64")]
@@ -677,24 +644,8 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     [false, false].into()
                 };
 
-                if self.backing.untrusted_synic().is_some() {
-                    self.update_synic(GuestVtl::Vtl0, true);
-                }
-
-                for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
-                    // Process interrupts.
-                    if self.backing.hv(vtl).is_some() {
-                        self.update_synic(vtl, false);
-                    }
-
-                    T::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
-                        .map_err(VpHaltReason::Hypervisor)?;
-                }
-                first_scan_irr = false;
-
-                if T::handle_cross_vtl_interrupts(self, dev)
-                    .map_err(VpHaltReason::InvalidVmState)?
-                {
+                let first_scan_irr = std::mem::take(&mut first_scan_irr);
+                if T::process_interrupts(self, dev, first_scan_irr, scan_irr)? {
                     continue;
                 }
 
@@ -734,11 +685,8 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
     fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
         if self.inner.wake_reasons.load(Ordering::Relaxed) != 0 {
             let scan_irr = self.handle_wake()?;
-            for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
-                if scan_irr[vtl] {
-                    T::poll_apic(self, vtl, true)?;
-                }
-            }
+            // TODO CVM SAVE/RESTORE: Handle polling the APIC
+            assert!(scan_irr.iter().all(|x| !x));
         }
         self.runner.flush_deferred_actions();
         Ok(())
@@ -874,8 +822,8 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                         if pending_sints & (1 << sint) == 0 {
                             continue;
                         }
-                        let sint_msr = if let Some(hv) = self.backing.hv(vtl).as_ref() {
-                            hv.synic.sint(sint)
+                        let sint_msr = if let Some(synic) = self.backing.synic(vtl) {
+                            synic.sint(sint)
                         } else {
                             #[cfg(guest_arch = "x86_64")]
                             let sint_reg =
@@ -917,8 +865,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
                     if vtl == GuestVtl::Vtl1 {
                         assert!(self.partition.isolation.is_hardware_isolated());
-                        // Should have already initialized the hv emulator for this vtl
-                        assert!(self.backing.hv(vtl).is_some());
 
                         // TODO CVM GUEST VSM: Revisit during AP startup if we need to exit to VTL 1 here
                     }
@@ -942,9 +888,9 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         }
 
         // Send the SINT notifications to the local synic for non-proxied SINTs.
-        let untrusted_sints = if let Some(hv) = self.backing.hv_mut(vtl).as_mut() {
-            let proxied_sints = hv.synic.proxied_sints();
-            hv.synic.request_sint_readiness(sints & !proxied_sints);
+        let untrusted_sints = if let Some(synic) = self.backing.synic(vtl) {
+            let proxied_sints = synic.proxied_sints();
+            synic.request_sint_readiness(sints & !proxied_sints);
             proxied_sints
         } else {
             !0
@@ -963,7 +909,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg(guest_arch = "x86_64")]
     fn write_msr(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
         if msr & 0xf0000000 == 0x40000000 {
-            if let Some(hv) = self.backing.hv_mut(vtl).as_mut() {
+            if let Some(hv) = self.backing.hv(vtl) {
                 // If updated is Synic MSR, then check if its proxy or previous was proxy
                 // in either case, we need to update the `proxy_irr_blocked`
                 let mut irr_filter_update = false;
@@ -1014,7 +960,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg(guest_arch = "x86_64")]
     fn read_msr(&mut self, msr: u32, vtl: GuestVtl) -> Result<u64, MsrError> {
         if msr & 0xf0000000 == 0x40000000 {
-            if let Some(hv) = self.backing.hv(vtl).as_ref() {
+            if let Some(hv) = self.backing.hv(vtl) {
                 let r = hv.msr_read(msr);
                 if !matches!(r, Err(MsrError::Unknown)) {
                     return r;
@@ -1094,46 +1040,16 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         )
     }
 
+    // TODO: Move this to a non-isolated-only backing trait?
     fn deliver_synic_messages(&mut self, vtl: GuestVtl, sints: u16) {
-        let proxied_sints = self
-            .backing
-            .hv(vtl)
-            .as_ref()
-            .map_or(!0, |hv| hv.synic.proxied_sints());
+        assert!(self.backing.synic(vtl).is_none());
         let pending_sints =
             self.inner.message_queues[vtl].post_pending_messages(sints, |sint, message| {
-                if proxied_sints & (1 << sint) != 0 {
-                    if let Some(synic) = self.backing.untrusted_synic_mut().as_mut() {
-                        synic.post_message(
-                            &self.partition.gm[vtl],
-                            sint,
-                            message,
-                            &mut self
-                                .partition
-                                .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
-                        )
-                    } else {
-                        self.partition.hcl.post_message_direct(
-                            self.inner.vp_info.base.vp_index.index(),
-                            sint,
-                            message,
-                        )
-                    }
-                } else {
-                    self.backing
-                        .hv_mut(vtl)
-                        .as_mut()
-                        .unwrap()
-                        .synic
-                        .post_message(
-                            &self.partition.gm[vtl],
-                            sint,
-                            message,
-                            &mut self
-                                .partition
-                                .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
-                        )
-                }
+                self.partition.hcl.post_message_direct(
+                    self.inner.vp_info.base.vp_index.index(),
+                    sint,
+                    message,
+                )
             });
 
         self.request_sint_notifications(vtl, pending_sints);
@@ -1144,9 +1060,9 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         let mut irr_bits: BitArray<[u32; 8], Lsb0> = BitArray::new(Default::default());
 
         // Get all not masked && proxy SINT vectors
-        if let Some(hv) = self.backing.hv(vtl).as_ref() {
+        if let Some(synic) = self.backing.synic(vtl) {
             for sint in 0..NUM_SINTS as u8 {
-                let sint_msr = hv.synic.sint(sint);
+                let sint_msr = synic.sint(sint);
                 let hv_sint = HvSynicSint::from(sint_msr);
                 if hv_sint.proxy() && !hv_sint.masked() {
                     irr_bits.set(hv_sint.vector() as usize, true);
