@@ -400,7 +400,7 @@ fn get_vp_registers(command_page: &mut CommandPage) {
         count,
         target_vtl,
         rsvd: _,
-        status: ref mut result,
+        ref mut status,
         rsvd2: _,
         regs: [],
     } = FromBytes::mut_from(request).unwrap();
@@ -413,7 +413,7 @@ fn get_vp_registers(command_page: &mut CommandPage) {
         return;
     };
 
-    *result = HvStatus::SUCCESS;
+    *status = HvStatus::SUCCESS;
     for &mut HvRegisterAssoc {
         name,
         pad: _,
@@ -434,7 +434,7 @@ fn get_vp_registers(command_page: &mut CommandPage) {
         match r {
             Ok(v) => *value = v,
             Err(err) => {
-                *result = Err(err).into();
+                *status = Err(err).into();
                 break;
             }
         };
@@ -450,7 +450,7 @@ fn set_vp_registers(command_page: &mut CommandPage) {
         count,
         target_vtl,
         rsvd: _,
-        status: ref mut result,
+        ref mut status,
         rsvd2: _,
         regs: [],
     } = FromBytes::mut_from(request).unwrap();
@@ -463,7 +463,7 @@ fn set_vp_registers(command_page: &mut CommandPage) {
         return;
     };
 
-    *result = HvStatus::SUCCESS;
+    *status = HvStatus::SUCCESS;
     for &HvRegisterAssoc {
         name,
         value,
@@ -483,7 +483,7 @@ fn set_vp_registers(command_page: &mut CommandPage) {
         };
 
         if r.is_err() {
-            *result = r.into();
+            *status = r.into();
             break;
         }
     }

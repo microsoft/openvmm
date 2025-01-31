@@ -355,7 +355,7 @@ impl HvStatus {
 
     /// Returns `Ok(())` if this is `HvStatus::SUCCESS`, otherwise returns an
     /// `Err(err)` where `err` is the corresponding `HvError`.
-    pub fn result(&self) -> HvResult<()> {
+    pub fn result(self) -> HvResult<()> {
         if let Ok(err) = self.0.try_into() {
             Err(HvError(err))
         } else {
@@ -364,13 +364,13 @@ impl HvStatus {
     }
 
     /// Returns true if this is `HvStatus::SUCCESS`.
-    pub fn is_ok(&self) -> bool {
-        self.0 == 0
+    pub fn is_ok(self) -> bool {
+        self == Self::SUCCESS
     }
 
     /// Returns true if this is not `HvStatus::SUCCESS`.
-    pub fn is_err(&self) -> bool {
-        self.0 != 0
+    pub fn is_err(self) -> bool {
+        self != Self::SUCCESS
     }
 
     const fn from_bits(bits: u16) -> Self {
