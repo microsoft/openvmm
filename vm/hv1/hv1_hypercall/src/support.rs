@@ -575,7 +575,7 @@ where
 {
     /// Parses the hypercall parameters to input and output types.
     pub fn parse(params: HypercallParameters<'_>) -> (&Hdr, &[In], &mut [Out]) {
-        let (header, rest) = Ref::<_, Hdr>::from_prefix(params.input).unwrap().unwrap();
+        let (header, rest) = Ref::<_, Hdr>::from_prefix(params.input).unwrap();
         let input = if size_of::<In>() == 0 {
             &[]
         } else {
