@@ -1213,9 +1213,6 @@ jobs:
     - name: copying OpenHCL igvm extras to artifact dir
       run: flowey e 11 flowey_lib_common::copy_to_artifact_dir 0
       shell: bash
-    - name: copying openhcl builds to publish dir
-      run: flowey e 11 flowey_lib_hvlite::artifact_openvmm_hcl_sizecheck::publish 0
-      shell: bash
     - name: inject cross env
       run: flowey e 11 flowey_lib_hvlite::init_cross_build 2
       shell: bash
@@ -1802,9 +1799,6 @@ jobs:
       shell: bash
     - name: copying OpenHCL igvm extras to artifact dir
       run: flowey e 12 flowey_lib_common::copy_to_artifact_dir 0
-      shell: bash
-    - name: copying openhcl builds to publish dir
-      run: flowey e 12 flowey_lib_hvlite::artifact_openvmm_hcl_sizecheck::publish 0
       shell: bash
     - name: inject cross env
       run: flowey e 12 flowey_lib_hvlite::init_cross_build 2

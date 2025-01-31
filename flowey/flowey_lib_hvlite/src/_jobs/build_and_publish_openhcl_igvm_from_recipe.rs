@@ -55,7 +55,7 @@ impl SimpleFlowNode for Node {
 
         let mut built_igvm_files = Vec::new();
         let mut built_extras = Vec::new();
-        let mut built_openvmm_hcl_files = Vec::new();
+        let mut size_check_openvmm_hcl = None;
 
         for OpenhclIgvmBuildParams {
             profile,
@@ -97,7 +97,12 @@ impl SimpleFlowNode for Node {
                     }),
             );
 
-            built_openvmm_hcl_files.push((recipe, read_built_openvmm_hcl));
+            // We only do a size comparison for the ship profile and x64 recipe
+            if (profile == OpenvmmHclBuildProfile::OpenvmmHclShip)
+                && recipe == OpenhclIgvmRecipe::X64
+            {
+                size_check_openvmm_hcl = Some(read_built_openvmm_hcl);
+            }
         }
 
         let mut did_publish = Vec::new();
@@ -118,13 +123,15 @@ impl SimpleFlowNode for Node {
             }
         }));
 
-        did_publish.push(ctx.reqv(
-            |v| crate::artifact_openvmm_hcl_sizecheck::publish::Request {
-                done: v,
-                openhcl_builds: built_openvmm_hcl_files,
-                artifact_dir: artifact_openhcl_verify_size_baseline,
-            },
-        ));
+        if let Some(built_openvmm_hcl) = size_check_openvmm_hcl {
+            did_publish.push(ctx.reqv(|v| {
+                crate::artifact_openvmm_hcl_sizecheck::publish::Request {
+                    done: v,
+                    openhcl_builds: vec![(OpenhclIgvmRecipe::X64, built_openvmm_hcl)],
+                    artifact_dir: artifact_openhcl_verify_size_baseline,
+                }
+            }));
+        }
 
         ctx.emit_side_effect_step(did_publish, [done]);
 

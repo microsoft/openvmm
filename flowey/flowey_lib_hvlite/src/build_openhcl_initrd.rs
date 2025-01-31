@@ -14,7 +14,7 @@ pub struct OpenhclInitrdOutput {
 }
 
 /// Extra parameters for building specialized initrd files.
-#[derive(Default, Clone, Serialize, Deserialize, Debug)]
+#[derive(Default, Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct OpenhclInitrdExtraParams {
     /// additional layers to be included in the initrd
     pub extra_initrd_layers: Vec<PathBuf>,
