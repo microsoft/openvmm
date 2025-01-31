@@ -629,8 +629,15 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm"));
             let (pub_openhcl_igvm_extras, _use_openhcl_igvm_extras) =
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras"));
+
             let (pub_openhcl_baseline, _use_openhcl_baseline) =
-                pipeline.new_artifact(format!("{arch_tag}-openhcl-baseline"));
+                if matches!(config, PipelineConfig::Ci) {
+                    let (p, u) = pipeline.new_artifact(format!("{arch_tag}-openhcl-baseline"));
+                    (Some(p), Some(u))
+                } else {
+                    (None, None)
+                };
+
             // also build pipette musl on this job, as until we land the
             // refactor that allows building musl without the full openhcl
             // toolchain, it would require pulling in all the openhcl
@@ -681,6 +688,13 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(|ctx| {
+                    let publish_baseline_artifact =
+                        if let Some(baseline_artifact) = pub_openhcl_baseline {
+                            Some(ctx.publish_artifact(baseline_artifact))
+                        } else {
+                            None
+                        };
+
                     flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
                         igvm_files: igvm_recipes
                             .clone()
@@ -696,8 +710,7 @@ impl IntoPipeline for CheckinGatesCli {
                         artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
                         artifact_dir_openhcl_igvm_extras: ctx
                             .publish_artifact(pub_openhcl_igvm_extras),
-                        artifact_openhcl_verify_size_baseline: ctx
-                            .publish_artifact(pub_openhcl_baseline),
+                        artifact_openhcl_verify_size_baseline: publish_baseline_artifact,
                         done: ctx.new_done_handle(),
                     }
                 })

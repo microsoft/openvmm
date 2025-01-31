@@ -5,55 +5,44 @@
 
 /// Publish the artifact.
 pub mod publish {
-    use crate::artifact_openhcl_igvm_from_recipe::recipe_to_filename;
-    use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
     use crate::build_openvmm_hcl::OpenvmmHclOutput;
     use flowey::node::prelude::*;
 
     flowey_request! {
         pub struct Request {
-            pub openhcl_builds: Vec<(OpenhclIgvmRecipe, ReadVar<OpenvmmHclOutput>)>,
+            pub openvmm_openhcl_x86: ReadVar<OpenvmmHclOutput>,
             pub artifact_dir: ReadVar<PathBuf>,
             pub done: WriteVar<SideEffect>,
         }
     }
 
-    new_flow_node!(struct Node);
+    new_simple_flow_node!(struct Node);
 
-    impl FlowNode for Node {
+    impl SimpleFlowNode for Node {
         type Request = Request;
 
         fn imports(_ctx: &mut ImportCtx<'_>) {}
 
-        fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-            for Request {
-                openhcl_builds,
+        fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+            let Request {
+                openvmm_openhcl_x86,
                 artifact_dir,
                 done,
-            } in requests
-            {
-                ctx.emit_rust_step("copying openhcl builds to publish dir", |ctx| {
-                    done.claim(ctx);
-                    let artifact_dir = artifact_dir.claim(ctx);
-                    let openhcl_builds = openhcl_builds
-                        .iter()
-                        .map(|x| (x.0.clone(), x.1.clone().claim(ctx)))
-                        .collect::<Vec<_>>();
+            } = request;
 
-                    move |rt| {
-                        let artifact_dir = rt.read(artifact_dir);
-                        for (recipe, build) in openhcl_builds {
-                            let build = rt.read(build);
-                            fs_err::copy(
-                                build.bin,
-                                artifact_dir.join(recipe_to_filename(&recipe)),
-                            )?;
-                        }
+            ctx.emit_rust_step("copying openhcl build to publish dir", |ctx| {
+                done.claim(ctx);
+                let artifact_dir = artifact_dir.claim(ctx);
+                let openvmm_openhcl_x86 = openvmm_openhcl_x86.claim(ctx);
 
-                        Ok(())
-                    }
-                });
-            }
+                move |rt| {
+                    let artifact_dir = rt.read(artifact_dir);
+                    let openvmm_openhcl_x86 = rt.read(openvmm_openhcl_x86);
+                    fs_err::copy(openvmm_openhcl_x86.bin, artifact_dir.join("openhcl"))?;
+
+                    Ok(())
+                }
+            });
 
             Ok(())
         }

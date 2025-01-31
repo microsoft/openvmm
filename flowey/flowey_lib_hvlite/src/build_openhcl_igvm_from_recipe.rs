@@ -40,13 +40,13 @@ pub enum OpenhclKernelPackage {
 }
 
 /// Vtl0 kernel type
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Vtl0KernelType {
     Example,
     LocalOnlyCustom(PathBuf),
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum IgvmManifestPath {
     /// Name of an in-tree manifest (located under `vm/loader/manifests`)
     InTree(String),
@@ -54,7 +54,7 @@ pub enum IgvmManifestPath {
     LocalOnlyCustom(PathBuf),
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OpenhclIgvmRecipeDetails {
     pub local_only: Option<OpenhclIgvmRecipeDetailsLocalOnly>,
 
@@ -68,7 +68,7 @@ pub struct OpenhclIgvmRecipeDetails {
     pub with_sidecar_details: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OpenhclIgvmRecipeDetailsLocalOnly {
     pub openvmm_hcl_no_strip: bool,
     pub openhcl_initrd_extra_params: Option<OpenhclInitrdExtraParams>,
@@ -80,7 +80,7 @@ pub struct OpenhclIgvmRecipeDetailsLocalOnly {
     pub custom_extra_rootfs: Vec<PathBuf>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum OpenhclIgvmRecipe {
     LocalOnlyCustom(OpenhclIgvmRecipeDetails),
     X64,
