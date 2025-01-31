@@ -84,10 +84,11 @@ impl VpSpawner {
         let thread = underhill_threadpool::Thread::current().unwrap();
         // TODO propagate this error back earlier. This is easiest if
         // set_idle_task is fixed to take a non-Send fn.
-        let mut vp = self
-            .vp
-            .bind_processor::<T>(thread.driver(), control)
-            .context("failed to initialize VP")?;
+        let mut vp = thread.with_driver(|driver| {
+            self.vp
+                .bind_processor::<T>(driver, control)
+                .context("failed to initialize VP")
+        })?;
 
         if let Some(saved_state) = saved_state {
             vmcore::save_restore::ProtobufSaveRestore::restore(&mut vp, saved_state)
@@ -166,7 +167,7 @@ impl VpSpawner {
                     self.vp.set_sidecar_exit_due_to_task(
                         thread
                             .first_task()
-                            .map_or_else(|| "<unknown>".into(), |t| t.name.clone()),
+                            .map_or_else(|| "<unknown>".into(), |t| t.name),
                     );
                 }
 

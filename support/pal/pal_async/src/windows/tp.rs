@@ -22,6 +22,7 @@ use crate::timer::TimerDriver;
 use crate::wait::PollWait;
 use crate::wait::WaitDriver;
 use crate::waker::WakerList;
+use loan_cell::LoanCell;
 use once_cell::sync::OnceCell;
 use pal::windows::afd;
 use pal::windows::disassociate_completion_port;
@@ -64,34 +65,16 @@ impl TpPool {
     }
 }
 
-/// The thread local threadpool state.
-enum TpThreadState {
-    /// This thread either is not a threadpool thread, or another task is
-    /// running on it and so new wakeups should wake up another threadpool
-    /// thread.
-    NotOnTpThread,
-    /// This thread is a threadpool thread that is about to return to the
-    /// system after calling wakers associated with completed IOs.
-    Waking,
-    /// This thread is a threadpool thread that will run the attached task after
-    /// it finishes its current work.
-    Deferred(Runnable),
-}
-
 thread_local! {
-    static TP_THREAD_STATE: Cell<TpThreadState> = const { Cell::new(TpThreadState::NotOnTpThread) };
+    static DEFERRED_RUNNABLE: LoanCell<Cell<Option<Runnable>>> = const { LoanCell::new() };
 }
 
 fn wake_locally(f: impl FnOnce()) {
-    TP_THREAD_STATE.with(|state| {
-        state.set(TpThreadState::Waking);
-        f();
-        match state.replace(TpThreadState::NotOnTpThread) {
-            TpThreadState::NotOnTpThread => unreachable!(),
-            TpThreadState::Waking => {}
-            TpThreadState::Deferred(runnable) => {
-                runnable.run();
-            }
+    DEFERRED_RUNNABLE.with(|slot| {
+        let deferred = Cell::new(None);
+        slot.lend(&deferred, f);
+        if let Some(runnable) = deferred.into_inner() {
+            runnable.schedule();
         }
     })
 }
@@ -106,23 +89,23 @@ struct NextRunnable(Mutex<Option<Runnable>>);
 
 impl Schedule for TpScheduler {
     fn schedule(&self, runnable: Runnable) {
-        TP_THREAD_STATE.with(|state| match state.replace(TpThreadState::NotOnTpThread) {
-            TpThreadState::NotOnTpThread => {
-                {
-                    let mut next = self.next.0.lock();
-                    assert!(next.is_none());
-                    *next = Some(runnable);
+        DEFERRED_RUNNABLE.with(|slot| {
+            slot.borrow(|slot| {
+                if let Some(slot) = slot {
+                    let old_runnable = slot.replace(Some(runnable));
+                    if let Some(runnable) = old_runnable {
+                        runnable.schedule();
+                    }
+                } else {
+                    {
+                        let mut next = self.next.0.lock();
+                        assert!(next.is_none());
+                        *next = Some(runnable);
+                    }
+                    let _ = Arc::into_raw(self.next.clone());
+                    self.work.submit();
                 }
-                let _ = Arc::into_raw(self.next.clone());
-                self.work.submit();
-            }
-            TpThreadState::Waking => {
-                state.set(TpThreadState::Deferred(runnable));
-            }
-            TpThreadState::Deferred(old_runnable) => {
-                old_runnable.schedule();
-                state.set(TpThreadState::Deferred(runnable));
-            }
+            })
         })
     }
 

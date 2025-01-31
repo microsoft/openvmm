@@ -684,7 +684,6 @@ mod x86 {
     use super::WhpHypercallExit;
     use crate::regs;
     use crate::vtl2;
-    use crate::LocalApicKind;
     use crate::WhpProcessor;
     use crate::WhpRunVpError;
     use arrayvec::ArrayVec;
@@ -1606,14 +1605,9 @@ mod x86 {
                         return Err(HvError::AccessDenied);
                     }
 
-                    let mut supported = hvdef::HvDeliverabilityNotificationsRegister::new()
+                    let supported = hvdef::HvDeliverabilityNotificationsRegister::new()
                         .with_sints(!0)
                         .with_interrupt_notification(true);
-
-                    if let LocalApicKind::InVtl2 = self.vp.partition.vtl0.lapic {
-                        supported.set_nmi_notification(true);
-                        supported.set_interrupt_priority(0xf);
-                    }
 
                     if value.as_u64() & !u64::from(supported) != 0 {
                         return Err(HvError::InvalidParameter);

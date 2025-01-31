@@ -232,13 +232,6 @@ mod private {
         /// This is used for hypervisor-managed and untrusted SINTs.
         fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
-        /// Returns whether this VP should be put to sleep in usermode, or
-        /// whether it's ready to proceed into the kernel.
-        fn halt_in_usermode(this: &mut UhProcessor<'_, Self>, target_vtl: GuestVtl) -> bool {
-            let _ = (this, target_vtl);
-            false
-        }
-
         /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
         /// Returns whether interrupt reprocessing is required.
         fn handle_cross_vtl_interrupts(
@@ -712,12 +705,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     }
                 }
 
-                // TODO WHP GUEST VSM: This should be next_vtl
-                if T::halt_in_usermode(self, GuestVtl::Vtl0) {
-                    break Poll::Pending;
-                } else {
-                    return <Result<_, VpHaltReason<_>>>::Ok(()).into();
-                }
+                return <Result<_, VpHaltReason<_>>>::Ok(()).into();
             })
             .await?;
 

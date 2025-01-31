@@ -348,8 +348,6 @@ pub struct Vtl2Config {
     /// heuristic is to defer mapping VTL0 memory until the first
     /// `HvModifyVtlProtectionMask` hypercall is made.
     pub late_map_vtl0_memory: Option<LateMapVtl0MemoryPolicy>,
-    /// Defer VTL0 APIC emulation to VTL2.
-    pub vtl2_emulates_apic: bool,
 }
 
 // Isolation type for a partition.
