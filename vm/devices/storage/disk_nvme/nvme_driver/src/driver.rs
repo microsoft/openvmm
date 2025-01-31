@@ -589,10 +589,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .map_interrupt(0, 0)
             .context("failed to map interrupt 0")?;
 
-        let dma_client = worker
-            .device
-            .dma_client()
-            .context("Failed to get DMA client from device")?;
+        let dma_client = worker.device.dma_client();
 
         // Restore the admin queue pair.
         let admin = saved_state
