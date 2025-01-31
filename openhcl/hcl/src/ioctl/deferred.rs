@@ -27,6 +27,10 @@ impl DeferredActions {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.actions.is_empty()
+    }
+
     /// Copies the queued actions to the slots in the run page. Issues any
     /// immediately that won't fit in the run page.
     pub fn copy_to_slots(&mut self, slots: &mut DeferredActionSlots, hcl: &Hcl) {

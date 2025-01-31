@@ -1686,6 +1686,8 @@ mod private {
 impl<T> Drop for ProcessorRunner<'_, T> {
     fn drop(&mut self) {
         self.flush_deferred_actions();
+        let actions = DEFERRED_ACTIONS.with(|actions| actions.take());
+        assert!(actions.is_none_or(|a| a.is_empty()));
         let old_state = std::mem::replace(&mut *self.vp.state.lock(), VpState::NotRunning);
         assert!(matches!(old_state, VpState::Running(thread) if thread == Pthread::current()));
     }
@@ -1697,8 +1699,10 @@ impl<T> ProcessorRunner<'_, T> {
     /// actions will be lost.
     pub fn flush_deferred_actions(&mut self) {
         if self.sidecar.is_none() {
-            let mut deferred_actions = DEFERRED_ACTIONS.with(|state| state.take().unwrap());
-            deferred_actions.run_actions(self.hcl);
+            DEFERRED_ACTIONS.with(|actions| {
+                let mut actions = actions.borrow_mut();
+                actions.as_mut().unwrap().run_actions(self.hcl);
+            })
         }
     }
 }
