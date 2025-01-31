@@ -173,7 +173,7 @@ async fn storvsp(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
                         vtl2_settings_proto::Lun {
                             location: vtl0_scsi_lun,
                             device_id: Guid::new_random().to_string(),
-                            vendor_id: "HvLite".to_string(),
+                            vendor_id: "OpenVMM".to_string(),
                             product_id: "Disk".to_string(),
                             product_revision_level: "1.0".to_string(),
                             serial_number: "0".to_string(),
@@ -195,7 +195,7 @@ async fn storvsp(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
                         vtl2_settings_proto::Lun {
                             location: vtl0_nvme_lun,
                             device_id: Guid::new_random().to_string(),
-                            vendor_id: "HvLite".to_string(),
+                            vendor_id: "OpenVMM".to_string(),
                             product_id: "Disk".to_string(),
                             product_revision_level: "1.0".to_string(),
                             serial_number: "0".to_string(),
@@ -297,7 +297,7 @@ async fn openhcl_linux_storvsp_dvd(config: PetriVmConfigOpenVmm) -> Result<(), a
                     luns: vec![vtl2_settings_proto::Lun {
                         location: vtl0_scsi_lun,
                         device_id: Guid::new_random().to_string(),
-                        vendor_id: "HvLite".to_string(),
+                        vendor_id: "OpenVMM".to_string(),
                         product_id: "Disk".to_string(),
                         product_revision_level: "1.0".to_string(),
                         serial_number: "0".to_string(),
@@ -451,7 +451,7 @@ async fn openhcl_linux_stripe_storvsp(config: PetriVmConfigOpenVmm) -> Result<()
                     luns: vec![vtl2_settings_proto::Lun {
                         location: vtl0_nvme_lun,
                         device_id: Guid::new_random().to_string(),
-                        vendor_id: "HvLite".to_string(),
+                        vendor_id: "OpenVMM".to_string(),
                         product_id: "Disk".to_string(),
                         product_revision_level: "1.0".to_string(),
                         serial_number: "0".to_string(),
