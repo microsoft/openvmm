@@ -983,12 +983,12 @@ impl MshvHvcall {
 
             match result.result() {
                 Ok(()) => {
-                    assert_eq!(result.elements_processed() as usize, n);
+                    assert_eq!({ result.elements_processed() }, n);
                 }
                 Err(HvError::Timeout) => {}
                 Err(e) => return Err(e),
             }
-            gpns = &gpns[result.elements_processed() as usize..];
+            gpns = &gpns[result.elements_processed()..];
         }
         Ok(())
     }
@@ -2727,7 +2727,7 @@ impl Hcl {
                     .expect("submitting pin/unpin hypercall should not fail")
             };
 
-            ranges_processed += output.elements_processed() as usize;
+            ranges_processed += output.elements_processed();
 
             output.result().map_err(|e| PinUnpinError {
                 ranges_processed,
