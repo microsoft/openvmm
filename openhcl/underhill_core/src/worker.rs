@@ -501,8 +501,7 @@ impl UnderhillVmWorker {
 
             if let Some(TestScenarioConfig::RestoreStuck) = params.env_cfg.test_configuration {
                 tracing::info!(
-                    "Test configuration SERVICING_RESTORE_STUCK is set."
-                    "Waiting indefinitely in restore."
+                    "Test configuration SERVICING_RESTORE_STUCK is set. Waiting indefinitely in restore."
                 );
                 future::pending::<()>().await;
             }
