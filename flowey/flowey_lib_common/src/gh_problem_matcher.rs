@@ -27,7 +27,9 @@ impl FlowNode for Node {
                         vars,
                         &ProblemMatcher {
                             path: Some(path),
-                            owner: "flowey".to_string(),
+                            owners: ["flowey-rustc", "flowey-rust-panic"]
+                                .map(Into::into)
+                                .to_vec(),
                         },
                     );
                     Ok(())
@@ -39,7 +41,7 @@ impl FlowNode for Node {
                     ctx,
                     ProblemMatcher {
                         path: None,
-                        owner: String::new(),
+                        owners: Vec::new(),
                     },
                 )
             }
@@ -52,27 +54,27 @@ impl FlowNode for Node {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProblemMatcher {
     path: Option<PathBuf>,
-    owner: String,
+    owners: Vec<String>,
 }
 
 impl ProblemMatcher {
     pub fn enable(&self) -> EnabledProblemMatcher<'_> {
-        let owner = if let Some(path) = &self.path {
+        let owners = if let Some(path) = &self.path {
             println!("::add-matcher::{}", path.display());
-            Some(self.owner.as_ref())
+            self.owners.as_slice()
         } else {
-            None
+            &[]
         };
-        EnabledProblemMatcher(owner)
+        EnabledProblemMatcher(owners)
     }
 }
 
 #[must_use = "pattern matcher is disabled when this is dropped"]
-pub struct EnabledProblemMatcher<'a>(Option<&'a str>);
+pub struct EnabledProblemMatcher<'a>(&'a [String]);
 
 impl Drop for EnabledProblemMatcher<'_> {
     fn drop(&mut self) {
-        if let Some(owner) = self.0 {
+        for owner in self.0 {
             println!("::remove-matcher owner={owner}::");
         }
     }

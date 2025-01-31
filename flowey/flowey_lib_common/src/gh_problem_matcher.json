@@ -1,7 +1,7 @@
 {
     "problemMatcher": [
         {
-            "owner": "flowey",
+            "owner": "flowey-rustc",
             "pattern": [
                 {
                     "regexp": "^(?:\\x1b\\[[\\d;]+m)*(warning|warn|error)(?:\\x1b\\[[\\d;]+m)*(\\[(.*)\\])?(?:\\x1b\\[[\\d;]+m)*:(?:\\x1b\\[[\\d;]+m)* ([^\\x1b]*)(?:\\x1b\\[[\\d;]+m)*$",
@@ -18,7 +18,7 @@
             ]
         },
         {
-            "owner": "flowey",
+            "owner": "flowey-rust-panic",
             "pattern": [
                 {
                     "regexp": "thread '(.*)' panicked at (.*):(\\d*):(\\d*):$",
