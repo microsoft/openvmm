@@ -627,7 +627,7 @@ impl IntoPipeline for CheckinGatesCli {
 
             let (pub_openhcl_igvm, use_openhcl_igvm) =
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm"));
-            let (pub_openhcl_igvm_extras_dev, _use_openhcl_igvm_extras_dev) =
+            let (pub_openhcl_igvm_extras, _use_openhcl_igvm_extras) =
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras"));
             let (pub_openhcl_baseline, _use_openhcl_baseline) =
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-baseline"));
@@ -695,7 +695,7 @@ impl IntoPipeline for CheckinGatesCli {
                             .collect(),
                         artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
                         artifact_dir_openhcl_igvm_extras: ctx
-                            .publish_artifact(pub_openhcl_igvm_extras_dev),
+                            .publish_artifact(pub_openhcl_igvm_extras),
                         artifact_openhcl_verify_size_baseline: ctx
                             .publish_artifact(pub_openhcl_baseline),
                         done: ctx.new_done_handle(),
