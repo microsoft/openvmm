@@ -794,7 +794,7 @@ impl UhProcessor<'_, SnpBacked> {
         self.backing.hv_sint_notifications &= !message.deliverable_sints;
 
         // These messages are always VTL0, as VTL1 does not own any VMBUS channels.
-        self.deliver_synic_messages(GuestVtl::Vtl0, message.deliverable_sints);
+        self.hcvm_deliver_synic_messages(GuestVtl::Vtl0, message.deliverable_sints);
     }
 
     fn handle_vmgexit(

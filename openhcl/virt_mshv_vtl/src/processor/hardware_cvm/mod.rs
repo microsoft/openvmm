@@ -1145,7 +1145,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         }
     }
 
-    fn hcvm_deliver_synic_messages(&mut self, vtl: GuestVtl, sints: u16) {
+    pub(crate) fn hcvm_deliver_synic_messages(&mut self, vtl: GuestVtl, sints: u16) {
         let proxied_sints = self.backing.cvm_state_mut().hv[vtl].synic.proxied_sints();
         let pending_sints =
             self.inner.message_queues[vtl].post_pending_messages(sints, |sint, message| {
