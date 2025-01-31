@@ -34,6 +34,7 @@ impl FlowNode for Node {
         ctx.import::<crate::cfg_cargo_common_flags::Node>();
         ctx.import::<crate::download_cargo_nextest::Node>();
         ctx.import::<crate::install_rust::Node>();
+        ctx.import::<crate::gh_problem_matcher::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -42,6 +43,8 @@ impl FlowNode for Node {
         let nextest_installed = ctx.reqv(crate::download_cargo_nextest::Request::InstallWithCargo);
 
         let rust_toolchain = ctx.reqv(crate::install_rust::Request::GetRustupToolchain);
+
+        let problem_matcher = ctx.reqv(crate::gh_problem_matcher::Request);
 
         for Request {
             friendly_label,
@@ -75,12 +78,14 @@ impl FlowNode for Node {
                     let archive_file = archive_file.claim(ctx);
                     let packages = packages.claim(ctx);
                     let extra_env = extra_env.claim(ctx);
+                    let problem_matcher = problem_matcher.clone().claim(ctx);
                     move |rt| {
                         let cargo_flags = rt.read(cargo_flags);
                         let working_dir = rt.read(working_dir);
                         let rust_toolchain = rt.read(rust_toolchain);
                         let packages = rt.read(packages);
                         let extra_env = rt.read(extra_env);
+                        let problem_matcher = rt.read(problem_matcher);
 
                         let rust_toolchain = rust_toolchain.map(|s| format!("+{s}"));
                         let (build_args, build_env) =
@@ -118,7 +123,10 @@ impl FlowNode for Node {
                             cmd = cmd.env(k, v);
                         }
 
-                        cmd.run()?;
+                        {
+                            let _enabled_matcher = problem_matcher.enable();
+                            cmd.run()?;
+                        }
 
                         rt.write(archive_file, &out_archive_file);
 

@@ -391,6 +391,9 @@ jobs:
     - name: report common cargo flags
       run: flowey.exe e 1 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
+    - name: write GitHub problem matchers
+      run: flowey.exe e 1 flowey_lib_common::gh_problem_matcher 0
+      shell: bash
     - name: construct cargo doc command
       run: flowey.exe e 1 flowey_lib_common::run_cargo_doc 0
       shell: bash
@@ -529,6 +532,9 @@ jobs:
       shell: bash
     - name: report common cargo flags
       run: flowey e 10 flowey_lib_common::cfg_cargo_common_flags 0
+      shell: bash
+    - name: write GitHub problem matchers
+      run: flowey e 10 flowey_lib_common::gh_problem_matcher 0
       shell: bash
     - name: checking if packages need to be installed
       run: flowey e 10 flowey_lib_common::install_dist_pkg 0
@@ -984,6 +990,9 @@ jobs:
     - name: report common cargo flags
       run: flowey e 11 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
+    - name: write GitHub problem matchers
+      run: flowey e 11 flowey_lib_common::gh_problem_matcher 0
+      shell: bash
     - name: check if hvlite needs to be cloned
       run: flowey e 11 flowey_lib_common::git_checkout 0
       shell: bash
@@ -1398,6 +1407,9 @@ jobs:
       shell: bash
     - name: report common cargo flags
       run: flowey e 12 flowey_lib_common::cfg_cargo_common_flags 0
+      shell: bash
+    - name: write GitHub problem matchers
+      run: flowey e 12 flowey_lib_common::gh_problem_matcher 0
       shell: bash
     - name: check if hvlite needs to be cloned
       run: flowey e 12 flowey_lib_common::git_checkout 0
@@ -1942,6 +1954,9 @@ jobs:
     - name: report common cargo flags
       run: flowey.exe e 13 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
+    - name: write GitHub problem matchers
+      run: flowey.exe e 13 flowey_lib_common::gh_problem_matcher 0
+      shell: bash
     - name: check if hvlite needs to be cloned
       run: flowey.exe e 13 flowey_lib_common::git_checkout 0
       shell: bash
@@ -2266,6 +2281,9 @@ jobs:
       shell: bash
     - name: report common cargo flags
       run: flowey e 14 flowey_lib_common::cfg_cargo_common_flags 0
+      shell: bash
+    - name: write GitHub problem matchers
+      run: flowey e 14 flowey_lib_common::gh_problem_matcher 0
       shell: bash
     - name: checking if packages need to be installed
       run: flowey e 14 flowey_lib_common::install_dist_pkg 0
@@ -2640,6 +2658,9 @@ jobs:
     - name: report common cargo flags
       run: flowey e 15 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
+    - name: write GitHub problem matchers
+      run: flowey e 15 flowey_lib_common::gh_problem_matcher 0
+      shell: bash
     - name: check if hvlite needs to be cloned
       run: flowey e 15 flowey_lib_common::git_checkout 0
       shell: bash
@@ -3002,6 +3023,9 @@ jobs:
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
       shell: bash
+    - name: write GitHub problem matchers
+      run: flowey.exe e 16 flowey_lib_common::gh_problem_matcher 0
+      shell: bash
     - name: report common cargo flags
       run: flowey.exe e 16 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
@@ -3265,6 +3289,9 @@ jobs:
         echo "${{ runner.temp }}\\used_artifacts\\x64-windows-openvmm" | flowey.exe v 17 'artifact_use_from_x64-windows-openvmm' --update-from-stdin --is-raw-string
         echo "${{ runner.temp }}\\used_artifacts\\x64-windows-pipette" | flowey.exe v 17 'artifact_use_from_x64-windows-pipette' --update-from-stdin --is-raw-string
         echo "${{ runner.temp }}\\used_artifacts\\x64-windows-vmm-tests-archive" | flowey.exe v 17 'artifact_use_from_x64-windows-vmm-tests-archive' --update-from-stdin --is-raw-string
+      shell: bash
+    - name: write GitHub problem matchers
+      run: flowey.exe e 17 flowey_lib_common::gh_problem_matcher 0
       shell: bash
     - name: create cargo-nextest cache dir
       run: flowey.exe e 17 flowey_lib_common::download_cargo_nextest 0
@@ -3628,6 +3655,9 @@ jobs:
         echo "${{ runner.temp }}\\used_artifacts\\x64-windows-pipette" | flowey.exe v 18 'artifact_use_from_x64-windows-pipette' --update-from-stdin --is-raw-string
         echo "${{ runner.temp }}\\used_artifacts\\x64-windows-vmm-tests-archive" | flowey.exe v 18 'artifact_use_from_x64-windows-vmm-tests-archive' --update-from-stdin --is-raw-string
       shell: bash
+    - name: write GitHub problem matchers
+      run: flowey.exe e 18 flowey_lib_common::gh_problem_matcher 0
+      shell: bash
     - name: create cargo-nextest cache dir
       run: flowey.exe e 18 flowey_lib_common::download_cargo_nextest 0
       shell: bash
@@ -3985,6 +4015,9 @@ jobs:
       shell: bash
     - name: ensure /dev/kvm is accessible
       run: flowey e 19 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: write GitHub problem matchers
+      run: flowey e 19 flowey_lib_common::gh_problem_matcher 0
       shell: bash
     - name: create cargo-nextest cache dir
       run: flowey e 19 flowey_lib_common::download_cargo_nextest 0
@@ -4457,6 +4490,9 @@ jobs:
     - name: report common cargo flags
       run: flowey e 2 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
+    - name: write GitHub problem matchers
+      run: flowey e 2 flowey_lib_common::gh_problem_matcher 0
+      shell: bash
     - name: construct cargo doc command
       run: flowey e 2 flowey_lib_common::run_cargo_doc 0
       shell: bash
@@ -4616,6 +4652,9 @@ jobs:
         echo "${{ runner.temp }}\\used_artifacts\\aarch64-windows-openvmm" | flowey.exe v 20 'artifact_use_from_aarch64-windows-openvmm' --update-from-stdin --is-raw-string
         echo "${{ runner.temp }}\\used_artifacts\\aarch64-windows-pipette" | flowey.exe v 20 'artifact_use_from_aarch64-windows-pipette' --update-from-stdin --is-raw-string
         echo "${{ runner.temp }}\\used_artifacts\\aarch64-windows-vmm-tests-archive" | flowey.exe v 20 'artifact_use_from_aarch64-windows-vmm-tests-archive' --update-from-stdin --is-raw-string
+      shell: bash
+    - name: write GitHub problem matchers
+      run: flowey.exe e 20 flowey_lib_common::gh_problem_matcher 0
       shell: bash
     - name: create cargo-nextest cache dir
       run: flowey.exe e 20 flowey_lib_common::download_cargo_nextest 0
@@ -5222,6 +5261,9 @@ jobs:
     - name: report common cargo flags
       run: flowey.exe e 3 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
+    - name: write GitHub problem matchers
+      run: flowey.exe e 3 flowey_lib_common::gh_problem_matcher 0
+      shell: bash
     - name: set '-Dwarnings' in .cargo/config.toml
       run: flowey.exe e 3 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
       shell: bash
@@ -5412,6 +5454,9 @@ jobs:
     - name: report common cargo flags
       run: flowey e 4 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
+    - name: write GitHub problem matchers
+      run: flowey e 4 flowey_lib_common::gh_problem_matcher 0
+      shell: bash
     - name: set '-Dwarnings' in .cargo/config.toml
       run: flowey e 4 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
       shell: bash
@@ -5593,6 +5638,9 @@ jobs:
       shell: bash
     - name: report common cargo flags
       run: flowey.exe e 5 flowey_lib_common::cfg_cargo_common_flags 0
+      shell: bash
+    - name: write GitHub problem matchers
+      run: flowey.exe e 5 flowey_lib_common::gh_problem_matcher 0
       shell: bash
     - name: check if hvlite needs to be cloned
       run: flowey.exe e 5 flowey_lib_common::git_checkout 0
@@ -5890,6 +5938,9 @@ jobs:
     - name: report common cargo flags
       run: flowey.exe e 6 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
+    - name: write GitHub problem matchers
+      run: flowey.exe e 6 flowey_lib_common::gh_problem_matcher 0
+      shell: bash
     - name: create gh-release-download cache dir
       run: flowey.exe e 6 flowey_lib_common::download_gh_release 0
       shell: bash
@@ -6180,6 +6231,9 @@ jobs:
       shell: bash
     - name: report common cargo flags
       run: flowey.exe e 7 flowey_lib_common::cfg_cargo_common_flags 0
+      shell: bash
+    - name: write GitHub problem matchers
+      run: flowey.exe e 7 flowey_lib_common::gh_problem_matcher 0
       shell: bash
     - name: check if hvlite needs to be cloned
       run: flowey.exe e 7 flowey_lib_common::git_checkout 0
@@ -6479,6 +6533,9 @@ jobs:
       shell: bash
     - name: report common cargo flags
       run: flowey.exe e 8 flowey_lib_common::cfg_cargo_common_flags 0
+      shell: bash
+    - name: write GitHub problem matchers
+      run: flowey.exe e 8 flowey_lib_common::gh_problem_matcher 0
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey.exe e 8 flowey_lib_common::download_gh_release 0
@@ -6781,6 +6838,9 @@ jobs:
       shell: bash
     - name: report common cargo flags
       run: flowey e 9 flowey_lib_common::cfg_cargo_common_flags 0
+      shell: bash
+    - name: write GitHub problem matchers
+      run: flowey e 9 flowey_lib_common::gh_problem_matcher 0
       shell: bash
     - name: checking if packages need to be installed
       run: flowey e 9 flowey_lib_common::install_dist_pkg 0

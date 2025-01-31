@@ -95,11 +95,14 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::cfg_cargo_common_flags::Node>();
         ctx.import::<crate::install_rust::Node>();
+        ctx.import::<crate::gh_problem_matcher::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let rust_toolchain = ctx.reqv(crate::install_rust::Request::GetRustupToolchain);
         let flags = ctx.reqv(crate::cfg_cargo_common_flags::Request::GetFlags);
+
+        let problem_matcher = ctx.reqv(crate::gh_problem_matcher::Request);
 
         for Request {
             in_folder,
@@ -125,11 +128,13 @@ impl FlowNode for Node {
                 let in_folder = in_folder.claim(ctx);
                 let output = output.claim(ctx);
                 let extra_env = extra_env.claim(ctx);
+                let problem_matcher = problem_matcher.clone().claim(ctx);
                 move |rt| {
                     let rust_toolchain = rt.read(rust_toolchain);
                     let flags = rt.read(flags);
                     let in_folder = rt.read(in_folder);
                     let with_env = extra_env.map(|x| rt.read(x)).unwrap_or_default();
+                    let problem_matcher = rt.read(problem_matcher);
 
                     let crate::cfg_cargo_common_flags::Flags { locked, verbose } = flags;
 
@@ -261,7 +266,11 @@ impl FlowNode for Node {
                         log::info!("extra_env: {key}={val}");
                         cmd = cmd.env(key, val);
                     }
-                    cmd.run()?;
+
+                    {
+                        let _enabled_matcher = problem_matcher.enable();
+                        cmd.run()?;
+                    }
 
                     sh.change_dir(out_dir.clone());
 

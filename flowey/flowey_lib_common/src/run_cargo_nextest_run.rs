@@ -146,6 +146,7 @@ impl FlowNode for Node {
         ctx.import::<crate::cfg_cargo_common_flags::Node>();
         ctx.import::<crate::download_cargo_nextest::Node>();
         ctx.import::<crate::install_rust::Node>();
+        ctx.import::<crate::gh_problem_matcher::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -166,6 +167,8 @@ impl FlowNode for Node {
         }
 
         let terminate_job_on_fail = terminate_job_on_fail.unwrap_or(false);
+
+        let problem_matcher = ctx.reqv(crate::gh_problem_matcher::Request);
 
         for Run {
             friendly_name,
@@ -219,6 +222,7 @@ impl FlowNode for Node {
             ctx.emit_rust_step(format!("run '{friendly_name}' nextest tests"), |ctx| {
                 pre_run_deps.claim(ctx);
 
+                let problem_matcher = problem_matcher.clone().claim(ctx);
                 let run_kind_deps = run_kind_deps.claim(ctx);
                 let working_dir = working_dir.claim(ctx);
                 let config_file = config_file.claim(ctx);
@@ -232,6 +236,7 @@ impl FlowNode for Node {
                 move |rt| {
                     let working_dir = rt.read(working_dir);
                     let config_file = rt.read(config_file);
+                    let problem_matcher = rt.read(problem_matcher);
                     let mut with_env = extra_env.map(|x| rt.read(x)).unwrap_or_default();
 
                     // first things first - determine if junit is supported by
@@ -483,15 +488,18 @@ impl FlowNode for Node {
                     let mut command = std::process::Command::new(&argv0);
                     command.args(&args).envs(with_env).current_dir(&working_dir);
 
-                    let mut child = command.spawn().with_context(|| {
-                        format!(
-                            "failed to spawn '{} {}'",
-                            argv0.to_string_lossy(),
-                            arg_string()
-                        )
-                    })?;
+                    let status = {
+                        let _enabled_matcher = problem_matcher.enable();
+                        let mut child = command.spawn().with_context(|| {
+                            format!(
+                                "failed to spawn '{} {}'",
+                                argv0.to_string_lossy(),
+                                arg_string()
+                            )
+                        })?;
 
-                    let status = child.wait()?;
+                        child.wait()?
+                    };
 
                     #[cfg(unix)]
                     if let Some((soft, hard)) = old_core_rlimits {

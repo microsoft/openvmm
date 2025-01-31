@@ -6,6 +6,7 @@
 //! global cargo flags (e.g: --verbose, --locked), ensuring base Rust
 //! dependencies are installed, etc...
 
+use crate::gh_problem_matcher::ProblemMatcher;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -14,6 +15,7 @@ pub struct CargoDocCommands {
     cmds: Vec<Vec<String>>,
     cargo_work_dir: PathBuf,
     cargo_out_dir: PathBuf,
+    problem_matcher: ProblemMatcher,
 }
 
 impl CargoDocCommands {
@@ -37,16 +39,20 @@ impl CargoDocCommands {
             cmds,
             cargo_work_dir,
             cargo_out_dir,
+            problem_matcher,
         } = self;
 
         let out_dir = sh.current_dir();
         sh.change_dir(cargo_work_dir);
 
-        for mut cmd in cmds {
-            let argv0 = cmd.remove(0);
-            let cmd = xshell::cmd!(sh, "{argv0} {cmd...}");
-            let cmd = f(cmd);
-            cmd.run()?;
+        {
+            let _enabled_matcher = problem_matcher.enable();
+            for mut cmd in cmds {
+                let argv0 = cmd.remove(0);
+                let cmd = xshell::cmd!(sh, "{argv0} {cmd...}");
+                let cmd = f(cmd);
+                cmd.run()?;
+            }
         }
 
         let final_dir = out_dir.join("cargo-doc-out");
@@ -108,11 +114,13 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::cfg_cargo_common_flags::Node>();
         ctx.import::<crate::install_rust::Node>();
+        ctx.import::<crate::gh_problem_matcher::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let rust_toolchain = ctx.reqv(crate::install_rust::Request::GetRustupToolchain);
         let flags = ctx.reqv(crate::cfg_cargo_common_flags::Request::GetFlags);
+        let problem_matcher = ctx.reqv(crate::gh_problem_matcher::Request);
 
         for Request {
             in_folder,
@@ -161,11 +169,13 @@ impl FlowNode for Node {
                 let flags = flags.clone().claim(ctx);
                 let in_folder = in_folder.claim(ctx);
                 let write_doc_cmd = cargo_cmd.claim(ctx);
+                let problem_matcher = problem_matcher.clone().claim(ctx);
 
                 move |rt| {
                     let rust_toolchain = rt.read(rust_toolchain);
                     let flags = rt.read(flags);
                     let in_folder = rt.read(in_folder);
+                    let problem_matcher = rt.read(problem_matcher);
 
                     let crate::cfg_cargo_common_flags::Flags { locked, verbose } = flags;
 
@@ -253,6 +263,7 @@ impl FlowNode for Node {
                                 .join(target_triple.to_string())
                                 .join("doc"),
                         ),
+                        problem_matcher,
                     };
 
                     rt.write(write_doc_cmd, &cmd);

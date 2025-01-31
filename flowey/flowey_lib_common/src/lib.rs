@@ -31,6 +31,7 @@ pub mod download_mdbook_mermaid;
 pub mod download_nuget_exe;
 pub mod download_protoc;
 pub mod gh_download_azure_key_vault_secret;
+pub mod gh_problem_matcher;
 pub mod gh_task_azure_login;
 pub mod git_checkout;
 pub mod install_azure_cli;
