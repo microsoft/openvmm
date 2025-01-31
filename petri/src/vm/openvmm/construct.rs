@@ -183,7 +183,6 @@ impl PetriVmConfigOpenVmm {
                     Some(Vtl2Config {
                         vtl0_alias_map: false, // TODO: enable when OpenVMM supports it for DMA
                         late_map_vtl0_memory: Some(LateMapVtl0MemoryPolicy::InjectException),
-                        vtl2_emulates_apic: false,
                     }),
                     Some(VmbusConfig {
                         vsock_listener: Some(vtl2_vsock_listener),

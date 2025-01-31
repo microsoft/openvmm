@@ -6,15 +6,14 @@
 // UNSAFETY: Managing information stored as pointers for debugging purposes.
 #![expect(unsafe_code)]
 
+use loan_cell::LoanCell;
 use parking_lot::Mutex;
 use slab::Slab;
-use std::cell::Cell;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::future::Future;
 use std::panic::Location;
 use std::pin::Pin;
-use std::ptr::null;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicUsize;
@@ -76,22 +75,16 @@ impl TaskMetadata {
         self.id.store(id, Ordering::Relaxed);
     }
 
-    fn pend(&self, old_task: *const Self) {
+    fn pend(&self) {
         self.state.store(TASK_STATE_WAITING, Ordering::Relaxed);
-        CURRENT_TASK.with(|task| {
-            let this_task = task.replace(old_task);
-            assert_eq!(this_task, std::ptr::from_ref(self));
-        })
     }
 
     fn done(&self) {
         self.state.store(TASK_STATE_DONE, Ordering::Relaxed);
     }
 
-    fn run(&self) -> *const Self {
-        let old_task = CURRENT_TASK.with(|task| task.replace(std::ptr::from_ref(self)));
+    fn run(&self) {
         self.state.store(TASK_STATE_RUNNING, Ordering::Relaxed);
-        old_task
     }
 
     /// The name of the spawned task.
@@ -265,12 +258,12 @@ impl<Fut: Future> Future for TaskFuture<'_, Fut> {
         // SAFETY: projecting this type for pinned access to the future. The
         // future will not be moved or dropped.
         let this = unsafe { self.get_unchecked_mut() };
-        let old_task = this.metadata.run();
+        this.metadata.run();
         // SAFETY: the future is pinned since `self` is pinned.
         let future = unsafe { Pin::new_unchecked(&mut this.future) };
-        let r = future.poll(cx);
+        let r = CURRENT_TASK.with(|task| task.lend(this.metadata, || future.poll(cx)));
         if r.is_pending() {
-            this.metadata.pend(old_task);
+            this.metadata.pend();
         } else {
             this.metadata.done();
         }
@@ -353,23 +346,12 @@ pub trait SpawnLocal {
 }
 
 thread_local! {
-    static CURRENT_TASK: Cell<*const TaskMetadata> = const { Cell::new(null()) };
+    static CURRENT_TASK: LoanCell<TaskMetadata> = const { LoanCell::new() };
 }
 
 /// Calls `f` with the current task metadata, if there is a current task.
 pub fn with_current_task_metadata<F: FnOnce(Option<&TaskMetadata>) -> R, R>(f: F) -> R {
-    CURRENT_TASK.with(|task| {
-        let task = task.get();
-        let metadata = if !task.is_null() {
-            // SAFETY: `CURRENT_TASK` is set if and only if a task is actively
-            // running, so it is safe to dereference (as long as it is not accessed
-            // across an await point)).
-            Some(unsafe { &*task })
-        } else {
-            None
-        };
-        f(metadata)
-    })
+    CURRENT_TASK.with(|task| task.borrow(f))
 }
 
 impl<T: ?Sized + Spawn> Spawn for &'_ T {

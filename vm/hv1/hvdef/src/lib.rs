@@ -486,12 +486,6 @@ impl core::error::Error for HvError {}
 /// The error is an `HvError` and the success value `T` is the output data of the hypercall.
 pub type HvResult<T> = Result<T, HvError>;
 
-/// Hypervisor result type for rep hypercalls. These hypercalls have either no or only rep output
-/// data, which is passed separately from the result. The error is an a tuple consisting of an
-/// `HvError` and the number of elements successfully processed prior to the error being returned.
-/// An `Ok` result implies that all input elements were processed successfully.
-pub type HvRepResult = Result<(), (HvError, usize)>;
-
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Vtl {
@@ -747,23 +741,20 @@ pub mod hypercall {
         /// The variable header size, in qwords.
         #[bits(10)]
         pub variable_header_size: usize,
-        /// Reserved, must be zero.
         #[bits(4)]
-        pub _rsvd0: usize,
+        _rsvd0: u8,
         /// Specifies that the hypercall should be handled by the L0 hypervisor in a nested environment.
         pub nested: bool,
         /// The element count for rep hypercalls.
         #[bits(12)]
         pub rep_count: usize,
-        /// Reserved, must be zero.
         #[bits(4)]
-        pub _rsvd1: usize,
+        _rsvd1: u8,
         /// The first element to start processing in a rep hypercall.
         #[bits(12)]
         pub rep_start: usize,
-        /// Reserved, must be zero.
         #[bits(4)]
-        pub _rsvd2: usize,
+        _rsvd2: u8,
     }
 
     /// The hypercall output value returned to the guest.
@@ -775,7 +766,7 @@ pub mod hypercall {
         pub call_status: u16,
         pub rsvd: u16,
         #[bits(12)]
-        pub elements_processed: u16,
+        pub elements_processed: usize,
         #[bits(20)]
         pub rsvd2: u32,
     }

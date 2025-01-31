@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::OpenHclServicingFlags;
+use get_resources::ged::GuestServicingFlags;
 use hvlite_defs::config::Config;
 use hvlite_defs::rpc::PulseSaveRestoreError;
 use hvlite_defs::rpc::VmRpc;
@@ -59,9 +61,18 @@ impl Worker {
     pub(crate) async fn restart_openhcl(
         &self,
         send: &mesh::Sender<get_resources::ged::GuestEmulationRequest>,
+        flags: OpenHclServicingFlags,
         file: std::fs::File,
     ) -> anyhow::Result<()> {
-        hvlite_helpers::underhill::service_underhill(&self.rpc, send, file).await
+        hvlite_helpers::underhill::service_underhill(
+            &self.rpc,
+            send,
+            GuestServicingFlags {
+                nvme_keepalive: flags.enable_nvme_keepalive,
+            },
+            file,
+        )
+        .await
     }
 
     pub(crate) async fn inspect_all(&self) -> String {

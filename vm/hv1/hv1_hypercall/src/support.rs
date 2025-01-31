@@ -8,6 +8,7 @@ use guestmem::GuestMemoryError;
 use hvdef::hypercall::Control;
 use hvdef::hypercall::HypercallOutput;
 use hvdef::HvError;
+use hvdef::HvResult;
 use hvdef::HypercallCode;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PAGE_SIZE_USIZE;
@@ -51,7 +52,6 @@ pub struct HypercallParameters<'a> {
     control: Control,
     input: &'a [u8],
     output: &'a mut [u8],
-    elements_processed: Option<&'a mut usize>,
 }
 
 /// `[u64; 2]` buffer aligned to 16 bytes for hypercall inputs.
@@ -147,15 +147,23 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
     /// Complete hypercall handling.
     fn complete(&mut self, output: Option<HypercallOutput>) {
         if let Some(output) = output {
-            self.handler.set_result(output.into());
-            self.handler.advance_ip();
+            if output.call_status() == HvError::Timeout.0 {
+                self.handler.retry(
+                    self.control
+                        .with_rep_start(output.elements_processed())
+                        .into(),
+                );
+            } else {
+                self.handler.set_result(output.into());
+                self.handler.advance_ip();
+            }
         }
     }
 
     fn dispatch_dyn<H>(
         &mut self,
         data: &HypercallData,
-        dispatch: fn(&mut H, HypercallParameters<'_>) -> hvdef::HvResult<()>,
+        dispatch: fn(&mut H, HypercallParameters<'_>) -> HypercallOutput,
     ) -> Option<HypercallOutput>
     where
         T: AsHandler<H>,
@@ -167,7 +175,7 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
     fn dispatch_inner<H>(
         &mut self,
         data: &HypercallData,
-        dispatch: fn(&mut H, HypercallParameters<'_>) -> hvdef::HvResult<()>,
+        dispatch: fn(&mut H, HypercallParameters<'_>) -> HypercallOutput,
     ) -> Result<Option<HypercallOutput>, HvError>
     where
         T: AsHandler<H>,
@@ -175,63 +183,55 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
         tracing::trace!(code = ?self.code(), "hypercall");
         let control = self.control;
 
-        let (input_len, output_start, output_len, out_elem_size, mut elements_processed) =
-            match *data {
-                HypercallData::Vtl => {
-                    let input = self.handler.vtl_input();
-                    let _ = (dispatch)(
-                        self.handler.as_handler(),
-                        HypercallParameters {
-                            control,
-                            input: input.as_bytes(),
-                            output: &mut [],
-                            elements_processed: None,
-                        },
-                    );
-                    return Ok(None);
+        let (input_len, output_start, output_len, out_elem_size) = match *data {
+            HypercallData::Vtl => {
+                let input = self.handler.vtl_input();
+                let _ = (dispatch)(
+                    self.handler.as_handler(),
+                    HypercallParameters {
+                        control,
+                        input: input.as_bytes(),
+                        output: &mut [],
+                    },
+                );
+                return Ok(None);
+            }
+            HypercallData::Simple {
+                input_size,
+                output_size,
+                is_variable,
+            } => {
+                if control.rep_count() != 0
+                    || control.rep_start() != 0
+                    || (!is_variable && control.variable_header_size() != 0)
+                {
+                    return Err(HypercallParseError::InvalidControl(control).into());
                 }
-                HypercallData::Simple {
-                    input_size,
-                    output_size,
-                    is_variable,
-                } => {
-                    if control.rep_count() != 0
-                        || control.rep_start() != 0
-                        || (!is_variable && control.variable_header_size() != 0)
-                    {
-                        return Err(HypercallParseError::InvalidControl(control).into());
-                    }
 
-                    let input_size = input_size + control.variable_header_size() * 8;
-                    (input_size, 0, output_size, 0, None)
+                let input_size = input_size + control.variable_header_size() * 8;
+                (input_size, 0, output_size, 0)
+            }
+            HypercallData::Rep {
+                header_size,
+                input_element_size,
+                output_element_size,
+                is_variable,
+            } => {
+                if control.rep_count() == 0
+                    || (!is_variable && control.variable_header_size() != 0)
+                    || control.rep_start() >= control.rep_count()
+                {
+                    return Err(HypercallParseError::InvalidControl(control).into());
                 }
-                HypercallData::Rep {
-                    header_size,
-                    input_element_size,
-                    output_element_size,
-                    is_variable,
-                } => {
-                    if control.rep_count() == 0
-                        || (!is_variable && control.variable_header_size() != 0)
-                        || control.rep_start() >= control.rep_count()
-                    {
-                        return Err(HypercallParseError::InvalidControl(control).into());
-                    }
 
-                    let input_len = header_size
-                        + control.variable_header_size() * 8
-                        + input_element_size * control.rep_count();
-                    let output_start = output_element_size * control.rep_start();
-                    let output_len = output_element_size * control.rep_count();
-                    (
-                        input_len,
-                        output_start,
-                        output_len,
-                        output_element_size,
-                        Some(0),
-                    )
-                }
-            };
+                let input_len = header_size
+                    + control.variable_header_size() * 8
+                    + input_element_size * control.rep_count();
+                let output_start = output_element_size * control.rep_start();
+                let output_len = output_element_size * control.rep_count();
+                (input_len, output_start, output_len, output_element_size)
+            }
+        };
 
         let mut input_buffer = HypercallAlignedPage::new_zeroed();
         let mut output_buffer = HypercallAlignedPage::new_zeroed();
@@ -249,12 +249,10 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
             let input = &mut input_buffer.0[..input_regpairs];
             let output = &mut output_buffer.0[..output_regpairs];
 
-            let completed_output_size = out_elem_size * control.rep_start();
-
             // Read in the input.
             let output_start_index = self.handler.fast_input(input, output_regpairs);
-            let completed_output_pairs = completed_output_size / 16;
-            let (new_output_index, completed_output_pairs) = match completed_output_size % 16 {
+            let completed_output_pairs = output_start / 16;
+            let (new_output_index, completed_output_pairs) = match output_start % 16 {
                 0 => (
                     output_start_index + completed_output_pairs,
                     completed_output_pairs,
@@ -278,19 +276,21 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
                     control,
                     input: &input.as_bytes()[..input_len],
                     output: &mut output.as_mut_bytes()[..output_len],
-                    elements_processed: elements_processed.as_mut(),
                 },
             );
 
             // For rep hypercalls, always write back the completed number of reps (which may be 0).
             // For simple hypercalls, on success write back all output. On failure (and timeout,
             // which is handled as a failure), nothing is written back.
-            let current_output_size = elements_processed.map_or_else(
-                || if ret.is_ok() { output_len } else { 0 }, // Simple calls.
-                |n| n * out_elem_size,                       // Rep calls.
-            );
+            let output_end = if out_elem_size > 0 {
+                out_elem_size * ret.elements_processed()
+            } else if ret.call_status() == 0 {
+                output_len
+            } else {
+                0
+            };
 
-            let output_regpairs = (current_output_size + completed_output_size + 15) / 16;
+            let output_regpairs = (output_end + 15) / 16;
 
             // Only need to write back output regpairs that were not previously completely written
             // out, at the new output location.
@@ -332,19 +332,20 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
                     control,
                     input,
                     output,
-                    elements_processed: elements_processed.as_mut(),
                 },
             );
 
             // For rep hypercalls, always write back the completed number of reps (which may be 0).
             // For simple hypercalls, on success write back all output. On failure (and timeout,
             // which is handled as a failure), nothing is written back.
-            let current_output_size = elements_processed.map_or_else(
-                || if ret.is_ok() { output_len } else { 0 }, // Simple calls.
-                |n| n * out_elem_size,                       // Rep calls.
-            );
+            let output_end = if out_elem_size > 0 {
+                out_elem_size * ret.elements_processed()
+            } else if ret.call_status() == 0 {
+                output_len
+            } else {
+                0
+            };
 
-            let output_end = output_start + current_output_size;
             self.guest_memory
                 .write_at(
                     output_gpa.wrapping_add(output_start as u64),
@@ -355,34 +356,11 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
             ret
         };
 
-        if ret.is_ok() {
-            debug_assert_eq!(
-                elements_processed.unwrap_or(0),
-                control.rep_count() - control.rep_start()
-            );
+        if ret.call_status() == 0 {
+            debug_assert_eq!(ret.elements_processed(), control.rep_count());
         }
 
-        let ret = match ret {
-            Err(HvError::Timeout) => {
-                self.handler.retry(
-                    control
-                        .with_rep_start(control.rep_start() + elements_processed.unwrap_or(0))
-                        .into(),
-                );
-                None
-            }
-            _ => Some(
-                HypercallOutput::new()
-                    .with_call_status(ret.map_or_else(|e| e.0, |_| 0))
-                    .with_elements_processed(
-                        (control.rep_start() + elements_processed.unwrap_or(0)) as u16,
-                    ),
-            ),
-        };
-
-        // Even failures are wrapped with Ok here since the error has already been transformed into
-        // a HypercallOutput.
-        Ok(ret)
+        Ok(Some(ret))
     }
 }
 
@@ -493,7 +471,7 @@ pub trait HypercallDefinition {
 /// A trait to dispatch an individual hypercall.
 pub trait HypercallDispatch<T> {
     /// Dispatch this hypercall.
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> hvdef::HvResult<()>;
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput;
 }
 
 /// A simple, non-variable hypercall.
@@ -510,6 +488,20 @@ where
             FromBytes::ref_from_prefix(params.input).unwrap().0, // todo: zerocopy: ref-from-prefix: use-rest-of-range, err
             FromBytes::mut_from_prefix(params.output).unwrap().0, // todo: zerocopy: mut-from-prefix: use-rest-of-range, err
         )
+    }
+
+    pub fn run(
+        params: HypercallParameters<'_>,
+        f: impl FnOnce(&In) -> HvResult<Out>,
+    ) -> HypercallOutput {
+        let (input, output) = Self::parse(params);
+        match f(input) {
+            Ok(r) => {
+                *output = r;
+                HypercallOutput::SUCCESS
+            }
+            Err(e) => HypercallOutput::from(e),
+        }
     }
 }
 
@@ -540,6 +532,20 @@ where
             Out::mut_from_prefix(params.output).unwrap().0, //todo: zerocopy: err
         )
     }
+
+    pub fn run(
+        params: HypercallParameters<'_>,
+        f: impl FnOnce(&In, &[u64]) -> HvResult<Out>,
+    ) -> HypercallOutput {
+        let (input, var_header, output) = Self::parse(params);
+        match f(input, var_header) {
+            Ok(r) => {
+                *output = r;
+                HypercallOutput::SUCCESS
+            }
+            Err(e) => HypercallOutput::from(e),
+        }
+    }
 }
 
 impl<In, Out, const CODE: u16> HypercallDefinition for VariableHypercall<In, Out, CODE> {
@@ -555,6 +561,12 @@ impl<In, Out, const CODE: u16> HypercallDefinition for VariableHypercall<In, Out
 /// A rep hypercall.
 pub struct RepHypercall<Hdr, In, Out, const CODE: u16>(PhantomData<(Hdr, In, Out)>);
 
+/// Hypervisor result type for rep hypercalls. These hypercalls have either no or only rep output
+/// data, which is passed separately from the result. The error is an a tuple consisting of an
+/// `HvError` and the number of elements successfully processed prior to the error being returned.
+/// An `Ok` result implies that all input elements were processed successfully.
+pub type HvRepResult = Result<(), (HvError, usize)>;
+
 impl<Hdr, In, Out, const CODE: u16> RepHypercall<Hdr, In, Out, CODE>
 where
     Hdr: IntoBytes + FromBytes + Immutable + KnownLayout,
@@ -562,8 +574,8 @@ where
     Out: IntoBytes + FromBytes + Immutable + KnownLayout,
 {
     /// Parses the hypercall parameters to input and output types.
-    pub fn parse(params: HypercallParameters<'_>) -> (&Hdr, &[In], &mut [Out], &mut usize) {
-        let (header, rest) = Ref::<_, Hdr>::from_prefix(params.input).unwrap();
+    pub fn parse(params: HypercallParameters<'_>) -> (&Hdr, &[In], &mut [Out]) {
+        let (header, rest) = Ref::<_, Hdr>::from_prefix(params.input).unwrap().unwrap();
         let input = if size_of::<In>() == 0 {
             &[]
         } else {
@@ -584,12 +596,25 @@ where
             .0[params.control.rep_start()..]
         };
 
-        (
-            Ref::into_ref(header),
-            input,
-            output,
-            params.elements_processed.unwrap(),
-        )
+        (Ref::into_ref(header), input, output)
+    }
+
+    pub fn run(
+        params: HypercallParameters<'_>,
+        f: impl FnOnce(&Hdr, &[In], &mut [Out]) -> HvRepResult,
+    ) -> HypercallOutput {
+        let control = params.control;
+        let (header, input, output) = Self::parse(params);
+        match f(header, input, output) {
+            Ok(()) => HypercallOutput::SUCCESS.with_elements_processed(control.rep_count()),
+            Err((e, reps)) => {
+                assert!(
+                    control.rep_start() + reps < control.rep_count(),
+                    "more reps processed than requested"
+                );
+                HypercallOutput::from(e).with_elements_processed(control.rep_start() + reps)
+            }
+        }
     }
 }
 
@@ -614,7 +639,7 @@ where
     Out: IntoBytes + FromBytes + Immutable + KnownLayout,
 {
     /// Parses the hypercall parameters to input and output types.
-    pub fn parse(params: HypercallParameters<'_>) -> (&Hdr, &[u64], &[In], &mut [Out], &mut usize) {
+    pub fn parse(params: HypercallParameters<'_>) -> (&Hdr, &[u64], &[In], &mut [Out]) {
         let (header, rest) = Ref::<_, Hdr>::from_prefix(params.input).unwrap();
         let (var_header, rest) =
             <[u64]>::ref_from_prefix_with_elems(rest, params.control.variable_header_size())
@@ -637,14 +662,25 @@ where
             .unwrap()
             .0[params.control.rep_start()..]
         };
+        (Ref::into_ref(header), var_header, input, output)
+    }
 
-        (
-            Ref::into_ref(header),
-            var_header,
-            input,
-            output,
-            params.elements_processed.unwrap(),
-        )
+    pub fn run(
+        params: HypercallParameters<'_>,
+        f: impl FnOnce(&Hdr, &[u64], &[In], &mut [Out]) -> HvRepResult,
+    ) -> HypercallOutput {
+        let control = params.control;
+        let (header, var_header, input, output) = Self::parse(params);
+        match f(header, var_header, input, output) {
+            Ok(()) => HypercallOutput::SUCCESS.with_elements_processed(control.rep_count()),
+            Err((e, reps)) => {
+                assert!(
+                    control.rep_start() + reps < control.rep_count(),
+                    "more reps processed than requested"
+                );
+                HypercallOutput::from(e).with_elements_processed(control.rep_start() + reps)
+            }
+        }
     }
 }
 
@@ -667,6 +703,12 @@ pub struct VtlHypercall<const CODE: u16>(());
 impl<const CODE: u16> VtlHypercall<CODE> {
     pub fn parse(params: HypercallParameters<'_>) -> (u64, Control) {
         (u64::read_from_bytes(params.input).unwrap(), params.control)
+    }
+
+    pub fn run(params: HypercallParameters<'_>, f: impl FnOnce(u64, Control)) -> HypercallOutput {
+        let (input, control) = Self::parse(params);
+        f(input, control);
+        HypercallOutput::SUCCESS
     }
 }
 
@@ -717,7 +759,7 @@ pub struct Dispatcher<H> {
 #[doc(hidden)]
 pub struct HypercallHandler<H> {
     data: &'static HypercallData,
-    f: fn(&mut H, HypercallParameters<'_>) -> hvdef::HvResult<()>,
+    f: fn(&mut H, HypercallParameters<'_>) -> HypercallOutput,
 }
 
 impl<H> HypercallHandler<H> {

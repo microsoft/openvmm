@@ -294,6 +294,13 @@ pub enum IsolationType {
     Tdx,
 }
 
+/// Flags controlling servicing behavior.
+#[derive(Default)]
+pub struct OpenHclServicingFlags {
+    /// Preserve DMA memory for NVMe devices if supported.
+    pub enable_nvme_keepalive: bool,
+}
+
 /// Generates a name for the petri test based on the thread name
 pub fn get_test_name() -> anyhow::Result<String> {
     // Use the current thread name for the test name, both cargo-test and

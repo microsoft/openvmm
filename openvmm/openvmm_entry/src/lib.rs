@@ -46,6 +46,7 @@ use futures::StreamExt;
 use futures_concurrency::stream::Merge;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
+use get_resources::ged::GuestServicingFlags;
 use guid::Guid;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
@@ -1275,7 +1276,6 @@ fn vm_config_from_command_line(
                         Some(LateMapVtl0MemoryPolicy::InjectException)
                     }
                 },
-                vtl2_emulates_apic: opt.vtl2_emulates_apic,
             }),
             with_isolation,
             user_mode_hv_enlightenments: opt.no_enlightenments,
@@ -2693,6 +2693,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         hvlite_helpers::underhill::service_underhill(
                             &vm_rpc,
                             resources.ged_rpc.as_ref().context("no GED")?,
+                            GuestServicingFlags::default(),
                             file.into(),
                         )
                         .await?;

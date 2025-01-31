@@ -340,7 +340,7 @@ enum HvcallRepInput<'a, T> {
     /// The actual elements to rep over
     Elements(&'a [T]),
     /// The elements for the rep are implied and only a count is needed
-    Count(usize),
+    Count(u16),
 }
 
 mod ioctls {
@@ -928,7 +928,7 @@ impl MshvHvcall {
                 self.hvcall_rep::<hvdef::hypercall::AcceptGpaPages, u8, u8>(
                     HypercallCode::HvCallAcceptGpaPages,
                     &header,
-                    HvcallRepInput::Count(count as usize),
+                    HvcallRepInput::Count(count as u16),
                     None,
                 )
                 .expect("kernel hypercall submission should always succeed")
@@ -985,12 +985,12 @@ impl MshvHvcall {
 
             match result.result() {
                 Ok(()) => {
-                    assert_eq!(result.elements_processed() as usize, n);
+                    assert_eq!({ result.elements_processed() }, n);
                 }
                 Err(HvError::Timeout) => {}
                 Err(e) => return Err(e),
             }
-            gpns = &gpns[result.elements_processed() as usize..];
+            gpns = &gpns[result.elements_processed()..];
         }
         Ok(())
     }
@@ -1049,7 +1049,7 @@ impl MshvHvcall {
                 // This applies to both simple and rep hypercalls.
                 call_object
                     .control
-                    .set_rep_start(call_object.status.elements_processed().into());
+                    .set_rep_start(call_object.status.elements_processed());
             } else {
                 if call_object.control.rep_count() == 0 {
                     // For non-rep hypercalls, the elements processed field should be 0.
@@ -1061,10 +1061,10 @@ impl MshvHvcall {
                     assert!(
                         (call_object.status.result().is_ok()
                             && call_object.control.rep_count()
-                                == call_object.status.elements_processed().into())
+                                == call_object.status.elements_processed())
                             || (call_object.status.result().is_err()
                                 && call_object.control.rep_count()
-                                    > call_object.status.elements_processed().into())
+                                    > call_object.status.elements_processed())
                     );
                 }
 
@@ -1184,7 +1184,7 @@ impl MshvHvcall {
             HvcallRepInput::Elements(e) => {
                 ([input_header.as_bytes(), e.as_bytes()].concat(), e.len())
             }
-            HvcallRepInput::Count(c) => (input_header.as_bytes().to_vec(), c),
+            HvcallRepInput::Count(c) => (input_header.as_bytes().to_vec(), c.into()),
         };
 
         if input.len() > HV_PAGE_SIZE as usize {
@@ -1706,6 +1706,8 @@ mod private {
 impl<T> Drop for ProcessorRunner<'_, T> {
     fn drop(&mut self) {
         self.flush_deferred_actions();
+        let actions = DEFERRED_ACTIONS.with(|actions| actions.take());
+        assert!(actions.is_none_or(|a| a.is_empty()));
         let old_state = std::mem::replace(&mut *self.vp.state.lock(), VpState::NotRunning);
         assert!(matches!(old_state, VpState::Running(thread) if thread == Pthread::current()));
     }
@@ -1717,8 +1719,10 @@ impl<T> ProcessorRunner<'_, T> {
     /// actions will be lost.
     pub fn flush_deferred_actions(&mut self) {
         if self.sidecar.is_none() {
-            let mut deferred_actions = DEFERRED_ACTIONS.with(|state| state.take().unwrap());
-            deferred_actions.run_actions(self.hcl);
+            DEFERRED_ACTIONS.with(|actions| {
+                let mut actions = actions.borrow_mut();
+                actions.as_mut().unwrap().run_actions(self.hcl);
+            })
         }
     }
 }
@@ -2729,7 +2733,7 @@ impl Hcl {
                     .expect("submitting pin/unpin hypercall should not fail")
             };
 
-            ranges_processed += output.elements_processed() as usize;
+            ranges_processed += output.elements_processed();
 
             output.result().map_err(|e| PinUnpinError {
                 ranges_processed,

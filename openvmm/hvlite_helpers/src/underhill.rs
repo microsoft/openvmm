@@ -5,6 +5,7 @@
 
 use anyhow::Context;
 use get_resources::ged::GuestEmulationRequest;
+use get_resources::ged::GuestServicingFlags;
 use hvlite_defs::rpc::VmRpc;
 use mesh::rpc::RpcSend;
 
@@ -12,6 +13,7 @@ use mesh::rpc::RpcSend;
 pub async fn service_underhill(
     vm_send: &mesh::Sender<VmRpc>,
     send: &mesh::Sender<GuestEmulationRequest>,
+    flags: GuestServicingFlags,
     file: std::fs::File,
 ) -> anyhow::Result<()> {
     // Stage the IGVM file in the VM worker.
@@ -27,7 +29,7 @@ pub async fn service_underhill(
     // blocked while waiting for the guest.
     tracing::debug!("waiting for guest to send saved state");
     let r = send
-        .call_failable(GuestEmulationRequest::SaveGuestVtl2State, ())
+        .call_failable(GuestEmulationRequest::SaveGuestVtl2State, flags)
         .await
         .context("failed to save VTL2 state");
 

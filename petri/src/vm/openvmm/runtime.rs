@@ -6,6 +6,7 @@
 use super::PetriVmResourcesOpenVmm;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::worker::Worker;
+use crate::OpenHclServicingFlags;
 use crate::PetriVm;
 use crate::ShutdownKind;
 use anyhow::Context;
@@ -172,7 +173,11 @@ impl PetriVmOpenVmm {
     );
     petri_vm_fn!(
         /// Restarts OpenHCL.
-        pub async fn restart_openhcl(&mut self, new_openhcl: ArtifactHandle<impl petri_artifacts_common::tags::IsOpenhclIgvm>) -> anyhow::Result<()>
+        pub async fn restart_openhcl(
+            &mut self,
+            new_openhcl: ArtifactHandle<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+            flags: OpenHclServicingFlags
+        ) -> anyhow::Result<()>
     );
     petri_vm_fn!(
         /// Resets the hardware state of the VM, simulating a power cycle.
@@ -345,6 +350,7 @@ impl PetriVmInner {
     async fn restart_openhcl(
         &self,
         new_openhcl: ArtifactHandle<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+        flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()> {
         let ged_send = self
             .resources
@@ -355,7 +361,7 @@ impl PetriVmInner {
         let igvm_path = self.resources.resolver.resolve(new_openhcl);
         let igvm_file = fs_err::File::open(igvm_path).context("failed to open igvm file")?;
         self.worker
-            .restart_openhcl(ged_send, igvm_file.into())
+            .restart_openhcl(ged_send, flags, igvm_file.into())
             .await
     }
 

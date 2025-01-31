@@ -20,7 +20,6 @@ use guestmem::PAGE_SIZE;
 use hvdef::hypercall::Control;
 use hvdef::hypercall::HypercallOutput;
 use hvdef::HvError;
-use hvdef::HvRepResult;
 use hvdef::HvResult;
 use hvdef::HV_PAGE_SIZE_USIZE;
 use open_enum::open_enum;
@@ -308,39 +307,12 @@ impl From<TestResult> for HypercallOutput {
                 HypercallOutput::new().with_call_status(err.0)
             }
             TestResult::Rep(RepResult::Success(rep_count)) => {
-                HypercallOutput::new().with_elements_processed(rep_count as u16)
+                HypercallOutput::new().with_elements_processed(rep_count)
             }
             TestResult::Rep(RepResult::Failure(err, rep_count)) => HypercallOutput::new()
                 .with_call_status(err.0)
-                .with_elements_processed(rep_count as u16),
+                .with_elements_processed(rep_count),
             _ => panic!("Should not be invoked for VTL"),
-        }
-    }
-}
-
-trait MapToHypercallResult {
-    fn map_to_hypercall_result(
-        &self,
-        rep_count: usize,
-        elements_processed: &mut usize,
-    ) -> HvResult<()>;
-}
-
-impl MapToHypercallResult for HvRepResult {
-    fn map_to_hypercall_result(
-        &self,
-        rep_count: usize,
-        elements_processed: &mut usize,
-    ) -> HvResult<()> {
-        match self {
-            Ok(()) => {
-                *elements_processed = rep_count;
-                Ok(())
-            }
-            Err((e, reps)) => {
-                *elements_processed = *reps;
-                Err(*e)
-            }
         }
     }
 }
@@ -391,9 +363,8 @@ struct TestOutput([u8; 16]);
 // Simple hypercall with no input or output.
 type TestNull = SimpleHypercall<(), (), { TestHypercallCode::CallNull.0 }>;
 impl HypercallDispatch<TestNull> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, _params: HypercallParameters<'_>) -> HvResult<()> {
-        self.ctrl.simple_null()?;
-        Ok(())
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestNull::run(params, |()| self.ctrl.simple_null())
     }
 }
 
@@ -402,10 +373,8 @@ type TestSimpleNoOutput =
     SimpleHypercall<TestInput, (), { TestHypercallCode::CallSimpleNoOutput.0 }>;
 
 impl HypercallDispatch<TestSimpleNoOutput> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
-        let (input, _) = TestSimpleNoOutput::parse(params);
-        self.ctrl.simple_no_output(input)?;
-        Ok(())
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestSimpleNoOutput::run(params, |input| self.ctrl.simple_no_output(input))
     }
 }
 
@@ -413,10 +382,8 @@ impl HypercallDispatch<TestSimpleNoOutput> for TestHypercallHandler<'_> {
 type TestSimple = SimpleHypercall<TestInput, TestOutput, { TestHypercallCode::CallSimple.0 }>;
 
 impl HypercallDispatch<TestSimple> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
-        let (input, output) = TestSimple::parse(params);
-        *output = self.ctrl.simple(input)?;
-        Ok(())
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestSimple::run(params, |input| self.ctrl.simple(input))
     }
 }
 
@@ -424,22 +391,20 @@ impl HypercallDispatch<TestSimple> for TestHypercallHandler<'_> {
 type TestRepNoOutput = RepHypercall<TestInput, u64, (), { TestHypercallCode::CallRepNoOutput.0 }>;
 
 impl HypercallDispatch<TestRepNoOutput> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
-        let (header, input, _, elements_processed) = TestRepNoOutput::parse(params);
-        self.ctrl
-            .rep_no_output(header, input)
-            .map_to_hypercall_result(input.len(), elements_processed)
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestRepNoOutput::run(params, |header, input, _output| {
+            self.ctrl.rep_no_output(header, input)
+        })
     }
 }
 
 // Rep hypercall with input and output.
 type TestRep = RepHypercall<TestInput, u64, u64, { TestHypercallCode::CallRep.0 }>;
 impl HypercallDispatch<TestRep> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
-        let (header, input, output, elements_processed) = TestRep::parse(params);
-        self.ctrl
-            .rep(header, input, output)
-            .map_to_hypercall_result(input.len(), elements_processed)
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestRep::run(params, |header, input, output| {
+            self.ctrl.rep(header, input, output)
+        })
     }
 }
 
@@ -448,10 +413,10 @@ type TestVariableNoOutput =
     VariableHypercall<TestInput, (), { TestHypercallCode::CallVariableNoOutput.0 }>;
 
 impl HypercallDispatch<TestVariableNoOutput> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
-        let (input, var_header, _) = TestVariableNoOutput::parse(params);
-        self.ctrl.variable_no_output(input, var_header)?;
-        Ok(())
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestVariableNoOutput::run(params, |input, var_header| {
+            self.ctrl.variable_no_output(input, var_header)
+        })
     }
 }
 
@@ -459,10 +424,10 @@ impl HypercallDispatch<TestVariableNoOutput> for TestHypercallHandler<'_> {
 type TestVariable = VariableHypercall<TestInput, TestOutput, { TestHypercallCode::CallVariable.0 }>;
 
 impl HypercallDispatch<TestVariable> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
-        let (input, var_header, output) = TestVariable::parse(params);
-        *output = self.ctrl.variable(input, var_header)?;
-        Ok(())
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestVariable::run(params, |input, var_header| {
+            self.ctrl.variable(input, var_header)
+        })
     }
 }
 
@@ -471,12 +436,10 @@ type TestVariableRep =
     VariableRepHypercall<TestInput, u64, u64, { TestHypercallCode::CallVariableRep.0 }>;
 
 impl HypercallDispatch<TestVariableRep> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
-        let (header, var_header, input, output, elements_processed) =
-            TestVariableRep::parse(params);
-        self.ctrl
-            .variable_rep(header, var_header, input, output)
-            .map_to_hypercall_result(input.len(), elements_processed)
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestVariableRep::run(params, |header, var_header, input, output| {
+            self.ctrl.variable_rep(header, var_header, input, output)
+        })
     }
 }
 
@@ -484,10 +447,10 @@ impl HypercallDispatch<TestVariableRep> for TestHypercallHandler<'_> {
 pub type TestVtl = VtlHypercall<{ TestHypercallCode::CallVtl.0 }>;
 
 impl HypercallDispatch<TestVtl> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         let (input, _) = TestVtl::parse(params);
         self.ctrl.vtl_switch(input);
-        Ok(())
+        HypercallOutput::SUCCESS
     }
 }
 
@@ -1210,7 +1173,7 @@ fn check_test_result(test_params: &TestParams, result: HypercallOutput, control:
             _ => 0,
         };
 
-        assert_eq!(control.rep_start(), reps);
+        assert_eq!({ control.rep_start() }, reps);
     }
 }
 

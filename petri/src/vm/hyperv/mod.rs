@@ -355,6 +355,12 @@ impl PetriVmHyperV {
             .set_high_vtl(set_high_vtl)
             .context("failed to set socket for VTL0")?;
 
+        // TODO: This maximum is specific to hyper-v tests and should be configurable.
+        //
+        // Allow for the slowest test (hyperv_pcat_x64_ubuntu_2204_server_x64_boot)
+        // but fail before the nextest timeout. (~1 attempt for second)
+        const PIPETTE_CONNECT_ATTEMPTS: u32 = 240;
+        let mut attempts = 0;
         let mut socket = PolledSocket::new(driver, socket)?.convert();
         loop {
             match socket
@@ -363,6 +369,10 @@ impl PetriVmHyperV {
             {
                 Ok(_) => break,
                 Err(_) => {
+                    if attempts >= PIPETTE_CONNECT_ATTEMPTS {
+                        anyhow::bail!("Pipette connection timed out")
+                    }
+                    attempts += 1;
                     PolledTimer::new(driver).sleep(Duration::from_secs(1)).await;
                     continue;
                 }

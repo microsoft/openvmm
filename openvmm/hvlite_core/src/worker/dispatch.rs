@@ -627,7 +627,6 @@ fn convert_vtl2_config(
     let config = virt::Vtl2Config {
         vtl0_alias_map: vtl2_cfg.vtl0_alias_map,
         late_map_vtl0_memory,
-        vtl2_emulates_apic: vtl2_cfg.vtl2_emulates_apic,
     };
 
     Ok(Some(config))

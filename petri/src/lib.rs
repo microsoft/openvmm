@@ -3,9 +3,8 @@
 
 //! A Rust-based testing framework for VMMs.
 //!
-//! At this time - `petri` only supports testing OpenVMM and OpenHCL based VMs.
-//! In the future, we expect `petri` to also support other VMM backends
-//! (notably, Hyper-V).
+//! At this time - `petri` supports testing OpenVMM, OpenHCL,
+//! and Hyper-V based VMs.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

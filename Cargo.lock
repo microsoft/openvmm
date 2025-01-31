@@ -3560,6 +3560,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "loan_cell"
+version = "0.0.0"
+dependencies = [
+ "static_assertions",
+]
+
+[[package]]
 name = "local_clock"
 version = "0.0.0"
 dependencies = [
@@ -4868,6 +4875,7 @@ dependencies = [
  "futures",
  "getrandom",
  "libc",
+ "loan_cell",
  "once_cell",
  "pal",
  "pal_async_test",
@@ -4911,6 +4919,7 @@ dependencies = [
  "inspect",
  "io-uring",
  "libc",
+ "loan_cell",
  "once_cell",
  "pal",
  "pal_async",
@@ -7194,6 +7203,7 @@ version = "0.0.0"
 dependencies = [
  "fs-err",
  "inspect",
+ "loan_cell",
  "pal",
  "pal_async",
  "pal_uring",

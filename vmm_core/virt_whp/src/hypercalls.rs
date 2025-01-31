@@ -7,6 +7,7 @@ use crate::Hv1State;
 use crate::WhpProcessor;
 #[cfg(guest_arch = "aarch64")]
 use aarch64 as arch;
+use hv1_hypercall::HvRepResult;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvInterceptType;
 use hvdef::HvError;
@@ -234,7 +235,7 @@ impl<T: CpuIo> hv1_hypercall::GetVpRegisters for WhpHypercallExit<'_, '_, T> {
         vtl: Option<Vtl>,
         registers: &[hvdef::HvRegisterName],
         output: &mut [hvdef::HvRegisterValue],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         tracing::trace!(partition_id, vp_index, ?vtl, ?registers, "get_vp_registers");
         if partition_id != HV_PARTITION_ID_SELF || vp_index != HV_VP_INDEX_SELF {
             return Err((HvError::InvalidParameter, 0));
@@ -263,7 +264,7 @@ impl<T: CpuIo> hv1_hypercall::SetVpRegisters for WhpHypercallExit<'_, '_, T> {
         vp_index: u32,
         vtl: Option<Vtl>,
         registers: &[hvdef::hypercall::HvRegisterAssoc],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         tracing::trace!(partition_id, vp_index, ?vtl, ?registers, "set_vp_registers");
         if partition_id != HV_PARTITION_ID_SELF || vp_index != HV_VP_INDEX_SELF {
             return Err((HvError::InvalidParameter, 0));
@@ -394,7 +395,7 @@ impl<T: CpuIo> hv1_hypercall::ModifyVtlProtectionMask for WhpHypercallExit<'_, '
         map_flags: HvMapGpaFlags,
         target_vtl: Option<Vtl>,
         gpa_pages: &[u64],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         if partition_id != HV_PARTITION_ID_SELF {
             return Err((HvError::AccessDenied, 0));
         }
@@ -579,7 +580,7 @@ impl<T: CpuIo> hv1_hypercall::AcceptGpaPages for WhpHypercallExit<'_, '_, T> {
         vtl_permission_set: hvdef::hypercall::VtlPermissionSet,
         gpa_page_base: u64,
         page_count: usize,
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         if partition_id != HV_PARTITION_ID_SELF {
             return Err((HvError::AccessDenied, 0));
         }
@@ -642,7 +643,7 @@ impl<T: CpuIo> hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercall
         partition_id: u64,
         visibility: HostVisibilityType,
         gpa_pages: &[u64],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         if partition_id != HV_PARTITION_ID_SELF {
             return Err((HvError::AccessDenied, 0));
         }
@@ -684,11 +685,11 @@ mod x86 {
     use super::WhpHypercallExit;
     use crate::regs;
     use crate::vtl2;
-    use crate::LocalApicKind;
     use crate::WhpProcessor;
     use crate::WhpRunVpError;
     use arrayvec::ArrayVec;
     use hv1_hypercall::HvInterruptParameters;
+    use hv1_hypercall::HvRepResult;
     use hv1_hypercall::HypercallIo;
     use hv1_hypercall::SignalEventDirect;
     use hv1_hypercall::TranslateVirtualAddressExX64;
@@ -701,7 +702,6 @@ mod x86 {
     use hvdef::HvRegisterName;
     use hvdef::HvRegisterValue;
     use hvdef::HvRegisterVsmVpSecureVtlConfig;
-    use hvdef::HvRepResult;
     use hvdef::HvResult;
     use hvdef::HvVpAssistPageActionSignalEvent;
     use hvdef::HvX64RegisterName;
@@ -1605,14 +1605,9 @@ mod x86 {
                         return Err(HvError::AccessDenied);
                     }
 
-                    let mut supported = hvdef::HvDeliverabilityNotificationsRegister::new()
+                    let supported = hvdef::HvDeliverabilityNotificationsRegister::new()
                         .with_sints(!0)
                         .with_interrupt_notification(true);
-
-                    if let LocalApicKind::InVtl2 = self.vp.partition.vtl0.lapic {
-                        supported.set_nmi_notification(true);
-                        supported.set_interrupt_priority(0xf);
-                    }
 
                     if value.as_u64() & !u64::from(supported) != 0 {
                         return Err(HvError::InvalidParameter);

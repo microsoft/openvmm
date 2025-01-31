@@ -7,6 +7,7 @@ use crate::abi;
 use crate::HvfProcessor;
 use hv1_hypercall::Arm64RegisterState;
 use hv1_hypercall::GetVpRegisters;
+use hv1_hypercall::HvRepResult;
 use hv1_hypercall::PostMessage;
 use hv1_hypercall::SetVpRegisters;
 use hv1_hypercall::SignalEvent;
@@ -69,7 +70,7 @@ impl<T> GetVpRegisters for HvfHypercallHandler<'_, '_, T> {
         _vtl: Option<Vtl>,
         registers: &[hvdef::HvRegisterName],
         output: &mut [hvdef::HvRegisterValue],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         if partition_id != hvdef::HV_PARTITION_ID_SELF || vp_index != hvdef::HV_VP_INDEX_SELF {
             return Err((HvError::InvalidParameter, 0));
         }
@@ -118,7 +119,7 @@ impl<T> SetVpRegisters for HvfHypercallHandler<'_, '_, T> {
         vp_index: u32,
         _vtl: Option<Vtl>,
         registers: &[HvRegisterAssoc],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         if partition_id != hvdef::HV_PARTITION_ID_SELF || vp_index != hvdef::HV_VP_INDEX_SELF {
             return Err((HvError::InvalidParameter, 0));
         }

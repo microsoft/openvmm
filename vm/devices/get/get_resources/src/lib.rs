@@ -151,6 +151,13 @@ pub mod ged {
         const ID: &'static str = "ged";
     }
 
+    /// Define servicing behavior.
+    #[derive(MeshPayload, Default)]
+    pub struct GuestServicingFlags {
+        /// Retain memory for DMA-attached devices.
+        pub nvme_keepalive: bool,
+    }
+
     /// Actions a client can request that the Guest Emulation
     /// Device perform.
     #[derive(MeshPayload)]
@@ -160,7 +167,7 @@ pub mod ged {
         /// Wait for VTL2 to start VTL0.
         WaitForVtl0Start(Rpc<(), Result<(), Vtl0StartError>>),
         /// Save VTL2 state.
-        SaveGuestVtl2State(Rpc<(), Result<(), SaveRestoreError>>),
+        SaveGuestVtl2State(Rpc<GuestServicingFlags, Result<(), SaveRestoreError>>),
         /// Update the VTL2 settings.
         ModifyVtl2Settings(Rpc<Vec<u8>, Result<(), ModifyVtl2SettingsError>>),
     }

@@ -467,6 +467,7 @@ fn build_device_tree(
     let p_memory_allocation_mode = root.add_string("memory-allocation-mode")?;
     let p_memory_size = root.add_string("memory-size")?;
     let p_mmio_size = root.add_string("mmio-size")?;
+    let p_vf_keep_alive_devs = root.add_string("device-types")?;
     let mut openhcl = root.start_node("openhcl")?;
 
     let memory_allocation_mode = match vtl2_base_address {
@@ -493,6 +494,12 @@ fn build_device_tree(
             .add_prop_array(p_reg, &[entropy])?
             .end_node()?;
     }
+
+    // Indicate that NVMe keep-alive feature is supported by this VMM.
+    openhcl = openhcl
+        .start_node("keep-alive")?
+        .add_str(p_vf_keep_alive_devs, "nvme")?
+        .end_node()?;
 
     root = openhcl.end_node()?;
 

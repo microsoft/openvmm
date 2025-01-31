@@ -233,7 +233,7 @@ impl HvCall {
         let mut current_page = range.start_4k_gpn();
         while current_page < range.end_4k_gpn() {
             let remaining_pages = range.end_4k_gpn() - current_page;
-            let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64);
+            let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64) as usize;
 
             // PANIC: Infallable, since the hypercall header is less than the size of a page
             header
@@ -242,7 +242,7 @@ impl HvCall {
 
             let mut input_offset = HEADER_SIZE;
             for i in 0..count {
-                let page_num = current_page + i;
+                let page_num = current_page + i as u64;
                 // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
                 page_num
                     .write_to_prefix(&mut Self::input_page().buffer[input_offset..])
@@ -252,12 +252,12 @@ impl HvCall {
 
             let output = self.dispatch_hvcall(
                 hvdef::HypercallCode::HvCallModifyVtlProtectionMask,
-                Some(count as usize),
+                Some(count),
             );
 
             output.result()?;
 
-            current_page += count;
+            current_page += count as u64;
         }
 
         Ok(())
@@ -314,21 +314,19 @@ impl HvCall {
             };
 
             let remaining_pages = range.end_4k_gpn() - current_page;
-            let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64);
+            let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64) as usize;
 
             // PANIC: Infallable, since the hypercall header is less than the size of a page
             header
                 .write_to_prefix(Self::input_page().buffer.as_mut_slice())
                 .unwrap();
 
-            let output = self.dispatch_hvcall(
-                hvdef::HypercallCode::HvCallAcceptGpaPages,
-                Some(count as usize),
-            );
+            let output =
+                self.dispatch_hvcall(hvdef::HypercallCode::HvCallAcceptGpaPages, Some(count));
 
             output.result()?;
 
-            current_page += count;
+            current_page += count as u64;
         }
 
         Ok(())
@@ -374,7 +372,7 @@ impl HvCall {
                 Some(hw_ids.len()),
             );
 
-            let n = r.elements_processed() as usize;
+            let n = r.elements_processed();
             //todo: zerocopy: review carefully!
             output.extend(
                 <[u32]>::ref_from_bytes(&Self::output_page().buffer[..n * 4])
