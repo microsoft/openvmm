@@ -1342,4 +1342,9 @@ mod test {
 
         check_e820(&boot_params, &ext, &expected);
     }
+
+    #[test]
+    fn nope() {
+        panic!("testing failure annotations");
+    }
 }

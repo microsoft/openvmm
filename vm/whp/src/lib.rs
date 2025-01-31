@@ -839,7 +839,7 @@ impl Partition {
 
     pub fn create_trigger(
         &self,
-        parameters: TriggerParameters,
+        parameters: TriggerParametersX,
     ) -> Result<(TriggerHandle, OwnedHandle)> {
         unsafe {
             let mut trigger_handle = std::mem::zeroed();
