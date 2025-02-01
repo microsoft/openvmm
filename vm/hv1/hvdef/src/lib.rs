@@ -403,7 +403,7 @@ impl Debug for HvStatus {
 //
 // DEVNOTE: use `NonZeroU16` to get a niche optimization, since 0 is reserved
 // for success.
-#[derive(Copy, Clone, PartialEq, Eq, AsBytes)]
+#[derive(Copy, Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout)]
 #[repr(transparent)]
 pub struct HvError(core::num::NonZeroU16);
 
