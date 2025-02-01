@@ -611,14 +611,23 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         )
         .vtl0_alias_map_available()
     {
-        // Disable the alias map on ARM because physical address size is not
-        // reliably reported. Since the position of the alias map bit is inferred
-        // from address size, the alias map is broken when the PA size is wrong.
-        // TODO: is this still true?
-        if !cfg!(target_arch = "aarch64") {
+        // If the vtl0 alias map was not provided in the devicetree, attempt to
+        // derive it from the architectural physical address bits.
+        //
+        // The value in the ID_AA64MMFR0_EL1 register used to determine the
+        // physical address bits can only represent multiples of 4. As a result,
+        // the Surface Pro X (and systems with similar CPUs) cannot properly
+        // report their address width of 39 bits. This causes the calculated
+        // alias map to be incorrect, which results in panics when trying to
+        // read memory and getting invalid data.
+        if partition_info.vtl0_alias_map.is_none() {
             partition_info.vtl0_alias_map =
                 Some(1 << (arch::physical_address_bits(p.isolation_type) - 1));
         }
+    } else {
+        // Ignore any devicetree-provided alias map if the conditions above
+        // aren't met.
+        partition_info.vtl0_alias_map = None;
     }
 
     if can_trust_host {
