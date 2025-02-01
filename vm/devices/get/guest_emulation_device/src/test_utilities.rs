@@ -12,6 +12,7 @@ use get_protocol::HostRequests;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::UefiConsoleMode;
 use get_resources::ged::GuestEmulationRequest;
+use get_resources::ged::GuestServicingFlags;
 use guestmem::GuestMemory;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
@@ -334,7 +335,10 @@ enum TestTask {
 impl TestGedClient {
     pub async fn test_save_guest_vtl2_state(&mut self) {
         self.sender
-            .call_failable(GuestEmulationRequest::SaveGuestVtl2State, ())
+            .call_failable(
+                GuestEmulationRequest::SaveGuestVtl2State,
+                GuestServicingFlags::default(),
+            )
             .await
             .expect("no failure");
     }

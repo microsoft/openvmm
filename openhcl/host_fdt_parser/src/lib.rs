@@ -236,6 +236,8 @@ pub struct ParsedDeviceTree<
     pub device_dma_page_count: Option<u64>,
     /// Indicates that Host does support NVMe keep-alive.
     pub nvme_keepalive: bool,
+    /// The physical address of the VTL0 alias mapping, if one is configured.
+    pub vtl0_alias_map: Option<u64>,
 }
 
 /// The memory allocation mode provided by the host. This determines how OpenHCL
@@ -316,6 +318,7 @@ impl<
             entropy: None,
             device_dma_page_count: None,
             nvme_keepalive: false,
+            vtl0_alias_map: None,
         }
     }
 
@@ -482,6 +485,13 @@ impl<
                             return Err(ErrorKind::UnexpectedMemoryAllocationMode { mode });
                         }
                     }
+
+                    storage.vtl0_alias_map = child
+                        .find_property("vtl0-alias-map")
+                        .map_err(ErrorKind::Prop)?
+                        .map(|p| p.read_u64(0))
+                        .transpose()
+                        .map_err(ErrorKind::Prop)?;
 
                     for openhcl_child in child.children() {
                         let openhcl_child = openhcl_child.map_err(|error| ErrorKind::Node {
@@ -727,6 +737,7 @@ impl<
             entropy: _,
             device_dma_page_count: _,
             nvme_keepalive: _,
+            vtl0_alias_map: _,
         } = storage;
 
         *device_tree_size = parser.total_size;

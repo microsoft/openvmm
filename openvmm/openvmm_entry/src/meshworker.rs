@@ -17,7 +17,7 @@ use pal_async::task::Task;
 use std::path::PathBuf;
 
 pub(crate) fn run_vmm_mesh_host() -> anyhow::Result<()> {
-    try_run_mesh_host("hvlite", |params: MeshHostParams| async {
+    try_run_mesh_host("openvmm", |params: MeshHostParams| async {
         params.runner.run(RegisteredWorkers).await;
         Ok(())
     })
@@ -38,7 +38,7 @@ impl VmmMesh {
         let mesh = if single_process {
             None
         } else {
-            Some(Mesh::new("hvlite".to_string())?)
+            Some(Mesh::new("openvmm".to_string())?)
         };
         let (local_host, runner) = mesh_worker::worker_host();
         let task = spawn.spawn("worker-host", runner.run(RegisteredWorkers));

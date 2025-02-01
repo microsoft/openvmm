@@ -234,7 +234,7 @@ pub struct Manifest {
 }
 
 #[derive(Protobuf, SavedStateRoot)]
-#[mesh(package = "hvlite")]
+#[mesh(package = "openvmm")]
 pub struct SavedState {
     #[mesh(1)]
     pub units: Vec<SavedStateUnit>,

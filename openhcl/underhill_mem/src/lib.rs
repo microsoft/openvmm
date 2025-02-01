@@ -36,7 +36,6 @@ mod mapping {
     use hvdef::hypercall::HvInputVtl;
     use hvdef::HvError;
     use hvdef::HvMapGpaFlags;
-    use hvdef::HvRepResult;
     use hvdef::HypercallCode;
     use hvdef::Vtl;
     use hvdef::HV_MAP_GPA_PERMISSIONS_ALL;
@@ -820,7 +819,11 @@ mod mapping {
     }
 
     impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
-        fn change_host_visibility(&self, shared: bool, gpns: &[u64]) -> HvRepResult {
+        fn change_host_visibility(
+            &self,
+            shared: bool,
+            gpns: &[u64],
+        ) -> Result<(), (HvError, usize)> {
             // Validate the ranges are RAM.
             for &gpn in gpns {
                 if !self
@@ -962,7 +965,7 @@ mod mapping {
             &self,
             gpns: &[u64],
             host_visibility: &mut [HostVisibilityType],
-        ) -> HvRepResult {
+        ) -> Result<(), (HvError, usize)> {
             // Validate the ranges are RAM.
             for (i, &gpn) in gpns.iter().enumerate() {
                 if !self
@@ -1051,7 +1054,7 @@ mod mapping {
             vtl: GuestVtl,
             gpns: &[u64],
             protections: HvMapGpaFlags,
-        ) -> HvRepResult {
+        ) -> Result<(), (HvError, usize)> {
             // Validate the ranges are RAM.
             for &gpn in gpns {
                 if !self

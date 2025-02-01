@@ -46,6 +46,7 @@ use futures::StreamExt;
 use futures_concurrency::stream::Merge;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
+use get_resources::ged::GuestServicingFlags;
 use guid::Guid;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
@@ -2692,6 +2693,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         hvlite_helpers::underhill::service_underhill(
                             &vm_rpc,
                             resources.ged_rpc.as_ref().context("no GED")?,
+                            GuestServicingFlags::default(),
                             file.into(),
                         )
                         .await?;

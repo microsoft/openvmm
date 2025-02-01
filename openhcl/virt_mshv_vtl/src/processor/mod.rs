@@ -41,6 +41,7 @@ use crate::WakeReason;
 use hcl::ioctl;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
+use hv1_hypercall::HvRepResult;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::HvError;
 use hvdef::HvMessage;
@@ -238,6 +239,11 @@ mod private {
             this: &mut UhProcessor<'_, Self>,
             dev: &impl CpuIo,
         ) -> Result<bool, UhRunVpError>;
+
+        fn handle_vp_start_enable_vtl_wake(
+            _this: &mut UhProcessor<'_, Self>,
+            _vtl: GuestVtl,
+        ) -> Result<(), UhRunVpError>;
 
         fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
 
@@ -902,26 +908,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
             #[cfg(guest_arch = "x86_64")]
             if wake_reasons.hv_start_enable_vtl_vp() {
-                if let Some(context) = self.inner.hv_start_enable_vtl_vp[vtl].lock().take() {
-                    tracing::debug!(
-                        vp_index = self.inner.cpu_index,
-                        ?vtl,
-                        "starting vp with initial registers"
-                    );
-                    hv1_emulator::hypercall::set_x86_vp_context(
-                        &mut self.access_state(vtl.into()),
-                        &context,
-                    )
-                    .map_err(UhRunVpError::State)?;
-
-                    if vtl == GuestVtl::Vtl1 {
-                        assert!(self.partition.isolation.is_hardware_isolated());
-                        // Should have already initialized the hv emulator for this vtl
-                        assert!(self.backing.hv(vtl).is_some());
-
-                        // TODO CVM GUEST VSM: Revisit during AP startup if we need to exit to VTL 1 here
-                    }
-                }
+                T::handle_vp_start_enable_vtl_wake(self, vtl)?;
             }
 
             #[cfg(guest_arch = "x86_64")]
@@ -1226,7 +1213,7 @@ impl<T, B: Backing> hv1_hypercall::GetVpIndexFromApicId for UhHypercallHandler<'
         target_vtl: Vtl,
         apic_ids: &[u32],
         vp_indices: &mut [u32],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         tracing::debug!(partition_id, ?target_vtl, "HvGetVpIndexFromApicId");
 
         if partition_id != hvdef::HV_PARTITION_ID_SELF {
@@ -1301,44 +1288,6 @@ impl<T: CpuIo, B: Backing> Arm64RegisterState for UhHypercallHandler<'_, '_, T, 
     }
 }
 
-impl<T, B: Backing> hv1_hypercall::StartVirtualProcessor<hvdef::hypercall::InitialVpContextX64>
-    for UhHypercallHandler<'_, '_, T, B>
-{
-    fn start_virtual_processor(
-        &mut self,
-        partition_id: u64,
-        target_vp: u32,
-        target_vtl: Vtl,
-        vp_context: &hvdef::hypercall::InitialVpContextX64,
-    ) -> hvdef::HvResult<()> {
-        tracing::debug!(
-            vp_index = self.vp.vp_index().index(),
-            target_vp,
-            ?target_vtl,
-            "HvStartVirtualProcessor"
-        );
-
-        if partition_id != hvdef::HV_PARTITION_ID_SELF {
-            return Err(HvError::InvalidPartitionId);
-        }
-
-        if target_vp == self.vp.vp_index().index()
-            || target_vp as usize >= self.vp.partition.vps.len()
-        {
-            return Err(HvError::InvalidVpIndex);
-        }
-
-        let target_vtl = self.target_vtl_no_higher(target_vtl)?;
-        let target_vp = &self.vp.partition.vps[target_vp as usize];
-
-        // TODO CVM GUEST VSM: probably some validation on vtl1_enabled
-        *target_vp.hv_start_enable_vtl_vp[target_vtl].lock() = Some(Box::new(*vp_context));
-        target_vp.wake(target_vtl, WakeReason::HV_START_ENABLE_VP_VTL);
-
-        Ok(())
-    }
-}
-
 impl<T: CpuIo, B: Backing> hv1_hypercall::PostMessage for UhHypercallHandler<'_, '_, T, B> {
     fn post_message(&mut self, connection_id: u32, message: &[u8]) -> hvdef::HvResult<()> {
         tracing::trace!(
@@ -1398,7 +1347,7 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::ModifySparseGpaPageHostVisibility
         partition_id: u64,
         visibility: HostVisibilityType,
         gpa_pages: &[u64],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         if partition_id != hvdef::HV_PARTITION_ID_SELF {
             return Err((HvError::AccessDenied, 0));
         }
@@ -1436,7 +1385,7 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::QuerySparseGpaPageHostVisibility
         partition_id: u64,
         gpa_pages: &[u64],
         host_visibility: &mut [HostVisibilityType],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         if partition_id != hvdef::HV_PARTITION_ID_SELF {
             return Err((HvError::AccessDenied, 0));
         }
