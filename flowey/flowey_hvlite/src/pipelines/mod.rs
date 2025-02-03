@@ -8,6 +8,7 @@ pub mod build_igvm;
 pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
 pub mod restore_packages;
+pub mod run_igvm;
 
 #[derive(clap::Subcommand)]
 #[allow(clippy::large_enum_variant)]
@@ -20,6 +21,7 @@ pub enum OpenvmmPipelines {
     },
 
     BuildIgvm(build_igvm::BuildIgvmCli),
+    RunIgvm(run_igvm::RunIgvmCli),
     CustomVmfirmwareigvmDll(custom_vmfirmwareigvm_dll::CustomVmfirmwareigvmDllCli),
 
     /// Flowey pipelines primarily designed to run in CI.
@@ -56,6 +58,7 @@ impl IntoPipeline for OpenvmmPipelines {
             }
 
             OpenvmmPipelines::BuildIgvm(cmd) => cmd.into_pipeline(pipeline_hint),
+            OpenvmmPipelines::RunIgvm(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::CustomVmfirmwareigvmDll(cmd) => cmd.into_pipeline(pipeline_hint),
 
             OpenvmmPipelines::Ci(cmd) => match cmd {

@@ -84,6 +84,9 @@ function setup_windows_cross {
     fi
 
     local tooldir="$(realpath "$myfulldir/../build_support/windows_cross")"
+    echo $tooldir
+
+    extract_include_lib x86_64 Microsoft.VisualStudio.Component.VC.Tools.x86.x64 x64
 
     if env=$(extract_include_lib x86_64 Microsoft.VisualStudio.Component.VC.Tools.x86.x64 x64); then
         # Extract the variables, one line each.
@@ -94,6 +97,8 @@ function setup_windows_cross {
         export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$tooldir/x86_64-lld-link"
         export AR_x86_64_pc_windows_msvc="$lib"
         export RC_x86_64_pc_windows_msvc="$rc"
+
+        printenv
 	[ -h $CC_x86_64_pc_windows_msvc ] || fatal_error "$CC_x86_64_pc_windows_msvc is not a symbolic link, check git config core.symlinks:\n"
         [ -h $CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER ] || fatal_error "$CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER is not a symbolic link, check git config core.symlinks:\n"
         echo x86_64
