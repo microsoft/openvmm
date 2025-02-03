@@ -8,10 +8,8 @@
 
 use parking_lot::Mutex;
 use std::sync::Arc;
-use user_driver::memory;
-use user_driver::vfio;
-use user_driver::MemoryBlock;
-use user_driver::VfioDmaBuffer;
+use user_driver::memory::MemoryBlock;
+use user_driver::vfio::VfioDmaBuffer;
 
 pub struct GlobalDmaManager {
     inner: Arc<Mutex<GlobalDmaManagerInner>>,
