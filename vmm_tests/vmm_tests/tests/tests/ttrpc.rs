@@ -19,6 +19,7 @@ use std::process::Stdio;
 use unix_socket::UnixStream;
 use vmm_test_petri_support::TestArtifactRequirementsExt;
 
+#[cfg(guest_arch = "x86_64")]
 crate::test!(crate::SimpleTest::new(
     "test_ttrpc_interface",
     TestArtifactRequirements::new()
