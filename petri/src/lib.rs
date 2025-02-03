@@ -12,6 +12,7 @@
 mod disk_image;
 mod linux_direct_serial_agent;
 mod openhcl_diag;
+mod test;
 mod tracing;
 mod vm;
 mod worker;
@@ -23,6 +24,10 @@ pub use petri_artifacts_core::ResolveTestArtifact;
 pub use petri_artifacts_core::TestArtifactRequirements;
 pub use petri_artifacts_core::TestArtifacts;
 pub use pipette_client as pipette;
+pub use test::test_macro_support;
+pub use test::test_main;
+pub use test::RunTest;
+pub use test::SimpleTest;
 pub use vm::*;
 
 /// 1 kibibyte's worth of bytes.

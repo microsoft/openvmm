@@ -796,7 +796,7 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
 
         let test = quote! {
             #cfg_conditions
-            Box::new(crate::SimpleTest::new(
+            Box::new(::petri::SimpleTest::new(
                 #name,
                 ::petri::TestArtifactRequirements::new()
                     #( .require(#deps) )*
@@ -817,7 +817,7 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
     let guest_archs = guest_archs.into_iter();
 
     Ok(quote! {
-        crate::multitest!(vec![#tests]);
+        ::petri::multitest!(vec![#tests]);
         // Allow dead code for tests that are not run on the current architecture.
         #[cfg_attr(not(any(#(guest_arch = #guest_archs,)*)), allow(dead_code))]
         #item

@@ -3,43 +3,56 @@
 
 //! Infrastructure for defining tests.
 
-use petri::TestArtifactRequirements;
-use petri::TestArtifacts;
+#[doc(hidden)]
+pub mod test_macro_support {
+    use super::RunTest;
+    pub use linkme;
 
-#[linkme::distributed_slice]
-pub(crate) static TESTS: [fn() -> (&'static str, Vec<Box<dyn RunTest>>)] = [..];
+    #[linkme::distributed_slice]
+    pub static TESTS: [fn() -> (&'static str, Vec<Box<dyn RunTest>>)] = [..];
+}
+
+use crate::TestArtifactRequirements;
+use crate::TestArtifacts;
+use test_macro_support::TESTS;
 
 /// Defines a single test from a value that implements [`RunTest`].
+#[macro_export]
 macro_rules! test {
-    ($test:expr) => {
-        $crate::multitest!(vec![Box::new($test)]);
+    ($f:ident, $req:expr) => {
+        $crate::multitest!(vec![Box::new($crate::SimpleTest::new(
+            stringify!($f),
+            $req,
+            $f
+        ))]);
     };
 }
-pub(crate) use test;
 
 /// Defines a set of tests from a [`Vec<Box<dyn RunTest>>`].
+#[macro_export]
 macro_rules! multitest {
     ($tests:expr) => {
         const _: () = {
+            use $crate::test_macro_support::linkme;
             // UNSAFETY: linkme uses manual link sections, which are unsafe.
             #[expect(unsafe_code)]
-            #[linkme::distributed_slice($crate::test::TESTS)]
-            static TEST: fn() -> (&'static str, Vec<Box<dyn $crate::test::RunTest>>) =
+            #[linkme::distributed_slice($crate::test_macro_support::TESTS)]
+            #[linkme(crate = linkme)]
+            static TEST: fn() -> (&'static str, Vec<Box<dyn $crate::RunTest>>) =
                 || (module_path!(), $tests);
         };
     };
 }
-pub(crate) use multitest;
 
 /// A single test.
-pub struct Test {
+struct Test {
     module: &'static str,
     test: Box<dyn RunTest>,
 }
 
 impl Test {
     /// Returns all the tests defined in this crate.
-    pub(crate) fn all() -> impl Iterator<Item = Self> {
+    fn all() -> impl Iterator<Item = Self> {
         TESTS.iter().flat_map(|f| {
             let (module, tests) = f();
             tests.into_iter().map(move |test| Self { module, test })
@@ -47,7 +60,7 @@ impl Test {
     }
 
     /// Returns the name of the test.
-    pub fn name(&self) -> String {
+    fn name(&self) -> String {
         let crate_name = module_path!().split("::").next().unwrap();
         // Prefix the module where the test was defined, but strip the crate
         // name for consistency with libtest.
@@ -63,7 +76,7 @@ impl Test {
     }
 
     /// Returns the artifact requirements for the test.
-    pub fn requirements(&self) -> TestArtifactRequirements {
+    fn requirements(&self) -> TestArtifactRequirements {
         // All tests require the log directory.
         self.test
             .requirements()
@@ -71,7 +84,7 @@ impl Test {
     }
 
     /// Returns a libtest-mimic trial to run the test.
-    pub fn trial(
+    fn trial(
         self,
         resolve: fn(&str, TestArtifactRequirements) -> anyhow::Result<TestArtifacts>,
     ) -> libtest_mimic::Trial {
@@ -87,7 +100,7 @@ impl Test {
 /// A test that can be run.
 ///
 /// Register it to be run with [`test!`] or [`multitest!`].
-pub(crate) trait RunTest: Send {
+pub trait RunTest: Send {
     /// The leaf name of the test.
     ///
     /// To produce the full test name, this will be prefixed with the module
@@ -101,7 +114,7 @@ pub(crate) trait RunTest: Send {
 }
 
 /// A test defined by a fixed set of requirements and a run function.
-pub(crate) struct SimpleTest<F> {
+pub struct SimpleTest<F> {
     leaf_name: &'static str,
     requirements: TestArtifactRequirements,
     run: F,
@@ -140,4 +153,47 @@ where
         (self.run)(name, artifacts).map_err(|err| format!("{:#}", err.into()))?;
         Ok(())
     }
+}
+
+#[derive(clap::Parser)]
+struct Options {
+    /// Lists the required artifacts for all tests.
+    #[clap(long)]
+    list_required_artifacts: bool,
+    #[clap(flatten)]
+    inner: libtest_mimic::Arguments,
+}
+
+/// Entry point for test binaries.
+pub fn test_main(
+    resolve: fn(&str, TestArtifactRequirements) -> anyhow::Result<TestArtifacts>,
+) -> ! {
+    let mut args = <Options as clap::Parser>::parse();
+    if args.list_required_artifacts {
+        // FUTURE: write this in a machine readable format.
+        for test in Test::all() {
+            let requirements = test.requirements();
+            println!("{}:", test.name());
+            for artifact in requirements.required_artifacts() {
+                println!("required: {artifact:?}");
+            }
+            for artifact in requirements.optional_artifacts() {
+                println!("optional: {artifact:?}");
+            }
+            println!();
+        }
+        std::process::exit(0);
+    }
+
+    // Always just use one thread to avoid interleaving logs and to avoid using
+    // too many resources. These tests are usually run under nextest, which will
+    // run them in parallel in separate processes with appropriate concurrency
+    // limits.
+    if !matches!(args.inner.test_threads, None | Some(1)) {
+        eprintln!("warning: ignoring value passed to --test-threads, using 1");
+    }
+    args.inner.test_threads = Some(1);
+
+    let trials = Test::all().map(|test| test.trial(resolve)).collect();
+    libtest_mimic::run(&args.inner, trials).exit()
 }
