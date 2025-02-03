@@ -16,8 +16,8 @@ use petri_artifacts_vmm_test::artifacts as hvlite_artifacts;
 /// Helper methods to streamline requesting common sets of dependencies via
 /// [`petri::TestArtifactRequirements`]
 pub trait TestArtifactRequirementsExt {
-    /// Helper method to require standard HvLite test dependencies.
-    fn require_hvlite_standard(self, pipette_flavor: Option<(MachineArch, OsFlavor)>) -> Self;
+    /// Helper method to require standard OpenVMM test dependencies.
+    fn require_openvmm_standard(self, pipette_flavor: Option<(MachineArch, OsFlavor)>) -> Self;
 
     /// Helper method to require standard OpenHCL test dependencies.
     fn require_openhcl_standard<A>(self, openhcl_image: ArtifactHandle<A>) -> Self
@@ -26,8 +26,8 @@ pub trait TestArtifactRequirementsExt {
 }
 
 impl TestArtifactRequirementsExt for petri::TestArtifactRequirements {
-    /// Helper method to require standard HvLite test dependencies.
-    fn require_hvlite_standard(self, pipette_flavor: Option<(MachineArch, OsFlavor)>) -> Self {
+    /// Helper method to require standard OpenVMM test dependencies.
+    fn require_openvmm_standard(self, pipette_flavor: Option<(MachineArch, OsFlavor)>) -> Self {
         let s = self
             .require(petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE)
             .require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);

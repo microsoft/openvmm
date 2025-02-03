@@ -22,7 +22,7 @@ macro_rules! multitest {
     ($tests:expr) => {
         const _: () = {
             // UNSAFETY: linkme uses manual link sections, which are unsafe.
-            #[allow(unsafe_code)]
+            #[expect(unsafe_code)]
             #[linkme::distributed_slice($crate::test::TESTS)]
             static TEST: fn() -> (&'static str, Vec<Box<dyn $crate::test::RunTest>>) =
                 || (module_path!(), $tests);

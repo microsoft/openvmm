@@ -61,6 +61,9 @@ pub fn main() {
     // too many resources. These tests are usually run under nextest, which will
     // run them in parallel in separate processes with appropriate concurrency
     // limits.
+    if !matches!(args.inner.test_threads, None | Some(1)) {
+        eprintln!("warning: ignoring value passed to --test-threads, using 1");
+    }
     args.inner.test_threads = Some(1);
 
     let trials = test::Test::all()

@@ -22,7 +22,7 @@ use vmm_test_petri_support::TestArtifactRequirementsExt;
 crate::test!(crate::SimpleTest::new(
     "test_ttrpc_interface",
     TestArtifactRequirements::new()
-        .require_hvlite_standard(None)
+        .require_openvmm_standard(None)
         .require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64)
         .require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64),
     |_, artifacts| DefaultPool::run_with(|driver| test_ttrpc_interface(driver, artifacts)),
