@@ -20,7 +20,7 @@ use std::path::Path;
 pub fn build_agent_image(
     arch: MachineArch,
     os_flavor: OsFlavor,
-    resolver: &TestArtifacts,
+    artifacts: &TestArtifacts,
 ) -> anyhow::Result<tempfile::NamedTempFile> {
     match os_flavor {
         OsFlavor::Windows => {
@@ -30,7 +30,7 @@ pub fn build_agent_image(
                 b"pipette    ",
                 &[(
                     "pipette.exe",
-                    PathOrBinary::Path(&resolver.resolve(match arch {
+                    PathOrBinary::Path(&artifacts.get(match arch {
                         MachineArch::X86_64 => common_artifacts::PIPETTE_WINDOWS_X64.erase(),
                         MachineArch::Aarch64 => common_artifacts::PIPETTE_WINDOWS_AARCH64.erase(),
                     })),
@@ -45,7 +45,7 @@ pub fn build_agent_image(
                 &[
                     (
                         "pipette",
-                        PathOrBinary::Path(&resolver.resolve(match arch {
+                        PathOrBinary::Path(&artifacts.get(match arch {
                             MachineArch::X86_64 => common_artifacts::PIPETTE_LINUX_X64.erase(),
                             MachineArch::Aarch64 => common_artifacts::PIPETTE_LINUX_AARCH64.erase(),
                         })),

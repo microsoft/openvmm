@@ -728,8 +728,8 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
     let original_args =
         match item.sig.inputs.len() {
             1 => quote! {config},
-            2 => quote! {config, resolver},
-            3 => quote! {config, resolver, driver },
+            2 => quote! {config, artifacts},
+            3 => quote! {config, artifacts, driver },
             _ => return Err(Error::new(
                 item.sig.inputs.span(),
                 "expected 1, 2, or 3 arguments (the PetriVmConfig, ArtifactResolver, and Driver)",
@@ -739,9 +739,9 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
     let original_name = &item.sig.ident;
     let mut tests = TokenStream::new();
     let mut guest_archs = HashSet::new();
+    // FUTURE: compute all this in code instead of in the macro.
     for config in args.configs {
         let name = format!("{}_{original_name}", config.name_prefix(specific_vmm));
-        let fn_name = Ident::new(&name, original_name.span());
 
         let mut deps = config.deps();
         let optional_deps = config.optional_deps();
@@ -762,9 +762,10 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
             | (None, Some(Vmm::HyperV)) => (
                 quote!(#[cfg(all(guest_arch=#guest_arch, windows))]),
                 quote!(::petri::hyperv::PetriVmConfigHyperV::new(
+                    test_name,
                     #firmware,
                     #arch,
-                    resolver.clone(),
+                    artifacts.clone(),
                     &driver,
                 )?),
             ),
@@ -780,7 +781,7 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
                     quote!(::petri::openvmm::PetriVmConfigOpenVmm::new(
                         #firmware,
                         #arch,
-                        resolver.clone(),
+                        artifacts.clone(),
                         &driver,
                     )?),
                 )
@@ -793,26 +794,31 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
             petri_vm_config = quote!(Box::new(#petri_vm_config));
         }
 
-        tests.extend(quote!(
-        #cfg_conditions
-        #[::pal_async::async_test]
-        async fn #fn_name(driver: ::pal_async::DefaultDriver) -> anyhow::Result<()> {
-            let resolver = crate::prelude::vmm_tests_artifact_resolver()
-                .require(::petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY)
-                #( .require(#deps) )*
-                #( .require(#extra_deps) )*
-                #( .try_require(#optional_deps) )*
-                .finalize();
-            let config = #petri_vm_config;
-            #original_name(#original_args).await
-        }))
+        let test = quote! {
+            #cfg_conditions
+            Box::new(crate::SimpleTest::new(
+                #name,
+                ::petri::TestArtifactRequirements::new()
+                    #( .require(#deps) )*
+                    #( .require(#extra_deps) )*
+                    #( .try_require(#optional_deps) )*,
+                |test_name, artifacts| {
+                    ::pal_async::DefaultPool::run_with(|driver| async move {
+                        let config = #petri_vm_config;
+                        #original_name(#original_args).await
+                    })
+                }
+            )),
+        };
+
+        tests.extend(test);
     }
 
     let guest_archs = guest_archs.into_iter();
 
-    // Allow dead code for tests that are not run on the current architecture.
     Ok(quote! {
-        #tests
+        crate::multitest!(vec![#tests]);
+        // Allow dead code for tests that are not run on the current architecture.
         #[cfg_attr(not(any(#(guest_arch = #guest_archs,)*)), allow(dead_code))]
         #item
     })

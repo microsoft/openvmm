@@ -74,7 +74,7 @@ impl PetriVmConfigOpenVmm {
 
         let mesh = Mesh::new("petri_mesh".to_string())?;
 
-        let host = Self::hvlite_host(&mesh, &resources.resolver, hvlite_log_file)
+        let host = Self::hvlite_host(&mesh, &resources.artifacts, hvlite_log_file)
             .await
             .context("failed to create host process")?;
         let (worker, halt_notif) = Worker::launch(&host, config)
@@ -144,7 +144,7 @@ impl PetriVmConfigOpenVmm {
         let agent_disk = build_agent_image(
             self.arch,
             self.firmware.os_flavor(),
-            &self.resources.resolver,
+            &self.resources.artifacts,
         )
         .context("failed to build agent image")?;
 
@@ -199,7 +199,7 @@ impl PetriVmConfigOpenVmm {
                 Guid::from_static_str("766e96f8-2ceb-437e-afe3-a93169e48a7c");
 
             let uh_agent_disk =
-                build_agent_image(self.arch, OsFlavor::Linux, &self.resources.resolver)
+                build_agent_image(self.arch, OsFlavor::Linux, &self.resources.artifacts)
                     .context("failed to build agent image")?;
 
             self.config.vmbus_devices.push((
@@ -388,7 +388,7 @@ impl PetriVmConfigOpenVmm {
         let (host, runner) = mesh_worker::worker_host();
         mesh.launch_host(
             ProcessConfig::new("vmm")
-                .process_name(resolver.resolve(hvlite_artifacts::OPENVMM_NATIVE))
+                .process_name(resolver.get(hvlite_artifacts::OPENVMM_NATIVE))
                 .stderr(Some(stderr_write)),
             hvlite_defs::entrypoint::MeshHostParams { runner },
         )

@@ -12,8 +12,5 @@ petri_artifacts_vmm_test.workspace = true
 petri_artifacts_common.workspace = true
 petri.workspace = true
 
-anyhow.workspace = true
-parking_lot.workspace = true
-
 [lints]
 workspace = true

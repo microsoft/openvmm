@@ -105,7 +105,7 @@ struct PetriVmResourcesOpenVmm {
 
     // Externally injected management stuff also needed at runtime.
     driver: DefaultDriver,
-    resolver: TestArtifacts,
+    artifacts: TestArtifacts,
     output_dir: PathBuf,
 
     // Resources that are only kept so they can be dropped at the end.

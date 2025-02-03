@@ -6,6 +6,10 @@ name = "vmm_tests"
 edition.workspace = true
 rust-version.workspace = true
 
+[[test]]
+name = "tests"
+harness = false
+
 [dev-dependencies]
 petri_artifact_resolver_openvmm_known_paths.workspace = true
 petri_artifacts_vmm_test.workspace = true
@@ -30,6 +34,9 @@ pal_async.workspace = true
 unix_socket.workspace = true
 
 anyhow.workspace = true
+clap.workspace = true
+libtest-mimic.workspace = true
+linkme.workspace = true
 tracing.workspace = true
 
 hvlite_ttrpc_vmservice.workspace = true
