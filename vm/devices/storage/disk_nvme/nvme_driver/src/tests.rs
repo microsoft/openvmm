@@ -358,8 +358,8 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestE
         })
     }
 
-    fn host_allocator(&self) -> Self::DmaAllocator {
-        self.device.host_allocator()
+    fn dma_client(&self) -> Arc<dyn DmaClient> {
+        self.device.clone()
     }
 
     fn max_interrupt_count(&self) -> u32 {
