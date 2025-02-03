@@ -16,6 +16,7 @@ use std::sync::Arc;
 // exported to support the `declare_artifacts!` macro
 #[doc(hidden)]
 pub use paste;
+use std::path::Path;
 
 /// A trait that marks a type as being the type-safe ID for a petri artifact.
 ///
@@ -235,13 +236,13 @@ pub struct TestArtifacts {
 impl TestArtifacts {
     /// Try to get the resolved path of an artifact.
     #[track_caller]
-    pub fn try_get(&self, artifact: impl AsArtifactHandle) -> Option<PathBuf> {
-        self.artifacts.get(&artifact.erase()).cloned()
+    pub fn try_get(&self, artifact: impl AsArtifactHandle) -> Option<&Path> {
+        self.artifacts.get(&artifact.erase()).map(|p| p.as_ref())
     }
 
     /// Get the resolved path of an artifact.
     #[track_caller]
-    pub fn get(&self, artifact: impl AsArtifactHandle) -> PathBuf {
+    pub fn get(&self, artifact: impl AsArtifactHandle) -> &Path {
         self.try_get(artifact.erase())
             .unwrap_or_else(|| panic!("Artifact not initially required: {:?}", artifact.erase()))
     }

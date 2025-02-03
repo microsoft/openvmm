@@ -163,14 +163,14 @@ impl PetriVmConfigHyperV {
         };
 
         let reference_disk_path = artifacts.get(guest_artifact);
-        let openhcl_igvm = igvm_artifact.map(|a| artifacts.get(a));
+        let openhcl_igvm = igvm_artifact.map(|a| artifacts.get(a).to_owned());
 
         Ok(PetriVmConfigHyperV {
             name: test_name.to_owned(),
             generation,
             guest_state_isolation_type,
             memory: 0x1_0000_0000,
-            vhd_paths: vec![vec![reference_disk_path]],
+            vhd_paths: vec![vec![reference_disk_path.to_owned()]],
             secure_boot_template: matches!(generation, powershell::HyperVGeneration::Two)
                 .then_some(match firmware.os_flavor() {
                     OsFlavor::Windows => powershell::HyperVSecureBootTemplate::MicrosoftWindows,

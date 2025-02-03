@@ -440,9 +440,9 @@ impl PetriVmConfigSetupCore<'_> {
 
         let output_dir = self.artifacts.get(common_artifacts::TEST_LOG_DIRECTORY);
         if output_dir.exists() {
-            std::fs::remove_dir_all(&output_dir)?;
+            std::fs::remove_dir_all(output_dir)?;
         }
-        std::fs::create_dir_all(&output_dir)?;
+        std::fs::create_dir_all(output_dir)?;
 
         // NOTE: Due to a WSL + Windows defender bug, .txt extensions take forever to create within WSL
         // when cross compiling. Name them .log which works around it.
@@ -463,7 +463,7 @@ impl PetriVmConfigSetupCore<'_> {
         }
 
         Ok(TestLogFiles {
-            output_dir,
+            output_dir: output_dir.to_owned(),
             hvlite_file,
             guest_file,
             petri_file,
@@ -648,8 +648,7 @@ impl PetriVmConfigSetupCore<'_> {
             (MachineArch::X86_64, Firmware::Pcat { .. }) => {
                 let firmware = hvlite_pcat_locator::find_pcat_bios(
                     self.artifacts
-                        .try_get(hvlite_artifacts::loadable::PCAT_FIRMWARE_X64)
-                        .as_deref(),
+                        .try_get(hvlite_artifacts::loadable::PCAT_FIRMWARE_X64),
                 )
                 .context("Failed to load packaged PCAT binary")?;
                 LoadMode::Pcat {
@@ -752,7 +751,7 @@ impl PetriVmConfigSetupCore<'_> {
             }
             Firmware::Pcat { guest } => {
                 let path = self.artifacts.get(guest.artifact());
-                let inner_disk = open_disk_type(&path, true)?;
+                let inner_disk = open_disk_type(path, true)?;
                 let guest_media = match guest {
                     PcatGuest::Vhd(_) => GuestMedia::Disk {
                         read_only: false,
@@ -806,7 +805,7 @@ impl PetriVmConfigSetupCore<'_> {
                                 disk: LayeredDiskHandle {
                                     layers: vec![
                                         RamDiskLayerHandle { len: None }.into_resource().into(),
-                                        DiskLayerHandle(open_disk_type(&path, true)?)
+                                        DiskLayerHandle(open_disk_type(path, true)?)
                                             .into_resource()
                                             .into(),
                                     ],
@@ -838,7 +837,7 @@ impl PetriVmConfigSetupCore<'_> {
                             disk: LayeredDiskHandle {
                                 layers: vec![
                                     RamDiskLayerHandle { len: None }.into_resource().into(),
-                                    DiskLayerHandle(open_disk_type(&path, true)?)
+                                    DiskLayerHandle(open_disk_type(path, true)?)
                                         .into_resource()
                                         .into(),
                                 ],
@@ -922,7 +921,9 @@ impl PetriVmConfigSetupCore<'_> {
 
         let (crash, task) = spawn_dump_handler(
             self.driver,
-            self.artifacts.get(hvlite_artifacts::OPENHCL_DUMP_DIRECTORY),
+            self.artifacts
+                .get(hvlite_artifacts::OPENHCL_DUMP_DIRECTORY)
+                .to_owned(),
             None,
         );
         task.detach();
@@ -975,8 +976,7 @@ impl PetriVmConfigSetupCore<'_> {
             Firmware::Pcat { .. } => Some(VideoDevice::Vga(
                 hvlite_pcat_locator::find_svga_bios(
                     self.artifacts
-                        .try_get(hvlite_artifacts::loadable::SVGA_FIRMWARE_X64)
-                        .as_deref(),
+                        .try_get(hvlite_artifacts::loadable::SVGA_FIRMWARE_X64),
                 )
                 .context("Failed to load VGA BIOS")?,
             )),
