@@ -89,6 +89,7 @@ pub struct DmaClientSpawner {
 }
 
 impl DmaClientSpawner {
+    /// Creates a new DMA client with the given device name.
     pub fn create_client(&self, device_name: String) -> anyhow::Result<Arc<DmaClientImpl>> {
         GlobalDmaManager::create_client_internal(&self.dma_manager_inner, device_name)
     }
