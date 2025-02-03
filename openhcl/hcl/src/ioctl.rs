@@ -1852,7 +1852,9 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
     }
 
     /// Gets the proxied interrupt request bitmap from the hypervisor.
-    pub fn proxy_irr(&mut self) -> Option<[u32; 8]> {
+    pub fn proxy_irr(&mut self, vtl: GuestVtl) -> Option<[u32; 8]> {
+        // We only support proxying interrupts for VTL 0 today.
+        assert_eq!(vtl, GuestVtl::Vtl0);
         // SAFETY: the `scan_proxy_irr` and `proxy_irr` fields of the run page
         // are concurrently updated by the kernel on multiple processors. They
         // are accessed atomically everywhere.
@@ -1876,7 +1878,9 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
     }
 
     /// Update the `proxy_irr_blocked` in run page
-    pub fn update_proxy_irr_filter(&mut self, irr_filter: &[u32; 8]) {
+    pub fn update_proxy_irr_filter(&mut self, irr_filter: &[u32; 8], vtl: GuestVtl) {
+        // We only support proxying interrupts for VTL 0 today.
+        assert_eq!(vtl, GuestVtl::Vtl0);
         // SAFETY: `proxy_irr_blocked` is accessed by current VP only, but could
         // be concurrently accessed by kernel too, hence accessing as Atomic
         let proxy_irr_blocked = unsafe {

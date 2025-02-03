@@ -1157,7 +1157,8 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         self.partition.fill_device_vectors(vtl, &mut irr_bits);
 
         // Update `proxy_irr_blocked` filter in run page
-        self.runner.update_proxy_irr_filter(&irr_bits.into_inner());
+        self.runner
+            .update_proxy_irr_filter(&irr_bits.into_inner(), vtl);
     }
 }
 
