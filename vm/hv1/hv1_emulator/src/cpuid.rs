@@ -20,15 +20,7 @@ pub fn hv_cpuid_leaves(
     vtom: Option<u64>,
 ) -> Vec<CpuidLeaf> {
     let hardware_isolated = isolation.is_hardware_isolated();
-    let split_u128 = |x: u128| -> [u32; 4] {
-        let bytes = x.to_le_bytes();
-        [
-            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-            u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
-        ]
-    };
+    let split_u128 = |x: u128| -> [u32; 4] { zerocopy::transmute!(x) };
 
     let privileges = {
         let mut privileges = hvdef::HvPartitionPrivilege::new()
