@@ -1,9 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! This module provides a global DMA manager and client implementation.
+//! It manages DMA buffers and provides clients with access to these buffers.
+//! The `GlobalDmaManager` creates DMA buffers for different devices.
+//! The `DmaClientImpl` struct implements the `user_driver::DmaClient` trait.
+
 use parking_lot::Mutex;
 use std::sync::Arc;
-use user_driver::{memory::MemoryBlock, vfio::VfioDmaBuffer};
+use user_driver::memory;
+use user_driver::vfio;
+use user_driver::MemoryBlock;
+use user_driver::VfioDmaBuffer;
 
 pub struct GlobalDmaManager {
     inner: Arc<Mutex<GlobalDmaManagerInner>>,
