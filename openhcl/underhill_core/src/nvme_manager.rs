@@ -47,8 +47,8 @@ enum InnerError {
     Vfio(#[source] anyhow::Error),
     #[error("failed to initialize nvme device")]
     DeviceInitFailed(#[source] anyhow::Error),
-    #[error("failed to create dma buffer for device")]
-    DmaBuffer(#[source] anyhow::Error),
+    #[error("failed to create dma client for device")]
+    DmaClient(#[source] anyhow::Error),
     #[error("failed to get namespace {nsid}")]
     Namespace {
         nsid: u32,
@@ -295,7 +295,7 @@ impl NvmeManagerWorker {
                 let dma_client = self
                     .dma_client_spawner
                     .create_client(format!("nvme_{}", pci_id))
-                    .map_err(InnerError::DmaBuffer)?;
+                    .map_err(InnerError::DmaClient)?;
 
                 let device = VfioDevice::new(&self.driver_source, entry.key(), dma_client)
                     .instrument(tracing::info_span!("vfio_device_open", pci_id))

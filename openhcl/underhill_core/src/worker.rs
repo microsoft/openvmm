@@ -756,6 +756,8 @@ impl UhVmNetworkSettings {
             .unwrap_or(MAX_SUBCHANNELS_PER_VNIC)
             .min(vps_count as u16);
 
+        let dma_client = dma_client_spawner.create_client(format!("nic_{}", nic_config.pci_id))?;
+
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
             nic_config.instance_id,
             nic_config.pci_id,
@@ -767,7 +769,7 @@ impl UhVmNetworkSettings {
             nic_max_sub_channels,
             servicing_netvsp_state,
             self.dma_mode,
-            dma_client_spawner,
+            dma_client
         )
         .await?;
 

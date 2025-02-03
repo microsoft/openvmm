@@ -20,6 +20,7 @@ pub struct GlobalDmaManagerInner {
 }
 
 impl GlobalDmaManager {
+    /// Creates a new `GlobalDmaManager` with the given DMA buffer spawner.
     pub fn new(
         dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
     ) -> Self {
@@ -46,12 +47,12 @@ impl GlobalDmaManager {
             dma_buffer_allocator: Some(allocator.clone()), // Set the allocator now
         };
 
-        // Create an Arc<DmaClient>
         let arc_client = Arc::new(client);
 
         Ok(arc_client)
     }
 
+    /// Returns a `DmaClientSpawner` for creating DMA clients.
     pub fn get_client_spawner(&self) -> DmaClientSpawner {
         DmaClientSpawner {
             dma_manager_inner: self.inner.clone(),
