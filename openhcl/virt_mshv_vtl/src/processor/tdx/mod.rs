@@ -1273,16 +1273,15 @@ impl UhProcessor<'_, TdxBacked> {
         // do any pending flushes, unlock our TLB locks, and wait for any others
         // we're supposed to.
 
-        // active_vtl needs SeqCst ordering in order to ensure that, when other VPs
-        // issue a TLB flush, they always observe the correct active VTL. Otherwise
-        // they might choose to not send this VP a wake, leading to a stall, until
-        // this VP happens to exit to VTL 2 again.
-        // This needs to be set before doing local TLB flushes to ensure there is
-        // no window of time where new flush requests could be added to the queue
-        // while the active VTL is still perceived to be VTL 2, as that could result
-        // in missing a wake. This does technically leave open a small window
-        // for potential spurious wakes, but that's preferable, and will cause no
-        // problems besides a small amount of time waste.
+        // active_vtl needs SeqCst ordering here in order to correctly synchronize
+        // access with the TLB address flush list. We need to ensure that, when
+        // other VPs are adding entries to the list, they always observe the
+        // correct lower active VTL. Otherwise they might choose to not send this
+        // VP a wake, leading to a stall, until this VP happens to exit to VTL 2 again.
+        //
+        // This does technically leave open a small window for potential spurious
+        // wakes, but that's preferable, and will cause no problems besides a
+        // small amount of time waste.
         self.shared.active_vtl[self.vp_index().index() as usize]
             .store(next_vtl as u8, Ordering::SeqCst);
 
@@ -1327,7 +1326,11 @@ impl UhProcessor<'_, TdxBacked> {
             .run()
             .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?;
 
-        self.shared.active_vtl[self.vp_index().index() as usize].store(2, Ordering::SeqCst);
+        // TLB flushes can only target lower VTLs, so it is fine to use a relaxed
+        // ordering here. The worst that can happen is some spurious wakes, due
+        // to another VP observing that this VP is still in a lower VTL.
+        self.shared.active_vtl[self.vp_index().index() as usize].store(2, Ordering::Relaxed);
+
         let entered_from_vtl = next_vtl;
         *self.runner.tdx_vp_entry_flags_mut() = TdxVmFlags::new();
 
@@ -3526,31 +3529,34 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
         Ok(())
     }
 
-    fn wake_processors_for_tlb_flush(&mut self, vtl: GuestVtl, processor_set: Option<Vec<u32>>) {
+    fn wake_processors_for_tlb_flush(
+        &mut self,
+        target_vtl: GuestVtl,
+        processor_set: Option<Vec<u32>>,
+    ) {
         match processor_set {
             Some(processors) => {
                 self.wake_processors_for_tlb_flush_inner(
-                    vtl,
+                    target_vtl,
                     processors.into_iter().map(|x| x as usize),
                 );
             }
-            None => self.wake_processors_for_tlb_flush_inner(vtl, 0..self.vp.partition.vps.len()),
+            None => {
+                self.wake_processors_for_tlb_flush_inner(target_vtl, 0..self.vp.partition.vps.len())
+            }
         }
     }
 
     fn wake_processors_for_tlb_flush_inner(
         &mut self,
-        vtl: GuestVtl,
+        target_vtl: GuestVtl,
         processors: impl Iterator<Item = usize>,
     ) {
         for target_vp in processors {
-            // Use SeqCst ordering to ensure that we are observing the most
-            // up-to-date value from other VPs. Otherwise we might not send a
-            // wake to a VP in a lower VTL, which could cause TLB lock holders
-            // to be stuck waiting until the target_vp happens to switch into
-            // VTL 2.
+            // Use SeqCst ordering here to ensure we are fully synchronized with
+            // the TLB address flush list we just added to.
             if self.vp.vp_index().index() as usize != target_vp
-                && self.vp.shared.active_vtl[target_vp].load(Ordering::SeqCst) == vtl as u8
+                && self.vp.shared.active_vtl[target_vp].load(Ordering::SeqCst) == target_vtl as u8
             {
                 self.vp.partition.vps[target_vp].wake_vtl2();
             }
