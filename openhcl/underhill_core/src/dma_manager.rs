@@ -49,7 +49,7 @@ impl GlobalDmaManager {
         // Create an Arc<DmaClient>
         let arc_client = Arc::new(client);
 
-        Ok(arc_client) // Return the `Arc<Mutex<DmaClient>>`
+        Ok(arc_client)
     }
 
     pub fn get_client_spawner(&self) -> DmaClientSpawner {
