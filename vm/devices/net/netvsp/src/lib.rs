@@ -56,6 +56,7 @@ use net_backend::TxSegment;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::timer::Instant;
 use pal_async::timer::PolledTimer;
+use rand::Rng;
 use ring::gparange::MultiPagedRangeIter;
 use rx_bufs::RxBuffers;
 use rx_bufs::SubAllocationInUse;
@@ -796,11 +797,23 @@ impl PrimaryChannelState {
             .collect();
 
         let rss_state = rss_state
-            .map(|rss| {
+            .map(|mut rss| {
+                tracing::error!(
+                    "ERIK restore rss_state: {:?} adapter: {:?}",
+                    rss.indirection_table.len(),
+                    indirection_table_size
+                );
                 if rss.indirection_table.len() != indirection_table_size as usize {
-                    return Err(NetRestoreError::MismatchedIndirectionTableSize);
+                    tracing::warn!(
+                        "ERIK MissmatchedIndirectionTableSize rss_state: {:?} adapter: {:?} RESIZING",
+                        rss.indirection_table.len(),
+                        indirection_table_size
+                    );
+                    rss.indirection_table
+                        .resize(indirection_table_size as usize, 0);
+                    //return Err(NetRestoreError::MismatchedIndirectionTableSize);
                 }
-                Ok(RssState {
+                Ok::<RssState, NetRestoreError>(RssState {
                     key: rss
                         .key
                         .try_into()
@@ -1026,11 +1039,27 @@ impl NicBuilder {
         };
 
         let driver = driver_source.simple();
+
+        let mut rng = rand::rng();
+        let count: u8 = rng.random();
+        let even = count % 2 == 0;
+        let table_size = if even {
+            multiqueue.indirection_table_size
+        } else {
+            128
+        };
+        tracing::error!(
+            "ERIK Arc::new Adapter multiqueue.indirection_table_size {:?} count {:?} even {:?} table_size {:?}",
+            multiqueue.indirection_table_size,
+            count,
+            even,
+            table_size,
+        );
         let adapter = Arc::new(Adapter {
             driver,
             mac_address,
             max_queues,
-            indirection_table_size: multiqueue.indirection_table_size,
+            indirection_table_size: table_size,
             offload_support,
             free_tx_packet_threshold,
             ring_size_limit: ring_size_limit.into(),
@@ -4062,6 +4091,8 @@ impl Coordinator {
     }
 
     async fn restart_queues(&mut self, c_state: &mut CoordinatorState) -> Result<(), WorkerError> {
+        tracing::error!("ERIK Coordinator::restart_queues enter");
+
         // Drop all the queues and stop the endpoint. Collect the worker drivers to pass to the queues.
         let drivers = self
             .workers
@@ -4199,6 +4230,15 @@ impl Coordinator {
                     indirection_table: &rss.indirection_table,
                     flags: 0,
                 });
+
+            if let Some(rss) = rss.as_ref() {
+                tracing::error!(
+                    "ERIK Coordinator::restart_queues DONE RSS State Some indirection table len: {:?}",
+                    rss.indirection_table.len()
+                );
+            } else {
+                tracing::error!("ERIK Coordinator::restart_queues DONE RSS State None");
+            }
 
             c_state
                 .endpoint
