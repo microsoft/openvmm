@@ -3567,6 +3567,8 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
                 self.vp.partition.vps[target_vp].wake_vtl2();
             }
         }
+
+        // TODO TDX GUEST VSM: We need to wait here until all woken VPs actually enter VTL 2.
     }
 }
 
