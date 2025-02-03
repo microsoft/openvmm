@@ -61,18 +61,12 @@ impl Test {
 
     /// Returns the name of the test.
     fn name(&self) -> String {
-        let crate_name = module_path!().split("::").next().unwrap();
-        // Prefix the module where the test was defined, but strip the crate
-        // name for consistency with libtest.
-        format!(
-            "{}::{}",
-            self.module
-                .strip_prefix(crate_name)
-                .unwrap()
-                .strip_prefix("::")
-                .unwrap(),
-            self.test.leaf_name()
-        )
+        // Strip the crate name from the module path, for consistency with libtest.
+        let module = self
+            .module
+            .split_once("::")
+            .map_or(self.module, |(_, rest)| rest);
+        format!("{}::{}", module, self.test.leaf_name())
     }
 
     /// Returns the artifact requirements for the test.
