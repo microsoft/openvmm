@@ -3552,11 +3552,17 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
         target_vtl: GuestVtl,
         processors: impl Iterator<Item = usize>,
     ) {
+        // Use SeqCst ordering to ensure that we are observing the most
+        // up-to-date value from other VPs. Otherwise we might not send a
+        // wake to a VP in a lower VTL, which could cause TLB lock holders
+        // to be stuck waiting until the target_vp happens to switch into
+        // VTL 2.
+        // We use a single fence to avoid having to take a SeqCst load
+        // for each VP.
+        std::sync::atomic::fence(Ordering::SeqCst);
         for target_vp in processors {
-            // Use SeqCst ordering here to ensure we are fully synchronized with
-            // the TLB address flush list we just added to.
             if self.vp.vp_index().index() as usize != target_vp
-                && self.vp.shared.active_vtl[target_vp].load(Ordering::SeqCst) == target_vtl as u8
+                && self.vp.shared.active_vtl[target_vp].load(Ordering::Relaxed) == target_vtl as u8
             {
                 self.vp.partition.vps[target_vp].wake_vtl2();
             }
