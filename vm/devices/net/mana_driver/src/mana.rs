@@ -34,8 +34,7 @@ use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::DeviceBacking;
-use user_driver::DmaAllocator;
-use user_driver::HostDmaAllocator;
+use user_driver::DmaClient;
 use vmcore::vm_task::VmTaskDriverSource;
 
 enum LinkStatus {
@@ -329,11 +328,12 @@ impl<T: DeviceBacking> Vport<T> {
         cpu: u32,
     ) -> anyhow::Result<BnicEq> {
         let mut gdma = self.inner.gdma.lock().await;
-        let mem = gdma
-            .device()
-            .host_allocator()
+
+        let dma_client = gdma.device().dma_client();
+
+        let mem = dma_client
             .allocate_dma_buffer(size as usize)
-            .context("failed to allocate dma buffer for eq")?;
+            .context("Failed to allocate DMA buffer")?;
 
         let gdma_region = gdma
             .create_dma_region(arena, self.inner.dev_id, mem.clone())
@@ -371,11 +371,12 @@ impl<T: DeviceBacking> Vport<T> {
         assert!(wq_size >= PAGE_SIZE as u32 && wq_size.is_power_of_two());
         assert!(cq_size >= PAGE_SIZE as u32 && cq_size.is_power_of_two());
         let mut gdma = self.inner.gdma.lock().await;
-        let mem = Arc::new(
-            gdma.device()
-                .host_allocator()
-                .allocate_dma_buffer((wq_size + cq_size) as usize)?,
-        );
+
+        let dma_client = gdma.device().dma_client();
+
+        let mem = dma_client
+            .allocate_dma_buffer((wq_size + cq_size) as usize)
+            .context("Failed to allocate DMA buffer")?;
 
         let wq_mem = mem.subblock(0, wq_size as usize);
         let cq_mem = mem.subblock(wq_size as usize, cq_size as usize);
@@ -535,9 +536,9 @@ impl<T: DeviceBacking> Vport<T> {
         vport_link_status[vport_index] = LinkStatus::Active { sender, connected };
     }
 
-    /// Returns an object that can allocate host memory to be shared with the device.
-    pub async fn host_allocator(&self) -> DmaAllocator<T> {
-        self.inner.gdma.lock().await.device().host_allocator()
+    /// Returns an object that can allocate dma memory to be shared with the device.
+    pub async fn dma_client(&self) -> Arc<dyn DmaClient> {
+        self.inner.gdma.lock().await.device().dma_client()
     }
 }
 
