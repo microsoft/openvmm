@@ -16,6 +16,7 @@ pub mod interrupt;
 pub mod lockmem;
 pub mod memory;
 pub mod vfio;
+pub mod dma;
 
 pub type DmaAllocator<T> = <T as DeviceBacking>::DmaAllocator;
 
