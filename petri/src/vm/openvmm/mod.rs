@@ -18,11 +18,12 @@ pub use runtime::PetriVmOpenVmm;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::Firmware;
+use crate::PetriLogFile;
+use crate::PetriLogSource;
 use crate::PetriVm;
 use crate::PetriVmConfig;
 use async_trait::async_trait;
 use framebuffer::FramebufferAccess;
-use fs_err::File;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use hvlite_defs::config::Config;
@@ -67,7 +68,7 @@ pub struct PetriVmConfigOpenVmm {
     resources: PetriVmResourcesOpenVmm,
 
     // Logging
-    hvlite_log_file: File,
+    openvmm_log_file: PetriLogFile,
 
     // Resources that are only used during startup.
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
@@ -107,6 +108,7 @@ struct PetriVmResourcesOpenVmm {
     driver: DefaultDriver,
     artifacts: TestArtifacts,
     output_dir: PathBuf,
+    log_source: PetriLogSource,
 
     // Resources that are only kept so they can be dropped at the end.
     _vsock_temp_paths: Vec<TempPath>,

@@ -42,7 +42,6 @@ gdma_resources.workspace = true
 net_backend_resources.workspace = true
 
 mesh_rpc.workspace = true
-test_with_tracing.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

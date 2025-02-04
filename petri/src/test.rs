@@ -12,8 +12,11 @@ pub mod test_macro_support {
     pub static TESTS: [fn() -> (&'static str, Vec<Box<dyn RunTest>>)] = [..];
 }
 
+use crate::tracing::try_init_tracing;
+use crate::PetriLogSource;
 use crate::TestArtifactRequirements;
 use crate::TestArtifacts;
+use anyhow::Context as _;
 use test_macro_support::TESTS;
 
 /// Defines a single test from a value that implements [`RunTest`].
@@ -62,11 +65,10 @@ impl Test {
     /// Returns the name of the test.
     fn name(&self) -> String {
         // Strip the crate name from the module path, for consistency with libtest.
-        let module = self
-            .module
-            .split_once("::")
-            .map_or(self.module, |(_, rest)| rest);
-        format!("{}::{}", module, self.test.leaf_name())
+        match self.module.split_once("::") {
+            Some((_crate_name, rest)) => format!("{}::{}", rest, self.test.leaf_name()),
+            None => self.test.leaf_name().to_owned(),
+        }
     }
 
     /// Returns the artifact requirements for the test.
@@ -77,16 +79,30 @@ impl Test {
             .require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY)
     }
 
+    fn run(
+        &self,
+        resolve: fn(&str, TestArtifactRequirements) -> anyhow::Result<TestArtifacts>,
+    ) -> anyhow::Result<()> {
+        let name = self.name();
+        let artifacts =
+            resolve(&name, self.requirements()).context("failed to resolve artifacts")?;
+        let logger =
+            try_init_tracing(artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY))
+                .context("failed to initialize tracing")?;
+        self.test.run(PetriTestParams {
+            test_name: &name,
+            artifacts: &artifacts,
+            logger: &logger,
+        })
+    }
+
     /// Returns a libtest-mimic trial to run the test.
     fn trial(
         self,
         resolve: fn(&str, TestArtifactRequirements) -> anyhow::Result<TestArtifacts>,
     ) -> libtest_mimic::Trial {
         libtest_mimic::Trial::test(self.name(), move || {
-            let name = self.name();
-            let artifacts = resolve(&name, self.requirements())
-                .map_err(|err| format!("failed to resolve artifacts: {:#}", err))?;
-            self.test.run(&name, &artifacts)
+            self.run(resolve).map_err(|err| format!("{err:#}").into())
         })
     }
 }
@@ -104,7 +120,17 @@ pub trait RunTest: Send {
     fn requirements(&self) -> TestArtifactRequirements;
     /// Runs the test, which has been assigned `name`, with the given
     /// `artifacts`.
-    fn run(&self, name: &str, artifacts: &TestArtifacts) -> Result<(), libtest_mimic::Failed>;
+    fn run(&self, params: PetriTestParams<'_>) -> anyhow::Result<()>;
+}
+
+/// Parameters passed to a [`RunTest`] when it is run.
+pub struct PetriTestParams<'a> {
+    /// The name of the running test.
+    pub test_name: &'a str,
+    /// The artifacts available to the test.
+    pub artifacts: &'a TestArtifacts,
+    /// The logger for the test.
+    pub logger: &'a PetriLogSource,
 }
 
 /// A test defined by a fixed set of requirements and a run function.
@@ -116,7 +142,7 @@ pub struct SimpleTest<F> {
 
 impl<F, E> SimpleTest<F>
 where
-    F: 'static + Send + Fn(&str, &TestArtifacts) -> Result<(), E>,
+    F: 'static + Send + Fn(PetriTestParams<'_>) -> Result<(), E>,
     E: Into<anyhow::Error>,
 {
     /// Returns a new test with the given `leaf_name`, `requirements`, and `run`
@@ -132,7 +158,7 @@ where
 
 impl<F, E> RunTest for SimpleTest<F>
 where
-    F: 'static + Send + Fn(&str, &TestArtifacts) -> Result<(), E>,
+    F: 'static + Send + Fn(PetriTestParams<'_>) -> Result<(), E>,
     E: Into<anyhow::Error>,
 {
     fn leaf_name(&self) -> &str {
@@ -143,9 +169,8 @@ where
         self.requirements.clone()
     }
 
-    fn run(&self, name: &str, artifacts: &TestArtifacts) -> Result<(), libtest_mimic::Failed> {
-        (self.run)(name, artifacts).map_err(|err| format!("{:#}", err.into()))?;
-        Ok(())
+    fn run(&self, params: PetriTestParams<'_>) -> anyhow::Result<()> {
+        (self.run)(params).map_err(Into::into)
     }
 }
 

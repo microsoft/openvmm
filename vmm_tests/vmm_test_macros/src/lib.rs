@@ -762,10 +762,9 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
             | (None, Some(Vmm::HyperV)) => (
                 quote!(#[cfg(all(guest_arch=#guest_arch, windows))]),
                 quote!(::petri::hyperv::PetriVmConfigHyperV::new(
-                    test_name,
+                    &params,
                     #firmware,
                     #arch,
-                    artifacts.clone(),
                     &driver,
                 )?),
             ),
@@ -779,9 +778,9 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
                 (
                     quote!(#[cfg(guest_arch=#guest_arch)]),
                     quote!(::petri::openvmm::PetriVmConfigOpenVmm::new(
+                        &params,
                         #firmware,
                         #arch,
-                        artifacts.clone(),
                         &driver,
                     )?),
                 )
@@ -802,7 +801,7 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
                     #( .require(#deps) )*
                     #( .require(#extra_deps) )*
                     #( .try_require(#optional_deps) )*,
-                |test_name, artifacts| {
+                |params| {
                     ::pal_async::DefaultPool::run_with(|driver| async move {
                         let config = #petri_vm_config;
                         #original_name(#original_args).await

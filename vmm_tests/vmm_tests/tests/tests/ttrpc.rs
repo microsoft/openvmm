@@ -28,16 +28,13 @@ petri::test!(
 );
 
 #[cfg(guest_arch = "x86_64")]
-fn test_ttrpc_interface(_name: &str, artifacts: &petri::TestArtifacts) -> anyhow::Result<()> {
-    // This test doesn't use a Petri VM, so it needs to initialize tracing itself.
-    test_with_tracing::init();
-
+fn test_ttrpc_interface(params: petri::PetriTestParams<'_>) -> anyhow::Result<()> {
     let mut socket_path = std::env::temp_dir();
     socket_path.push(Guid::new_random().to_string());
 
     tracing::info!(socket_path = %socket_path.display(), "launching hvlite with ttrpc");
 
-    let mut child = std::process::Command::new(artifacts.get(artifacts::OPENVMM_NATIVE))
+    let mut child = std::process::Command::new(params.artifacts.get(artifacts::OPENVMM_NATIVE))
         .arg("--ttrpc")
         .arg(&socket_path)
         .stdin(Stdio::null())
@@ -53,15 +50,20 @@ fn test_ttrpc_interface(_name: &str, artifacts: &petri::TestArtifacts) -> anyhow
     // Copy the child's stderr to this process's, since internally this is
     // wrapped by the test harness.
     let stderr = child.stderr.take().context("failed to take stderr")?;
+    let stderr_log = params.logger.log_file("stderr").unwrap();
     std::thread::spawn(move || {
         let stderr = BufReader::new(stderr);
         for line in stderr.lines() {
-            tracing::info!(target: "stderr_log", "{}", line.unwrap());
+            stderr_log.write_entry(line.unwrap());
         }
     });
 
-    let kernel_path = artifacts.get(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64);
-    let initrd_path = artifacts.get(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64);
+    let kernel_path = params
+        .artifacts
+        .get(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64);
+    let initrd_path = params
+        .artifacts
+        .get(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64);
 
     let ttrpc_path = socket_path.clone();
     DefaultPool::run_with(|driver| async move {
@@ -112,12 +114,16 @@ fn test_ttrpc_interface(_name: &str, artifacts: &petri::TestArtifacts) -> anyhow
 
             let com1 = UnixStream::connect(&com1_path).unwrap();
 
+            let com1_log = params.logger.log_file("linux").unwrap();
             std::thread::spawn(move || {
                 let read = BufReader::new(com1);
                 for line in read.lines() {
                     match line {
-                        Ok(line) => tracing::info!(target: "linux_console", "{}", line),
-                        Err(e) => tracing::error!(target: "linux_console", "{}", e),
+                        Ok(line) => com1_log.write_entry(line),
+                        Err(e) => tracing::error!(
+                            error = &e as &dyn std::error::Error,
+                            "failed to read from com1"
+                        ),
                     }
                 }
             });

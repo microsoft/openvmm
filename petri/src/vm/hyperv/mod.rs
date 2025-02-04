@@ -11,6 +11,7 @@ use crate::disk_image::build_agent_image;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::Firmware;
 use crate::IsolationType;
+use crate::PetriTestParams;
 use crate::PetriVm;
 use crate::PetriVmConfig;
 use anyhow::Context;
@@ -107,10 +108,9 @@ impl PetriVm for PetriVmHyperV {
 impl PetriVmConfigHyperV {
     /// Create a new Hyper-V petri VM config
     pub fn new(
-        test_name: &str,
+        params: &PetriTestParams<'_>,
         firmware: Firmware,
         arch: MachineArch,
-        artifacts: TestArtifacts,
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
         let temp_dir = tempfile::tempdir()?;
@@ -162,11 +162,11 @@ impl PetriVmConfigHyperV {
             // TODO: OpenHCL PCAT
         };
 
-        let reference_disk_path = artifacts.get(guest_artifact);
-        let openhcl_igvm = igvm_artifact.map(|a| artifacts.get(a).to_owned());
+        let reference_disk_path = params.artifacts.get(guest_artifact);
+        let openhcl_igvm = igvm_artifact.map(|a| params.artifacts.get(a).to_owned());
 
         Ok(PetriVmConfigHyperV {
-            name: test_name.to_owned(),
+            name: params.test_name.to_owned(),
             generation,
             guest_state_isolation_type,
             memory: 0x1_0000_0000,
@@ -182,7 +182,7 @@ impl PetriVmConfigHyperV {
                     }
                 }),
             openhcl_igvm,
-            artifacts,
+            artifacts: params.artifacts.clone(),
             driver: driver.clone(),
             arch,
             os_flavor: firmware.os_flavor(),

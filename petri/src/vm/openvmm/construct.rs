@@ -12,10 +12,12 @@ use super::BOOT_NVME_NSID;
 use super::SCSI_INSTANCE;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openhcl_diag::OpenHclDiagHandler;
-use crate::tracing::trace_attachment;
 use crate::Firmware;
 use crate::IsolationType;
 use crate::PcatGuest;
+use crate::PetriLogFile;
+use crate::PetriLogSource;
+use crate::PetriTestParams;
 use crate::UefiGuest;
 use crate::SIZE_1_GB;
 use anyhow::Context;
@@ -59,7 +61,6 @@ use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::DefaultDriver;
-use petri_artifacts_common::artifacts as common_artifacts;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::AsArtifactHandle;
 use petri_artifacts_core::TestArtifacts;
@@ -72,7 +73,6 @@ use serial_core::resources::DisconnectedSerialBackendHandle;
 use serial_socket::net::OpenSocketSerialConfig;
 use sparse_mmap::alloc_shared_memory;
 use std::fmt::Write as _;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use storvsp_resources::ScsiControllerHandle;
@@ -94,29 +94,17 @@ use vtl2_settings_proto::Vtl2Settings;
 impl PetriVmConfigOpenVmm {
     /// Create a new VM configuration.
     pub fn new(
+        params: &PetriTestParams<'_>,
         firmware: Firmware,
         arch: MachineArch,
-        artifacts: TestArtifacts,
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
         let setup = PetriVmConfigSetupCore {
             arch,
             firmware: &firmware,
-            artifacts: &artifacts,
+            artifacts: params.artifacts,
             driver,
         };
-
-        let TestLogFiles {
-            output_dir,
-            hvlite_file,
-            guest_file,
-            petri_file,
-            openhcl_file,
-        } = setup
-            .create_log_files()
-            .context("failed to create test log files")?;
-
-        crate::tracing::try_init_tracing(petri_file.into())?;
 
         let mut chipset = VmManifestBuilder::new(
             match firmware {
@@ -142,7 +130,7 @@ impl PetriVmConfigOpenVmm {
             mut emulated_serial_config,
             serial_tasks,
             linux_direct_serial_agent,
-        } = setup.configure_serial(guest_file, openhcl_file)?;
+        } = setup.configure_serial(params.logger)?;
 
         let (video_dev, framebuffer, framebuffer_access) = match setup.config_video()? {
             Some((v, fb, fba)) => {
@@ -381,12 +369,16 @@ impl PetriVmConfigOpenVmm {
                 openhcl_diag_handler,
                 linux_direct_serial_agent,
                 driver: driver.clone(),
-                artifacts,
-                output_dir,
+                output_dir: params
+                    .artifacts
+                    .get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY)
+                    .to_owned(),
+                log_source: params.logger.clone(),
+                artifacts: params.artifacts.clone(),
                 _vsock_temp_paths: vsock_temp_paths,
             },
 
-            hvlite_log_file: hvlite_file,
+            openvmm_log_file: params.logger.log_file("openvmm")?,
 
             ged,
             vtl2_settings,
@@ -408,21 +400,6 @@ struct SerialData {
     linux_direct_serial_agent: Option<LinuxDirectSerialAgent>,
 }
 
-struct TestLogFiles {
-    output_dir: PathBuf,
-    hvlite_file: File,
-    guest_file: File,
-    petri_file: File,
-    openhcl_file: Option<File>,
-}
-
-enum LogTarget {
-    Linux,
-    Uefi,
-    Pcat,
-    Openhcl,
-}
-
 enum Device {
     Vmbus(DeviceVtl, Resource<VmbusDeviceHandleKind>),
     Vpci(VpciDeviceConfig),
@@ -435,66 +412,21 @@ enum VideoDevice {
 }
 
 impl PetriVmConfigSetupCore<'_> {
-    fn create_log_files(&self) -> anyhow::Result<TestLogFiles> {
-        // DEVNOTE: This function runs before tracing is set up.
-
-        let output_dir = self.artifacts.get(common_artifacts::TEST_LOG_DIRECTORY);
-        if output_dir.exists() {
-            std::fs::remove_dir_all(output_dir)?;
-        }
-        std::fs::create_dir_all(output_dir)?;
-
-        // NOTE: Due to a WSL + Windows defender bug, .txt extensions take forever to create within WSL
-        // when cross compiling. Name them .log which works around it.
-        let hvlite_file = File::create(output_dir.join("hvlite.log"))?;
-        let guest_file = File::create(output_dir.join("guest.log"))?;
-        let petri_file = File::create(output_dir.join("petri.log"))?;
-        let openhcl_file = if self.firmware.is_openhcl() {
-            Some(File::create(output_dir.join("openhcl.log"))?)
-        } else {
-            None
-        };
-
-        for attachment in [&hvlite_file, &guest_file, &petri_file]
-            .into_iter()
-            .chain(openhcl_file.as_ref())
-        {
-            trace_attachment(attachment.path());
-        }
-
-        Ok(TestLogFiles {
-            output_dir: output_dir.to_owned(),
-            hvlite_file,
-            guest_file,
-            petri_file,
-            openhcl_file,
-        })
-    }
-
-    fn configure_serial(
-        &self,
-        guest_file: File,
-        openhcl_file: Option<File>,
-    ) -> anyhow::Result<SerialData> {
+    fn configure_serial(&self, logger: &PetriLogSource) -> anyhow::Result<SerialData> {
         let mut serial_tasks = Vec::new();
 
-        let serial0_log_target = match self.firmware {
-            Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => LogTarget::Linux,
-            Firmware::Pcat { .. } => LogTarget::Pcat,
-            Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => LogTarget::Uefi,
-        };
+        let serial0_log_file = logger.log_file(match self.firmware {
+            Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => "linux",
+            Firmware::Pcat { .. } => "pcat",
+            Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => "uefi",
+        })?;
 
         let (serial0_host, serial0) = self
             .create_serial_stream()
             .context("failed to create serial0 stream")?;
         let (serial0_read, serial0_write) = serial0_host.split();
         let serial0_task = self
-            .spawn_serial_task(
-                "serial0-console",
-                serial0_log_target,
-                serial0_read,
-                guest_file,
-            )
+            .spawn_serial_task("serial0-console", serial0_log_file, serial0_read)
             .context("failed to spawn serial0 task")?;
         serial_tasks.push(serial0_task);
 
@@ -503,12 +435,7 @@ impl PetriVmConfigSetupCore<'_> {
                 .create_serial_stream()
                 .context("failed to create serial2 stream")?;
             let serial2_task = self
-                .spawn_serial_task(
-                    "serial2-openhcl",
-                    LogTarget::Openhcl,
-                    serial2_host,
-                    openhcl_file.unwrap(),
-                )
+                .spawn_serial_task("serial2-openhcl", logger.log_file("openhcl")?, serial2_host)
                 .context("failed to spawn serial2 task")?;
             serial_tasks.push(serial2_task);
             serial2
@@ -550,9 +477,8 @@ impl PetriVmConfigSetupCore<'_> {
     fn spawn_serial_task(
         &self,
         task_name: &str,
-        log_target: LogTarget,
+        log_file: PetriLogFile,
         reader: impl AsyncRead + Unpin + Send + 'static,
-        mut file: File,
     ) -> anyhow::Result<Task<anyhow::Result<()>>> {
         Ok(self.driver.spawn(task_name, async move {
             let mut buf = Vec::new();
@@ -566,23 +492,7 @@ impl PetriVmConfigSetupCore<'_> {
 
                 let string_buf = String::from_utf8_lossy(&buf);
                 let string_buf_trimmed = string_buf.trim_end();
-                // tracing's target needs to be a const, can't just pass in a string
-                match log_target {
-                    LogTarget::Linux => {
-                        tracing::info!(target: crate::tracing::LINUX_TARGET, "{}", string_buf_trimmed)
-                    }
-                    LogTarget::Uefi => {
-                        tracing::info!(target: crate::tracing::UEFI_TARGET, "{}", string_buf_trimmed)
-                    }
-                    LogTarget::Pcat => {
-                        tracing::info!(target: crate::tracing::PCAT_TARGET, "{}", string_buf_trimmed)
-                    }
-                    LogTarget::Openhcl => {
-                        tracing::info!(target: crate::tracing::OPENHCL_TARGET, "{}", string_buf_trimmed)
-                    }
-                }
-
-                file.write_all(&buf)?;
+                log_file.write_entry(string_buf_trimmed);
             }
             Ok(())
         }))
