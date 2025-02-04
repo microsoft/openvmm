@@ -3512,7 +3512,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
         }
 
         for range in gva_ranges {
-            if range.as_extended().large_page() && use_extended_range_format {
+            if use_extended_range_format && range.as_extended().large_page() {
                 // TDX does not provide a way to flush large page ranges,
                 // we have to promote this request to a flush entire.
                 return Err(());
