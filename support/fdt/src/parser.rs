@@ -773,6 +773,7 @@ mod test {
     use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
+    use zerocopy::IntoBytes;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum DtProp {
@@ -780,6 +781,7 @@ mod test {
         PropB(Vec<u8>),
         Reg(u32),
         SuperAwesomeProp(String),
+        PropList(Vec<u64>),
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -801,6 +803,7 @@ mod test {
         propb: StringId,
         reg: StringId,
         saprop: StringId,
+        proplist: StringId,
     }
 
     macro_rules! build_fdt_props {
@@ -813,6 +816,26 @@ mod test {
                     DtProp::PropB(val) => new_builder.add_prop_array($ids.propb, &[&val]).unwrap(),
                     DtProp::Reg(val) => new_builder.add_u32($ids.reg, *val).unwrap(),
                     DtProp::SuperAwesomeProp(val) => new_builder.add_str($ids.saprop, val).unwrap(),
+                    DtProp::PropList(val) => {
+                        // convert to BE first, since the underlying routines require BE data
+                        let big_endians = val
+                            .iter()
+                            .map(|v| {
+                                zerocopy::byteorder::U64::<zerocopy::byteorder::BigEndian>::new(*v)
+                            })
+                            .collect::<Vec<_>>();
+
+                        new_builder
+                            .add_prop_array(
+                                $ids.proplist,
+                                big_endians
+                                    .iter()
+                                    .map(|v| v.as_bytes())
+                                    .collect::<Vec<_>>()
+                                    .as_slice(),
+                            )
+                            .unwrap()
+                    }
                 };
             }
 
@@ -839,6 +862,7 @@ mod test {
                 propb: builder.add_string("test,prop-b").unwrap(),
                 reg: builder.add_string("reg").unwrap(),
                 saprop: builder.add_string("Awesome,super-prop").unwrap(),
+                proplist: builder.add_string("prop-list").unwrap(),
             };
 
             // build root
@@ -882,6 +906,13 @@ mod test {
                         "reg" => DtProp::Reg(prop.read_u32(0).unwrap()),
                         "Awesome,super-prop" => {
                             DtProp::SuperAwesomeProp(prop.read_str().unwrap().into())
+                        }
+                        "prop-list" => {
+                            let mut list = vec![];
+                            for val in prop.as_64_list().unwrap() {
+                                list.push(val);
+                            }
+                            DtProp::PropList(list)
                         }
                         _ => panic!("unexpected name {}", name),
                     };
@@ -964,8 +995,11 @@ mod test {
                 properties: vec![
                     DtProp::PropA(0x123456789abcdef),
                     DtProp::PropB(vec![]),
+                    DtProp::PropB(vec![1]),
                     DtProp::Reg(0xabcdef),
                     DtProp::SuperAwesomeProp("this is a string!".into()),
+                    DtProp::PropList(vec![1, 2, 3, 4, 5]),
+                    DtProp::PropA(0x223456789abcdef),
                 ],
             },
             memory_reservations: vec![ReserveEntry {
