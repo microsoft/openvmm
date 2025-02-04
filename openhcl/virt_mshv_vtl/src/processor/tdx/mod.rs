@@ -3385,11 +3385,15 @@ impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt for UhHypercallHandler<'_,
         data: u32,
         params: &hv1_hypercall::HvInterruptParameters<'_>,
     ) -> hvdef::HvResult<()> {
+
+        // Request a remapping in vtl2 for the guest device interrupt vector
+        let remapped_vector = self.vp.partition.hcl.remap_guest_interrupt(params.vector);
+
         self.hcvm_retarget_interrupt(
             device_id,
             address,
             data,
-            params.vector,
+            remapped_vector,
             params.multicast,
             params.target_processors,
         )
