@@ -3512,11 +3512,9 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
         }
 
         for range in gva_ranges {
-            if range.as_extended().large_page() && !use_extended_range_format {
-                // If we have not been asked to use extended ranges, but this range
-                // claims to be large pages, then what has actually happened is this
-                // range has overflowed its count field. We have no way to disambiguate
-                // this case at flush time, so we have to promote this to a flush entire.
+            if range.as_extended().large_page() && use_extended_range_format {
+                // TDX does not provide a way to flush large page ranges,
+                // we have to promote this request to a flush entire.
                 return Err(());
             }
             if flush_state.gva_list.len() == FLUSH_GVA_LIST_SIZE {

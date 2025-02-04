@@ -146,10 +146,6 @@ impl UhProcessor<'_, TdxBacked> {
 
         if count_diff == 1 {
             let gva_range = flush_addrs.next().unwrap();
-            // Any extended entry can't be handled, promote to a flush entire.
-            if gva_range.as_extended().large_page() {
-                return false;
-            }
             runner
                 .invgla(gla_flags, TdxGlaListInfo::from(gva_range.0))
                 .unwrap();
@@ -159,11 +155,6 @@ impl UhProcessor<'_, TdxBacked> {
             let page_mapping = flush_page.mapping().unwrap();
 
             for (i, gva_range) in flush_addrs.enumerate() {
-                // Any extended entry can't be handled, promote to a flush entire.
-                if gva_range.as_extended().large_page() {
-                    return false;
-                }
-
                 page_mapping
                     .write_at(i * size_of::<HvGvaRange>(), gva_range.as_bytes())
                     .unwrap();
