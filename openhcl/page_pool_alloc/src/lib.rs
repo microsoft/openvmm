@@ -19,9 +19,11 @@ use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
+use sparse_mmap::alloc_shared_memory;
 use sparse_mmap::SparseMapping;
 use std::fmt::Debug;
 use std::num::NonZeroU64;
+use std::os::fd::OwnedFd;
 use std::sync::Arc;
 use thiserror::Error;
 use vm_topology::memory::MemoryRangeWithNode;
@@ -478,6 +480,41 @@ impl Mapper for NoMapper {
         _pool_type: PoolType,
     ) -> Result<SparseMapping, anyhow::Error> {
         anyhow::bail!("mapping not supported on this pool")
+    }
+}
+
+/// A mapper that uses an internal buffer to map pages.
+// TODO: name?
+#[derive(Debug)]
+pub struct TestMapper {
+    mem: OwnedFd,
+}
+
+impl TestMapper {
+    pub fn new(size_pages: u64) -> anyhow::Result<Self> {
+        let len = (size_pages * HV_PAGE_SIZE) as usize;
+        let fd = alloc_shared_memory(len).context("creating shared mem")?;
+
+        Ok(Self { mem: fd })
+    }
+}
+
+impl Mapper for TestMapper {
+    fn map(
+        &self,
+        base_pfn: u64,
+        size_pages: u64,
+        _pool_type: PoolType,
+    ) -> Result<SparseMapping, anyhow::Error> {
+        let len = (size_pages * HV_PAGE_SIZE) as usize;
+        let mapping = SparseMapping::new(len).context("failed to create mapping")?;
+        let gpa = base_pfn * HV_PAGE_SIZE;
+
+        mapping
+            .map_file(0, len, &self.mem, gpa, true)
+            .context("unable to map allocation")?;
+
+        Ok(mapping)
     }
 }
 
@@ -1120,6 +1157,32 @@ mod test {
         assert!(alloc
             .restore_alloc(a1.base_pfn, a1.size_pages.try_into().unwrap(), false)
             .is_err());
+    }
+
+    #[test]
+    fn test_mapping() {
+        let pool = PagePool::new_private_pool(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::from_4k_gpn_range(0..30),
+                vnode: 0,
+            }],
+            TestMapper::new(30).unwrap(),
+        )
+        .unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+
+        let a1 = alloc
+            .alloc_with_mapping(5.try_into().unwrap(), "alloc1".into())
+            .unwrap();
+        let a1_mapping = a1.mapping().unwrap();
+        assert_eq!(a1_mapping.len(), 5 * HV_PAGE_SIZE as usize);
+        a1_mapping.write_at(123, &[1, 2, 3, 4]).unwrap();
+        let mut data = [0; 4];
+        a1_mapping.read_at(123, &mut data).unwrap();
+        assert_eq!(data, [1, 2, 3, 4]);
+        let mut data = [0; 2];
+        a1_mapping.read_at(125, &mut data).unwrap();
+        assert_eq!(data, [3, 4]);
     }
 
     // TODO: test mapper?
