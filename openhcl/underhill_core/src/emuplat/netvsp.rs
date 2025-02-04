@@ -218,7 +218,7 @@ impl HclNetworkVFManagerWorker {
         vp_count: u32,
         max_sub_channels: u16,
         dma_mode: GuestDmaMode,
-        dma_client: Arc<dyn DmaClient>
+        dma_client: Arc<dyn DmaClient>,
     ) -> (Self, mesh::Sender<HclNetworkVfManagerMessage>) {
         let (tx_to_worker, worker_rx) = mesh::channel();
         let vtl0_bus_control = if save_state.hidden_vtl0.lock().unwrap_or(false) {
@@ -867,20 +867,20 @@ impl HclNetworkVFManager {
         max_sub_channels: u16,
         netvsp_state: &Option<Vec<SavedState>>,
         dma_mode: GuestDmaMode,
-        dma_client: Arc<dyn DmaClient>
+        dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<(
         Self,
         Vec<HclNetworkVFManagerEndpointInfo>,
         RuntimeSavedState,
     )> {
         let device = create_mana_device(
-                    driver_source,
-                    &vtl2_pci_id,
-                    vp_count,
-                    max_sub_channels,
-                    dma_client.clone(),
-                )
-                .await?;
+            driver_source,
+            &vtl2_pci_id,
+            vp_count,
+            max_sub_channels,
+            dma_client.clone(),
+        )
+        .await?;
         let (mut endpoints, endpoint_controls): (Vec<_>, Vec<_>) = (0..device.num_vports())
             .map(|_| {
                 let (endpoint, endpoint_control) = DisconnectableEndpoint::new();

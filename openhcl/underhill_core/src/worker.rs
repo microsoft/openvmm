@@ -769,7 +769,7 @@ impl UhVmNetworkSettings {
             nic_max_sub_channels,
             servicing_netvsp_state,
             self.dma_mode,
-            dma_client
+            dma_client,
         )
         .await?;
 
