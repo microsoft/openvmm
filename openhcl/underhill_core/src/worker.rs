@@ -1525,6 +1525,7 @@ async fn new_underhill_vm(
                 .vtom_offset_bit
                 .map(|bit| 1 << bit)
                 .unwrap_or(0),
+            page_pool_alloc::HclMapper,
         )
         .context("failed to create shared vis page pool")?;
 
@@ -1551,8 +1552,8 @@ async fn new_underhill_vm(
         use vmcore::save_restore::SaveRestore;
 
         let ranges = runtime_params.private_pool_ranges();
-        let mut pool =
-            PagePool::new_private_pool(ranges).context("failed to create private pool")?;
+        let mut pool = PagePool::new_private_pool(ranges, page_pool_alloc::HclMapper)
+            .context("failed to create private pool")?;
 
         if let Some(pool_state) = servicing_state.private_pool_state.flatten() {
             pool.restore(pool_state)
