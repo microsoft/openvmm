@@ -209,8 +209,6 @@ struct NvmeManagerWorker {
     driver_source: VmTaskDriverSource,
     #[inspect(iter_by_key)]
     devices: HashMap<String, nvme_driver::NvmeDriver<VfioDevice>>,
-    // TODO: Revisit this Box<fn> into maybe a trait, once we refactor DMA to a
-    // central manager.
     vp_count: u32,
     /// Running environment (memory layout) allows save/restore.
     save_restore_supported: bool,
