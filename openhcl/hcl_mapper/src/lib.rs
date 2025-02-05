@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Provides a mapper implementation for the page pool that uses [`MshvVtlLow`].
+//! Provides a mapper implementation for the page pool that uses the hcl ioctl
+//! crate to map guest memory.
 
 #![cfg(target_os = "linux")]
 #![warn(missing_docs)]
@@ -9,12 +10,17 @@
 use anyhow::Context;
 use hcl::ioctl::MshvVtlLow;
 use hvdef::HV_PAGE_SIZE;
+use inspect::Inspect;
+use inspect::Response;
 use page_pool_alloc::Mapper;
 use page_pool_alloc::PoolType;
 use sparse_mmap::SparseMapping;
 
 /// A mapper that uses [`MshvVtlLow`] to map pages.
+#[derive(Inspect)]
+#[inspect(extra = "HclMapper::inspect_extra")]
 pub struct HclMapper {
+    #[inspect(skip)]
     fd: MshvVtlLow,
 }
 
@@ -23,6 +29,10 @@ impl HclMapper {
     pub fn new() -> Result<Self, anyhow::Error> {
         let fd = MshvVtlLow::new().context("failed to open gpa fd")?;
         Ok(Self { fd })
+    }
+
+    fn inspect_extra(&self, resp: &mut Response<'_>) {
+        resp.field("type", "hcl_mapper");
     }
 }
 

@@ -13,6 +13,7 @@ pub use device_dma::PagePoolDmaBuffer;
 use anyhow::Context;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
+use inspect::Response;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use sparse_mmap::alloc_shared_memory;
@@ -296,6 +297,7 @@ impl Inspect for PagePoolInner {
     fn inspect(&self, req: inspect::Request<'_>) {
         req.respond()
             .field("device_ids", inspect::iter_by_index(&self.device_ids))
+            .field("mapper", &self.mapper)
             .child("slots", |req| {
                 let mut resp = req.respond();
                 for (i, slot) in self.slots.iter().enumerate() {
@@ -408,7 +410,7 @@ impl Drop for PagePoolHandle {
 }
 
 /// A trait used to map a range of pages into a [`SparseMapping`].
-pub trait Mapper: Send + Sync {
+pub trait Mapper: Inspect + Send + Sync {
     /// Create a mapping for the given range of pages.
     ///
     /// The pages should be mapped such that the `base_pfn` is at offset zero,
@@ -422,8 +424,15 @@ pub trait Mapper: Send + Sync {
 }
 
 /// A mapper that does not support mapping and always returns an error.
-#[derive(Debug)]
+#[derive(Inspect)]
+#[inspect(extra = "NoMapper::inspect_extra")]
 pub struct NoMapper;
+
+impl NoMapper {
+    fn inspect_extra(&self, resp: &mut Response<'_>) {
+        resp.field("type", "unsupported");
+    }
+}
 
 impl Mapper for NoMapper {
     fn map(
@@ -438,8 +447,10 @@ impl Mapper for NoMapper {
 
 /// A mapper that uses an internal buffer to map pages. This is meant to be used
 /// for tests that use [`PagePool`].
-#[derive(Debug)]
+#[derive(Inspect)]
+#[inspect(extra = "TestMapper::inspect_extra")]
 pub struct TestMapper {
+    #[inspect(skip)]
     mem: Mappable,
 }
 
@@ -450,6 +461,10 @@ impl TestMapper {
         let fd = alloc_shared_memory(len).context("creating shared mem")?;
 
         Ok(Self { mem: fd })
+    }
+
+    fn inspect_extra(&self, resp: &mut Response<'_>) {
+        resp.field("type", "test");
     }
 }
 

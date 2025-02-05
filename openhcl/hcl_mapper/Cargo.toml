@@ -9,9 +9,10 @@ edition.workspace = true
 [dependencies]
 hcl.workspace = true
 
+hvdef.workspace = true
 page_pool_alloc.workspace = true
 
-hvdef.workspace = true
+inspect.workspace = true
 sparse_mmap.workspace = true
 
 anyhow.workspace = true

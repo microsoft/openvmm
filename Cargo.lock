@@ -2688,6 +2688,7 @@ dependencies = [
  "anyhow",
  "hcl",
  "hvdef",
+ "inspect",
  "page_pool_alloc",
  "sparse_mmap",
  "tracing",
