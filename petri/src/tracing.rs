@@ -41,6 +41,9 @@ impl PetriLogSource {
             Entry::Occupied(occupied_entry) => occupied_entry.get().clone(),
             Entry::Vacant(vacant_entry) => {
                 let mut path = self.0.root_path.join(name);
+                // Note that .log is preferred to .txt at least partially
+                // because WSL2 and Defender reportedly conspire to make
+                // cross-OS .txt file accesses extremely slow.
                 path.set_extension(".log");
                 let file = File::create(&path)?;
                 // Write the path to the file in junit attachment syntax to
@@ -263,6 +266,7 @@ pub fn try_init_tracing(root_path: &Path) -> anyhow::Result<PetriLogSource> {
         json_log: JsonLog(Arc::new(jsonl)),
         root_path,
         log_files: Default::default(),
+        attachments: Default::default(),
     }));
 
     let petri_log = logger.log_file("petri")?;
