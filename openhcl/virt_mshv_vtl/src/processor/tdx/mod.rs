@@ -1315,9 +1315,8 @@ impl UhProcessor<'_, TdxBacked> {
             .tdx_vp_entry_flags_mut()
             .set_vm_index(next_vtl as u8 + 1);
 
-        self.backing.vtls[next_vtl]
-            .private_regs
-            .write_to_kernel(&mut self.runner);
+        self.runner
+            .write_private_regs(&self.backing.vtls[next_vtl].private_regs);
 
         let has_intercept = self
             .runner
@@ -1331,9 +1330,8 @@ impl UhProcessor<'_, TdxBacked> {
 
         let entered_from_vtl = next_vtl;
         *self.runner.tdx_vp_entry_flags_mut() = TdxVmFlags::new();
-        self.backing.vtls[entered_from_vtl]
-            .private_regs
-            .read_from_kernel(&mut self.runner);
+        self.runner
+            .read_private_regs(&mut self.backing.vtls[entered_from_vtl].private_regs);
 
         // Kernel offload may have set or cleared the halt/idle states
         if offload_enabled && kernel_known_state {

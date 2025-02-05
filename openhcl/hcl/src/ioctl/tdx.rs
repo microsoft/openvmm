@@ -164,6 +164,75 @@ impl ProcessorRunner<'_, Tdx> {
         &mut self.tdx_vp_context_mut().entry_rcx
     }
 
+    /// Reads the private registers from the kernel's shared run page into
+    /// the given [`TdxPrivateRegs`].
+    pub fn read_private_regs(&self, regs: &mut TdxPrivateRegs) {
+        let TdxL2EnterGuestState {
+            gps: _gps, // Shared between VTLs
+            rflags,
+            rip,
+            ssp,
+            rvi,
+            svi,
+            reserved: _reserved,
+        } = self.tdx_enter_guest_state();
+        regs.rflags = *rflags;
+        regs.rip = *rip;
+        regs.ssp = *ssp;
+        regs.rvi = *rvi;
+        regs.svi = *svi;
+
+        let tdx_vp_state {
+            msr_kernel_gs_base,
+            msr_star,
+            msr_lstar,
+            msr_sfmask,
+            msr_xss,
+            cr2: _cr2, // Shared between VTLs
+            msr_tsc_aux,
+            flags: _flags, // Global flags
+        } = self.tdx_vp_state();
+        regs.msr_kernel_gs_base = *msr_kernel_gs_base;
+        regs.msr_star = *msr_star;
+        regs.msr_lstar = *msr_lstar;
+        regs.msr_sfmask = *msr_sfmask;
+        regs.msr_xss = *msr_xss;
+        regs.msr_tsc_aux = *msr_tsc_aux;
+    }
+
+    /// Writes the private registers from the given [`TdxPrivateRegs`] to the
+    /// kernel's shared run page.
+    pub fn write_private_regs(&mut self, regs: &TdxPrivateRegs) {
+        let TdxPrivateRegs {
+            rflags,
+            rip,
+            ssp,
+            rvi,
+            svi,
+            msr_kernel_gs_base,
+            msr_star,
+            msr_lstar,
+            msr_sfmask,
+            msr_xss,
+            msr_tsc_aux,
+        } = regs;
+
+        let enter_guest_state = self.tdx_enter_guest_state_mut();
+        enter_guest_state.rflags = *rflags;
+        enter_guest_state.rip = *rip;
+        enter_guest_state.ssp = *ssp;
+        enter_guest_state.rvi = *rvi;
+        enter_guest_state.svi = *svi;
+
+        let vp_state = self.tdx_vp_state_mut();
+        vp_state.msr_kernel_gs_base = *msr_kernel_gs_base;
+        vp_state.msr_star = *msr_star;
+        vp_state.msr_lstar = *msr_lstar;
+        vp_state.msr_sfmask = *msr_sfmask;
+        vp_state.msr_xss = *msr_xss;
+        vp_state.msr_tsc_aux = *msr_tsc_aux;
+    }
+
     fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
         let class_code = match vtl {
             GuestVtl::Vtl0 => TdVpsClassCode::VMCS_1,
@@ -400,73 +469,6 @@ impl TdxPrivateRegs {
             msr_xss: 0,
             msr_tsc_aux: 0,
         }
-    }
-
-    /// Reads the private registers from the kernel's shared run page.
-    pub fn read_from_kernel(&mut self, runner: &mut ProcessorRunner<'_, Tdx>) {
-        let TdxL2EnterGuestState {
-            gps: _gps, // Shared between VTLs
-            rflags,
-            rip,
-            ssp,
-            rvi,
-            svi,
-            reserved: _reserved,
-        } = runner.tdx_enter_guest_state();
-        self.rflags = *rflags;
-        self.rip = *rip;
-        self.ssp = *ssp;
-        self.rvi = *rvi;
-        self.svi = *svi;
-
-        let tdx_vp_state {
-            msr_kernel_gs_base,
-            msr_star,
-            msr_lstar,
-            msr_sfmask,
-            msr_xss,
-            cr2: _cr2, // Shared between VTLs
-            msr_tsc_aux,
-            flags: _flags, // Global flags
-        } = runner.tdx_vp_state();
-        self.msr_kernel_gs_base = *msr_kernel_gs_base;
-        self.msr_star = *msr_star;
-        self.msr_lstar = *msr_lstar;
-        self.msr_sfmask = *msr_sfmask;
-        self.msr_xss = *msr_xss;
-        self.msr_tsc_aux = *msr_tsc_aux;
-    }
-
-    /// Writes the private registers to the kernel's shared run page.
-    pub fn write_to_kernel(&self, runner: &mut ProcessorRunner<'_, Tdx>) {
-        let Self {
-            rflags,
-            rip,
-            ssp,
-            rvi,
-            svi,
-            msr_kernel_gs_base,
-            msr_star,
-            msr_lstar,
-            msr_sfmask,
-            msr_xss,
-            msr_tsc_aux,
-        } = self;
-
-        let enter_guest_state = runner.tdx_enter_guest_state_mut();
-        enter_guest_state.rflags = *rflags;
-        enter_guest_state.rip = *rip;
-        enter_guest_state.ssp = *ssp;
-        enter_guest_state.rvi = *rvi;
-        enter_guest_state.svi = *svi;
-
-        let vp_state = runner.tdx_vp_state_mut();
-        vp_state.msr_kernel_gs_base = *msr_kernel_gs_base;
-        vp_state.msr_star = *msr_star;
-        vp_state.msr_lstar = *msr_lstar;
-        vp_state.msr_sfmask = *msr_sfmask;
-        vp_state.msr_xss = *msr_xss;
-        vp_state.msr_tsc_aux = *msr_tsc_aux;
     }
 }
 
