@@ -3,6 +3,9 @@
 
 //! Provides a mapper implementation for the page pool that uses [`MshvVtlLow`].
 
+#![cfg(target_os = "linux")]
+#![warn(missing_docs)]
+
 use anyhow::Context;
 use hcl::ioctl::MshvVtlLow;
 use hvdef::HV_PAGE_SIZE;
@@ -11,7 +14,6 @@ use page_pool_alloc::PoolType;
 use sparse_mmap::SparseMapping;
 
 /// A mapper that uses [`MshvVtlLow`] to map pages.
-#[derive(Debug)]
 pub struct HclMapper;
 
 impl Mapper for HclMapper {

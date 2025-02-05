@@ -278,7 +278,6 @@ impl DeviceId {
     }
 }
 
-#[derive(Debug)]
 struct PagePoolInner {
     /// The internal slots for the pool, representing page state.
     slots: Vec<Slot>,
@@ -325,7 +324,6 @@ impl Inspect for PagePoolInner {
 
 /// A handle for a page pool allocation. When dropped, the allocation is
 /// freed.
-#[derive(Debug)]
 pub struct PagePoolHandle {
     inner: Arc<Mutex<PagePoolInner>>,
     base_pfn: u64,
@@ -410,7 +408,7 @@ impl Drop for PagePoolHandle {
 }
 
 /// A trait used to map a range of pages into a [`SparseMapping`].
-pub trait Mapper: Debug + Send + Sync {
+pub trait Mapper: Send + Sync {
     /// Create a mapping for the given range of pages.
     ///
     /// The pages should be mapped such that the `base_pfn` is at offset zero,
@@ -617,7 +615,6 @@ impl PagePool {
 ///
 /// Useful when you need to create multiple allocators, without having ownership
 /// of the actual [`PagePool`].
-#[derive(Debug)]
 pub struct PagePoolAllocatorSpawner {
     inner: Arc<Mutex<PagePoolInner>>,
     typ: PoolType,
@@ -643,10 +640,8 @@ impl PagePoolAllocatorSpawner {
 /// are left as-is in the pool. A new allocator can then be created with the
 /// same name. Exisitng allocations with that same device_name will be
 /// linked to the new allocator.
-#[derive(Debug)]
 pub struct PagePoolAllocator {
     inner: Arc<Mutex<PagePoolInner>>,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     typ: PoolType,
     device_id: usize,
 }
