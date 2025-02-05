@@ -4,14 +4,12 @@
 //! This module implements a page memory allocator for allocating pages from a
 //! given portion of the guest address space.
 
-#![cfg(unix)]
 #![warn(missing_docs)]
 
 mod device_dma;
 
 pub use device_dma::PagePoolDmaBuffer;
 
-#[cfg(all(feature = "vfio", target_os = "linux"))]
 use anyhow::Context;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
