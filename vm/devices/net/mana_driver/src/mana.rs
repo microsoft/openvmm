@@ -376,7 +376,7 @@ impl<T: DeviceBacking> Vport<T> {
 
         let mem = dma_client
             .allocate_dma_buffer((wq_size + cq_size) as usize)
-            .context("Failed to allocate DMA buffer")?;
+            .context("failed to allocate DMA buffer")?;
 
         let wq_mem = mem.subblock(0, wq_size as usize);
         let cq_mem = mem.subblock(wq_size as usize, cq_size as usize);
