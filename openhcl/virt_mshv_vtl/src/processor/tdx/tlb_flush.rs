@@ -97,6 +97,8 @@ impl UhProcessor<'_, TdxBacked> {
             )
         };
 
+        // TODO: Track EPT invalidations separately.
+
         // If a flush entire is required, then return a flag and update the
         // flush counters to indicate that a complete flush has been accomplished.
         if flush_entire_required {
