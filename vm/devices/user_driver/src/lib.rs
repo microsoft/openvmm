@@ -6,11 +6,10 @@
 // UNSAFETY: Manual memory management around buffers and mmap.
 #![expect(unsafe_code)]
 
-use std::sync::Arc;
-
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;
 use memory::MemoryBlock;
+use std::sync::Arc;
 
 pub mod backoff;
 pub mod emulated;
@@ -72,7 +71,9 @@ pub trait HostDmaAllocator: Send + Sync {
 }
 
 pub trait DmaClient: Send + Sync {
+    /// Allocate a new DMA buffer.
     fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock>;
 
+    /// Attach to a previously allocated memory block
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }
