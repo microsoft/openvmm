@@ -14,7 +14,17 @@ use page_pool_alloc::PoolType;
 use sparse_mmap::SparseMapping;
 
 /// A mapper that uses [`MshvVtlLow`] to map pages.
-pub struct HclMapper;
+pub struct HclMapper {
+    fd: MshvVtlLow,
+}
+
+impl HclMapper {
+    /// Creates a new [`HclMapper`].
+    pub fn new() -> Result<Self, anyhow::Error> {
+        let fd = MshvVtlLow::new().context("failed to open gpa fd")?;
+        Ok(Self { fd })
+    }
+}
 
 impl Mapper for HclMapper {
     fn map(
@@ -24,7 +34,6 @@ impl Mapper for HclMapper {
         pool_type: PoolType,
     ) -> Result<SparseMapping, anyhow::Error> {
         let len = (size_pages * HV_PAGE_SIZE) as usize;
-        let gpa_fd = MshvVtlLow::new().context("failed to open gpa fd")?;
         let mapping = SparseMapping::new(len).context("failed to create mapping")?;
         let gpa = base_pfn * HV_PAGE_SIZE;
 
@@ -43,7 +52,7 @@ impl Mapper for HclMapper {
         tracing::trace!(gpa, file_offset, len, "mapping allocation");
 
         mapping
-            .map_file(0, len, gpa_fd.get(), file_offset, true)
+            .map_file(0, len, self.fd.get(), file_offset, true)
             .context("unable to map allocation")?;
 
         Ok(mapping)
