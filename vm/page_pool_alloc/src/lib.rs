@@ -1141,6 +1141,4 @@ mod test {
         a1_mapping.read_at(125, &mut data).unwrap();
         assert_eq!(data, [3, 4]);
     }
-
-    // TODO: test mapper?
 }
