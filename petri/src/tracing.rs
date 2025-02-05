@@ -44,7 +44,7 @@ impl PetriLogSource {
                 // Note that .log is preferred to .txt at least partially
                 // because WSL2 and Defender reportedly conspire to make
                 // cross-OS .txt file accesses extremely slow.
-                path.set_extension(".log");
+                path.set_extension("log");
                 let file = File::create(&path)?;
                 // Write the path to the file in junit attachment syntax to
                 // stdout to ensure the file is attached to the test result.
