@@ -83,7 +83,7 @@ impl PetriLogSource {
     pub fn create_attachment(&self, filename: &str) -> anyhow::Result<File> {
         let path = self.attachment_path(filename);
         let file = File::create(&path)?;
-        self.trace_attachment_canonical(&path);
+        self.trace_attachment(&path);
         Ok(file)
     }
 
@@ -98,34 +98,16 @@ impl PetriLogSource {
     ) -> anyhow::Result<PathBuf> {
         let path = self.attachment_path(filename);
         fs_err::write(&path, data)?;
-        self.trace_attachment_canonical(&path);
+        self.trace_attachment(&path);
         Ok(path)
     }
 
-    fn trace_attachment_canonical(&self, path: &Path) {
-        self.0.json_log.write_attachment(path);
+    fn trace_attachment(&self, path: &Path) {
+        // Just write the relative path to the JSON log.
+        self.0
+            .json_log
+            .write_attachment(path.file_name().unwrap().as_ref());
         println!("[[ATTACHMENT|{}]]", path.display());
-    }
-
-    /// Report a file as an attachment to the currently running test. This ensures
-    /// that the file makes it into the test results.
-    pub fn trace_attachment(&self, path: impl AsRef<Path>) {
-        fn trace(this: &PetriLogSource, path: &Path) {
-            // ATTACHMENT is most reliable when using true canonicalized paths.
-            match path.fs_err_canonicalize() {
-                Ok(path) => {
-                    this.trace_attachment_canonical(&path);
-                }
-                Err(err) => {
-                    tracing::error!(
-                        path = %path.display(),
-                        error = &err as &dyn std::error::Error,
-                        "failed to canonicalize attachment path"
-                    );
-                }
-            }
-        }
-        trace(self, path.as_ref());
     }
 }
 

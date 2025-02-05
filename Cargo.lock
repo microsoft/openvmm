@@ -5204,6 +5204,7 @@ name = "petri_artifact_resolver_openvmm_known_paths"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "fs-err",
  "petri_artifacts_common",
  "petri_artifacts_core",
  "petri_artifacts_vmm_test",

@@ -364,7 +364,9 @@ fn test_log_directory_path(test_name: &str) -> anyhow::Result<PathBuf> {
     };
     // Use a per-test subdirectory, replacing `::` with `__` to avoid issues
     // with filesystems that don't support `::` in filenames.
-    Ok(root.join(test_name.replace("::", "__")))
+    let path = root.join(test_name.replace("::", "__"));
+    fs_err::create_dir_all(&path)?;
+    Ok(path)
 }
 
 /// Path to the location for OpenHCL crash dump files.
