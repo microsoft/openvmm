@@ -1285,7 +1285,7 @@ impl UhProcessor<'_, TdxBacked> {
         self.shared.active_vtl[self.vp_index().index() as usize]
             .store(next_vtl as u8, Ordering::SeqCst);
 
-        self.do_tlb_flush(next_vtl);
+        let invd_needed = self.do_tlb_flush(next_vtl);
         self.unlock_tlb_lock(Vtl::Vtl2);
         let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
 
@@ -1317,9 +1317,11 @@ impl UhProcessor<'_, TdxBacked> {
 
         *self.runner.offload_flags_mut() = offload_flags;
 
-        self.runner
-            .tdx_vp_entry_flags_mut()
-            .set_vm_index(next_vtl as u8 + 1);
+        self.runner.set_tdx_vp_entry_flags(
+            TdxVmFlags::new()
+                .with_vm_index(next_vtl as u8 + 1)
+                .with_invd_translations(invd_needed),
+        );
 
         let has_intercept = self
             .runner
@@ -1332,7 +1334,6 @@ impl UhProcessor<'_, TdxBacked> {
         self.shared.active_vtl[self.vp_index().index() as usize].store(2, Ordering::Relaxed);
 
         let entered_from_vtl = next_vtl;
-        *self.runner.tdx_vp_entry_flags_mut() = TdxVmFlags::new();
 
         // Kernel offload may have set or cleared the halt/idle states
         if offload_enabled && kernel_known_state {

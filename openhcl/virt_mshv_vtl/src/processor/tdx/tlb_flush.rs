@@ -69,7 +69,9 @@ impl TdxFlushState {
 
 impl UhProcessor<'_, TdxBacked> {
     /// Completes any pending TLB flush activity on the current VP.
-    pub(super) fn do_tlb_flush(&mut self, target_vtl: GuestVtl) {
+    /// Returns the VP_ENTER_INVD flag needed, if any.
+    #[must_use]
+    pub(super) fn do_tlb_flush(&mut self, target_vtl: GuestVtl) -> u8 {
         let partition_flush_state = self.shared.flush_state[target_vtl].read();
         let self_flush_state = &mut self.backing.vtls[target_vtl].flush_state;
 
@@ -95,11 +97,11 @@ impl UhProcessor<'_, TdxBacked> {
             )
         };
 
-        // If a flush entire is required, then complete the flush and update the
+        // If a flush entire is required, then return a flag and update the
         // flush counters to indicate that a complete flush has been accomplished.
         if flush_entire_required {
             *self_flush_state = partition_flush_state.s.clone();
-            Self::do_flush_entire(true, &mut self.runner);
+            x86defs::tdx::TDX_VP_ENTER_INVD_INVEPT
         }
         // If no flush entire is required, then check to see whether a full
         // non-global flush is required.
@@ -108,7 +110,11 @@ impl UhProcessor<'_, TdxBacked> {
         {
             self_flush_state.flush_entire_non_global_counter =
                 partition_flush_state.s.flush_entire_non_global_counter;
-            Self::do_flush_entire(false, &mut self.runner);
+            x86defs::tdx::TDX_VP_ENTER_INVD_INVVPID_NON_GLOBAL
+        }
+        // If neither of the above is true then no additional work is needed.
+        else {
+            0
         }
     }
 
@@ -165,16 +171,5 @@ impl UhProcessor<'_, TdxBacked> {
 
         *gva_list_count = partition_flush_state.s.gva_list_count;
         true
-    }
-
-    fn do_flush_entire(global: bool, runner: &mut ProcessorRunner<'_, Tdx>) {
-        let vp_flags = runner.tdx_vp_entry_flags_mut();
-
-        if global {
-            // TODO: Track EPT invalidations separately.
-            vp_flags.set_invd_translations(x86defs::tdx::TDX_VP_ENTER_INVD_INVEPT);
-        } else if !global && vp_flags.invd_translations() == 0 {
-            vp_flags.set_invd_translations(x86defs::tdx::TDX_VP_ENTER_INVD_INVVPID_NON_GLOBAL);
-        }
     }
 }

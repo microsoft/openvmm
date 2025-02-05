@@ -133,14 +133,9 @@ impl ProcessorRunner<'_, Tdx> {
         &mut self.tdx_vp_context_mut().vp_state
     }
 
-    /// Gets a reference to the TDX VP entry flags.
-    pub fn tdx_vp_entry_flags(&self) -> &TdxVmFlags {
-        &self.tdx_vp_context().entry_rcx
-    }
-
-    /// Gets a mutable reference to the TDX VP entry flags.
-    pub fn tdx_vp_entry_flags_mut(&mut self) -> &mut TdxVmFlags {
-        &mut self.tdx_vp_context_mut().entry_rcx
+    /// Sets the TDX VP entry flags.
+    pub fn set_tdx_vp_entry_flags(&mut self, flags: TdxVmFlags) {
+        self.tdx_vp_context_mut().entry_rcx = flags;
     }
 
     fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
