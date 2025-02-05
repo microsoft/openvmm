@@ -39,7 +39,7 @@ impl GlobalDmaManager {
         let allocator = {
             // Access the page_pool and call its allocator method directly
             (manager_inner.dma_buffer_spawner)(device_name)
-                .map_err(|e| anyhow::anyhow!("Failed to get DMA buffer allocator: {:?}", e))?
+                .map_err(|e| anyhow::anyhow!("failed to get DMA buffer allocator: {:?}", e))?
         };
 
         let client = DmaClientImpl {
