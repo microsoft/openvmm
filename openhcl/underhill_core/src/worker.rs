@@ -1872,6 +1872,8 @@ async fn new_underhill_vm(
 
     let private_pool_spanwer = private_pool.as_ref().map(|p| p.allocator_spawner());
 
+    let private_pool_spawner_available = private_pool_spanwer.is_some();
+
     let vfio_dma_buffer_spawner = Box::new(
         move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
             shared_vis_pool_spawner
@@ -1896,7 +1898,7 @@ async fn new_underhill_vm(
 
     let dma_manager = GlobalDmaManager::new(vfio_dma_buffer_spawner);
     let nvme_manager = if env_cfg.nvme_vfio {
-        let save_restore_supported = env_cfg.nvme_keep_alive; //&& private_pool_spanwer.is_some();
+        let save_restore_supported = env_cfg.nvme_keep_alive && private_pool_spawner_available;
 
         let manager = NvmeManager::new(
             &driver_source,

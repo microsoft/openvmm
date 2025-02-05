@@ -328,9 +328,7 @@ impl<T: DeviceBacking> Vport<T> {
         cpu: u32,
     ) -> anyhow::Result<BnicEq> {
         let mut gdma = self.inner.gdma.lock().await;
-
         let dma_client = gdma.device().dma_client();
-
         let mem = dma_client
             .allocate_dma_buffer(size as usize)
             .context("Failed to allocate DMA buffer")?;
