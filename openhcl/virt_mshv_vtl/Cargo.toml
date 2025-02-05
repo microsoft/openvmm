@@ -13,7 +13,7 @@ gdb = []
 aarch64emu.workspace = true
 aarch64defs.workspace = true
 hcl.workspace = true
-page_pool_alloc = { workspace = true, features = ["hcl_mapping"] }
+page_pool_alloc.workspace = true
 virt.workspace = true
 virt_support_aarch64emu.workspace = true
 virt_support_apic.workspace = true

@@ -13,17 +13,15 @@ pub use device_dma::PagePoolDmaBuffer;
 
 #[cfg(all(feature = "vfio", target_os = "linux"))]
 use anyhow::Context;
-#[cfg(all(feature = "hcl_mapping", target_os = "linux"))]
-use hcl::ioctl::MshvVtlLow;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use sparse_mmap::alloc_shared_memory;
+use sparse_mmap::Mappable;
 use sparse_mmap::SparseMapping;
 use std::fmt::Debug;
 use std::num::NonZeroU64;
-use std::os::fd::OwnedFd;
 use std::sync::Arc;
 use thiserror::Error;
 use vm_topology::memory::MemoryRangeWithNode;
@@ -39,7 +37,7 @@ pub mod save_restore {
     use vmcore::save_restore::SavedStateRoot;
 
     #[derive(Protobuf)]
-    #[mesh(package = "openhcl.pagepool")]
+    #[mesh(package = "openvmm.pagepool")]
     enum InnerSlotState {
         #[mesh(1)]
         Free,
@@ -60,7 +58,7 @@ pub mod save_restore {
     }
 
     #[derive(Protobuf)]
-    #[mesh(package = "openhcl.pagepool")]
+    #[mesh(package = "openvmm.pagepool")]
     struct SlotSavedState {
         #[mesh(1)]
         base_pfn: u64,
@@ -72,7 +70,7 @@ pub mod save_restore {
 
     /// The saved state for [`PagePool`].
     #[derive(Protobuf, SavedStateRoot)]
-    #[mesh(package = "openhcl.pagepool")]
+    #[mesh(package = "openvmm.pagepool")]
     pub struct PagePoolState {
         #[mesh(1)]
         state: Vec<SlotSavedState>,
@@ -427,47 +425,6 @@ pub trait Mapper: Debug + Send + Sync {
     ) -> Result<SparseMapping, anyhow::Error>;
 }
 
-// TODO: lift out of this crate
-/// A mapper that uses [`MshvVtlLow`] to map pages.
-#[cfg(all(feature = "hcl_mapping", target_os = "linux"))]
-#[derive(Debug)]
-pub struct HclMapper;
-
-#[cfg(all(feature = "hcl_mapping", target_os = "linux"))]
-impl Mapper for HclMapper {
-    fn map(
-        &self,
-        base_pfn: u64,
-        size_pages: u64,
-        pool_type: PoolType,
-    ) -> Result<SparseMapping, anyhow::Error> {
-        let len = (size_pages * HV_PAGE_SIZE) as usize;
-        let gpa_fd = MshvVtlLow::new().context("failed to open gpa fd")?;
-        let mapping = SparseMapping::new(len).context("failed to create mapping")?;
-        let gpa = base_pfn * HV_PAGE_SIZE;
-
-        // When the pool references shared memory, on hardware isolated
-        // platforms the file_offset must have the shared bit set as these
-        // are decrypted pages. Setting this bit is okay on non-hardware
-        // isolated platforms, as it does nothing.
-        let file_offset = match pool_type {
-            PoolType::Private => gpa,
-            PoolType::Shared => {
-                tracing::trace!("setting MshvVtlLow::SHARED_MEMORY_FLAG");
-                gpa | MshvVtlLow::SHARED_MEMORY_FLAG
-            }
-        };
-
-        tracing::trace!(gpa, file_offset, len, "mapping allocation");
-
-        mapping
-            .map_file(0, len, gpa_fd.get(), file_offset, true)
-            .context("unable to map allocation")?;
-
-        Ok(mapping)
-    }
-}
-
 /// A mapper that does not support mapping and always returns an error.
 #[derive(Debug)]
 pub struct NoMapper;
@@ -483,14 +440,15 @@ impl Mapper for NoMapper {
     }
 }
 
-/// A mapper that uses an internal buffer to map pages.
-// TODO: name?
+/// A mapper that uses an internal buffer to map pages. This is meant to be used
+/// for tests that use [`PagePool`].
 #[derive(Debug)]
 pub struct TestMapper {
-    mem: OwnedFd,
+    mem: Mappable,
 }
 
 impl TestMapper {
+    /// Create a new test mapper that holds an internal buffer of `size_pages`.
     pub fn new(size_pages: u64) -> anyhow::Result<Self> {
         let len = (size_pages * HV_PAGE_SIZE) as usize;
         let fd = alloc_shared_memory(len).context("creating shared mem")?;
@@ -836,7 +794,6 @@ impl PagePoolAllocator {
     /// The same as [`Self::alloc`], but also creates an associated mapping for
     /// the allocation so the user can use the mapping via
     /// [`PagePoolHandle::mapping`].
-    #[cfg(all(feature = "hcl_mapping", target_os = "linux"))]
     pub fn alloc_with_mapping(
         &self,
         size_pages: NonZeroU64,

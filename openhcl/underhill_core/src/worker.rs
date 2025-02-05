@@ -71,6 +71,7 @@ use guest_emulation_transport::GuestEmulationTransportClient;
 use guestmem::GuestMemory;
 use guid::Guid;
 use hcl_compat_uefi_nvram_storage::HclCompatNvramQuirks;
+use hcl_mapper::HclMapper;
 use hvdef::hypercall::HvGuestOsId;
 use hvdef::HvRegisterValue;
 use hvdef::Vtl;
@@ -1525,7 +1526,7 @@ async fn new_underhill_vm(
                 .vtom_offset_bit
                 .map(|bit| 1 << bit)
                 .unwrap_or(0),
-            page_pool_alloc::HclMapper,
+            HclMapper,
         )
         .context("failed to create shared vis page pool")?;
 
@@ -1552,7 +1553,7 @@ async fn new_underhill_vm(
         use vmcore::save_restore::SaveRestore;
 
         let ranges = runtime_params.private_pool_ranges();
-        let mut pool = PagePool::new_private_pool(ranges, page_pool_alloc::HclMapper)
+        let mut pool = PagePool::new_private_pool(ranges, HclMapper)
             .context("failed to create private pool")?;
 
         if let Some(pool_state) = servicing_state.private_pool_state.flatten() {

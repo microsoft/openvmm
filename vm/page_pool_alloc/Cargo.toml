@@ -7,10 +7,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-# Enable mapping support, using the MshvVtlLow.
-hcl_mapping = ["hcl"]
 # Enable user_driver vfio trait support.
-vfio = ["hcl_mapping", "user_driver/vfio"]
+vfio = ["user_driver/vfio"]
 
 [dependencies]
 user_driver.workspace = true
