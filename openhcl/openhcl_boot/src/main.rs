@@ -150,7 +150,7 @@ fn build_kernel_command_line(
         // Even with iommu=off, the SWIOTLB is still allocated on AARCH64
         // (iommu=off ignored entirely), and CVMs (memory encryption forces it on).
         // Set it to the minimum, saving ~63 MiB.
-        "swiotlb=1",
+        "swiotlb=1,1",
         // Use vfio for MANA devices.
         "vfio_pci.ids=1414:00ba",
         // WORKAROUND: Enable no-IOMMU mode. This mode provides no device isolation,
