@@ -1975,6 +1975,16 @@ impl UhPartition {
             );
         }
     }
+
+    /// Forward Pin GPA Ranges to the HV for handling.
+    pub fn pin_gpa_ranges(&self, ranges: &[MemoryRange]) -> Result<(), HvError> {
+        self.inner.hcl.pin_gpa_ranges(ranges)
+    }
+
+    /// Forward Un-Pin GPA Ranges to the HV for handling.
+    pub fn unpin_gpa_ranges(&self, ranges: &[MemoryRange]) -> Result<(), HvError> {
+        self.inner.hcl.unpin_gpa_ranges(ranges)
+    }
 }
 
 #[cfg(guest_arch = "x86_64")]
