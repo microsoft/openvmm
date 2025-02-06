@@ -51,6 +51,9 @@ pub(crate) const SCSI_INSTANCE: Guid =
 pub(crate) const BOOT_NVME_INSTANCE: Guid =
     Guid::from_static_str("92bc8346-718b-449a-8751-edbf3dcd27e4");
 
+/// The instance guid for the MANA nic automatically added for boot media.
+const MANA_INSTANCE: Guid = Guid::from_static_str("f9641cf4-d915-4743-a7d8-efa75db7b85a");
+
 /// The namespace ID for the NVMe controller automatically added for boot media.
 pub(crate) const BOOT_NVME_NSID: u32 = 37;
 

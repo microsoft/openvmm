@@ -61,7 +61,10 @@ pub enum Firmware {
     /// Boot Linux directly, without any firmware.
     LinuxDirect,
     /// Boot Linux directly, without any firmware, with OpenHCL in VTL2.
-    OpenhclLinuxDirect,
+    OpenhclLinuxDirect {
+        /// Enables an emulated MANA device
+        mana: bool,
+    },
     /// Boot a PCAT-based VM.
     Pcat {
         /// The guest OS the VM will boot into.

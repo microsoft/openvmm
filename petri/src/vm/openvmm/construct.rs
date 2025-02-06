@@ -9,6 +9,7 @@ use super::PetriVmResourcesOpenVmm;
 use super::BOOT_NVME_INSTANCE;
 use super::BOOT_NVME_LUN;
 use super::BOOT_NVME_NSID;
+use super::MANA_INSTANCE;
 use super::SCSI_INSTANCE;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openhcl_diag::OpenHclDiagHandler;
@@ -32,6 +33,8 @@ use futures::io::BufReader;
 use futures::AsyncBufReadExt;
 use futures::AsyncRead;
 use futures::AsyncReadExt;
+use gdma_resources::GdmaDeviceHandle;
+use gdma_resources::VportDefinition;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use hvlite_defs::config::Config;
@@ -198,6 +201,7 @@ impl PetriVmConfigOpenVmm {
                 (None, None, None, None, None, None)
             };
 
+        setup.add_nic(&mut devices, vtl2_settings.as_mut())?;
         setup.load_boot_disk(&mut devices, vtl2_settings.as_mut())?;
         let expected_boot_event = setup.get_expected_boot_event();
 
@@ -639,6 +643,41 @@ impl PetriVmConfigSetupCore<'_> {
             }
             (a, f) => anyhow::bail!("Unsupported firmware {f:?} for arch {a:?}"),
         })
+    }
+
+    fn add_nic(
+        &self,
+        devices: &mut impl Extend<Device>,
+        vtl2_settings: Option<&mut Vtl2Settings>,
+    ) -> anyhow::Result<()> {
+        if let Firmware::OpenhclLinuxDirect { mana: true } = &self.firmware {
+            devices.extend([Device::Vpci(VpciDeviceConfig {
+                vtl: DeviceVtl::Vtl2,
+                instance_id: MANA_INSTANCE,
+                resource: GdmaDeviceHandle {
+                    vports: vec![VportDefinition {
+                        mac_address: [0x00, 0x15, 0x5D, 0x12, 0x12, 0x12].into(),
+                        endpoint: net_backend_resources::consomme::ConsommeHandle { cidr: None }
+                            .into_resource(),
+                    }],
+                }
+                .into_resource(),
+            })]);
+
+            vtl2_settings
+                .expect("openhcl config should have vtl2settings")
+                .dynamic
+                .as_mut()
+                .unwrap()
+                .nic_devices
+                .push(vtl2_settings_proto::NicDeviceLegacy {
+                    instance_id: MANA_INSTANCE.to_string(),
+                    subordinate_instance_id: None,
+                    max_sub_channels: None,
+                });
+        }
+
+        Ok(())
     }
 
     fn load_boot_disk(

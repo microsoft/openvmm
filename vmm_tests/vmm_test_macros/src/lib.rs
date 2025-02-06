@@ -38,8 +38,13 @@ enum Firmware {
     LinuxDirect,
     Pcat(PcatGuest),
     Uefi(UefiGuest),
-    OpenhclLinuxDirect,
+    OpenhclLinuxDirect(OpenhclLinuxDirectOptions),
     OpenhclUefi(OpenhclUefiOptions, UefiGuest),
+}
+
+#[derive(Default)]
+struct OpenhclLinuxDirectOptions {
+    mana: bool,
 }
 
 #[derive(Default)]
@@ -104,21 +109,19 @@ impl Config {
             Firmware::LinuxDirect => "linux",
             Firmware::Pcat(_) => "pcat",
             Firmware::Uefi(_) => "uefi",
-            Firmware::OpenhclLinuxDirect => "openhcl_linux",
+            Firmware::OpenhclLinuxDirect(_) => "openhcl_linux",
             Firmware::OpenhclUefi(..) => "openhcl_uefi",
         };
 
         let guest_prefix = match &self.firmware {
-            Firmware::LinuxDirect | Firmware::OpenhclLinuxDirect => None,
+            Firmware::LinuxDirect | Firmware::OpenhclLinuxDirect(_) => None,
             Firmware::Pcat(guest) => Some(guest.name_prefix()),
             Firmware::Uefi(guest) | Firmware::OpenhclUefi(_, guest) => guest.name_prefix(),
         };
 
         let options_prefix = match &self.firmware {
-            Firmware::LinuxDirect
-            | Firmware::Pcat(_)
-            | Firmware::Uefi(_)
-            | Firmware::OpenhclLinuxDirect => None,
+            Firmware::LinuxDirect | Firmware::Pcat(_) | Firmware::Uefi(_) => None,
+            Firmware::OpenhclLinuxDirect(opt) => opt.name_prefix(),
             Firmware::OpenhclUefi(opt, _) => opt.name_prefix(),
         };
 
@@ -164,7 +167,7 @@ impl Config {
                 deps.extend(guest.deps());
                 deps
             }
-            (MachineArch::X86_64, Firmware::OpenhclLinuxDirect) => vec![
+            (MachineArch::X86_64, Firmware::OpenhclLinuxDirect(_)) => vec![
                 quote!(
                     ::petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64
                 ),
@@ -331,7 +334,9 @@ impl ToTokens for Firmware {
             Firmware::LinuxDirect => quote!(::petri::Firmware::LinuxDirect),
             Firmware::Pcat(guest) => quote!(::petri::Firmware::Pcat { guest: #guest }),
             Firmware::Uefi(guest) => quote!(::petri::Firmware::Uefi { guest: #guest }),
-            Firmware::OpenhclLinuxDirect => quote!(::petri::Firmware::OpenhclLinuxDirect),
+            Firmware::OpenhclLinuxDirect(OpenhclLinuxDirectOptions { mana }) => {
+                quote!(::petri::Firmware::OpenhclLinuxDirect { mana: #mana })
+            }
             Firmware::OpenhclUefi(OpenhclUefiOptions { nvme, isolation }, guest) => {
                 let isolation = match isolation {
                     Some(i) => quote!(Some(#i)),
@@ -393,7 +398,10 @@ impl Parse for Config {
         let (arch, firmware) = match remainder {
             "linux_direct_x64" => (MachineArch::X86_64, Firmware::LinuxDirect),
             "linux_direct_aarch64" => (MachineArch::Aarch64, Firmware::LinuxDirect),
-            "openhcl_linux_direct_x64" => (MachineArch::X86_64, Firmware::OpenhclLinuxDirect),
+            "openhcl_linux_direct_x64" => (
+                MachineArch::X86_64,
+                Firmware::OpenhclLinuxDirect(parse_openhcl_linux_direct_options(input)?),
+            ),
             "pcat_x64" => (
                 MachineArch::X86_64,
                 Firmware::Pcat(parse_pcat_guest(input)?),
@@ -555,6 +563,48 @@ fn parse_iso(input: ParseStream<'_>) -> syn::Result<ImageInfo> {
     })
 }
 
+impl OpenhclLinuxDirectOptions {
+    fn name_prefix(&self) -> Option<String> {
+        let mut prefix = String::new();
+
+        if self.mana {
+            if !prefix.is_empty() {
+                prefix.push('_');
+            }
+            prefix.push_str("mana");
+        }
+
+        if prefix.is_empty() {
+            None
+        } else {
+            Some(prefix)
+        }
+    }
+}
+
+impl Parse for OpenhclLinuxDirectOptions {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut options = Self::default();
+
+        let words = input.parse_terminated(|stream| stream.parse::<Ident>(), Token![,])?;
+        for word in words {
+            match &*word.to_string() {
+                "mana" => {
+                    options.mana = true;
+                }
+                _ => {
+                    return Err(Error::new(
+                        word.span(),
+                        "unrecognized openhcl linux direct option",
+                    ))
+                }
+            }
+        }
+
+        Ok(options)
+    }
+}
+
 impl OpenhclUefiOptions {
     fn name_prefix(&self) -> Option<String> {
         let mut prefix = String::new();
@@ -622,6 +672,18 @@ impl ToTokens for IsolationType {
             IsolationType::Snp => quote!(petri::IsolationType::Snp),
             IsolationType::Tdx => quote!(petri::IsolationType::Tdx),
         });
+    }
+}
+
+fn parse_openhcl_linux_direct_options(
+    input: ParseStream<'_>,
+) -> syn::Result<OpenhclLinuxDirectOptions> {
+    if input.peek(syn::token::Bracket) {
+        let brackets;
+        syn::bracketed!(brackets in input);
+        brackets.parse()
+    } else {
+        Ok(Default::default())
     }
 }
 
