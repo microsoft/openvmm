@@ -47,9 +47,9 @@ async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
 
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
 /// the MANA emulator), and vmbus relay.
-#[openvmm_test(openhcl_linux_direct_x64[mana])]
+#[openvmm_test(openhcl_linux_direct_x64)]
 async fn mana_nic(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    let (vm, agent) = config.with_vmbus_redirect().run().await?;
+    let (vm, agent) = config.with_vmbus_redirect().with_nic().run().await?;
 
     validate_mana_nic(&agent).await?;
 
@@ -62,10 +62,11 @@ async fn mana_nic(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
 /// the MANA emulator), and vmbus relay. Use the shared pool override to test
 /// the shared pool dma path.
-#[openvmm_test(openhcl_linux_direct_x64[mana])]
+#[openvmm_test(openhcl_linux_direct_x64)]
 async fn mana_nic_shared_pool(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     let (vm, agent) = config
         .with_vmbus_redirect()
+        .with_nic()
         .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
         .run()
         .await?;
@@ -81,10 +82,11 @@ async fn mana_nic_shared_pool(config: PetriVmConfigOpenVmm) -> Result<(), anyhow
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
 /// the MANA emulator), and vmbus relay. Perform servicing and validate that the
 /// nic is still functional.
-#[openvmm_test(openhcl_linux_direct_x64[mana])]
+#[openvmm_test(openhcl_linux_direct_x64)]
 async fn mana_nic_servicing(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     let (mut vm, agent) = config
         .with_vmbus_redirect()
+        .with_nic()
         .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
         .run()
         .await?;

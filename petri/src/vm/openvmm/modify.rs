@@ -4,11 +4,16 @@
 //! Helpers to modify a [`PetriVmConfigOpenVmm`] from its defaults.
 
 use super::PetriVmConfigOpenVmm;
+use super::MANA_INSTANCE;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use fs_err::File;
+use gdma_resources::GdmaDeviceHandle;
+use gdma_resources::VportDefinition;
 use hvlite_defs::config::Config;
+use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::LoadMode;
+use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use petri_artifacts_common::tags::IsOpenhclIgvm;
 use petri_artifacts_core::ArtifactHandle;
@@ -128,6 +133,37 @@ impl PetriVmConfigOpenVmm {
                 *enable_battery = true;
             }
         }
+        self
+    }
+
+    /// Enable an emulated mana device for the VM.
+    pub fn with_nic(mut self) -> Self {
+        self.config.vpci_devices.push(VpciDeviceConfig {
+            vtl: DeviceVtl::Vtl2,
+            instance_id: MANA_INSTANCE,
+            resource: GdmaDeviceHandle {
+                vports: vec![VportDefinition {
+                    mac_address: [0x00, 0x15, 0x5D, 0x12, 0x12, 0x12].into(),
+                    endpoint: net_backend_resources::consomme::ConsommeHandle { cidr: None }
+                        .into_resource(),
+                }],
+            }
+            .into_resource(),
+        });
+
+        self.vtl2_settings
+            .as_mut()
+            .unwrap()
+            .dynamic
+            .as_mut()
+            .unwrap()
+            .nic_devices
+            .push(vtl2_settings_proto::NicDeviceLegacy {
+                instance_id: MANA_INSTANCE.to_string(),
+                subordinate_instance_id: None,
+                max_sub_channels: None,
+            });
+
         self
     }
 
