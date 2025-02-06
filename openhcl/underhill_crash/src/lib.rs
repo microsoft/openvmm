@@ -528,7 +528,6 @@ impl<'a> DumpStreamer<'a> {
             let phnum = std::cmp::min(phnum_remaining, max);
             let phdrs_size = phnum * size_of::<Elf64_Phdr>();
             self.read(&mut buf[..phdrs_size], true).await;
-            // TODO: zerocopy: review carefully! (https://github.com/microsoft/openvmm/issues/759)
             let phdrs: &mut [Elf64_Phdr] =
                 <[Elf64_Phdr]>::mut_from_bytes(&mut buf[..phdrs_size]).unwrap();
 

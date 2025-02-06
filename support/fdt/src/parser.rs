@@ -637,7 +637,6 @@ impl<'a> Property<'a> {
         // read types that are greater than 4 bytes, we must bound T to accept
         // unaligned types so LayoutVerified does not apply alignment and read
         // incorrect values.
-        // TODO: zerocopy: review carefully! (manual) (https://github.com/microsoft/openvmm/issues/759)
         <[T]>::ref_from_bytes(self.data)
             .map_err(|_| {
                 // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)

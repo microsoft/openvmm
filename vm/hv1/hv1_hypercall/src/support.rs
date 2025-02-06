@@ -485,8 +485,8 @@ where
     /// Parses the hypercall parameters to input and output types.
     pub fn parse(params: HypercallParameters<'_>) -> (&In, &mut Out) {
         (
-            FromBytes::ref_from_prefix(params.input).unwrap().0, // TODO: zerocopy: ref-from-prefix: use-rest-of-range, err
-            FromBytes::mut_from_prefix(params.output).unwrap().0, // TODO: zerocopy: mut-from-prefix: use-rest-of-range, err
+            FromBytes::ref_from_prefix(params.input).unwrap().0, // TODO: zerocopy: ref-from-prefix: use-rest-of-range, err (https://github.com/microsoft/openvmm/issues/759)
+            FromBytes::mut_from_prefix(params.output).unwrap().0, // TODO: zerocopy: mut-from-prefix: use-rest-of-range, err (https://github.com/microsoft/openvmm/issues/759)
         )
     }
 
@@ -528,8 +528,8 @@ where
         let (input, rest) = Ref::<_, In>::from_prefix(params.input).unwrap();
         (
             Ref::into_ref(input),
-            <[u64]>::ref_from_bytes(rest).unwrap(), //TODO: zerocopy: err
-            Out::mut_from_prefix(params.output).unwrap().0, //TODO: zerocopy: err
+            <[u64]>::ref_from_bytes(rest).unwrap(), //TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
+            Out::mut_from_prefix(params.output).unwrap().0, //TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
         )
     }
 
@@ -579,15 +579,13 @@ where
         let input = if size_of::<In>() == 0 {
             &[]
         } else {
-            // TODO: zerocopy: review carefully!
-            // TODO: zerocopy: err
+            // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
             &<[In]>::ref_from_bytes(rest).unwrap()[params.control.rep_start()..]
         };
         let output = if size_of::<Out>() == 0 {
             &mut []
         } else {
-            // TODO: zerocopy: review carefully!
-            // TODO: zerocopy: err
+            // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
             &mut <[Out]>::mut_from_prefix_with_elems(
                 params.output,
                 params.output.len() / size_of::<Out>(),
@@ -648,13 +646,11 @@ where
             &[]
         } else {
             &<[In]>::ref_from_bytes(rest).unwrap()[params.control.rep_start()..]
-            // TODO: zerocopy: review carefully!
         };
         let output = if size_of::<Out>() == 0 {
             &mut []
         } else {
-            // TODO: zerocopy: review carefully!
-            // TODO: zerocopy: err
+            // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
             &mut <[Out]>::mut_from_prefix_with_elems(
                 params.output,
                 params.output.len() / size_of::<Out>(),

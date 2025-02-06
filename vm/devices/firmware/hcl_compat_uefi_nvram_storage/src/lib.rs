@@ -169,7 +169,6 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         self.nvram_buf = nvram_buf;
         let mut buf = self.nvram_buf.as_slice();
         // TODO: zerocopy: error propagation (https://github.com/microsoft/openvmm/issues/759)
-        // TODO: zerocopy: review carefully! manual fixup (https://github.com/microsoft/openvmm/issues/759)
         while let Ok((header, _)) = format::NvramHeader::read_from_prefix(buf) {
             if buf.len() < header.length as usize {
                 return Err(NvramStorageError::Load(

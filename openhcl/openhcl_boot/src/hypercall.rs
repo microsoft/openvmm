@@ -373,7 +373,6 @@ impl HvCall {
             );
 
             let n = r.elements_processed();
-            //TODO: zerocopy: review carefully! (https://github.com/microsoft/openvmm/issues/759)
             output.extend(
                 <[u32]>::ref_from_bytes(&Self::output_page().buffer[..n * 4])
                     .unwrap()
