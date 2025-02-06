@@ -34,9 +34,8 @@ use windows::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows::Win32::System::IO::DeviceIoControl;
 use zerocopy::IntoBytes;
 
-pub mod vmbusioctl;
-
 mod proxyioctl;
+pub mod vmbusioctl;
 
 pub type Error = windows::core::Error;
 pub type Result<T> = windows::core::Result<T>;
@@ -77,6 +76,7 @@ impl ProxyHandle {
 }
 
 impl From<OwnedHandle> for ProxyHandle {
+    /// Create a `ProxyHandle` from an existing VM handle.
     fn from(value: OwnedHandle) -> Self {
         Self(value.into())
     }
