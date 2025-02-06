@@ -15,7 +15,6 @@ use pal_async::windows::overlapped::IoBuf;
 use pal_async::windows::overlapped::IoBufMut;
 use pal_async::windows::overlapped::OverlappedFile;
 use pal_event::Event;
-use std::ffi::c_void;
 use std::mem::zeroed;
 use std::os::windows::prelude::*;
 use std::ptr::null_mut;
@@ -331,10 +330,7 @@ impl VmbusProxy {
             DeviceIoControl(
                 HANDLE(self.file.get().as_raw_handle() as isize),
                 proxyioctl::IOCTL_VMBUS_PROXY_RUN_CHANNEL,
-                Some(
-                    std::ptr::from_ref::<proxyioctl::VMBUS_PROXY_RUN_CHANNEL_INPUT>(&input)
-                        as *mut c_void,
-                ),
+                Some(std::ptr::from_ref(&input).cast()),
                 size_of_val(&input) as u32,
                 None,
                 0,
