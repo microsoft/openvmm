@@ -116,7 +116,7 @@ impl PetriVmConfigHyperV {
         let temp_dir = tempfile::tempdir()?;
 
         let (guest_state_isolation_type, generation, guest_artifact, igvm_artifact) = match &firmware {
-            Firmware::LinuxDirect | Firmware::OpenhclLinuxDirect { mana: _ } => {
+            Firmware::LinuxDirect | Firmware::OpenhclLinuxDirect => {
                 todo!("linux direct not supported on hyper-v")
             }
             Firmware::Pcat { guest } => (
