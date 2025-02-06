@@ -16,9 +16,15 @@ pal_event.workspace = true
 pal_async.workspace = true
 
 futures.workspace = true
-ntapi.workspace = true
 tracing.workspace = true
-winapi = { workspace = true, features = ["debug", "winioctl"] }
+widestring.workspace = true
+windows-sys = { workspace = true, features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl"
+] }
 zerocopy.workspace = true
 [lints]
 workspace = true

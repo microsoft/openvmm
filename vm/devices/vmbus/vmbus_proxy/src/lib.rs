@@ -9,9 +9,7 @@
 use futures::poll;
 use guestmem::GuestMemory;
 use mesh::MeshPayload;
-use ntapi::ntioapi::NtOpenFile;
 use pal::windows::chk_status;
-use pal::windows::UnicodeString;
 use pal_async::driver::Driver;
 use pal_async::windows::overlapped::IoBuf;
 use pal_async::windows::overlapped::IoBufMut;
@@ -25,201 +23,22 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use vmbusioctl::VMBUS_CHANNEL_OFFER;
 use vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
-use winapi::shared::ntdef::OBJECT_ATTRIBUTES;
-use winapi::shared::winerror::ERROR_CANCELLED;
-use winapi::um::ioapiset::DeviceIoControl;
-use winapi::um::winnt::GENERIC_ALL;
-use winapi::um::winnt::SYNCHRONIZE;
+use widestring::utf16str;
+use widestring::Utf16Str;
+use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use windows_sys::Wdk::Storage::FileSystem::NtOpenFile;
+use windows_sys::Win32::Foundation::ERROR_CANCELLED;
+use windows_sys::Win32::Foundation::GENERIC_ALL;
+use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::UNICODE_STRING;
+use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+use windows_sys::Win32::System::IO::DeviceIoControl;
+use zerocopy::AsBytes;
 use zerocopy::IntoBytes;
 
-pub mod vmbusioctl {
-    #![allow(
-        dead_code,
-        non_camel_case_types,
-        non_snake_case,
-        non_upper_case_globals,
-        clippy::upper_case_acronyms
-    )]
+pub mod vmbusioctl;
 
-    use vmbus_core::protocol::UserDefinedData;
-    use winapi::shared::guiddef::GUID;
-
-    #[repr(C)]
-    #[derive(Debug, Copy, Clone)]
-    pub struct VMBUS_CHANNEL_OFFER {
-        pub InterfaceType: GUID,
-        pub InterfaceInstance: GUID,
-        pub InterruptLatencyIn100nsUnits: u64,
-        pub ChannelFlags: u16,
-        pub MmioMegabytes: u16,         // in bytes * 1024 * 1024
-        pub MmioMegabytesOptional: u16, // mmio memory in addition to MmioMegabytes that is optional
-        pub SubChannelIndex: u16,
-        pub TargetVtl: u8,
-        pub Reserved: [u8; 7],
-        pub UserDefined: UserDefinedData,
-    }
-
-    pub const VMBUS_CHANNEL_ENUMERATE_DEVICE_INTERFACE: u16 = 1;
-    pub const VMBUS_CHANNEL_NAMED_PIPE_MODE: u16 = 0x10;
-    pub const VMBUS_CHANNEL_LOOPBACK_OFFER: u16 = 0x100;
-    pub const VMBUS_CHANNEL_REQUEST_MONITORED_NOTIFICATION: u16 = 0x400;
-    pub const VMBUS_CHANNEL_FORCE_NEW_CHANNEL: u16 = 0x1000;
-    pub const VMBUS_CHANNEL_TLNPI_PROVIDER_OFFER: u16 = 0x2000;
-
-    pub const VMBUS_PIPE_TYPE_BYTE: u32 = 0;
-    pub const VMBUS_PIPE_TYPE_MESSAGE: u32 = 4;
-    pub const VMBUS_PIPE_TYPE_RAW: u32 = 8;
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub struct VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS {
-        pub RingBufferGpadlHandle: u32,
-        pub DownstreamRingBufferPageOffset: u32,
-        pub NodeNumber: u16,
-    }
-}
-
-mod proxyioctl {
-    #![allow(
-        dead_code,
-        non_snake_case,
-        non_upper_case_globals,
-        non_camel_case_types,
-        clippy::upper_case_acronyms
-    )]
-
-    use super::vmbusioctl::VMBUS_CHANNEL_OFFER;
-    use super::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
-    use winapi::um::winioctl::FILE_DEVICE_UNKNOWN;
-    use winapi::um::winioctl::FILE_READ_ACCESS;
-    use winapi::um::winioctl::FILE_WRITE_ACCESS;
-    use winapi::um::winioctl::METHOD_BUFFERED;
-    use zerocopy::Immutable;
-    use zerocopy::IntoBytes;
-    use zerocopy::KnownLayout;
-
-    const fn CTL_CODE(DeviceType: u32, Function: u32, Method: u32, Access: u32) -> u32 {
-        (DeviceType << 16) | (Access << 14) | (Function << 2) | Method
-    }
-
-    const fn VMBUS_PROXY_IOCTL(code: u32) -> u32 {
-        CTL_CODE(
-            FILE_DEVICE_UNKNOWN,
-            code,
-            METHOD_BUFFERED,
-            FILE_READ_ACCESS | FILE_WRITE_ACCESS,
-        )
-    }
-
-    pub const IOCTL_VMBUS_PROXY_SET_VM_NAME: u32 = VMBUS_PROXY_IOCTL(0x1);
-    pub const IOCTL_VMBUS_PROXY_SET_TOPOLOGY: u32 = VMBUS_PROXY_IOCTL(0x2);
-    pub const IOCTL_VMBUS_PROXY_SET_MEMORY: u32 = VMBUS_PROXY_IOCTL(0x3);
-    pub const IOCTL_VMBUS_PROXY_NEXT_ACTION: u32 = VMBUS_PROXY_IOCTL(0x4);
-    pub const IOCTL_VMBUS_PROXY_OPEN_CHANNEL: u32 = VMBUS_PROXY_IOCTL(0x5);
-    pub const IOCTL_VMBUS_PROXY_CLOSE_CHANNEL: u32 = VMBUS_PROXY_IOCTL(0x6);
-    pub const IOCTL_VMBUS_PROXY_CREATE_GPADL: u32 = VMBUS_PROXY_IOCTL(0x7);
-    pub const IOCTL_VMBUS_PROXY_DELETE_GPADL: u32 = VMBUS_PROXY_IOCTL(0x8);
-    pub const IOCTL_VMBUS_PROXY_RELEASE_CHANNEL: u32 = VMBUS_PROXY_IOCTL(0x9);
-    pub const IOCTL_VMBUS_PROXY_RUN_CHANNEL: u32 = VMBUS_PROXY_IOCTL(0xa);
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub struct VMBUS_PROXY_SET_VM_NAME_INPUT {
-        pub VmId: [u8; 16],
-        pub NameLength: u16,
-        pub NameOffset: u16,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub struct VMBUS_PROXY_SET_TOPOLOGY_INPUT {
-        pub NodeCount: u32,
-        pub VpCount: u32,
-        pub NodesOffset: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub struct VMBUS_PROXY_SET_MEMORY_INPUT {
-        pub BaseAddress: u64,
-        pub Size: u64,
-    }
-
-    pub const VmbusProxyActionTypeOffer: u32 = 1;
-    pub const VmbusProxyActionTypeRevoke: u32 = 2;
-    pub const VmbusProxyActionTypeInterruptPolicy: u32 = 3;
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub struct VMBUS_PROXY_NEXT_ACTION_OUTPUT {
-        pub Type: u32,
-        pub ChannelId: u64,
-        pub u: VMBUS_PROXY_NEXT_ACTION_OUTPUT_union,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub union VMBUS_PROXY_NEXT_ACTION_OUTPUT_union {
-        pub Offer: VMBUS_PROXY_NEXT_ACTION_OUTPUT_union_Offer,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub struct VMBUS_PROXY_NEXT_ACTION_OUTPUT_union_Offer {
-        pub Offer: VMBUS_CHANNEL_OFFER,
-        pub DeviceIncomingRingEvent: u64, // BUGBUG: HANDLE
-        pub DeviceOutgoingRingEvent: u64, // BUGBUG: HANDLE
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub struct VMBUS_PROXY_OPEN_CHANNEL_INPUT {
-        pub ChannelId: u64,
-        pub OpenParameters: VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS,
-        pub VmmSignalEvent: u64, // BUGBUG: HANDLE
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub struct VMBUS_PROXY_OPEN_CHANNEL_OUTPUT {
-        pub Status: i32,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub struct VMBUS_PROXY_CLOSE_CHANNEL_INPUT {
-        pub ChannelId: u64,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout)]
-    pub struct VMBUS_PROXY_CREATE_GPADL_INPUT {
-        pub ChannelId: u64,
-        pub GpadlId: u32,
-        pub RangeCount: u32,
-        pub RangeBufferOffset: u32,
-        pub RangeBufferSize: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub struct VMBUS_PROXY_DELETE_GPADL_INPUT {
-        pub ChannelId: u64,
-        pub GpadlId: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub struct VMBUS_PROXY_RELEASE_CHANNEL_INPUT {
-        pub ChannelId: u64,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub struct VMBUS_PROXY_RUN_CHANNEL_INPUT {
-        pub ChannelId: u64,
-    }
-}
+mod proxyioctl;
 
 pub type Error = std::io::Error;
 
@@ -230,11 +49,17 @@ pub struct ProxyHandle(std::fs::File);
 impl ProxyHandle {
     /// Creates a new VM handle.
     pub fn new() -> Result<Self, Error> {
-        let mut pathu: UnicodeString = "\\Device\\VmbusProxy".try_into().expect("string fits");
-        let mut oa = OBJECT_ATTRIBUTES {
+        const DEVICE_PATH: &Utf16Str = utf16str!("\\Device\\VmbusProxy");
+        const BYTE_LEN: u16 = (DEVICE_PATH.len() * 2) as u16;
+        let pathu = UNICODE_STRING {
+            Length: BYTE_LEN,
+            MaximumLength: BYTE_LEN,
+            Buffer: DEVICE_PATH.as_ptr().cast_mut(),
+        };
+        let oa = OBJECT_ATTRIBUTES {
             Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-            RootDirectory: null_mut(),
-            ObjectName: pathu.as_mut_ptr(),
+            RootDirectory: 0,
+            ObjectName: &pathu,
             Attributes: 0,
             SecurityDescriptor: null_mut(),
             SecurityQualityOfService: null_mut(),
@@ -242,16 +67,16 @@ impl ProxyHandle {
         // SAFETY: calling API according to docs.
         unsafe {
             let mut iosb = zeroed();
-            let mut handle = null_mut();
+            let mut handle = 0;
             chk_status(NtOpenFile(
                 &mut handle,
                 GENERIC_ALL | SYNCHRONIZE,
-                &mut oa,
+                &oa,
                 &mut iosb,
                 0,
                 0,
             ))?;
-            Ok(Self(std::fs::File::from_raw_handle(handle)))
+            Ok(Self(std::fs::File::from_raw_handle(handle as RawHandle)))
         }
     }
 }
@@ -270,7 +95,6 @@ pub struct VmbusProxy {
     cancelled: AtomicBool,
 }
 
-#[derive(Debug)]
 pub enum ProxyAction {
     Offer {
         id: u64,
@@ -508,7 +332,7 @@ impl VmbusProxy {
             let input = proxyioctl::VMBUS_PROXY_RUN_CHANNEL_INPUT { ChannelId: id };
             let mut bytes = 0;
             if DeviceIoControl(
-                self.file.get().as_raw_handle(),
+                self.file.get().as_raw_handle() as HANDLE,
                 proxyioctl::IOCTL_VMBUS_PROXY_RUN_CHANNEL,
                 std::ptr::from_ref::<proxyioctl::VMBUS_PROXY_RUN_CHANNEL_INPUT>(&input)
                     as *mut c_void,

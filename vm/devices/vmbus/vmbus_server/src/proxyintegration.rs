@@ -304,7 +304,6 @@ impl ProxyTask {
         send: mesh::Sender<TaggedStream<u64, mesh::Receiver<ChannelRequest>>>,
     ) {
         while let Ok(action) = self.proxy.next_action().await {
-            tracing::debug!(action = ?action, "action");
             match action {
                 ProxyAction::Offer {
                     id,

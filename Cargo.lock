@@ -8057,13 +8057,13 @@ dependencies = [
  "futures",
  "guestmem",
  "mesh",
- "ntapi",
  "pal",
  "pal_async",
  "pal_event",
  "tracing",
  "vmbus_core",
- "winapi",
+ "widestring",
+ "windows-sys 0.52.0",
  "zerocopy 0.8.14",
 ]
 
