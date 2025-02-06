@@ -12,7 +12,8 @@ use windows::Win32::System::Ioctl::FILE_DEVICE_UNKNOWN;
 use windows::Win32::System::Ioctl::FILE_READ_ACCESS;
 use windows::Win32::System::Ioctl::FILE_WRITE_ACCESS;
 use windows::Win32::System::Ioctl::METHOD_BUFFERED;
-use zerocopy::AsBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
 
 const fn CTL_CODE(DeviceType: u32, Function: u32, Method: u32, Access: u32) -> u32 {
     (DeviceType << 16) | (Access << 14) | (Function << 2) | Method
@@ -108,7 +109,7 @@ pub struct VMBUS_PROXY_CLOSE_CHANNEL_INPUT {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes)]
+#[derive(Copy, Clone, IntoBytes, Immutable)]
 pub struct VMBUS_PROXY_CREATE_GPADL_INPUT {
     pub ChannelId: u64,
     pub GpadlId: u32,

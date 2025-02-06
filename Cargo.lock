@@ -8228,10 +8228,8 @@ dependencies = [
  "vmbus_proxy",
  "vmbus_ring",
  "vmcore",
- "zerocopy 0.8.14",
  "windows",
  "zerocopy 0.8.14",
- "zerocopy_helpers",
 ]
 
 [[package]]

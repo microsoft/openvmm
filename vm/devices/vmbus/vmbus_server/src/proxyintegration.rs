@@ -44,7 +44,6 @@ use vmbus_proxy::VmbusProxy;
 use vmcore::interrupt::Interrupt;
 use windows::core::HRESULT;
 use windows::Win32::Foundation::ERROR_CANCELLED;
-use zerocopy::AsBytes;
 use zerocopy::IntoBytes;
 
 pub struct ProxyIntegration {

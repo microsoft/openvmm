@@ -32,7 +32,6 @@ use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 use windows::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows::Win32::System::IO::DeviceIoControl;
-use zerocopy::AsBytes;
 use zerocopy::IntoBytes;
 
 pub mod vmbusioctl;
