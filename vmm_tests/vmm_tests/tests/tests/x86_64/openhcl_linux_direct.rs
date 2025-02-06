@@ -6,8 +6,6 @@
 use anyhow::Context;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use disk_backend_resources::LayeredDiskHandle;
-use gdma_resources::GdmaDeviceHandle;
-use gdma_resources::VportDefinition;
 use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::VpciDeviceConfig;
@@ -16,7 +14,6 @@ use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use petri::openvmm::PetriVmConfigOpenVmm;
-use petri::openvmm::PetriVmOpenVmm;
 use petri::pipette::cmd;
 use petri::pipette::PipetteClient;
 use petri::OpenHclServicingFlags;
