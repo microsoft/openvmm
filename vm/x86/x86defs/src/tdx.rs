@@ -565,7 +565,8 @@ pub struct TdxL2EnterGuestState {
     pub reserved: [u8; 6],
 }
 
-impl TdxL2EnterGuestState {
+pub enum TdxGp {}
+impl TdxGp {
     pub const RAX: usize = 0;
     pub const RCX: usize = 1;
     pub const RDX: usize = 2;
@@ -582,103 +583,6 @@ impl TdxL2EnterGuestState {
     pub const R13: usize = 13;
     pub const R14: usize = 14;
     pub const R15: usize = 15;
-
-    pub fn rax(&self) -> u64 {
-        self.gps[Self::RAX]
-    }
-    pub fn set_rax(&mut self, v: u64) {
-        self.gps[Self::RAX] = v
-    }
-    pub fn rcx(&self) -> u64 {
-        self.gps[Self::RCX]
-    }
-    pub fn set_rcx(&mut self, v: u64) {
-        self.gps[Self::RCX] = v
-    }
-    pub fn rdx(&self) -> u64 {
-        self.gps[Self::RDX]
-    }
-    pub fn set_rdx(&mut self, v: u64) {
-        self.gps[Self::RDX] = v
-    }
-    pub fn rbx(&self) -> u64 {
-        self.gps[Self::RBX]
-    }
-    pub fn set_rbx(&mut self, v: u64) {
-        self.gps[Self::RBX] = v
-    }
-    pub fn rsp(&self) -> u64 {
-        self.gps[Self::RSP]
-    }
-    pub fn set_rsp(&mut self, v: u64) {
-        self.gps[Self::RSP] = v
-    }
-    pub fn rbp(&self) -> u64 {
-        self.gps[Self::RBP]
-    }
-    pub fn set_rbp(&mut self, v: u64) {
-        self.gps[Self::RBP] = v
-    }
-    pub fn rsi(&self) -> u64 {
-        self.gps[Self::RSI]
-    }
-    pub fn set_rsi(&mut self, v: u64) {
-        self.gps[Self::RSI] = v
-    }
-    pub fn rdi(&self) -> u64 {
-        self.gps[Self::RDI]
-    }
-    pub fn set_rdi(&mut self, v: u64) {
-        self.gps[Self::RDI] = v
-    }
-    pub fn r8(&self) -> u64 {
-        self.gps[Self::R8]
-    }
-    pub fn set_r8(&mut self, v: u64) {
-        self.gps[Self::R8] = v
-    }
-    pub fn r9(&self) -> u64 {
-        self.gps[Self::R9]
-    }
-    pub fn set_r9(&mut self, v: u64) {
-        self.gps[Self::R9] = v
-    }
-    pub fn r10(&self) -> u64 {
-        self.gps[Self::R10]
-    }
-    pub fn set_r10(&mut self, v: u64) {
-        self.gps[Self::R10] = v
-    }
-    pub fn r11(&self) -> u64 {
-        self.gps[Self::R11]
-    }
-    pub fn set_r11(&mut self, v: u64) {
-        self.gps[Self::R11] = v
-    }
-    pub fn r12(&self) -> u64 {
-        self.gps[Self::R12]
-    }
-    pub fn set_r12(&mut self, v: u64) {
-        self.gps[Self::R12] = v
-    }
-    pub fn r13(&self) -> u64 {
-        self.gps[Self::R13]
-    }
-    pub fn set_r13(&mut self, v: u64) {
-        self.gps[Self::R13] = v
-    }
-    pub fn r14(&self) -> u64 {
-        self.gps[Self::R14]
-    }
-    pub fn set_r14(&mut self, v: u64) {
-        self.gps[Self::R14] = v
-    }
-    pub fn r15(&self) -> u64 {
-        self.gps[Self::R15]
-    }
-    pub fn set_r15(&mut self, v: u64) {
-        self.gps[Self::R15] = v
-    }
 }
 
 #[bitfield(u64)]

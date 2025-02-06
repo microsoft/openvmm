@@ -7,6 +7,8 @@ mod pci_shutdown;
 pub mod vtl2_settings_worker;
 
 use self::vtl2_settings_worker::DeviceInterfaces;
+use crate::dma_manager::DmaClientSpawner;
+use crate::dma_manager::GlobalDmaManager;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::EmuplatServicing;
 use crate::nvme_manager::NvmeManager;
@@ -105,10 +107,10 @@ pub trait LoadedVmNetworkSettings: Inspect {
         threadpool: &AffinitizedThreadpool,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        shared_vis_pages_pool: &Option<PagePool>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
+        dma_client_spawner: DmaClientSpawner,
     ) -> anyhow::Result<RuntimeSavedState>;
 
     /// Callback when network is removed externally.
@@ -181,6 +183,7 @@ pub(crate) struct LoadedVm {
     pub private_pool: Option<PagePool>,
     pub nvme_keep_alive: bool,
     pub test_configuration: Option<TestScenarioConfig>,
+    pub dma_manager: GlobalDmaManager,
 }
 
 pub struct LoadedVmState<T> {
@@ -747,10 +750,10 @@ impl LoadedVm {
                 threadpool,
                 &self.uevent_listener,
                 &None, // VF getting added; no existing state
-                &self.shared_vis_pool,
                 self.partition.clone(),
                 &self.state_units,
                 &self.vmbus_server,
+                self.dma_manager.get_client_spawner().clone(),
             )
             .await?;
 

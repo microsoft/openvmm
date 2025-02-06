@@ -11,6 +11,7 @@ use crate::interrupt::DeviceInterruptSource;
 use crate::memory::MemoryBlock;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
+use crate::DmaClient;
 use crate::HostDmaAllocator;
 use anyhow::Context;
 use futures::FutureExt;
@@ -58,8 +59,6 @@ pub struct VfioDevice {
     #[inspect(skip)]
     device: Arc<vfio_sys::Device>,
     #[inspect(skip)]
-    dma_buffer: Arc<dyn VfioDmaBuffer>,
-    #[inspect(skip)]
     msix_info: IrqInfo,
     #[inspect(skip)]
     driver_source: VmTaskDriverSource,
@@ -67,6 +66,8 @@ pub struct VfioDevice {
     interrupts: Vec<Option<InterruptState>>,
     #[inspect(skip)]
     config_space: vfio_sys::RegionInfo,
+    #[inspect(skip)]
+    dma_client: Arc<dyn DmaClient>,
 }
 
 #[derive(Inspect)]
@@ -83,9 +84,9 @@ impl VfioDevice {
     pub async fn new(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
-        dma_buffer: Arc<dyn VfioDmaBuffer>,
+        dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
-        Self::restore(driver_source, pci_id, dma_buffer, false).await
+        Self::restore(driver_source, pci_id, false, dma_client).await
     }
 
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
@@ -93,8 +94,8 @@ impl VfioDevice {
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
-        dma_buffer: Arc<dyn VfioDmaBuffer>,
         keepalive: bool,
+        dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
@@ -136,11 +137,11 @@ impl VfioDevice {
             _container: container,
             _group: group,
             device: Arc::new(device),
-            dma_buffer,
             msix_info,
             config_space,
             driver_source: driver_source.clone(),
             interrupts: Vec::new(),
+            dma_client,
         };
 
         // Ensure bus master enable and memory space enable are set, and that
@@ -242,10 +243,8 @@ impl DeviceBacking for VfioDevice {
         (*self).map_bar(n)
     }
 
-    fn host_allocator(&self) -> Self::DmaAllocator {
-        LockedMemoryAllocator {
-            dma_buffer: self.dma_buffer.clone(),
-        }
+    fn dma_client(&self) -> Arc<dyn DmaClient> {
+        self.dma_client.clone()
     }
 
     fn max_interrupt_count(&self) -> u32 {

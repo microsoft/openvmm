@@ -12,6 +12,7 @@ use super::ProcessorRunner;
 use crate::protocol::tdx_tdg_vp_enter_exit_info;
 use crate::protocol::tdx_vp_context;
 use crate::protocol::tdx_vp_state;
+use crate::protocol::tdx_vp_state_flags;
 use crate::GuestVtl;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
@@ -95,13 +96,23 @@ impl ProcessorRunner<'_, Tdx> {
     }
 
     /// Gets a reference to the TDX enter guest state.
-    pub fn tdx_enter_guest_state(&self) -> &TdxL2EnterGuestState {
+    fn tdx_enter_guest_state(&self) -> &TdxL2EnterGuestState {
         &self.tdx_vp_context().gpr_list
     }
 
     /// Gets a mutable reference to the TDX enter guest state.
-    pub fn tdx_enter_guest_state_mut(&mut self) -> &mut TdxL2EnterGuestState {
+    fn tdx_enter_guest_state_mut(&mut self) -> &mut TdxL2EnterGuestState {
         &mut self.tdx_vp_context_mut().gpr_list
+    }
+
+    /// Gets a reference to the TDX enter guest state's GP list.
+    pub fn tdx_enter_guest_gps(&self) -> &[u64; 16] {
+        &self.tdx_enter_guest_state().gps
+    }
+
+    /// Gets a mutable reference to the TDX enter guest state's GP list.
+    pub fn tdx_enter_guest_gps_mut(&mut self) -> &mut [u64; 16] {
+        &mut self.tdx_enter_guest_state_mut().gps
     }
 
     /// Gets a reference to the tdx exit info from a VP.ENTER call.
@@ -124,23 +135,102 @@ impl ProcessorRunner<'_, Tdx> {
     }
 
     /// Gets a reference to TDX VP specific state.
-    pub fn tdx_vp_state(&self) -> &tdx_vp_state {
+    fn tdx_vp_state(&self) -> &tdx_vp_state {
         &self.tdx_vp_context().vp_state
     }
 
     /// Gets a mutable reference to TDX VP specific state
-    pub fn tdx_vp_state_mut(&mut self) -> &mut tdx_vp_state {
+    fn tdx_vp_state_mut(&mut self) -> &mut tdx_vp_state {
         &mut self.tdx_vp_context_mut().vp_state
     }
 
-    /// Gets a reference to the TDX VP entry flags.
-    pub fn tdx_vp_entry_flags(&self) -> &TdxVmFlags {
-        &self.tdx_vp_context().entry_rcx
+    /// Gets the value of CR2 from the shared kernel state.
+    pub fn cr2(&self) -> u64 {
+        self.tdx_vp_state().cr2
+    }
+
+    /// Gets the value of CR2 from the shared kernel state.
+    pub fn set_cr2(&mut self, value: u64) {
+        self.tdx_vp_state_mut().cr2 = value;
+    }
+
+    /// Gets a mutable reference to TDX specific VP flags.
+    pub fn tdx_vp_state_flags_mut(&mut self) -> &mut tdx_vp_state_flags {
+        &mut self.tdx_vp_state_mut().flags
     }
 
     /// Gets a mutable reference to the TDX VP entry flags.
     pub fn tdx_vp_entry_flags_mut(&mut self) -> &mut TdxVmFlags {
         &mut self.tdx_vp_context_mut().entry_rcx
+    }
+
+    /// Reads the private registers from the kernel's shared run page into
+    /// the given [`TdxPrivateRegs`].
+    pub fn read_private_regs(&self, regs: &mut TdxPrivateRegs) {
+        let TdxL2EnterGuestState {
+            gps: _gps, // Shared between VTLs
+            rflags,
+            rip,
+            ssp,
+            rvi,
+            svi,
+            reserved: _reserved,
+        } = self.tdx_enter_guest_state();
+        regs.rflags = *rflags;
+        regs.rip = *rip;
+        regs.ssp = *ssp;
+        regs.rvi = *rvi;
+        regs.svi = *svi;
+
+        let tdx_vp_state {
+            msr_kernel_gs_base,
+            msr_star,
+            msr_lstar,
+            msr_sfmask,
+            msr_xss,
+            cr2: _cr2, // Shared between VTLs
+            msr_tsc_aux,
+            flags: _flags, // Global flags
+        } = self.tdx_vp_state();
+        regs.msr_kernel_gs_base = *msr_kernel_gs_base;
+        regs.msr_star = *msr_star;
+        regs.msr_lstar = *msr_lstar;
+        regs.msr_sfmask = *msr_sfmask;
+        regs.msr_xss = *msr_xss;
+        regs.msr_tsc_aux = *msr_tsc_aux;
+    }
+
+    /// Writes the private registers from the given [`TdxPrivateRegs`] to the
+    /// kernel's shared run page.
+    pub fn write_private_regs(&mut self, regs: &TdxPrivateRegs) {
+        let TdxPrivateRegs {
+            rflags,
+            rip,
+            ssp,
+            rvi,
+            svi,
+            msr_kernel_gs_base,
+            msr_star,
+            msr_lstar,
+            msr_sfmask,
+            msr_xss,
+            msr_tsc_aux,
+        } = regs;
+
+        let enter_guest_state = self.tdx_enter_guest_state_mut();
+        enter_guest_state.rflags = *rflags;
+        enter_guest_state.rip = *rip;
+        enter_guest_state.ssp = *ssp;
+        enter_guest_state.rvi = *rvi;
+        enter_guest_state.svi = *svi;
+
+        let vp_state = self.tdx_vp_state_mut();
+        vp_state.msr_kernel_gs_base = *msr_kernel_gs_base;
+        vp_state.msr_star = *msr_star;
+        vp_state.msr_lstar = *msr_lstar;
+        vp_state.msr_sfmask = *msr_sfmask;
+        vp_state.msr_xss = *msr_xss;
+        vp_state.msr_tsc_aux = *msr_tsc_aux;
     }
 
     fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
@@ -340,6 +430,45 @@ impl super::private::BackingPrivate for Tdx {
         _name: HvRegisterName,
     ) -> Result<Option<HvRegisterValue>, super::Error> {
         Ok(None)
+    }
+}
+
+/// Private registers that are copied to/from the kernel's shared run page.
+#[derive(inspect::InspectMut)]
+#[expect(missing_docs, reason = "Self-describing field names")]
+pub struct TdxPrivateRegs {
+    // Registers on [`TdxL2EnterGuestState`].
+    pub rflags: u64,
+    pub rip: u64,
+    pub ssp: u64,
+    pub rvi: u8,
+    pub svi: u8,
+    // Registers on [`tdx_vp_state`].
+    pub msr_kernel_gs_base: u64,
+    pub msr_star: u64,
+    pub msr_lstar: u64,
+    pub msr_sfmask: u64,
+    pub msr_xss: u64,
+    pub msr_tsc_aux: u64,
+}
+
+impl TdxPrivateRegs {
+    /// Creates a new register set with the given values.
+    /// Other values are initialized to zero.
+    pub fn new(rflags: u64, rip: u64) -> Self {
+        Self {
+            rflags,
+            rip,
+            ssp: 0,
+            rvi: 0,
+            svi: 0,
+            msr_kernel_gs_base: 0,
+            msr_star: 0,
+            msr_lstar: 0,
+            msr_sfmask: 0,
+            msr_xss: 0,
+            msr_tsc_aux: 0,
+        }
     }
 }
 
