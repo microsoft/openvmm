@@ -356,7 +356,7 @@ impl MemoryAcceptor {
     }
 }
 
-/// An implementation of [`virt_mshv_vtl::ChangeHostVisibility`] for Underhill VMs.
+/// An implementation of [`ProtectIsolatedMemory`] for Underhill VMs.
 pub struct HardwareIsolatedMemoryProtector {
     // Serves as a lock for synchronizing visibility and page-protection changes.
     inner: Mutex<HardwareIsolatedMemoryProtectorInner>,
