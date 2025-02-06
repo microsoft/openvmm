@@ -57,6 +57,7 @@ sparse_mmap.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
+clap.workspace = true
 fatfs = { workspace = true, features = ["std", "alloc"] }
 fs-err.workspace = true
 fscommon.workspace = true
@@ -64,8 +65,14 @@ futures.workspace = true
 futures-concurrency.workspace = true
 gptman.workspace = true
 image = { workspace = true, features = ["png"] }
+jiff = { workspace = true, features = ["serde"] }
+libtest-mimic.workspace = true
+linkme.workspace = true
 mbrman.workspace = true
+parking_lot.workspace = true
 prost.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

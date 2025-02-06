@@ -441,6 +441,18 @@ impl HwControl {
                     .update_eq_msix(req.queue_index, req.msix)?;
                 0
             }
+            GdmaRequestType::GDMA_DEREGISTER_DEVICE => {
+                if hdr.dev_id != BNIC_DEV_ID {
+                    anyhow::bail!("invalid device id: {:?}", hdr.dev_id);
+                }
+
+                if !self.bnic_enabled {
+                    anyhow::bail!("bnic not enabled");
+                }
+
+                self.bnic_enabled = false;
+                0
+            }
             ty => {
                 anyhow::bail!("unsupported message type: {:x?}", ty);
             }

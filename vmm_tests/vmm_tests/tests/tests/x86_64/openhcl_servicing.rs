@@ -12,10 +12,14 @@ use vmm_test_macros::openvmm_test;
 
 async fn openhcl_servicing_core(
     config: PetriVmConfigOpenVmm,
+    openhcl_cmdline: &str,
     new_openhcl: ArtifactHandle<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     flags: OpenHclServicingFlags,
 ) -> anyhow::Result<()> {
-    let (mut vm, agent) = config.run().await?;
+    let (mut vm, agent) = config
+        .with_openhcl_command_line(openhcl_cmdline)
+        .run()
+        .await?;
 
     agent.ping().await?;
 
@@ -40,6 +44,7 @@ async fn openhcl_servicing_core(
 async fn openhcl_servicing(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     openhcl_servicing_core(
         config,
+        "",
         LATEST_LINUX_DIRECT_TEST_X64,
         OpenHclServicingFlags::default(),
     )
@@ -52,6 +57,7 @@ async fn openhcl_servicing(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::E
 async fn openhcl_servicing_keepalive(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     openhcl_servicing_core(
         config,
+        "OPENHCL_ENABLE_VTL2_GPA_POOL=1024",
         LATEST_LINUX_DIRECT_TEST_X64,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,

@@ -18,6 +18,7 @@ pub mod artifact_openhcl_boot;
 pub mod artifact_openhcl_igvm_from_recipe;
 pub mod artifact_openhcl_igvm_from_recipe_extras;
 pub mod artifact_openvmm;
+pub mod artifact_openvmm_hcl_sizecheck;
 pub mod artifact_pipette;
 pub mod artifact_rustdoc;
 pub mod artifact_vmgs_lib;

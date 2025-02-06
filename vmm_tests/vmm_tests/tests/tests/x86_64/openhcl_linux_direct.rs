@@ -16,7 +16,11 @@ use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use petri::openvmm::PetriVmConfigOpenVmm;
+use petri::openvmm::PetriVmOpenVmm;
 use petri::pipette::cmd;
+use petri::pipette::PipetteClient;
+use petri::OpenHclServicingFlags;
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use scsidisk_resources::SimpleScsiDvdRequest;
@@ -27,15 +31,29 @@ use vm_resource::IntoResource;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 
-/// Boot an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay. This should expose a nic to VTL0 via
-/// vmbus.
-///
 /// Today this only tests that the nic can get an IP address via consomme's DHCP
 /// implementation.
 ///
 /// FUTURE: Test traffic on the nic.
-async fn boot_openhcl_linux_mana_nic(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
+    let sh = agent.unix_shell();
+    cmd!(sh, "ifconfig eth0 up").run().await?;
+    cmd!(sh, "udhcpc eth0").run().await?;
+    let output = cmd!(sh, "ifconfig eth0").read().await?;
+    // Validate that we see a mana nic with the expected MAC address and IPs.
+    assert!(output.contains("HWaddr 00:15:5D:12:12:12"));
+    assert!(output.contains("inet addr:10.0.0.2"));
+    assert!(output.contains("inet6 addr: fe80::215:5dff:fe12:1212/64"));
+
+    Ok(())
+}
+
+/// Boot an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
+/// the MANA emulator), and vmbus relay. This should expose a nic to VTL0 via
+/// vmbus.
+async fn boot_openhcl_linux_mana_nic(
+    config: PetriVmConfigOpenVmm,
+) -> Result<(PetriVmOpenVmm, PipetteClient), anyhow::Error> {
     const MANA_INSTANCE: Guid = Guid::from_static_str("27b553e8-8b39-411b-a55f-839971a7884f");
 
     let (vm, agent) = config
@@ -68,14 +86,16 @@ async fn boot_openhcl_linux_mana_nic(config: PetriVmConfigOpenVmm) -> Result<(),
         .run()
         .await?;
 
-    let sh = agent.unix_shell();
-    cmd!(sh, "ifconfig eth0 up").run().await?;
-    cmd!(sh, "udhcpc eth0").run().await?;
-    let output = cmd!(sh, "ifconfig eth0").read().await?;
-    // Validate that we see a mana nic with the expected MAC address and IPs.
-    assert!(output.contains("HWaddr 00:15:5D:12:12:12"));
-    assert!(output.contains("inet addr:10.0.0.2"));
-    assert!(output.contains("inet6 addr: fe80::215:5dff:fe12:1212/64"));
+    Ok((vm, agent))
+}
+
+/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
+/// the MANA emulator), and vmbus relay.
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn mana_nic(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+    let (vm, agent) = boot_openhcl_linux_mana_nic(config).await?;
+
+    validate_mana_nic(&agent).await?;
 
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
@@ -84,21 +104,44 @@ async fn boot_openhcl_linux_mana_nic(config: PetriVmConfigOpenVmm) -> Result<(),
 }
 
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay.
-#[openvmm_test(openhcl_linux_direct_x64)]
-async fn mana_nic(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    boot_openhcl_linux_mana_nic(config).await
-}
-
-/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
 /// the MANA emulator), and vmbus relay. Use the shared pool override to test
 /// the shared pool dma path.
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn mana_nic_shared_pool(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    boot_openhcl_linux_mana_nic(
+    let (vm, agent) = boot_openhcl_linux_mana_nic(
         config.with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1"),
     )
-    .await
+    .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+
+    Ok(())
+}
+
+/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
+/// the MANA emulator), and vmbus relay. Perform servicing and validate that the
+/// nic is still functional.
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn mana_nic_servicing(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = boot_openhcl_linux_mana_nic(config).await?;
+
+    validate_mana_nic(&agent).await?;
+
+    vm.restart_openhcl(
+        LATEST_LINUX_DIRECT_TEST_X64,
+        OpenHclServicingFlags::default(),
+    )
+    .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+
+    Ok(())
 }
 
 /// Test an OpenHCL Linux direct VM with a SCSI disk assigned to VTL2, and

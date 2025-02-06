@@ -7,7 +7,6 @@ pub mod hyperv;
 /// OpenVMM VM management
 pub mod openvmm;
 
-use anyhow::Context;
 use async_trait::async_trait;
 use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_common::tags::MachineArch;
@@ -299,22 +298,4 @@ pub enum IsolationType {
 pub struct OpenHclServicingFlags {
     /// Preserve DMA memory for NVMe devices if supported.
     pub enable_nvme_keepalive: bool,
-}
-
-/// Generates a name for the petri test based on the thread name
-pub fn get_test_name() -> anyhow::Result<String> {
-    // Use the current thread name for the test name, both cargo-test and
-    // cargo-nextest set this.
-    // FUTURE: If we ever want to use petri outside a testing context this
-    // will need to be revisited.
-    let current_thread = std::thread::current();
-    let test_name = current_thread.name().context("no thread name configured")?;
-    if test_name.is_empty() {
-        anyhow::bail!("thread name is empty");
-    }
-    if test_name == "main" {
-        anyhow::bail!("thread name is 'main', not running from test thread");
-    }
-    // Windows paths can't include colons, replace them.
-    Ok(test_name.replace("::", "__"))
 }

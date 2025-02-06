@@ -15,12 +15,19 @@ use tempfile::TempDir;
 use vmm_test_images::KnownIso;
 use vmm_test_images::KnownVhd;
 
-/// An implementation of [`petri_artifacts_core::TestArtifactResolverBackend`]
+/// An implementation of [`petri_artifacts_core::ResolveTestArtifact`]
 /// that resolves artifacts to various "known paths" within the context of
 /// the OpenVMM repository.
-pub struct OpenvmmKnownPathsTestArtifactResolver;
+pub struct OpenvmmKnownPathsTestArtifactResolver<'a>(&'a str);
 
-impl petri_artifacts_core::TestArtifactResolverBackend for OpenvmmKnownPathsTestArtifactResolver {
+impl<'a> OpenvmmKnownPathsTestArtifactResolver<'a> {
+    /// Creates a new resolver for a test with the given name.
+    pub fn new(test_name: &'a str) -> Self {
+        Self(test_name)
+    }
+}
+
+impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifactResolver<'_> {
     #[rustfmt::skip]
     fn resolve(&self, id: ErasedArtifactHandle) -> anyhow::Result<PathBuf> {
         use petri_artifacts_common::artifacts as common;
@@ -32,7 +39,7 @@ impl petri_artifacts_core::TestArtifactResolverBackend for OpenvmmKnownPathsTest
             _ if id == common::PIPETTE_WINDOWS_AARCH64 => pipette_path(MachineArch::Aarch64, PipetteFlavor::Windows),
             _ if id == common::PIPETTE_LINUX_AARCH64 => pipette_path(MachineArch::Aarch64, PipetteFlavor::Linux),
 
-            _ if id == common::TEST_LOG_DIRECTORY => test_log_directory_path(),
+            _ if id == common::TEST_LOG_DIRECTORY => test_log_directory_path(self.0),
 
             _ if id == OPENVMM_NATIVE => openvmm_native_executable_path(),
             _ if id == OPENHCL_DUMP_DIRECTORY => openhcl_dump_path(),
@@ -348,13 +355,18 @@ fn openhcl_extras_path(
     )
 }
 
-/// Path to our standard test output directory.
-fn test_log_directory_path() -> anyhow::Result<PathBuf> {
-    Ok(if let Some(path) = std::env::var_os("TEST_OUTPUT_PATH") {
+/// Path to the per-test test output directory.
+fn test_log_directory_path(test_name: &str) -> anyhow::Result<PathBuf> {
+    let root = if let Some(path) = std::env::var_os("TEST_OUTPUT_PATH") {
         PathBuf::from(path)
     } else {
         get_repo_root()?.join("vmm_test_results")
-    })
+    };
+    // Use a per-test subdirectory, replacing `::` with `__` to avoid issues
+    // with filesystems that don't support `::` in filenames.
+    let path = root.join(test_name.replace("::", "__"));
+    fs_err::create_dir_all(&path)?;
+    Ok(path)
 }
 
 /// Path to the location for OpenHCL crash dump files.

@@ -264,7 +264,9 @@ impl BackingShared {
         Ok(match isolation {
             IsolationType::None | IsolationType::Vbs => {
                 #[allow(irrefutable_let_patterns)]
-                let BackingSharedParams { cvm_state: None } = backing_shared_params
+                let BackingSharedParams {
+                    cvm_state: None, ..
+                } = backing_shared_params
                 else {
                     unreachable!()
                 };
@@ -1677,7 +1679,13 @@ impl<'a> UhProtoPartition<'a> {
             private_vis_pages_pool: late_params.private_vis_pages_pool,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
-            backing_shared: BackingShared::new(isolation, BackingSharedParams { cvm_state })?,
+            backing_shared: BackingShared::new(
+                isolation,
+                BackingSharedParams {
+                    cvm_state,
+                    vp_count: params.topology.vp_count(),
+                },
+            )?,
             #[cfg(guest_arch = "x86_64")]
             device_vector_table: RwLock::new(IrrBitmap::new(Default::default())),
             intercept_debug_exceptions: params.intercept_debug_exceptions,
