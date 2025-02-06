@@ -4868,7 +4868,6 @@ name = "page_pool_alloc"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "hcl",
  "hvdef",
  "inspect",
  "memory_range",
