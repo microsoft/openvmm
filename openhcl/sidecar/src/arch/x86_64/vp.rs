@@ -518,7 +518,7 @@ fn translate_gva(command_page: &mut CommandPage) {
         let output = unsafe { &*addr_space::hypercall_output() };
         FromBytes::read_from_prefix(output).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     } else {
-        FromZeroes::new_zeroed()
+        FromZeros::new_zeroed()
     };
 
     TranslateGvaResponse {
