@@ -10,10 +10,10 @@
 )]
 
 use vmbus_core::protocol::UserDefinedData;
-use windows_sys::core::GUID;
+use windows::core::GUID;
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct VMBUS_CHANNEL_OFFER {
     pub InterfaceType: GUID,
     pub InterfaceInstance: GUID,

@@ -54,6 +54,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Once;
 use std::time::Duration;
 use widestring::U16CString;
+use widestring::Utf16Str;
 use winapi::shared::ntdef;
 use winapi::shared::ntdef::NTSTATUS;
 use winapi::shared::ntstatus;
@@ -628,6 +629,22 @@ impl AsUnicodeStringRef for UnicodeString {
 impl AsUnicodeStringRef for UnicodeStringRef<'_> {
     fn as_unicode_string_ref(&self) -> &UnicodeStringRef<'_> {
         self
+    }
+}
+
+impl AsRef<windows::Win32::Foundation::UNICODE_STRING> for UnicodeStringRef<'_> {
+    fn as_ref(&self) -> &windows::Win32::Foundation::UNICODE_STRING {
+        // SAFETY: These are different definitions of the same type, so the memory layout is the
+        // same.
+        unsafe { std::mem::transmute(&self.0) }
+    }
+}
+
+impl<'a> TryFrom<&'a Utf16Str> for UnicodeStringRef<'a> {
+    type Error = StringTooLong;
+
+    fn try_from(value: &'a Utf16Str) -> std::result::Result<Self, Self::Error> {
+        UnicodeStringRef::new(value.as_slice()).ok_or(StringTooLong)
     }
 }
 

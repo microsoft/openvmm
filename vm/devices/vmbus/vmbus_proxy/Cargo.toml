@@ -18,7 +18,7 @@ pal_async.workspace = true
 futures.workspace = true
 tracing.workspace = true
 widestring.workspace = true
-windows-sys = { workspace = true, features = [
+windows = { workspace = true, features = [
     "Wdk_Foundation",
     "Wdk_Storage_FileSystem",
     "Win32_Storage_FileSystem",

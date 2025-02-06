@@ -42,7 +42,9 @@ use vmbus_proxy::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use vmbus_proxy::ProxyAction;
 use vmbus_proxy::VmbusProxy;
 use vmcore::interrupt::Interrupt;
-use winapi::shared::winerror::ERROR_CANCELLED;
+use windows::core::HRESULT;
+use windows::Win32::Foundation::ERROR_CANCELLED;
+use zerocopy::AsBytes;
 use zerocopy::IntoBytes;
 
 pub struct ProxyIntegration {
@@ -304,6 +306,7 @@ impl ProxyTask {
         send: mesh::Sender<TaggedStream<u64, mesh::Receiver<ChannelRequest>>>,
     ) {
         while let Ok(action) = self.proxy.next_action().await {
+            tracing::debug!(action = ?action, "action");
             match action {
                 ProxyAction::Offer {
                     id,
@@ -374,7 +377,7 @@ impl ProxyTask {
                         tracing::warn!(proxy_id, "closed while some gpadls are still registered");
                         for gpadl_id in gpadls {
                             if let Err(e) = self.proxy.delete_gpadl(proxy_id, gpadl_id.0).await {
-                                if e.raw_os_error() == Some(ERROR_CANCELLED as i32) {
+                                if e.code() == HRESULT::from(ERROR_CANCELLED) {
                                     // No further IOs will succeed if one was cancelled. This can
                                     // happen here if we're in the process of shutting down.
                                     tracing::debug!("gpadl delete cancelled");

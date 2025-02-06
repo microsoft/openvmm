@@ -10,6 +10,7 @@ use futures::poll;
 use guestmem::GuestMemory;
 use mesh::MeshPayload;
 use pal::windows::chk_status;
+use pal::windows::UnicodeStringRef;
 use pal_async::driver::Driver;
 use pal_async::windows::overlapped::IoBuf;
 use pal_async::windows::overlapped::IoBufMut;
@@ -25,14 +26,13 @@ use vmbusioctl::VMBUS_CHANNEL_OFFER;
 use vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use widestring::utf16str;
 use widestring::Utf16Str;
-use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
-use windows_sys::Wdk::Storage::FileSystem::NtOpenFile;
-use windows_sys::Win32::Foundation::ERROR_CANCELLED;
-use windows_sys::Win32::Foundation::GENERIC_ALL;
-use windows_sys::Win32::Foundation::HANDLE;
-use windows_sys::Win32::Foundation::UNICODE_STRING;
-use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
-use windows_sys::Win32::System::IO::DeviceIoControl;
+use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use windows::Wdk::Storage::FileSystem::NtOpenFile;
+use windows::Win32::Foundation::ERROR_CANCELLED;
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+use windows::Win32::Storage::FileSystem::SYNCHRONIZE;
+use windows::Win32::System::IO::DeviceIoControl;
 use zerocopy::AsBytes;
 use zerocopy::IntoBytes;
 
@@ -40,7 +40,8 @@ pub mod vmbusioctl;
 
 mod proxyioctl;
 
-pub type Error = std::io::Error;
+pub type Error = windows::core::Error;
+pub type Result<T> = windows::core::Result<T>;
 
 /// A VM handle the VMBus proxy driver.
 #[derive(Debug, MeshPayload)]
@@ -48,18 +49,13 @@ pub struct ProxyHandle(std::fs::File);
 
 impl ProxyHandle {
     /// Creates a new VM handle.
-    pub fn new() -> Result<Self, Error> {
+    pub fn new() -> Result<Self> {
         const DEVICE_PATH: &Utf16Str = utf16str!("\\Device\\VmbusProxy");
-        const BYTE_LEN: u16 = (DEVICE_PATH.len() * 2) as u16;
-        let pathu = UNICODE_STRING {
-            Length: BYTE_LEN,
-            MaximumLength: BYTE_LEN,
-            Buffer: DEVICE_PATH.as_ptr().cast_mut(),
-        };
+        let pathu = UnicodeStringRef::try_from(DEVICE_PATH).expect("string fits");
         let oa = OBJECT_ATTRIBUTES {
             Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-            RootDirectory: 0,
-            ObjectName: &pathu,
+            RootDirectory: HANDLE::default(),
+            ObjectName: pathu.as_ref(),
             Attributes: 0,
             SecurityDescriptor: null_mut(),
             SecurityQualityOfService: null_mut(),
@@ -67,16 +63,17 @@ impl ProxyHandle {
         // SAFETY: calling API according to docs.
         unsafe {
             let mut iosb = zeroed();
-            let mut handle = 0;
-            chk_status(NtOpenFile(
+            let mut handle = HANDLE::default();
+            NtOpenFile(
                 &mut handle,
-                GENERIC_ALL | SYNCHRONIZE,
+                (FILE_ALL_ACCESS | SYNCHRONIZE).0,
                 &oa,
                 &mut iosb,
                 0,
                 0,
-            ))?;
-            Ok(Self(std::fs::File::from_raw_handle(handle as RawHandle)))
+            )
+            .ok()?;
+            Ok(Self(std::fs::File::from_raw_handle(handle.0 as RawHandle)))
         }
     }
 }
@@ -95,6 +92,7 @@ pub struct VmbusProxy {
     cancelled: AtomicBool,
 }
 
+#[derive(Debug)]
 pub enum ProxyAction {
     Offer {
         id: u64,
@@ -131,7 +129,7 @@ unsafe impl<T> IoBufMut for StaticIoctlBuffer<T> {
 }
 
 impl VmbusProxy {
-    pub fn new(driver: &dyn Driver, handle: ProxyHandle) -> Result<Self, std::io::Error> {
+    pub fn new(driver: &dyn Driver, handle: ProxyHandle) -> Result<Self> {
         Ok(Self {
             file: OverlappedFile::new(driver, handle.0)?,
             guest_memory: None,
@@ -148,7 +146,7 @@ impl VmbusProxy {
         self.file.get().as_handle()
     }
 
-    async unsafe fn ioctl<In, Out>(&self, code: u32, input: In, output: Out) -> std::io::Result<Out>
+    async unsafe fn ioctl<In, Out>(&self, code: u32, input: In, output: Out) -> Result<Out>
     where
         In: IoBufMut,
         Out: IoBufMut,
@@ -156,7 +154,7 @@ impl VmbusProxy {
         // Don't issue new IO if the cancel() method has been called.
         if self.cancelled.load(Ordering::Acquire) {
             tracing::trace!("ioctl cancelled before issued");
-            return Err(std::io::Error::from_raw_os_error(ERROR_CANCELLED as i32));
+            return Err(Error::from_hresult(ERROR_CANCELLED.into()));
         }
 
         // SAFETY: guaranteed by caller.
@@ -182,7 +180,7 @@ impl VmbusProxy {
         Ok(output)
     }
 
-    pub async fn set_memory(&mut self, guest_memory: &GuestMemory) -> Result<(), std::io::Error> {
+    pub async fn set_memory(&mut self, guest_memory: &GuestMemory) -> Result<()> {
         assert!(self.guest_memory.is_none());
         let (base, len) = guest_memory.full_mapping().ok_or_else(|| {
             std::io::Error::new(
@@ -204,7 +202,7 @@ impl VmbusProxy {
         }
     }
 
-    pub async fn next_action(&self) -> Result<ProxyAction, Error> {
+    pub async fn next_action(&self) -> Result<ProxyAction> {
         let output = unsafe {
             self.ioctl(
                 proxyioctl::IOCTL_VMBUS_PROXY_NEXT_ACTION,
@@ -248,7 +246,7 @@ impl VmbusProxy {
         id: u64,
         params: &VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS,
         event: &Event,
-    ) -> Result<(), Error> {
+    ) -> Result<()> {
         let output = unsafe {
             let handle = event.as_handle().as_raw_handle() as usize as u64;
             self.ioctl(
@@ -267,7 +265,7 @@ impl VmbusProxy {
         Ok(())
     }
 
-    pub async fn close(&self, id: u64) -> Result<(), Error> {
+    pub async fn close(&self, id: u64) -> Result<()> {
         unsafe {
             self.ioctl(
                 proxyioctl::IOCTL_VMBUS_PROXY_CLOSE_CHANNEL,
@@ -278,7 +276,7 @@ impl VmbusProxy {
         }
     }
 
-    pub async fn release(&self, id: u64) -> Result<(), Error> {
+    pub async fn release(&self, id: u64) -> Result<()> {
         unsafe {
             self.ioctl(
                 proxyioctl::IOCTL_VMBUS_PROXY_RELEASE_CHANNEL,
@@ -295,7 +293,7 @@ impl VmbusProxy {
         gpadl_id: u32,
         range_count: u32,
         range_buf: &[u8],
-    ) -> Result<(), Error> {
+    ) -> Result<()> {
         let mut buf = Vec::new();
         let header = proxyioctl::VMBUS_PROXY_CREATE_GPADL_INPUT {
             ChannelId: id,
@@ -312,7 +310,7 @@ impl VmbusProxy {
         }
     }
 
-    pub async fn delete_gpadl(&self, id: u64, gpadl_id: u32) -> Result<(), Error> {
+    pub async fn delete_gpadl(&self, id: u64, gpadl_id: u32) -> Result<()> {
         unsafe {
             self.ioctl(
                 proxyioctl::IOCTL_VMBUS_PROXY_DELETE_GPADL,
@@ -326,25 +324,24 @@ impl VmbusProxy {
         }
     }
 
-    pub fn run_channel(&self, id: u64) -> Result<(), Error> {
+    pub fn run_channel(&self, id: u64) -> Result<()> {
         unsafe {
             // This is a synchronous operation, so don't use the async IO infrastructure.
             let input = proxyioctl::VMBUS_PROXY_RUN_CHANNEL_INPUT { ChannelId: id };
             let mut bytes = 0;
-            if DeviceIoControl(
-                self.file.get().as_raw_handle() as HANDLE,
+            DeviceIoControl(
+                HANDLE(self.file.get().as_raw_handle() as isize),
                 proxyioctl::IOCTL_VMBUS_PROXY_RUN_CHANNEL,
-                std::ptr::from_ref::<proxyioctl::VMBUS_PROXY_RUN_CHANNEL_INPUT>(&input)
-                    as *mut c_void,
+                Some(
+                    std::ptr::from_ref::<proxyioctl::VMBUS_PROXY_RUN_CHANNEL_INPUT>(&input)
+                        as *mut c_void,
+                ),
                 size_of_val(&input) as u32,
-                null_mut(),
+                None,
                 0,
-                &mut bytes,
-                null_mut(),
-            ) == 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
+                Some(&mut bytes),
+                None,
+            )?;
         };
         Ok(())
     }

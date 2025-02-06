@@ -8,10 +8,10 @@
 
 use super::vmbusioctl::VMBUS_CHANNEL_OFFER;
 use super::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
-use windows_sys::Win32::System::Ioctl::FILE_DEVICE_UNKNOWN;
-use windows_sys::Win32::System::Ioctl::FILE_READ_ACCESS;
-use windows_sys::Win32::System::Ioctl::FILE_WRITE_ACCESS;
-use windows_sys::Win32::System::Ioctl::METHOD_BUFFERED;
+use windows::Win32::System::Ioctl::FILE_DEVICE_UNKNOWN;
+use windows::Win32::System::Ioctl::FILE_READ_ACCESS;
+use windows::Win32::System::Ioctl::FILE_WRITE_ACCESS;
+use windows::Win32::System::Ioctl::METHOD_BUFFERED;
 use zerocopy::AsBytes;
 
 const fn CTL_CODE(DeviceType: u32, Function: u32, Method: u32, Access: u32) -> u32 {

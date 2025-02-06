@@ -280,6 +280,28 @@ mod windows {
             }
         }
     }
+
+    impl From<windows::core::GUID> for Guid {
+        fn from(guid: windows::core::GUID) -> Self {
+            Self {
+                data1: guid.data1,
+                data2: guid.data2,
+                data3: guid.data3,
+                data4: guid.data4,
+            }
+        }
+    }
+
+    impl From<Guid> for windows::core::GUID {
+        fn from(guid: Guid) -> Self {
+            Self {
+                data1: guid.data1,
+                data2: guid.data2,
+                data3: guid.data3,
+                data4: guid.data4,
+            }
+        }
+    }
 }
 
 #[cfg(test)]
