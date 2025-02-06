@@ -9,7 +9,6 @@
 use futures::poll;
 use guestmem::GuestMemory;
 use mesh::MeshPayload;
-use pal::windows::chk_status;
 use pal::windows::UnicodeStringRef;
 use pal_async::driver::Driver;
 use pal_async::windows::overlapped::IoBuf;
@@ -30,6 +29,7 @@ use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::NtOpenFile;
 use windows::Win32::Foundation::ERROR_CANCELLED;
 use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 use windows::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows::Win32::System::IO::DeviceIoControl;
@@ -261,8 +261,7 @@ impl VmbusProxy {
             .await?
             .0
         };
-        chk_status(output.Status)?;
-        Ok(())
+        NTSTATUS(output.Status).ok()
     }
 
     pub async fn close(&self, id: u64) -> Result<()> {
