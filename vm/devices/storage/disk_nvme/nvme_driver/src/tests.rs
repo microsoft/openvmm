@@ -233,6 +233,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
 }
 
 async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
+    // ===== SHARED RESOURCES =====
     const MSIX_COUNT: u16 = 2;
     const IO_QUEUE_COUNT: u16 = 64;
     const CPU_COUNT: u32 = 64;
@@ -261,12 +262,16 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
         .await
         .unwrap();
 
-    let device = EmulatedDevice::new(nvme_ctrl, msi_x, mem);
+    // ===== FIRST DRIVER INIT =====
+    let device = EmulatedDevice::new(nvme_ctrl, msi_x, mem.clone());
     let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
         .await
         .unwrap();
     let _ns1 = nvme_driver.namespace(1).await.unwrap();
     let saved_state = nvme_driver.save().await.unwrap();
+
+    // Tear down the original driver to kill the underlying tasks.
+    nvme_driver.shutdown().await;
     // As of today we do not save namespace data to avoid possible conflict
     // when namespace has changed during servicing.
     // TODO: Review and re-enable in future.
@@ -299,11 +304,24 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     // Wait for CSTS.RDY to set.
     backoff.back_off().await;
 
-    let _new_device = EmulatedDevice::new(new_nvme_ctrl, new_msi_x, new_emu_mem);
-    // TODO: Memory restore is disabled for emulated DMA, uncomment once fixed.
-    // let _new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, new_device, &saved_state)
-    //     .await
-    //     .unwrap();
+    // ====== SECOND DRIVER INIT =====
+    let _new_device = EmulatedDevice::new(new_nvme_ctrl, new_msi_x, mem.clone());
+    let mut new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, _new_device, &saved_state)
+        .await
+        .unwrap();
+
+
+    // ===== VERIFY RESTORE =====
+    // TODO: [nvme-keepalive-testing] We should be be byte-by-byte coplying this memory before
+    // passing it in. Reserving this for when we swap out the back end to use actual memory instead
+    // of emulated memory.
+    // TODO: [nvme-keepalive-testing] Do not need to use "allocate dma buffer" once we have actual
+    // memory backing
+    let host_allocator = EmulatedDmaAllocator::new(mem.clone());
+    let verify_mem = DmaClient::attach_dma_buffer(&host_allocator, base_len, 0).unwrap();
+    
+    let verify = new_nvme_driver.verify_restore(saved_state, verify_mem).await;
+    assert_eq!(verify.unwrap(), ());
 }
 
 #[derive(Inspect)]

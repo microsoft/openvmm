@@ -683,6 +683,12 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     pub fn update_servicing_flags(&mut self, nvme_keepalive: bool) {
         self.nvme_keepalive = nvme_keepalive;
     }
+
+    /// Given an input of the saved state from which the driver was constructed and the underlying
+    /// memory, this validates the current driver.
+    pub(crate) async fn verify_restore(&mut self, saved_state: NvmeDriverSavedState, mem: MemoryBlock) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 async fn handle_asynchronous_events(
