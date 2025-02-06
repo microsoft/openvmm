@@ -288,7 +288,7 @@ struct PagePoolInner {
     /// unique.
     device_ids: Vec<DeviceId>,
     /// The mapper used to create mappings for allocations.
-    mapper: Box<dyn Mapper>, // todo inspect?
+    mapper: Box<dyn Mapper>,
 }
 
 // Manually implement inspect so device_ids can be rendered as strings, not
