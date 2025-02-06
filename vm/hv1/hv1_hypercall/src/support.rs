@@ -111,18 +111,6 @@ pub trait AsHandler<H> {
     fn as_handler(&mut self) -> &mut H;
 }
 
-impl<H> AsHandler<H> for H {
-    fn as_handler(&mut self) -> &mut H {
-        self
-    }
-}
-
-impl<H> AsHandler<H> for &mut H {
-    fn as_handler(&mut self) -> &mut H {
-        self
-    }
-}
-
 impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
     /// Creates a new dispatcher.
     fn new(guest_memory: &'a GuestMemory, mut handler: T) -> Self {
