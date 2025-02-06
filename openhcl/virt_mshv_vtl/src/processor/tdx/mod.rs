@@ -79,7 +79,6 @@ use x86defs::tdx::TdVmCallR10Result;
 use x86defs::tdx::TdxGp;
 use x86defs::tdx::TdxInstructionInfo;
 use x86defs::tdx::TdxL2Ctls;
-use x86defs::tdx::TdxVmFlags;
 use x86defs::tdx::TdxVpEnterRaxResult;
 use x86defs::vmx::ApicPage;
 use x86defs::vmx::ApicRegister;
@@ -727,42 +726,34 @@ impl BackingPrivate for TdxBacked {
         }
 
         Ok(Self {
-            vtls: VtlArray::from_fn(|vtl| TdxVtl {
-                efer: regs.efer,
-                cr0: VirtualRegister::new(
-                    ShadowedRegister::Cr0,
-                    vtl.try_into().unwrap(),
-                    regs.cr0,
-                    None,
-                ),
-                cr4: VirtualRegister::new(
-                    ShadowedRegister::Cr4,
-                    vtl.try_into().unwrap(),
-                    regs.cr4,
-                    Some(allowed_cr4_bits),
-                ),
-                tpr_threshold: 0,
-                processor_controls: params
-                    .runner
-                    .read_vmcs32(
-                        vtl.try_into().unwrap(),
-                        VmcsField::VMX_VMCS_PROCESSOR_CONTROLS,
-                    )
-                    .into(),
-                secondary_processor_controls: params
-                    .runner
-                    .read_vmcs32(
-                        vtl.try_into().unwrap(),
-                        VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS,
-                    )
-                    .into(),
-                interruption_information: Default::default(),
-                exception_error_code: 0,
-                interruption_set: false,
-                flush_state: TdxFlushState::new(),
-                private_regs: TdxPrivateRegs::new(regs.rflags, regs.rip),
-                enter_stats: Default::default(),
-                exit_stats: Default::default(),
+            vtls: VtlArray::from_fn(|vtl| {
+                let vtl: GuestVtl = vtl.try_into().unwrap();
+                TdxVtl {
+                    efer: regs.efer,
+                    cr0: VirtualRegister::new(ShadowedRegister::Cr0, vtl, regs.cr0, None),
+                    cr4: VirtualRegister::new(
+                        ShadowedRegister::Cr4,
+                        vtl,
+                        regs.cr4,
+                        Some(allowed_cr4_bits),
+                    ),
+                    tpr_threshold: 0,
+                    processor_controls: params
+                        .runner
+                        .read_vmcs32(vtl, VmcsField::VMX_VMCS_PROCESSOR_CONTROLS)
+                        .into(),
+                    secondary_processor_controls: params
+                        .runner
+                        .read_vmcs32(vtl, VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS)
+                        .into(),
+                    interruption_information: Default::default(),
+                    exception_error_code: 0,
+                    interruption_set: false,
+                    flush_state: TdxFlushState::new(),
+                    private_regs: TdxPrivateRegs::new(regs.rflags, regs.rip, vtl),
+                    enter_stats: Default::default(),
+                    exit_stats: Default::default(),
+                }
             }),
             direct_overlays_pfns: overlays.try_into().unwrap(),
             direct_overlay_pfns_handle: pfns_handle,
@@ -1312,10 +1303,6 @@ impl UhProcessor<'_, TdxBacked> {
         *self.runner.offload_flags_mut() = offload_flags;
 
         self.runner
-            .tdx_vp_entry_flags_mut()
-            .set_vm_index(next_vtl as u8 + 1);
-
-        self.runner
             .write_private_regs(&self.backing.vtls[next_vtl].private_regs);
 
         let has_intercept = self
@@ -1329,9 +1316,13 @@ impl UhProcessor<'_, TdxBacked> {
         self.shared.active_vtl[self.vp_index().index() as usize].store(2, Ordering::Relaxed);
 
         let entered_from_vtl = next_vtl;
-        *self.runner.tdx_vp_entry_flags_mut() = TdxVmFlags::new();
         self.runner
             .read_private_regs(&mut self.backing.vtls[entered_from_vtl].private_regs);
+        // TODO: Remove this line once the kernel does it for us
+        self.backing.vtls[entered_from_vtl]
+            .private_regs
+            .vp_entry_flags
+            .set_invd_translations(0);
 
         // Kernel offload may have set or cleared the halt/idle states
         if offload_enabled && kernel_known_state {
