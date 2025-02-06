@@ -11,6 +11,7 @@ use crate::disk_image::build_agent_image;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::Firmware;
 use crate::IsolationType;
+use crate::PetriTestParams;
 use crate::PetriVm;
 use crate::PetriVmConfig;
 use anyhow::Context;
@@ -47,8 +48,8 @@ pub struct PetriVmConfigHyperV {
     secure_boot_template: Option<powershell::HyperVSecureBootTemplate>,
     openhcl_igvm: Option<PathBuf>,
 
-    // Petri test dependency resolver
-    resolver: TestArtifacts,
+    // Petri test dependency artifacts
+    artifacts: TestArtifacts,
     driver: DefaultDriver,
 
     arch: MachineArch,
@@ -107,12 +108,11 @@ impl PetriVm for PetriVmHyperV {
 impl PetriVmConfigHyperV {
     /// Create a new Hyper-V petri VM config
     pub fn new(
+        params: &PetriTestParams<'_>,
         firmware: Firmware,
         arch: MachineArch,
-        resolver: TestArtifacts,
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
-        let test_name = crate::get_test_name()?;
         let temp_dir = tempfile::tempdir()?;
 
         let (guest_state_isolation_type, generation, guest_artifact, igvm_artifact) = match &firmware {
@@ -162,15 +162,15 @@ impl PetriVmConfigHyperV {
             // TODO: OpenHCL PCAT
         };
 
-        let reference_disk_path = resolver.resolve(guest_artifact);
-        let openhcl_igvm = igvm_artifact.map(|a| resolver.resolve(a));
+        let reference_disk_path = params.artifacts.get(guest_artifact);
+        let openhcl_igvm = igvm_artifact.map(|a| params.artifacts.get(a).to_owned());
 
         Ok(PetriVmConfigHyperV {
-            name: test_name,
+            name: params.test_name.to_owned(),
             generation,
             guest_state_isolation_type,
             memory: 0x1_0000_0000,
-            vhd_paths: vec![vec![reference_disk_path]],
+            vhd_paths: vec![vec![reference_disk_path.to_owned()]],
             secure_boot_template: matches!(generation, powershell::HyperVGeneration::Two)
                 .then_some(match firmware.os_flavor() {
                     OsFlavor::Windows => powershell::HyperVSecureBootTemplate::MicrosoftWindows,
@@ -182,7 +182,7 @@ impl PetriVmConfigHyperV {
                     }
                 }),
             openhcl_igvm,
-            resolver,
+            artifacts: params.artifacts.clone(),
             driver: driver.clone(),
             arch,
             os_flavor: firmware.os_flavor(),
@@ -253,7 +253,7 @@ impl PetriVmConfigHyperV {
             // Construct the agent disk.
             let agent_disk_path = self.temp_dir.path().join("cidata.vhd");
             {
-                let agent_disk = build_agent_image(self.arch, self.os_flavor, &self.resolver)
+                let agent_disk = build_agent_image(self.arch, self.os_flavor, &self.artifacts)
                     .context("failed to build agent image")?;
                 disk_vhd1::Vhd1Disk::make_fixed(agent_disk.as_file())
                     .context("failed to make vhd for agent image")?;

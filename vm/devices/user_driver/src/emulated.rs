@@ -11,6 +11,7 @@ use crate::memory::MemoryBlock;
 use crate::memory::PAGE_SIZE;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
+use crate::DmaClient;
 use crate::HostDmaAllocator;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
@@ -282,6 +283,18 @@ impl HostDmaAllocator for EmulatedDmaAllocator {
     }
 }
 
+impl DmaClient for EmulatedDmaAllocator {
+    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
+        let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);
+        memory.as_slice().atomic_fill(0);
+        Ok(memory)
+    }
+
+    fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        anyhow::bail!("restore is not supported for emulated DMA")
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[cfg(feature = "vfio")]
 impl crate::vfio::VfioDmaBuffer for EmulatedDmaAllocator {
@@ -315,11 +328,10 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
         })
     }
 
-    /// Returns an object that can allocate host memory to be shared with the device.
-    fn host_allocator(&self) -> Self::DmaAllocator {
-        EmulatedDmaAllocator {
+    fn dma_client(&self) -> Arc<dyn DmaClient> {
+        Arc::new(EmulatedDmaAllocator {
             shared_mem: self.shared_mem.clone(),
-        }
+        }) as Arc<dyn DmaClient>
     }
 
     fn max_interrupt_count(&self) -> u32 {

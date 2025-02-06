@@ -25,6 +25,7 @@ use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
+use user_driver::DmaClient;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::AsBytes;
@@ -358,8 +359,8 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestE
         })
     }
 
-    fn host_allocator(&self) -> Self::DmaAllocator {
-        self.device.host_allocator()
+    fn dma_client(&self) -> Arc<dyn DmaClient> {
+        self.device.dma_client()
     }
 
     fn max_interrupt_count(&self) -> u32 {

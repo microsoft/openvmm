@@ -14,6 +14,7 @@ petri_artifacts_common.workspace = true
 petri_artifacts_core.workspace = true
 
 anyhow.workspace = true
+fs-err.workspace = true
 tempfile.workspace = true
 
 [lints]

@@ -78,6 +78,7 @@ enum Commands {
     Fuzz(tasks::Fuzz),
     GuestTest(tasks::GuestTest),
     InstallGitHooks(tasks::InstallGitHooks),
+    VerifySize(tasks::VerifySize),
 }
 
 fn main() {
@@ -140,5 +141,6 @@ fn try_main() -> anyhow::Result<()> {
         Commands::Fuzz(task) => task.run(ctx),
         Commands::GuestTest(task) => task.run(ctx),
         Commands::InstallGitHooks(task) => task.run(ctx),
+        Commands::VerifySize(task) => task.run(ctx),
     }
 }

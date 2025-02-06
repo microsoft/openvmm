@@ -443,11 +443,13 @@ igvm_defs = { version = "0.3.3", default-features = false, features = [
 ] }
 image = { version = "0.24", default-features = false }
 io-uring = "0.6"
+jiff = "0.1"
 kvm-bindings = "0.7"
 # Use of these specific REPO will go away when changes are taken upstream.
 landlock = "0.3.1"
 libc = "0.2"
 libfuzzer-sys = "0.4"
+libtest-mimic = "0.8"
 linkme = "0.3.9"
 log = "0.4"
 macaddr = "1.0"
