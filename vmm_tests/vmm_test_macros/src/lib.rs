@@ -728,8 +728,8 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
     let original_args =
         match item.sig.inputs.len() {
             1 => quote! {config},
-            2 => quote! {config, artifacts},
-            3 => quote! {config, artifacts, driver },
+            2 => quote! {config, params.artifacts},
+            3 => quote! {config, params.artifacts, driver },
             _ => return Err(Error::new(
                 item.sig.inputs.span(),
                 "expected 1, 2, or 3 arguments (the PetriVmConfig, ArtifactResolver, and Driver)",
