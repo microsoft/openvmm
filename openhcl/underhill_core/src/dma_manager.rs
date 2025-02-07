@@ -9,20 +9,20 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 use user_driver::memory::MemoryBlock;
-use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DmaClient;
 
 pub struct GlobalDmaManager {
     inner: Arc<Mutex<GlobalDmaManagerInner>>,
 }
 
 pub struct GlobalDmaManagerInner {
-    dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
+    dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn DmaClient>> + Send>,
 }
 
 impl GlobalDmaManager {
     /// Creates a new `GlobalDmaManager` with the given DMA buffer spawner.
     pub fn new(
-        dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
+        dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn DmaClient>> + Send>,
     ) -> Self {
         let inner = GlobalDmaManagerInner { dma_buffer_spawner };
 
@@ -63,10 +63,10 @@ impl GlobalDmaManager {
 pub struct DmaClientImpl {
     /// This is added to support map/pin functionality in the future.
     _dma_manager_inner: Arc<Mutex<GlobalDmaManagerInner>>,
-    dma_buffer_allocator: Option<Arc<dyn VfioDmaBuffer>>,
+    dma_buffer_allocator: Option<Arc<dyn DmaClient>>,
 }
 
-impl user_driver::DmaClient for DmaClientImpl {
+impl DmaClient for DmaClientImpl {
     fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock> {
         if self.dma_buffer_allocator.is_none() {
             return Err(anyhow::anyhow!("DMA buffer allocator is not set"));
@@ -74,12 +74,12 @@ impl user_driver::DmaClient for DmaClientImpl {
 
         let allocator = self.dma_buffer_allocator.as_ref().unwrap();
 
-        allocator.create_dma_buffer(total_size)
+        allocator.allocate_dma_buffer(total_size)
     }
 
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock> {
         let allocator = self.dma_buffer_allocator.as_ref().unwrap();
-        allocator.restore_dma_buffer(len, base_pfn)
+        allocator.attach_dma_buffer(len, base_pfn)
     }
 }
 

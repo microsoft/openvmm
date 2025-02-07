@@ -124,7 +124,6 @@ use underhill_attestation::AttestationType;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::lockmem::LockedMemorySpawner;
-use user_driver::vfio::VfioDmaBuffer;
 use user_driver::DmaClient;
 use virt::state::HvRegisterState;
 use virt::Partition;
