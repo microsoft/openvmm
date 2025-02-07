@@ -52,6 +52,8 @@ use std::future;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::ready;
+use std::task::Poll;
 use unicycle::FuturesUnordered;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
@@ -1792,15 +1794,23 @@ pub(crate) struct MessageSender {
 }
 
 impl MessagePort for MessageSender {
-    fn handle_message(&self, data: &[u8], trusted: bool) -> bool {
-        self.send
-            .clone()
-            .try_send(SynicMessage {
-                data: data.to_vec(),
-                multiclient: self.multiclient,
-                trusted,
-            })
-            .is_ok()
+    fn poll_handle_message(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        msg: &[u8],
+        trusted: bool,
+    ) -> Poll<bool> {
+        let mut send = self.send.clone();
+        let result = ready!(send.poll_ready(cx)).is_ok()
+            && send
+                .start_send(SynicMessage {
+                    data: msg.to_vec(),
+                    multiclient: self.multiclient,
+                    trusted,
+                })
+                .is_ok();
+
+        Poll::Ready(result)
     }
 }
 
@@ -1822,6 +1832,7 @@ impl ParentBus for VmbusServerControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::task::noop_waker_ref;
     use pal_async::async_test;
     use parking_lot::Mutex;
     use protocol::UserDefinedData;
@@ -1864,12 +1875,19 @@ mod tests {
         }
 
         fn send_message_core(&self, msg: OutgoingMessage, trusted: bool) {
-            self.inner
-                .lock()
-                .message_port
-                .as_ref()
-                .unwrap()
-                .handle_message(msg.data(), trusted);
+            assert_eq!(
+                self.inner
+                    .lock()
+                    .message_port
+                    .as_ref()
+                    .unwrap()
+                    .poll_handle_message(
+                        &mut std::task::Context::from_waker(noop_waker_ref()),
+                        msg.data(),
+                        trusted,
+                    ),
+                Poll::Ready(true)
+            );
         }
     }
 
