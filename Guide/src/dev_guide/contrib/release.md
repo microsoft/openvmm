@@ -33,7 +33,7 @@ Please reach out to the maintainers before staging that PR if you have any doubt
 
 ## Existing Release Branches
 
-| Relase | Phase | Notes |
+| Release | Phase | Notes |
 |--------|-------|-------|
 | release/2411 | Ask Mode | |
  
