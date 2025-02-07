@@ -717,7 +717,7 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
 
         let test = quote! {
             #cfg_conditions
-            Box::new(::petri::SimpleTest::new(
+            ::petri::SimpleTest::new(
                 #name,
                 |mut resolver| {
                     let firmware = #firmware;
@@ -731,7 +731,7 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
                         #original_name(#original_args).await
                     })
                 }
-            )),
+            ).into(),
         };
 
         tests.extend(test);

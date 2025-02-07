@@ -5,11 +5,11 @@
 
 #[doc(hidden)]
 pub mod test_macro_support {
-    use super::DynRunTest;
+    use super::TestCase;
     pub use linkme;
 
     #[linkme::distributed_slice]
-    pub static TESTS: [fn() -> (&'static str, Vec<Box<dyn DynRunTest>>)] = [..];
+    pub static TESTS: [fn() -> (&'static str, Vec<TestCase>)];
 }
 
 use crate::tracing::try_init_tracing;
@@ -25,15 +25,13 @@ use test_macro_support::TESTS;
 #[macro_export]
 macro_rules! test {
     ($f:ident, $req:expr) => {
-        $crate::multitest!(vec![Box::new($crate::SimpleTest::new(
-            stringify!($f),
-            $req,
-            $f
-        ))]);
+        $crate::multitest!(vec![
+            $crate::SimpleTest::new(stringify!($f), $req, $f).into()
+        ]);
     };
 }
 
-/// Defines a set of tests from a [`Vec<Box<dyn RunTest>>`].
+/// Defines a set of tests from a [`TestCase`].
 #[macro_export]
 macro_rules! multitest {
     ($tests:expr) => {
@@ -43,16 +41,32 @@ macro_rules! multitest {
             #[expect(unsafe_code)]
             #[linkme::distributed_slice($crate::test_macro_support::TESTS)]
             #[linkme(crate = linkme)]
-            static TEST: fn() -> (&'static str, Vec<Box<dyn $crate::DynRunTest>>) =
+            static TEST: fn() -> (&'static str, Vec<$crate::TestCase>) =
                 || (module_path!(), $tests);
         };
     };
 }
 
-/// A single test.
+/// A single test case.
+pub struct TestCase(Box<dyn DynRunTest>);
+
+impl TestCase {
+    /// Creates a new test case from a value that implements [`RunTest`].
+    pub fn new(test: impl 'static + RunTest) -> Self {
+        Self(Box::new(test))
+    }
+}
+
+impl<T: 'static + RunTest> From<T> for TestCase {
+    fn from(test: T) -> Self {
+        Self::new(test)
+    }
+}
+
+/// A single test, with module name.
 struct Test {
     module: &'static str,
-    test: Box<dyn DynRunTest>,
+    test: TestCase,
 }
 
 impl Test {
@@ -68,8 +82,8 @@ impl Test {
     fn name(&self) -> String {
         // Strip the crate name from the module path, for consistency with libtest.
         match self.module.split_once("::") {
-            Some((_crate_name, rest)) => format!("{}::{}", rest, self.test.leaf_name()),
-            None => self.test.leaf_name().to_owned(),
+            Some((_crate_name, rest)) => format!("{}::{}", rest, self.test.0.leaf_name()),
+            None => self.test.0.leaf_name().to_owned(),
         }
     }
 
@@ -77,6 +91,7 @@ impl Test {
     fn requirements(&self) -> TestArtifactRequirements {
         // All tests require the log directory.
         self.test
+            .0
             .requirements()
             .require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY)
     }
@@ -90,7 +105,7 @@ impl Test {
             resolve(&name, self.requirements()).context("failed to resolve artifacts")?;
         let output_dir = artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
         let logger = try_init_tracing(output_dir).context("failed to initialize tracing")?;
-        self.test.run(
+        self.test.0.run(
             PetriTestParams {
                 test_name: &name,
                 logger: &logger,
@@ -130,8 +145,7 @@ pub trait RunTest: Send {
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()>;
 }
 
-#[doc(hidden)]
-pub trait DynRunTest: Send {
+trait DynRunTest: Send {
     fn leaf_name(&self) -> &str;
     fn requirements(&self) -> TestArtifactRequirements;
     fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()>;
