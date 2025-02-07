@@ -35,7 +35,7 @@ fn test_ttrpc_interface(
 
     tracing::info!(socket_path = %socket_path.display(), "launching hvlite with ttrpc");
 
-    let mut child = std::process::Command::new(openvmm.as_ref())
+    let mut child = std::process::Command::new(openvmm)
         .arg("--ttrpc")
         .arg(&socket_path)
         .stdin(Stdio::null())
@@ -85,8 +85,8 @@ fn test_ttrpc_interface(
                             }),
                             boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
                                 vmservice::DirectBoot {
-                                    kernel_path: kernel_path.as_ref().to_string_lossy().to_string(),
-                                    initrd_path: initrd_path.as_ref().to_string_lossy().to_string(),
+                                    kernel_path: kernel_path.get().to_string_lossy().to_string(),
+                                    initrd_path: initrd_path.get().to_string_lossy().to_string(),
                                     kernel_cmdline:
                                         "console=ttyS0 rdinit=/bin/busybox panic=-1 -- poweroff -f"
                                             .to_string(),

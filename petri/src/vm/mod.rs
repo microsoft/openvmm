@@ -14,8 +14,6 @@ use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ResolvedArtifact;
 use petri_artifacts_core::ResolvedOptionalArtifact;
 use pipette_client::PipetteClient;
-use std::path::Path;
-use std::path::PathBuf;
 use vmm_core_defs::HaltReason;
 
 /// Configuration state for a test VM.
@@ -202,7 +200,7 @@ pub enum PcatGuest {
 }
 
 impl PcatGuest {
-    fn artifact(&self) -> &Path {
+    fn artifact(&self) -> &ResolvedArtifact {
         match self {
             PcatGuest::Vhd(disk) => &disk.artifact,
             PcatGuest::Iso(disk) => &disk.artifact,
@@ -223,10 +221,10 @@ pub enum UefiGuest {
 }
 
 impl UefiGuest {
-    fn artifact(&self) -> &Path {
+    fn artifact(&self) -> &ResolvedArtifact {
         match self {
             UefiGuest::Vhd(vhd) => &vhd.artifact,
-            UefiGuest::GuestTestUefi(_a, p) => p.as_ref(),
+            UefiGuest::GuestTestUefi(_a, p) => p,
             UefiGuest::None => unreachable!(),
         }
     }
@@ -260,7 +258,7 @@ pub mod boot_image_type {
 #[derive(Debug)]
 pub struct BootImageConfig<T: boot_image_type::BootImageType> {
     /// Artifact handle corresponding to the boot media.
-    artifact: PathBuf,
+    artifact: ResolvedArtifact,
     /// The OS flavor.
     os_flavor: OsFlavor,
     /// Any quirks needed to boot the guest.
@@ -278,7 +276,7 @@ impl BootImageConfig<boot_image_type::Vhd> {
         A: petri_artifacts_common::tags::IsTestVhd,
     {
         BootImageConfig {
-            artifact: artifact.into(),
+            artifact: artifact.erase(),
             os_flavor: A::OS_FLAVOR,
             quirks: A::quirks(),
             _type: std::marker::PhantomData,
@@ -293,7 +291,7 @@ impl BootImageConfig<boot_image_type::Iso> {
         A: petri_artifacts_common::tags::IsTestIso,
     {
         BootImageConfig {
-            artifact: artifact.into(),
+            artifact: artifact.erase(),
             os_flavor: A::OS_FLAVOR,
             quirks: A::quirks(),
             _type: std::marker::PhantomData,

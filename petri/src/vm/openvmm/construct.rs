@@ -651,8 +651,8 @@ impl PetriVmConfigSetupCore<'_> {
                 // Nothing to do, no guest
             }
             Firmware::Pcat { guest, .. } => {
-                let path = guest.artifact();
-                let inner_disk = open_disk_type(path, true)?;
+                let disk_path = guest.artifact();
+                let inner_disk = open_disk_type(disk_path.as_ref(), true)?;
                 let guest_media = match guest {
                     PcatGuest::Vhd(_) => GuestMedia::Disk {
                         read_only: false,
@@ -706,7 +706,7 @@ impl PetriVmConfigSetupCore<'_> {
                                 disk: LayeredDiskHandle {
                                     layers: vec![
                                         RamDiskLayerHandle { len: None }.into_resource().into(),
-                                        DiskLayerHandle(open_disk_type(disk_path, true)?)
+                                        DiskLayerHandle(open_disk_type(disk_path.as_ref(), true)?)
                                             .into_resource()
                                             .into(),
                                     ],
@@ -738,7 +738,7 @@ impl PetriVmConfigSetupCore<'_> {
                             disk: LayeredDiskHandle {
                                 layers: vec![
                                     RamDiskLayerHandle { len: None }.into_resource().into(),
-                                    DiskLayerHandle(open_disk_type(disk_path, true)?)
+                                    DiskLayerHandle(open_disk_type(disk_path.as_ref(), true)?)
                                         .into_resource()
                                         .into(),
                                 ],

@@ -176,7 +176,7 @@ impl PetriVmConfigHyperV {
             generation,
             guest_state_isolation_type,
             memory: 0x1_0000_0000,
-            vhd_paths: vec![vec![reference_disk_path.to_owned()]],
+            vhd_paths: vec![vec![reference_disk_path.clone().into()]],
             secure_boot_template: matches!(generation, powershell::HyperVGeneration::Two)
                 .then_some(match firmware.os_flavor() {
                     OsFlavor::Windows => powershell::HyperVSecureBootTemplate::MicrosoftWindows,
