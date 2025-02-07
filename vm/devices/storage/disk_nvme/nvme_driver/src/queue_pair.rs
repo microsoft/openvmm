@@ -329,7 +329,10 @@ impl QueuePair {
     /// Input memory block should already be constructed from the offsets.
     #[cfg(test)]
     pub(crate) async fn verify_restore(&self, saved_state: QueuePairSavedState, saved_mem: MemoryBlock) -> anyhow::Result<()> {
-        // TODO: Verify restore for the QueueHandler
+        // Entire memory region is checked below. No need for the the handler to check it again.
+        // Send an RPC request to QueueHandler thread to verify the restore status.
+        self.issuer.send.call(Req::Verify, saved_state.handler_data).await??;
+
         // TODO: Do we need to verify_restore for cancel?
         // TODO: Do we need to verify_restore for issuers?
         // Verify bytes from memory
@@ -624,6 +627,8 @@ enum Req {
     Command(Rpc<spec::Command, spec::Completion>),
     Inspect(inspect::Deferred),
     Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
+    #[cfg(test)]
+    Verify(Rpc<QueueHandlerSavedState, Result<(), anyhow::Error>>),
 }
 
 #[derive(Inspect)]
@@ -709,6 +714,10 @@ impl QueueHandler {
                         // Do not allow any more processing after save completed.
                         break;
                     }
+                    #[cfg(test)]
+                    Req::Verify(verify_state) => {
+                        verify_state.complete(Err(anyhow::Error::msg("not implemented")));
+                    }
                 },
                 Event::Completion(completion) => {
                     assert_eq!(completion.sqid, self.sq.id());
@@ -756,6 +765,12 @@ impl QueueHandler {
             // Admin queue is expected to have pending Async Event requests.
             drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
         })
+    }
+
+    /// Given the QueueHandlerSavedState, it verifies the constructed handler.
+    #[cfg(test)]
+    pub(crate) fn verify_restore(saved_state: QueueHandlerSavedState) -> anyhow::Result<()> {
+        anyhow::bail!("verify_restore not yet implemented for the QueueHandler");
     }
 }
 
