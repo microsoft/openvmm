@@ -138,7 +138,7 @@ pub trait RunTest: Send {
     /// name where the test is defined.
     fn leaf_name(&self) -> &str;
     /// Returns the artifacts required by the test.
-    fn requirements(&self, resolver: &ArtifactResolver<'_>) -> Self::Artifacts;
+    fn resolve(&self, resolver: &ArtifactResolver<'_>) -> Self::Artifacts;
     /// Runs the test, which has been assigned `name`, with the given
     /// `artifacts`.
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()>;
@@ -157,12 +157,12 @@ impl<T: RunTest> DynRunTest for T {
 
     fn requirements(&self) -> TestArtifactRequirements {
         let mut requirements = TestArtifactRequirements::new();
-        self.requirements(&ArtifactResolver::collector(&mut requirements));
+        self.resolve(&ArtifactResolver::collector(&mut requirements));
         requirements
     }
 
     fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()> {
-        let artifacts = self.requirements(&ArtifactResolver::resolver(artifacts));
+        let artifacts = self.resolve(&ArtifactResolver::resolver(artifacts));
         self.run(params, artifacts)
     }
 }
@@ -177,10 +177,10 @@ pub struct PetriTestParams<'a> {
     pub output_dir: &'a Path,
 }
 
-/// A test defined by a fixed set of requirements and a run function.
+/// A test defined by an artifact resolver function and a run function.
 pub struct SimpleTest<A, F> {
     leaf_name: &'static str,
-    requirements: A,
+    resolve: A,
     run: F,
 }
 
@@ -190,12 +190,12 @@ where
     F: 'static + Send + Fn(PetriTestParams<'_>, AR) -> Result<(), E>,
     E: Into<anyhow::Error>,
 {
-    /// Returns a new test with the given `leaf_name`, `requirements`, and `run`
+    /// Returns a new test with the given `leaf_name`, `resolve`, and `run`
     /// functions.
-    pub fn new(leaf_name: &'static str, requirements: A, run: F) -> Self {
+    pub fn new(leaf_name: &'static str, resolve: A, run: F) -> Self {
         SimpleTest {
             leaf_name,
-            requirements,
+            resolve,
             run,
         }
     }
@@ -213,8 +213,8 @@ where
         self.leaf_name
     }
 
-    fn requirements(&self, resolver: &ArtifactResolver<'_>) -> Self::Artifacts {
-        (self.requirements)(resolver)
+    fn resolve(&self, resolver: &ArtifactResolver<'_>) -> Self::Artifacts {
+        (self.resolve)(resolver)
     }
 
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()> {
