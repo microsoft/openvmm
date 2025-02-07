@@ -17,6 +17,7 @@ use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::pipette::cmd;
 use petri::pipette::PipetteClient;
 use petri::OpenHclServicingFlags;
+use petri::ResolvedArtifact;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
@@ -82,8 +83,11 @@ async fn mana_nic_shared_pool(config: PetriVmConfigOpenVmm) -> Result<(), anyhow
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
 /// the MANA emulator), and vmbus relay. Perform servicing and validate that the
 /// nic is still functional.
-#[openvmm_test(openhcl_linux_direct_x64)]
-async fn mana_nic_servicing(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing(
+    config: PetriVmConfigOpenVmm,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
     let (mut vm, agent) = config
         .with_vmbus_redirect()
         .with_nic()
@@ -93,11 +97,8 @@ async fn mana_nic_servicing(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::
 
     validate_mana_nic(&agent).await?;
 
-    vm.restart_openhcl(
-        LATEST_LINUX_DIRECT_TEST_X64,
-        OpenHclServicingFlags::default(),
-    )
-    .await?;
+    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
+        .await?;
 
     validate_mana_nic(&agent).await?;
 

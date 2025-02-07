@@ -16,7 +16,7 @@ use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use petri_artifacts_common::tags::IsOpenhclIgvm;
-use petri_artifacts_core::ArtifactHandle;
+use petri_artifacts_core::ResolvedArtifact;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
 use vm_resource::IntoResource;
@@ -193,11 +193,11 @@ impl PetriVmConfigOpenVmm {
     }
 
     /// Load a custom OpenHCL firmware file.
-    pub fn with_custom_openhcl<A: IsOpenhclIgvm>(mut self, artifact: ArtifactHandle<A>) -> Self {
+    pub fn with_custom_openhcl<A: IsOpenhclIgvm>(mut self, artifact: ResolvedArtifact<A>) -> Self {
         let LoadMode::Igvm { file, .. } = &mut self.config.load_mode else {
             panic!("Custom OpenHCL is only supported for OpenHCL firmware.")
         };
-        *file = File::open(self.resources.artifacts.get(artifact))
+        *file = File::open(artifact)
             .expect("Failed to open custom OpenHCL file")
             .into();
         self

@@ -16,6 +16,7 @@ use std::sync::Arc;
 // exported to support the `declare_artifacts!` macro
 #[doc(hidden)]
 pub use paste;
+use std::marker::PhantomData;
 use std::path::Path;
 
 /// A trait that marks a type as being the type-safe ID for a petri artifact.
@@ -37,12 +38,125 @@ pub trait ArtifactId: 'static {
 /// A type-safe handle to a particular Artifact, as declared using the
 /// [`declare_artifacts!`](crate::declare_artifacts) macro.
 #[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ArtifactHandle<A: ArtifactId>(core::marker::PhantomData<A>);
+pub struct ArtifactHandle<A: ArtifactId>(PhantomData<A>);
 
 impl<A: ArtifactId + std::fmt::Debug> std::fmt::Debug for ArtifactHandle<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Debug::fmt(&self.erase(), f)
     }
+}
+
+/// A resolved artifact path for artifact `A`.
+#[derive(Clone, Debug)]
+pub struct ResolvedArtifact<A = ()>(Option<PathBuf>, PhantomData<A>);
+
+impl<A> ResolvedArtifact<A> {
+    /// Erases the type `A`.
+    pub fn erase(self) -> ResolvedArtifact {
+        ResolvedArtifact(self.0, PhantomData)
+    }
+}
+
+impl<A> From<ResolvedArtifact<A>> for PathBuf {
+    #[track_caller]
+    fn from(ra: ResolvedArtifact<A>) -> PathBuf {
+        ra.0.expect("cannot get path in requirements phase")
+    }
+}
+
+impl<A> AsRef<Path> for ResolvedArtifact<A> {
+    #[track_caller]
+    fn as_ref(&self) -> &Path {
+        self.0
+            .as_ref()
+            .expect("cannot get path in requirements phase")
+    }
+}
+
+/// A resolve artifact path for an optional artifact `A`.
+#[derive(Clone, Debug)]
+pub struct ResolvedOptionalArtifact<A = ()>(OptionalArtifactState, PhantomData<A>);
+
+#[derive(Clone, Debug)]
+enum OptionalArtifactState {
+    Collecting,
+    Missing,
+    Present(PathBuf),
+}
+
+impl<A> ResolvedOptionalArtifact<A> {
+    /// Erases the type `A`.
+    pub fn erase(self) -> ResolvedOptionalArtifact {
+        ResolvedOptionalArtifact(self.0, PhantomData)
+    }
+
+    /// Gets the resolved path of the artifact, if it was found.
+    #[track_caller]
+    pub fn get(&self) -> Option<&Path> {
+        match self.0 {
+            OptionalArtifactState::Collecting => panic!("cannot get path in requirements phase"),
+            OptionalArtifactState::Missing => None,
+            OptionalArtifactState::Present(ref path) => Some(path),
+        }
+    }
+}
+
+/// An artifact resolver, used both to express requirements for artifacts and to
+/// resolve them to paths.
+pub struct ArtifactResolver<'a>(ArtifactResolverInner<'a>);
+
+impl<'a> ArtifactResolver<'a> {
+    /// Returns a resolver to collect requirements; the artifact objects returned by
+    /// [`require`](Self::require) will panic if used.
+    pub fn collect(requirements: &'a mut TestArtifactRequirements) -> Self {
+        ArtifactResolver(ArtifactResolverInner::Collecting(requirements))
+    }
+
+    /// Returns a resolver to resolve artifacts.
+    pub fn resolve(artifacts: &'a TestArtifacts) -> Self {
+        ArtifactResolver(ArtifactResolverInner::Resolving(artifacts))
+    }
+
+    /// Resolve a required artifact.
+    pub fn require<A: ArtifactId>(&mut self, handle: ArtifactHandle<A>) -> ResolvedArtifact<A> {
+        match &mut self.0 {
+            ArtifactResolverInner::Collecting(requirements) => {
+                **requirements = std::mem::replace(*requirements, TestArtifactRequirements::new())
+                    .require(handle.erase());
+                ResolvedArtifact(None, PhantomData)
+            }
+            ArtifactResolverInner::Resolving(artifacts) => {
+                ResolvedArtifact(Some(artifacts.get(handle).to_owned()), PhantomData)
+            }
+        }
+    }
+
+    /// Resolve an optional artifact.
+    pub fn try_require<A: ArtifactId>(
+        &mut self,
+        handle: ArtifactHandle<A>,
+    ) -> ResolvedOptionalArtifact<A> {
+        match &mut self.0 {
+            ArtifactResolverInner::Collecting(requirements) => {
+                **requirements = std::mem::replace(*requirements, TestArtifactRequirements::new())
+                    .try_require(handle.erase());
+                ResolvedOptionalArtifact(OptionalArtifactState::Collecting, PhantomData)
+            }
+            ArtifactResolverInner::Resolving(artifacts) => ResolvedOptionalArtifact(
+                artifacts
+                    .try_get(handle)
+                    .map_or(OptionalArtifactState::Missing, |p| {
+                        OptionalArtifactState::Present(p.to_owned())
+                    }),
+                PhantomData,
+            ),
+        }
+    }
+}
+
+enum ArtifactResolverInner<'a> {
+    Collecting(&'a mut TestArtifactRequirements),
+    Resolving(&'a TestArtifacts),
 }
 
 /// A type-erased handle to a particular Artifact, with no information as to
@@ -84,7 +198,7 @@ impl<A: ArtifactId> ArtifactHandle<A> {
     /// Create a new typed artifact handle. It is unlikely you will need to call
     /// this directly.
     pub const fn new() -> Self {
-        Self(core::marker::PhantomData)
+        Self(PhantomData)
     }
 }
 

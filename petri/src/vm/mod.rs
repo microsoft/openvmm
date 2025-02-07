@@ -11,11 +11,11 @@ use async_trait::async_trait;
 use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
-use petri_artifacts_core::ArtifactHandle;
-use petri_artifacts_core::AsArtifactHandle;
-use petri_artifacts_core::ErasedArtifactHandle;
-use petri_artifacts_vmm_test::artifacts as hvlite_artifacts;
+use petri_artifacts_core::ResolvedArtifact;
+use petri_artifacts_core::ResolvedOptionalArtifact;
 use pipette_client::PipetteClient;
+use std::path::Path;
+use std::path::PathBuf;
 use vmm_core_defs::HaltReason;
 
 /// Configuration state for a test VM.
@@ -59,18 +59,36 @@ pub trait PetriVm: Send {
 #[derive(Debug)]
 pub enum Firmware {
     /// Boot Linux directly, without any firmware.
-    LinuxDirect,
+    LinuxDirect {
+        /// The kernel to boot.
+        kernel: ResolvedArtifact,
+        /// The initrd to use.
+        initrd: ResolvedArtifact,
+    },
     /// Boot Linux directly, without any firmware, with OpenHCL in VTL2.
-    OpenhclLinuxDirect,
+    OpenhclLinuxDirect {
+        /// The kernel to boot.
+        kernel: ResolvedArtifact,
+        /// The initrd to use.
+        initrd: ResolvedArtifact,
+        /// The path to the IGVM file to use.
+        igvm_path: ResolvedArtifact,
+    },
     /// Boot a PCAT-based VM.
     Pcat {
         /// The guest OS the VM will boot into.
         guest: PcatGuest,
+        /// The firmware to use.
+        bios_firmware: ResolvedOptionalArtifact,
+        /// The SVGA firmware to use.
+        svga_firmware: ResolvedOptionalArtifact,
     },
     /// Boot a UEFI-based VM.
     Uefi {
         /// The guest OS the VM will boot into.
         guest: UefiGuest,
+        /// The firmware to use.
+        uefi_firmware: ResolvedArtifact,
     },
     /// Boot a UEFI-based VM with OpenHCL in VTL2.
     OpenhclUefi {
@@ -81,6 +99,8 @@ pub enum Firmware {
         /// Emulate SCSI via NVME to VTL2, with the provided namespace ID on
         /// the controller with `BOOT_NVME_INSTANCE`.
         vtl2_nvme_boot: bool,
+        /// The path to the IGVM file to use.
+        igvm_path: ResolvedArtifact,
     },
 }
 
@@ -122,17 +142,20 @@ impl Firmware {
         match self {
             Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => OsFlavor::Linux,
             Firmware::Uefi {
-                guest: UefiGuest::GuestTestUefi(_) | UefiGuest::None,
+                guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::None,
+                ..
             }
             | Firmware::OpenhclUefi {
-                guest: UefiGuest::GuestTestUefi(_) | UefiGuest::None,
+                guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::None,
                 ..
             } => OsFlavor::Uefi,
             Firmware::Pcat {
                 guest: PcatGuest::Vhd(cfg),
+                ..
             }
             | Firmware::Uefi {
                 guest: UefiGuest::Vhd(cfg),
+                ..
             }
             | Firmware::OpenhclUefi {
                 guest: UefiGuest::Vhd(cfg),
@@ -179,10 +202,10 @@ pub enum PcatGuest {
 }
 
 impl PcatGuest {
-    fn artifact(&self) -> ErasedArtifactHandle {
+    fn artifact(&self) -> &Path {
         match self {
-            PcatGuest::Vhd(disk) => disk.artifact,
-            PcatGuest::Iso(disk) => disk.artifact,
+            PcatGuest::Vhd(disk) => &disk.artifact,
+            PcatGuest::Iso(disk) => &disk.artifact,
         }
     }
 }
@@ -194,20 +217,16 @@ pub enum UefiGuest {
     /// Mount a VHD as the boot drive.
     Vhd(BootImageConfig<boot_image_type::Vhd>),
     /// The UEFI test image produced by our guest-test infrastructure.
-    GuestTestUefi(MachineArch),
+    GuestTestUefi(MachineArch, ResolvedArtifact),
     /// No guest, just the firmware.
     None,
 }
 
 impl UefiGuest {
-    fn artifact(&self) -> ErasedArtifactHandle {
+    fn artifact(&self) -> &Path {
         match self {
-            UefiGuest::Vhd(vhd) => vhd.artifact,
-            UefiGuest::GuestTestUefi(a) => match a {
-                MachineArch::X86_64 => hvlite_artifacts::test_vhd::GUEST_TEST_UEFI_X64.erase(),
-                MachineArch::Aarch64 => hvlite_artifacts::test_vhd::GUEST_TEST_UEFI_AARCH64.erase(),
-            },
-
+            UefiGuest::Vhd(vhd) => &vhd.artifact,
+            UefiGuest::GuestTestUefi(_a, p) => p.as_ref(),
             UefiGuest::None => unreachable!(),
         }
     }
@@ -241,7 +260,7 @@ pub mod boot_image_type {
 #[derive(Debug)]
 pub struct BootImageConfig<T: boot_image_type::BootImageType> {
     /// Artifact handle corresponding to the boot media.
-    artifact: ErasedArtifactHandle,
+    artifact: PathBuf,
     /// The OS flavor.
     os_flavor: OsFlavor,
     /// Any quirks needed to boot the guest.
@@ -254,12 +273,12 @@ pub struct BootImageConfig<T: boot_image_type::BootImageType> {
 
 impl BootImageConfig<boot_image_type::Vhd> {
     /// Create a new BootImageConfig from a VHD artifact handle
-    pub fn from_vhd<A>(artifact: ArtifactHandle<A>) -> Self
+    pub fn from_vhd<A>(artifact: ResolvedArtifact<A>) -> Self
     where
         A: petri_artifacts_common::tags::IsTestVhd,
     {
         BootImageConfig {
-            artifact: artifact.erase(),
+            artifact: artifact.into(),
             os_flavor: A::OS_FLAVOR,
             quirks: A::quirks(),
             _type: std::marker::PhantomData,
@@ -269,12 +288,12 @@ impl BootImageConfig<boot_image_type::Vhd> {
 
 impl BootImageConfig<boot_image_type::Iso> {
     /// Create a new BootImageConfig from an ISO artifact handle
-    pub fn from_iso<A>(artifact: ArtifactHandle<A>) -> Self
+    pub fn from_iso<A>(artifact: ResolvedArtifact<A>) -> Self
     where
         A: petri_artifacts_common::tags::IsTestIso,
     {
         BootImageConfig {
-            artifact: artifact.erase(),
+            artifact: artifact.into(),
             os_flavor: A::OS_FLAVOR,
             quirks: A::quirks(),
             _type: std::marker::PhantomData,

@@ -4,8 +4,8 @@
 //! Integration tests for x86_64 OpenHCL servicing.
 
 use petri::openvmm::PetriVmConfigOpenVmm;
-use petri::ArtifactHandle;
 use petri::OpenHclServicingFlags;
+use petri::ResolvedArtifact;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
@@ -13,7 +13,7 @@ use vmm_test_macros::openvmm_test;
 async fn openhcl_servicing_core(
     config: PetriVmConfigOpenVmm,
     openhcl_cmdline: &str,
-    new_openhcl: ArtifactHandle<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+    new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     flags: OpenHclServicingFlags,
 ) -> anyhow::Result<()> {
     let (mut vm, agent) = config
@@ -40,25 +40,25 @@ async fn openhcl_servicing_core(
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself.
-#[openvmm_test(openhcl_linux_direct_x64)]
-async fn openhcl_servicing(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    openhcl_servicing_core(
-        config,
-        "",
-        LATEST_LINUX_DIRECT_TEST_X64,
-        OpenHclServicingFlags::default(),
-    )
-    .await
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn openhcl_servicing(
+    config: PetriVmConfigOpenVmm,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    openhcl_servicing_core(config, "", igvm_file, OpenHclServicingFlags::default()).await
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with VF keepalive support.
-#[openvmm_test(openhcl_linux_direct_x64)]
-async fn openhcl_servicing_keepalive(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn openhcl_servicing_keepalive(
+    config: PetriVmConfigOpenVmm,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
     openhcl_servicing_core(
         config,
         "OPENHCL_ENABLE_VTL2_GPA_POOL=1024",
-        LATEST_LINUX_DIRECT_TEST_X64,
+        igvm_file,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,
         },

@@ -5,7 +5,6 @@
 
 use super::PetriVmConfigOpenVmm;
 use super::PetriVmOpenVmm;
-use crate::disk_image::build_agent_image;
 use crate::worker::Worker;
 use crate::Firmware;
 use crate::PetriLogFile;
@@ -26,12 +25,11 @@ use pal_async::timer::PolledTimer;
 use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
-use petri_artifacts_core::TestArtifacts;
-use petri_artifacts_vmm_test::artifacts as hvlite_artifacts;
 use pipette_client::PipetteClient;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::io::BufRead;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -73,7 +71,7 @@ impl PetriVmConfigOpenVmm {
 
         let mesh = Mesh::new("petri_mesh".to_string())?;
 
-        let host = Self::openvmm_host(&mesh, &resources.artifacts, openvmm_log_file)
+        let host = Self::openvmm_host(&mesh, openvmm_log_file, resources.openvmm_path.as_ref())
             .await
             .context("failed to create host process")?;
         let (worker, halt_notif) = Worker::launch(&host, config)
@@ -140,12 +138,11 @@ impl PetriVmConfigOpenVmm {
             Guid::from_static_str("766e96f8-2ceb-437e-afe3-a93169e48a7b");
 
         // Construct the agent disk.
-        let agent_disk = build_agent_image(
-            self.arch,
-            self.firmware.os_flavor(),
-            &self.resources.artifacts,
-        )
-        .context("failed to build agent image")?;
+        let agent_disk = self
+            .resources
+            .agent_image
+            .build()
+            .context("failed to build agent image")?;
 
         // Add a SCSI controller to contain the agent disk. Don't reuse an
         // existing controller so that we can avoid interfering with
@@ -197,9 +194,13 @@ impl PetriVmConfigOpenVmm {
             const UH_CIDATA_SCSI_INSTANCE: Guid =
                 Guid::from_static_str("766e96f8-2ceb-437e-afe3-a93169e48a7c");
 
-            let uh_agent_disk =
-                build_agent_image(self.arch, OsFlavor::Linux, &self.resources.artifacts)
-                    .context("failed to build agent image")?;
+            let uh_agent_disk = self
+                .resources
+                .openhcl_agent_image
+                .as_ref()
+                .unwrap()
+                .build()
+                .context("failed to build agent image")?;
 
             self.config.vmbus_devices.push((
                 DeviceVtl::Vtl2,
@@ -363,8 +364,8 @@ impl PetriVmConfigOpenVmm {
 
     async fn openvmm_host(
         mesh: &Mesh,
-        resolver: &TestArtifacts,
         log_file: PetriLogFile,
+        path: &Path,
     ) -> anyhow::Result<WorkerHost> {
         // Copy the child's stderr to this process's, since internally this is
         // wrapped by the test harness.
@@ -389,7 +390,7 @@ impl PetriVmConfigOpenVmm {
         let (host, runner) = mesh_worker::worker_host();
         mesh.launch_host(
             ProcessConfig::new("vmm")
-                .process_name(resolver.get(hvlite_artifacts::OPENVMM_NATIVE))
+                .process_name(path)
                 .stderr(Some(stderr_write)),
             hvlite_defs::entrypoint::MeshHostParams { runner },
         )
