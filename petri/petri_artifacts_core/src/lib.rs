@@ -52,7 +52,7 @@ pub struct ResolvedArtifact<A = ()>(Option<PathBuf>, PhantomData<A>);
 
 impl<A> Clone for ResolvedArtifact<A> {
     fn clone(&self) -> Self {
-        Self(self.0.clone(), self.1.clone())
+        Self(self.0.clone(), self.1)
     }
 }
 
