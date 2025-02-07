@@ -14,7 +14,6 @@ tracelimit.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 open_enum.workspace = true
 sparse_mmap.workspace = true

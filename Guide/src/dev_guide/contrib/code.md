@@ -257,16 +257,18 @@ intrinsic (such as CPUID, or a SIMD instruction), or when implementing a
 
 ...otherwise, use `cfg(guest_arch = ...)`!
 
-## Avoid `Default` when using `zerocopy::FromZeroes`
+## Avoid `Default` when using `zerocopy::FromZeros`
 
 _Checked Automatically:_ **No**
 
 The rule:
 
-- A type can `derive(Default)` **XOR** `derive(FromZeroes)`.
-- A type that is `FromZeroes` can also `impl Default`, but it must be a
+- A type can `derive(Default)` **XOR** `derive(FromZeros)`.
+- A type that is `FromZeros` can also `impl Default`, but it must be a
   conscious, explicit choice, with justification (read: inline comment) as to
   why that particular default value was chosen.
+- N.B. `derive(IntoBytes)` or `derive(FromBytes)` imply `derive(FromZeros)`. That is:
+  this convention applies to those types as well.
 
 The why:
 
@@ -349,7 +351,7 @@ init a "uninitialized" struct in-memory is quite handy...
 In OpenVMM, we don't do this. Instead, we use a separate trait to init all-zero
 structs.
 
-**In OpenVMM, we use `FromZeroes` and `FromZeroes::new_zeroed()` to work with types
+**In OpenVMM, we use `FromZeros` and `FromZeros::new_zeroed()` to work with types
 that have valid all-zero representations, _without_ implying that those types
 also have valid all-zero _default_ values!**
 
@@ -357,7 +359,7 @@ So, for the example above:
 
 ```rust
 #[repr(C)]
-#[derive(zerocopy::FromZeroes)]
+#[derive(zerocopy::FromZeros)]
 struct Handle {
     opaque_handle: u16
 }
@@ -373,7 +375,7 @@ Now, it's impossible for code elsewhere to obtain a `Handle` via
 do so by _manually_ implementing `derive(Default)` ourselves:
 
 ```rust
-// Default + FromZeroes: `default` returns fully initialized handle
+// Default + FromZeros: `default` returns fully initialized handle
 impl Default for Handle {
     fn default() -> Handle {
         let mut handle = Handle::new_zeroed();

@@ -161,7 +161,7 @@ impl PetriVmConfigOpenVmm {
         let LoadMode::Igvm { file, .. } = &mut self.config.load_mode else {
             panic!("Custom OpenHCL is only supported for OpenHCL firmware.")
         };
-        *file = File::open(self.resources.resolver.resolve(artifact))
+        *file = File::open(self.resources.artifacts.get(artifact))
             .expect("Failed to open custom OpenHCL file")
             .into();
         self

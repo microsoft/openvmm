@@ -20,8 +20,8 @@ use scsi_buffers::RequestBuffers;
 use std::sync::Arc;
 use thiserror::Error;
 use vhd1_defs::VhdFooter;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 const DEFAULT_SECTOR_SIZE: u32 = 512;
 
@@ -75,7 +75,7 @@ impl BlobDisk {
             .ok_or(ErrorInner::BlobTooSmall)?;
 
         let mut footer = VhdFooter::new_zeroed();
-        blob.read(footer.as_bytes_mut(), footer_offset)
+        blob.read(footer.as_mut_bytes(), footer_offset)
             .await
             .map_err(ErrorInner::VhdFooter)?;
 

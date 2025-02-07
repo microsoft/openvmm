@@ -25,8 +25,8 @@ use tracing::Id;
 use tracing::Subscriber;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// A JSON layer wrapping a [`TraceWriter`].
 pub struct JsonMeshLayer {
@@ -206,9 +206,9 @@ fn generate_tracing_luid(time: pal_async::timer::Instant, span_id: u64) -> Guid 
 
     let process_id = std::process::id() as u16;
 
-    guid.as_bytes_mut()[..6].copy_from_slice(&time.as_nanos().to_le_bytes()[..6]);
-    guid.as_bytes_mut()[6..8].copy_from_slice(&process_id.to_ne_bytes());
-    guid.as_bytes_mut()[8..].copy_from_slice(&span_id.to_ne_bytes());
+    guid.as_mut_bytes()[..6].copy_from_slice(&time.as_nanos().to_le_bytes()[..6]);
+    guid.as_mut_bytes()[6..8].copy_from_slice(&process_id.to_ne_bytes());
+    guid.as_mut_bytes()[8..].copy_from_slice(&span_id.to_ne_bytes());
 
     guid
 }

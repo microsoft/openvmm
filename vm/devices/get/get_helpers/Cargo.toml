@@ -10,6 +10,5 @@ rust-version.workspace = true
 get_protocol.workspace = true
 guid.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

@@ -83,7 +83,8 @@ impl EventLogServices {
 
         while !event_data.is_empty() {
             let desc = EfiEventDescriptor::read_from_prefix(event_data)
-                .ok_or(EventLogError::ConvertBytes)?;
+                .map_err(|_| EventLogError::ConvertBytes)?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
             let data = event_data
                 .get(desc.header_size as usize..)
@@ -97,7 +98,8 @@ impl EventLogServices {
             match desc.event_id {
                 uefi_specs::hyperv::boot_bios_log::BOOT_DEVICE_EVENT_ID => {
                     let boot_entry = BootEventDeviceEntry::read_from_prefix(data)
-                        .ok_or(EventLogError::BootEventSize)?;
+                        .map_err(|_| EventLogError::BootEventSize)?
+                        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                     tracing::debug!(?boot_entry, "boot log entry");
 

@@ -43,9 +43,9 @@ use sidecar_defs::SidecarCommand;
 use sidecar_defs::TranslateGvaRequest;
 use sidecar_defs::TranslateGvaResponse;
 use x86defs::apic::ApicBase;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// Entry point for an AP. Called with per-VP state (page tables, stack,
 /// globals) already initialized, and IDT and GDT set appropriately.
@@ -252,7 +252,8 @@ fn run_vp(globals: &mut VpGlobals, command_page: &mut CommandPage, cpu_status: &
     RunVpResponse {
         intercept: intercept as u8,
     }
-    .write_to_prefix(command_page.request_data.as_bytes_mut());
+    .write_to_prefix(command_page.request_data.as_mut_bytes())
+    .unwrap(); // PANIC: will not panic, since sizeof(RunVpResponse) is 1, whereas the buffer is statically declared as 16 bytes long.
 }
 
 fn run_vp_once(command_page: &mut CommandPage) -> Result<bool, ()> {
@@ -394,7 +395,7 @@ fn get_debug_register(name: HvX64RegisterName) -> Option<u64> {
 fn get_vp_registers(command_page: &mut CommandPage) {
     let (request, regs) = command_page
         .request_data
-        .as_bytes_mut()
+        .as_mut_bytes()
         .split_at_mut(size_of::<GetSetVpRegisterRequest>());
     let &mut GetSetVpRegisterRequest {
         count,
@@ -403,9 +404,10 @@ fn get_vp_registers(command_page: &mut CommandPage) {
         ref mut status,
         rsvd2: _,
         regs: [],
-    } = FromBytes::mut_from(request).unwrap();
+    } = FromBytes::mut_from_bytes(request).unwrap();
 
-    let Some((regs, _)) = FromBytes::mut_slice_from_prefix(regs, count.into()) else {
+    let Ok((regs, _)) = <[HvRegisterAssoc]>::mut_from_prefix_with_elems(regs, count.into()) else {
+        // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
         set_error(
             command_page,
             format_args!("invalid register name count: {count}"),
@@ -444,7 +446,7 @@ fn get_vp_registers(command_page: &mut CommandPage) {
 fn set_vp_registers(command_page: &mut CommandPage) {
     let (request, regs) = command_page
         .request_data
-        .as_bytes_mut()
+        .as_mut_bytes()
         .split_at_mut(size_of::<GetSetVpRegisterRequest>());
     let &mut GetSetVpRegisterRequest {
         count,
@@ -453,9 +455,10 @@ fn set_vp_registers(command_page: &mut CommandPage) {
         ref mut status,
         rsvd2: _,
         regs: [],
-    } = FromBytes::mut_from(request).unwrap();
+    } = FromBytes::mut_from_bytes(request).unwrap();
 
-    let Some((assoc, _)) = FromBytes::slice_from_prefix(regs, count.into()) else {
+    let Ok((assoc, _)) = <[HvRegisterAssoc]>::ref_from_prefix_with_elems(regs, count.into()) else {
+        // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
         set_error(
             command_page,
             format_args!("invalid register count: {count}"),
@@ -491,8 +494,9 @@ fn set_vp_registers(command_page: &mut CommandPage) {
 
 fn translate_gva(command_page: &mut CommandPage) {
     let TranslateGvaRequest { gvn, control_flags } =
-        FromBytes::read_from_prefix(command_page.request_data.as_bytes()).unwrap();
-
+        FromBytes::read_from_prefix(command_page.request_data.as_bytes())
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
     {
         // SAFETY: the input page is not concurrently accessed.
         let input = unsafe { &mut *addr_space::hypercall_input() };
@@ -512,9 +516,9 @@ fn translate_gva(command_page: &mut CommandPage) {
     let output = if result.is_ok() {
         // SAFETY: the output is not concurrently accessed
         let output = unsafe { &*addr_space::hypercall_output() };
-        FromBytes::read_from_prefix(output).unwrap()
+        FromBytes::read_from_prefix(output).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     } else {
-        FromZeroes::new_zeroed()
+        FromZeros::new_zeroed()
     };
 
     TranslateGvaResponse {
@@ -522,7 +526,7 @@ fn translate_gva(command_page: &mut CommandPage) {
         rsvd: [0; 7],
         output,
     }
-    .write_to_prefix(command_page.request_data.as_bytes_mut())
+    .write_to_prefix(command_page.request_data.as_mut_bytes())
     .unwrap();
 }
 

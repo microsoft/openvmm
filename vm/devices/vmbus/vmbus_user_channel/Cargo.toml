@@ -23,6 +23,5 @@ parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

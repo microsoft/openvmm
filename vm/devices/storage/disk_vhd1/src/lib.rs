@@ -24,8 +24,8 @@ use vhd1_defs::VhdFooter;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::ResolveResource;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 pub struct Vhd1Resolver;
 declare_static_resolver!(Vhd1Resolver, (DiskHandleKind, FixedVhd1DiskHandle));
@@ -145,8 +145,8 @@ impl Vhd1Disk {
             return Err(OpenError::InvalidFileSize(len));
         }
         file.seek(io::SeekFrom::End(-512))?;
-        let mut footer: VhdFooter = FromZeroes::new_zeroed();
-        file.read_exact(footer.as_bytes_mut())?;
+        let mut footer: VhdFooter = FromZeros::new_zeroed();
+        file.read_exact(footer.as_mut_bytes())?;
         let metadata = Metadata::from_footer(footer, len)?;
 
         // Just wrap FileDisk for handling actual IO.
@@ -244,7 +244,7 @@ mod tests {
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
     use std::io::Write;
-    use zerocopy::AsBytes;
+    use zerocopy::IntoBytes;
 
     #[async_test]
     async fn open_fixed() {
@@ -263,7 +263,7 @@ mod tests {
         )
         .await
         .unwrap();
-        mem.read_at(0, buf.as_bytes_mut()).unwrap();
+        mem.read_at(0, buf.as_mut_bytes()).unwrap();
         assert!(buf.iter().copied().eq(1000_u32 * 128..1001 * 128));
     }
 }

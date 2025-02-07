@@ -18,9 +18,11 @@ use winapi::shared::ntdef;
 use winapi::shared::ntstatus;
 use winapi::um::winioctl;
 use winapi::um::winnt;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // Minimum permissions needed to access a file's metadata.
 pub const MINIMUM_PERMISSIONS: u32 =
@@ -793,7 +795,7 @@ pub fn create_link(
     // at the end removed. u8 arrays are used for fields to remove the need for padding and repr(packed).
     #[allow(non_snake_case)]
     #[repr(C)]
-    #[derive(Debug, Clone, Copy, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
     struct FILE_LINK_INFORMATION {
         ReplaceIfExists: ntdef::BOOLEAN,
         pad: [u8; 7],
@@ -804,7 +806,7 @@ pub fn create_link(
     }
 
     // Default + FromBytes: External APIs require Default (even though the
-    // all-zero repr is not a semantically valid default)
+    // all-zero repr is not a semantically valid default + Immutable + KnownLayout)
     impl Default for FILE_LINK_INFORMATION {
         fn default() -> Self {
             Self::new_zeroed()

@@ -6,9 +6,10 @@
 use crate::vmx;
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 pub const TDX_SHARED_GPA_BOUNDARY_BITS: u8 = 47;
 pub const TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT: u64 = 1 << TDX_SHARED_GPA_BOUNDARY_BITS;
@@ -201,7 +202,7 @@ pub enum TdVmCallSubFunction {
 
 open_enum! {
     /// Result code for `tdcall` to the TDX module, returned in RAX.
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum TdCallResultCode: u32 {
         SUCCESS = 0x00000000,
         NON_RECOVERABLE_VCPU = 0x40000001,
@@ -391,7 +392,7 @@ pub struct TdCallResult {
 
 open_enum! {
     /// The result returned by a tdg.vm.call in r10.
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum TdVmCallR10Result: u64 {
         SUCCESS = 0,
         RETRY = 1,
@@ -552,7 +553,7 @@ impl TdxExtendedExitQualificationType {
 /// The GPR list used for TDG.VP.ENTER. Specified in the TDX specification as
 /// L2_ENTER_GUEST_STATE.
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TdxL2EnterGuestState {
     /// GPs in the usual order.
     pub gps: [u64; 16],
@@ -564,7 +565,8 @@ pub struct TdxL2EnterGuestState {
     pub reserved: [u8; 6],
 }
 
-impl TdxL2EnterGuestState {
+pub enum TdxGp {}
+impl TdxGp {
     pub const RAX: usize = 0;
     pub const RCX: usize = 1;
     pub const RDX: usize = 2;
@@ -581,103 +583,6 @@ impl TdxL2EnterGuestState {
     pub const R13: usize = 13;
     pub const R14: usize = 14;
     pub const R15: usize = 15;
-
-    pub fn rax(&self) -> u64 {
-        self.gps[Self::RAX]
-    }
-    pub fn set_rax(&mut self, v: u64) {
-        self.gps[Self::RAX] = v
-    }
-    pub fn rcx(&self) -> u64 {
-        self.gps[Self::RCX]
-    }
-    pub fn set_rcx(&mut self, v: u64) {
-        self.gps[Self::RCX] = v
-    }
-    pub fn rdx(&self) -> u64 {
-        self.gps[Self::RDX]
-    }
-    pub fn set_rdx(&mut self, v: u64) {
-        self.gps[Self::RDX] = v
-    }
-    pub fn rbx(&self) -> u64 {
-        self.gps[Self::RBX]
-    }
-    pub fn set_rbx(&mut self, v: u64) {
-        self.gps[Self::RBX] = v
-    }
-    pub fn rsp(&self) -> u64 {
-        self.gps[Self::RSP]
-    }
-    pub fn set_rsp(&mut self, v: u64) {
-        self.gps[Self::RSP] = v
-    }
-    pub fn rbp(&self) -> u64 {
-        self.gps[Self::RBP]
-    }
-    pub fn set_rbp(&mut self, v: u64) {
-        self.gps[Self::RBP] = v
-    }
-    pub fn rsi(&self) -> u64 {
-        self.gps[Self::RSI]
-    }
-    pub fn set_rsi(&mut self, v: u64) {
-        self.gps[Self::RSI] = v
-    }
-    pub fn rdi(&self) -> u64 {
-        self.gps[Self::RDI]
-    }
-    pub fn set_rdi(&mut self, v: u64) {
-        self.gps[Self::RDI] = v
-    }
-    pub fn r8(&self) -> u64 {
-        self.gps[Self::R8]
-    }
-    pub fn set_r8(&mut self, v: u64) {
-        self.gps[Self::R8] = v
-    }
-    pub fn r9(&self) -> u64 {
-        self.gps[Self::R9]
-    }
-    pub fn set_r9(&mut self, v: u64) {
-        self.gps[Self::R9] = v
-    }
-    pub fn r10(&self) -> u64 {
-        self.gps[Self::R10]
-    }
-    pub fn set_r10(&mut self, v: u64) {
-        self.gps[Self::R10] = v
-    }
-    pub fn r11(&self) -> u64 {
-        self.gps[Self::R11]
-    }
-    pub fn set_r11(&mut self, v: u64) {
-        self.gps[Self::R11] = v
-    }
-    pub fn r12(&self) -> u64 {
-        self.gps[Self::R12]
-    }
-    pub fn set_r12(&mut self, v: u64) {
-        self.gps[Self::R12] = v
-    }
-    pub fn r13(&self) -> u64 {
-        self.gps[Self::R13]
-    }
-    pub fn set_r13(&mut self, v: u64) {
-        self.gps[Self::R13] = v
-    }
-    pub fn r14(&self) -> u64 {
-        self.gps[Self::R14]
-    }
-    pub fn set_r14(&mut self, v: u64) {
-        self.gps[Self::R14] = v
-    }
-    pub fn r15(&self) -> u64 {
-        self.gps[Self::R15]
-    }
-    pub fn set_r15(&mut self, v: u64) {
-        self.gps[Self::R15] = v
-    }
 }
 
 #[bitfield(u64)]
@@ -706,7 +611,7 @@ pub struct TdGlaVmAndFlags {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TdxVmFlags {
     #[bits(2)]
     pub invd_translations: u8,

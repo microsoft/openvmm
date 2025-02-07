@@ -32,10 +32,9 @@ use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
 use vmbus_channel::RawAsyncChannel;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
-use zerocopy_helpers::FromBytesExt;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// A shutdown IC device.
 #[derive(InspectMut)]
@@ -178,7 +177,7 @@ impl ShutdownChannel {
                 let message = hyperv_ic_protocol::NegotiateMessage {
                     framework_version_count: FRAMEWORK_VERSIONS.len() as u16,
                     message_version_count: message_versions.len() as u16,
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 };
 
                 let header = hyperv_ic_protocol::Header {
@@ -191,7 +190,7 @@ impl ShutdownChannel {
                     flags: hyperv_ic_protocol::HeaderFlags::new()
                         .with_transaction(true)
                         .with_request(true),
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 };
 
                 self.pipe
@@ -209,14 +208,15 @@ impl ShutdownChannel {
             ChannelState::WaitVersion => {
                 let (_result, buf) = read_response(&mut self.pipe).await?;
                 let (message, rest) =
-                    hyperv_ic_protocol::NegotiateMessage::read_from_prefix_split(buf.as_slice())
-                        .ok_or(Error::TruncatedMessage)?;
+                    hyperv_ic_protocol::NegotiateMessage::read_from_prefix(buf.as_slice())
+                        .map_err(|_| Error::TruncatedMessage)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 if message.framework_version_count != 1 || message.message_version_count != 1 {
                     return Err(Error::NoSupportedVersions);
                 }
                 let [framework_version, message_version] =
                     <[hyperv_ic_protocol::Version; 2]>::read_from_prefix(rest)
-                        .ok_or(Error::TruncatedMessage)?;
+                        .map_err(|_| Error::TruncatedMessage)?
+                        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                 self.state = ChannelState::Ready {
                     framework_version,
@@ -258,7 +258,7 @@ impl ShutdownChannel {
                         flags: hyperv_ic_protocol::HeaderFlags::new()
                             .with_transaction(true)
                             .with_request(true),
-                        ..FromZeroes::new_zeroed()
+                        ..FromZeros::new_zeroed()
                     };
 
                     self.pipe
@@ -294,7 +294,7 @@ async fn read_response(pipe: &mut MessagePipe<GpadlRingMem>) -> Result<(u32, Vec
     let n = pipe.recv(&mut buf).await.map_err(Error::Ring)?;
     let buf = &buf[..n];
     let (header, rest) =
-        hyperv_ic_protocol::Header::read_from_prefix_split(buf).ok_or(Error::TruncatedMessage)?;
+        hyperv_ic_protocol::Header::read_from_prefix(buf).map_err(|_| Error::TruncatedMessage)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
     if header.transaction_id != 0 || !header.flags.transaction() || !header.flags.response() {
         return Err(Error::InvalidVersionResponse);

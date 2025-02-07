@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -66,7 +66,7 @@ impl Mapping {
         let n = self.len / PAGE_SIZE;
         let mut pfns = vec![0u64; n];
         pagemap
-            .read(pfns.as_bytes_mut())
+            .read(pfns.as_mut_bytes())
             .context("failed to read from pagemap")?;
         for pfn in &mut pfns {
             if *pfn & (1 << 63) == 0 {

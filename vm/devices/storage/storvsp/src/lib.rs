@@ -96,9 +96,11 @@ use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 pub struct StorageDevice {
     instance_id: Guid,
@@ -381,7 +383,7 @@ fn parse_packet<T: RingMem>(
         protocol::Operation::QUERY_PROTOCOL_VERSION => {
             let mut version = protocol::ProtocolVersion::new_zeroed();
             reader
-                .read(version.as_bytes_mut())
+                .read(version.as_mut_bytes())
                 .map_err(PacketError::Access)?;
             PacketData::QueryProtocolVersion(version.major_minor)
         }
@@ -397,7 +399,7 @@ fn parse_packet<T: RingMem>(
 
             {
                 let full_request = Arc::get_mut(&mut full_request).unwrap();
-                let request_buf = &mut full_request.request.as_bytes_mut()[..request_size];
+                let request_buf = &mut full_request.request.as_mut_bytes()[..request_size];
                 reader.read(request_buf).map_err(PacketError::Access)?;
 
                 let buf = packet.read_external_ranges().map_err(PacketError::Range)?;
@@ -414,7 +416,7 @@ fn parse_packet<T: RingMem>(
         protocol::Operation::CREATE_SUB_CHANNELS => {
             let mut sub_channel_count: u16 = 0;
             reader
-                .read(sub_channel_count.as_bytes_mut())
+                .read(sub_channel_count.as_mut_bytes())
                 .map_err(PacketError::Access)?;
             PacketData::CreateSubChannels(sub_channel_count)
         }
@@ -480,7 +482,7 @@ impl WorkerInner {
             })
     }
 
-    fn send_packet<M: RingMem, P: AsBytes>(
+    fn send_packet<M: RingMem, P: IntoBytes + Immutable + KnownLayout>(
         &mut self,
         writer: &mut queue::WriteHalf<'_, M>,
         operation: protocol::Operation,
@@ -498,7 +500,7 @@ impl WorkerInner {
         )
     }
 
-    fn send_completion<M: RingMem, P: AsBytes>(
+    fn send_completion<M: RingMem, P: IntoBytes + Immutable + KnownLayout>(
         &mut self,
         writer: &mut queue::WriteHalf<'_, M>,
         packet: &Packet,
@@ -577,9 +579,9 @@ impl ScsiCommandQueue {
                     length: (luns.len() as u32 * 8).into(),
                     reserved: [0; 4],
                 };
-                data.as_bytes_mut()[..HEADER_SIZE].copy_from_slice(header.as_bytes());
+                data.as_mut_bytes()[..HEADER_SIZE].copy_from_slice(header.as_bytes());
                 for (i, lun) in luns.iter().enumerate() {
-                    data[i + 1].as_bytes_mut()[..2].copy_from_slice(&(*lun as u16).to_be_bytes());
+                    data[i + 1].as_mut_bytes()[..2].copy_from_slice(&(*lun as u16).to_be_bytes());
                 }
                 if external_data.len() >= HEADER_SIZE {
                     let tx = std::cmp::min(external_data.len(), data.as_bytes().len());
@@ -624,7 +626,9 @@ impl ScsiCommandQueue {
                     .await
             }
             ScsiOp::INQUIRY => {
-                let cdb = scsi::CdbInquiry::ref_from_prefix(&request.payload).unwrap();
+                let cdb = scsi::CdbInquiry::ref_from_prefix(&request.payload)
+                    .unwrap()
+                    .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 if external_data.len() < cdb.allocation_length.get() as usize
                     || request.data_in != protocol::SCSI_IOCTL_DATA_IN
                     || (cdb.allocation_length.get() as usize) < size_of::<scsi::InquiryDataHeader>()
@@ -1623,7 +1627,7 @@ impl VmbusDevice for StorageDevice {
                 path_id: path.path,
                 target_id: path.target,
                 flags: protocol::OFFER_PROPERTIES_FLAG_IDE_DEVICE,
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             };
             let mut user_defined = UserDefinedData::new_zeroed();
             offer_properties
@@ -1866,7 +1870,8 @@ mod tests {
             major_minor: !0,
             reserved: 0,
         }
-        .write_to_prefix(&mut buf[..]);
+        .write_to_prefix(&mut buf[..])
+        .unwrap(); // PANIC: Infallable since `ProtcolVersion` is less than 128 bytes
 
         for &(len, resp_len) in &[(48, 48), (50, 56), (56, 56), (64, 64), (72, 64)] {
             guest

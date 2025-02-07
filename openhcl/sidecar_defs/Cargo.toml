@@ -12,6 +12,5 @@ open_enum.workspace = true
 x86defs.workspace = true
 
 zerocopy.workspace = true
-
 [lints]
 workspace = true

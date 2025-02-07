@@ -7,9 +7,10 @@
 use guid::Guid;
 use static_assertions::const_assert_eq;
 use std::fmt;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 //cfa8b69e-5b4a-4cc0-b98b-8ba1a1f3f95a
 pub const INTERFACE_GUID: Guid = Guid::from_static_str("cfa8b69e-5b4a-4cc0-b98b-8ba1a1f3f95a");
@@ -41,7 +42,7 @@ pub const MAX_HID_REPORT_DESCRIPTOR: u16 = 256;
 
 //HID Protocol Structs
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HidAttributes {
     pub size: u32,
     pub vendor_id: u16,
@@ -53,7 +54,7 @@ pub struct HidAttributes {
 const_assert_eq!(0x20, size_of::<HidAttributes>());
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HidDescriptor {
     pub length: u8,
     pub descriptor_type: u8,
@@ -66,7 +67,7 @@ pub struct HidDescriptor {
 const_assert_eq!(0x9, size_of::<HidDescriptor>());
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HidDescriptorList {
     pub report_type: u8,
     pub report_length: u16,
@@ -75,7 +76,7 @@ pub struct HidDescriptorList {
 const_assert_eq!(0x3, size_of::<HidDescriptorList>());
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageHeader {
     pub message_type: u32,
     pub message_size: u32,
@@ -84,7 +85,7 @@ pub struct MessageHeader {
 const_assert_eq!(0x8, size_of::<MessageHeader>());
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageProtocolRequest {
     pub version: u32,
 }
@@ -92,7 +93,7 @@ pub struct MessageProtocolRequest {
 const_assert_eq!(0x4, size_of::<MessageProtocolRequest>());
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageProtocolResponse {
     pub version_requested: u32,
     pub accepted: u8,
@@ -101,7 +102,7 @@ pub struct MessageProtocolResponse {
 const_assert_eq!(0x5, size_of::<MessageProtocolResponse>());
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageDeviceInfo {
     pub device_attributes: HidAttributes,
     pub descriptor_info: HidDescriptor,
@@ -119,7 +120,7 @@ impl fmt::Debug for MessageDeviceInfo {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageDeviceInfoAck {
     pub acknowledged: u8,
 }
@@ -127,7 +128,7 @@ pub struct MessageDeviceInfoAck {
 const_assert_eq!(1, size_of::<MessageDeviceInfoAck>());
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageInputReport {
     pub input_report: MousePacket,
 }
@@ -222,7 +223,7 @@ pub const fn event_single_change(button: MouseButton) -> u32 {
 pub const MOUSE_EVENT_FLAG_FORCE_REPORT_EVENT: u32 = 1 << 8;
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MousePacket {
     pub button_data: u8,
 

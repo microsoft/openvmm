@@ -18,7 +18,7 @@ macro_rules! defn_nvram_var {
         #[allow(non_snake_case)]
         pub fn $varname() -> (Guid, &'static ucs2::Ucs2LeSlice) {
             use ucs2::Ucs2LeSlice;
-            use zerocopy::AsBytes;
+            use zerocopy::IntoBytes;
 
             (
                 $guid,

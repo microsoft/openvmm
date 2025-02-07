@@ -5,9 +5,10 @@
 
 use core::fmt::Debug;
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::LittleEndian;
 use zerocopy::U64;
 
@@ -20,7 +21,7 @@ open_enum! {
     /// high bits when taking a guest-provided 64-bit value.
     ///
     /// However, this type is not intended for direct sharing with the guest, so
-    /// it does not derive `AsBytes`, etc. To be clear about intent when using
+    /// it does not derive `IntoBytes`, etc. To be clear about intent when using
     /// this value for communication with the guest via shared memory, use
     /// [`EfiStatus64`] instead. If you are implementing a legacy protocol that
     /// does not preserve the error bit, use
@@ -77,7 +78,7 @@ impl EfiStatus {
 /// A 64-bit, unaligned, little-endian encoding of [`EfiStatus`], appropriate
 /// for sharing with the guest.
 #[repr(transparent)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct EfiStatus64(pub U64<LittleEndian>);
 
 impl Debug for EfiStatus64 {

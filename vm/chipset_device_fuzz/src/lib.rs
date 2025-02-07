@@ -155,7 +155,7 @@ impl FuzzChipset {
         let result = locked_dev
             .supports_pci()
             .expect("objects on the pci bus support pci")
-            .pci_cfg_read(offset, u32::mut_from(data).unwrap());
+            .pci_cfg_read(offset, u32::mut_from_bytes(data).unwrap());
         match result {
             IoResult::Ok => {}
             IoResult::Err(_) => {

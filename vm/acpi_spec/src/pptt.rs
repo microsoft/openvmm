@@ -6,14 +6,16 @@ use crate::packed_nums::u32_ne;
 use crate::Table;
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::Unaligned;
 
 /// PPTT table, used for describing the cache topology of a machine.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes, Unaligned)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
 pub struct Pptt {}
 
 impl Table for Pptt {
@@ -21,7 +23,7 @@ impl Table for Pptt {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes, Unaligned)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
     pub enum PpttType: u8 {
         PROCESSOR = 0,
         CACHE = 1,
@@ -29,7 +31,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes, Unaligned)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
 pub struct PpttProcessor {
     pub typ: PpttType,
     pub len: u8,
@@ -59,13 +61,13 @@ impl PpttProcessor {
             typ: PpttType::PROCESSOR,
             len: size_of::<Self>() as u8 + num_private_resources * 4,
             num_private_resources: (num_private_resources as u32).into(),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         }
     }
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes, Unaligned)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
 pub struct PpttCache {
     pub typ: PpttType,
     pub len: u8,
@@ -87,7 +89,7 @@ impl PpttCache {
         Self {
             typ: PpttType::CACHE,
             len: size_of::<Self>() as u8,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         }
     }
 }
@@ -107,7 +109,7 @@ pub struct PpttCacheFlags {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes, Unaligned)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
 pub struct PpttCacheAttributes {
     #[bits(2)]
     pub allocation_type: u8,

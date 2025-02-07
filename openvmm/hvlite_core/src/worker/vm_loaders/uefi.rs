@@ -14,7 +14,7 @@ use thiserror::Error;
 use vm_loader::Loader;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 pub enum Error {

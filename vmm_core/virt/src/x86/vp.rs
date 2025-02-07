@@ -44,9 +44,11 @@ use x86defs::X64_CR0_ET;
 use x86defs::X64_CR0_NW;
 use x86defs::X64_EFER_NXE;
 use x86defs::X86X_MSR_DEFAULT_PAT;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::Ref;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Protobuf, Inspect)]
@@ -707,9 +709,8 @@ pub struct Xsave {
 
 impl Xsave {
     fn normalize(&mut self) {
-        let (mut fxsave, data) =
-            Ref::<_, Fxsave>::new_from_prefix(self.data.as_bytes_mut()).unwrap();
-        let header = XsaveHeader::mut_from_prefix(data).unwrap();
+        let (mut fxsave, data) = Ref::<_, Fxsave>::from_prefix(self.data.as_mut_bytes()).unwrap();
+        let header = XsaveHeader::mut_from_prefix(data).unwrap().0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         // Clear the mxcsr mask since it's ignored in the restore process and
         // will only cause xsave comparisons to fail.
@@ -765,7 +766,7 @@ impl Xsave {
     pub fn from_compact(data: &[u8], caps: &X86PartitionCapabilities) -> Self {
         assert_eq!(data.len() % 8, 0);
         let mut aligned = vec![0; data.len() / 8];
-        aligned.as_bytes_mut().copy_from_slice(data);
+        aligned.as_mut_bytes().copy_from_slice(data);
         let mut this = Self { data: aligned };
 
         this.normalize();
@@ -776,8 +777,9 @@ impl Xsave {
         // penalty.
         if caps.xsaves_state_bv_broken {
             let header =
-                XsaveHeader::mut_from_prefix(&mut this.data.as_bytes_mut()[XSAVE_LEGACY_LEN..])
-                    .unwrap();
+                XsaveHeader::mut_from_prefix(&mut this.data.as_mut_bytes()[XSAVE_LEGACY_LEN..])
+                    .unwrap()
+                    .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
             // Just enable supervisor states that were possible when the
             // hypervisor had the bug. Future ones will only be supported by
@@ -793,13 +795,12 @@ impl Xsave {
         let mut this = Self {
             data: vec![0; caps.xsave.compact_len as usize / 8],
         };
-        this.data.as_bytes_mut()[..XSAVE_VARIABLE_OFFSET]
+        this.data.as_mut_bytes()[..XSAVE_VARIABLE_OFFSET]
             .copy_from_slice(&src[..XSAVE_VARIABLE_OFFSET]);
 
-        let (mut header, data) = Ref::<_, XsaveHeader>::new_from_prefix(
-            &mut this.data.as_bytes_mut()[XSAVE_LEGACY_LEN..],
-        )
-        .unwrap();
+        let (mut header, data) =
+            Ref::<_, XsaveHeader>::from_prefix(&mut this.data.as_mut_bytes()[XSAVE_LEGACY_LEN..])
+                .unwrap();
 
         header.xcomp_bv = caps.xsave.features | caps.xsave.supervisor_features | XCOMP_COMPRESSED;
         let mut cur = 0;
@@ -865,7 +866,7 @@ impl Xsave {
     /// Since this does not include `xstate_bv`, fields for disabled features
     /// will be set to their default values.
     pub fn fxsave(&self) -> Fxsave {
-        let mut fxsave = Fxsave::read_from_prefix(self.data.as_bytes()).unwrap();
+        let mut fxsave = Fxsave::read_from_prefix(self.data.as_bytes()).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let header = self.xsave_header();
         if header.xstate_bv & XFEATURE_X87 == 0 {
             fxsave.fcw = INIT_FCW;
@@ -877,7 +878,9 @@ impl Xsave {
     }
 
     fn xsave_header(&self) -> &XsaveHeader {
-        XsaveHeader::ref_from_prefix(&self.data.as_bytes()[XSAVE_LEGACY_LEN..]).unwrap()
+        XsaveHeader::ref_from_prefix(&self.data.as_bytes()[XSAVE_LEGACY_LEN..])
+            .unwrap()
+            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 }
 
@@ -950,7 +953,10 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Xsave {
 
     fn at_reset(caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
         let mut data = vec![0; caps.xsave.compact_len as usize];
-        *XsaveHeader::mut_from_prefix(&mut data[XSAVE_LEGACY_LEN..]).unwrap() = XsaveHeader {
+        *XsaveHeader::mut_from_prefix(&mut data[XSAVE_LEGACY_LEN..])
+            .unwrap()
+            .0 = XsaveHeader {
+            // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             xstate_bv: 0,
             xcomp_bv: XCOMP_COMPRESSED | caps.xsave.features | caps.xsave.supervisor_features,
             reserved: [0; 6],
@@ -989,7 +995,7 @@ impl Debug for Apic {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes, Inspect)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
 pub struct ApicRegisters {
     #[inspect(skip)]
     pub reserved_0: [u32; 2],
@@ -1057,18 +1063,18 @@ const _: () = assert!(size_of::<ApicRegisters>() == 0x100);
 
 impl From<&'_ [u32; 64]> for ApicRegisters {
     fn from(value: &'_ [u32; 64]) -> Self {
-        Self::read_from(value.as_bytes()).unwrap()
+        Self::read_from_bytes(value.as_bytes()).unwrap()
     }
 }
 
 impl From<ApicRegisters> for [u32; 64] {
     fn from(value: ApicRegisters) -> Self {
-        Self::read_from(value.as_bytes()).unwrap()
+        Self::read_from_bytes(value.as_bytes()).unwrap()
     }
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct ApicRegister {
     value: u32,
     zero: [u32; 3],
@@ -1096,7 +1102,7 @@ impl Apic {
     /// N.B. The MS hypervisor's APIC page format includes a non-architectural
     /// NMI pending bit that should be stripped first.
     pub fn from_page(apic_base: u64, page: &[u8; 1024]) -> Self {
-        let registers = <[ApicRegister; 64]>::read_from(page.as_slice()).unwrap();
+        let registers = <[ApicRegister; 64]>::read_from_bytes(page.as_slice()).unwrap();
         Self {
             apic_base,
             registers: registers.map(|reg| reg.value),

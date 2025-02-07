@@ -58,6 +58,8 @@ use core::num::NonZeroU8;
 use core::num::NonZeroUsize;
 use core::time::Duration;
 use thiserror::Error;
+use zerocopy::Immutable;
+use zerocopy::KnownLayout;
 
 /// An encoding derived by `mesh_derive` for `T`.
 #[derive(Copy, Clone)]
@@ -1436,7 +1438,7 @@ impl<T> DescribeField<T> for ZeroCopyEncoding {
 #[error("invalid byte size for type")]
 struct InvalidZeroCopySize;
 
-impl<T: zerocopy::AsBytes, R> FieldEncode<T, R> for ZeroCopyEncoding {
+impl<T: zerocopy::IntoBytes + Immutable + KnownLayout, R> FieldEncode<T, R> for ZeroCopyEncoding {
     fn write_field(item: T, writer: FieldWriter<'_, '_, R>) {
         writer.bytes(item.as_bytes());
     }
@@ -1446,9 +1448,11 @@ impl<T: zerocopy::AsBytes, R> FieldEncode<T, R> for ZeroCopyEncoding {
     }
 }
 
-impl<'a, T: zerocopy::FromBytes, R> FieldDecode<'a, T, R> for ZeroCopyEncoding {
+impl<'a, T: zerocopy::FromBytes + Immutable + KnownLayout, R> FieldDecode<'a, T, R>
+    for ZeroCopyEncoding
+{
     fn read_field(item: &mut InplaceOption<'_, T>, reader: FieldReader<'a, '_, R>) -> Result<()> {
-        item.set(T::read_from(reader.bytes()?).ok_or_else(|| Error::new(InvalidZeroCopySize))?);
+        item.set(T::read_from_bytes(reader.bytes()?).map_err(|_| Error::new(InvalidZeroCopySize))?); // TODO: zerocopy: better use error here (https://github.com/microsoft/openvmm/issues/759)
         Ok(())
     }
 

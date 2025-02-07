@@ -14,7 +14,7 @@ use virt::x86::TableRegister;
 use virt::VpIndex;
 use vm_topology::processor::x86::X86VpInfo;
 use x86defs::SegmentAttributes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 pub struct KvmVpStateAccess<'a> {
     partition: &'a KvmPartitionInner,
@@ -377,7 +377,7 @@ impl AccessVpState for KvmVpStateAccess<'_> {
         self.kvm()
             .get_msrs(&[x86defs::X86X_MSR_APIC_BASE], &mut apic_base)?;
 
-        let mut state = FromZeroes::new_zeroed();
+        let mut state = FromZeros::new_zeroed();
         self.kvm().get_lapic(&mut state)?;
 
         Ok(vp::Apic::from_page(apic_base[0], &state))

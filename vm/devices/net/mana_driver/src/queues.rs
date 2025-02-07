@@ -26,8 +26,10 @@ use std::marker::PhantomData;
 use std::sync::atomic::Ordering::Acquire;
 use std::sync::Arc;
 use user_driver::memory::MemoryBlock;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// An interface to write a doorbell value to signal the device.
 pub trait Doorbell: Send + Sync {
@@ -121,7 +123,7 @@ impl CqEq<Eqe> {
     }
 }
 
-impl<T: AsBytes + FromBytes> CqEq<T> {
+impl<T: IntoBytes + FromBytes + Immutable + KnownLayout> CqEq<T> {
     /// Creates a new queue.
     fn new(
         queue_type: GdmaQueueType,
@@ -160,7 +162,7 @@ impl<T: AsBytes + FromBytes> CqEq<T> {
         self.id
     }
 
-    fn read_next<U: FromBytes>(&self, offset: u32) -> U {
+    fn read_next<U: FromBytes + Immutable + KnownLayout>(&self, offset: u32) -> U {
         assert!((offset as usize & (size_of::<T>() - 1)) + size_of::<U>() <= size_of::<T>());
         self.mem
             .read_obj((self.next.wrapping_add(offset) & (self.size - 1)) as usize)
@@ -319,7 +321,7 @@ impl Wq {
     /// external data via a scatter-gather list.
     pub fn push<I: IntoIterator<Item = Sge>>(
         &mut self,
-        oob: &impl AsBytes,
+        oob: &(impl IntoBytes + Immutable + KnownLayout),
         sgl: I,
         client_oob_in_sgl: Option<u8>,
         gd_client_unit_data: u16,

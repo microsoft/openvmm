@@ -24,7 +24,7 @@ use hvdef::HvRegisterValue;
 use hvdef::HvResult;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 /// Implements the `HvPostMessage` hypercall.
 pub trait PostMessage {

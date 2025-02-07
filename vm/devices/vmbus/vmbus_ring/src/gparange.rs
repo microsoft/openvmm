@@ -5,20 +5,22 @@ use guestmem::ranges::PagedRange;
 use smallvec::smallvec;
 use smallvec::SmallVec;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const PAGE_SIZE: usize = 4096;
 
 pub type GpnList = SmallVec<[u64; 64]>;
 
 pub fn zeroed_gpn_list(len: usize) -> GpnList {
-    smallvec![FromZeroes::new_zeroed(); len]
+    smallvec![FromZeros::new_zeroed(); len]
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GpaRange {
     pub len: u32,
     pub offset: u32,
@@ -201,7 +203,9 @@ impl<'a> Iterator for MultiPagedRangeIter<'a> {
         if self.count == 0 {
             return None;
         }
-        let hdr = GpaRange::read_from_prefix(self.buf[0].as_bytes()).unwrap();
+        let hdr = GpaRange::read_from_prefix(self.buf[0].as_bytes())
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let page_count = ((hdr.offset + hdr.len) as usize).div_ceil(PAGE_SIZE); // N.B. already validated
         let (this, rest) = self.buf.split_at(page_count + 1);
         let range = PagedRange::new(hdr.offset as usize, hdr.len as usize, &this[1..]).unwrap();

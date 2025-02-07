@@ -41,7 +41,9 @@ use vmbus_core::MonitorPageGpas;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::TaggedStream;
 use vmbus_core::VersionInfo;
-use zerocopy::AsBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const SINT: u8 = 2;
 const VTL: u8 = 0;
@@ -1356,11 +1358,16 @@ struct ClientTaskInner {
 }
 
 impl ClientTaskInner {
-    fn send<T: AsBytes + protocol::VmbusMessage + std::fmt::Debug>(&self, msg: &T) {
+    fn send<T: IntoBytes + protocol::VmbusMessage + std::fmt::Debug + Immutable + KnownLayout>(
+        &self,
+        msg: &T,
+    ) {
         send_message(self.synic.as_ref(), msg, &[])
     }
 
-    fn send_with_data<T: AsBytes + protocol::VmbusMessage + std::fmt::Debug>(
+    fn send_with_data<
+        T: IntoBytes + protocol::VmbusMessage + std::fmt::Debug + Immutable + KnownLayout,
+    >(
         &self,
         msg: &T,
         data: &[u8],
@@ -1373,7 +1380,9 @@ impl ClientTaskInner {
     }
 }
 
-fn send_message<T: AsBytes + protocol::VmbusMessage + std::fmt::Debug>(
+fn send_message<
+    T: IntoBytes + protocol::VmbusMessage + std::fmt::Debug + Immutable + KnownLayout,
+>(
     synic: &dyn SynicClient,
     msg: &T,
     data: &[u8],
@@ -1399,13 +1408,15 @@ mod tests {
     use vmbus_core::protocol::MessageType;
     use vmbus_core::protocol::OfferFlags;
     use vmbus_core::protocol::UserDefinedData;
-    use zerocopy::AsBytes;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     const VMBUS_TEST_CLIENT_ID: Guid =
         Guid::from_static_str("e6e6e6e6-e6e6-e6e6-e6e6-e6e6e6e6e6e6");
 
-    fn in_msg<T: AsBytes>(message_type: MessageType, t: T) -> Vec<u8> {
+    fn in_msg<T: IntoBytes + Immutable + KnownLayout>(message_type: MessageType, t: T) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(&message_type.0.to_ne_bytes());
         data.extend_from_slice(&0u32.to_ne_bytes());
@@ -1592,7 +1603,7 @@ mod tests {
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             })
         );
     }
@@ -1616,7 +1627,7 @@ mod tests {
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             })
         );
 
@@ -1658,7 +1669,7 @@ mod tests {
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             })
         );
 
@@ -1733,7 +1744,7 @@ mod tests {
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             })
         );
 

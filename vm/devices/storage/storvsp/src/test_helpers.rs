@@ -35,8 +35,8 @@ use vmbus_ring as ring;
 use vmbus_ring::FlatRingMem;
 use vmbus_ring::OutgoingPacketType;
 use vmbus_ring::PAGE_SIZE;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 pub struct TestWorker {
     task: Task<Result<(), WorkerError>>,
@@ -236,7 +236,7 @@ impl TestGuest {
             operation_code: ScsiOp::WRITE,
             logical_block: block.into(),
             transfer_blocks: ((byte_len / 512) as u16).into(),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         let mut scsi_req = protocol::ScsiRequest {
@@ -246,7 +246,7 @@ impl TestGuest {
             length: protocol::SCSI_REQUEST_LEN_V2 as u16,
             cdb_length: size_of::<scsi::Cdb10>() as u8,
             data_transfer_length: byte_len as u32,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         scsi_req.payload[0..10].copy_from_slice(cdb.as_bytes());
@@ -278,7 +278,7 @@ impl TestGuest {
             operation_code: ScsiOp::READ,
             logical_block: block.into(),
             transfer_blocks: ((byte_len / 512) as u16).into(),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         let mut scsi_req = protocol::ScsiRequest {
@@ -289,7 +289,7 @@ impl TestGuest {
             cdb_length: size_of::<scsi::Cdb10>() as u8,
             data_transfer_length: byte_len as u32,
             data_in: 1,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         scsi_req.payload[0..10].copy_from_slice(cdb.as_bytes());
@@ -317,7 +317,7 @@ impl TestGuest {
 
         let cdb = scsi::Cdb10 {
             operation_code: ScsiOp::REPORT_LUNS,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         let mut scsi_req = protocol::ScsiRequest {
@@ -328,7 +328,7 @@ impl TestGuest {
             cdb_length: size_of::<scsi::Cdb10>() as u8,
             data_transfer_length: data_buffer_len as u32,
             data_in: 1,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         scsi_req.payload[0..10].copy_from_slice(cdb.as_bytes());

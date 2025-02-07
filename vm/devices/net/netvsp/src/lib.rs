@@ -104,9 +104,11 @@ use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // The minimum ring space required to handle a control message. Most control messages only need to send a completion
 // packet, but also need room for an additional SEND_VF_ASSOCIATION message.
@@ -732,7 +734,7 @@ impl OffloadConfig {
             },
             checksum,
             lso_v2,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         }
     }
 }
@@ -1928,7 +1930,7 @@ impl Packet<'_> {
     }
 }
 
-fn read_packet_data<T: AsBytes + FromBytes>(
+fn read_packet_data<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
     reader: &mut impl MemoryRead,
 ) -> Result<T, PacketError> {
     reader.read_plain().map_err(PacketError::Access)
@@ -2033,14 +2035,18 @@ struct NvspMessage<T> {
     padding: &'static [u8],
 }
 
-impl<T: AsBytes> NvspMessage<T> {
+impl<T: IntoBytes + Immutable + KnownLayout> NvspMessage<T> {
     fn payload(&self) -> [&[u8]; 3] {
         [self.header.as_bytes(), self.data.as_bytes(), self.padding]
     }
 }
 
 impl<T: RingMem> NetChannel<T> {
-    fn message<P: AsBytes>(&self, message_type: u32, data: P) -> NvspMessage<P> {
+    fn message<P: IntoBytes + Immutable + KnownLayout>(
+        &self,
+        message_type: u32,
+        data: P,
+    ) -> NvspMessage<P> {
         let padding = self.padding(&data);
         NvspMessage {
             header: protocol::MessageHeader { message_type },
@@ -2051,7 +2057,7 @@ impl<T: RingMem> NetChannel<T> {
 
     /// Returns zero padding bytes to round the payload up to the packet size.
     /// Only needed for Windows guests, which are picky about packet sizes.
-    fn padding<P: AsBytes>(&self, data: &P) -> &'static [u8] {
+    fn padding<P: IntoBytes + Immutable + KnownLayout>(&self, data: &P) -> &'static [u8] {
         static PADDING: &[u8] = &[0; protocol::PACKET_SIZE_V61];
         let padding_len = self.packet_size
             - cmp::min(
@@ -2455,7 +2461,7 @@ impl<T: RingMem> NetChannel<T> {
         }
 
         #[repr(C)]
-        #[derive(AsBytes)]
+        #[derive(IntoBytes, Immutable, KnownLayout)]
         struct SendIndirectionMsg {
             pub message: protocol::Message5SendIndirectionTable,
             pub send_indirection_table:
@@ -2936,7 +2942,7 @@ impl<T: RingMem> NetChannel<T> {
 }
 
 /// Writes an RNDIS message to `writer`.
-fn write_rndis_message<T: AsBytes>(
+fn write_rndis_message<T: IntoBytes + Immutable + KnownLayout>(
     writer: &mut impl MemoryWrite,
     message_type: u32,
     extra: usize,
@@ -3294,7 +3300,7 @@ impl Adapter {
         // Vmswitch doesn't validate the NDIS header on this object, so read it manually.
         let mut params = rndisprot::NdisReceiveScaleParameters::new_zeroed();
         let len = reader.len().min(size_of_val(&params));
-        reader.clone().read(&mut params.as_bytes_mut()[..len])?;
+        reader.clone().read(&mut params.as_mut_bytes()[..len])?;
 
         if ((params.flags & NDIS_RSS_PARAM_FLAG_DISABLE_RSS) != 0)
             || ((params.hash_information & NDIS_HASH_FUNCTION_MASK) == 0)
@@ -3319,7 +3325,7 @@ impl Adapter {
             .read(&mut key)?;
         reader
             .skip(params.indirection_table_offset as usize)?
-            .read(indirection_table[..indirection_table_size].as_bytes_mut())?;
+            .read(indirection_table[..indirection_table_size].as_mut_bytes())?;
         if indirection_table
             .iter()
             .any(|&x| x >= self.max_queues as u32)
@@ -3502,7 +3508,7 @@ impl Adapter {
     }
 }
 
-fn read_ndis_object<T: AsBytes + FromBytes + Debug>(
+fn read_ndis_object<T: IntoBytes + FromBytes + Debug + Immutable + KnownLayout>(
     mut reader: impl MemoryRead,
     object_type: rndisprot::NdisObjectType,
     min_revision: u8,
@@ -3511,9 +3517,11 @@ fn read_ndis_object<T: AsBytes + FromBytes + Debug>(
     let mut buffer = T::new_zeroed();
     let sent_size = reader.len();
     let len = sent_size.min(size_of_val(&buffer));
-    reader.read(&mut buffer.as_bytes_mut()[..len])?;
+    reader.read(&mut buffer.as_mut_bytes()[..len])?;
     validate_ndis_object_header(
-        &rndisprot::NdisObjectHeader::read_from_prefix(buffer.as_bytes()).unwrap(),
+        &rndisprot::NdisObjectHeader::read_from_prefix(buffer.as_bytes())
+            .unwrap()
+            .0, // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         sent_size,
         object_type,
         min_revision,

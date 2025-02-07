@@ -60,7 +60,7 @@ use vmcore::notify::PolledNotify;
 use vmcore::save_restore::NoSavedState;
 use vmcore::save_restore::SavedStateBlob;
 use vmcore::save_restore::SavedStateRoot;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 pub enum OfferResponse {
     Ignore,

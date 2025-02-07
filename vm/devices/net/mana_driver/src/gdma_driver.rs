@@ -79,10 +79,11 @@ use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
-use user_driver::HostDmaAllocator;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const HWC_WARNING_TIME_IN_MS: u32 = 3000;
 const HWC_TIMEOUT_DEFAULT_IN_MS: u32 = 10000;
@@ -234,7 +235,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             if i == 0 && v == !0 {
                 anyhow::bail!("bar0 read returned -1, device is not present");
             }
-            map.as_bytes_mut()[i * 4..(i + 1) * 4].copy_from_slice(&v.to_ne_bytes());
+            map.as_mut_bytes()[i * 4..(i + 1) * 4].copy_from_slice(&v.to_ne_bytes());
         }
 
         tracing::debug!(?map, "register map");
@@ -267,9 +268,12 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             );
         }
 
-        let dma_buffer = device
-            .host_allocator()
-            .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)?;
+        let dma_client = device.dma_client();
+
+        let dma_buffer = dma_client
+            .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
+            .context("failed to allocate DMA buffer")?;
+
         let pages = dma_buffer.pfns();
 
         // Write the shared memory.
@@ -295,7 +299,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 .with_msg_version(SMC_MSG_TYPE_ESTABLISH_HWC_VERSION),
         };
 
-        let shmem = u32::slice_from(establish.as_bytes()).unwrap();
+        let shmem = <[u32]>::ref_from_bytes(establish.as_bytes()).unwrap();
         assert!(shmem.len() == 8);
         for (i, &n) in shmem.iter().enumerate() {
             bar0_mapping.write_u32(map.vf_gdma_sriov_shared_reg_start as usize + i * 4, n);
@@ -369,13 +373,13 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             tracing::debug!(event_type = eqe.params.event_type(), "got init eqe");
             match eqe.params.event_type() {
                 GDMA_EQE_HWC_INIT_EQ_ID_DB => {
-                    let data = HwcInitEqIdDb::read_from_prefix(&eqe.data[..]).unwrap();
+                    let data = HwcInitEqIdDb::read_from_prefix(&eqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                     eq.set_id(data.eq_id().into());
                     eq.set_doorbell(DoorbellPage::new(bar0.clone(), data.doorbell().into())?);
                     db_id = Some(data.doorbell());
                 }
                 GDMA_EQE_HWC_INIT_DATA => {
-                    let data = HwcInitTypeData::read_from_prefix(&eqe.data[..]).unwrap();
+                    let data = HwcInitTypeData::read_from_prefix(&eqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                     match data.ty() {
                         HWC_INIT_DATA_CQID => cq_id = Some(data.value()),
                         HWC_INIT_DATA_RQID => rq_id = Some(data.value()),
@@ -618,7 +622,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         self.rq.commit();
     }
 
-    pub async fn request_version<Req: AsBytes, Resp: AsBytes + FromBytes>(
+    pub async fn request_version<
+        Req: IntoBytes + Immutable + KnownLayout,
+        Resp: IntoBytes + FromBytes + Immutable + KnownLayout,
+    >(
         &mut self,
         req_msg_type: u32,
         req_msg_version: u16,
@@ -663,7 +670,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let oob = HwcTxOob {
             flags3: HwcTxOobFlags3::new().with_vscq_id(self.cq.id()),
             flags4: HwcTxOobFlags4::new().with_vsq_id(self.sq.id()),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         let hw_access = async {
@@ -743,7 +750,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok((resp, self.hwc_activity_id))
     }
 
-    pub async fn request<Req: AsBytes, Resp: AsBytes + FromBytes>(
+    pub async fn request<
+        Req: IntoBytes + Immutable + KnownLayout,
+        Resp: IntoBytes + FromBytes + Immutable + KnownLayout,
+    >(
         &mut self,
         msg_type: u32,
         dev_id: GdmaDevId,
@@ -782,7 +792,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 GDMA_EQE_COMPLETION => self.cq_armed = false,
                 GDMA_EQE_TEST_EVENT => self.test_events += 1,
                 GDMA_EQE_HWC_RECONFIG_DATA => {
-                    let data = EqeDataReconfig::read_from_prefix(&eqe.data[..]).unwrap();
+                    let data = EqeDataReconfig::read_from_prefix(&eqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                     let mut value: [u8; 4] = [0; 4];
                     value[0..3].copy_from_slice(&data.data);
                     let value: u32 = u32::from_le_bytes(value);
@@ -943,7 +953,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     gd_drv_cap_flags1: DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT
                         | DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE
                         | DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG,
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 },
             )
             .await?;
@@ -1069,7 +1079,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     gdma_region,
                     queue_size,
                     eq_pci_msix_index: msix,
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 },
             )
             .await?;
@@ -1109,7 +1119,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         mem: MemoryBlock,
     ) -> anyhow::Result<u64> {
         #[repr(C)]
-        #[derive(AsBytes)]
+        #[derive(IntoBytes, Immutable, KnownLayout)]
         struct Req {
             req: GdmaCreateDmaRegionReq,
             pages: [u64; 16],

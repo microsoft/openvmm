@@ -107,9 +107,9 @@ impl PetriVmOpenVmm {
         self.inner.openhcl_diag().map(|x| &*x.vtl2_vsock_path)
     }
 
-    /// Get the artifact resolver constructed for this VM.
-    pub fn artifact_resolver(&self) -> &petri_artifacts_core::TestArtifacts {
-        &self.inner.resources.resolver
+    /// Get the artifacts for this VM.
+    pub fn artifacts(&self) -> &petri_artifacts_core::TestArtifacts {
+        &self.inner.resources.artifacts
     }
 
     /// Wait for the VM to halt, returning the reason for the halt.
@@ -358,7 +358,7 @@ impl PetriVmInner {
             .as_ref()
             .context("openhcl not configured")?;
 
-        let igvm_path = self.resources.resolver.resolve(new_openhcl);
+        let igvm_path = self.resources.artifacts.get(new_openhcl);
         let igvm_file = fs_err::File::open(igvm_path).context("failed to open igvm file")?;
         self.worker
             .restart_openhcl(ged_send, flags, igvm_file.into())

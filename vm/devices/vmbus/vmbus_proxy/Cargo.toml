@@ -20,6 +20,5 @@ ntapi.workspace = true
 tracing.workspace = true
 winapi = { workspace = true, features = ["debug", "winioctl"] }
 zerocopy.workspace = true
-
 [lints]
 workspace = true

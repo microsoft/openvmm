@@ -275,7 +275,7 @@ mod json {
                     v.len()
                 )));
             }
-            Ok(Guid::read_from_prefix(v.as_slice()).unwrap())
+            Ok(Guid::read_from_prefix(v.as_slice()).unwrap().0) // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         }
     }
 }

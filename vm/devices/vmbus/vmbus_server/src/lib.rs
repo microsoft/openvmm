@@ -1829,8 +1829,11 @@ mod tests {
     use vmbus_core::protocol::ChannelId;
     use vmbus_core::protocol::VmbusMessage;
     use vmcore::synic::SynicPortAccess;
-    use zerocopy::AsBytes;
     use zerocopy::FromBytes;
+
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     struct MockSynicInner {
         message_port: Option<Arc<dyn MessagePort>>,
@@ -1849,11 +1852,14 @@ mod tests {
             }
         }
 
-        fn send_message(&self, msg: impl VmbusMessage + AsBytes) {
+        fn send_message(&self, msg: impl VmbusMessage + IntoBytes + Immutable + KnownLayout) {
             self.send_message_core(OutgoingMessage::new(&msg), false);
         }
 
-        fn send_message_trusted(&self, msg: impl VmbusMessage + AsBytes) {
+        fn send_message_trusted(
+            &self,
+            msg: impl VmbusMessage + IntoBytes + Immutable + KnownLayout,
+        ) {
             self.send_message_core(OutgoingMessage::new(&msg), true);
         }
 
@@ -2102,17 +2108,17 @@ mod tests {
 
         async fn expect_response(&mut self, expected: protocol::MessageType) {
             let data = self.message_recv.next().await.unwrap();
-            let header = protocol::MessageHeader::read_from_prefix(&data).unwrap();
-
+            let header = protocol::MessageHeader::read_from_prefix(&data).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             assert_eq!(expected, header.message_type())
         }
 
-        async fn get_response<T: VmbusMessage + FromBytes>(&mut self) -> T {
-            use zerocopy_helpers::FromBytesExt;
+        async fn get_response<T: VmbusMessage + FromBytes + Immutable + KnownLayout>(
+            &mut self,
+        ) -> T {
             let data = self.message_recv.next().await.unwrap();
-            let (header, message) = protocol::MessageHeader::read_from_prefix_split(&data).unwrap();
+            let (header, message) = protocol::MessageHeader::read_from_prefix(&data).unwrap(); // TODO: zerocopy: unwrap (https://github.com/microsoft/openvmm/issues/759)
             assert_eq!(T::MESSAGE_TYPE, header.message_type());
-            T::read_from_prefix(message).unwrap()
+            T::read_from_prefix(message).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn initiate_contact(

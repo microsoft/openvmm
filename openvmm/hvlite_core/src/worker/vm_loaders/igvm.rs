@@ -42,7 +42,7 @@ use vm_topology::processor::aarch64::Aarch64Topology;
 use vm_topology::processor::x86::X86Topology;
 use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -282,7 +282,7 @@ pub fn vtl2_memory_range(
     // Select a random base within the alignment
     let possible_bases = (aligned_max_addr - aligned_min_addr) / alignment;
     let mut num: u64 = 0;
-    getrandom::getrandom(num.as_bytes_mut()).expect("crng failure");
+    getrandom::getrandom(num.as_mut_bytes()).expect("crng failure");
     let selected_base = num % (possible_bases - 1);
     let selected_addr = aligned_min_addr + (selected_base * alignment);
     tracing::trace!(possible_bases, selected_base, selected_addr);

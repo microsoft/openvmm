@@ -26,7 +26,6 @@ slab.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 safe_intrinsics.workspace = true
 
 [dev-dependencies]

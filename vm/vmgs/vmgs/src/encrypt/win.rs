@@ -24,11 +24,11 @@ use windows::Win32::Security::Cryptography::BCRYPT_KEY_DATA_BLOB;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_DATA_BLOB_MAGIC;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_DATA_BLOB_VERSION1;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_HANDLE;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes; use zerocopy::Immutable; use zerocopy::KnownLayout; 
 
 // BCryptImportKey expects a key header immediately followed by a key of size key_len
 #[repr(C)]
-#[derive(AsBytes)]
+#[derive(IntoBytes, Immutable, KnownLayout)]
 struct KeyBlob {
     header_magic: u32,
     header_version: u32,

@@ -233,7 +233,7 @@ impl Options {
                 .parse::<TestScenarioConfig>()
                 .map_err(|e| {
                     tracing::warn!(
-                        "Failed to parse OPENHCL_TEST_CONFIG: {}. No test will be simulated.",
+                        "failed to parse OPENHCL_TEST_CONFIG: {}. No test will be simulated.",
                         e
                     )
                 })

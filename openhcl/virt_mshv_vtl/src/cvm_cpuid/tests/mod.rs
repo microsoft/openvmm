@@ -10,8 +10,8 @@ use super::*;
 use x86defs::cpuid::Vendor;
 use x86defs::snp::HvPspCpuidLeaf;
 use x86defs::snp::HvPspCpuidPage;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 // Because of the filtering logic, besides subleaves 0 and 1, these are the
 // extended state enumeration subleaves that can be tested on.

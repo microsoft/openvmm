@@ -27,9 +27,10 @@ use vmbus_channel::simple::SimpleVmbusDevice;
 use vmbus_channel::RawAsyncChannel;
 use vmbus_ring::RingMem;
 use vmcore::save_restore::SavedStateRoot;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy_helpers::FromBytesExt;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 #[derive(Debug)]
 enum Request {
@@ -56,17 +57,19 @@ async fn recv_packet(reader: &mut impl AsyncRecv) -> Result<Request, Error> {
     let n = reader.recv(&mut buf).await.map_err(Error::Io)?;
     let buf = &buf[..n];
     let (header, buf) =
-        protocol::MessageHeader::read_from_prefix_split(buf).ok_or(Error::BadPacket)?;
+        protocol::MessageHeader::read_from_prefix(buf).map_err(|_| Error::BadPacket)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
     let request = match header.message_type {
         protocol::MESSAGE_PROTOCOL_REQUEST => {
-            let message =
-                protocol::MessageProtocolRequest::read_from_prefix(buf).ok_or(Error::BadPacket)?;
+            let message = protocol::MessageProtocolRequest::read_from_prefix(buf)
+                .map_err(|_| Error::BadPacket)?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             Request::ProtocolRequest(message.version)
         }
         protocol::MESSAGE_SET_LED_INDICATORS => {
             // We don't have any actual LEDs to set, so check the message for validity but ignore its contents.
             let _message = protocol::MessageLedIndicatorsState::read_from_prefix(buf)
-                .ok_or(Error::BadPacket)?;
+                .map_err(|_| Error::BadPacket)?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             Request::SetLedIndicators
         }
         typ => return Err(Error::UnknownMessageType(typ)),
@@ -74,7 +77,7 @@ async fn recv_packet(reader: &mut impl AsyncRecv) -> Result<Request, Error> {
     Ok(request)
 }
 
-async fn send_packet<T: AsBytes>(
+async fn send_packet<T: IntoBytes + Immutable + KnownLayout>(
     writer: &mut impl AsyncSend,
     typ: u32,
     packet: &T,
@@ -328,12 +331,13 @@ mod tests {
             return None;
         }
         let packet = &packet[..n];
-        let (header, rest) = protocol::MessageHeader::read_from_prefix_split(packet).unwrap();
+        let (header, rest) = protocol::MessageHeader::read_from_prefix(packet).unwrap(); // TODO: zerocopy: unwrap (https://github.com/microsoft/openvmm/issues/759)
         Some(match header.message_type {
             protocol::MESSAGE_PROTOCOL_RESPONSE => {
-                Packet::ProtocolResponse(FromBytes::read_from_prefix(rest).unwrap())
+                Packet::ProtocolResponse(FromBytes::read_from_prefix(rest).unwrap().0)
+                // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             }
-            protocol::MESSAGE_EVENT => Packet::Event(FromBytes::read_from_prefix(rest).unwrap()),
+            protocol::MESSAGE_EVENT => Packet::Event(FromBytes::read_from_prefix(rest).unwrap().0), // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             _ => panic!("unknown packet type {}", header.message_type),
         })
     }

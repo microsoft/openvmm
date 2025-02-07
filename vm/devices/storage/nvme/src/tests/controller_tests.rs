@@ -22,8 +22,8 @@ use pci_core::test_helpers::TestPciInterruptController;
 use user_driver::backoff::Backoff;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 fn instantiate_controller(
     driver: DefaultDriver,
@@ -170,17 +170,17 @@ pub async fn instantiate_and_build_admin_queue(
 
     // Enable the controller.
     let mut dword = 0u32;
-    nvmec.read_bar0(0x14, dword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
     dword |= 1;
     nvmec.write_bar0(0x14, dword.as_bytes()).unwrap();
     backoff.back_off().await;
-    nvmec.read_bar0(0x14, dword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
     assert!(dword & 1 != 0);
 
     // Read CSTS
     let mut ready = false;
     for _i in 0..5 {
-        nvmec.read_bar0(0x1c, dword.as_bytes_mut()).unwrap();
+        nvmec.read_bar0(0x1c, dword.as_mut_bytes()).unwrap();
         let csts = spec::Csts::from(dword);
         assert_eq!(csts.cfs(), false);
         if csts.rdy() {
@@ -200,20 +200,20 @@ async fn test_basic_registers(driver: DefaultDriver) {
     let mut dword = 0u32;
 
     // Read controller caps, version.
-    nvmec.read_bar0(0, dword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(0, dword.as_mut_bytes()).unwrap();
     assert_eq!(dword, 0xFF0100FF);
     let mut qword = 0u64;
-    nvmec.read_bar0(0, qword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(0, qword.as_mut_bytes()).unwrap();
     assert_eq!(qword, 0x20FF0100FF);
-    nvmec.read_bar0(8, dword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(8, dword.as_mut_bytes()).unwrap();
     assert_eq!(dword, 0x20000);
 
     // Read ACQ and write it back, see that it sticks.
-    nvmec.read_bar0(0x30, qword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(0x30, qword.as_mut_bytes()).unwrap();
     assert_eq!(qword, 0);
     qword = 0x1000;
     nvmec.write_bar0(0x30, qword.as_bytes()).unwrap();
-    nvmec.read_bar0(0x30, qword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(0x30, qword.as_mut_bytes()).unwrap();
     assert_eq!(qword, 0x1000);
 }
 
@@ -222,12 +222,12 @@ async fn test_invalid_configuration(driver: DefaultDriver) {
     let gm = test_memory();
     let mut nvmec = instantiate_controller(driver, &gm, None);
     let mut dword = 0u32;
-    nvmec.read_bar0(0x14, dword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
     // Set MPS to some disallowed value
     dword |= 0x380;
     nvmec.write_bar0(0x14, dword.as_bytes()).unwrap();
     // Read CSTS, expect fatal error
-    nvmec.read_bar0(0x1c, dword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(0x1c, dword.as_mut_bytes()).unwrap();
     assert!(dword & 2 != 0);
 }
 
@@ -247,14 +247,14 @@ async fn test_enable_controller(driver: DefaultDriver) {
     nvmec.write_bar0(0x24, dword.as_bytes()).unwrap();
 
     // Enable the controller.
-    nvmec.read_bar0(0x14, dword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
     dword |= 1;
     nvmec.write_bar0(0x14, dword.as_bytes()).unwrap();
-    nvmec.read_bar0(0x14, dword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
     assert!(dword & 1 != 0);
 
     // Read CSTS
-    nvmec.read_bar0(0x1c, dword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(0x1c, dword.as_mut_bytes()).unwrap();
     assert!(dword & 2 == 0);
 }
 
@@ -274,14 +274,14 @@ async fn test_multi_page_admin_queues(driver: DefaultDriver) {
     nvmec.write_bar0(0x24, dword.as_bytes()).unwrap();
 
     // Enable the controller.
-    nvmec.read_bar0(0x14, dword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
     dword |= 1;
     nvmec.write_bar0(0x14, dword.as_bytes()).unwrap();
-    nvmec.read_bar0(0x14, dword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
     assert!(dword & 1 != 0);
 
     // Read CSTS
-    nvmec.read_bar0(0x1c, dword.as_bytes_mut()).unwrap();
+    nvmec.read_bar0(0x1c, dword.as_mut_bytes()).unwrap();
     assert!(dword & 2 == 0);
 }
 

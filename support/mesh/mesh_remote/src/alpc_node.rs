@@ -54,9 +54,9 @@ use std::task::Context;
 use std::task::Poll;
 use tracing_helpers::ErrorValueExt;
 use unicycle::FuturesUnordered;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 type InvitationMap =
     Arc<Mutex<HashMap<NodeId, (RemoteNodeHandle, mesh_channel::OneshotSender<()>)>>>;
@@ -557,7 +557,8 @@ impl AlpcNode {
                         .expect("port must exist");
 
                     match protocol::PacketHeader::read_from_prefix(buf) {
-                        Some(header) => match header.packet_type {
+                        Ok((header, _)) => match header.packet_type {
+                            // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                             protocol::PacketType::EVENT => {
                                 local_node.event(
                                     connection.handle.id(),
@@ -576,7 +577,8 @@ impl AlpcNode {
                                 tracing::error!(node = ?local_id, ?packet_type, "unknown packet type");
                             }
                         },
-                        None => {
+                        Err(_) => {
+                            // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
                             tracing::error!(node = ?local_id, "invalid message");
                         }
                     }
@@ -700,7 +702,7 @@ impl Connection {
             message = SendMessage::from(
                 protocol::PacketHeader {
                     packet_type: protocol::PacketType::LARGE_EVENT,
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 }
                 .as_bytes(),
             );
@@ -715,7 +717,7 @@ impl Connection {
             message.extend(
                 protocol::PacketHeader {
                     packet_type: protocol::PacketType::EVENT,
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 }
                 .as_bytes(),
             );

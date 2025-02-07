@@ -23,7 +23,6 @@ x86defs.workspace = true
 
 arrayvec.workspace = true
 zerocopy.workspace = true
-
 [build-dependencies]
 minimal_rt_build.workspace = true
 

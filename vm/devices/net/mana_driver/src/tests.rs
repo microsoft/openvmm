@@ -23,7 +23,6 @@ use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::DeviceBacking;
-use user_driver::HostDmaAllocator;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -62,7 +61,7 @@ async fn test_gdma(driver: DefaultDriver) {
     let vport = port_config.vport;
     let buffer = Arc::new(
         gdma.device()
-            .host_allocator()
+            .dma_client()
             .allocate_dma_buffer(0x5000)
             .unwrap(),
     );

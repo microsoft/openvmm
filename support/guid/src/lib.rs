@@ -8,13 +8,17 @@
 
 use std::str::FromStr;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Windows format GUID.
 #[repr(C)]
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, AsBytes, FromBytes, FromZeroes)]
+#[derive(
+    Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, IntoBytes, FromBytes, Immutable, KnownLayout,
+)]
 #[cfg_attr(
     feature = "mesh",
     derive(mesh_protobuf::Protobuf),
@@ -63,7 +67,7 @@ impl Guid {
     /// Return a new randomly-generated Version 4 UUID
     pub fn new_random() -> Self {
         let mut guid = Guid::default();
-        getrandom::getrandom(guid.as_bytes_mut()).expect("rng failure");
+        getrandom::getrandom(guid.as_mut_bytes()).expect("rng failure");
 
         guid.data3 = guid.data3 & 0xfff | 0x4000;
         // Variant 1

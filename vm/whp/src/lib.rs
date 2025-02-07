@@ -31,7 +31,9 @@ use winapi::shared::ntdef::LUID;
 use winapi::shared::winerror;
 use winapi::um::winnt::DEVICE_POWER_STATE;
 use winerror::ERROR_BAD_PATHNAME;
-use zerocopy::AsBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Functions to get the WHP platform's capabilities.
 pub mod capabilities {
@@ -362,7 +364,7 @@ impl Partition {
             win32_bool: u32,
             banks: [u64; 8],
         }
-        fn set<T: AsBytes>(t: &mut T, v: T) -> &[u8] {
+        fn set<T: IntoBytes + Immutable + KnownLayout>(t: &mut T, v: T) -> &[u8] {
             *t = v;
             t.as_bytes()
         }

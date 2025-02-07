@@ -47,7 +47,7 @@ use std::task::Context;
 use thiserror::Error;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::line_interrupt::LineInterrupt;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 open_enum! {
     pub enum IdeIoPort: u16 {
@@ -1749,9 +1749,9 @@ mod tests {
     use std::task::Poll;
     use tempfile::NamedTempFile;
     use test_with_tracing::test;
-    use zerocopy::AsBytes;
     use zerocopy::FromBytes;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
 
     #[derive(Debug, Inspect)]
     struct MediaGeometry {
@@ -2292,7 +2292,9 @@ mod tests {
         // PIO - reads data from track cache buffer
         let data = &mut [0_u8; protocol::IDENTIFY_DEVICE_BYTES];
         ide_device.io_read(IdeIoPort::PRI_DATA.0, data).unwrap();
-        let features = protocol::IdeFeatures::read_from_prefix(&data[..]).unwrap();
+        let features = protocol::IdeFeatures::read_from_prefix(&data[..])
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let ex_features = protocol::IdeFeatures {
             config_bits: 0x85C0,
             serial_no: *b"                    ",
@@ -2313,7 +2315,7 @@ mod tests {
             recommended_multi_dma_time: 0x0078,
             min_pio_cycle_time_no_flow: 0x01FC, // Taken from a real CD device
             min_pio_cycle_time_flow: 0x00B4,    // Taken from a real CD device
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
         assert_eq!(features.as_bytes(), ex_features.as_bytes());
     }
@@ -2336,7 +2338,9 @@ mod tests {
         // PIO - reads data from track cache buffer
         let data = &mut [0_u8; protocol::IDENTIFY_DEVICE_BYTES];
         ide_device.io_read(IdeIoPort::PRI_DATA.0, data).unwrap();
-        let features = protocol::IdeFeatures::read_from_prefix(&data[..]).unwrap();
+        let features = protocol::IdeFeatures::read_from_prefix(&data[..])
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         let total_chs_sectors: u32 =
             geometry.sectors_per_track * geometry.cylinder_count * geometry.head_count;
@@ -2413,7 +2417,7 @@ mod tests {
             total_sectors_48_bit: geometry.total_sectors.into(),
             default_sector_size_config: 0x4000, // describes the sector size related info. Reflect the underlying device sector size and logical:physical ratio
             logical_block_alignment: 0x4000, // describes alignment of logical blocks within physical block
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
         assert_eq!(features.as_bytes(), ex_features.as_bytes());
     }

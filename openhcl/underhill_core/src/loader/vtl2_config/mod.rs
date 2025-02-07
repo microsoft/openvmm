@@ -24,7 +24,9 @@ use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_SIZE_PAGES;
 use memory_range::MemoryRange;
 use sparse_mmap::SparseMapping;
 use vm_topology::memory::MemoryRangeWithNode;
-use zerocopy::AsBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Structure that holds parameters provided at runtime. Some are read from the
 /// guest address space, and others from openhcl_boot provided via devicetree.
@@ -152,7 +154,10 @@ impl<'a> Vtl2ParamsMap<'a> {
         Ok(self.mapping.read_at(offset, buf)?)
     }
 
-    fn read_plain<T: AsBytes + zerocopy::FromBytes>(&self, offset: usize) -> anyhow::Result<T> {
+    fn read_plain<T: IntoBytes + zerocopy::FromBytes + Immutable + KnownLayout>(
+        &self,
+        offset: usize,
+    ) -> anyhow::Result<T> {
         Ok(self.mapping.read_plain(offset)?)
     }
 }

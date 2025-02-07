@@ -8,9 +8,10 @@
 use super::GdmaQueueType;
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 open_enum! {
     pub enum ManaCommandCode: u32 {
@@ -36,7 +37,7 @@ pub const MANA_VTL2_QUERY_FILTER_STATE_REQUEST_V1: u16 = 1;
 pub const MANA_VTL2_QUERY_FILTER_STATE_RESPONSE_V1: u16 = 1;
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct BasicNicDriverFlags {
     #[bits(1)]
     pub query_link_status: u8,
@@ -49,7 +50,7 @@ pub struct BasicNicDriverFlags {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaQueryDeviceCfgReq {
     pub mn_drv_cap_flags1: u64,
     pub mn_drv_cap_flags2: u64,
@@ -64,7 +65,7 @@ pub struct ManaQueryDeviceCfgReq {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaQueryDeviceCfgResp {
     pub pf_cap_flags1: BasicNicDriverFlags,
     pub pf_cap_flags2: u64,
@@ -104,13 +105,13 @@ impl ManaQueryDeviceCfgResp {
 
 /* Query vPort Configuration */
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaQueryVportCfgReq {
     pub vport_index: u32,
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaQueryVportCfgResp {
     pub max_num_sq: u32,
     pub max_num_rq: u32,
@@ -123,7 +124,7 @@ pub struct ManaQueryVportCfgResp {
 
 /* Move Filter invoked from VTL2 to move filter from VTL2 to VTL0 and back*/
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaMoveFilterVTL2PrivilegedReq {
     pub vport: u64,
     pub direction_to_vtl0: u8,
@@ -133,7 +134,7 @@ pub struct ManaMoveFilterVTL2PrivilegedReq {
 
 /* Set vport serial number. */
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaSetVportSerialNo {
     pub vport: u64,
     pub serial_no: u32,
@@ -142,20 +143,20 @@ pub struct ManaSetVportSerialNo {
 
 /* Get vport Filter State. */
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaQueryFilterStateReq {
     pub vport: u64,
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaQueryFilterStateResponse {
     pub direction_to_vtl0: u8,
     pub reserved: [u8; 7],
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaConfigVportReq {
     pub vport: u64,
     pub pdid: u32,
@@ -163,7 +164,7 @@ pub struct ManaConfigVportReq {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaConfigVportResp {
     pub tx_vport_offset: u16,
     pub short_form_allowed: u8,
@@ -171,7 +172,7 @@ pub struct ManaConfigVportResp {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaCreateWqobjReq {
     pub vport: u64,
     pub wq_type: GdmaQueueType,
@@ -185,7 +186,7 @@ pub struct ManaCreateWqobjReq {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaCreateWqobjResp {
     pub wq_id: u32,
     pub cq_id: u32,
@@ -193,7 +194,7 @@ pub struct ManaCreateWqobjResp {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaDestroyWqobjReq {
     pub wq_type: GdmaQueueType,
     pub reserved: u32,
@@ -201,13 +202,13 @@ pub struct ManaDestroyWqobjReq {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaFenceRqReq {
     pub wq_obj_handle: u64,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaCfgRxSteerReq {
     pub vport: u64,
     pub num_indir_entries: u16,
@@ -223,7 +224,7 @@ pub struct ManaCfgRxSteerReq {
 }
 
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
 pub struct Tristate(pub u32);
 
 impl Tristate {
@@ -243,7 +244,7 @@ impl From<Option<bool>> for Tristate {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaCqeHeader {
     #[bits(6)]
     pub cqe_type: u8,
@@ -273,7 +274,7 @@ pub const CQE_TX_VLAN_TAGGING_VIOLATION: u8 = 41;
 pub const MANA_CQE_COMPLETION: u8 = 1;
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaTxCompOob {
     pub cqe_hdr: ManaCqeHeader,
     pub tx_data_offset: u32,
@@ -282,7 +283,7 @@ pub struct ManaTxCompOob {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaTxCompOobOffsets {
     #[bits(5)]
     pub tx_sgl_offset: u32,
@@ -291,7 +292,7 @@ pub struct ManaTxCompOobOffsets {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaRxcompPerpktInfo {
     pub pkt_len: u16,
     pub reserved1: u16,
@@ -300,7 +301,7 @@ pub struct ManaRxcompPerpktInfo {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaRxcompOob {
     pub cqe_hdr: ManaCqeHeader,
     pub flags: ManaRxcompOobFlags,
@@ -309,7 +310,7 @@ pub struct ManaRxcompOob {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaRxcompOobFlags {
     #[bits(12)]
     pub rx_vlan_id: u32,
@@ -329,7 +330,7 @@ pub struct ManaRxcompOobFlags {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaTxShortOob {
     #[bits(2)]
     pub pkt_fmt: u8,
@@ -353,7 +354,7 @@ pub const MANA_SHORT_PKT_FMT: u8 = 0;
 pub const MANA_LONG_PKT_FMT: u8 = 1;
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaTxLongOob {
     pub is_encap: bool,
     pub inner_is_ipv6: bool,
@@ -378,7 +379,7 @@ pub struct ManaTxLongOob {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaTxOob {
     pub s_oob: ManaTxShortOob,
     pub l_oob: ManaTxLongOob,
@@ -441,13 +442,13 @@ pub const STATISTICS_FLAGS_ALL: u64 = STATISTICS_FLAGS_IN_DISCARDS_NO_WQE
     | STATISTICS_FLAGS_HC_OUT_BCAST_OCTETS;
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaQueryStatisticsRequest {
     pub requested_statistics: u64,
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ManaQueryStatisticsResponse {
     pub reported_statistics: u64,
     // In discards/errors

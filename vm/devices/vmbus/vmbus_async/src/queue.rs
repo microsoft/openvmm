@@ -34,9 +34,9 @@ use vmbus_ring::FlatRingMem;
 use vmbus_ring::IncomingPacketType;
 use vmbus_ring::IncomingRing;
 use vmbus_ring::RingMem;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// A queue error.
 #[derive(Debug, Error)]
@@ -256,15 +256,17 @@ impl<T: RingMem> DataPacket<'_, T> {
             return Err(AccessError::OutOfRange(0, 0));
         }
 
-        let mut buf: GpnList = smallvec![FromZeroes::new_zeroed(); len];
-        reader.read(buf.as_bytes_mut())?;
+        let mut buf: GpnList = smallvec![FromZeros::new_zeroed(); len];
+        reader.read(buf.as_mut_bytes())?;
 
         // Construct an array of the form [#1 offset/length][page1][page2][...][#2 offset/length][page1][page2]...
         // See MultiPagedRangeIter for more details.
         let transfer_buf: GpnList = buf
             .iter()
             .map(|range| {
-                let range_data = TransferPageRange::read_from_prefix(range.as_bytes()).unwrap();
+                let range_data = TransferPageRange::read_from_prefix(range.as_bytes())
+                    .unwrap()
+                    .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 let sub_range = transfer_buf
                     .subrange(
                         range_data.byte_offset as usize,
@@ -297,7 +299,7 @@ impl<T: RingMem> DataPacket<'_, T> {
         let len = reader.len() / 8;
         let mut buf = zeroed_gpn_list(len);
         reader
-            .read(buf.as_bytes_mut())
+            .read(buf.as_mut_bytes())
             .map_err(ExternalDataError::Access)?;
         MultiPagedRangeBuf::new(self.external_data.0 as usize, buf)
             .map_err(ExternalDataError::GpaRange)

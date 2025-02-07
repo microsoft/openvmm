@@ -5,10 +5,11 @@ use bitfield_struct::bitfield;
 use core::fmt::Display;
 use open_enum::open_enum;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::KnownLayout;
 
 open_enum! {
-    #[derive(FromBytes, FromZeroes)]
+    #[derive(FromBytes, Immutable, KnownLayout)]
     pub enum CpuidFunction : u32 {
         #![expect(non_upper_case_globals, reason = "TODO: rename to SHOUTING_CASE")]
         BasicMinimum = 0x00000000,

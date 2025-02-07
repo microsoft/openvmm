@@ -28,7 +28,7 @@ use std::task::Poll;
 use vmbus_async::async_dgram::AsyncRecv;
 use vmbus_client::SynicClient;
 use vmbus_client::VmbusMessageSource;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 /// Returns the synic client and message source for use with
 /// [`vmbus_client::VmbusClient`].
@@ -113,7 +113,7 @@ impl AsyncRecv for MessageSource {
         mut bufs: &mut [IoSliceMut<'_>],
     ) -> Poll<io::Result<usize>> {
         let mut msg = HvMessage::default();
-        let size = ready!(Pin::new(&mut self.pipe).poll_read(cx, msg.as_bytes_mut()))?;
+        let size = ready!(Pin::new(&mut self.pipe).poll_read(cx, msg.as_mut_bytes()))?;
         if size == 0 {
             return Ok(0).into();
         }

@@ -6,14 +6,14 @@
 use super::PetriVmConfigOpenVmm;
 use super::PetriVmOpenVmm;
 use crate::disk_image::build_agent_image;
-use crate::tracing::trace_attachment;
 use crate::worker::Worker;
 use crate::Firmware;
+use crate::PetriLogFile;
+use crate::PetriLogSource;
 use anyhow::Context;
 use diag_client::DiagClient;
 use disk_backend_resources::FileDiskHandle;
 use framebuffer::FramebufferAccess;
-use fs_err::File;
 use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
 use image::ColorType;
@@ -32,7 +32,6 @@ use pipette_client::PipetteClient;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::io::BufRead;
 use std::io::Write;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,7 +49,7 @@ impl PetriVmConfigOpenVmm {
 
             resources,
 
-            hvlite_log_file,
+            openvmm_log_file,
 
             ged,
             vtl2_settings,
@@ -74,7 +73,7 @@ impl PetriVmConfigOpenVmm {
 
         let mesh = Mesh::new("petri_mesh".to_string())?;
 
-        let host = Self::hvlite_host(&mesh, &resources.resolver, hvlite_log_file)
+        let host = Self::openvmm_host(&mesh, &resources.artifacts, openvmm_log_file)
             .await
             .context("failed to create host process")?;
         let (worker, halt_notif) = Worker::launch(&host, config)
@@ -86,7 +85,7 @@ impl PetriVmConfigOpenVmm {
             framebuffer_access,
             worker.clone(),
             vtl2_vsock_path,
-            &resources.output_dir,
+            &resources.log_source,
             &resources.driver,
         )?;
 
@@ -144,7 +143,7 @@ impl PetriVmConfigOpenVmm {
         let agent_disk = build_agent_image(
             self.arch,
             self.firmware.os_flavor(),
-            &self.resources.resolver,
+            &self.resources.artifacts,
         )
         .context("failed to build agent image")?;
 
@@ -199,7 +198,7 @@ impl PetriVmConfigOpenVmm {
                 Guid::from_static_str("766e96f8-2ceb-437e-afe3-a93169e48a7c");
 
             let uh_agent_disk =
-                build_agent_image(self.arch, OsFlavor::Linux, &self.resources.resolver)
+                build_agent_image(self.arch, OsFlavor::Linux, &self.resources.artifacts)
                     .context("failed to build agent image")?;
 
             self.config.vmbus_devices.push((
@@ -243,7 +242,7 @@ impl PetriVmConfigOpenVmm {
         framebuffer_access: Option<FramebufferAccess>,
         worker: Arc<Worker>,
         vtl2_vsock_path: Option<PathBuf>,
-        output_dir: &Path,
+        log_source: &PetriLogSource,
         driver: &DefaultDriver,
     ) -> anyhow::Result<Vec<Task<()>>> {
         // Our CI environment will kill tests after some time. We want to save
@@ -251,27 +250,32 @@ impl PetriVmConfigOpenVmm {
         const TIMEOUT_DURATION_MINUTES: u64 = 6;
         const TIMER_DURATION: Duration = Duration::from_secs(TIMEOUT_DURATION_MINUTES * 60 - 10);
 
-        let inspect_log_path = output_dir.join("timeout_inspect.log");
-        let ohcldiag_dev_inspect_log_path = output_dir.join("timeout_openhcl_inspect.log");
         let mut tasks = Vec::new();
 
         let mut timer = PolledTimer::new(driver);
-        tasks.push(driver.spawn("petri-watchdog-inspect", async move {
-            timer.sleep(TIMER_DURATION).await;
-            tracing::warn!("Test has been running for almost {TIMEOUT_DURATION_MINUTES} minutes, saving inspect details.");
+        tasks.push(driver.spawn("petri-watchdog-inspect", {
+            let log_source = log_source.clone();
+            async move {
+                timer.sleep(TIMER_DURATION).await;
+                tracing::warn!(
+                    "Test has been running for almost {TIMEOUT_DURATION_MINUTES} minutes,
+                     saving inspect details."
+                );
 
-            if let Err(e) = std::fs::write(&inspect_log_path, worker.inspect_all().await) {
-                tracing::error!(?e, "Failed to save inspect log");
-                return;
+                if let Err(e) =
+                    log_source.write_attachment("timeout_inspect.log", worker.inspect_all().await)
+                {
+                    tracing::error!(?e, "Failed to save inspect log");
+                    return;
+                }
+                tracing::info!("Watchdog inspect task finished.");
             }
-            tracing::info!("Watchdog inspect task finished.");
-            trace_attachment(inspect_log_path);
         }));
 
         if let Some(fba) = framebuffer_access {
             let mut view = fba.view()?;
             let mut timer = PolledTimer::new(driver);
-            let screenshot_output_dir = output_dir.to_owned();
+            let log_source = log_source.clone();
             tasks.push(driver.spawn("petri-watchdog-screenshot", async move {
                 let mut count = 0;
                 loop {
@@ -300,20 +304,24 @@ impl PetriVmConfigOpenVmm {
                         }
                     }
 
-                    let screenshot_path =
-                        screenshot_output_dir.join(format!("screenshot_{}.png", count));
+                    let r = log_source
+                        .create_attachment("screenshot.png")
+                        .and_then(|mut f| {
+                            image::write_buffer_with_format(
+                                &mut f,
+                                &image,
+                                width.into(),
+                                height.into(),
+                                ColorType::Rgba8,
+                                image::ImageFormat::Png,
+                            )
+                            .map_err(Into::into)
+                        });
 
-                    if let Err(e) = image::save_buffer(
-                        &screenshot_path,
-                        &image,
-                        width.into(),
-                        height.into(),
-                        ColorType::Rgba8,
-                    ) {
+                    if let Err(e) = r {
                         tracing::error!(?e, "Failed to save screenshot");
                     } else {
                         tracing::info!(count, "Screenshot saved.");
-                        trace_attachment(screenshot_path);
                     }
                 }
             }));
@@ -322,6 +330,7 @@ impl PetriVmConfigOpenVmm {
         if let Some(vtl2_vsock_path) = vtl2_vsock_path {
             let mut timer = PolledTimer::new(driver);
             let driver2 = driver.clone();
+            let log_source = log_source.clone();
             tasks.push(driver.spawn("petri-watchdog-inspect-vtl2", async move {
                 timer.sleep(TIMER_DURATION).await;
                 tracing::warn!(
@@ -340,23 +349,22 @@ impl PetriVmConfigOpenVmm {
                 };
 
                 let formatted_output = format!("{output:#}");
-                if let Err(e) = std::fs::write(&ohcldiag_dev_inspect_log_path, formatted_output) {
+                if let Err(e) = log_source.write_attachment("timeout_openhcl_inspect.log", formatted_output) {
                     tracing::error!(?e, "Failed to save ohcldiag-dev inspect log");
                     return;
                 }
 
                 tracing::info!("Watchdog OpenHCL inspect task finished.");
-                trace_attachment(ohcldiag_dev_inspect_log_path);
             }));
         }
 
         Ok(tasks)
     }
 
-    async fn hvlite_host(
+    async fn openvmm_host(
         mesh: &Mesh,
         resolver: &TestArtifacts,
-        mut log_file: File,
+        log_file: PetriLogFile,
     ) -> anyhow::Result<WorkerHost> {
         // Copy the child's stderr to this process's, since internally this is
         // wrapped by the test harness.
@@ -366,14 +374,7 @@ impl PetriVmConfigOpenVmm {
             for line in read.lines() {
                 match line {
                     Ok(line) => {
-                        tracing::info!(target: crate::tracing::OPENVMM_TARGET, "{}", line);
-                        // add a newline otherwise the file is unreadable
-                        if let Err(err) = log_file.write_all(format!("{line}\n").as_bytes()) {
-                            tracing::error!(
-                                error = &err as &dyn std::error::Error,
-                                "error writing hvlite stderr to file"
-                            );
-                        }
+                        log_file.write_entry(line);
                     }
                     Err(err) => {
                         tracing::warn!(
@@ -388,7 +389,7 @@ impl PetriVmConfigOpenVmm {
         let (host, runner) = mesh_worker::worker_host();
         mesh.launch_host(
             ProcessConfig::new("vmm")
-                .process_name(resolver.resolve(hvlite_artifacts::OPENVMM_NATIVE))
+                .process_name(resolver.get(hvlite_artifacts::OPENVMM_NATIVE))
                 .stderr(Some(stderr_write)),
             hvlite_defs::entrypoint::MeshHostParams { runner },
         )

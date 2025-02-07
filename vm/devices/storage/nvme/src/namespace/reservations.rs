@@ -11,8 +11,8 @@ use crate::spec;
 use crate::spec::nvm;
 use disk_backend::pr::PersistentReservation;
 use nvme_common::to_nvme_reservation_type;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 impl Namespace {
     pub(super) async fn reservation_register(
@@ -23,7 +23,7 @@ impl Namespace {
         let cdw10 = nvm::Cdw10ReservationRegister::from(command.cdw10);
         let mut data = nvm::ReservationRegister::new_zeroed();
         let range = PrpRange::parse(&self.mem, size_of_val(&data), command.dptr)?;
-        range.read(&self.mem, data.as_bytes_mut())?;
+        range.read(&self.mem, data.as_mut_bytes())?;
 
         let current_key = (!cdw10.iekey()).then_some(data.crkey);
         let ptpl = if pr.capabilities().persist_through_power_loss {
@@ -82,9 +82,9 @@ impl Namespace {
                     .map_or(nvm::ReservationType(0), to_nvme_reservation_type),
                 regctl: (report.controllers.len() as u16).into(),
                 ptpls: 0,
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             },
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         let controllers = report.controllers.iter().map(|controller| {
@@ -97,7 +97,7 @@ impl Namespace {
                     .with_holds_reservation(controller.holds_reservation),
                 hostid,
                 rkey: controller.key,
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             }
         });
 
@@ -116,7 +116,7 @@ impl Namespace {
                         rcsts: controller.rcsts,
                         hostid: controller.hostid[..8].try_into().unwrap(),
                         rkey: controller.rkey,
-                        ..FromZeroes::new_zeroed()
+                        ..FromZeros::new_zeroed()
                     }
                     .as_bytes(),
                 );
@@ -135,7 +135,7 @@ impl Namespace {
         let cdw10 = nvm::Cdw10ReservationAcquire::from(command.cdw10);
         let mut data = nvm::ReservationAcquire::new_zeroed();
         let range = PrpRange::parse(&self.mem, size_of_val(&data), command.dptr)?;
-        range.read(&self.mem, data.as_bytes_mut())?;
+        range.read(&self.mem, data.as_mut_bytes())?;
 
         // According to the spec, this is never to be set.
         if cdw10.iekey() {
@@ -176,7 +176,7 @@ impl Namespace {
         let cdw10 = nvm::Cdw10ReservationRelease::from(command.cdw10);
         let mut data = nvm::ReservationRelease::new_zeroed();
         let range = PrpRange::parse(&self.mem, size_of_val(&data), command.dptr)?;
-        range.read(&self.mem, data.as_bytes_mut())?;
+        range.read(&self.mem, data.as_mut_bytes())?;
 
         // According to the spec, this is never to be set.
         if cdw10.iekey() {

@@ -15,7 +15,7 @@ use mesh::rpc::RpcSend;
 use std::sync::Arc;
 use user_driver::vfio::VfioDmaBuffer;
 use vpci::bus_control::VpciBusEvent;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 /// Guest-side client for the GET.
 ///

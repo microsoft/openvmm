@@ -27,9 +27,11 @@ use page_table::IdentityMapSize;
 use std::ffi::CString;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Construct a zero page from the following parameters.
 /// TODO: support different acpi_base other than 0xe0000
@@ -53,9 +55,9 @@ pub fn build_zero_page(
             ramdisk_image: initrd_base.into(),
             ramdisk_size: initrd_size.into(),
             kernel_alignment: 0x100000.into(),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         },
-        ..FromZeroes::new_zeroed()
+        ..FromZeros::new_zeroed()
     };
 
     let mut ram = mem_layout.ram().iter().cloned();
@@ -461,7 +463,7 @@ where
 }
 
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum Aarch64ImagePageSize: u64 {
         UNSPECIFIED = 0,
         PAGE4_K = 1,
@@ -509,7 +511,7 @@ struct Aarch64ImageFlags {
 
 // Kernel boot protocol is specified in the Linux kernel
 // Documentation/arm64/booting.txt.
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[repr(C)]
 struct Aarch64ImageHeader {
     /// Executable code
@@ -571,7 +573,7 @@ where
 
     let mut header = Aarch64ImageHeader::new_zeroed();
     kernel_image
-        .read_exact(header.as_bytes_mut())
+        .read_exact(header.as_mut_bytes())
         .map_err(|_| Error::FlatLoader(FlatLoaderError::ReadKernelImage))?;
 
     tracing::debug!("aarch64 kernel header {header:x?}");

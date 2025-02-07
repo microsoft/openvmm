@@ -310,8 +310,8 @@ mod tests {
         data[..rsa_wrapped_dek.len()].copy_from_slice(&rsa_wrapped_dek);
 
         let result = KeyProtector::read_from_prefix(&data);
-        assert!(result.is_some());
-        let mut key_protector = result.unwrap();
+        assert!(result.is_ok());
+        let mut key_protector = result.unwrap().0;
         assert_eq!(
             key_protector.dek[ingress_index]
                 .dek_buffer
@@ -419,8 +419,8 @@ mod tests {
         data[..aes_wrapped_dek.len()].copy_from_slice(&aes_wrapped_dek);
 
         let result = KeyProtector::read_from_prefix(&data);
-        assert!(result.is_some());
-        let mut key_protector = result.unwrap();
+        assert!(result.is_ok());
+        let mut key_protector = result.unwrap().0;
         assert_eq!(
             key_protector.dek[ingress_index]
                 .dek_buffer
@@ -544,8 +544,8 @@ mod tests {
         data[..aes_wrapped_dek.len()].copy_from_slice(&aes_wrapped_dek);
 
         let result = KeyProtector::read_from_prefix(&data);
-        assert!(result.is_some());
-        let mut key_protector = result.unwrap();
+        assert!(result.is_ok());
+        let mut key_protector = result.unwrap().0;
 
         let result =
             key_protector.unwrap_and_rotate_keys(&kek, Some(rsa_wrapped_des.as_ref()), 0, 1);

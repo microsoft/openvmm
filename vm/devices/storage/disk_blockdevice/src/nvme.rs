@@ -13,9 +13,10 @@ use nvme_spec::nvm;
 use std::fs;
 use std::io;
 use std::os::unix::io::AsRawFd;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 mod ioctl {
     use nix::ioctl_readwrite;
@@ -76,7 +77,7 @@ enum Opcode {
 fn nvme_command(
     file: &fs::File,
     opcode: Opcode,
-    data: &mut (impl AsBytes + FromBytes + ?Sized),
+    data: &mut (impl IntoBytes + FromBytes + ?Sized + Immutable + KnownLayout),
     command: &NvmeCommand,
 ) -> io::Result<u32> {
     let mut cmd = ioctl::NvmeCmd {
@@ -89,9 +90,9 @@ fn nvme_command(
         cdw2: command.cdw2,
         cdw3: command.cdw3,
         metadata: 0,
-        addr: data.as_bytes_mut().as_mut_ptr() as u64,
+        addr: data.as_mut_bytes().as_mut_ptr() as u64,
         metadata_len: 0,
-        data_len: data.as_bytes_mut().len() as u32,
+        data_len: data.as_mut_bytes().len() as u32,
         cdw10: command.cdw10,
         cdw11: command.cdw11,
         cdw12: command.cdw12,
@@ -119,7 +120,7 @@ fn nvme_command(
 const PAGE_SIZE: usize = 4096;
 
 #[repr(C, align(4096))]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct Page([u8; PAGE_SIZE]);
 
 const ZERO_PAGE: Page = Page([0; PAGE_SIZE]);
@@ -178,7 +179,7 @@ fn nvme_reservation_report(
     // One page should be good enough for most cases. Just in case let caller set bigger buffer size.
     let size = std::cmp::max(size, PAGE_SIZE);
     let mut buffer = vec![ZERO_PAGE; size.div_ceil(PAGE_SIZE)];
-    let buffer = &mut buffer.as_bytes_mut()[..size];
+    let buffer = &mut buffer.as_mut_bytes()[..size];
     let cmd = NvmeCommand {
         ns_id,
         cdw10: nvm::Cdw10ReservationReport::new()
@@ -194,7 +195,9 @@ fn nvme_reservation_report(
         &cmd,
     )?;
 
-    let report_header = nvm::ReservationReportExtended::read_from_prefix(&*buffer).unwrap();
+    let report_header = nvm::ReservationReportExtended::read_from_prefix(&*buffer)
+        .unwrap()
+        .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     let mut controllers = Vec::new();
 
     // Return all controllers or none so caller can set correct buffer size and call again
@@ -207,7 +210,9 @@ fn nvme_reservation_report(
         if source + controller_count * source_step <= size {
             for _i in 0..controller_count {
                 let controller =
-                    nvm::RegisteredControllerExtended::read_from_prefix(&buffer[source..]).unwrap();
+                    nvm::RegisteredControllerExtended::read_from_prefix(&buffer[source..])
+                        .unwrap()
+                        .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 tracing::debug!(controller = ?controller, "nvme_reservation_report");
                 controllers.push(controller);
                 source += source_step;
@@ -247,7 +252,7 @@ pub fn nvme_identify_namespace_data(
 ) -> io::Result<nvm::IdentifyNamespace> {
     let size = size_of::<nvm::IdentifyNamespace>();
     let mut buffer = vec![ZERO_PAGE; size.div_ceil(PAGE_SIZE)];
-    let buffer = &mut buffer.as_bytes_mut()[..size];
+    let buffer = &mut buffer.as_mut_bytes()[..size];
     let cmd = NvmeCommand {
         ns_id,
         cdw10: nvme_spec::Cdw10Identify::new()
@@ -263,7 +268,7 @@ pub fn nvme_identify_namespace_data(
         &cmd,
     )?;
 
-    let data = nvm::IdentifyNamespace::read_from_prefix(buffer).unwrap();
+    let data = nvm::IdentifyNamespace::read_from_prefix(buffer).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     tracing::trace!(?data, "nvme_identify_namespace_data");
     Ok(data)
 }
@@ -271,7 +276,7 @@ pub fn nvme_identify_namespace_data(
 pub fn nvme_identify_controller_data(file: &fs::File) -> io::Result<nvme_spec::IdentifyController> {
     let size = size_of::<nvme_spec::IdentifyController>();
     let mut buffer = vec![ZERO_PAGE; size.div_ceil(PAGE_SIZE)];
-    let buffer = &mut buffer.as_bytes_mut()[..size];
+    let buffer = &mut buffer.as_mut_bytes()[..size];
     let cmd = NvmeCommand {
         cdw10: nvme_spec::Cdw10Identify::new()
             .with_cns(nvme_spec::Cns::CONTROLLER.0)
@@ -286,7 +291,9 @@ pub fn nvme_identify_controller_data(file: &fs::File) -> io::Result<nvme_spec::I
         &cmd,
     )?;
 
-    let data = nvme_spec::IdentifyController::read_from_prefix(buffer).unwrap();
+    let data = nvme_spec::IdentifyController::read_from_prefix(buffer)
+        .unwrap()
+        .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     tracing::trace!(?data, "nvme_identify_controller_data");
     Ok(data)
 }

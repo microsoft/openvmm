@@ -168,7 +168,6 @@ time = { workspace = true, features = ["macros"] }
 tracing-subscriber = { workspace = true, features = ["registry"] }
 tracing.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 firmware_pcat.workspace = true
 

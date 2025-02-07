@@ -6,9 +6,10 @@
 use bitfield_struct::bitfield;
 use core::mem::size_of;
 use guid::Guid;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 fn align_8(x: usize) -> usize {
     (x + 7) & !7
@@ -110,7 +111,7 @@ impl Default for Blob {
     }
 }
 
-pub trait BlobStructure: AsBytes + FromBytes {
+pub trait BlobStructure: IntoBytes + FromBytes + Immutable + KnownLayout {
     const STRUCTURE_TYPE: BlobStructureType;
 }
 
@@ -200,7 +201,7 @@ pub enum BlobStructureType {
 // header.
 //
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Header {
     pub structure_type: u32,
     pub length: u32,
@@ -213,14 +214,14 @@ pub struct Header {
 // NOTE: TotalConfigBlobSize is in bytes.
 //
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct StructureCount {
     pub total_structure_count: u32,
     pub total_config_blob_size: u32,
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct BiosInformation {
     pub bios_size_pages: u32,
     // struct {
@@ -247,7 +248,7 @@ pub const VM_MEMORY_RANGE_FLAG_PERSISTENT: u32 = 0x2;
 pub const VM_MEMORY_RANGE_FLAG_SPECIFIC_PURPOSE: u32 = 0x4;
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MemoryRangeV5 {
     pub base_address: u64,
     pub length: u64,
@@ -256,7 +257,7 @@ pub struct MemoryRangeV5 {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Entropy(pub [u8; 64]);
 
 impl Default for Entropy {
@@ -266,11 +267,11 @@ impl Default for Entropy {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct BiosGuid(pub Guid);
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Smbios31ProcessorInformation {
     pub processor_id: u64,
     pub external_clock: u16,
@@ -286,7 +287,7 @@ pub struct Smbios31ProcessorInformation {
 }
 
 #[bitfield(u64, debug = false)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Flags {
     pub serial_controllers_enabled: bool,
     pub pause_after_boot_failure: bool,
@@ -374,7 +375,7 @@ impl MemoryProtection {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ProcessorInformation {
     pub max_processor_count: u32,
     pub processor_count: u32,
@@ -383,31 +384,31 @@ pub struct ProcessorInformation {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes, Copy, Clone)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Copy, Clone)]
 pub struct Mmio {
     pub mmio_page_number_start: u64,
     pub mmio_size_in_pages: u64,
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MmioRanges(pub [Mmio; 2]);
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NvdimmCount {
     pub count: u16,
     pub padding: [u16; 3],
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpciInstanceFilter {
     pub instance_guid: Guid,
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Gic {
     pub gic_distributor_base: u64,
     pub gic_redistributors_base: u64,
@@ -419,9 +420,11 @@ mod tests {
 
     fn read<T>(bytes: &[u8]) -> T
     where
-        T: FromBytes,
+        T: FromBytes + Immutable + KnownLayout,
     {
-        T::read_from_prefix(bytes).expect("byte slice should always be big enough")
+        T::read_from_prefix(bytes)
+            .expect("byte slice should always be big enough")
+            .0
     }
 
     fn add_one_dynamic(length: usize) {

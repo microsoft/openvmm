@@ -11,9 +11,10 @@ use bitfield_struct::bitfield;
 use inspect::Inspect;
 use open_enum::open_enum;
 use std::fmt::Debug;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 pub const VENDOR_ID: u16 = 0x1414;
 pub const DEVICE_ID: u16 = 0x00BA;
@@ -22,7 +23,7 @@ pub const PAGE_SIZE32: u32 = 4096;
 pub const PAGE_SIZE64: u64 = 4096;
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes, Inspect)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
 pub struct RegMap {
     #[inspect(hex)]
     pub micro_version_number: u16,
@@ -76,7 +77,7 @@ pub struct WqDoorbellValue {
 
 // Shmem
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SmcProtoHdr {
     #[bits(3)]
     pub msg_type: u8,
@@ -105,7 +106,7 @@ pub const SMC_MSG_TYPE_DESTROY_HWC_VERSION: u8 = 0;
 pub const SMC_MSG_TYPE_REPORT_HWC_TIMEOUT_VERSION: u8 = 1;
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct EstablishHwc {
     pub eq: [u8; 6],
     pub cq: [u8; 6],
@@ -118,7 +119,7 @@ pub struct EstablishHwc {
 
 // Wq
 #[repr(C, align(8))]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Wqe {
     pub header: WqeHeader,
     pub data: [u8; 512 - 8],
@@ -132,7 +133,7 @@ impl Wqe {
     }
 
     pub fn sgl(&self) -> &[Sge] {
-        Sge::slice_from_prefix(
+        <[Sge]>::ref_from_prefix_with_elems(
             &self.data[self.header.sgl_offset()..],
             self.header.params.num_sgl_entries() as usize,
         )
@@ -142,7 +143,7 @@ impl Wqe {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct WqeHeader {
     pub reserved: [u8; 3],
     pub last_vbytes: u8,
@@ -183,7 +184,7 @@ impl WqeHeader {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct WqeParams {
     pub num_sgl_entries: u8,
     #[bits(3)]
@@ -202,7 +203,7 @@ pub const CLIENT_OOB_24: u8 = 6;
 pub const CLIENT_OOB_32: u8 = 7;
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Sge {
     pub address: u64,
     pub mem_key: u32,
@@ -210,14 +211,14 @@ pub struct Sge {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Cqe {
     pub data: [u8; 60],
     pub params: CqeParams,
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CqeParams {
     #[bits(24)]
     pub wq_number: u32,
@@ -233,14 +234,14 @@ pub const OWNER_BITS: u32 = 3;
 pub const OWNER_MASK: u32 = (1 << OWNER_BITS) - 1;
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Eqe {
     pub data: [u8; 12],
     pub params: EqeParams,
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct EqeParams {
     pub event_type: u8,
     pub reserved: u8,
@@ -258,14 +259,14 @@ pub const GDMA_EQE_HWC_INIT_DONE: u8 = 131;
 pub const GDMA_EQE_HWC_RECONFIG_DATA: u8 = 133;
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HwcInitEqIdDb {
     pub eq_id: u16,
     pub doorbell: u16,
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HwcInitTypeData {
     #[bits(24)]
     pub value: u32,
@@ -276,7 +277,7 @@ pub const HWC_DATA_CONFIG_HWC_TIMEOUT: u8 = 1;
 pub const HWC_DATA_TYPE_HW_VPORT_LINK_CONNECT: u8 = 2;
 pub const HWC_DATA_TYPE_HW_VPORT_LINK_DISCONNECT: u8 = 3;
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct EqeDataReconfig {
     pub data: [u8; 3],
     pub data_type: u8,
@@ -294,7 +295,7 @@ pub const HWC_INIT_DATA_PDID: u8 = 8;
 pub const HWC_INIT_DATA_GPA_MKEY: u8 = 9;
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum GdmaRequestType : u32 {
         GDMA_VERIFY_VF_DRIVER_VERSION = 1,
         GDMA_QUERY_MAX_RESOURCES = 2,
@@ -312,7 +313,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaMsgHdr {
     pub hdr_type: u32,
     pub msg_type: u32,
@@ -326,14 +327,14 @@ pub const GDMA_STANDARD_HEADER_TYPE: u32 = 0;
 pub const GDMA_MESSAGE_V1: u16 = 1;
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
 pub struct GdmaDevId {
     pub ty: GdmaDevType,
     pub instance: u16,
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum GdmaDevType: u16 {
         GDMA_DEVICE_NONE = 0,
         GDMA_DEVICE_HWC = 1,
@@ -347,7 +348,7 @@ pub const HWC_DEV_ID: GdmaDevId = GdmaDevId {
 };
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaReqHdr {
     pub req: GdmaMsgHdr,
     pub resp: GdmaMsgHdr,
@@ -356,7 +357,7 @@ pub struct GdmaReqHdr {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaRespHdr {
     pub response: GdmaMsgHdr,
     pub dev_id: GdmaDevId,
@@ -366,13 +367,13 @@ pub struct GdmaRespHdr {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaGenerateTestEventReq {
     pub queue_index: u32,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HwcTxOob {
     pub reserved: u64,
     pub flags1: HwcTxOobFlags1,
@@ -382,7 +383,7 @@ pub struct HwcTxOob {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HwcTxOobFlags1 {
     #[bits(24)]
     pub vrq_id: u32,
@@ -390,7 +391,7 @@ pub struct HwcTxOobFlags1 {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HwcTxOobFlags2 {
     #[bits(24)]
     pub vrcq_id: u32,
@@ -398,7 +399,7 @@ pub struct HwcTxOobFlags2 {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HwcTxOobFlags3 {
     #[bits(24)]
     pub vscq_id: u32,
@@ -410,7 +411,7 @@ pub struct HwcTxOobFlags3 {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HwcTxOobFlags4 {
     #[bits(24)]
     pub vsq_id: u32,
@@ -418,7 +419,7 @@ pub struct HwcTxOobFlags4 {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HwcRxOob {
     pub flags: HwcRxOobFlags,
     pub reserved2: u32,
@@ -430,7 +431,7 @@ pub struct HwcRxOob {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HwcRxOobFlags {
     #[bits(6)]
     pub ty: u8,
@@ -449,7 +450,7 @@ pub const DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT: u64 = 0x20;
 pub const DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE: u64 = 0x40;
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaVerifyVerReq {
     pub protocol_ver_min: u64,
     pub protocol_ver_max: u64,
@@ -472,7 +473,7 @@ pub struct GdmaVerifyVerReq {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaVerifyVerResp {
     pub gdma_protocol_ver: u64,
     pub pf_cap_flags1: u64,
@@ -482,7 +483,7 @@ pub struct GdmaVerifyVerResp {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaQueryMaxResourcesResp {
     pub status: u32,
     pub max_sq: u32,
@@ -497,7 +498,7 @@ pub struct GdmaQueryMaxResourcesResp {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaListDevicesResp {
     pub num_of_devs: u32,
     pub reserved: u32,
@@ -505,7 +506,7 @@ pub struct GdmaListDevicesResp {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaRegisterDeviceResp {
     pub pdid: u32,
     pub gpa_mkey: u32,
@@ -513,7 +514,7 @@ pub struct GdmaRegisterDeviceResp {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaCreateDmaRegionReq {
     pub length: u64,
     pub offset_in_page: u32,
@@ -526,19 +527,19 @@ pub struct GdmaCreateDmaRegionReq {
 pub const GDMA_PAGE_TYPE_4K: u32 = 0;
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaCreateDmaRegionResp {
     pub gdma_region: u64,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaDestroyDmaRegionReq {
     pub gdma_region: u64,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaCreateQueueReq {
     pub queue_type: GdmaQueueType,
     pub reserved1: u32,
@@ -559,7 +560,7 @@ pub struct GdmaCreateQueueReq {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum GdmaQueueType: u32 {
         GDMA_SQ = 1,
         GDMA_RQ = 2,
@@ -569,13 +570,13 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaCreateQueueResp {
     pub queue_index: u32,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaDisableQueueReq {
     pub queue_type: GdmaQueueType,
     pub queue_index: u32,
@@ -583,7 +584,7 @@ pub struct GdmaDisableQueueReq {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaChangeMsixVectorIndexForEq {
     pub queue_index: u32,
     pub msix: u32,

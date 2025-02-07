@@ -21,8 +21,8 @@ use x86defs::SegmentRegister;
 use x86emu::Gp;
 use x86emu::RegisterIndex;
 use x86emu::Segment;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 /// Support routines for the emulator.
 pub trait EmulatorSupport {
@@ -995,7 +995,7 @@ fn vtl_access_event(
             _reserved3: 0,
         };
 
-        hvdef::HvX64PendingEvent::read_from(memory_event.as_bytes())
+        hvdef::HvX64PendingEvent::read_from_bytes(memory_event.as_bytes())
             .expect("memory event and pending event should be the same size")
     } else {
         gpf_event()

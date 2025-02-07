@@ -28,7 +28,6 @@ parking_lot.workspace = true
 tracing.workspace = true
 vfio-bindings.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(target_os = "linux")'.dependencies]
 fs-err.workspace = true
 futures.workspace = true

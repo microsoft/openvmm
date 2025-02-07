@@ -6,9 +6,11 @@
 use bitfield_struct::bitfield;
 use guid::Guid;
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::NativeEndian;
 use zerocopy::U64;
 
@@ -21,7 +23,7 @@ pub const MMIO_PAGE_CONFIG_SPACE: u64 = 0x1000;
 pub const MMIO_PAGE_MASK: u64 = !0xfff;
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum MessageType: u32 {
         BUS_RELATIONS = 0x42490000,
         QUERY_BUS_RELATIONS = 0x42490001,
@@ -53,7 +55,7 @@ open_enum! {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum ResourceType: u8 {
         NULL = 0,
         PORT = 1,
@@ -70,7 +72,7 @@ pub const GUID_VPCI_VSP_CHANNEL_TYPE: Guid =
     Guid::from_static_str("44C4F61D-4444-4400-9D52-802E27EDE19F");
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum ProtocolVersion: u32 {
         WIN8 = 0x00010000,
         WIN10 = 0x00010001,
@@ -83,14 +85,14 @@ pub const MAXIMUM_PACKET_SIZE: usize = size_of::<DeviceTranslate>()
     + size_of::<MsiResource3>() * MAX_SUPPORTED_INTERRUPT_MESSAGES as usize;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct QueryProtocolVersion {
     pub message_type: MessageType,
     pub protocol_version: ProtocolVersion,
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum Status: u32 {
         SUCCESS = 0,
         REVISION_MISMATCH = 0xC0000059,
@@ -99,14 +101,14 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct QueryProtocolVersionReply {
     pub status: Status,
     pub protocol_version: ProtocolVersion,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PnpId {
     pub vendor_id: u16,
     pub device_id: u16,
@@ -119,7 +121,7 @@ pub struct PnpId {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DeviceDescription {
     pub pnp_id: PnpId,
     pub slot: SlotNumber,
@@ -127,7 +129,7 @@ pub struct DeviceDescription {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct QueryBusRelations {
     pub message_type: MessageType,
     pub device_count: u32,
@@ -135,7 +137,7 @@ pub struct QueryBusRelations {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DeviceDescription2 {
     pub pnp_id: PnpId,
     pub slot: SlotNumber,
@@ -146,7 +148,7 @@ pub struct DeviceDescription2 {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct QueryBusRelations2 {
     pub message_type: MessageType,
     pub device_count: u32,
@@ -154,7 +156,7 @@ pub struct QueryBusRelations2 {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
 pub struct SlotNumber {
     #[bits(5)]
     pub device: u8,
@@ -165,21 +167,21 @@ pub struct SlotNumber {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct QueryResourceRequirements {
     pub message_type: MessageType,
     pub slot: SlotNumber,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct QueryResourceRequirementsReply {
     pub status: Status,
     pub bars: [u32; 6],
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GetResources {
     pub message_type: MessageType,
     pub slot: SlotNumber,
@@ -187,7 +189,7 @@ pub struct GetResources {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PartialResourceList {
     pub version: u16,
     pub revision: u16,
@@ -196,7 +198,7 @@ pub struct PartialResourceList {
 }
 
 #[bitfield(u16)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ResourceFlags {
     #[bits(9)]
     pub reserved: u16,
@@ -208,7 +210,7 @@ pub struct ResourceFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FdoD0Entry {
     pub message_type: MessageType,
     pub padding: u32,
@@ -216,7 +218,7 @@ pub struct FdoD0Entry {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PartialResourceDescriptor {
     pub resource_type: ResourceType,
     pub share_disposition: u8,
@@ -228,14 +230,14 @@ pub struct PartialResourceDescriptor {
 
 // < VPCI_PROTOCOL_VERSION_RS1
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MsiResource {
     // union of Descriptor (request) and remap (response)
     pub resource_data: [u64; 2],
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MsiResourceRemapped {
     pub reserved: u16,
     pub message_count: u16,
@@ -244,7 +246,7 @@ pub struct MsiResourceRemapped {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MsiResourceDescriptor {
     pub vector: u8,
     pub delivery_mode: u8,
@@ -254,7 +256,7 @@ pub struct MsiResourceDescriptor {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MsiResourceDescriptor2 {
     pub vector: u8,
     pub delivery_mode: u8,
@@ -265,7 +267,7 @@ pub struct MsiResourceDescriptor2 {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MsiResourceDescriptor3 {
     pub vector: u32,
     pub delivery_mode: u8,
@@ -294,25 +296,33 @@ impl From<MsiResourceDescriptor> for MsiResource {
 
 impl MsiResource {
     pub fn remapped(&self) -> &MsiResourceRemapped {
-        MsiResourceRemapped::ref_from_prefix(self.resource_data.as_bytes()).unwrap()
+        MsiResourceRemapped::ref_from_prefix(self.resource_data.as_bytes())
+            .unwrap()
+            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     pub fn remapped_mut(&mut self) -> &mut MsiResourceRemapped {
-        MsiResourceRemapped::mut_from_prefix(self.resource_data.as_bytes_mut()).unwrap()
-    }
+        MsiResourceRemapped::mut_from_prefix(self.resource_data.as_mut_bytes())
+            .unwrap()
+            .0
+    } // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
     pub fn descriptor(&self) -> &MsiResourceDescriptor {
-        MsiResourceDescriptor::ref_from_prefix(self.resource_data.as_bytes()).unwrap()
+        MsiResourceDescriptor::ref_from_prefix(self.resource_data.as_bytes())
+            .unwrap()
+            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     pub fn descriptor_mut(&mut self) -> &mut MsiResourceDescriptor {
-        MsiResourceDescriptor::mut_from_prefix(self.resource_data.as_bytes_mut()).unwrap()
-    }
+        MsiResourceDescriptor::mut_from_prefix(self.resource_data.as_mut_bytes())
+            .unwrap()
+            .0
+    } // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 }
 
 // >= VPCI_PROTOCOL_VERSION_RS1
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MsiResource2 {
     // union of Descriptor (request) and remap (response)
     pub resource_data: [u64; 9],
@@ -336,24 +346,32 @@ impl From<MsiResourceDescriptor2> for MsiResource2 {
 
 impl MsiResource2 {
     pub fn remapped(&self) -> &MsiResourceRemapped {
-        MsiResourceRemapped::ref_from_prefix(self.resource_data.as_bytes()).unwrap()
+        MsiResourceRemapped::ref_from_prefix(self.resource_data.as_bytes())
+            .unwrap()
+            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     pub fn remapped_mut(&mut self) -> &mut MsiResourceRemapped {
-        MsiResourceRemapped::mut_from_prefix(self.resource_data.as_bytes_mut()).unwrap()
-    }
+        MsiResourceRemapped::mut_from_prefix(self.resource_data.as_mut_bytes())
+            .unwrap()
+            .0
+    } // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
     pub fn descriptor(&self) -> &MsiResourceDescriptor2 {
-        MsiResourceDescriptor2::ref_from_prefix(self.resource_data.as_bytes()).unwrap()
+        MsiResourceDescriptor2::ref_from_prefix(self.resource_data.as_bytes())
+            .unwrap()
+            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     pub fn descriptor_mut(&mut self) -> &mut MsiResourceDescriptor2 {
-        MsiResourceDescriptor2::mut_from_prefix(self.resource_data.as_bytes_mut()).unwrap()
-    }
+        MsiResourceDescriptor2::mut_from_prefix(self.resource_data.as_mut_bytes())
+            .unwrap()
+            .0
+    } // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MsiResource3 {
     // union of Descriptor (request) and remap (response)
     pub resource_data: [u64; 10],
@@ -377,26 +395,34 @@ impl From<MsiResourceDescriptor3> for MsiResource3 {
 
 impl MsiResource3 {
     pub fn remapped(&self) -> &MsiResourceRemapped {
-        MsiResourceRemapped::ref_from_prefix(self.resource_data.as_bytes()).unwrap()
+        MsiResourceRemapped::ref_from_prefix(self.resource_data.as_bytes())
+            .unwrap()
+            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     pub fn remapped_mut(&mut self) -> &mut MsiResourceRemapped {
-        MsiResourceRemapped::mut_from_prefix(self.resource_data.as_bytes_mut()).unwrap()
-    }
+        MsiResourceRemapped::mut_from_prefix(self.resource_data.as_mut_bytes())
+            .unwrap()
+            .0
+    } // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
     pub fn descriptor(&self) -> &MsiResourceDescriptor3 {
-        MsiResourceDescriptor3::ref_from_prefix(self.resource_data.as_bytes()).unwrap()
+        MsiResourceDescriptor3::ref_from_prefix(self.resource_data.as_bytes())
+            .unwrap()
+            .0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     pub fn descriptor_mut(&mut self) -> &mut MsiResourceDescriptor3 {
-        MsiResourceDescriptor3::mut_from_prefix(self.resource_data.as_bytes_mut()).unwrap()
-    }
+        MsiResourceDescriptor3::mut_from_prefix(self.resource_data.as_mut_bytes())
+            .unwrap()
+            .0
+    } // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 }
 
 pub const MAX_SUPPORTED_INTERRUPT_MESSAGES: u32 = 494; // 500 resources minus 6 for the BARs.
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DeviceTranslate {
     pub message_type: MessageType,
     pub slot: SlotNumber,
@@ -407,7 +433,7 @@ pub struct DeviceTranslate {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DeviceTranslateReply {
     pub status: Status,
     pub slot: SlotNumber,
@@ -418,7 +444,7 @@ pub struct DeviceTranslateReply {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CreateInterrupt {
     pub message_type: MessageType,
     pub slot: SlotNumber,
@@ -426,7 +452,7 @@ pub struct CreateInterrupt {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CreateInterruptReply {
     pub status: Status,
     pub rsvd: u32,
@@ -434,7 +460,7 @@ pub struct CreateInterruptReply {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CreateInterrupt2 {
     pub message_type: MessageType,
     pub slot: SlotNumber,
@@ -442,7 +468,7 @@ pub struct CreateInterrupt2 {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DeleteInterrupt {
     pub message_type: MessageType,
     pub slot: SlotNumber,
@@ -450,7 +476,7 @@ pub struct DeleteInterrupt {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DevicePowerChange {
     pub message_type: MessageType,
     pub slot: SlotNumber,
@@ -458,7 +484,7 @@ pub struct DevicePowerChange {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum DevicePowerState: u32 {
         D0 = 1,
         D3 = 4,
@@ -466,7 +492,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PdoMessage {
     pub message_type: MessageType,
     pub slot: SlotNumber,

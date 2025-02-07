@@ -61,10 +61,10 @@ use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE32;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
-use user_driver::HostDmaAllocator;
+use user_driver::DmaClient;
 use vmcore::slim_event::SlimEvent;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 /// Per queue limit, in number of pages.
 /// Used to handle bounce buffering non-contiguous network packet headers.
@@ -305,7 +305,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
         let tx_max = tx_cq_size / size_of::<Cqe>() as u32;
 
         let tx_bounce_buffer = ContiguousBufferManager::new(
-            &self.vport.host_allocator().await,
+            self.vport.dma_client().await,
             if self.bounce_buffer {
                 TX_BOUNCE_BUFFER_PAGE_LIMIT
             } else {
@@ -317,7 +317,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
         let rx_bounce_buffer = if self.bounce_buffer {
             Some(
                 ContiguousBufferManager::new(
-                    &self.vport.host_allocator().await,
+                    self.vport.dma_client().await,
                     RX_BOUNCE_BUFFER_PAGE_LIMIT,
                 )
                 .context("failed to allocate rx bounce buffer")?,
@@ -797,7 +797,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         while i < packets.len() {
             if let Some(cqe) = self.rx_cq.pop() {
                 let rx = self.posted_rx.pop_front().unwrap();
-                let rx_oob = ManaRxcompOob::read_from_prefix(&cqe.data[..]).unwrap();
+                let rx_oob = ManaRxcompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 match rx_oob.cqe_hdr.cqe_type() {
                     CQE_RX_OKAY => {
                         let ip_checksum = if rx_oob.flags.rx_iphdr_csum_succeed() {
@@ -902,7 +902,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         let mut i = 0;
         while i < done.len() {
             let id = if let Some(cqe) = self.tx_cq.pop() {
-                let tx_oob = ManaTxCompOob::read_from_prefix(&cqe.data[..]).unwrap();
+                let tx_oob = ManaTxCompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 match tx_oob.cqe_hdr.cqe_type() {
                     CQE_TX_OKAY => {
                         self.stats.tx_packets += 1;
@@ -1221,9 +1221,9 @@ struct ContiguousBufferManager {
 struct OutOfMemory;
 
 impl ContiguousBufferManager {
-    pub fn new<T: HostDmaAllocator>(host_allocator: &T, page_limit: u32) -> anyhow::Result<Self> {
+    pub fn new(dma_client: Arc<dyn DmaClient>, page_limit: u32) -> anyhow::Result<Self> {
         let len = PAGE_SIZE32 * page_limit;
-        let mem = host_allocator.allocate_dma_buffer(len as usize)?;
+        let mem = dma_client.allocate_dma_buffer(len as usize)?;
         Ok(Self {
             len,
             head: 0,

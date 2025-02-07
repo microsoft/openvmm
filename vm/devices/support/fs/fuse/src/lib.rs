@@ -26,9 +26,10 @@ use lx::LxStr;
 use lx::LxString;
 use protocol::*;
 use std::time::Duration;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Reply data for the `create` operation.
 ///
@@ -36,7 +37,7 @@ use zerocopy::FromZeroes;
 /// combination of these values as they're just passed as separate arguments to `fuse_reply_create`
 /// in libfuse.
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CreateOut {
     pub entry: fuse_entry_out,
     pub open: fuse_open_out,

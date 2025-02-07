@@ -18,9 +18,10 @@
 
 use super::config::SmbiosProcessorInfoBundle;
 use core::mem::size_of;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// reSearch query: `RootCpuData::GetVpDmiInfo`
 pub(crate) fn get_vp_dmi_info(
@@ -108,7 +109,7 @@ pub(crate) fn get_vp_dmi_info(
 
 // reSearch query: `SMBIOS_HEADER`
 #[repr(C, packed)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes, Clone, Copy)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Clone, Copy)]
 struct SmbiosHeader {
     structure_type: u8,
     length: u8,
@@ -122,7 +123,7 @@ struct SmbiosHeader {
 ///
 /// reSearch query: `SMBIOS_CPU_INFO_FORMATTED`
 #[repr(C, packed)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes, Clone, Copy)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Clone, Copy)]
 struct SmbiosCpuInfoFormatted {
     header: SmbiosHeader,
     socket_designation: u8,
@@ -173,14 +174,15 @@ const MAX_SMBIOS_STRING_TABLE_LENGTH: usize =
 
 /// reSearch query: `SMBIOS_CPU_INFO_STRINGS_LEGACY`
 #[repr(C, packed)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes, Clone, Copy)]
-struct SmbiosCpuInfoStringsLegacy {
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Clone, Copy)]
+// TODO: zerocopy: remove `pub(crate)` once this issue is resolved: https://github.com/google/zerocopy/issues/2177 (https://github.com/microsoft/openvmm/issues/759)
+pub(crate) struct SmbiosCpuInfoStringsLegacy {
     string_table: [u8; MAX_SMBIOS_STRING_TABLE_LEGACY_LENGTH],
 }
 
 /// reSearch query: `SMBIOS_CPU_INFO_STRINGS`
 #[repr(C, packed)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes, Clone, Copy)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Clone, Copy)]
 struct SmbiosCpuInfoStrings {
     string_table: [u8; MAX_SMBIOS_STRING_TABLE_LENGTH],
 }
@@ -191,7 +193,7 @@ static_assertions::const_assert!(
 
 /// reSearch query: `SMBIOS_CPU_INFORMATION_LEGACY`
 #[repr(C, packed)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes, Clone, Copy)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Clone, Copy)]
 pub(crate) struct SmbiosCpuInfoLegacy {
     formatted: SmbiosCpuInfoFormatted,
     unformatted: SmbiosCpuInfoStringsLegacy,

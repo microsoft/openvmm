@@ -23,9 +23,9 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use thiserror::Error;
 use vmcore::vm_task::VmTaskDriver;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// An error getting a namespace.
 #[derive(Debug, Error)]
@@ -404,7 +404,9 @@ impl Namespace {
                 )
                 .await?;
 
-            let header = nvm::ReservationReportExtended::read_from_prefix(&data[..]).unwrap();
+            let header = nvm::ReservationReportExtended::read_from_prefix(&data[..])
+                .unwrap()
+                .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             let len = size_of_val(&header)
                 + header.report.regctl.get() as usize
                     * size_of::<nvm::RegisteredControllerExtended>();
@@ -420,7 +422,7 @@ impl Namespace {
             ];
 
             controllers
-                .as_bytes_mut()
+                .as_mut_bytes()
                 .copy_from_slice(&data[size_of_val(&header)..len]);
 
             break Ok((header, controllers));
@@ -623,7 +625,7 @@ async fn identify_namespace(
                     .into(),
                 ..admin_cmd(spec::AdminOpcode::IDENTIFY)
             },
-            identify.as_bytes_mut(),
+            identify.as_mut_bytes(),
         )
         .await?;
     Ok(identify)
@@ -633,6 +635,6 @@ fn nvm_cmd(opcode: nvm::NvmOpcode, nsid: u32) -> spec::Command {
     spec::Command {
         cdw0: spec::Cdw0::new().with_opcode(opcode.0),
         nsid,
-        ..FromZeroes::new_zeroed()
+        ..FromZeros::new_zeroed()
     }
 }

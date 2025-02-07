@@ -17,7 +17,6 @@ aarch64emu.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 
 [lints]

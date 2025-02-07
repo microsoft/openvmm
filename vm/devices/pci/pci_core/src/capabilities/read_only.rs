@@ -1,21 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A generic, read-only PCI Capability (backed by an [`AsBytes`] type).
+//! A generic, read-only PCI Capability (backed by an [`IntoBytes`] type).
 
 use super::PciCapability;
 use inspect::Inspect;
 use std::fmt::Debug;
-use zerocopy::AsBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
-/// Helper to define a read-only [`PciCapability`] from an [`AsBytes`] type.
+/// Helper to define a read-only [`PciCapability`] from an [`IntoBytes`] type.
 #[derive(Debug)]
 pub struct ReadOnlyCapability<T> {
     label: String,
     data: T,
 }
 
-impl<T: AsBytes> ReadOnlyCapability<T> {
+impl<T: IntoBytes + Immutable + KnownLayout> ReadOnlyCapability<T> {
     /// Create a new [`ReadOnlyCapability`]
     pub fn new(label: impl Into<String>, data: T) -> Self {
         Self {
@@ -35,7 +37,7 @@ impl<T: Debug> Inspect for ReadOnlyCapability<T> {
 
 impl<T> PciCapability for ReadOnlyCapability<T>
 where
-    T: AsBytes + Send + Sync + Debug,
+    T: IntoBytes + Send + Sync + Debug + Immutable + KnownLayout,
 {
     fn label(&self) -> &str {
         &self.label

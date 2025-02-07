@@ -10,7 +10,7 @@ use fuse::DirEntryWriter;
 use lxutil::LxFile;
 use parking_lot::RwLock;
 use std::sync::Arc;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 /// Implements file callbacks for virtio-fs.
 pub struct VirtioFsFile {

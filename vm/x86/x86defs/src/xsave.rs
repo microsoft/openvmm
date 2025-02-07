@@ -3,12 +3,13 @@
 
 //! Xsave-related definitions.
 
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 #[repr(C)]
-#[derive(Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Fxsave {
     pub fcw: u16,
     pub fsw: u16,
@@ -26,7 +27,7 @@ pub struct Fxsave {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct XsaveHeader {
     pub xstate_bv: u64,
     pub xcomp_bv: u64,

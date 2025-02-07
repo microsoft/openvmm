@@ -45,7 +45,6 @@ thiserror.workspace = true
 tracing.workspace = true
 winapi.workspace = true
 zerocopy.workspace = true
-
 [build-dependencies]
 build_rs_guest_arch.workspace = true
 

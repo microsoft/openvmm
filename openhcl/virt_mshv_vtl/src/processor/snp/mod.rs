@@ -72,9 +72,9 @@ use x86defs::snp::SevStatusMsr;
 use x86defs::snp::SevVmsa;
 use x86defs::snp::Vmpl;
 use x86defs::RFlags;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// A backing for SNP partitions.
 #[derive(InspectMut)]
@@ -525,7 +525,7 @@ fn virt_table_to_snp(val: TableRegister) -> SevSelector {
     SevSelector {
         limit: val.limit as u32,
         base: val.base,
-        ..FromZeroes::new_zeroed()
+        ..FromZeros::new_zeroed()
     }
 }
 
@@ -787,7 +787,8 @@ impl UhProcessor<'_, SnpBacked> {
         let message = hvdef::HvX64SynicSintDeliverableMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
         )
-        .unwrap();
+        .unwrap()
+        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::trace!(
             deliverable_sints = message.deliverable_sints,
@@ -808,7 +809,8 @@ impl UhProcessor<'_, SnpBacked> {
         let message = hvdef::HvX64VmgexitInterceptMessage::ref_from_prefix(
             self.runner.exit_message().payload(),
         )
-        .unwrap();
+        .unwrap()
+        .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         let ghcb_msr = x86defs::snp::GhcbMsr::from(message.ghcb_msr);
         tracing::trace!(?ghcb_msr, "vmgexit intercept");
@@ -1187,7 +1189,8 @@ impl UhProcessor<'_, SnpBacked> {
                     HvMessageType::HvMessageTypeExceptionIntercept => {
                         let exception_message =
                             hvdef::HvX64ExceptionInterceptMessage::ref_from_prefix(payload)
-                                .unwrap();
+                                .unwrap()
+                                .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
                         exception_message.vector
                             == x86defs::Exception::SEV_VMM_COMMUNICATION.0 as u16
@@ -1199,7 +1202,9 @@ impl UhProcessor<'_, SnpBacked> {
                         // - determine whether the intercept message should be delivered to VTL 1
                         // - determine whether emulation is appropriate for this gpa
                         let gpa_message: &hvdef::HvX64MemoryInterceptMessage =
-                            hvdef::HvX64MemoryInterceptMessage::ref_from_prefix(payload).unwrap();
+                            hvdef::HvX64MemoryInterceptMessage::ref_from_prefix(payload)
+                                .unwrap()
+                                .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
                         // Only the page numbers need to match.
                         (gpa_message.guest_physical_address >> hvdef::HV_PAGE_SHIFT)
@@ -2198,25 +2203,6 @@ impl<T: CpuIo> hv1_hypercall::EnableVpVtl<hvdef::hypercall::InitialVpContextX64>
         vp_context: &hvdef::hypercall::InitialVpContextX64,
     ) -> hvdef::HvResult<()> {
         self.hcvm_enable_vp_vtl(partition_id, vp_index, vtl, vp_context)
-    }
-}
-
-impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt for UhHypercallHandler<'_, '_, T, SnpBacked> {
-    fn retarget_interrupt(
-        &mut self,
-        device_id: u64,
-        address: u64,
-        data: u32,
-        params: &hv1_hypercall::HvInterruptParameters<'_>,
-    ) -> hvdef::HvResult<()> {
-        self.hcvm_retarget_interrupt(
-            device_id,
-            address,
-            data,
-            params.vector,
-            params.multicast,
-            params.target_processors,
-        )
     }
 }
 

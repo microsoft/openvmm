@@ -47,9 +47,7 @@ pub enum Error {
     LoadOffsetOverflow { load_offset: u64, p_paddr: u64 },
     #[error("invalid ELF program header memory offset {mem_offset}, below start {start_address}")]
     InvalidProgramHeaderMemoryOffset { mem_offset: u64, start_address: u64 },
-    #[error(
-        "adding reloc bias {reloc_bias} and load offset {load_offset} to paddr {p_paddr} overflowed"
-    )]
+    #[error("adding reloc bias {reloc_bias} and load offset {load_offset} to paddr {p_paddr} overflowed")]
     RelocBiasOverflow {
         load_offset: u64,
         reloc_bias: u64,

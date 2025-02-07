@@ -144,7 +144,6 @@ unix_socket = { path = "support/unix_socket" }
 vmsocket = { path = "support/vmsocket" }
 win_import_lib = { path = "support/win_import_lib" }
 win_prng_support = { path = "support/win_prng_support" }
-zerocopy_helpers = { path = "support/zerocopy_helpers" }
 
 azure_profiler_proto = { path = "openhcl/azure_profiler_proto" }
 bootloader_fdt_parser = { path = "openhcl/bootloader_fdt_parser" }
@@ -437,17 +436,17 @@ iced-x86 = { version = "1.17", default-features = false, features = [
   "no_d3now",
 ] }
 ignore = "0.4"
-igvm = "0.3.3"
-igvm_defs = { version = "0.3.3", default-features = false, features = [
-  "unstable",
-] }
+igvm = {git = "https://github.com/microsoft/igvm", rev = "365065d7e31da0a0116e7934de3ecd85f00bab70"}
+igvm_defs = {git = "https://github.com/microsoft/igvm", rev = "365065d7e31da0a0116e7934de3ecd85f00bab70", default-features = false, features = [ "unstable" ]}
 image = { version = "0.24", default-features = false }
 io-uring = "0.6"
+jiff = "0.1"
 kvm-bindings = "0.7"
 # Use of these specific REPO will go away when changes are taken upstream.
 landlock = "0.3.1"
 libc = "0.2"
 libfuzzer-sys = "0.4"
+libtest-mimic = "0.8"
 linkme = "0.3.9"
 log = "0.4"
 macaddr = "1.0"
@@ -523,7 +522,8 @@ windows-sys = "0.52"
 xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshell/issues/63
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
-zerocopy = { version = "0.7.32", features = ["derive"] }
+#zerocopy = { version = "0.7.32", features = ["derive"]}
+zerocopy = { version = "0.8.14", features = ["derive"]}
 
 [workspace.metadata.xtask.unused-deps]
 # Pulled in through "tracing", but we need to pin the version

@@ -53,9 +53,9 @@ use tracing_helpers::ErrorValueExt;
 use unmap::validate_lba_range;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 const UNMAP_RANGE_DESCRIPTOR_COUNT_MAX: u16 = 4096;
 const VHDMP_MAX_WRITE_SAME_LENGTH_BYTES: u64 = 8 * 1024 * 1024; // bytes
@@ -276,7 +276,9 @@ impl SimpleScsiDisk {
         request: &Request,
         unit_attention: bool,
     ) -> Result<usize, ScsiError> {
-        let cdb = scsi::CdbInquiry::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::CdbInquiry::read_from_prefix(&request.cdb[..])
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let allocation_length = cdb.allocation_length.get() as usize;
 
         let min = size_of::<scsi::SenseDataHeader>();
@@ -321,12 +323,16 @@ impl SimpleScsiDisk {
         let header_size;
         let is_spbit_set;
         if is_mode_select_10 {
-            let cdb = scsi::ModeSelect10::read_from_prefix(&request.cdb[..]).unwrap();
+            let cdb = scsi::ModeSelect10::read_from_prefix(&request.cdb[..])
+                .unwrap()
+                .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             request_length = cdb.parameter_list_length.get() as usize;
             header_size = MODE_PARAMETER_HEADER10_SIZE;
             is_spbit_set = cdb.flags.spbit();
         } else {
-            let cdb = scsi::ModeSelect::read_from_prefix(&request.cdb[..]).unwrap();
+            let cdb = scsi::ModeSelect::read_from_prefix(&request.cdb[..])
+                .unwrap()
+                .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             request_length = cdb.parameter_list_length as usize;
             header_size = MODE_PARAMETER_HEADER_SIZE;
             is_spbit_set = cdb.flags.spbit();
@@ -366,12 +372,14 @@ impl SimpleScsiDisk {
             let temp10 = scsi::ModeParameterHeader10::read_from_prefix(
                 &buffer[..MODE_PARAMETER_HEADER10_SIZE],
             )
-            .unwrap();
+            .unwrap()
+            .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             usize::from(temp10.block_descriptor_length)
         } else {
             let temp =
                 scsi::ModeParameterHeader::read_from_prefix(&buffer[..MODE_PARAMETER_HEADER_SIZE])
-                    .unwrap();
+                    .unwrap()
+                    .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             temp.block_descriptor_length as usize
         };
 
@@ -389,8 +397,8 @@ impl SimpleScsiDisk {
         let page = scsi::ModeCachingPage::read_from_prefix(
             &buffer[skipped..skipped + MODE_CACHING_PAGE_SIZE],
         )
-        .unwrap();
-
+        .unwrap()
+        .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
         if page.page_code != scsi::MODE_PAGE_CACHING
             || (page.page_length as usize) < MODE_CACHING_PAGE_SIZE
             || ((page.flags & scsi::MODE_CACHING_WRITE_CACHE_ENABLE == 0)
@@ -440,13 +448,17 @@ impl SimpleScsiDisk {
         let allocation_length;
         let header_size;
         if is_mode_sense_10 {
-            let cdb = scsi::ModeSense10::read_from_prefix(&request.cdb[..]).unwrap();
+            let cdb = scsi::ModeSense10::read_from_prefix(&request.cdb[..])
+                .unwrap()
+                .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             allocation_length = cdb.allocation_length.get() as usize;
             page_code = cdb.flags2.page_code();
             page_control = cdb.flags2.pc() << 6;
             header_size = MODE_PARAMETER_HEADER10_SIZE;
         } else {
-            let cdb = scsi::ModeSense::read_from_prefix(&request.cdb[..]).unwrap();
+            let cdb = scsi::ModeSense::read_from_prefix(&request.cdb[..])
+                .unwrap()
+                .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             allocation_length = cdb.allocation_length as usize;
             page_code = cdb.flags2.page_code();
             page_control = cdb.flags2.pc() << 6;
@@ -491,14 +503,14 @@ impl SimpleScsiDisk {
             temp10 = scsi::ModeParameterHeader10 {
                 mode_data_length: MODE_DATA_LENGTH10.into(),
                 device_specific_parameter: dsp,
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             };
             temp10.as_bytes()
         } else {
             temp = scsi::ModeParameterHeader {
                 mode_data_length: MODE_DATA_LENGTH,
                 device_specific_parameter: dsp,
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             };
             temp.as_bytes()
         };
@@ -506,7 +518,7 @@ impl SimpleScsiDisk {
         let mut page = scsi::ModeCachingPage {
             page_code: scsi::MODE_PAGE_CACHING,
             page_length: (MODE_CACHING_PAGE_SIZE - 2) as u8,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         if (page_control == scsi::MODE_CONTROL_CURRENT_VALUES
@@ -537,7 +549,9 @@ impl SimpleScsiDisk {
         request: &Request,
         sector_count: u64,
     ) -> Result<usize, ScsiError> {
-        let cdb = scsi::ServiceActionIn16::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::ServiceActionIn16::read_from_prefix(&request.cdb[..])
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         match cdb.service_action & 0x1f {
             scsi::SERVICE_ACTION_READ_CAPACITY16 => {
                 let min = size_of::<scsi::ReadCapacityDataEx>();
@@ -554,7 +568,7 @@ impl SimpleScsiDisk {
                         bytes_per_block: (1u32 << self.sector_shift).into(),
                     },
                     exponents: self.physical_extra_shift,
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 };
 
                 if self.scsi_parameters.support_unmap {
@@ -624,7 +638,7 @@ impl SimpleScsiDisk {
         tracing::debug!("handle_verify_validation");
         let (start_lba, lba_count) = match op {
             ScsiOp::VERIFY | ScsiOp::WRITE_VERIFY => {
-                let cdb = scsi::Cdb10::read_from_prefix(&request.cdb[..]).unwrap();
+                let cdb = scsi::Cdb10::read_from_prefix(&request.cdb[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 if cdb.flags.relative_address() {
                     tracing::debug!(flags = ?cdb.flags, "doesn't support relative address");
                     return Err(ScsiError::IllegalRequest(AdditionalSenseCode::INVALID_CDB));
@@ -635,7 +649,7 @@ impl SimpleScsiDisk {
                 )
             }
             ScsiOp::VERIFY12 | ScsiOp::WRITE_VERIFY12 => {
-                let cdb = scsi::Cdb12::read_from_prefix(&request.cdb[..]).unwrap();
+                let cdb = scsi::Cdb12::read_from_prefix(&request.cdb[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 if cdb.flags.relative_address() {
                     tracing::debug!(flags = ?cdb.flags, "doesn't support relative address");
                     return Err(ScsiError::IllegalRequest(AdditionalSenseCode::INVALID_CDB));
@@ -646,7 +660,7 @@ impl SimpleScsiDisk {
                 )
             }
             ScsiOp::VERIFY16 | ScsiOp::WRITE_VERIFY16 => {
-                let cdb = scsi::Cdb16::read_from_prefix(&request.cdb[..]).unwrap();
+                let cdb = scsi::Cdb16::read_from_prefix(&request.cdb[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 (cdb.logical_block.get(), cdb.transfer_blocks.get() as u64)
             }
             _ => unreachable!(),
@@ -664,7 +678,9 @@ impl SimpleScsiDisk {
 
     fn handle_send_diagnostic_validation(&self, request: &Request) -> Result<usize, ScsiError> {
         tracing::debug!("handle_send_diagnostic_validation");
-        let cdb = scsi::SendDiagnostic::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::SendDiagnostic::read_from_prefix(&request.cdb[..])
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         if cdb.flags.self_test_code() == 0
             && !cdb.flags.page_format()
             && cdb.parameter_list_length.get() == 0
@@ -723,7 +739,7 @@ impl SimpleScsiDisk {
         request: &Request,
         sector_count: u64,
     ) -> Result<RequestParameters, ScsiError> {
-        let cdb = scsi::Cdb10::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::Cdb10::read_from_prefix(&request.cdb[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         if cdb.flags.relative_address() {
             tracing::debug!(flags = ?cdb.flags, "doesn't support relative address");
             return Err(ScsiError::IllegalRequest(AdditionalSenseCode::INVALID_CDB));
@@ -757,7 +773,9 @@ impl SimpleScsiDisk {
         request: &Request,
         sector_count: u64,
     ) -> Result<RequestParameters, ScsiError> {
-        let cdb = scsi::Cdb6ReadWrite::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::Cdb6ReadWrite::read_from_prefix(&request.cdb[..])
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let len = cdb.transfer_blocks as u64;
         let offset = u32::from_be_bytes([
             0,
@@ -795,7 +813,7 @@ impl SimpleScsiDisk {
         request: &Request,
         sector_count: u64,
     ) -> Result<RequestParameters, ScsiError> {
-        let cdb = scsi::Cdb12::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::Cdb12::read_from_prefix(&request.cdb[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         if cdb.flags.relative_address() {
             tracing::debug!(flags = ?cdb.flags, "doesn't support relative address");
             return Err(ScsiError::IllegalRequest(AdditionalSenseCode::INVALID_CDB));
@@ -828,7 +846,7 @@ impl SimpleScsiDisk {
         request: &Request,
         sector_count: u64,
     ) -> Result<RequestParameters, ScsiError> {
-        let cdb = scsi::Cdb16::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::Cdb16::read_from_prefix(&request.cdb[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let len = cdb.transfer_blocks.get() as u64;
         let offset = cdb.logical_block.get();
         let sector_shift = self.sector_shift;
@@ -861,7 +879,7 @@ impl SimpleScsiDisk {
         let op = request.scsiop();
         let mut p = match op {
             ScsiOp::WRITE_SAME => {
-                let cdb = scsi::Cdb10::read_from_prefix(&request.cdb[..]).unwrap();
+                let cdb = scsi::Cdb10::read_from_prefix(&request.cdb[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 if cdb.flags.relative_address() {
                     tracing::debug!(flags = ?cdb.flags, "doesn't support relative address");
                     return Err(ScsiError::IllegalRequest(AdditionalSenseCode::INVALID_CDB));
@@ -875,7 +893,7 @@ impl SimpleScsiDisk {
                 }
             }
             ScsiOp::WRITE_SAME16 => {
-                let cdb = scsi::Cdb16::read_from_prefix(&request.cdb[..]).unwrap();
+                let cdb = scsi::Cdb16::read_from_prefix(&request.cdb[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 WriteSameParameters {
                     start_lba: cdb.logical_block.get(),
                     lba_count: cdb.transfer_blocks.get() as usize,
@@ -1198,7 +1216,9 @@ impl SimpleScsiDisk {
     }
 
     async fn handle_start_stop(&self, request: &Request) -> Result<usize, ScsiError> {
-        let cdb = scsi::StartStop::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::StartStop::read_from_prefix(&request.cdb[..])
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         if cdb.immediate & scsi::IMMEDIATE_BIT != 0 {
             tracing::debug!("immediate bit is not supported");
             return Err(ScsiError::IllegalRequest(AdditionalSenseCode::INVALID_CDB));

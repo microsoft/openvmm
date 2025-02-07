@@ -47,8 +47,8 @@ use static_assertions::const_assert_eq;
 use std::fmt::Debug;
 use tee_call::TeeCall;
 use thiserror::Error;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// An attestation error.
 #[derive(Debug, Error)]

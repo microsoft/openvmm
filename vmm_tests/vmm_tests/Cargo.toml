@@ -6,6 +6,10 @@ name = "vmm_tests"
 edition.workspace = true
 rust-version.workspace = true
 
+[[test]]
+name = "tests"
+harness = false
+
 [dev-dependencies]
 petri_artifact_resolver_openvmm_known_paths.workspace = true
 petri_artifacts_vmm_test.workspace = true
@@ -38,7 +42,6 @@ gdma_resources.workspace = true
 net_backend_resources.workspace = true
 
 mesh_rpc.workspace = true
-test_with_tracing.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

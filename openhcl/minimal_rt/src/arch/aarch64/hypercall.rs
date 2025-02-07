@@ -44,9 +44,10 @@
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use hvdef::HvResult;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Invokes a standard hypercall, or a fast hypercall with at most two input
 /// words and zero output words.
@@ -106,7 +107,7 @@ unsafe fn invoke_hypercall_fast_6_2(
 /// Sets a register for the current VTL using a fast hypercall.
 pub fn set_register_fast(name: HvRegisterName, value: HvRegisterValue) -> HvResult<()> {
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     struct Input {
         header: hvdef::hypercall::GetSetVpRegisters,
         assoc: hvdef::hypercall::HvRegisterAssoc,
@@ -144,7 +145,7 @@ pub fn set_register_fast(name: HvRegisterName, value: HvRegisterValue) -> HvResu
 /// Gets a register for the current VTL using a fast hypercall.
 pub fn get_register_fast(name: HvRegisterName) -> HvResult<HvRegisterValue> {
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     struct Input {
         header: hvdef::hypercall::GetSetVpRegisters,
         name: HvRegisterName,

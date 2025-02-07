@@ -12,7 +12,6 @@ hvdef.workspace = true
 arrayvec.workspace = true
 cfg-if.workspace = true
 zerocopy.workspace = true
-
 [build-dependencies]
 minimal_rt_build.workspace = true
 

@@ -7,9 +7,10 @@
 
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 open_enum! {
     /// VMX exit reason
@@ -356,14 +357,14 @@ pub struct SecondaryProcessorControls {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ApicRegister {
     pub value: u32,
     _reserved: [u32; 3],
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ApicPage {
     pub reserved_0: [ApicRegister; 2],
     pub id: ApicRegister,

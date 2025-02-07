@@ -721,10 +721,9 @@ mod x86 {
     use whp::abi::WHV_REGISTER_VALUE;
     use whp::RegisterName;
     use whp::RegisterValue;
-    use zerocopy::AsBytes;
     use zerocopy::FromBytes;
-    use zerocopy::FromZeroes;
-
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
     pub(super) struct WhpHypercallRegisters<'a> {
         info: whp::abi::WHV_HYPERCALL_CONTEXT,
         rip: u64,
@@ -1080,8 +1079,8 @@ mod x86 {
                                         match HvVpAssistPageActionSignalEvent::read_from_prefix(
                                             &actions[offset..],
                                         ) {
-                                            Some(v) => v,
-                                            None => break,
+                                            Ok((v, _)) => v,
+                                            Err(_) => break, // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
                                         };
 
                                     if let Err(err) = self.handle_action_signal_event(&signal_event)
@@ -1295,16 +1294,16 @@ mod x86 {
                 Ok(TranslateResult { gpa, cache_info: _ }) => {
                     hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
                         gpa_page: gpa / HV_PAGE_SIZE,
-                        ..FromZeroes::new_zeroed()
+                        ..FromZeros::new_zeroed()
                     }
                 }
                 Err(err) => hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
                     translation_result: hvdef::hypercall::TranslateGvaResultExX64 {
                         result: hvdef::hypercall::TranslateGvaResult::new()
                             .with_result_code(TranslateGvaResultCode::from(err).0),
-                        ..FromZeroes::new_zeroed()
+                        ..FromZeros::new_zeroed()
                     },
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 },
             };
 
@@ -1689,7 +1688,7 @@ mod aarch64 {
     use virt_support_aarch64emu::translate::TranslateFlags;
     use virt_support_aarch64emu::translate::TranslationRegisters;
     use whp::RegisterValue;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
 
     pub(super) struct WhpHypercallRegisters<'a> {
         message: hvdef::HvArm64HypercallInterceptMessage,
@@ -1968,14 +1967,14 @@ mod aarch64 {
             let result = match result {
                 Ok(gpa) => hvdef::hypercall::TranslateVirtualAddressExOutputArm64 {
                     gpa_page: gpa / HV_PAGE_SIZE,
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 },
                 Err(err) => hvdef::hypercall::TranslateVirtualAddressExOutputArm64 {
                     translation_result: hvdef::hypercall::TranslateGvaResultExArm64 {
                         result: hvdef::hypercall::TranslateGvaResult::new()
                             .with_result_code(TranslateGvaResultCode::from(err).0),
                     },
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 },
             };
 

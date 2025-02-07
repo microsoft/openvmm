@@ -4,9 +4,10 @@
 #![allow(dead_code)]
 
 use self::packed_nums::*;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 #[allow(non_camel_case_types)]
 mod packed_nums {
@@ -17,7 +18,7 @@ mod packed_nums {
 // As defined in https://github.com/rfbproto/rfbproto/blob/master/rfbproto.rst#handshaking-messages
 
 #[repr(transparent)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ProtocolVersion(pub [u8; 12]);
 
 pub const PROTOCOL_VERSION_33: [u8; 12] = *b"RFB 003.003\n";
@@ -25,14 +26,14 @@ pub const PROTOCOL_VERSION_37: [u8; 12] = *b"RFB 003.007\n";
 pub const PROTOCOL_VERSION_38: [u8; 12] = *b"RFB 003.008\n";
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Security33 {
     pub padding: [u8; 3],
     pub security_type: u8,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Security37 {
     pub type_count: u8,
     // types: [u8; N]
@@ -45,7 +46,7 @@ pub const SECURITY_TYPE_TIGHT: u8 = 16;
 pub const SECURITY_TYPE_VENCRYPT: u8 = 19;
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SecurityResult {
     pub status: u32_be,
 }
@@ -55,13 +56,13 @@ pub const SECURITY_RESULT_STATUS_FAILED: u32 = 1;
 pub const SECURITY_RESULT_STATUS_FAILED_TOO_MANY_ATTEMPTS: u32 = 2;
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ClientInit {
     pub shared_flag: u8,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ServerInit {
     pub framebuffer_width: u16_be,
     pub framebuffer_height: u16_be,
@@ -71,7 +72,7 @@ pub struct ServerInit {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PixelFormat {
     pub bits_per_pixel: u8,
     pub depth: u8,
@@ -97,7 +98,7 @@ pub const CS_MESSAGE_CLIENT_CUT_TEXT: u8 = 6;
 pub const CS_MESSAGE_QEMU: u8 = 255;
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SetPixelFormat {
     pub message_type: u8,
     pub padding: [u8; 3],
@@ -105,7 +106,7 @@ pub struct SetPixelFormat {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SetEncodings {
     pub message_type: u8,
     pub padding: u8,
@@ -128,7 +129,7 @@ pub const ENCODING_TYPE_DESKTOP_SIZE: u32 = -223i32 as u32;
 pub const ENCODING_TYPE_QEMU_EXTENDED_KEY_EVENT: u32 = -258i32 as u32;
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FramebufferUpdateRequest {
     pub message_type: u8,
     pub incremental: u8,
@@ -139,7 +140,7 @@ pub struct FramebufferUpdateRequest {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct KeyEvent {
     pub message_type: u8,
     pub down_flag: u8,
@@ -148,7 +149,7 @@ pub struct KeyEvent {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PointerEvent {
     pub message_type: u8,
     pub button_mask: u8,
@@ -157,7 +158,7 @@ pub struct PointerEvent {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ClientCutText {
     pub message_type: u8,
     pub padding: [u8; 3],
@@ -173,7 +174,7 @@ pub const SC_MESSAGE_TYPE_BELL: u8 = 2;
 pub const SC_MESSAGE_TYPE_SERVER_CUT_TEXT: u8 = 3;
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FramebufferUpdate {
     pub message_type: u8,
     pub padding: u8,
@@ -182,7 +183,7 @@ pub struct FramebufferUpdate {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Rectangle {
     pub x: u16_be,
     pub y: u16_be,
@@ -193,7 +194,7 @@ pub struct Rectangle {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SetColorMapEntries {
     pub message_type: u8,
     pub padding: u8,
@@ -203,7 +204,7 @@ pub struct SetColorMapEntries {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Color {
     pub red: u16_be,
     pub green: u16_be,
@@ -211,13 +212,13 @@ pub struct Color {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Bell {
     pub message_type: u8,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ServerCutText {
     pub message_type: u8,
     pub padding: [u8; 3],
@@ -226,7 +227,7 @@ pub struct ServerCutText {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct QemuMessageHeader {
     pub message_type: u8,
     pub submessage_type: u8,
@@ -235,7 +236,7 @@ pub struct QemuMessageHeader {
 pub const QEMU_MESSAGE_EXTENDED_KEY_EVENT: u8 = 0;
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct QemuExtendedKeyEvent {
     pub message_type: u8,
     pub submessage_type: u8,

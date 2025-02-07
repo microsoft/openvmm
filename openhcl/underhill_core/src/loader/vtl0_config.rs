@@ -19,8 +19,8 @@ use std::ffi::CString;
 use std::io::Read;
 use thiserror::Error;
 use tracing::instrument;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// Errors returned when reading measured config.
 #[derive(Debug, Error)]
@@ -212,13 +212,13 @@ fn parse_vtl0_vp_context(raw: Vec<u8>) -> Result<VpContext, Error> {
     let mut reader = std::io::Cursor::new(raw);
     let mut registers = Vec::new();
     reader
-        .read_exact(header.as_bytes_mut())
+        .read_exact(header.as_mut_bytes())
         .map_err(|_| Error::InvalidVtl0VpContext)?;
 
     for _ in 0..header.register_count {
         let mut reg = igvm_defs::VbsVpContextRegister::new_zeroed();
         reader
-            .read_exact(reg.as_bytes_mut())
+            .read_exact(reg.as_mut_bytes())
             .map_err(|_| Error::InvalidVtl0VpContext)?;
 
         #[cfg(guest_arch = "x86_64")]
