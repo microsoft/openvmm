@@ -138,6 +138,14 @@ impl IoQueue {
             cpu: *cpu,
         })
     }
+
+    #[cfg(test)]
+    pub(crate) async fn verify_restore(&self, saved_state: IoQueueSavedState, mem: MemoryBlock) {
+        self.queue.verify_restore(saved_state.queue_data, mem);
+
+        // TODO: [expand-verify-restore-functionality] What is the iv in the IoQueue vs msix in the IoQueueSavedState
+        assert_eq!(saved_state.cpu, self.cpu);
+    }
 }
 
 #[derive(Debug, Inspect)]
@@ -686,6 +694,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Given an input of the saved state from which the driver was constructed and the underlying
     /// memory, this validates the current driver.
+    // TODO: [expand-verify-restore-functionality] move this function to take a reference to the
+    // SavedState for versatility of use (That way it doesn't take ownership of the saved state
+    // from the unit tests)
     #[cfg(test)]
     pub(crate) async fn verify_restore(&mut self, saved_state: NvmeDriverSavedState, mem: MemoryBlock) {
         if let Some(task) = self.task.as_mut() {
@@ -694,16 +705,22 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             
             // Verify Admin Queue
             // TODO: [expand-verify-restore-functionality] Currrently providing base_pfn value in u64, this might panic
-            let admin_queue_match: Result<(), anyhow::Error> = match (saved_state.worker_data.admin, &worker.admin) {
-                (None, None) => Ok(()),
+            match (saved_state.worker_data.admin, &worker.admin) {
+                (None, None) => (),
                 (Some(admin_saved_state), Some(admin)) => {
                     let admin_saved_mem = mem.subblock(admin_saved_state.base_pfn.try_into().unwrap(), admin_saved_state.mem_len);
-                    return admin.verify_restore(admin_saved_state, admin_saved_mem).await;
+                    admin.verify_restore(admin_saved_state, admin_saved_mem).await;
                 },
                 _ => panic!("admin queue states do not match"),
             };
 
-            // TODO: Verify I/O Queues with strict ordering
+            // Verify I/O queues in strict ordering
+            assert_eq!(saved_state.worker_data.io.len(), worker.io.len());
+            for index in 0..saved_state.worker_data.io.len() {
+                let io_saved_state = saved_state.worker_data.io[index].clone();
+                let io_saved_mem = mem.subblock(io_saved_state.queue_data.base_pfn.try_into().unwrap(), io_saved_state.queue_data.mem_len);
+                worker.io[index].verify_restore(io_saved_state, io_saved_mem);
+            }
             task.start();
         } else {
             panic!("task cannot be None() after restore");

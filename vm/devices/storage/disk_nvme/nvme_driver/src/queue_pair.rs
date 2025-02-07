@@ -346,8 +346,8 @@ impl QueuePair {
         // Send an RPC request to QueueHandler thread to verify the restore status.
         let _ =self.issuer.send.call(Req::Verify, saved_state.handler_data).await;
 
-        // TODO: Do we need to verify_restore for cancel?
-        // TODO: Do we need to verify_restore for issuers?
+        // TODO: [expand-verify-restore-functionality] Do we need to verify_restore for cancel?
+        // TODO: [expand-verify-restore-functionality] Do we need to verify_restore for issuers?
         // Verify bytes from memory
         let mut saved_mem_data: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
         let mut self_mem_data: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
