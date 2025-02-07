@@ -2169,9 +2169,10 @@ mod tests {
                     child_to_parent_monitor_page_gpa: 0,
                     parent_to_child_monitor_page_gpa: 0,
                     interrupt_page_or_target_info: protocol::TargetInfo::new()
-                    .with_sint(2)
-                    .with_vtl(0)
-                    .with_feature_flags(feature_flags.into()).into(),
+                        .with_sint(2)
+                        .with_vtl(0)
+                        .with_feature_flags(feature_flags.into())
+                        .into(),
                 }),
                 trusted,
             );
