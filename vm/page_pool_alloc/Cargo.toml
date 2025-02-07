@@ -6,10 +6,6 @@ name = "page_pool_alloc"
 edition.workspace = true
 rust-version.workspace = true
 
-[features]
-# Enable user_driver vfio trait support.
-vfio = ["user_driver/vfio"]
-
 [dependencies]
 user_driver.workspace = true
 hvdef.workspace = true

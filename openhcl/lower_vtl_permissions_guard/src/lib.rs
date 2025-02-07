@@ -73,16 +73,15 @@ impl Drop for PagesAccessibleToLowerVtl {
     }
 }
 
-/// A [`VfioDmaBuffer`] wrapper that will lower the VTL permissions of the page
+/// A [`DmaClient`] wrapper that will lower the VTL permissions of the page
 /// on the allocated memory block.
-#[cfg(all(feature = "vfio", target_os = "linux"))]
 pub struct LowerVtlMemorySpawner<T: DmaClient> {
     spawner: T,
     vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
 }
 
 impl<T: DmaClient> LowerVtlMemorySpawner<T> {
-    /// Create a new wrapped [`VfioDmaBuffer`] spawner that will lower the VTL
+    /// Create a new wrapped [`DmaClient`] spawner that will lower the VTL
     /// permissions of the returned [`MemoryBlock`].
     pub fn new(spawner: T, vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>) -> Self {
         Self {

@@ -32,7 +32,7 @@ cvm_tracing.workspace = true
 diag_proto.workspace = true
 diag_server.workspace = true
 debug_worker_defs = { workspace = true, optional = true }
-page_pool_alloc =  { workspace = true, features = ["vfio"] }
+page_pool_alloc.workspace = true
 virt.workspace = true
 vmm_core.workspace = true
 vmm_core_defs.workspace = true
@@ -67,7 +67,7 @@ ide.workspace = true
 ide_resources.workspace = true
 input_core.workspace = true
 kmsg_defs.workspace = true
-lower_vtl_permissions_guard = { workspace = true, features = ["vfio"] }
+lower_vtl_permissions_guard.workspace = true
 mana_driver.workspace = true
 mcr_resources.workspace = true
 net_backend.workspace = true

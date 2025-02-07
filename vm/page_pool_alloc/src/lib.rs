@@ -357,7 +357,6 @@ impl PagePoolHandle {
     }
 
     /// Create a memory block from this allocation.
-    #[cfg(all(feature = "vfio", target_os = "linux"))]
     fn into_memory_block(
         mut self,
         zero_block: bool,
