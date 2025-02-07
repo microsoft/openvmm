@@ -686,7 +686,29 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Given an input of the saved state from which the driver was constructed and the underlying
     /// memory, this validates the current driver.
+    #[cfg(test)]
     pub(crate) async fn verify_restore(&mut self, saved_state: NvmeDriverSavedState, mem: MemoryBlock) -> anyhow::Result<()> {
+        // Going in order of variables defined in the NvmeDriver struct
+        if saved_state.device_id != self.device_id {
+            anyhow::bail!(format!("incorrect device_id after restore. Expected:{} Actual: {}", saved_state.device_id, self.device_id));
+        }
+
+        // TODO: [expand-verify-restore-functionality]
+        // saved_state.identify_ctrl.verify_restore(self.identify)?;
+
+        // TODO: [expand-verify-restore-functionality] Namespace save is currently not supported.
+        // if saved_state.namespaces.len() != self.namespaces.len() {
+        //     return Err(format!("number of namespaces after restore is incorrect. Expected: {} Actual: {}", saved_state.namespaces.len(), self.namespaces.len()));
+        // }
+
+        // for i in 0..saved_state.namespaces.len() {
+        //     saved_state.namespaces[i].verify_restore(self.namespaces[i])?;
+        // }
+        
+        if !self.nvme_keepalive {
+            anyhow::bail!(format!("incorrect nvme_keepalive value after restore. Expected: {} Actual: {}", true, self.nvme_keepalive));
+        }
+
         Ok(())
     }
 }
