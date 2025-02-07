@@ -16,6 +16,7 @@ use std::sync::Arc;
 // exported to support the `declare_artifacts!` macro
 #[doc(hidden)]
 pub use paste;
+use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::marker::PhantomData;
 use std::path::Path;
@@ -133,21 +134,22 @@ pub struct ArtifactResolver<'a>(ArtifactResolverInner<'a>);
 impl<'a> ArtifactResolver<'a> {
     /// Returns a resolver to collect requirements; the artifact objects returned by
     /// [`require`](Self::require) will panic if used.
-    pub fn collect(requirements: &'a mut TestArtifactRequirements) -> Self {
-        ArtifactResolver(ArtifactResolverInner::Collecting(requirements))
+    pub fn collector(requirements: &'a mut TestArtifactRequirements) -> Self {
+        ArtifactResolver(ArtifactResolverInner::Collecting(RefCell::new(
+            requirements,
+        )))
     }
 
     /// Returns a resolver to resolve artifacts.
-    pub fn resolve(artifacts: &'a TestArtifacts) -> Self {
+    pub fn resolver(artifacts: &'a TestArtifacts) -> Self {
         ArtifactResolver(ArtifactResolverInner::Resolving(artifacts))
     }
 
     /// Resolve a required artifact.
-    pub fn require<A: ArtifactId>(&mut self, handle: ArtifactHandle<A>) -> ResolvedArtifact<A> {
-        match &mut self.0 {
+    pub fn require<A: ArtifactId>(&self, handle: ArtifactHandle<A>) -> ResolvedArtifact<A> {
+        match &self.0 {
             ArtifactResolverInner::Collecting(requirements) => {
-                **requirements = std::mem::replace(*requirements, TestArtifactRequirements::new())
-                    .require(handle.erase());
+                requirements.borrow_mut().require(handle.erase());
                 ResolvedArtifact(None, PhantomData)
             }
             ArtifactResolverInner::Resolving(artifacts) => {
@@ -158,13 +160,12 @@ impl<'a> ArtifactResolver<'a> {
 
     /// Resolve an optional artifact.
     pub fn try_require<A: ArtifactId>(
-        &mut self,
+        &self,
         handle: ArtifactHandle<A>,
     ) -> ResolvedOptionalArtifact<A> {
-        match &mut self.0 {
+        match &self.0 {
             ArtifactResolverInner::Collecting(requirements) => {
-                **requirements = std::mem::replace(*requirements, TestArtifactRequirements::new())
-                    .try_require(handle.erase());
+                requirements.borrow_mut().try_require(handle.erase());
                 ResolvedOptionalArtifact(OptionalArtifactState::Collecting, PhantomData)
             }
             ArtifactResolverInner::Resolving(artifacts) => ResolvedOptionalArtifact(
@@ -180,7 +181,7 @@ impl<'a> ArtifactResolver<'a> {
 }
 
 enum ArtifactResolverInner<'a> {
-    Collecting(&'a mut TestArtifactRequirements),
+    Collecting(RefCell<&'a mut TestArtifactRequirements>),
     Resolving(&'a TestArtifacts),
 }
 
@@ -315,13 +316,13 @@ impl TestArtifactRequirements {
     }
 
     /// Add a dependency to the set of required artifacts.
-    pub fn require(mut self, dependency: impl AsArtifactHandle) -> Self {
+    pub fn require(&mut self, dependency: impl AsArtifactHandle) -> &mut Self {
         self.artifacts.push((dependency.erase(), false));
         self
     }
 
     /// Add an optional dependency to the set of artifacts.
-    pub fn try_require(mut self, dependency: impl AsArtifactHandle) -> Self {
+    pub fn try_require(&mut self, dependency: impl AsArtifactHandle) -> &mut Self {
         self.artifacts.push((dependency.erase(), true));
         self
     }

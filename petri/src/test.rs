@@ -89,11 +89,10 @@ impl Test {
 
     /// Returns the artifact requirements for the test.
     fn requirements(&self) -> TestArtifactRequirements {
+        let mut requirements = self.test.0.requirements();
         // All tests require the log directory.
-        self.test
-            .0
-            .requirements()
-            .require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY)
+        requirements.require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
+        requirements
     }
 
     fn run(
@@ -139,7 +138,7 @@ pub trait RunTest: Send {
     /// name where the test is defined.
     fn leaf_name(&self) -> &str;
     /// Returns the artifacts required by the test.
-    fn requirements(&self, resolver: ArtifactResolver<'_>) -> Self::Artifacts;
+    fn requirements(&self, resolver: &ArtifactResolver<'_>) -> Self::Artifacts;
     /// Runs the test, which has been assigned `name`, with the given
     /// `artifacts`.
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()>;
@@ -158,12 +157,12 @@ impl<T: RunTest> DynRunTest for T {
 
     fn requirements(&self) -> TestArtifactRequirements {
         let mut requirements = TestArtifactRequirements::new();
-        self.requirements(ArtifactResolver::collect(&mut requirements));
+        self.requirements(&ArtifactResolver::collector(&mut requirements));
         requirements
     }
 
     fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()> {
-        let artifacts = self.requirements(ArtifactResolver::resolve(artifacts));
+        let artifacts = self.requirements(&ArtifactResolver::resolver(artifacts));
         self.run(params, artifacts)
     }
 }
@@ -187,7 +186,7 @@ pub struct SimpleTest<A, F> {
 
 impl<A, AR, F, E> SimpleTest<A, F>
 where
-    A: 'static + Send + Fn(ArtifactResolver<'_>) -> AR,
+    A: 'static + Send + Fn(&ArtifactResolver<'_>) -> AR,
     F: 'static + Send + Fn(PetriTestParams<'_>, AR) -> Result<(), E>,
     E: Into<anyhow::Error>,
 {
@@ -204,7 +203,7 @@ where
 
 impl<A, AR, F, E> RunTest for SimpleTest<A, F>
 where
-    A: 'static + Send + Fn(ArtifactResolver<'_>) -> AR,
+    A: 'static + Send + Fn(&ArtifactResolver<'_>) -> AR,
     F: 'static + Send + Fn(PetriTestParams<'_>, AR) -> Result<(), E>,
     E: Into<anyhow::Error>,
 {
@@ -214,7 +213,7 @@ where
         self.leaf_name
     }
 
-    fn requirements(&self, resolver: ArtifactResolver<'_>) -> Self::Artifacts {
+    fn requirements(&self, resolver: &ArtifactResolver<'_>) -> Self::Artifacts {
         (self.requirements)(resolver)
     }
 

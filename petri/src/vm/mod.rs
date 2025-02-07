@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
+use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use petri_artifacts_core::ResolvedOptionalArtifact;
 use pipette_client::PipetteClient;
@@ -65,10 +66,6 @@ pub enum Firmware {
     },
     /// Boot Linux directly, without any firmware, with OpenHCL in VTL2.
     OpenhclLinuxDirect {
-        /// The kernel to boot.
-        kernel: ResolvedArtifact,
-        /// The initrd to use.
-        initrd: ResolvedArtifact,
         /// The path to the IGVM file to use.
         igvm_path: ResolvedArtifact,
     },
@@ -103,6 +100,77 @@ pub enum Firmware {
 }
 
 impl Firmware {
+    /// Constructs a standard [`Firmware::LinuxDirect`] configuration.
+    pub fn linux_direct(resolver: &ArtifactResolver<'_>, arch: MachineArch) -> Self {
+        use petri_artifacts_vmm_test::artifacts::loadable::*;
+        match arch {
+            MachineArch::X86_64 => Firmware::LinuxDirect {
+                kernel: resolver.require(LINUX_DIRECT_TEST_KERNEL_X64).erase(),
+                initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_X64).erase(),
+            },
+            MachineArch::Aarch64 => Firmware::LinuxDirect {
+                kernel: resolver.require(LINUX_DIRECT_TEST_KERNEL_AARCH64).erase(),
+                initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_AARCH64).erase(),
+            },
+        }
+    }
+
+    /// Constructs a standard [`Firmware::OpenhclLinuxDirect`] configuration.
+    pub fn openhcl_linux_direct(resolver: &ArtifactResolver<'_>, arch: MachineArch) -> Self {
+        use petri_artifacts_vmm_test::artifacts::openhcl_igvm::*;
+        match arch {
+            MachineArch::X86_64 => Firmware::OpenhclLinuxDirect {
+                igvm_path: resolver.require(LATEST_LINUX_DIRECT_TEST_X64).erase(),
+            },
+            MachineArch::Aarch64 => todo!("Linux direct not yet supported on aarch64"),
+        }
+    }
+
+    /// Constructs a standard [`Firmware::Pcat`] configuration.
+    pub fn pcat(resolver: &ArtifactResolver<'_>, guest: PcatGuest) -> Self {
+        use petri_artifacts_vmm_test::artifacts::loadable::*;
+        Firmware::Pcat {
+            guest,
+            bios_firmware: resolver.try_require(PCAT_FIRMWARE_X64).erase(),
+            svga_firmware: resolver.try_require(SVGA_FIRMWARE_X64).erase(),
+        }
+    }
+
+    /// Constructs a standard [`Firmware::Uefi`] configuration.
+    pub fn uefi(resolver: &ArtifactResolver<'_>, arch: MachineArch, guest: UefiGuest) -> Self {
+        use petri_artifacts_vmm_test::artifacts::loadable::*;
+        let uefi_firmware = match arch {
+            MachineArch::X86_64 => resolver.require(UEFI_FIRMWARE_X64).erase(),
+            MachineArch::Aarch64 => resolver.require(UEFI_FIRMWARE_AARCH64).erase(),
+        };
+        Firmware::Uefi {
+            guest,
+            uefi_firmware,
+        }
+    }
+
+    /// Constructs a standard [`Firmware::OpenhclUefi`] configuration.
+    pub fn openhcl_uefi(
+        resolver: &ArtifactResolver<'_>,
+        arch: MachineArch,
+        guest: UefiGuest,
+        isolation: Option<IsolationType>,
+        vtl2_nvme_boot: bool,
+    ) -> Self {
+        use petri_artifacts_vmm_test::artifacts::openhcl_igvm::*;
+        let igvm_path = match arch {
+            MachineArch::X86_64 if isolation.is_some() => resolver.require(LATEST_CVM_X64).erase(),
+            MachineArch::X86_64 => resolver.require(LATEST_STANDARD_X64).erase(),
+            MachineArch::Aarch64 => resolver.require(LATEST_STANDARD_AARCH64).erase(),
+        };
+        Firmware::OpenhclUefi {
+            guest,
+            isolation,
+            vtl2_nvme_boot,
+            igvm_path,
+        }
+    }
+
     fn is_openhcl(&self) -> bool {
         match self {
             Firmware::OpenhclLinuxDirect { .. } | Firmware::OpenhclUefi { .. } => true,
@@ -215,16 +283,26 @@ pub enum UefiGuest {
     /// Mount a VHD as the boot drive.
     Vhd(BootImageConfig<boot_image_type::Vhd>),
     /// The UEFI test image produced by our guest-test infrastructure.
-    GuestTestUefi(MachineArch, ResolvedArtifact),
+    GuestTestUefi(ResolvedArtifact),
     /// No guest, just the firmware.
     None,
 }
 
 impl UefiGuest {
+    /// Construct a standard [`UefiGuest::GuestTestUefi`] configuration.
+    pub fn guest_test_uefi(resolver: &ArtifactResolver<'_>, arch: MachineArch) -> Self {
+        use petri_artifacts_vmm_test::artifacts::test_vhd::*;
+        let artifact = match arch {
+            MachineArch::X86_64 => resolver.require(GUEST_TEST_UEFI_X64).erase(),
+            MachineArch::Aarch64 => resolver.require(GUEST_TEST_UEFI_AARCH64).erase(),
+        };
+        UefiGuest::GuestTestUefi(artifact)
+    }
+
     fn artifact(&self) -> &ResolvedArtifact {
         match self {
             UefiGuest::Vhd(vhd) => &vhd.artifact,
-            UefiGuest::GuestTestUefi(_a, p) => p,
+            UefiGuest::GuestTestUefi(p) => p,
             UefiGuest::None => unreachable!(),
         }
     }

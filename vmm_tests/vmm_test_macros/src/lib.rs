@@ -177,11 +177,7 @@ impl ToTokens for UefiGuest {
             }
             UefiGuest::GuestTestUefi(arch) => {
                 let arch_tokens = arch_to_tokens(*arch);
-                let artifact = match arch {
-                    MachineArch::X86_64 => quote!(::petri_artifacts_vmm_test::artifacts::test_vhd::GUEST_TEST_UEFI_X64),
-                    MachineArch::Aarch64 => quote!(::petri_artifacts_vmm_test::artifacts::test_vhd::GUEST_TEST_UEFI_AARCH64),
-                };
-                quote!(::petri::UefiGuest::GuestTestUefi(#arch_tokens, resolver.require(#artifact).erase()))
+                quote!(::petri::UefiGuest::guest_test_uefi(resolver, #arch_tokens))
             }
             UefiGuest::None => quote!(::petri::UefiGuest::None),
         });
@@ -193,79 +189,28 @@ struct FirmwareAndArch {
     arch: MachineArch,
 }
 
-fn kernel_and_initrd(arch: MachineArch) -> (TokenStream, TokenStream) {
-    match arch {
-        MachineArch::X86_64 => (
-            quote!(::petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64),
-            quote!(::petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64),
-        ),
-        MachineArch::Aarch64 => (
-            quote!(
-                ::petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64
-            ),
-            quote!(
-                ::petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_AARCH64
-            ),
-        ),
-    }
-}
-
 impl ToTokens for FirmwareAndArch {
     fn to_tokens(&self, tokens: &mut TokenStream) {
+        let arch = arch_to_tokens(self.arch);
         tokens.extend(match &self.firmware {
             Firmware::LinuxDirect => {
-                let (kernel, initrd) = kernel_and_initrd(self. arch);
-                quote!(::petri::Firmware::LinuxDirect {
-                    kernel: resolver.require(#kernel).erase(),
-                    initrd: resolver.require(#initrd).erase(),
-                })
+                quote!(::petri::Firmware::linux_direct(resolver, #arch))
             }
             Firmware::Pcat(guest) => {
-                quote!(::petri::Firmware::Pcat {
-                    guest: #guest,
-                    bios_firmware: resolver.try_require(::petri_artifacts_vmm_test::artifacts::loadable::PCAT_FIRMWARE_X64).erase(),
-                    svga_firmware: resolver.try_require(::petri_artifacts_vmm_test::artifacts::loadable::SVGA_FIRMWARE_X64).erase(),
-                })
+                quote!(::petri::Firmware::pcat(resolver, #guest))
             }
-            Firmware::Uefi(guest) =>
-            {
-                let uefi_firmware = match self.arch {
-                    MachineArch::X86_64 => quote!(::petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_X64),
-                    MachineArch::Aarch64 => quote!(::petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_AARCH64),
-                };
-                quote!(::petri::Firmware::Uefi {
-                    guest: #guest,
-                    uefi_firmware: resolver.require(#uefi_firmware).erase(),
-                })
+            Firmware::Uefi(guest) => {
+                quote!(::petri::Firmware::uefi(resolver, #arch, #guest))
             }
             Firmware::OpenhclLinuxDirect => {
-                let (kernel, initrd) = kernel_and_initrd(self.arch);
-                let igvm_path = match self.arch {
-                    MachineArch::X86_64 => quote!(::petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64),
-                    MachineArch::Aarch64 => quote!(::petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_AARCH64),
-                };
-                quote!(::petri::Firmware::OpenhclLinuxDirect {
-                    kernel: resolver.require(#kernel).erase(),
-                    initrd: resolver.require(#initrd).erase(),
-                    igvm_path: resolver.require(#igvm_path).erase(),
-                })
+                quote!(::petri::Firmware::openhcl_linux_direct(resolver, #arch))
             }
             Firmware::OpenhclUefi(OpenhclUefiOptions { nvme, isolation }, guest) => {
-                let igvm_file = match self.arch {
-                    MachineArch::X86_64 if isolation.is_some() => quote!(::petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_CVM_X64),
-                    MachineArch::X86_64 => quote!(::petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64),
-                    MachineArch::Aarch64 => quote!(::petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64),
-                };
                 let isolation = match isolation {
                     Some(i) => quote!(Some(#i)),
                     None => quote!(None),
                 };
-                quote!(::petri::Firmware::OpenhclUefi {
-                    guest: #guest,
-                    isolation: #isolation,
-                    vtl2_nvme_boot: #nvme,
-                    igvm_path: resolver.require(#igvm_file).erase(),
-                })
+                quote!(::petri::Firmware::openhcl_uefi(resolver, #arch, #guest, #isolation, #nvme))
             }
         })
     }
@@ -685,9 +630,7 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
             | (None, Some(Vmm::HyperV)) => (
                 quote!(#[cfg(all(guest_arch=#guest_arch, windows))]),
                 quote!(::petri::hyperv::PetriVmArtifactsHyperV::new(
-                    &mut resolver,
-                    firmware,
-                    arch,
+                    resolver, firmware, arch,
                 )),
                 quote!(::petri::hyperv::PetriVmConfigHyperV::new(
                     &params, artifacts, &driver,
@@ -699,9 +642,7 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
             | (None, Some(Vmm::OpenVmm)) => (
                 quote!(#[cfg(guest_arch=#guest_arch)]),
                 quote!(::petri::openvmm::PetriVmArtifactsOpenVmm::new(
-                    &mut resolver,
-                    firmware,
-                    arch,
+                    resolver, firmware, arch,
                 )),
                 quote!(::petri::openvmm::PetriVmConfigOpenVmm::new(
                     &params, artifacts, &driver,
@@ -719,7 +660,7 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
             #cfg_conditions
             ::petri::SimpleTest::new(
                 #name,
-                |mut resolver| {
+                |resolver| {
                     let firmware = #firmware;
                     let arch = #arch;
                     let extra_deps = (#(resolver.require(#extra_deps),)*);

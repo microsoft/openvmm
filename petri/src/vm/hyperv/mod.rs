@@ -111,7 +111,7 @@ pub struct PetriVmArtifactsHyperV {
 
 impl PetriVmArtifactsHyperV {
     /// Resolves the artifacts needed to instantiate a [`PetriVmConfigHyperV`].
-    pub fn new(resolver: &mut ArtifactResolver<'_>, firmware: Firmware, arch: MachineArch) -> Self {
+    pub fn new(resolver: &ArtifactResolver<'_>, firmware: Firmware, arch: MachineArch) -> Self {
         Self {
             agent_image: AgentImage::new(resolver, arch, firmware.os_flavor()),
             firmware,

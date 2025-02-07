@@ -75,7 +75,7 @@ pub struct PetriVmArtifactsOpenVmm {
 
 impl PetriVmArtifactsOpenVmm {
     /// Resolves the artifacts needed to instantiate a [`PetriVmConfigOpenVmm`].
-    pub fn new(resolver: &mut ArtifactResolver<'_>, firmware: Firmware, arch: MachineArch) -> Self {
+    pub fn new(resolver: &ArtifactResolver<'_>, firmware: Firmware, arch: MachineArch) -> Self {
         let agent_image = AgentImage::new(resolver, arch, firmware.os_flavor());
         let openhcl_agent_image = if firmware.is_openhcl() {
             Some(AgentImage::new(resolver, arch, OsFlavor::Linux))

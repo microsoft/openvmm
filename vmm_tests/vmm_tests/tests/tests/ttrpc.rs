@@ -18,7 +18,7 @@ use std::process::Stdio;
 use unix_socket::UnixStream;
 
 #[cfg(guest_arch = "x86_64")]
-petri::test!(test_ttrpc_interface, |mut resolver| {
+petri::test!(test_ttrpc_interface, |resolver| {
     let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
     let kernel = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64);
     let initrd = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64);

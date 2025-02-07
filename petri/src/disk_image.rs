@@ -23,11 +23,7 @@ pub struct AgentImage {
 
 impl AgentImage {
     /// Resolves the artifacts needed to build a disk image for a VM.
-    pub fn new(
-        resolver: &mut ArtifactResolver<'_>,
-        arch: MachineArch,
-        os_flavor: OsFlavor,
-    ) -> Self {
+    pub fn new(resolver: &ArtifactResolver<'_>, arch: MachineArch, os_flavor: OsFlavor) -> Self {
         let pipette = match (os_flavor, arch) {
             (OsFlavor::Windows, MachineArch::X86_64) => Some(
                 resolver
