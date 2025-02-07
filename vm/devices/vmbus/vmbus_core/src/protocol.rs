@@ -291,8 +291,7 @@ impl From<InitiateContact> for InitiateContact2 {
 pub struct TargetInfo {
     pub sint: u8,
     pub vtl: u8,
-    #[bits(16)]
-    pub _padding: [u8; 2],
+    pub _padding: u16,
     pub feature_flags: u32,
 }
 
