@@ -845,51 +845,52 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(())
     }
 
-    async fn process_eqs_or_wait(&mut self) -> anyhow::Result<()> {
-        let mut eqe_found = false;
+    async fn process_eqs_or_wait_with_retry(&mut self) -> (bool, u128, u32, u32, u32, anyhow::Result<()>) {
         let mut last_wait_result: anyhow::Result<()> = Ok(());
         let mut elapsed: u128 = 0;
+        let mut eq_arm_count = 0;
         let mut interrupt_wait_count = 0;
         let mut interrupt_count = 0;
-        loop {
+        return loop {
             if self.process_all_eqs() {
-                eqe_found = true;
-                break;
+                break (true, elapsed, interrupt_count, interrupt_wait_count, eq_arm_count, last_wait_result);
             }
-
             if !self.eq_armed {
-                tracing::trace!("arming eq");
+                eq_arm_count += 1;
                 self.eq.arm();
                 self.eq_armed = true;
                 // Check if the event arrived while arming.
                 if self.process_all_eqs() {
                     // Remove any pending interrupt events.
                     let _ = self.interrupts[0].as_mut().unwrap().wait().now_or_never();
-                    eqe_found = true;
-                    break;
+                    break (true, elapsed, interrupt_count, interrupt_wait_count, eq_arm_count, last_wait_result);
                 }
             }
-            tracing::trace!("waiting for eq interrupt");
             interrupt_wait_count += 1;
             let before_wait = std::time::Instant::now();
             last_wait_result = Self::wait_for_hwc_interrupt(
                 self.interrupts[0].as_mut().unwrap(),
                 Some(&mut self.hwc_failure),
-                std::cmp::max(self.hwc_timeout_in_ms / 4, 500),
+                500,
             )
             .await;
             elapsed += before_wait.elapsed().as_millis();
             if !last_wait_result.is_err() {
                 interrupt_count += 1;
             }
-            if elapsed > self.hwc_timeout_in_ms as u128 {
+            if elapsed >= self.hwc_timeout_in_ms as u128 {
                 if self.process_all_eqs() {
-                    eqe_found = true;
+                    break (true, elapsed, interrupt_count, interrupt_wait_count, eq_arm_count, last_wait_result);
+                } else {
+                    break (false, elapsed, interrupt_count, interrupt_wait_count, eq_arm_count, last_wait_result);
                 }
-                break;
             }
         }
+    }
 
+    async fn process_eqs_or_wait(&mut self) -> anyhow::Result<()> {
+        let (eqe_found, elapsed, interrupt_count, interrupt_wait_count, eq_arm_count, last_wait_result) =
+            self.process_eqs_or_wait_with_retry().await;
         let wait_failed = !eqe_found;
         let interrupt_loss =
             interrupt_wait_count != 0 &&
@@ -902,11 +903,13 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 interrupt_loss,
                 interrupt_count,
                 interrupt_wait_count,
+                eq_arm_count,
                 self.hwc_warning_time_in_ms,
                 "hwc {}",
-                match wait_failed {
-                    true => "timeout",
-                    false => "delay warning",
+                match (wait_failed, interrupt_loss) {
+                    (true, _) => "timeout waiting for response",
+                    (_, true) => "response received with interrupt wait attempted but no interrupt received",
+                    _ => "response received with delay",
                 }
             );
             self.report_hwc_timeout(wait_failed, interrupt_loss, elapsed as u32).await;
@@ -916,9 +919,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             }
         }
         if wait_failed {
-            if !self.hwc_failure {
-                self.hwc_failure = true;
-            }
+            self.hwc_failure = true;
             if last_wait_result.is_err() {
                 return last_wait_result;
             } else {
