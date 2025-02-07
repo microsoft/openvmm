@@ -871,9 +871,8 @@ impl Drop for PagePoolAllocator {
     }
 }
 
-#[cfg(all(feature = "vfio", target_os = "linux"))]
-impl user_driver::vfio::VfioDmaBuffer for PagePoolAllocator {
-    fn create_dma_buffer(&self, len: usize) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+impl user_driver::DmaClient for PagePoolAllocator {
+    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<user_driver::memory::MemoryBlock> {
         if len as u64 % HV_PAGE_SIZE != 0 {
             anyhow::bail!("not a page-size multiple");
         }
@@ -892,7 +891,7 @@ impl user_driver::vfio::VfioDmaBuffer for PagePoolAllocator {
 
     /// Restore a dma buffer in the predefined location with the given `len` in
     /// bytes.
-    fn restore_dma_buffer(
+    fn attach_dma_buffer(
         &self,
         len: usize,
         base_pfn: u64,

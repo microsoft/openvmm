@@ -16,7 +16,6 @@ use inspect::InspectMut;
 use pci_core::msi::MsiInterruptSet;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
-use user_driver::emulated::EmulatedDmaAllocator;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::DeviceBacking;
@@ -40,7 +39,6 @@ impl<T: PciConfigSpace + MmioIntercept + InspectMut> FuzzEmulatedDevice<T> {
 /// Implementation for DeviceBacking trait.
 impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<T> {
     type Registers = Mapping<T>;
-    type DmaAllocator = EmulatedDmaAllocator;
 
     fn id(&self) -> &str {
         self.device.id()

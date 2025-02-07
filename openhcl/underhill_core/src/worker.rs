@@ -125,6 +125,7 @@ use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::lockmem::LockedMemorySpawner;
 use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DmaClient;
 use virt::state::HvRegisterState;
 use virt::Partition;
 use virt::VpIndex;
@@ -1880,7 +1881,7 @@ async fn new_underhill_vm(
     let private_pool_spawner_available = private_pool_spanwer.is_some();
 
     let vfio_dma_buffer_spawner = Box::new(
-        move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
+        move |device_id: String| -> anyhow::Result<Arc<dyn DmaClient>> {
             shared_vis_pool_spawner
                 .as_ref()
                 .map(|spawner| {

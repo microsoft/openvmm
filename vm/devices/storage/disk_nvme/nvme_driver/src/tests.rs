@@ -20,7 +20,6 @@ use std::sync::Arc;
 use test_with_tracing::test;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
-use user_driver::emulated::EmulatedDmaAllocator;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::DeviceBacking;
@@ -345,7 +344,6 @@ impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
 /// Implementation of DeviceBacking trait for NvmeTestEmulatedDevice
 impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestEmulatedDevice<T> {
     type Registers = NvmeTestMapping<T>;
-    type DmaAllocator = EmulatedDmaAllocator;
 
     fn id(&self) -> &str {
         self.device.id()

@@ -35,7 +35,7 @@ use thiserror::Error;
 use underhill_config::Vtl2SettingsErrorInfo;
 use underhill_config::Vtl2SettingsErrorInfoVec;
 use unicycle::FuturesUnordered;
-use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DmaClient;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
@@ -150,7 +150,7 @@ pub(crate) mod msg {
     use guid::Guid;
     use mesh::rpc::Rpc;
     use std::sync::Arc;
-    use user_driver::vfio::VfioDmaBuffer;
+    use user_driver::DmaClient;
     use vpci::bus_control::VpciBusEvent;
 
     #[derive(Debug)]
@@ -180,7 +180,7 @@ pub(crate) mod msg {
         /// Inspect the state of the process loop.
         Inspect(inspect::Deferred),
         /// Store the gpa allocator to be used for attestation.
-        SetGpaAllocator(Arc<dyn VfioDmaBuffer>),
+        SetGpaAllocator(Arc<dyn DmaClient>),
 
         // Late bound receivers for Guest Notifications
         /// Take the late-bound GuestRequest receiver for Generation Id updates.
@@ -483,7 +483,7 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     igvm_attest_read_send: mesh::Sender<Vec<u8>>,
     #[inspect(skip)]
-    gpa_allocator: Option<Arc<dyn VfioDmaBuffer>>,
+    gpa_allocator: Option<Arc<dyn DmaClient>>,
     stats: Stats,
 
     guest_notification_listeners: GuestNotificationListeners,
@@ -1831,12 +1831,12 @@ async fn request_saved_state(
 async fn request_igvm_attest(
     mut access: HostRequestPipeAccess,
     request: msg::IgvmAttestRequestData,
-    gpa_allocator: Option<Arc<dyn VfioDmaBuffer>>,
+    gpa_allocator: Option<Arc<dyn DmaClient>>,
 ) -> Result<Result<Vec<u8>, IgvmAttestError>, FatalError> {
     let allocator = gpa_allocator.ok_or(FatalError::GpaAllocatorUnavailable)?;
     let dma_size = request.response_buffer_len;
     let mem = allocator
-        .create_dma_buffer(dma_size)
+        .allocate_dma_buffer(dma_size)
         .map_err(FatalError::GpaMemoryAllocationError)?;
 
     // Host expects the vTOM bit to be stripped
