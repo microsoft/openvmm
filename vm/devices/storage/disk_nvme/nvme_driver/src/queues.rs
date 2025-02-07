@@ -106,6 +106,13 @@ impl SubmissionQueue {
             mem,
         })
     }
+
+    /// Given the saved state, checks the state of the submission queue. Does not verify memory.
+    // TODO: Can this be an associated function instead?
+    #[cfg(test)]
+    pub fn verify_restore(&self, saved_state: SubmissionQueueSavedState) -> anyhow::Result<()> {
+        anyhow::bail!("verify restore for Submission Queue not implemented yet");
+    }
 }
 
 #[derive(Inspect)]
@@ -200,6 +207,12 @@ impl CompletionQueue {
             phase: *phase,
             mem,
         })
+    }
+
+    /// Given the saved state, checks the state of the completion queue. Does not verify memory.
+    #[cfg(test)]
+    pub fn verify_restore(&self, saved_state: CompletionQueueSavedState) -> anyhow::Result<()> {
+        anyhow::bail!("verify restore for CompletionQueue not implemented yet");
     }
 }
 

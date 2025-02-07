@@ -163,6 +163,12 @@ impl PendingCommands {
             next_cid_high_bits: Wrapping(*next_cid_high_bits),
         })
     }
+
+    /// Given the saved state, verifies the state of the PendingCommands to match the saved state
+    #[cfg(test)]
+    pub fn verify_restore(&self, saved_state: PendingCommandsSavedState) -> anyhow::Result<()> {
+        anyhow::bail!("verify restore for PendingCommands not implemented");
+    }
 }
 
 impl QueuePair {
@@ -716,7 +722,21 @@ impl QueueHandler {
                     }
                     #[cfg(test)]
                     Req::Verify(verify_state) => {
-                        verify_state.complete(Err(anyhow::Error::msg("not implemented")));
+                        let saved_state = verify_state.input();
+                        
+                        let sq_verify = self.sq.verify_restore(saved_state.sq_state.clone());
+                        let cq_verify = self.cq.verify_restore(saved_state.cq_state.clone());
+                        let pending_cmds_verify = self.commands.verify_restore(saved_state.pending_cmds.clone());
+
+                        if let Err(_) = sq_verify {
+                            verify_state.complete(sq_verify);
+                        } else if let Err(_) = cq_verify {
+                            verify_state.complete(cq_verify);
+                        } else if let Err(_) = pending_cmds_verify {
+                            verify_state.complete(pending_cmds_verify);
+                        } else {
+                            verify_state.complete(Ok(()));
+                        }
                     }
                 },
                 Event::Completion(completion) => {
