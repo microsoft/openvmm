@@ -2168,8 +2168,10 @@ mod tests {
                     target_message_vp: 0,
                     child_to_parent_monitor_page_gpa: 0,
                     parent_to_child_monitor_page_gpa: 0,
-                    interrupt_page_or_target_info: *protocol::TargetInfo::new(2, 0, feature_flags)
-                        .as_u64(),
+                    interrupt_page_or_target_info: protocol::TargetInfo::new()
+                    .with_sint(2)
+                    .with_vtl(0)
+                    .with_feature_flags(feature_flags.into()).into(),
                 }),
                 trusted,
             );
