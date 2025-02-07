@@ -75,7 +75,6 @@ petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact
 petri_artifacts_vmm_test = { path = "vmm_tests/petri_artifacts_vmm_test" }
 vmm_test_images = { path = "vmm_tests/vmm_test_images" }
 vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
-vmm_test_petri_support = { path = "vmm_tests/vmm_test_petri_support" }
 
 petri = { path = "petri" }
 petri_artifacts_common = { path = "petri/petri_artifacts_common" }

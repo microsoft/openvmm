@@ -8481,15 +8481,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vmm_test_petri_support"
-version = "0.0.0"
-dependencies = [
- "petri",
- "petri_artifacts_common",
- "petri_artifacts_vmm_test",
-]
-
-[[package]]
 name = "vmm_tests"
 version = "0.0.0"
 dependencies = [
@@ -8514,7 +8505,6 @@ dependencies = [
  "vm_resource",
  "vmm_core_defs",
  "vmm_test_macros",
- "vmm_test_petri_support",
  "vtl2_settings_proto",
 ]
 
