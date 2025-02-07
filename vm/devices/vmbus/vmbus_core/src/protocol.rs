@@ -7,7 +7,6 @@ use hvdef::Vtl;
 use inspect::Inspect;
 use mesh::payload::Protobuf;
 use open_enum::open_enum;
-use static_assertions::const_assert_eq;
 use std::mem::size_of;
 use std::ops::BitAnd;
 use std::ops::BitAndAssign;
@@ -284,36 +283,12 @@ impl From<InitiateContact> for InitiateContact2 {
 }
 
 /// Helper struct to interpret the `InitiateContact::interrupt_page_or_target_info` field.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[bitfield(u64)]
 pub struct TargetInfo {
     pub sint: u8,
     pub vtl: u8,
-    pub _padding: [u8; 2],
+    pub _padding: u16,
     pub feature_flags: u32,
-}
-
-const_assert_eq!(size_of::<u64>(), size_of::<TargetInfo>());
-
-impl TargetInfo {
-    pub fn new(sint: u8, vtl: u8, feature_flags: FeatureFlags) -> Self {
-        Self {
-            sint,
-            vtl,
-            _padding: [0; 2],
-            feature_flags: feature_flags.into(),
-        }
-    }
-
-    /// Interprets a 64 bit value as the `TargetInfo` struct.
-    pub fn from_u64(value: &u64) -> &Self {
-        Self::ref_from_prefix(value.as_bytes()).unwrap()
-    }
-
-    /// Represents the `TargetInfo` struct as a 64 bit number.
-    pub fn as_u64(&self) -> &u64 {
-        u64::ref_from_prefix(self.as_bytes()).unwrap()
-    }
 }
 
 pub const fn make_version(major: u16, minor: u16) -> u32 {

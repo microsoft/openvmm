@@ -1868,12 +1868,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         includes_client_id: bool,
     ) -> Result<(), ChannelError> {
         let target_info =
-            protocol::TargetInfo::from_u64(&input.initiate_contact.interrupt_page_or_target_info);
+            protocol::TargetInfo::from(input.initiate_contact.interrupt_page_or_target_info);
 
         let target_sint = if message.multiclient
             && input.initiate_contact.version_requested >= Version::Win10Rs3_1 as u32
         {
-            target_info.sint
+            target_info.sint()
         } else {
             SINT
         };
@@ -1881,13 +1881,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         let target_vtl = if message.multiclient
             && input.initiate_contact.version_requested >= Version::Win10Rs4 as u32
         {
-            target_info.vtl
+            target_info.vtl()
         } else {
             0
         };
 
         let feature_flags = if input.initiate_contact.version_requested >= Version::Copper as u32 {
-            target_info.feature_flags
+            target_info.feature_flags()
         } else {
             0
         };
@@ -3519,7 +3519,10 @@ mod tests {
         let (mut notifier, _recv) = TestNotifier::new();
         let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
 
-        let target_info = TargetInfo::new(3, 0, FeatureFlags::new());
+        let target_info = TargetInfo::new()
+            .with_sint(3)
+            .with_vtl(0)
+            .with_feature_flags(FeatureFlags::new().into());
 
         server
             .with_notifier(&mut notifier)
@@ -3528,7 +3531,7 @@ mod tests {
                 protocol::InitiateContact {
                     version_requested: Version::Win10Rs3_1 as u32,
                     target_message_vp: 0,
-                    interrupt_page_or_target_info: *target_info.as_u64(),
+                    interrupt_page_or_target_info: target_info.into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
@@ -3556,7 +3559,7 @@ mod tests {
             &mut server,
             &mut notifier,
             Version::Win10Rs3_1 as u32,
-            *target_info.as_u64(),
+            target_info.into(),
             true,
             0,
         );
@@ -3567,7 +3570,10 @@ mod tests {
         let (mut notifier, _recv) = TestNotifier::new();
         let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
 
-        let target_info = TargetInfo::new(SINT, 2, FeatureFlags::new());
+        let target_info = TargetInfo::new()
+            .with_sint(SINT)
+            .with_vtl(2)
+            .with_feature_flags(FeatureFlags::new().into());
 
         server
             .with_notifier(&mut notifier)
@@ -3576,7 +3582,7 @@ mod tests {
                 protocol::InitiateContact {
                     version_requested: Version::Win10Rs4 as u32,
                     target_message_vp: 0,
-                    interrupt_page_or_target_info: *target_info.as_u64(),
+                    interrupt_page_or_target_info: target_info.into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
@@ -3597,7 +3603,7 @@ mod tests {
             &mut server,
             &mut notifier,
             Version::Win10Rs4 as u32,
-            *target_info.as_u64(),
+            target_info.into(),
             true,
             0,
         );
@@ -3611,25 +3617,30 @@ mod tests {
         let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
 
         // Test with no feature flags.
-        let mut target_info = TargetInfo::new(SINT, 0, FeatureFlags::new());
+        let mut target_info = TargetInfo::new()
+            .with_sint(SINT)
+            .with_vtl(0)
+            .with_feature_flags(FeatureFlags::new().into());
         test_initiate_contact(
             &mut server,
             &mut notifier,
             Version::Copper as u32,
-            *target_info.as_u64(),
+            target_info.into(),
             true,
             0,
         );
 
         // Request supported feature flags.
-        target_info.feature_flags = FeatureFlags::new()
-            .with_guest_specified_signal_parameters(true)
-            .into();
+        target_info.set_feature_flags(
+            FeatureFlags::new()
+                .with_guest_specified_signal_parameters(true)
+                .into(),
+        );
         test_initiate_contact(
             &mut server,
             &mut notifier,
             Version::Copper as u32,
-            *target_info.as_u64(),
+            target_info.into(),
             true,
             FeatureFlags::new()
                 .with_guest_specified_signal_parameters(true)
@@ -3637,14 +3648,15 @@ mod tests {
         );
 
         // Request unsupported feature flags. This will succeed and report back the supported ones.
-        target_info.feature_flags =
+        target_info.set_feature_flags(
             u32::from(FeatureFlags::new().with_guest_specified_signal_parameters(true))
-                | 0xf0000000;
+                | 0xf0000000,
+        );
         test_initiate_contact(
             &mut server,
             &mut notifier,
             Version::Copper as u32,
-            *target_info.as_u64(),
+            target_info.into(),
             true,
             FeatureFlags::new()
                 .with_guest_specified_signal_parameters(true)
@@ -3652,12 +3664,12 @@ mod tests {
         );
 
         // Verify client ID feature flag.
-        target_info.feature_flags = FeatureFlags::new().with_client_id(true).into();
+        target_info.set_feature_flags(FeatureFlags::new().with_client_id(true).into());
         test_initiate_contact(
             &mut server,
             &mut notifier,
             Version::Copper as u32,
-            *target_info.as_u64(),
+            target_info.into(),
             true,
             FeatureFlags::new().with_client_id(true).into(),
         );
@@ -3973,9 +3985,12 @@ mod tests {
             })
             .unwrap();
 
-        let mut target_info = TargetInfo::new(SINT, 0, FeatureFlags::new());
+        let mut target_info = TargetInfo::new()
+            .with_sint(SINT)
+            .with_vtl(2)
+            .with_feature_flags(FeatureFlags::new().into());
         if version >= Version::Copper {
-            target_info.feature_flags = feature_flags.into();
+            target_info.set_feature_flags(feature_flags.into());
         }
 
         server
@@ -3985,7 +4000,7 @@ mod tests {
                 protocol::InitiateContact {
                     version_requested: version as u32,
                     target_message_vp: 0,
-                    interrupt_page_or_target_info: *target_info.as_u64(),
+                    interrupt_page_or_target_info: target_info.into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
@@ -4452,8 +4467,11 @@ mod tests {
                 protocol::InitiateContact2 {
                     initiate_contact: protocol::InitiateContact {
                         version_requested: version as u32,
-                        interrupt_page_or_target_info: *TargetInfo::new(SINT, 0, feature_flags)
-                            .as_u64(),
+                        interrupt_page_or_target_info: TargetInfo::new()
+                            .with_sint(SINT)
+                            .with_vtl(0)
+                            .with_feature_flags(feature_flags.into())
+                            .into(),
                         child_to_parent_monitor_page_gpa: 0x123f000,
                         parent_to_child_monitor_page_gpa: 0x321f000,
                         ..FromZeroes::new_zeroed()
