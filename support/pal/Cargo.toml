@@ -23,7 +23,7 @@ pal_event.workspace = true
 ntapi = { workspace = true, features = ["impl-default"] }
 socket2 = { workspace = true, features = ["all"] }
 widestring.workspace = true
-windows = { workspace = true, features = ["Win32_Foundation"] }
+windows = { workspace = true, features = ["Wdk_Foundation", "Win32_Foundation"] }
 
 [target.'cfg(windows)'.dependencies.winapi]
 workspace = true

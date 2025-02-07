@@ -9,6 +9,7 @@
 use futures::poll;
 use guestmem::GuestMemory;
 use mesh::MeshPayload;
+use pal::windows::ObjectAttributes;
 use pal::windows::UnicodeStringRef;
 use pal_async::driver::Driver;
 use pal_async::windows::overlapped::IoBuf;
@@ -17,14 +18,12 @@ use pal_async::windows::overlapped::OverlappedFile;
 use pal_event::Event;
 use std::mem::zeroed;
 use std::os::windows::prelude::*;
-use std::ptr::null_mut;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use vmbusioctl::VMBUS_CHANNEL_OFFER;
 use vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use widestring::utf16str;
 use widestring::Utf16Str;
-use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::NtOpenFile;
 use windows::Win32::Foundation::ERROR_CANCELLED;
 use windows::Win32::Foundation::HANDLE;
@@ -49,14 +48,8 @@ impl ProxyHandle {
     pub fn new() -> Result<Self> {
         const DEVICE_PATH: &Utf16Str = utf16str!("\\Device\\VmbusProxy");
         let pathu = UnicodeStringRef::try_from(DEVICE_PATH).expect("string fits");
-        let oa = OBJECT_ATTRIBUTES {
-            Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-            RootDirectory: HANDLE::default(),
-            ObjectName: pathu.as_ref(),
-            Attributes: 0,
-            SecurityDescriptor: null_mut(),
-            SecurityQualityOfService: null_mut(),
-        };
+        let mut oa = ObjectAttributes::new();
+        oa.name(&pathu);
         // SAFETY: calling API according to docs.
         unsafe {
             let mut iosb = zeroed();
@@ -64,7 +57,7 @@ impl ProxyHandle {
             NtOpenFile(
                 &mut handle,
                 (FILE_ALL_ACCESS | SYNCHRONIZE).0,
-                &oa,
+                oa.as_ref(),
                 &mut iosb,
                 0,
                 0,

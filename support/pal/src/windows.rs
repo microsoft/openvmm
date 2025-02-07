@@ -791,6 +791,14 @@ impl<'a> ObjectAttributes<'a> {
     }
 }
 
+impl AsRef<windows::Wdk::Foundation::OBJECT_ATTRIBUTES> for ObjectAttributes<'_> {
+    fn as_ref(&self) -> &windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
+        // SAFETY: These are different definitions of the same type, so the memory layout is the
+        // same.
+        unsafe { std::mem::transmute(&self.attributes) }
+    }
+}
+
 pub fn open_object_directory(obj_attr: &ObjectAttributes<'_>, access: u32) -> Result<OwnedHandle> {
     // SAFETY: calling the API according to the NT API
     unsafe {
