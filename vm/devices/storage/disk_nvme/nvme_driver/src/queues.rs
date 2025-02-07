@@ -110,28 +110,12 @@ impl SubmissionQueue {
     /// Given the saved state, checks the state of the submission queue. Does not verify memory.
     // TODO: Can this be an associated function instead?
     #[cfg(test)]
-    pub fn verify_restore(&self, saved_state: SubmissionQueueSavedState) -> anyhow::Result<()> {
-        if saved_state.sqid != self.sqid {
-            anyhow::bail!(format!("sqid for the submission queue did not match. Expected: {}, Actual: {}", saved_state.sqid, self.sqid));
-        }
-
-        if saved_state.head != self.head {
-            anyhow::bail!(format!("head for the submission queue did not match. Expected: {}, Actual: {}", saved_state.head, self.head));
-        }
-
-        if saved_state.tail != self.tail {
-            anyhow::bail!(format!("tail for the submission queue did not match. Expected: {}, Actual: {}", saved_state.tail, self.tail));
-        }
-
-        if saved_state.committed_tail != self.committed_tail {
-            anyhow::bail!(format!("committed_tail for the submission queue did not match. Expected: {}, Actual: {}", saved_state.committed_tail, self.committed_tail));
-        }
-
-        if saved_state.len != self.len {
-            anyhow::bail!(format!("len for the submission queue did not match. Expected: {}, Actual: {}", saved_state.len, self.len));
-        }
-
-        Ok(())
+    pub(crate) fn verify_restore(&self, saved_state: SubmissionQueueSavedState) {
+        assert_eq!(saved_state.sqid, self.sqid);
+        assert_eq!(saved_state.head, self.head);
+        assert_eq!(saved_state.tail, self.tail);
+        assert_eq!(saved_state.committed_tail, self.committed_tail);
+        assert_eq!(saved_state.len, self.len);
     }
 }
 
@@ -231,28 +215,12 @@ impl CompletionQueue {
 
     /// Given the saved state, checks the state of the completion queue. Does not verify memory.
     #[cfg(test)]
-    pub fn verify_restore(&self, saved_state: CompletionQueueSavedState) -> anyhow::Result<()> {
-        if saved_state.cqid != self.cqid {
-            anyhow::bail!(format!("cqid for the completion queue did not match. Expected: {}, Actual: {}", saved_state.cqid, self.cqid));
-        }
-
-        if saved_state.head != self.head {
-            anyhow::bail!(format!("head for the completion queue did not match. Expected: {}, Actual: {}", saved_state.head, self.head));
-        }
-
-        if saved_state.committed_head != self.committed_head {
-            anyhow::bail!(format!("committed_head for the completion queue did not match. Expected: {}, Actual: {}", saved_state.committed_head, self.committed_head));
-        }
-
-        if saved_state.len != self.len {
-            anyhow::bail!(format!("len for the completion queue did not match. Expected: {}, Actual: {}", saved_state.len, self.len));
-        }
-
-        if saved_state.phase != self.phase {
-            anyhow::bail!(format!("phase for the completion queue did not match. Expected: {}, Actual: {}", saved_state.phase, self.phase));
-        }
-
-        Ok(())
+    pub(crate) fn verify_restore(&self, saved_state: CompletionQueueSavedState) {
+        assert_eq!(saved_state.cqid, self.cqid);
+        assert_eq!(saved_state.head, self.head);
+        assert_eq!(saved_state.committed_head, self.committed_head);
+        assert_eq!(saved_state.len, self.len);
+        assert_eq!(saved_state.phase, self.phase);
     }
 }
 

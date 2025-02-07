@@ -687,7 +687,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     /// Given an input of the saved state from which the driver was constructed and the underlying
     /// memory, this validates the current driver.
     #[cfg(test)]
-    pub(crate) async fn verify_restore(&mut self, saved_state: NvmeDriverSavedState, mem: MemoryBlock) -> anyhow::Result<()> {
+    pub(crate) async fn verify_restore(&mut self, saved_state: NvmeDriverSavedState, mem: MemoryBlock) {
         if let Some(task) = self.task.as_mut() {
             task.stop().await;
             let worker = task.task();
@@ -700,23 +700,16 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     let admin_saved_mem = mem.subblock(admin_saved_state.base_pfn.try_into().unwrap(), admin_saved_state.mem_len);
                     return admin.verify_restore(admin_saved_state, admin_saved_mem).await;
                 },
-                _ => anyhow::bail!("admin queue states do not match"),
+                _ => panic!("admin queue states do not match"),
             };
-
-            if let Err(_) = admin_queue_match {
-                task.start();
-                admin_queue_match?;
-            }
 
             // TODO: Verify I/O Queues with strict ordering
             task.start();
         } else {
-            anyhow::bail!("task cannot be None() after restore");
+            panic!("task cannot be None() after restore");
         }
 
-        if saved_state.device_id != self.device_id {
-            anyhow::bail!(format!("incorrect device_id after restore. Expected:{} Actual: {}", saved_state.device_id, self.device_id));
-        }
+        assert_eq!(saved_state.device_id, self.device_id);
 
         // TODO: [expand-verify-restore-functionality]
         // self.identify.verify_restore(saved_state.identify_ctrl)?;
@@ -730,11 +723,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         //     self.namespaces[i].verify_restore(saved_state.namespaces[i])?;
         // }
         
-        if !self.nvme_keepalive {
-            anyhow::bail!(format!("incorrect nvme_keepalive value after restore. Expected: {} Actual: {}", true, self.nvme_keepalive));
-        }
-
-        Ok(())
+        assert!(self.nvme_keepalive);
     }
 }
 

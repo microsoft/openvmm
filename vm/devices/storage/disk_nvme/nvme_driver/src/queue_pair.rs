@@ -166,8 +166,8 @@ impl PendingCommands {
 
     /// Given the saved state, verifies the state of the PendingCommands to match the saved state
     #[cfg(test)]
-    pub fn verify_restore(&self, saved_state: PendingCommandsSavedState) -> anyhow::Result<()> {
-        anyhow::bail!("verify restore for PendingCommands not implemented");
+    pub(crate) fn verify_restore(&self, saved_state: PendingCommandsSavedState) {
+        panic!("verify restore for PendingCommands not implemented");
     }
 }
 
@@ -334,10 +334,10 @@ impl QueuePair {
     /// Given the saved state of a queue pair, this verifies the constructed queue pair.
     /// Input memory block should already be constructed from the offsets.
     #[cfg(test)]
-    pub(crate) async fn verify_restore(&self, saved_state: QueuePairSavedState, saved_mem: MemoryBlock) -> anyhow::Result<()> {
+    pub(crate) async fn verify_restore(&self, saved_state: QueuePairSavedState, saved_mem: MemoryBlock) {
         // Entire memory region is checked below. No need for the the handler to check it again.
         // Send an RPC request to QueueHandler thread to verify the restore status.
-        self.issuer.send.call(Req::Verify, saved_state.handler_data).await??;
+        self.issuer.send.call(Req::Verify, saved_state.handler_data).await;
 
         // TODO: Do we need to verify_restore for cancel?
         // TODO: Do we need to verify_restore for issuers?
@@ -345,34 +345,20 @@ impl QueuePair {
         let mut saved_mem_data: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
         let mut self_mem_data: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
 
-        if saved_mem.len() != self.mem.len() {
-            anyhow::bail!(format!("mem length mismatch. Expected: {}, Actual: {}", saved_mem.len(), self.mem.len()));
-        }
+        assert_eq!(saved_mem.len(), self.mem.len());
 
         for pfn in 0..(saved_mem.len()/PAGE_SIZE) {
             saved_mem.read_at(pfn * PAGE_SIZE, &mut saved_mem_data);
             self.mem.read_at(pfn * PAGE_SIZE, &mut self_mem_data);
 
             for i in 0..PAGE_SIZE {
-                if saved_mem_data[i] != self_mem_data[i] {
-                    anyhow::bail!(format!("memory mismatched at offset {}. Expected: {}, Actual: {}", pfn * PAGE_SIZE + i, saved_mem_data[i], self_mem_data[i]));
-                }
+                assert_eq!(saved_mem_data[i], self_mem_data[i]);
             }
         }
 
-        if saved_state.qid != self.qid {
-            anyhow::bail!(format!("qid did not match. Expected: {}, Actual: {}", saved_state.qid, self.qid));
-        }
-
-        if saved_state.sq_entries != self.sq_entries {
-            anyhow::bail!(format!("sq_entries did not match. Expected: {}, Actual: {}", saved_state.sq_entries, self.sq_entries));
-        }
-
-        if saved_state.cq_entries != self.cq_entries {
-            anyhow::bail!(format!("cq_entries did not match. Expected: {}, Actual: {}", saved_state.cq_entries, self.cq_entries));
-        }
-
-        Ok(())
+        assert_eq!(saved_state.qid, self.qid);
+        assert_eq!(saved_state.sq_entries, self.sq_entries);
+        assert_eq!(saved_state.cq_entries, self.cq_entries);
     }
 }
 
@@ -634,7 +620,7 @@ enum Req {
     Inspect(inspect::Deferred),
     Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
     #[cfg(test)]
-    Verify(Rpc<QueueHandlerSavedState, Result<(), anyhow::Error>>),
+    Verify(Rpc<QueueHandlerSavedState, ()>),
 }
 
 #[derive(Inspect)]
@@ -724,19 +710,9 @@ impl QueueHandler {
                     Req::Verify(verify_state) => {
                         let saved_state = verify_state.input();
                         
-                        let sq_verify = self.sq.verify_restore(saved_state.sq_state.clone());
-                        let cq_verify = self.cq.verify_restore(saved_state.cq_state.clone());
-                        let pending_cmds_verify = self.commands.verify_restore(saved_state.pending_cmds.clone());
-
-                        if let Err(_) = sq_verify {
-                            verify_state.complete(sq_verify);
-                        } else if let Err(_) = cq_verify {
-                            verify_state.complete(cq_verify);
-                        } else if let Err(_) = pending_cmds_verify {
-                            verify_state.complete(pending_cmds_verify);
-                        } else {
-                            verify_state.complete(Ok(()));
-                        }
+                        self.sq.verify_restore(saved_state.sq_state.clone());
+                        self.cq.verify_restore(saved_state.cq_state.clone());
+                        self.commands.verify_restore(saved_state.pending_cmds.clone());
                     }
                 },
                 Event::Completion(completion) => {
@@ -785,12 +761,6 @@ impl QueueHandler {
             // Admin queue is expected to have pending Async Event requests.
             drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
         })
-    }
-
-    /// Given the QueueHandlerSavedState, it verifies the constructed handler.
-    #[cfg(test)]
-    pub(crate) fn verify_restore(saved_state: QueueHandlerSavedState) -> anyhow::Result<()> {
-        anyhow::bail!("verify_restore not yet implemented for the QueueHandler");
     }
 }
 
