@@ -18,7 +18,7 @@ pub trait MessagePort: Send + Sync {
     /// A message is `trusted` if it was was received from the guest without using host-visible
     /// mechanisms on a hardware-isolated VM. The `trusted` parameter is always `false` if not
     /// running in the paravisor of a hardware-isolated VM.
-    fn poll_handle_message(&self, cx: &mut Context<'_>, msg: &[u8], trusted: bool) -> Poll<bool>;
+    fn poll_handle_message(&self, cx: &mut Context<'_>, msg: &[u8], trusted: bool) -> Poll<()>;
 }
 
 pub trait EventPort: Send + Sync {

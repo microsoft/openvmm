@@ -29,6 +29,7 @@ use channels::OpenParams;
 use channels::RestoreError;
 pub use channels::Update;
 use futures::channel::mpsc;
+use futures::channel::mpsc::SendError;
 use futures::future::OptionFuture;
 use futures::stream::SelectAll;
 use futures::FutureExt;
@@ -1793,24 +1794,40 @@ pub(crate) struct MessageSender {
     multiclient: bool,
 }
 
+impl MessageSender {
+    fn poll_handle_message(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        msg: &[u8],
+        trusted: bool,
+    ) -> Poll<Result<(), SendError>> {
+        let mut send = self.send.clone();
+        ready!(send.poll_ready(cx))?;
+        send.start_send(SynicMessage {
+            data: msg.to_vec(),
+            multiclient: self.multiclient,
+            trusted,
+        })?;
+
+        Poll::Ready(Ok(()))
+    }
+}
+
 impl MessagePort for MessageSender {
     fn poll_handle_message(
         &self,
         cx: &mut std::task::Context<'_>,
         msg: &[u8],
         trusted: bool,
-    ) -> Poll<bool> {
-        let mut send = self.send.clone();
-        let result = ready!(send.poll_ready(cx)).is_ok()
-            && send
-                .start_send(SynicMessage {
-                    data: msg.to_vec(),
-                    multiclient: self.multiclient,
-                    trusted,
-                })
-                .is_ok();
+    ) -> Poll<()> {
+        if let Err(err) = ready!(self.poll_handle_message(cx, msg, trusted)) {
+            tracelimit::error_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                "failed to send message"
+            );
+        }
 
-        Poll::Ready(result)
+        Poll::Ready(())
     }
 }
 
@@ -1886,7 +1903,7 @@ mod tests {
                         msg.data(),
                         trusted,
                     ),
-                Poll::Ready(true)
+                Poll::Ready(())
             );
         }
     }

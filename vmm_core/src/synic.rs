@@ -58,7 +58,7 @@ impl SynicPorts {
                 &mut Context::from_waker(noop_waker_ref()),
                 message,
                 secure,
-            ) == Poll::Ready(true)
+            ) == Poll::Ready(())
             {
                 Ok(())
             } else {
