@@ -487,7 +487,12 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(this)
     }
 
-    async fn report_hwc_timeout(&mut self, last_cmd_failed: bool, interrupt_loss: bool, ms_elapsed: u32) {
+    async fn report_hwc_timeout(
+        &mut self,
+        last_cmd_failed: bool,
+        interrupt_loss: bool,
+        ms_elapsed: u32,
+    ) {
         // Perform initial check for ownership, failing without wait if device
         // is not present or owns shmem region
         let data = self
@@ -531,9 +536,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         );
         self.bar0.mem.write_u32(
             self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 24,
-            ((last_cmd_failed as u32) << 24) |
-                ((interrupt_loss as u32) << 25) |
-                (ms_elapsed & 0xFFFFFF),
+            ((last_cmd_failed as u32) << 24)
+                | ((interrupt_loss as u32) << 25)
+                | (ms_elapsed & 0xFFFFFF),
         );
 
         // Format and write header information in final 32-bit range, flipping
@@ -845,7 +850,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(())
     }
 
-    async fn process_eqs_or_wait_with_retry(&mut self) -> (bool, u128, u32, u32, u32, anyhow::Result<()>) {
+    async fn process_eqs_or_wait_with_retry(
+        &mut self,
+    ) -> (bool, u128, u32, u32, u32, anyhow::Result<()>) {
         let mut last_wait_result: anyhow::Result<()> = Ok(());
         let mut elapsed: u128 = 0;
         let mut eq_arm_count = 0;
@@ -853,7 +860,14 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let mut interrupt_count = 0;
         return loop {
             if self.process_all_eqs() {
-                break (true, elapsed, interrupt_count, interrupt_wait_count, eq_arm_count, last_wait_result);
+                break (
+                    true,
+                    elapsed,
+                    interrupt_count,
+                    interrupt_wait_count,
+                    eq_arm_count,
+                    last_wait_result,
+                );
             }
             if !self.eq_armed {
                 eq_arm_count += 1;
@@ -863,7 +877,14 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 if self.process_all_eqs() {
                     // Remove any pending interrupt events.
                     let _ = self.interrupts[0].as_mut().unwrap().wait().now_or_never();
-                    break (true, elapsed, interrupt_count, interrupt_wait_count, eq_arm_count, last_wait_result);
+                    break (
+                        true,
+                        elapsed,
+                        interrupt_count,
+                        interrupt_wait_count,
+                        eq_arm_count,
+                        last_wait_result,
+                    );
                 }
             }
             interrupt_wait_count += 1;
@@ -880,22 +901,39 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             }
             if elapsed >= self.hwc_timeout_in_ms as u128 {
                 if self.process_all_eqs() {
-                    break (true, elapsed, interrupt_count, interrupt_wait_count, eq_arm_count, last_wait_result);
+                    break (
+                        true,
+                        elapsed,
+                        interrupt_count,
+                        interrupt_wait_count,
+                        eq_arm_count,
+                        last_wait_result,
+                    );
                 } else {
-                    break (false, elapsed, interrupt_count, interrupt_wait_count, eq_arm_count, last_wait_result);
+                    break (
+                        false,
+                        elapsed,
+                        interrupt_count,
+                        interrupt_wait_count,
+                        eq_arm_count,
+                        last_wait_result,
+                    );
                 }
             }
-        }
+        };
     }
 
     async fn process_eqs_or_wait(&mut self) -> anyhow::Result<()> {
-        let (eqe_found, elapsed, interrupt_count, interrupt_wait_count, eq_arm_count, last_wait_result) =
-            self.process_eqs_or_wait_with_retry().await;
+        let (
+            eqe_found,
+            elapsed,
+            interrupt_count,
+            interrupt_wait_count,
+            eq_arm_count,
+            last_wait_result,
+        ) = self.process_eqs_or_wait_with_retry().await;
         let wait_failed = !eqe_found;
-        let interrupt_loss =
-            interrupt_wait_count != 0 &&
-            interrupt_count == 0 &&
-            !wait_failed;
+        let interrupt_loss = interrupt_wait_count != 0 && interrupt_count == 0 && !wait_failed;
         if wait_failed || elapsed > self.hwc_warning_time_in_ms as u128 || interrupt_loss {
             tracing::warn!(
                 wait_failed,
@@ -908,11 +946,13 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 "hwc {}",
                 match (wait_failed, interrupt_loss) {
                     (true, _) => "timeout waiting for response",
-                    (_, true) => "response received with interrupt wait attempted but no interrupt received",
+                    (_, true) =>
+                        "response received with interrupt wait attempted but no interrupt received",
                     _ => "response received with delay",
                 }
             );
-            self.report_hwc_timeout(wait_failed, interrupt_loss, elapsed as u32).await;
+            self.report_hwc_timeout(wait_failed, interrupt_loss, elapsed as u32)
+                .await;
             if !wait_failed {
                 // Increase warning threshold after each warning occurrence
                 self.hwc_warning_time_in_ms += HWC_WARNING_TIME_IN_MS;
@@ -923,7 +963,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             if last_wait_result.is_err() {
                 return last_wait_result;
             } else {
-                return Err(anyhow::anyhow!("MANA request timed out. No EQE found for HWC response."));
+                return Err(anyhow::anyhow!(
+                    "MANA request timed out. No EQE found for HWC response."
+                ));
             }
         }
         self.hwc_failure = false;
