@@ -167,7 +167,14 @@ impl PendingCommands {
     /// Given the saved state, verifies the state of the PendingCommands to match the saved state
     #[cfg(test)]
     pub(crate) fn verify_restore(&self, saved_state: PendingCommandsSavedState) {
-        panic!("verify restore for PendingCommands not implemented");
+        // TODO: [expand-verify-restore-functionality] cid_key_bits are currently unused during restore. 
+        assert_eq!(saved_state.commands.len(), self.commands.len());
+
+        for (index, command) in &self.commands {
+            command.verify_restore(&saved_state.commands[index]);
+        }
+
+        assert_eq!(saved_state.next_cid_high_bits, self.next_cid_high_bits.0);
     }
 }
 
@@ -337,7 +344,7 @@ impl QueuePair {
     pub(crate) async fn verify_restore(&self, saved_state: QueuePairSavedState, saved_mem: MemoryBlock) {
         // Entire memory region is checked below. No need for the the handler to check it again.
         // Send an RPC request to QueueHandler thread to verify the restore status.
-        self.issuer.send.call(Req::Verify, saved_state.handler_data).await;
+        let _ =self.issuer.send.call(Req::Verify, saved_state.handler_data).await;
 
         // TODO: Do we need to verify_restore for cancel?
         // TODO: Do we need to verify_restore for issuers?
@@ -761,6 +768,14 @@ impl QueueHandler {
             // Admin queue is expected to have pending Async Event requests.
             drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
         })
+    }
+}
+
+#[cfg(test)]
+impl PendingCommand {
+    /// Verifies the value of the pending command from a saved state
+    pub(crate) fn verify_restore(&self, saved_state: &PendingCommandSavedState) {
+        assert_eq!(saved_state.command, self.command);
     }
 }
 
