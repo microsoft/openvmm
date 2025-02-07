@@ -487,7 +487,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(this)
     }
 
-    async fn report_hwc_timeout(&mut self, last_cmd_failed: bool, ms_elapsed_for_interrupt: u32) {
+    async fn report_hwc_timeout(&mut self, last_cmd_failed: bool, interrupt_loss: bool, ms_elapsed: u32) {
         // Perform initial check for ownership, failing without wait if device
         // is not present or owns shmem region
         let data = self
@@ -531,7 +531,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         );
         self.bar0.mem.write_u32(
             self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 24,
-            ((last_cmd_failed as u32) << 24) | (ms_elapsed_for_interrupt & 0xFFFFFF),
+            ((last_cmd_failed as u32) << 24) |
+                ((interrupt_loss as u32) << 25) |
+                (ms_elapsed & 0xFFFFFF),
         );
 
         // Format and write header information in final 32-bit range, flipping
@@ -844,9 +846,15 @@ impl<T: DeviceBacking> GdmaDriver<T> {
     }
 
     async fn process_eqs_or_wait(&mut self) -> anyhow::Result<()> {
+        let mut eqe_found = false;
+        let mut last_wait_result: anyhow::Result<()> = Ok(());
+        let mut elapsed: u128 = 0;
+        let mut interrupt_wait_count = 0;
+        let mut interrupt_count = 0;
         loop {
             if self.process_all_eqs() {
-                return Ok(());
+                eqe_found = true;
+                break;
             }
 
             if !self.eq_armed {
@@ -857,42 +865,68 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 if self.process_all_eqs() {
                     // Remove any pending interrupt events.
                     let _ = self.interrupts[0].as_mut().unwrap().wait().now_or_never();
-                    return Ok(());
+                    eqe_found = true;
+                    break;
                 }
             }
             tracing::trace!("waiting for eq interrupt");
+            interrupt_wait_count += 1;
             let before_wait = std::time::Instant::now();
-            let wait_result = Self::wait_for_hwc_interrupt(
+            last_wait_result = Self::wait_for_hwc_interrupt(
                 self.interrupts[0].as_mut().unwrap(),
                 Some(&mut self.hwc_failure),
-                self.hwc_timeout_in_ms,
+                std::cmp::max(self.hwc_timeout_in_ms / 4, 500),
             )
             .await;
-
-            let wait_failed = wait_result.is_err();
-            let elapsed: u128 = before_wait.elapsed().as_millis();
-            if wait_failed || elapsed > self.hwc_warning_time_in_ms as u128 {
-                tracing::warn!(
-                    wait_failed,
-                    elapsed,
-                    self.hwc_warning_time_in_ms,
-                    "hwc {}",
-                    match wait_failed {
-                        true => "timeout",
-                        false => "delay warning",
-                    }
-                );
-                self.report_hwc_timeout(wait_failed, elapsed as u32).await;
-                if !wait_failed {
-                    // Increase warning threshold after each warning occurrence
-                    self.hwc_warning_time_in_ms += HWC_WARNING_TIME_IN_MS;
-                }
+            elapsed += before_wait.elapsed().as_millis();
+            if !last_wait_result.is_err() {
+                interrupt_count += 1;
             }
-
-            if wait_failed {
-                return wait_result;
+            if elapsed > self.hwc_timeout_in_ms as u128 {
+                if self.process_all_eqs() {
+                    eqe_found = true;
+                }
+                break;
             }
         }
+
+        let wait_failed = !eqe_found;
+        let interrupt_loss =
+            interrupt_wait_count != 0 &&
+            interrupt_count == 0 &&
+            !wait_failed;
+        if wait_failed || elapsed > self.hwc_warning_time_in_ms as u128 || interrupt_loss {
+            tracing::warn!(
+                wait_failed,
+                elapsed,
+                interrupt_loss,
+                interrupt_count,
+                interrupt_wait_count,
+                self.hwc_warning_time_in_ms,
+                "hwc {}",
+                match wait_failed {
+                    true => "timeout",
+                    false => "delay warning",
+                }
+            );
+            self.report_hwc_timeout(wait_failed, interrupt_loss, elapsed as u32).await;
+            if !wait_failed {
+                // Increase warning threshold after each warning occurrence
+                self.hwc_warning_time_in_ms += HWC_WARNING_TIME_IN_MS;
+            }
+        }
+        if wait_failed {
+            if !self.hwc_failure {
+                self.hwc_failure = true;
+            }
+            if last_wait_result.is_err() {
+                return last_wait_result;
+            } else {
+                return Err(anyhow::anyhow!("MANA request timed out. No EQE found for HWC response."));
+            }
+        }
+        self.hwc_failure = false;
+        return Ok(());
     }
 
     async fn wait_cq(&mut self) -> anyhow::Result<Cqe> {
