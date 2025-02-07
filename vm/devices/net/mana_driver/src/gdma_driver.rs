@@ -89,6 +89,7 @@ const HWC_WARNING_TIME_IN_MS: u32 = 3000;
 const HWC_TIMEOUT_DEFAULT_IN_MS: u32 = 10000;
 const HWC_TIMEOUT_FOR_SHUTDOWN_IN_MS: u32 = 100;
 const HWC_POLL_TIMEOUT_IN_MS: u64 = 10000;
+const HWC_INTERRUPT_POLL_WAIT_IN_MS: u32 = 500;
 
 #[derive(Inspect)]
 struct Bar0<T: Inspect> {
@@ -892,7 +893,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             last_wait_result = Self::wait_for_hwc_interrupt(
                 self.interrupts[0].as_mut().unwrap(),
                 Some(&mut self.hwc_failure),
-                500,
+                HWC_INTERRUPT_POLL_WAIT_IN_MS,
             )
             .await;
             elapsed += before_wait.elapsed().as_millis();
@@ -900,25 +901,14 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 interrupt_count += 1;
             }
             if elapsed >= self.hwc_timeout_in_ms as u128 {
-                if self.process_all_eqs() {
-                    break (
-                        true,
-                        elapsed,
-                        interrupt_count,
-                        interrupt_wait_count,
-                        eq_arm_count,
-                        last_wait_result,
-                    );
-                } else {
-                    break (
-                        false,
-                        elapsed,
-                        interrupt_count,
-                        interrupt_wait_count,
-                        eq_arm_count,
-                        last_wait_result,
-                    );
-                }
+                break (
+                    self.process_all_eqs(),
+                    elapsed,
+                    interrupt_count,
+                    interrupt_wait_count,
+                    eq_arm_count,
+                    last_wait_result,
+                );
             }
         };
     }
@@ -969,7 +959,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             }
         }
         self.hwc_failure = false;
-        return Ok(());
+        Ok(())
     }
 
     async fn wait_cq(&mut self) -> anyhow::Result<Cqe> {
