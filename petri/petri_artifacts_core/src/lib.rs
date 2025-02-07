@@ -16,6 +16,7 @@ use std::sync::Arc;
 // exported to support the `declare_artifacts!` macro
 #[doc(hidden)]
 pub use paste;
+use std::ffi::OsStr;
 use std::marker::PhantomData;
 use std::path::Path;
 
@@ -47,13 +48,32 @@ impl<A: ArtifactId + std::fmt::Debug> std::fmt::Debug for ArtifactHandle<A> {
 }
 
 /// A resolved artifact path for artifact `A`.
-#[derive(Clone, Debug)]
 pub struct ResolvedArtifact<A = ()>(Option<PathBuf>, PhantomData<A>);
+
+impl<A> Clone for ResolvedArtifact<A> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), self.1.clone())
+    }
+}
+
+impl<A> std::fmt::Debug for ResolvedArtifact<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ResolvedArtifact").field(&self.0).finish()
+    }
+}
 
 impl<A> ResolvedArtifact<A> {
     /// Erases the type `A`.
     pub fn erase(self) -> ResolvedArtifact {
         ResolvedArtifact(self.0, PhantomData)
+    }
+
+    /// Gets the resolved path of the artifact.
+    #[track_caller]
+    pub fn get(&self) -> &Path {
+        self.0
+            .as_ref()
+            .expect("cannot get path in requirements phase")
     }
 }
 
@@ -67,9 +87,14 @@ impl<A> From<ResolvedArtifact<A>> for PathBuf {
 impl<A> AsRef<Path> for ResolvedArtifact<A> {
     #[track_caller]
     fn as_ref(&self) -> &Path {
-        self.0
-            .as_ref()
-            .expect("cannot get path in requirements phase")
+        self.get()
+    }
+}
+
+impl<A> AsRef<OsStr> for ResolvedArtifact<A> {
+    #[track_caller]
+    fn as_ref(&self) -> &OsStr {
+        self.get().as_ref()
     }
 }
 
