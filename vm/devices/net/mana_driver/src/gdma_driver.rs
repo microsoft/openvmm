@@ -859,7 +859,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let mut eq_arm_count = 0;
         let mut interrupt_wait_count = 0;
         let mut interrupt_count = 0;
-        return loop {
+        loop {
             if self.process_all_eqs() {
                 break (
                     true,
@@ -897,7 +897,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             )
             .await;
             elapsed += before_wait.elapsed().as_millis();
-            if !last_wait_result.is_err() {
+            if last_wait_result.is_ok() {
                 interrupt_count += 1;
             }
             if elapsed >= self.hwc_timeout_in_ms as u128 {
@@ -910,7 +910,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     last_wait_result,
                 );
             }
-        };
+        }
     }
 
     async fn process_eqs_or_wait(&mut self) -> anyhow::Result<()> {
