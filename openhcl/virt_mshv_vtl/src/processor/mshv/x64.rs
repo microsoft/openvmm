@@ -339,6 +339,12 @@ impl BackingPrivate for HypervisorBackedX86 {
     ) -> Result<(), UhRunVpError> {
         unimplemented!()
     }
+
+    fn vtl1_inspectable(_this: &UhProcessor<'_, Self>) -> bool {
+        // TODO: Use the VsmVpStatus register to query the hypervisor for
+        // whether VTL 1 is enabled on the vp (this can be cached).
+        false
+    }
 }
 
 fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
@@ -1995,8 +2001,6 @@ mod save_restore {
                         // Topology information
                         vp_info: _,
                         cpu_index: _,
-                        // Only relevant for CVMs
-                        hcvm_vtl1_enabled: _,
                         hv_start_enable_vtl_vp: _,
                     },
                 // Saved

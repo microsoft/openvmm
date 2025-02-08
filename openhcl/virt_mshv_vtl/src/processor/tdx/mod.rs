@@ -902,6 +902,10 @@ impl BackingPrivate for TdxBacked {
     ) -> Result<(), UhRunVpError> {
         this.hcvm_handle_vp_start_enable_vtl(vtl)
     }
+
+    fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool {
+        this.hcvm_vtl1_inspectable()
+    }
 }
 
 impl UhProcessor<'_, TdxBacked> {

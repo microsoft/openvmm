@@ -158,8 +158,12 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
 
         // Lock the remote vp state to make sure no other VP is trying to enable
         // VTL 1 on it.
-        let target_vp = &self.vp.partition.vps[vp_index as usize];
-        let mut vtl1_enabled = target_vp.hcvm_vtl1_enabled.lock();
+        let mut vtl1_enabled = self
+            .vp
+            .cvm_partition()
+            .vp_inner(vp_index)
+            .vtl1_enabled
+            .lock();
 
         if *vtl1_enabled {
             return Err(HvError::VtlAlreadyEnabled);
@@ -880,7 +884,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
                 self.intercepted_vtl
             );
             false
-        } else if !*self.vp.inner.hcvm_vtl1_enabled.lock() {
+        } else if !*self.vp.cvm_vp_inner().vtl1_enabled.lock() {
             // VTL 1 must be enabled on the vp
             tracelimit::warn_ratelimited!("vtl call not allowed because vtl 1 is not enabled");
             false
@@ -1132,6 +1136,17 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
 }
 
 impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
+    /// Returns the partition-wide CVM state.
+    pub fn cvm_partition(&self) -> &'_ crate::UhCvmPartitionState {
+        B::cvm_partition_state(self.shared)
+    }
+
+    /// Returns the per-vp cvm inner state for this vp
+    pub fn cvm_vp_inner(&self) -> &'_ crate::UhCvmVpInner {
+        self.cvm_partition()
+            .vp_inner(self.inner.vp_info.base.vp_index.index())
+    }
+
     fn set_vsm_partition_config(
         &mut self,
         value: HvRegisterVsmPartitionConfig,
@@ -1284,6 +1299,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn hcvm_vtl1_inspectable(&self) -> bool {
+        *self.cvm_vp_inner().vtl1_enabled.lock()
     }
 
     fn get_vsm_vp_secure_config_vtl(

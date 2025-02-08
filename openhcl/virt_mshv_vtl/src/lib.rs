@@ -365,12 +365,26 @@ pub struct UhCvmPartitionState {
         with = "|arr| inspect::iter_by_index(arr.iter()).map_value(|bb| inspect::iter_by_index(bb.iter().map(|v| *v)))"
     )]
     tlb_locked_vps: VtlArray<BitBox<AtomicU64>, 2>,
-    /// The current status of TLB locks, per-VP.
-    #[inspect(
-        with = "|vec| inspect::iter_by_index(vec.iter().map(|arr| inspect::iter_by_index(arr.iter())))"
-    )]
-    tlb_lock_info: Vec<VtlArray<TlbLockInfo, 2>>,
+    #[inspect(with = "inspect::iter_by_index")]
+    vps: Vec<UhCvmVpInner>,
     shared_memory: GuestMemory,
+}
+
+#[cfg(guest_arch = "x86_64")]
+impl UhCvmPartitionState {
+    fn vp_inner(&self, vp_index: u32) -> &UhCvmVpInner {
+        self.vps.get(vp_index as usize).unwrap()
+    }
+}
+
+#[cfg(guest_arch = "x86_64")]
+#[derive(Inspect)]
+/// Per-vp state for CVMs.
+pub struct UhCvmVpInner {
+    /// The current status of TLB locks
+    tlb_lock_info: VtlArray<TlbLockInfo, 2>,
+    /// Whether VTL 1 has been enabled on the vp
+    vtl1_enabled: Mutex<bool>,
 }
 
 /// Partition-wide state for CVMs.
@@ -603,9 +617,6 @@ struct UhVpInner {
     #[inspect(skip)]
     vp_info: TargetVpInfo,
     cpu_index: u32,
-    /// Only modified for hardware CVMs. On other types of VMs, since VTL 2
-    /// doesn't handle EnableVpVtl, there's no obvious place to set this.
-    hcvm_vtl1_enabled: Mutex<bool>,
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
     hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<hvdef::hypercall::InitialVpContextX64>>>, 2>,
@@ -1834,15 +1845,18 @@ impl UhProtoPartition<'_> {
         cpuid: cvm_cpuid::CpuidResults,
     ) -> Result<UhCvmPartitionState, Error> {
         let vp_count = params.topology.vp_count() as usize;
-        let tlb_lock_info = (0..vp_count)
-            .map(|_| VtlArray::from_fn(|_| TlbLockInfo::new(vp_count)))
+        let vps = (0..vp_count)
+            .map(|_vp_index| UhCvmVpInner {
+                tlb_lock_info: VtlArray::from_fn(|_| TlbLockInfo::new(vp_count)),
+                vtl1_enabled: Mutex::new(false),
+            })
             .collect();
         let tlb_locked_vps =
             VtlArray::from_fn(|_| BitVec::repeat(false, vp_count).into_boxed_bitslice());
         Ok(UhCvmPartitionState {
             cpuid,
             tlb_locked_vps,
-            tlb_lock_info,
+            vps,
             shared_memory: late_params
                 .shared_memory
                 .clone()

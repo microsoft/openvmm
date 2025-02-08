@@ -460,7 +460,7 @@ impl BackingPrivate for SnpBacked {
 
     fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {
         let vtl0_vmsa = this.runner.vmsa(GuestVtl::Vtl0);
-        let vtl1_vmsa = if *this.inner.hcvm_vtl1_enabled.lock() {
+        let vtl1_vmsa = if *this.cvm_vp_inner().vtl1_enabled.lock() {
             Some(this.runner.vmsa(GuestVtl::Vtl1))
         } else {
             None
@@ -509,6 +509,10 @@ impl BackingPrivate for SnpBacked {
         vtl: GuestVtl,
     ) -> Result<(), UhRunVpError> {
         this.hcvm_handle_vp_start_enable_vtl(vtl)
+    }
+
+    fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool {
+        this.hcvm_vtl1_inspectable()
     }
 }
 

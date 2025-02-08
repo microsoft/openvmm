@@ -229,6 +229,12 @@ impl BackingPrivate for HypervisorBackedArm64 {
     ) -> Result<(), UhRunVpError> {
         unimplemented!()
     }
+
+    fn vtl1_inspectable(_this: &UhProcessor<'_, Self>) -> bool {
+        // TODO: Use the VsmVpStatus register to query the hypervisor for
+        // whether VTL 1 is enabled on the vp (this can be cached).
+        false
+    }
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {

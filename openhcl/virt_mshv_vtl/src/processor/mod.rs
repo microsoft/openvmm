@@ -252,6 +252,8 @@ mod private {
 
         fn untrusted_synic(&self) -> Option<&ProcessorSynic>;
         fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
+
+        fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool;
     }
 }
 
@@ -343,7 +345,6 @@ impl UhVpInner {
             waker: Default::default(),
             cpu_index,
             vp_info,
-            hcvm_vtl1_enabled: Mutex::new(false),
             hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
             sidecar_exit_reason: Default::default(),
         }
@@ -758,16 +759,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
     fn vtl_inspectable(&self, vtl: Vtl) -> bool {
         match vtl {
             Vtl::Vtl0 => true,
-            Vtl::Vtl1 => {
-                if self.partition.isolation.is_hardware_isolated() {
-                    *self.inner.hcvm_vtl1_enabled.lock()
-                } else {
-                    // TODO: when there's support for returning VTL 1 registers,
-                    // use the VsmVpStatus register to query the hypervisor for
-                    // whether VTL 1 is enabled on the vp (this can be cached).
-                    false
-                }
-            }
+            Vtl::Vtl1 => T::vtl1_inspectable(self),
             Vtl::Vtl2 => false,
         }
     }
