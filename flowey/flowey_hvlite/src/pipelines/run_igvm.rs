@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use super::build_igvm::bail_if_running_in_ci;
 use super::build_igvm::BuildIgvmArch;
 use super::build_igvm::BuildIgvmCliCustomizations;
@@ -54,6 +57,10 @@ where
 
     #[clap(flatten)]
     pub customizations: BuildIgvmCliCustomizations,
+
+    /// Additional parameters to pass to OpenVMM
+    #[clap(trailing_var_arg = true)]
+    pub trailing_args: Vec<String>,
 }
 
 impl IntoPipeline for RunIgvmCli {
@@ -69,6 +76,7 @@ impl IntoPipeline for RunIgvmCli {
         );
 
         let Self {
+            trailing_args,
             recipe,
             release,
             verbose,
@@ -134,10 +142,9 @@ impl IntoPipeline for RunIgvmCli {
                 locked,
                 deny_warnings: false,
             })
-            .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_build_igvm::Params {
-                artifact_dir: ctx.publish_artifact(pub_out_dir),
-                done: ctx.new_done_handle(),
-
+            .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_run_igvm::Params {
+                release,
+                openvmm_args: trailing_args,
                 base_recipe: match recipe {
                     OpenhclRecipeCli::X64 => OpenhclIgvmRecipe::X64,
                     OpenhclRecipeCli::X64Devkern => OpenhclIgvmRecipe::X64Devkern,
@@ -150,8 +157,8 @@ impl IntoPipeline for RunIgvmCli {
                     OpenhclRecipeCli::Aarch64 => OpenhclIgvmRecipe::Aarch64,
                     OpenhclRecipeCli::Aarch64Devkern => OpenhclIgvmRecipe::Aarch64Devkern,
                 },
-                release,
-
+                artifact_dir: ctx.publish_artifact(pub_out_dir),
+                done: ctx.new_done_handle(),
                 customizations: flowey_lib_hvlite::_jobs::local_build_igvm::Customizations {
                     build_label,
                     override_arch: override_arch.map(|a| match a {
@@ -180,9 +187,6 @@ impl IntoPipeline for RunIgvmCli {
                     custom_layer,
                     custom_directory,
                 },
-            })
-            .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_run_igvm::Params {
-                done: ctx.new_done_handle(),
             })
             .finish();
 

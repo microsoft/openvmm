@@ -289,6 +289,7 @@ impl IntoPipeline for BuildIgvmCli {
             .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_build_igvm::Params {
                 artifact_dir: ctx.publish_artifact(pub_out_dir),
                 done: ctx.new_done_handle(),
+                bin_path: None,
 
                 base_recipe: match recipe {
                     OpenhclRecipeCli::X64 => OpenhclIgvmRecipe::X64,
