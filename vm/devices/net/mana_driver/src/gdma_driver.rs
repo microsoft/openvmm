@@ -947,6 +947,14 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 // Increase warning threshold after each warning occurrence
                 self.hwc_warning_time_in_ms += HWC_WARNING_TIME_IN_MS;
             }
+        } else if interrupt_wait_count != 0 || eq_arm_count != 0 {
+            tracing::trace!(
+                elapsed,
+                interrupt_count,
+                interrupt_wait_count,
+                eq_arm_count,
+                "found HWC response EQE after arm or wait",
+            );
         }
         if wait_failed {
             self.hwc_failure = true;
