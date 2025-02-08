@@ -110,7 +110,7 @@ impl FlowNode for Node {
                             "cargo locate-project --workspace --message-format=plain"
                         )
                         .read()
-                        .map(|p| PathBuf::from(p))
+                        .map(PathBuf::from)
                         .map(|p| p.parent().unwrap().to_path_buf())
                         .map_err(|e| anyhow::anyhow!("Failed to get workspace root: {}", e))?;
 
@@ -130,10 +130,10 @@ impl FlowNode for Node {
                         let converted = xshell::cmd!(sh, "tr ':' ';'").stdin(output).read()?;
                         let parts: Vec<&str> = converted.splitn(2, '\n').collect();
                         let include = parts
-                            .get(0)
+                            .first()
                             .ok_or_else(|| anyhow::anyhow!("Failed to split INCLUDE"))?;
                         let lib = parts
-                            .get(1)
+                            .first()
                             .ok_or_else(|| anyhow::anyhow!("Failed to split LIB"))?;
 
                         injected_env.insert("WINDOWS_CROSS_X86_64_LIB".into(), (*lib).into());
