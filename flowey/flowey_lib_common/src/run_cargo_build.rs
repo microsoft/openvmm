@@ -218,6 +218,7 @@ impl FlowNode for Node {
                     } = cmd;
 
                     let sh = xshell::Shell::new()?;
+
                     let out_dir = sh.current_dir();
 
                     let do_rename_output = |dry_run| {
