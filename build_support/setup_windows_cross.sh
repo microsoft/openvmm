@@ -56,6 +56,10 @@ function fatal_error {
 }
 
 function setup_windows_cross {
+    local print_only=0
+    if [ "$1" = "--print-only" ]; then
+        print_only=1
+    fi
     local llvm_version=${OPENVMM_LLVM_VERSION:-${HVLITE_LLVM_VERSION:-14}}
     # NOTE: clang-cl-<ver> is the msvc style arguments, which is what we want. This
     #       is sometimes in a different package than the default clang-<ver> which
@@ -72,9 +76,16 @@ function setup_windows_cross {
     check_cross_tool "$dlltool" || return 1
     check_cross_tool "$rc" || return 1
 
-    export WINDOWS_CROSS_CL="$clang"
-    export WINDOWS_CROSS_LINK="$lld"
-    export DLLTOOL="$dlltool"
+    if [ $print_only -eq 1 ]; then
+        echo "WINDOWS_CROSS_CL=$clang"
+        echo "WINDOWS_CROSS_LINK=$lld"
+        echo "DLLTOOL=$dlltool"
+    else
+        export WINDOWS_CROSS_CL="$clang"
+        export WINDOWS_CROSS_LINK="$lld"
+        export DLLTOOL="$dlltool"
+    fi
+
     local mydir="$(dirname -- "${BASH_SOURCE[0]}")"
     local myfulldir="$(realpath "$mydir")"
 
@@ -88,35 +99,60 @@ function setup_windows_cross {
     if env=$(extract_include_lib x86_64 Microsoft.VisualStudio.Component.VC.Tools.x86.x64 x64); then
         # Extract the variables, one line each.
         IFS=$'\n' read -rd '' INCLUDE LIB <<< "$env" || true
-        export WINDOWS_CROSS_X86_64_LIB="$LIB"
-        export WINDOWS_CROSS_X86_64_INCLUDE="$INCLUDE"
-        export CC_x86_64_pc_windows_msvc="$tooldir/x86_64-clang-cl"
-        export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$tooldir/x86_64-lld-link"
-        export AR_x86_64_pc_windows_msvc="$lib"
-        export RC_x86_64_pc_windows_msvc="$rc"
-	[ -h $CC_x86_64_pc_windows_msvc ] || fatal_error "$CC_x86_64_pc_windows_msvc is not a symbolic link, check git config core.symlinks:\n"
-        [ -h $CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER ] || fatal_error "$CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER is not a symbolic link, check git config core.symlinks:\n"
-        echo x86_64
+        if [ $print_only -eq 1 ]; then
+            echo "WINDOWS_CROSS_X86_64_LIB=$LIB"
+            echo "WINDOWS_CROSS_X86_64_INCLUDE=$INCLUDE"
+            echo "CC_x86_64_pc_windows_msvc=$tooldir/x86_64-clang-cl"
+            echo "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$tooldir/x86_64-lld-link"
+            echo "AR_x86_64_pc_windows_msvc=$lib"
+            echo "RC_x86_64_pc_windows_msvc=$rc"
+        else
+            export WINDOWS_CROSS_X86_64_LIB="$LIB"
+            export WINDOWS_CROSS_X86_64_INCLUDE="$INCLUDE"
+            export CC_x86_64_pc_windows_msvc="$tooldir/x86_64-clang-cl"
+            export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$tooldir/x86_64-lld-link"
+            export AR_x86_64_pc_windows_msvc="$lib"
+            export RC_x86_64_pc_windows_msvc="$rc"
+            [ -h $CC_x86_64_pc_windows_msvc ] || fatal_error "$CC_x86_64_pc_windows_msvc is not a symbolic link, check git config core.symlinks:\n"
+            [ -h $CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER ] || fatal_error "$CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER is not a symbolic link, check git config core.symlinks:\n"
+            echo x86_64
+        fi
+
     fi
 
     # FUTURE: use just "arm64" for the arch when the host arch is arm64.
     if env=$(extract_include_lib aarch64 Microsoft.VisualStudio.Component.VC.Tools.ARM64 x64_arm64); then
         # Extract the variables, one line each.
         IFS=$'\n' read -rd '' INCLUDE LIB <<< "$env" || true
-        export WINDOWS_CROSS_AARCH64_LIB="$LIB"
-        export WINDOWS_CROSS_AARCH64_INCLUDE="$INCLUDE"
-        export CC_aarch64_pc_windows_msvc="$tooldir/aarch64-clang-cl"
-        export CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER="$tooldir/aarch64-lld-link"
-        export AR_aarch64_pc_windows_msvc="$lib"
-        export RC_aarch64_pc_windows_msvc="$rc"
-	[ -h $CC_aarch64_pc_windows_msvc ] || fatal_error "$CC_aarch64_pc_windows_msvc is not a symbolic link, check git config core.symlinks:\n"
-        [ -h $CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER ] || fatal_error "$CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER is not a symbolic link, check git config core.symlinks:\n"
-        echo aarch64
+        if [ $print_only -eq 1 ]; then
+            echo "WINDOWS_CROSS_AARCH64_LIB=$LIB"
+            echo "WINDOWS_CROSS_AARCH64_INCLUDE=$INCLUDE"
+            echo "CC_aarch64_pc_windows_msvc=$tooldir/aarch64-clang-cl"
+            echo "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$tooldir/aarch64-lld-link"
+            echo "AR_aarch64_pc_windows_msvc=$lib"
+            echo "RC_aarch64_pc_windows_msvc=$rc"
+        else
+            export WINDOWS_CROSS_AARCH64_LIB="$LIB"
+            export WINDOWS_CROSS_AARCH64_INCLUDE="$INCLUDE"
+            export CC_aarch64_pc_windows_msvc="$tooldir/aarch64-clang-cl"
+            export CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER="$tooldir/aarch64-lld-link"
+            export AR_aarch64_pc_windows_msvc="$lib"
+            export RC_aarch64_pc_windows_msvc="$rc"
+            [ -h $CC_aarch64_pc_windows_msvc ] || fatal_error "$CC_aarch64_pc_windows_msvc is not a symbolic link, check git config core.symlinks:\n"
+            [ -h $CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER ] || fatal_error "$CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER is not a symbolic link, check git config core.symlinks:\n"
+            echo aarch64
+        fi
     fi
 }
 
 # Check if this file was run directly instead of sourced, and fail with a
 # warning if so.
-(return 0 2>/dev/null) || fatal_error "You must run $0 by sourcing it. Try instead:\n  . $0"
-
-setup_windows_cross
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    if [[ "$1" == "--print-only" ]]; then
+        setup_windows_cross --print-only
+    else
+        fatal_error "You must run $0 by sourcing it unless using the '--print-only' argument. Try instead:\n  . $0"
+    fi
+else
+    setup_windows_cross
+fi
