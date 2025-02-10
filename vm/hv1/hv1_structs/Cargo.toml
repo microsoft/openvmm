@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "vtl_array"
+name = "hv1_structs"
 edition.workspace = true
 rust-version.workspace = true
 

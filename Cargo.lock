@@ -2638,6 +2638,7 @@ dependencies = [
  "build_rs_guest_arch",
  "fs-err",
  "getrandom",
+ "hv1_structs",
  "hvdef",
  "inspect",
  "libc",
@@ -2653,7 +2654,6 @@ dependencies = [
  "thiserror 2.0.0",
  "tracelimit",
  "tracing",
- "vtl_array",
  "x86defs",
  "zerocopy 0.8.14",
 ]
@@ -2785,6 +2785,7 @@ version = "0.0.0"
 dependencies = [
  "build_rs_guest_arch",
  "guestmem",
+ "hv1_structs",
  "hvdef",
  "inspect",
  "parking_lot",
@@ -2793,7 +2794,6 @@ dependencies = [
  "virt",
  "vm_topology",
  "vmcore",
- "vtl_array",
  "x86defs",
  "zerocopy 0.8.14",
 ]
@@ -2811,6 +2811,15 @@ dependencies = [
  "tracelimit",
  "tracing",
  "zerocopy 0.8.14",
+]
+
+[[package]]
+name = "hv1_structs"
+version = "0.0.0"
+dependencies = [
+ "bitvec",
+ "hvdef",
+ "inspect",
 ]
 
 [[package]]
@@ -7257,6 +7266,7 @@ dependencies = [
  "guestmem",
  "hcl",
  "hv1_emulator",
+ "hv1_structs",
  "hvdef",
  "inspect",
  "memory_range",
@@ -7269,7 +7279,6 @@ dependencies = [
  "virt",
  "virt_mshv_vtl",
  "vm_topology",
- "vtl_array",
  "x86defs",
 ]
 
@@ -7616,6 +7625,7 @@ dependencies = [
  "hcl",
  "hv1_emulator",
  "hv1_hypercall",
+ "hv1_structs",
  "hvdef",
  "inspect",
  "inspect_counters",
@@ -7639,7 +7649,6 @@ dependencies = [
  "virt_support_x86emu",
  "vm_topology",
  "vmcore",
- "vtl_array",
  "x86defs",
  "x86emu",
  "zerocopy 0.8.14",
@@ -7721,6 +7730,7 @@ dependencies = [
  "guestmem",
  "hv1_emulator",
  "hv1_hypercall",
+ "hv1_structs",
  "hvdef",
  "inspect",
  "inspect_counters",
@@ -7741,7 +7751,6 @@ dependencies = [
  "virt_support_x86emu",
  "vm_topology",
  "vmcore",
- "vtl_array",
  "whp",
  "winapi",
  "x86defs",
@@ -8688,15 +8697,6 @@ dependencies = [
  "prost",
  "prost-build",
  "serde",
-]
-
-[[package]]
-name = "vtl_array"
-version = "0.0.0"
-dependencies = [
- "bitvec",
- "hvdef",
- "inspect",
 ]
 
 [[package]]

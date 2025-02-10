@@ -7,12 +7,12 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+hv1_structs.workspace = true
 hvdef.workspace = true
 vm_topology.workspace = true
 guestmem.workspace = true
 virt.workspace = true
 vmcore.workspace = true
-vtl_array.workspace = true
 x86defs.workspace = true
 
 inspect.workspace = true

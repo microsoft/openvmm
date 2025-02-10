@@ -9,6 +9,7 @@ use super::synic::GlobalSynic;
 use super::synic::ProcessorSynic;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use hv1_structs::VtlArray;
 use hvdef::HvRegisterVpAssistPage;
 use hvdef::HvVpVtlControl;
 use hvdef::HvVtlEntryReason;
@@ -22,7 +23,6 @@ use std::sync::Arc;
 use virt::x86::MsrError;
 use vm_topology::processor::VpIndex;
 use vmcore::reference_time_source::ReferenceTimeSource;
-use vtl_array::VtlArray;
 use x86defs::cpuid::Vendor;
 use zerocopy::FromZeros;
 

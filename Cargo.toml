@@ -318,8 +318,8 @@ vmbus_server = { path = "vm/devices/vmbus/vmbus_server" }
 vmbus_user_channel = { path = "vm/devices/vmbus/vmbus_user_channel" }
 hv1_emulator = { path = "vm/hv1/hv1_emulator" }
 hv1_hypercall = { path = "vm/hv1/hv1_hypercall" }
+hv1_structs = { path = "vm/hv1/hv1_structs" }
 hvdef = { path = "vm/hv1/hvdef" }
-vtl_array = { path = "vm/hv1/vtl_array" }
 vhd1_defs = { path = "vm/vhd1_defs" }
 kvm = { path = "vm/kvm" }
 loader = { path = "vm/loader" }

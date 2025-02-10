@@ -42,6 +42,7 @@ use hcl::ioctl;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_hypercall::HvRepResult;
+use hv1_structs::VtlArray;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::HvError;
 use hvdef::HvMessage;
@@ -72,7 +73,6 @@ use virt::VpHaltReason;
 use virt::VpIndex;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::vmtime::VmTimeAccess;
-use vtl_array::VtlArray;
 
 /// An object to run lower VTLs and to access processor state.
 ///
@@ -169,6 +169,7 @@ mod private {
     use hcl::ioctl::ProcessorRunner;
     use hv1_emulator::hv::ProcessorVtlHv;
     use hv1_emulator::synic::ProcessorSynic;
+    use hv1_structs::VtlArray;
     use inspect::InspectMut;
     use std::future::Future;
     use virt::io::CpuIo;
@@ -176,7 +177,6 @@ mod private {
     use virt::StopVp;
     use virt::VpHaltReason;
     use vm_topology::processor::TargetVpInfo;
-    use vtl_array::VtlArray;
 
     pub struct BackingParams<'a, 'b, T: BackingPrivate> {
         pub(crate) partition: &'a UhPartitionInner,
