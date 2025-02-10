@@ -26,6 +26,7 @@ use crate::protocol::HCL_VMSA_GUEST_VSM_PAGE_OFFSET;
 use crate::protocol::HCL_VMSA_PAGE_OFFSET;
 use crate::protocol::MSHV_APIC_PAGE_OFFSET;
 use crate::GuestVtl;
+use hv1_structs::ProcessorSet;
 use hvdef::hypercall::AssertVirtualInterrupt;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvGpaRange;
@@ -3153,7 +3154,7 @@ impl Hcl {
         entry: hvdef::hypercall::InterruptEntry,
         vector: u32,
         multicast: bool,
-        target_processors: &[u32],
+        target_processors: &ProcessorSet<'_>,
     ) -> Result<(), HvError> {
         let header = hvdef::hypercall::RetargetDeviceInterrupt {
             partition_id: HV_PARTITION_ID_SELF,
@@ -3177,18 +3178,18 @@ impl Hcl {
         let mut last_processor = None;
         for processor in target_processors {
             if let Some(last_processor) = last_processor {
-                assert!(*processor > last_processor);
+                assert!(processor > last_processor);
             }
 
-            let bank = *processor as usize / 64;
-            let bit = *processor as usize % 64;
+            let bank = processor as usize / 64;
+            let bit = processor as usize % 64;
             if Some(bank) != last_bank {
                 processor_set.push(0);
                 processor_set[0] |= 1 << bank;
                 last_bank = Some(bank);
             }
             *processor_set.last_mut().unwrap() |= 1 << bit;
-            last_processor = Some(*processor);
+            last_processor = Some(processor);
         }
 
         // SAFETY: The input header and slice are the correct types for this hypercall.

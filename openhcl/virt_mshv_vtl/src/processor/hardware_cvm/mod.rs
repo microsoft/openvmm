@@ -719,7 +719,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         data: u32,
         vector: u32,
         multicast: bool,
-        target_processors: &[u32],
+        target_processors: &ProcessorSet<'_>,
     ) -> HvResult<()> {
         // Before dispatching retarget_device_interrupt, add the device vector
         // to partition global device vector table and issue `proxy_irr_blocked`
@@ -815,7 +815,6 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::RetargetDeviceInterrup
             multicast,
             target_processors,
         } = params;
-        let target_processors = target_processors.into_iter().collect::<Vec<_>>();
         // It is unknown whether the interrupt is physical or virtual, so try both. Note that the
         // actual response from the hypervisor can't really be trusted so:
         // 1. Always invoke the virtual interrupt retargeting.

@@ -42,6 +42,7 @@ use hcl::ioctl;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_hypercall::HvRepResult;
+use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::HvError;
@@ -1324,12 +1325,13 @@ impl<T: CpuIo, B: Backing> UhHypercallHandler<'_, '_, T, B> {
         data: u32,
         vector: u32,
         multicast: bool,
-        target_processors: &[u32],
+        target_processors: &ProcessorSet<'_>,
     ) -> hvdef::HvResult<()> {
+        let target_processors = target_processors.into_iter().collect::<Vec<_>>();
         let vpci_params = vmcore::vpci_msi::VpciInterruptParameters {
             vector,
             multicast,
-            target_processors,
+            target_processors: &target_processors,
         };
 
         self.vp
