@@ -1712,15 +1712,16 @@ impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt
         device_id: u64,
         address: u64,
         data: u32,
-        params: &hv1_hypercall::HvInterruptParameters<'_>,
+        params: hv1_hypercall::HvInterruptParameters<'_>,
     ) -> hvdef::HvResult<()> {
+        let target_processors = params.target_processors.into_iter().collect::<Vec<_>>();
         self.retarget_virtual_interrupt(
             device_id,
             address,
             data,
             params.vector,
             params.multicast,
-            params.target_processors,
+            &target_processors,
         )
     }
 }

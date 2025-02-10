@@ -27,6 +27,7 @@ use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::HvRepResult;
 use hv1_hypercall::HypercallIo;
+use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
 use hvdef::hypercall::Control;
 use hvdef::hypercall::HvFlushFlags;
@@ -2229,7 +2230,7 @@ impl<T: CpuIo> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, Snp
 impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_, '_, T, SnpBacked> {
     fn flush_virtual_address_list(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
         gva_ranges: &[HvGvaRange],
     ) -> HvRepResult {
@@ -2247,7 +2248,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
 {
     fn flush_virtual_address_list_ex(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
         gva_ranges: &[HvGvaRange],
     ) -> HvRepResult {
@@ -2273,7 +2274,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpace
 {
     fn flush_virtual_address_space(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
     ) -> hvdef::HvResult<()> {
         hv1_hypercall::FlushVirtualAddressSpaceEx::flush_virtual_address_space_ex(
@@ -2289,7 +2290,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
 {
     fn flush_virtual_address_space_ex(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
     ) -> hvdef::HvResult<()> {
         self.hcvm_validate_flush_inputs(&processor_set, flags, false)?;
@@ -2352,8 +2353,13 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
         self.vp.partition.hcl.tlbsync();
     }
 
-    fn do_flush_virtual_address_space(&mut self, processor_set: &[u32], flags: HvFlushFlags) {
-        let only_self = processor_set.len() == 1 && processor_set[0] == self.vp.vp_index().index();
+    fn do_flush_virtual_address_space(
+        &mut self,
+        processor_set: &ProcessorSet<'_>,
+        flags: HvFlushFlags,
+    ) {
+        let only_self = processor_set.len() == 1
+            && processor_set.into_iter().next() == Some(self.vp.vp_index().index());
         if only_self && flags.non_global_mappings_only() {
             self.vp.runner.vmsa_mut(self.intercepted_vtl).set_pcpu_id(0);
         } else {
