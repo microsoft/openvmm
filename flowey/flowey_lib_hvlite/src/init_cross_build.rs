@@ -20,6 +20,7 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
+        ctx.import::<crate::git_checkout_openvmm_repo::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -50,6 +51,28 @@ impl FlowNode for Node {
         {
             let mut pre_build_deps = Vec::new();
             let mut injected_env = BTreeMap::new();
+            let mut openvmm_repo_path = None;
+            let mut runtime_env_for_cross = None;
+
+            if !native(&target)
+                && matches!(
+                    (ctx.platform(), target.operating_system),
+                    (
+                        FlowPlatform::Linux(_),
+                        target_lexicon::OperatingSystem::Windows
+                    )
+                )
+            {
+                runtime_env_for_cross = Some(ctx.new_var());
+                openvmm_repo_path =
+                    Some(ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir));
+            }
+
+            let (env_write_var, env_read_var) = if let Some(var) = runtime_env_for_cross {
+                (Some(var.1), Some(var.0))
+            } else {
+                (None, None)
+            };
 
             if !native(&target) {
                 match (ctx.platform(), target.operating_system) {
@@ -104,26 +127,35 @@ impl FlowNode for Node {
                     // For now, just silently continue regardless.
                     // TODO: Detect (and potentially install) these dependencies
                     (FlowPlatform::Linux(_), target_lexicon::OperatingSystem::Windows) => {
-                        let sh = xshell::Shell::new()?;
-                        let workspace_root = xshell::cmd!(
-                            sh,
-                            "cargo locate-project --workspace --message-format=plain"
-                        )
-                        .read()
-                        .map(PathBuf::from)
-                        .map(|p| p.parent().unwrap().to_path_buf())
-                        .map_err(|e| anyhow::anyhow!("Failed to get workspace root: {}", e))?;
+                        if let Some(write_var) = env_write_var {
+                            pre_build_deps.push(ctx.emit_rust_step(
+                            "get windows cross build environment variables",
+                            |ctx| {
+                                let runtime_env = write_var.claim(ctx);
+                                let openvmm_repo_path = openvmm_repo_path.unwrap().claim(ctx);
+                                |rt| {
+                                    let mut env = BTreeMap::new();
+                                    let openvmm_repo_path = rt.read(openvmm_repo_path);
 
-                        let env_vars = xshell::cmd!(
-                            sh,
-                            "{workspace_root}/build_support/setup_windows_cross.sh --print-only"
-                        )
-                        .read()?;
+                                    let sh = xshell::Shell::new()?;
+                                    let env_vars = xshell::cmd!(
+                                        sh,
+                                        "{openvmm_repo_path}/build_support/setup_windows_cross.sh --print-only"
+                                    )
+                                    .read()?;
 
-                        for line in env_vars.lines() {
-                            if let Some((key, value)) = line.split_once('=') {
-                                injected_env.insert(key.to_string(), value.to_string());
-                            }
+                                    for line in env_vars.lines() {
+                                        if let Some((key, value)) = line.split_once('=') {
+                                            env.insert(key.to_string(), value.to_string());
+                                        }
+                                    }
+
+                                    rt.write(runtime_env, &env);
+
+                                    Ok(())
+                                }
+                            },
+                        ));
                         }
                     }
                     (FlowPlatform::Windows, target_lexicon::OperatingSystem::Windows) => {}
@@ -138,7 +170,16 @@ impl FlowNode for Node {
             ctx.emit_rust_step("inject cross env", |ctx| {
                 pre_build_deps.claim(ctx);
                 let injected_env_write = injected_env_write.claim(ctx);
+                let runtime_env = env_read_var.map(|var| var.claim(ctx));
+
                 move |rt| {
+                    if let Some(runtime_env) = runtime_env {
+                        let runtime_env = rt.read(runtime_env);
+                        for (k, v) in runtime_env {
+                            injected_env.insert(k, v);
+                        }
+                    }
+
                     rt.write(injected_env_write, &injected_env);
                     Ok(())
                 }
