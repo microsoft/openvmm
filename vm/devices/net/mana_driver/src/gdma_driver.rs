@@ -86,6 +86,7 @@ use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
 const HWC_WARNING_TIME_IN_MS: u32 = 3000;
+const HWC_WARNING_INCREASE_IN_MS: u32 = 1000;
 const HWC_TIMEOUT_DEFAULT_IN_MS: u32 = 10000;
 const HWC_TIMEOUT_FOR_SHUTDOWN_IN_MS: u32 = 100;
 const HWC_POLL_TIMEOUT_IN_MS: u64 = 10000;
@@ -870,10 +871,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             last_wait_result: Ok(()),
         };
         loop {
-            if self.process_all_eqs() {
-                eqe_wait_result.eqe_found = true;
-                break eqe_wait_result;
-            }
+            // Arm the EQ if it is not already armed.
             if !self.eq_armed {
                 eqe_wait_result.eq_arm_count += 1;
                 self.eq.arm();
@@ -883,9 +881,12 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     // Remove any pending interrupt events.
                     let _ = self.interrupts[0].as_mut().unwrap().wait().now_or_never();
                     eqe_wait_result.eqe_found = true;
+                    eqe_wait_result.last_wait_result = Ok(()); // Reset last_wait_result.
                     break eqe_wait_result;
                 }
             }
+
+            // Wait for an interrupt.
             eqe_wait_result.interrupt_wait_count += 1;
             let before_wait = std::time::Instant::now();
             eqe_wait_result.last_wait_result = Self::wait_for_hwc_interrupt(
@@ -898,8 +899,16 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             if eqe_wait_result.last_wait_result.is_ok() {
                 eqe_wait_result.interrupt_count += 1;
             }
+
+            // Poll for EQ events.
+            if self.process_all_eqs() {
+                eqe_wait_result.eqe_found = true;
+                break eqe_wait_result;
+            }
+
+            // Exit with no eqe found if timeout occurs.
             if eqe_wait_result.elapsed >= self.hwc_timeout_in_ms as u128 {
-                eqe_wait_result.eqe_found = self.process_all_eqs();
+                eqe_wait_result.eqe_found = false;
                 break eqe_wait_result;
             }
         }
@@ -933,9 +942,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             );
             self.report_hwc_timeout(wait_failed, interrupt_loss, eqe_wait_result.elapsed as u32)
                 .await;
-            if !wait_failed {
-                // Increase warning threshold after each warning occurrence
-                self.hwc_warning_time_in_ms += HWC_WARNING_TIME_IN_MS;
+            if !wait_failed && eqe_wait_result.elapsed > self.hwc_warning_time_in_ms as u128 {
+                // Increase warning threshold after each delay warning occurrence.
+                self.hwc_warning_time_in_ms += HWC_WARNING_INCREASE_IN_MS;
             }
         } else if eqe_wait_result.interrupt_wait_count != 0 || eqe_wait_result.eq_arm_count != 0 {
             tracing::trace!(
