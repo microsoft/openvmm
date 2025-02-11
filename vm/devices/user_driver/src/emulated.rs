@@ -25,6 +25,7 @@ use pci_core::chipset_device_ext::PciChipsetDeviceExt;
 use pci_core::msi::MsiControl;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
+use sparse_mmap::SparseMapping;
 use safeatomic::AtomicSliceOps;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicU8;
@@ -139,6 +140,25 @@ pub struct DeviceSharedMemory {
     state: Arc<Mutex<Vec<u64>>>,
 }
 
+// struct RealBacking {
+//     mem: Arc<SparseMapping>, 
+//     allow_dma: bool,
+// }
+
+// unsafe impl GuestMemoryAccess for RealBacking {
+//     fn mapping(&self) -> Option<NonNull<u8>> {
+//         NonNull::new(self.mem.as_ptr().cast())
+//     }
+// 
+//     fn base_iova(&self) -> Option<u64> {
+//         self.allow_dma.then_some(0)
+//     }
+// 
+//     fn max_address(&self) -> u64 {
+//         self.mem.len().try_into().unwrap()
+//     }
+// }
+
 struct Backing {
     mem: Arc<AlignedHeapMemory>,
     allow_dma: bool,
@@ -163,6 +183,10 @@ impl DeviceSharedMemory {
     pub fn new(size: usize, extra: usize) -> Self {
         assert_eq!(size % PAGE_SIZE, 0);
         assert_eq!(extra % PAGE_SIZE, 0);
+        // let _real_mem_backing = RealBacking {
+        //     mem: Arc::new(TestMapper::new(size + extra)),
+        //     allow_dma: false,
+        // };
         let mem_backing = Backing {
             mem: Arc::new(AlignedHeapMemory::new(size + extra)),
             allow_dma: false,
