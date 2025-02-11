@@ -739,7 +739,7 @@ impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt
             data,
             params.vector,
             params.multicast,
-            &params.target_processors,
+            params.target_processors,
         )
     }
 }
