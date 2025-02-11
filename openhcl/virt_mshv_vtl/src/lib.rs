@@ -1255,7 +1255,12 @@ pub struct UhLateParams<'a> {
 /// Trait for CVM-related protections on guest memory.
 pub trait ProtectIsolatedMemory: Send + Sync {
     /// Changes host visibility on guest memory.
-    fn change_host_visibility(&self, shared: bool, gpns: &[u64]) -> Result<(), (HvError, usize)>;
+    fn change_host_visibility(
+        &self,
+        shared: bool,
+        gpns: &[u64],
+        tlb_access: &mut dyn TlbFlushLockAccess,
+    ) -> Result<(), (HvError, usize)>;
 
     /// Queries host visibility on guest memory.
     fn query_host_visibility(
@@ -1274,6 +1279,7 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         &self,
         vtl: GuestVtl,
         protections: HvMapGpaFlags,
+        tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), HvError>;
 
     /// Changes the vtl protections on a range of guest memory.
@@ -1282,6 +1288,7 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         vtl: GuestVtl,
         gpns: &[u64],
         protections: HvMapGpaFlags,
+        tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), (HvError, usize)>;
 
     /// Retrieves a protector for the hypercall code page overlay for a target
@@ -1292,10 +1299,15 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     ) -> Box<dyn VtlProtectHypercallOverlay>;
 
     /// Changes the overlay for the hypercall code page for a target VTL.
-    fn change_hypercall_overlay(&self, vtl: GuestVtl, gpn: u64);
+    fn change_hypercall_overlay(
+        &self,
+        vtl: GuestVtl,
+        gpn: u64,
+        tlb_access: &mut dyn TlbFlushLockAccess,
+    );
 
     /// Disables the overlay for the hypercall code page for a target VTL.
-    fn disable_hypercall_overlay(&self, vtl: GuestVtl);
+    fn disable_hypercall_overlay(&self, vtl: GuestVtl, tlb_access: &mut dyn TlbFlushLockAccess);
 
     /// Alerts the memory protector that vtl 1 is ready to set vtl protections
     /// on lower-vtl memory, and that these protections should be enforced.
@@ -1304,6 +1316,18 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// Whether VTL 1 is prepared to modify vtl protections on lower-vtl memory,
     /// and therefore whether these protections should be enforced.
     fn vtl1_protections_enabled(&self) -> bool;
+}
+
+/// Trait for access to TLB flush and lock machinery.
+pub trait TlbFlushLockAccess {
+    /// Flush the entire TLB for all VPs for the given VTL.
+    fn flush(&mut self, vtl: GuestVtl);
+
+    /// Flush the entire TLB for all VPs for all VTLs.
+    fn flush_entire(&mut self);
+
+    /// Causes the specified VTL on the current VP to wait on all TLB locks.
+    fn set_wait_for_tlb_locks(&mut self, vtl: GuestVtl);
 }
 
 /// A partially built partition. Used to allow querying partition capabilities

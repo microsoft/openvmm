@@ -18,6 +18,7 @@ use crate::processor::UhProcessor;
 use crate::BackingShared;
 use crate::Error;
 use crate::GuestVtl;
+use crate::TlbFlushLockAccess;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
 use crate::UhPartitionInner;
@@ -1041,9 +1042,10 @@ impl UhProcessor<'_, SnpBacked> {
                             vtl: entered_from_vtl,
                         })
                         .msr_write(msr, value)
+                        .or_else_if_unknown(|| self.write_msr_cvm(msr, value, entered_from_vtl))
                         .or_else_if_unknown(|| self.write_msr(msr, value, entered_from_vtl))
                         .or_else_if_unknown(|| {
-                            self.write_msr_cvm(dev, msr, value, entered_from_vtl)
+                            self.write_msr_snp(dev, msr, value, entered_from_vtl)
                         });
 
                     match r {
@@ -2105,7 +2107,7 @@ impl UhProcessor<'_, SnpBacked> {
         Ok(value)
     }
 
-    fn write_msr_cvm(
+    fn write_msr_snp(
         &mut self,
         _dev: &impl CpuIo,
         msr: u32,
@@ -2366,17 +2368,52 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
         if only_self && flags.non_global_mappings_only() {
             self.vp.runner.vmsa_mut(self.intercepted_vtl).set_pcpu_id(0);
         } else {
-            let rax = SevInvlpgbRax::new()
-                .with_asid_valid(true)
-                .with_global(!flags.non_global_mappings_only());
-            let ecx = SevInvlpgbEcx::new();
-            let edx = SevInvlpgbEdx::new();
-            self.vp
-                .partition
-                .hcl
-                .invlpgb(rax.into(), edx.into(), ecx.into());
+            self.vp.partition.hcl.invlpgb(
+                SevInvlpgbRax::new()
+                    .with_asid_valid(true)
+                    .with_global(!flags.non_global_mappings_only())
+                    .into(),
+                SevInvlpgbEdx::new().into(),
+                SevInvlpgbEcx::new().into(),
+            );
             self.vp.partition.hcl.tlbsync();
         }
+    }
+}
+
+impl TlbFlushLockAccess for UhProcessor<'_, SnpBacked> {
+    fn flush(&mut self, vtl: GuestVtl) {
+        // SNP provides no mechanism to flush a single VTL across multiple VPs
+        // Do a flush entire, but only wait on the VTL that was asked for
+        self.partition.hcl.invlpgb(
+            SevInvlpgbRax::new()
+                .with_asid_valid(true)
+                .with_global(true)
+                .into(),
+            SevInvlpgbEdx::new().into(),
+            SevInvlpgbEcx::new().into(),
+        );
+        self.partition.hcl.tlbsync();
+        self.set_wait_for_tlb_locks(vtl);
+    }
+
+    fn flush_entire(&mut self) {
+        self.partition.hcl.invlpgb(
+            SevInvlpgbRax::new()
+                .with_asid_valid(true)
+                .with_global(true)
+                .into(),
+            SevInvlpgbEdx::new().into(),
+            SevInvlpgbEcx::new().into(),
+        );
+        self.partition.hcl.tlbsync();
+        for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
+            self.set_wait_for_tlb_locks(vtl);
+        }
+    }
+
+    fn set_wait_for_tlb_locks(&mut self, vtl: GuestVtl) {
+        Self::set_wait_for_tlb_locks(self, vtl);
     }
 }
 
