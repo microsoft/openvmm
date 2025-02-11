@@ -344,11 +344,9 @@ impl QueuePair {
     pub(crate) async fn verify_restore(&self, saved_state: QueuePairSavedState, saved_mem: MemoryBlock) {
         // Entire memory region is checked below. No need for the the handler to check it again.
         // Send an RPC request to QueueHandler thread to verify the restore status.
-        let _ =self.issuer.send.call(Req::Verify, saved_state.handler_data).await;
+        let _ = self.issuer.send.call(Req::Verify, saved_state.handler_data).await;
 
-        // TODO: [expand-verify-restore-functionality] Do we need to verify_restore for cancel?
-        // TODO: [expand-verify-restore-functionality] Do we need to verify_restore for issuers?
-        // Verify bytes from memory
+        // cancel and issuers params are runtime parameters so we don't check underlying values.
         let mut saved_mem_data: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
         let mut self_mem_data: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
 
