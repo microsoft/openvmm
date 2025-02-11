@@ -20,8 +20,8 @@ use thiserror::Error;
 use virt::io::CpuIo;
 use virt::VpHaltReason;
 use vm_topology::processor::VpIndex;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 /// Support routines for the emulator.
 pub trait EmulatorSupport: AccessCpuState {
@@ -614,7 +614,7 @@ pub fn make_exception_event(syndrome: EsrEl2, fault_address: u64) -> HvAarch64Pe
     let exception_event_bytes = exception_event.as_bytes();
     let mut event = [0u8; 32];
     event.as_mut_slice()[..exception_event_bytes.len()].copy_from_slice(exception_event_bytes);
-    HvAarch64PendingEvent::read_from(&event[..]).unwrap()
+    HvAarch64PendingEvent::read_from_bytes(&event[..]).unwrap()
 }
 
 /// Injects an event into the guest if appropriate.

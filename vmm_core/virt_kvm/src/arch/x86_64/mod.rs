@@ -83,7 +83,7 @@ use vp_state::KvmVpStateAccess;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::msi::MsiAddress;
 use x86defs::msi::MsiData;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 // HACK: on certain machines, pcat spams these MSRs during boot.
 //
@@ -893,6 +893,14 @@ impl<T: CpuIo> KvmHypercallExit<'_, T> {
         Self,
         [hv1_hypercall::HvPostMessage, hv1_hypercall::HvSignalEvent],
     );
+}
+
+impl<'a, T: CpuIo> hv1_hypercall::AsHandler<KvmHypercallExit<'a, T>>
+    for &mut KvmHypercallExit<'a, T>
+{
+    fn as_handler(&mut self) -> &mut KvmHypercallExit<'a, T> {
+        self
+    }
 }
 
 impl<T> hv1_hypercall::HypercallIo for KvmHypercallExit<'_, T> {

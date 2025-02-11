@@ -9,14 +9,15 @@ use crate::U128LE;
 use bitfield_struct::bitfield;
 use inspect::Inspect;
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::LE;
 use zerocopy::U16;
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes, Inspect, Clone)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect, Clone)]
 pub struct IdentifyNamespace {
     pub nsze: u64,
     pub ncap: u64,
@@ -78,7 +79,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes, Inspect)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
 pub struct NamespaceIdentificationDescriptor {
     pub nidt: u8, // NamespaceIdentifierType
     pub nidl: u8,
@@ -88,7 +89,7 @@ pub struct NamespaceIdentificationDescriptor {
 
 #[derive(Inspect)]
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Nsfeat {
     /// Thin provisioning
     pub thinp: bool,
@@ -106,7 +107,7 @@ pub struct Nsfeat {
 /// LBA format
 #[derive(Inspect)]
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Lbaf {
     /// Metadata size
     pub ms: u16,
@@ -122,7 +123,7 @@ pub struct Lbaf {
 /// Formatted LBA size
 #[derive(Inspect)]
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Flbas {
     #[bits(4)]
     pub low_index: u8,
@@ -136,7 +137,7 @@ pub struct Flbas {
 
 #[derive(Inspect)]
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReservationCapabilities {
     pub persist_through_power_loss: bool,
     pub write_exclusive: bool,
@@ -217,7 +218,7 @@ pub struct Cdw11Dsm {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DsmRange {
     pub context_attributes: u32,
     pub lba_count: u32,
@@ -255,7 +256,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReservationRegister {
     /// Current reservation key
     pub crkey: u64,
@@ -285,7 +286,7 @@ open_enum! {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum ReservationType: u8 {
         WRITE_EXCLUSIVE = 1,
         EXCLUSIVE_ACCESS = 2,
@@ -297,7 +298,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReservationAcquire {
     /// Current reservation key
     pub crkey: u64,
@@ -326,7 +327,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReservationRelease {
     /// Current reservation key
     pub crkey: u64,
@@ -346,7 +347,7 @@ pub struct Cdw11ReservationReport {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReservationReport {
     /// Generation
     pub generation: u32,
@@ -362,7 +363,7 @@ pub struct ReservationReport {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReservationReportExtended {
     pub report: ReservationReport,
     pub reserved: [u8; 40],
@@ -370,7 +371,7 @@ pub struct ReservationReportExtended {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct RegisteredController {
     /// Controller ID
     pub cntlid: u16,
@@ -384,7 +385,7 @@ pub struct RegisteredController {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct RegisteredControllerExtended {
     /// Controller ID
     pub cntlid: u16,
@@ -399,7 +400,7 @@ pub struct RegisteredControllerExtended {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReservationStatus {
     pub holds_reservation: bool,
     #[bits(7)]

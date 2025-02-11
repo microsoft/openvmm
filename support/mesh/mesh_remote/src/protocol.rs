@@ -1,12 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PacketHeader {
     pub packet_type: PacketType,
     pub reserved: [u8; 7],
@@ -14,14 +15,14 @@ pub struct PacketHeader {
 
 #[cfg(unix)] // Only used for unix nodes
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReleaseFds {
     pub header: PacketHeader,
     pub count: u64,
 }
 
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
    pub enum PacketType: u8 {
         EVENT = 1,
         RELEASE_FDS = 2,

@@ -20,8 +20,10 @@ use safeatomic::AtomicSliceOps;
 use std::ops::Range;
 use std::sync::Arc;
 use vmbus_channel::gpadl::GpadlView;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const PAGE_SIZE: usize = 4096;
 const PAGE_SIZE32: u32 = 4096;
@@ -159,7 +161,7 @@ impl BufferAccess for BufferPool {
 
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata) {
         #[repr(C)]
-        #[derive(zerocopy::AsBytes, Debug)]
+        #[derive(zerocopy::IntoBytes, Immutable, KnownLayout, Debug)]
         struct Header {
             header: rndisprot::MessageHeader,
             packet: rndisprot::Packet,
@@ -167,7 +169,7 @@ impl BufferAccess for BufferPool {
         }
 
         #[repr(C)]
-        #[derive(zerocopy::AsBytes, Debug)]
+        #[derive(zerocopy::IntoBytes, Immutable, KnownLayout, Debug)]
         struct PerPacketInfo {
             header: rndisprot::PerPacketInfo,
             checksum: rndisprot::RxTcpIpChecksumInfo,

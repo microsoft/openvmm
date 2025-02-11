@@ -50,8 +50,8 @@ use tpm_resources::TpmRegisterLayout;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::non_volatile_store::NonVolatileStore;
 use vmcore::non_volatile_store::NonVolatileStoreError;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 pub const TPM_DEVICE_MMIO_REGION_BASE_ADDRESS: u64 = 0xfed40000;
 pub const TPM_DEVICE_MMIO_REGION_SIZE: u64 = 0x70;
@@ -487,7 +487,7 @@ impl Tpm {
             // Create auth value for NV index password authorization.
             // The value needs to be preserved across live servicing.
             let mut auth_value = 0;
-            getrandom::getrandom(auth_value.as_bytes_mut()).expect("rng failure");
+            getrandom::getrandom(auth_value.as_mut_bytes()).expect("rng failure");
             self.auth_value = Some(auth_value);
 
             // Initialize `TpmKeys`.
@@ -1127,7 +1127,7 @@ impl MmioIntercept for Tpm {
         };
 
         let mut val: u32 = 0;
-        val.as_bytes_mut()[..data.len()].copy_from_slice(data);
+        val.as_mut_bytes()[..data.len()].copy_from_slice(data);
         match (address - TPM_DEVICE_MMIO_REGION_BASE_ADDRESS) as usize {
             ControlArea::OFFSET_OF_LOC_STATE => {}
             ControlArea::OFFSET_OF_LOC_CTRL => self.requested_locality = val & 0x2 != 0x2,
@@ -1160,7 +1160,8 @@ impl MmioIntercept for Tpm {
                     let cmd_header = tpm20proto::protocol::common::CmdHeader::ref_from_prefix(
                         &self.command_buffer,
                     )
-                    .and_then(|cmd_header| cmd_header.command_code.into_enum());
+                    .ok() // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
+                    .and_then(|(cmd_header, _)| cmd_header.command_code.into_enum());
 
                     tracing::debug!(
                         cmd = ?cmd_header,
@@ -1191,7 +1192,7 @@ impl MmioIntercept for Tpm {
                         response_code = ?tpm20proto::protocol::common::ReplyHeader::ref_from_prefix(
                         &self.tpm_engine_helper.reply_buffer,
                         )
-                        .map(|reply| reply.response_code),
+                        .map(|(reply, _)| reply.response_code), // TODO: zerocopy: manual: review carefully! (https://github.com/microsoft/openvmm/issues/759)
                         "response code from guest tpm cmd",
                     );
 
@@ -1233,13 +1234,15 @@ impl MmioIntercept for Tpm {
 /// The IO port interface bespoke to the Hyper-V implementation of the vTPM.
 mod io_port_interface {
     use inspect::Inspect;
-    use zerocopy::AsBytes;
     use zerocopy::FromBytes;
-    use zerocopy::FromZeroes;
+
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     open_enum::open_enum! {
         /// I/O port command definitions
-        #[derive(Inspect, AsBytes, FromBytes, FromZeroes)]
+        #[derive(Inspect, IntoBytes, Immutable, KnownLayout, FromBytes)]
         #[inspect(debug)]
         pub enum TpmIoCommand: u32 {
             /// It can be used for engine vs. guest version negotiation. Not used.
@@ -1279,7 +1282,7 @@ mod io_port_interface {
         /// Table 2: Physical Presence Interface Operation Summary for TPM 2.0
         ///
         /// Part of the Physical Presence Interface Specification - TCG PC Client Platform
-        #[derive(Inspect, AsBytes, FromBytes, FromZeroes)]
+        #[derive(Inspect, IntoBytes, Immutable, KnownLayout, FromBytes)]
         #[inspect(debug)]
         pub enum PpiOperation: u32 {
             NO_OP = 0,
@@ -1308,11 +1311,13 @@ mod persist_restore {
     use super::*;
 
     mod state {
-        use zerocopy::AsBytes;
         use zerocopy::FromBytes;
-        use zerocopy::FromZeroes;
 
-        #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
         #[repr(C)]
         pub struct PersistedPpiState {
             pub pending_ppi_operation: u32,
@@ -1326,7 +1331,7 @@ mod persist_restore {
     }
 
     pub(crate) fn deserialize_ppi_state(buf: Vec<u8>) -> Option<PpiState> {
-        let saved = state::PersistedPpiState::read_from(buf.as_bytes())?;
+        let saved = state::PersistedPpiState::read_from_bytes(buf.as_bytes()).ok()?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let state::PersistedPpiState {
             pending_ppi_operation,
             in_query_ppi_operation,

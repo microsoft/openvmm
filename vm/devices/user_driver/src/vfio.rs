@@ -8,11 +8,9 @@
 
 use crate::interrupt::DeviceInterrupt;
 use crate::interrupt::DeviceInterruptSource;
-use crate::memory::MemoryBlock;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use crate::DmaClient;
-use crate::HostDmaAllocator;
 use anyhow::Context;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -35,16 +33,10 @@ use vfio_sys::IommuType;
 use vfio_sys::IrqInfo;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-
-pub trait VfioDmaBuffer: 'static + Send + Sync {
-    /// Create a new DMA buffer of the given `len` bytes. Guaranteed to be zero-initialized.
-    fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
-
-    /// Restore a dma buffer in the predefined location with the given `len` in bytes.
-    fn restore_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
-}
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// A device backend accessed via VFIO.
 #[derive(Inspect)]
@@ -231,7 +223,6 @@ pub struct MappedRegionWithFallback {
 
 impl DeviceBacking for VfioDevice {
     type Registers = MappedRegionWithFallback;
-    type DmaAllocator = LockedMemoryAllocator;
 
     fn id(&self) -> &str {
         &self.pci_id
@@ -420,7 +411,7 @@ impl MappedRegionWithFallback {
         unsafe { self.mapping.as_ptr().byte_add(offset).cast() }
     }
 
-    fn read_from_mapping<T: AsBytes + FromBytes>(
+    fn read_from_mapping<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
         &self,
         offset: usize,
     ) -> Result<T, sparse_mmap::MemoryError> {
@@ -428,7 +419,7 @@ impl MappedRegionWithFallback {
         unsafe { sparse_mmap::try_read_volatile(self.mapping::<T>(offset)) }
     }
 
-    fn write_to_mapping<T: AsBytes + FromBytes>(
+    fn write_to_mapping<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
         &self,
         offset: usize,
         data: T,
@@ -524,18 +515,4 @@ pub fn vfio_set_device_reset_method(
         .collect();
     fs_err::write(path, reset_method)?;
     Ok(())
-}
-
-pub struct LockedMemoryAllocator {
-    dma_buffer: Arc<dyn VfioDmaBuffer>,
-}
-
-impl HostDmaAllocator for LockedMemoryAllocator {
-    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
-        self.dma_buffer.create_dma_buffer(len)
-    }
-
-    fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock> {
-        self.dma_buffer.restore_dma_buffer(len, base_pfn)
-    }
 }

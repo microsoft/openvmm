@@ -15,6 +15,7 @@ use super::NoRunner;
 use super::ProcessorRunner;
 use crate::vmsa::VmsaWrapper;
 use crate::GuestVtl;
+use hv1_structs::VtlArray;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use hvdef::HV_PAGE_SIZE;
@@ -23,7 +24,6 @@ use sidecar_client::SidecarVp;
 use std::os::fd::AsRawFd;
 use std::ptr::NonNull;
 use thiserror::Error;
-use vtl_array::VtlArray;
 use x86defs::snp::SevRmpAdjust;
 use x86defs::snp::SevVmsa;
 

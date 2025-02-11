@@ -6,12 +6,6 @@ name = "page_pool_alloc"
 edition.workspace = true
 rust-version.workspace = true
 
-[features]
-# Enable mapping support, using the MshvVtlLow.
-hcl_mapping = ["hcl"]
-# Enable user_driver vfio trait support.
-vfio = ["hcl_mapping", "user_driver/vfio"]
-
 [dependencies]
 user_driver.workspace = true
 hvdef.workspace = true
@@ -27,9 +21,6 @@ parking_lot.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-hcl = { workspace = true, optional = true}
 
 [lints]
 workspace = true

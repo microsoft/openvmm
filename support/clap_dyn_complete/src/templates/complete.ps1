@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 Register-ArgumentCompleter -Native -CommandName '__COMMAND_NAME__' -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
 

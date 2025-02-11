@@ -68,9 +68,11 @@ use vmcore::save_restore::SavedStateBlob;
 use vmcore::slim_event::SlimEvent;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const VMNIC_CHANNEL_TYPE_GUID: Guid = Guid::from_static_str("f8615163-df3e-46c5-913f-f2d2f965ed0e");
 
@@ -625,7 +627,7 @@ impl<'a> TestNicChannel<'a> {
         timeout: Duration,
     ) -> Option<T>
     where
-        T: AsBytes + FromBytes,
+        T: IntoBytes + FromBytes + Immutable + KnownLayout,
     {
         let mem = self.nic.mock_vmbus.memory.clone();
         let gpadl_map_view = self.gpadl_map.clone().view();
@@ -700,7 +702,7 @@ impl<'a> TestNicChannel<'a> {
 
     pub async fn read_rndis_control_message<T>(&mut self, message_type: u32) -> Option<T>
     where
-        T: AsBytes + FromBytes,
+        T: IntoBytes + FromBytes + Immutable + KnownLayout,
     {
         self.read_rndis_control_message_with_timeout(message_type, Duration::from_millis(333))
             .await
@@ -896,7 +898,9 @@ impl<'a> TestNicChannel<'a> {
         self.send_send_buffer_message().await;
     }
 
-    pub async fn send_rndis_control_message_no_completion<T: AsBytes>(
+    pub async fn send_rndis_control_message_no_completion<
+        T: IntoBytes + Immutable + KnownLayout,
+    >(
         &mut self,
         message_type: u32,
         message: T,
@@ -944,7 +948,7 @@ impl<'a> TestNicChannel<'a> {
         self.transaction_id += 1;
     }
 
-    pub async fn send_rndis_control_message<T: AsBytes>(
+    pub async fn send_rndis_control_message<T: IntoBytes + Immutable + KnownLayout>(
         &mut self,
         message_type: u32,
         message: T,

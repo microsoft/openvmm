@@ -52,6 +52,7 @@ use hv1_emulator::hv::VtlProtectHypercallOverlay;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_emulator::synic::GlobalSynic;
 use hv1_emulator::synic::SintProxied;
+use hv1_structs::VtlArray;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvGuestOsId;
 use hvdef::hypercall::HvInputVtl;
@@ -108,13 +109,14 @@ use vm_topology::processor::TargetVpInfo;
 use vmcore::monitor::MonitorPage;
 use vmcore::reference_time_source::ReferenceTimeSource;
 use vmcore::vmtime::VmTimeSource;
-use vtl_array::VtlArray;
 use x86defs::snp::REG_TWEAK_BITMAP_OFFSET;
 use x86defs::snp::REG_TWEAK_BITMAP_SIZE;
 use x86defs::tdx::TdCallResult;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// General error returned by operations.
 #[derive(Error, Debug)]
@@ -641,7 +643,7 @@ impl TlbLockInfo {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct WakeReason {
     extint: bool,
     message_queues: bool,

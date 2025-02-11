@@ -8,16 +8,17 @@
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
 use std::fmt::Display;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Maximum message size between guest and host for IC devices.
 pub const MAX_MESSAGE_SIZE: usize = 13312;
 
 /// Protocol version.
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Version {
     /// Major version.
     pub major: u16,
@@ -40,7 +41,7 @@ impl Display for Version {
 
 open_enum! {
     /// Type of message
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum MessageType: u16 {
         /// Initial version negotiation between host and guest.
         VERSION_NEGOTIATION = 0,
@@ -65,7 +66,7 @@ open_enum! {
 
 /// Common message header for IC messages.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes, Debug)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
 pub struct Header {
     /// Version of the IC framework.
     pub framework_version: Version,
@@ -87,7 +88,7 @@ pub struct Header {
 
 /// Flags for IC messages.
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HeaderFlags {
     /// Message expects a response.
     pub transaction: bool,
@@ -102,7 +103,7 @@ pub struct HeaderFlags {
 
 /// Version negotiation message.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NegotiateMessage {
     /// The number of supported framework versions, located directly after
     /// this structure.
@@ -117,13 +118,14 @@ pub struct NegotiateMessage {
 /// Heartbeat component protocol.
 pub mod heartbeat {
     use open_enum::open_enum;
-    use zerocopy::AsBytes;
     use zerocopy::FromBytes;
-    use zerocopy::FromZeroes;
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     /// Heartbeat message from guest to host.
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HeartbeatMessage {
         /// Incrementing sequence counter.
         pub sequence_number: u64,
@@ -134,7 +136,7 @@ pub mod heartbeat {
     }
 
     open_enum! {
-        #[derive(AsBytes, FromBytes, FromZeroes)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         /// Current state of guest.
         pub enum ApplicationState: u32 {
             /// Guest is in an unknown state.
@@ -154,9 +156,10 @@ pub mod shutdown {
     use crate::Version;
     use bitfield_struct::bitfield;
     use guid::Guid;
-    use zerocopy::AsBytes;
     use zerocopy::FromBytes;
-    use zerocopy::FromZeroes;
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     /// The unique vmbus interface ID of the shutdown IC.
     pub const INTERFACE_ID: Guid = Guid::from_static_str("0e0b6031-5213-4934-818b-38d90ced39db");
@@ -176,7 +179,7 @@ pub mod shutdown {
 
     /// The message for shutdown initiated from the host.
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ShutdownMessage {
         /// The shutdown reason.
         pub reason_code: u32,
@@ -191,7 +194,7 @@ pub mod shutdown {
 
     /// Flags for shutdown.
     #[bitfield(u32)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ShutdownFlags {
         /// Whether the shutdown operation is being forced.
         pub force: bool,

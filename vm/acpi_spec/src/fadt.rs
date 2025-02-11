@@ -5,11 +5,13 @@ use super::Header;
 use super::Table;
 use core::mem::size_of;
 use static_assertions::const_assert_eq;
-use zerocopy::AsBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::Unaligned;
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, Default, AsBytes, Unaligned)]
+#[derive(Copy, Clone, Debug, Default, IntoBytes, Immutable, KnownLayout, Unaligned)]
 pub struct Fadt {
     // 36
     pub facs: u32,
@@ -120,7 +122,7 @@ pub const FADT_HW_REDUCED_ACPI: u32 = 1 << 20;
 pub const FADT_LOW_POWER_S0_IDLE_CAPABLE: u32 = 1 << 21;
 
 #[repr(u8)]
-#[derive(Copy, Clone, Debug, AsBytes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout)]
 pub enum AddressSpaceId {
     SystemMemory = 0,
     SystemIo = 1,
@@ -138,7 +140,7 @@ impl Default for AddressSpaceId {
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone, Debug, AsBytes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout)]
 pub enum AddressWidth {
     Undefined = 0,
     Byte = 1,
@@ -154,7 +156,7 @@ impl Default for AddressWidth {
 }
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, Default, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, IntoBytes, Immutable, KnownLayout)]
 pub struct GenericAddress {
     pub addr_space_id: AddressSpaceId,
     pub register_bit_width: u8,

@@ -17,8 +17,8 @@ use std::fmt::Debug;
 use x86defs::snp::SevSelector;
 use x86defs::snp::SevVmsa;
 use x86defs::X64_EFER_SVME;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// The interrupt injection type to use for the highest vmpl's VMSA.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -60,7 +60,7 @@ impl SnpHardwareContext {
         shared_gpa_boundary: u64,
         injection_type: InjectionType,
     ) -> Self {
-        let mut vmsa: SevVmsa = FromZeroes::new_zeroed();
+        let mut vmsa: SevVmsa = FromZeros::new_zeroed();
 
         // Fill in reset values that are needed for consistency.
         vmsa.efer = X64_EFER_SVME;
@@ -116,7 +116,7 @@ impl VpContextBuilder for SnpHardwareContext {
             SevSelector {
                 limit: reg.limit as u32,
                 base: reg.base,
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             }
         };
 

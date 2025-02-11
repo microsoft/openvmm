@@ -25,7 +25,6 @@ ntapi.workspace = true
 parking_lot.workspace = true
 widestring.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(windows)'.dependencies.winapi]
 workspace = true
 features = [

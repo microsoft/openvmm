@@ -8,6 +8,8 @@ use crate::monitor::MonitorId;
 use hvdef::Vtl;
 use inspect::Inspect;
 use std::sync::Arc;
+use std::task::Context;
+use std::task::Poll;
 use thiserror::Error;
 
 pub trait MessagePort: Send + Sync {
@@ -16,7 +18,7 @@ pub trait MessagePort: Send + Sync {
     /// A message is `trusted` if it was was received from the guest without using host-visible
     /// mechanisms on a hardware-isolated VM. The `trusted` parameter is always `false` if not
     /// running in the paravisor of a hardware-isolated VM.
-    fn handle_message(&self, msg: &[u8], trusted: bool) -> bool;
+    fn poll_handle_message(&self, cx: &mut Context<'_>, msg: &[u8], trusted: bool) -> Poll<()>;
 }
 
 pub trait EventPort: Send + Sync {

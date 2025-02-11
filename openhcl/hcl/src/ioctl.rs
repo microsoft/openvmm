@@ -78,9 +78,11 @@ use std::sync::Once;
 use thiserror::Error;
 use x86defs::snp::SevVmsa;
 use x86defs::tdx::TdCallResultCode;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Error returned by HCL operations.
 #[derive(Error, Debug)]
@@ -1105,8 +1107,8 @@ impl MshvHvcall {
         output: &mut O,
     ) -> Result<HypercallOutput, HvcallError>
     where
-        I: AsBytes + Sized,
-        O: AsBytes + FromBytes + Sized,
+        I: IntoBytes + Sized + Immutable + KnownLayout,
+        O: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
     {
         const fn assert_size<I, O>()
         where
@@ -1124,7 +1126,7 @@ impl MshvHvcall {
             control,
             input_data: input.as_bytes().as_ptr().cast(),
             input_size: size_of::<I>(),
-            status: FromZeroes::new_zeroed(),
+            status: FromZeros::new_zeroed(),
             output_data: output.as_bytes().as_ptr().cast(),
             output_size: size_of::<O>(),
         };
@@ -1173,9 +1175,9 @@ impl MshvHvcall {
         output_rep: Option<&mut [O]>,
     ) -> Result<HypercallOutput, HvcallError>
     where
-        InputHeader: AsBytes + Sized,
-        InputRep: AsBytes + Sized,
-        O: AsBytes + FromBytes + Sized,
+        InputHeader: IntoBytes + Sized + Immutable + KnownLayout,
+        InputRep: IntoBytes + Sized + Immutable + KnownLayout,
+        O: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
     {
         // Construct input buffer.
         let (input, count) = match input_rep {
@@ -1252,8 +1254,8 @@ impl MshvHvcall {
         output: &mut O,
     ) -> Result<HypercallOutput, HvcallError>
     where
-        I: AsBytes + Sized,
-        O: AsBytes + FromBytes + Sized,
+        I: IntoBytes + Sized + Immutable + KnownLayout,
+        O: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
     {
         const fn assert_size<I, O>()
         where
@@ -1279,7 +1281,7 @@ impl MshvHvcall {
             control,
             input_data: input.as_bytes().as_ptr().cast(),
             input_size: input.len(),
-            status: FromZeroes::new_zeroed(),
+            status: FromZeros::new_zeroed(),
             output_data: output.as_bytes().as_ptr().cast(),
             output_size: size_of::<O>(),
         };
@@ -1992,7 +1994,7 @@ impl<T: Backing> ProcessorRunner<'_, T> {
                 assoc.push(HvRegisterAssoc {
                     name: name.into(),
                     pad: Default::default(),
-                    value: FromZeroes::new_zeroed(),
+                    value: FromZeros::new_zeroed(),
                 });
                 offset.push(i);
             }
@@ -2622,7 +2624,7 @@ impl Hcl {
             gva_page: gva >> hvdef::HV_PAGE_SHIFT,
         };
 
-        let mut output: hypercall::TranslateVirtualAddressExOutputArm64 = FromZeroes::new_zeroed();
+        let mut output: hypercall::TranslateVirtualAddressExOutputArm64 = FromZeros::new_zeroed();
 
         // SAFETY: The input header and slice are the correct types for this hypercall.
         //         The hypercall output is validated right after the hypercall is issued.
@@ -3097,7 +3099,7 @@ impl Hcl {
             reserved_z0: 0,
         };
 
-        let mut output: hvdef::hypercall::MemoryMappedIoReadOutput = FromZeroes::new_zeroed();
+        let mut output: hvdef::hypercall::MemoryMappedIoReadOutput = FromZeros::new_zeroed();
 
         // SAFETY: The input header and slice are the correct types for this hypercall.
         //         The hypercall output is validated right after the hypercall is issued.

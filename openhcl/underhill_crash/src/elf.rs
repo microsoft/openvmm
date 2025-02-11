@@ -3,12 +3,13 @@
 
 //! Definitions for elf core dump handling.
 
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// ELF header
-#[derive(AsBytes, FromBytes, FromZeroes, Debug)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
 #[repr(C)]
 pub struct Elf64_Ehdr {
     pub e_ident: [u8; 16],
@@ -28,7 +29,7 @@ pub struct Elf64_Ehdr {
 }
 
 /// Program header
-#[derive(AsBytes, FromBytes, FromZeroes, Copy, Clone, Debug)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Copy, Clone, Debug)]
 #[repr(C)]
 pub struct Elf64_Phdr {
     pub p_type: u32,
@@ -42,7 +43,7 @@ pub struct Elf64_Phdr {
 }
 
 /// ELF note header
-#[derive(AsBytes)]
+#[derive(IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct Elf64_Nhdr {
     pub namesz: u32,

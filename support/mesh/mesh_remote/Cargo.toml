@@ -23,7 +23,6 @@ thiserror.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(windows)'.dependencies]
 ntapi.workspace = true
 

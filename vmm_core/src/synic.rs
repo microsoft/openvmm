@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use futures::task::noop_waker_ref;
 use hvdef::HvError;
 use hvdef::HvResult;
 use hvdef::Vtl;
@@ -11,6 +12,8 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::task::Context;
+use std::task::Poll;
 use virt::Synic;
 use virt::VpIndex;
 use vmcore::monitor::MonitorId;
@@ -51,7 +54,12 @@ impl SynicPorts {
         {
             if vtl < minimum_vtl {
                 Err(HvError::OperationDenied)
-            } else if port.handle_message(message, secure) {
+            } else if port.poll_handle_message(
+                &mut Context::from_waker(noop_waker_ref()),
+                message,
+                secure,
+            ) == Poll::Ready(())
+            {
                 Ok(())
             } else {
                 // TODO: VMBus sometimes (in Azure?) returns HV_STATUS_TIMEOUT

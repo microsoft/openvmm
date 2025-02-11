@@ -429,7 +429,12 @@ impl IntoPipeline for CheckinGatesCli {
                         },
                         profile: CommonProfile::from_release(release),
                         // FIXME: this relies on openvmm default features
-                        features: [].into(),
+                        // Our ARM test runners need the latest WHP changes
+                        features: if matches!(arch, CommonArch::Aarch64) {
+                            [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::UnstableWhp].into()
+                        } else {
+                            [].into()
+                        },
                         artifact_dir: ctx.publish_artifact(pub_openvmm),
                         done: ctx.new_done_handle(),
                     }
@@ -976,19 +981,10 @@ impl IntoPipeline for CheckinGatesCli {
                 if matches!(
                     target.as_triple().operating_system,
                     target_lexicon::OperatingSystem::Linux
-                ) || matches!(target.common_arch(), Some(CommonArch::Aarch64))
-                {
-                    // - OpenHCL is not supported on KVM
-                    // - OpenHCL is not currently supported on our ARM64 test runners
-                    expr = format!("{expr} and not test(openhcl)")
-                }
-
-                if matches!(
-                    target.as_triple().operating_system,
-                    target_lexicon::OperatingSystem::Linux
                 ) {
+                    // - OpenHCL is not supported on KVM
                     // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
-                    expr = format!("{expr} and not test(pcat_x64)")
+                    expr = format!("{expr} and not test(openhcl) and not test(pcat_x64)")
                 }
 
                 Some(expr)

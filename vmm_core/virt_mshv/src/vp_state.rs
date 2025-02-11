@@ -11,7 +11,7 @@ use std::mem::offset_of;
 use virt::state::HvRegisterState;
 use virt::x86::vp;
 use virt::x86::vp::AccessVpState;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 impl MshvProcessor<'_> {
     pub(crate) fn set_register_state<T, const N: usize>(&self, regs: &T) -> Result<(), Error>
@@ -21,7 +21,7 @@ impl MshvProcessor<'_> {
         let mut assoc = regs.names().map(|name| HvRegisterAssoc {
             name: name.into(),
             pad: [0; 3],
-            value: FromZeroes::new_zeroed(),
+            value: FromZeros::new_zeroed(),
         });
 
         regs.get_values(assoc.iter_mut().map(|assoc| &mut assoc.value));
@@ -42,7 +42,7 @@ impl MshvProcessor<'_> {
         let mut assoc = regs.names().map(|name| HvRegisterAssoc {
             name: name.into(),
             pad: [0; 3],
-            value: FromZeroes::new_zeroed(),
+            value: FromZeros::new_zeroed(),
         });
 
         self.inner

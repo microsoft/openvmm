@@ -46,8 +46,8 @@ use x86defs::GdtEntry;
 use x86defs::X64_BUSY_TSS_SEGMENT_ATTRIBUTES;
 use x86defs::X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES;
 use x86defs::X64_DEFAULT_DATA_SEGMENT_ATTRIBUTES;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 #[derive(Debug)]
 pub struct Vtl0Linux<'a> {
@@ -673,7 +673,7 @@ where
     let mut free_page = 1;
     let mut measured_config = ParavisorMeasuredVtl0Config {
         magic: ParavisorMeasuredVtl0Config::MAGIC,
-        ..FromZeroes::new_zeroed()
+        ..FromZeros::new_zeroed()
     };
 
     let Vtl0Config {
@@ -1057,7 +1057,7 @@ where
 
     let mut measured_config = ParavisorMeasuredVtl0Config {
         magic: ParavisorMeasuredVtl0Config::MAGIC,
-        ..FromZeroes::new_zeroed()
+        ..FromZeros::new_zeroed()
     };
 
     if let Some((uefi, vp_context)) = &supports_uefi {

@@ -37,9 +37,9 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::task::Waker;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 use zerocopy::Ref;
 use zerocopy::Unalign;
 
@@ -1896,11 +1896,12 @@ impl LocalNode {
     /// Processes a node event.
     pub fn event(&self, remote_node_id: &NodeId, event: &[u8], os_resources: &mut Vec<OsResource>) {
         let parse = || {
-            let header = protocol::Event::read_from_prefix(event)?;
-            let (resources, message) = Ref::new_slice_from_prefix(
+            let header = protocol::Event::read_from_prefix(event).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
+            let (resources, message) = Ref::from_prefix_with_elems(
                 &event[size_of_val(&header)..],
                 header.resource_count as usize,
-            )?;
+            )
+            .ok()?; // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
             let message = message.get(..header.message_size as usize)?;
             Some((header, resources, message))
         };
@@ -1970,7 +1971,8 @@ impl LocalNode {
             protocol::EventType::CLOSE_PORT => NonMessageEvent::ClosePort.into(),
             protocol::EventType::CHANGE_PEER => {
                 let data = protocol::ChangePeerData::read_from_prefix(message)
-                    .ok_or(EventError::Truncated)?;
+                    .map_err(|_| EventError::Truncated)?
+                    .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 let port = self
                     .get_port(Address {
                         node: NodeId(data.node.into()),
@@ -1990,7 +1992,8 @@ impl LocalNode {
             }
             protocol::EventType::FAIL_PORT => {
                 let data = protocol::FailPortData::read_from_prefix(message)
-                    .ok_or(EventError::Truncated)?;
+                    .map_err(|_| EventError::Truncated)?
+                    .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 NonMessageEvent::FailPort(NodeError::new(
                     remote_node_id,
                     RemotePortError(NodeId(data.node.into())),

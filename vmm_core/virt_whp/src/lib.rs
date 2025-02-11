@@ -28,6 +28,7 @@ use hv1_emulator::hv::GlobalHv;
 use hv1_emulator::hv::GlobalHvParams;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::message_queues::MessageQueues;
+use hv1_structs::VtlSet;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvMessage;
 use hvdef::HvMessageType;
@@ -68,7 +69,6 @@ use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
 use vp::WhpRunVpError;
 use vp_state::WhpVpStateAccess;
-use vtl_array::VtlSet;
 use x86defs::cpuid::Vendor;
 
 #[derive(Debug)]
@@ -1349,7 +1349,7 @@ impl VtlPartition {
                     vendor,
                     tsc_frequency,
                     ref_time,
-                    hypercall_page_protectors: vtl_array::VtlArray::from_fn(|_| None),
+                    hypercall_page_protectors: hv1_structs::VtlArray::from_fn(|_| None),
                 }))
             }
         } else {

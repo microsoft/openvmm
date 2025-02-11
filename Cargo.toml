@@ -75,7 +75,6 @@ petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact
 petri_artifacts_vmm_test = { path = "vmm_tests/petri_artifacts_vmm_test" }
 vmm_test_images = { path = "vmm_tests/vmm_test_images" }
 vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
-vmm_test_petri_support = { path = "vmm_tests/vmm_test_petri_support" }
 
 petri = { path = "petri" }
 petri_artifacts_common = { path = "petri/petri_artifacts_common" }
@@ -144,7 +143,6 @@ unix_socket = { path = "support/unix_socket" }
 vmsocket = { path = "support/vmsocket" }
 win_import_lib = { path = "support/win_import_lib" }
 win_prng_support = { path = "support/win_prng_support" }
-zerocopy_helpers = { path = "support/zerocopy_helpers" }
 
 azure_profiler_proto = { path = "openhcl/azure_profiler_proto" }
 bootloader_fdt_parser = { path = "openhcl/bootloader_fdt_parser" }
@@ -154,12 +152,12 @@ diag_proto = { path = "openhcl/diag_proto" }
 diag_server = { path = "openhcl/diag_server" }
 get_lower_vtl = { path = "openhcl/get_lower_vtl" }
 hcl = { path = "openhcl/hcl" }
+hcl_mapper = { path = "openhcl/hcl_mapper" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }
 kmsg_defs = { path = "openhcl/kmsg_defs" }
 lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
-page_pool_alloc = { path = "openhcl/page_pool_alloc" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
 underhill_attestation = { path = "openhcl/underhill_attestation" }
@@ -320,14 +318,15 @@ vmbus_server = { path = "vm/devices/vmbus/vmbus_server" }
 vmbus_user_channel = { path = "vm/devices/vmbus/vmbus_user_channel" }
 hv1_emulator = { path = "vm/hv1/hv1_emulator" }
 hv1_hypercall = { path = "vm/hv1/hv1_hypercall" }
+hv1_structs = { path = "vm/hv1/hv1_structs" }
 hvdef = { path = "vm/hv1/hvdef" }
-vtl_array = { path = "vm/hv1/vtl_array" }
 vhd1_defs = { path = "vm/vhd1_defs" }
 kvm = { path = "vm/kvm" }
 loader = { path = "vm/loader" }
 igvmfilegen_config = { path = "vm/loader/igvmfilegen_config" }
 loader_defs = { path = "vm/loader/loader_defs" }
 page_table = { path = "vm/loader/page_table" }
+page_pool_alloc = { path = "vm/page_pool_alloc" }
 vbs_defs = { path = "vm/vbs_defs" }
 vmgs = { path = "vm/vmgs/vmgs" }
 vmgs_broker = { path = "vm/vmgs/vmgs_broker" }
@@ -437,10 +436,8 @@ iced-x86 = { version = "1.17", default-features = false, features = [
   "no_d3now",
 ] }
 ignore = "0.4"
-igvm = "0.3.3"
-igvm_defs = { version = "0.3.3", default-features = false, features = [
-  "unstable",
-] }
+igvm = {git = "https://github.com/microsoft/igvm", rev = "365065d7e31da0a0116e7934de3ecd85f00bab70"}
+igvm_defs = {git = "https://github.com/microsoft/igvm", rev = "365065d7e31da0a0116e7934de3ecd85f00bab70", default-features = false, features = [ "unstable" ]}
 image = { version = "0.24", default-features = false }
 io-uring = "0.6"
 jiff = "0.1"
@@ -519,13 +516,14 @@ which = "6"
 widestring = "1.0"
 win_etw_tracing = "0.1"
 winapi = "0.3"
-windows = "0.56"
+windows = "0.59"
 windows-service = "0.7"
 windows-sys = "0.52"
 xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshell/issues/63
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
-zerocopy = { version = "0.7.32", features = ["derive"] }
+#zerocopy = { version = "0.7.32", features = ["derive"]}
+zerocopy = { version = "0.8.14", features = ["derive"]}
 
 [workspace.metadata.xtask.unused-deps]
 # Pulled in through "tracing", but we need to pin the version

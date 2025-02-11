@@ -26,7 +26,7 @@ use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
 use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::GuestQuirks;
-use petri_artifacts_core::ArtifactHandle;
+use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
 use std::future::Future;
 use std::path::Path;
@@ -107,11 +107,6 @@ impl PetriVmOpenVmm {
         self.inner.openhcl_diag().map(|x| &*x.vtl2_vsock_path)
     }
 
-    /// Get the artifacts for this VM.
-    pub fn artifacts(&self) -> &petri_artifacts_core::TestArtifacts {
-        &self.inner.resources.artifacts
-    }
-
     /// Wait for the VM to halt, returning the reason for the halt.
     pub async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
         if let Some(already) = self.halt.already_received.take() {
@@ -175,7 +170,7 @@ impl PetriVmOpenVmm {
         /// Restarts OpenHCL.
         pub async fn restart_openhcl(
             &mut self,
-            new_openhcl: ArtifactHandle<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+            new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
             flags: OpenHclServicingFlags
         ) -> anyhow::Result<()>
     );
@@ -349,7 +344,7 @@ impl PetriVmInner {
 
     async fn restart_openhcl(
         &self,
-        new_openhcl: ArtifactHandle<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+        new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
         flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()> {
         let ged_send = self
@@ -358,8 +353,7 @@ impl PetriVmInner {
             .as_ref()
             .context("openhcl not configured")?;
 
-        let igvm_path = self.resources.artifacts.get(new_openhcl);
-        let igvm_file = fs_err::File::open(igvm_path).context("failed to open igvm file")?;
+        let igvm_file = fs_err::File::open(new_openhcl).context("failed to open igvm file")?;
         self.worker
             .restart_openhcl(ged_send, flags, igvm_file.into())
             .await

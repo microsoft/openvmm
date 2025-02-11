@@ -26,9 +26,11 @@ use open_enum::open_enum;
 use sparse_mmap::SparseMapping;
 use std::vec;
 use test_with_tracing::test;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // A useful base pattern to fill into hypercall input and output.
 const FILL_PATTERN: u64 = 0x123456789abcdef0;
@@ -332,7 +334,7 @@ struct TestController {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     enum TestHypercallCode: u16 {
         #![allow(non_upper_case_globals)]
         CallSimpleNoOutput = 0x1001,
@@ -351,11 +353,11 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct TestInput([u8; 16]);
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct TestOutput([u8; 16]);
 
 // Simple hypercall with no input or output.
@@ -643,7 +645,7 @@ impl TestMemory {
 
         let mut buffers = [TestHypercallAlignedPage::new_zeroed(); 2];
         for buffer in buffers.iter_mut() {
-            let buffer = buffer.0.as_bytes_mut();
+            let buffer = buffer.0.as_mut_bytes();
             buffer.fill(BACK_BYTE);
         }
 
@@ -680,7 +682,7 @@ impl TestMemory {
             self.gm
                 .read_at(
                     TestMemory::INPUT_BASE as u64,
-                    self.internal_buffers[Self::IN_INDEX].0.as_bytes_mut(),
+                    self.internal_buffers[Self::IN_INDEX].0.as_mut_bytes(),
                 )
                 .unwrap();
         }
@@ -689,7 +691,7 @@ impl TestMemory {
             self.gm
                 .read_at(
                     TestMemory::OUTPUT_BASE as u64,
-                    self.internal_buffers[Self::OUT_INDEX].0.as_bytes_mut(),
+                    self.internal_buffers[Self::OUT_INDEX].0.as_mut_bytes(),
                 )
                 .unwrap();
         }
@@ -727,7 +729,7 @@ impl TestController {
 
     fn simple_no_output<InputT>(&self, input_header: &InputT) -> HvResult<()>
     where
-        InputT: AsBytes + FromBytes + Sized + Copy,
+        InputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         println!("simple_no_output");
         match self.test_result {
@@ -745,8 +747,8 @@ impl TestController {
 
     fn simple<InputT, OutputT>(&self, input: &InputT) -> HvResult<OutputT>
     where
-        InputT: AsBytes + FromBytes + Sized + Copy,
-        OutputT: AsBytes + FromBytes + Sized + Copy,
+        InputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
+        OutputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         println!("simple");
         match self.test_result {
@@ -765,8 +767,8 @@ impl TestController {
 
     fn rep_no_output<InputT, InRepT>(&self, header: &InputT, input: &[InRepT]) -> HvRepResult
     where
-        InputT: AsBytes + FromBytes + Sized + Copy,
-        InRepT: AsBytes + FromBytes + Sized + Copy,
+        InputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
+        InRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         println!("rep_no_output");
         let (rep_start, rep_count) = self.reps.unwrap();
@@ -793,9 +795,9 @@ impl TestController {
         output: &mut [OutRepT],
     ) -> HvRepResult
     where
-        InputT: AsBytes + FromBytes + Sized + Copy,
-        InRepT: AsBytes + FromBytes + Sized + Copy,
-        OutRepT: AsBytes + FromBytes + Sized + Copy,
+        InputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
+        InRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
+        OutRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         println!("rep");
         let (rep_start, rep_count) = self.reps.unwrap();
@@ -824,7 +826,7 @@ impl TestController {
 
     fn variable_no_output<InputT>(&self, input: &InputT, var_header: &[u64]) -> HvResult<()>
     where
-        InputT: AsBytes + FromBytes + Sized + Copy,
+        InputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         println!("simple_variable_no_output");
         match self.test_result {
@@ -847,8 +849,8 @@ impl TestController {
 
     fn variable<InputT, OutputT>(&self, input: &InputT, var_header: &[u64]) -> HvResult<OutputT>
     where
-        InputT: AsBytes + FromBytes + Sized + Copy,
-        OutputT: AsBytes + FromBytes + Sized + Copy,
+        InputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
+        OutputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         println!("simple_variable");
         match self.test_result {
@@ -877,9 +879,9 @@ impl TestController {
         output: &mut [OutRepT],
     ) -> HvRepResult
     where
-        InputT: AsBytes + FromBytes + Sized + Copy,
-        InRepT: AsBytes + FromBytes + Sized + Copy,
-        OutRepT: AsBytes + FromBytes + Sized + Copy,
+        InputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
+        InRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
+        OutRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         println!("var_rep");
         let (rep_start, rep_count) = self.reps.unwrap();
@@ -912,10 +914,11 @@ impl TestController {
 
     fn generate_test_input<InputHeaderT>() -> InputHeaderT
     where
-        InputHeaderT: AsBytes + FromBytes + Sized + Copy,
+        InputHeaderT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         assert!(size_of::<InputHeaderT>() % 8 == 0);
-        *InputHeaderT::ref_from(vec![FILL_PATTERN; size_of::<TestInput>() / 8].as_bytes()).unwrap()
+        *InputHeaderT::ref_from_bytes(vec![FILL_PATTERN; size_of::<TestInput>() / 8].as_bytes())
+            .unwrap()
     }
 
     fn generate_var_header(size: usize) -> Vec<u8> {
@@ -926,7 +929,7 @@ impl TestController {
 
     fn generate_input_reps<InRepT>(rep_count: usize) -> Vec<InRepT>
     where
-        InRepT: AsBytes + FromBytes + Sized + Copy,
+        InRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         let size = rep_count * size_of::<InRepT>();
         let pattern_count = (size + 7) / 8;
@@ -935,21 +938,22 @@ impl TestController {
             reps.push(FILL_PATTERN + 2 + i as u64);
         }
 
-        let (reps, _) = InRepT::slice_from_prefix(reps.as_bytes(), rep_count).unwrap();
+        let (reps, _) = <[InRepT]>::ref_from_prefix_with_elems(reps.as_bytes(), rep_count).unwrap();
         reps.to_vec()
     }
 
     fn generate_test_output<OutputT>() -> OutputT
     where
-        OutputT: AsBytes + FromBytes + FromZeroes + Sized + Copy,
+        OutputT: IntoBytes + FromBytes + FromZeros + Sized + Copy + Immutable + KnownLayout,
     {
         assert!(size_of::<TestOutput>() % 16 == 0);
-        *OutputT::ref_from(vec![!FILL_PATTERN; size_of::<TestOutput>() / 8].as_bytes()).unwrap()
+        *OutputT::ref_from_bytes(vec![!FILL_PATTERN; size_of::<TestOutput>() / 8].as_bytes())
+            .unwrap()
     }
 
     fn generate_output_reps<OutRepT>(rep_count: usize) -> Vec<OutRepT>
     where
-        OutRepT: AsBytes + FromBytes + Sized + Copy,
+        OutRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         let size = rep_count * size_of::<OutRepT>();
         let pattern_count = (size + 7) / 8;
@@ -958,7 +962,8 @@ impl TestController {
             reps.push(!FILL_PATTERN - 2 - i as u64);
         }
 
-        let (reps, _) = OutRepT::slice_from_prefix(reps.as_bytes(), rep_count).unwrap();
+        let (reps, _) =
+            <[OutRepT]>::ref_from_prefix_with_elems(reps.as_bytes(), rep_count).unwrap();
         reps.to_vec()
     }
 }
@@ -1213,10 +1218,10 @@ fn invoke_hypercall<InputT, InRepT, OutputT, OutRepT>(
     output_reps: &mut [OutRepT],
 ) -> (HypercallOutput, Control)
 where
-    InputT: AsBytes + FromBytes + Sized,
-    InRepT: AsBytes + FromBytes + Sized,
-    OutputT: AsBytes + FromBytes + Sized,
-    OutRepT: AsBytes + FromBytes + Sized,
+    InputT: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
+    InRepT: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
+    OutputT: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
+    OutRepT: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
 {
     assert!(size_of::<InputT>() % 8 == 0);
     assert!(size_of::<OutputT>() % 8 == 0);
@@ -1312,7 +1317,7 @@ where
         let len = combined_input.len().min(PAGE_SIZE - params.in_offset);
         let input_buffer = &mut test_mem.internal_buffers[TestMemory::IN_INDEX]
             .0
-            .as_bytes_mut()[params.in_offset..params.in_offset + len];
+            .as_mut_bytes()[params.in_offset..params.in_offset + len];
         input_buffer.copy_from_slice(&combined_input[..len]);
 
         // Write the input to guest memory.
@@ -1335,7 +1340,7 @@ where
 
         if pair_count != 0 {
             let mut input_buffer = vec![[0u64; 2]; pair_count];
-            input_buffer.as_bytes_mut()[..combined_input.len()]
+            input_buffer.as_mut_bytes()[..combined_input.len()]
                 .copy_from_slice(combined_input.as_bytes());
 
             io.set_fast_input(&input_buffer[..pair_count]);
@@ -1391,19 +1396,19 @@ where
 
                 let output_buffer = &mut test_mem.internal_buffers[TestMemory::OUT_INDEX]
                     .0
-                    .as_bytes_mut()[params.out_offset..params.out_offset + output_len];
+                    .as_mut_bytes()[params.out_offset..params.out_offset + output_len];
 
                 output_buffer.as_bytes().split_at(size_of::<OutputT>())
             } else {
                 output_buffer = vec![[0u64; 2]; (output_len + 15) / 16];
                 io.get_fast_output(input_register_pairs.unwrap(), &mut output_buffer);
-                let output_buffer = &mut output_buffer.as_bytes_mut()[..output_len];
+                let output_buffer = &mut output_buffer.as_mut_bytes()[..output_len];
 
                 output_buffer.as_bytes().split_at(size_of::<OutputT>())
             };
 
-            output.as_bytes_mut().copy_from_slice(hdr);
-            output_reps.as_bytes_mut().copy_from_slice(reps);
+            output.as_mut_bytes().copy_from_slice(hdr);
+            output_reps.as_mut_bytes().copy_from_slice(reps);
         }
 
         (result, control)

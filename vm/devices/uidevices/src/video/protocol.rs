@@ -3,9 +3,10 @@
 
 #![allow(dead_code)]
 
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 pub const MAX_VMBUS_PACKET_SIZE: usize = 0x4000;
 
@@ -43,7 +44,7 @@ macro_rules! packed {
     ($wrap:ident, $prim:ident, $count:literal) => {
         #[allow(non_camel_case_types)]
         #[repr(transparent)]
-        #[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+        #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub struct $wrap([u8; $count]);
 
         impl $wrap {
@@ -81,7 +82,7 @@ packed!(u16p, u16, 2);
 packed!(i32p, i32, 4);
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ScreenInfo {
     pub width: u16p,
     pub height: u16p,
@@ -102,7 +103,7 @@ pub const MAX_VSP_TO_VSC_MESSAGE_SIZE: usize = size_of::<SupportedResolutionsRes
 pub const EMERGENCY_RESET_IO_PORT: u16 = 0x100;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Version(u32p);
 
 impl Version {
@@ -137,7 +138,7 @@ pub const fn feature_level(major: u16, minor: u16) -> u32 {
 pub const EDID_BLOCK_SIZE: usize = 128;
 
 #[repr(transparent)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct EdidBlock(pub [u8; EDID_BLOCK_SIZE]);
 
 impl std::fmt::Debug for EdidBlock {
@@ -196,7 +197,7 @@ pub const MESSAGE_CAPABILITY_RESPONSE: u32 = 16;
 
 // Basic message structures.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageHeader {
     pub typ: u32p,  // Type of the enclosed message
     pub size: u32p, // Size of the enclosed message (size of the data payload)
@@ -207,7 +208,7 @@ pub struct MessageHeader {
 
 // VSC to VSP
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VersionRequestMessage {
     pub version: Version,
 }
@@ -215,7 +216,7 @@ pub struct VersionRequestMessage {
 // VSP to VSC
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VersionResponseMessage {
     pub version: Version,
     pub is_accepted: u8,
@@ -224,14 +225,14 @@ pub struct VersionResponseMessage {
 
 // VSC to VSP
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SupportedResolutionsRequestMessage {
     pub maximum_resolution_count: u8,
 }
 
 // VSP to VSC
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SupportedResolutionsResponseMessage {
     pub edid_block: EdidBlock,
     pub resolution_count: u8,
@@ -242,13 +243,13 @@ pub struct SupportedResolutionsResponseMessage {
 
 // VSC to VSP
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CapabilityRequestMessage {}
 
 // VSP to VSC
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CapabilityResponseMessage {
     pub lock_on_disconnect: u32p,
     pub reserved: [u32p; 15],
@@ -256,7 +257,7 @@ pub struct CapabilityResponseMessage {
 
 // VSC to VSP
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VramLocationMessage {
     pub user_context: u64p,
     pub is_vram_gpa_address_specified: u8,
@@ -269,7 +270,7 @@ pub struct VramLocationMessage {
 // that the guest can safely write to knowing that the writes will actually
 // be reflected in the VRAM memory block.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VramLocationAckMessage {
     pub user_context: u64p,
 }
@@ -277,7 +278,7 @@ pub struct VramLocationAckMessage {
 // These messages are used to communicate "situation updates" or changes
 // in the layout of the primary surface.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VideoOutputSituation {
     pub active: u8,                        // Determine if the device is active or not.
     pub primary_surface_vram_offset: u32p, // Removed in Threshold -- must be zero.
@@ -291,7 +292,7 @@ pub struct VideoOutputSituation {
 
 // VSC to VSP
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SituationUpdateMessage {
     pub user_context: u64p,
     pub video_output_count: u8, // 1 in Viridian 1.0
@@ -300,7 +301,7 @@ pub struct SituationUpdateMessage {
 
 // VSP to VSC
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SituationUpdateAckMessage {
     pub user_context: u64p,
 }
@@ -308,7 +309,7 @@ pub struct SituationUpdateAckMessage {
 // These messages are used to communicate the BIOS Information of the VM.
 // VSC to VSP
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct BiosInfoRequestMessage {}
 
 // VSP to VSC
@@ -317,7 +318,7 @@ pub struct BiosInfoRequestMessage {}
 // map to the least significant bit and generation 2 (value 1) maps
 // functionally to the StopDeviceSupported flag below.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct BiosInfoResponseMessage {
     pub stop_device_supported: u32p,
     pub reserved: [u8; 12],
@@ -329,7 +330,7 @@ pub struct BiosInfoResponseMessage {
 // VSC to VSP
 // This message is ignored unless we're in relative mouse mode.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PointerPositionMessage {
     // LDDM may specify FALSE here, XDDM generally will probably always specify TRUE.
     pub is_visible: u8,
@@ -344,7 +345,7 @@ pub struct PointerPositionMessage {
 
 // VSC to VSP
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PointerShapeMessage {
     // When a cursor is larger than the maximum VMBus payload size,
     // it is split up.  This 0-based index indicates which portion
@@ -396,7 +397,7 @@ pub const CURSOR_COMPLETE: u8 = 0xff;
 // VSC responsible for bringing VSP up-to-date with at least one message
 // of the relevant type if one of these goes from FALSE to TRUE.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureChangeMessage {
     pub is_dirt_needed: u8,
     pub is_pointer_position_updates_needed: u8,
@@ -405,7 +406,7 @@ pub struct FeatureChangeMessage {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureChangeMessageV2 {
     pub is_dirt_needed: u8,
     pub is_pointer_position_updates_needed: u8,
@@ -417,7 +418,7 @@ pub struct FeatureChangeMessageV2 {
 // VSC to VSP
 // This message is used to communicate dirty regions to the VSP.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DirtMessage {
     // 0 is the only valid value for 2D Video VSP 1.0
     pub video_output: u8,
@@ -426,7 +427,7 @@ pub struct DirtMessage {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Rectangle {
     pub left: i32p,
     pub top: i32p,

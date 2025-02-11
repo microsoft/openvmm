@@ -7,69 +7,97 @@ use fatfs::FsOptions;
 use petri_artifacts_common::artifacts as common_artifacts;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
-use petri_artifacts_core::AsArtifactHandle;
-use petri_artifacts_core::TestArtifacts;
+use petri_artifacts_core::ArtifactResolver;
+use petri_artifacts_core::ResolvedArtifact;
 use std::io::Read;
 use std::io::Seek;
 use std::io::Write;
 use std::ops::Range;
 use std::path::Path;
 
-/// Builds a disk image containing pipette and any files needed for the guest VM
-/// to run pipette.
-pub fn build_agent_image(
-    arch: MachineArch,
+/// The description and artifacts needed to build a pipette disk image for a VM.
+pub struct AgentImage {
     os_flavor: OsFlavor,
-    artifacts: &TestArtifacts,
-) -> anyhow::Result<tempfile::NamedTempFile> {
-    match os_flavor {
-        OsFlavor::Windows => {
-            // Windows doesn't use cloud-init, so we only need pipette
-            // (which is configured via the IMC hive).
-            build_disk_image(
-                b"pipette    ",
-                &[(
-                    "pipette.exe",
-                    PathOrBinary::Path(artifacts.get(match arch {
-                        MachineArch::X86_64 => common_artifacts::PIPETTE_WINDOWS_X64.erase(),
-                        MachineArch::Aarch64 => common_artifacts::PIPETTE_WINDOWS_AARCH64.erase(),
-                    })),
-                )],
-            )
-        }
-        OsFlavor::Linux => {
-            // Linux uses cloud-init, so we need to include the cloud-init
-            // configuration files as well.
-            build_disk_image(
-                b"cidata     ", // cloud-init looks for a volume label of "cidata",
-                &[
-                    (
-                        "pipette",
-                        PathOrBinary::Path(artifacts.get(match arch {
-                            MachineArch::X86_64 => common_artifacts::PIPETTE_LINUX_X64.erase(),
-                            MachineArch::Aarch64 => common_artifacts::PIPETTE_LINUX_AARCH64.erase(),
-                        })),
-                    ),
-                    (
-                        "meta-data",
-                        PathOrBinary::Binary(include_bytes!("../guest-bootstrap/meta-data")),
-                    ),
-                    (
-                        "user-data",
-                        PathOrBinary::Binary(include_bytes!("../guest-bootstrap/user-data")),
-                    ),
-                    // Specify a non-present NIC to work around https://github.com/canonical/cloud-init/issues/5511
-                    // TODO: support dynamically configuring the network based on vm configuration
-                    (
-                        "network-config",
-                        PathOrBinary::Binary(include_bytes!("../guest-bootstrap/network-config")),
-                    ),
-                ],
-            )
-        }
-        OsFlavor::FreeBsd | OsFlavor::Uefi => {
-            // No pipette binary yet.
-            todo!()
+    pipette: Option<ResolvedArtifact>,
+}
+
+impl AgentImage {
+    /// Resolves the artifacts needed to build a disk image for a VM.
+    pub fn new(resolver: &ArtifactResolver<'_>, arch: MachineArch, os_flavor: OsFlavor) -> Self {
+        let pipette = match (os_flavor, arch) {
+            (OsFlavor::Windows, MachineArch::X86_64) => Some(
+                resolver
+                    .require(common_artifacts::PIPETTE_WINDOWS_X64)
+                    .erase(),
+            ),
+            (OsFlavor::Linux, MachineArch::X86_64) => Some(
+                resolver
+                    .require(common_artifacts::PIPETTE_LINUX_X64)
+                    .erase(),
+            ),
+            (OsFlavor::Windows, MachineArch::Aarch64) => Some(
+                resolver
+                    .require(common_artifacts::PIPETTE_WINDOWS_AARCH64)
+                    .erase(),
+            ),
+            (OsFlavor::Linux, MachineArch::Aarch64) => Some(
+                resolver
+                    .require(common_artifacts::PIPETTE_LINUX_AARCH64)
+                    .erase(),
+            ),
+            (OsFlavor::FreeBsd | OsFlavor::Uefi, _) => None,
+        };
+        Self { os_flavor, pipette }
+    }
+
+    /// Builds a disk image containing pipette and any files needed for the guest VM
+    /// to run pipette.
+    pub fn build(&self) -> anyhow::Result<tempfile::NamedTempFile> {
+        match self.os_flavor {
+            OsFlavor::Windows => {
+                // Windows doesn't use cloud-init, so we only need pipette
+                // (which is configured via the IMC hive).
+                build_disk_image(
+                    b"pipette    ",
+                    &[(
+                        "pipette.exe",
+                        PathOrBinary::Path(self.pipette.as_ref().unwrap().as_ref()),
+                    )],
+                )
+            }
+            OsFlavor::Linux => {
+                // Linux uses cloud-init, so we need to include the cloud-init
+                // configuration files as well.
+                build_disk_image(
+                    b"cidata     ", // cloud-init looks for a volume label of "cidata",
+                    &[
+                        (
+                            "pipette",
+                            PathOrBinary::Path(self.pipette.as_ref().unwrap().as_ref()),
+                        ),
+                        (
+                            "meta-data",
+                            PathOrBinary::Binary(include_bytes!("../guest-bootstrap/meta-data")),
+                        ),
+                        (
+                            "user-data",
+                            PathOrBinary::Binary(include_bytes!("../guest-bootstrap/user-data")),
+                        ),
+                        // Specify a non-present NIC to work around https://github.com/canonical/cloud-init/issues/5511
+                        // TODO: support dynamically configuring the network based on vm configuration
+                        (
+                            "network-config",
+                            PathOrBinary::Binary(include_bytes!(
+                                "../guest-bootstrap/network-config"
+                            )),
+                        ),
+                    ],
+                )
+            }
+            OsFlavor::FreeBsd | OsFlavor::Uefi => {
+                // No pipette binary yet.
+                todo!()
+            }
         }
     }
 }

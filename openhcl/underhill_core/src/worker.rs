@@ -73,6 +73,7 @@ use guest_emulation_transport::GuestEmulationTransportClient;
 use guestmem::GuestMemory;
 use guid::Guid;
 use hcl_compat_uefi_nvram_storage::HclCompatNvramQuirks;
+use hcl_mapper::HclMapper;
 use hvdef::hypercall::HvGuestOsId;
 use hvdef::HvRegisterValue;
 use hvdef::Vtl;
@@ -123,7 +124,7 @@ use underhill_attestation::AttestationType;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::lockmem::LockedMemorySpawner;
-use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DmaClient;
 use virt::state::HvRegisterState;
 use virt::Partition;
 use virt::VpIndex;
@@ -171,7 +172,7 @@ use vmotherboard::options::BaseChipsetFoundation;
 use vmotherboard::BaseChipsetBuilder;
 use vmotherboard::BaseChipsetBuilderOutput;
 use vmotherboard::ChipsetDeviceHandle;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 pub(crate) const PM_BASE: u16 = 0x400;
 pub(crate) const SYSTEM_IRQ_ACPI: u32 = 9;
@@ -1515,6 +1516,7 @@ async fn new_underhill_vm(
                 .vtom_offset_bit
                 .map(|bit| 1 << bit)
                 .unwrap_or(0),
+            HclMapper::new().context("failed to create hcl mapper")?,
         )
         .context("failed to create shared vis page pool")?;
 
@@ -1541,8 +1543,11 @@ async fn new_underhill_vm(
         use vmcore::save_restore::SaveRestore;
 
         let ranges = runtime_params.private_pool_ranges();
-        let mut pool =
-            PagePool::new_private_pool(ranges).context("failed to create private pool")?;
+        let mut pool = PagePool::new_private_pool(
+            ranges,
+            HclMapper::new().context("failed to create hcl mapper")?,
+        )
+        .context("failed to create private pool")?;
 
         if let Some(pool_state) = servicing_state.private_pool_state.flatten() {
             pool.restore(pool_state)
@@ -1875,7 +1880,7 @@ async fn new_underhill_vm(
     let private_pool_spawner_available = private_pool_spanwer.is_some();
 
     let vfio_dma_buffer_spawner = Box::new(
-        move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
+        move |device_id: String| -> anyhow::Result<Arc<dyn DmaClient>> {
             shared_vis_pool_spawner
                 .as_ref()
                 .map(|spawner| {

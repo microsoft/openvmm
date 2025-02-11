@@ -42,8 +42,9 @@ use vmbus_proxy::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use vmbus_proxy::ProxyAction;
 use vmbus_proxy::VmbusProxy;
 use vmcore::interrupt::Interrupt;
-use winapi::shared::winerror::ERROR_CANCELLED;
-use zerocopy::AsBytes;
+use windows::core::HRESULT;
+use windows::Win32::Foundation::ERROR_CANCELLED;
+use zerocopy::IntoBytes;
 
 pub struct ProxyIntegration {
     cancel: Cancel,
@@ -57,19 +58,22 @@ impl ProxyIntegration {
     }
 
     /// Returns the handle to the vmbus proxy driver.
-    pub fn handle(&self) -> &OwnedHandle {
-        &self.handle
+    pub fn handle(&self) -> BorrowedHandle<'_> {
+        self.handle.as_handle()
     }
 
-    pub(crate) async fn start(
+    /// Starts the vmbus proxy.
+    pub async fn start(
         driver: &(impl SpawnDriver + Clone),
         handle: ProxyHandle,
         server: Arc<VmbusServerControl>,
-        mem: &GuestMemory,
+        mem: Option<&GuestMemory>,
     ) -> io::Result<Self> {
         let mut proxy = VmbusProxy::new(driver, handle)?;
         let handle = proxy.handle().try_clone_to_owned()?;
-        proxy.set_memory(mem).await?;
+        if let Some(mem) = mem {
+            proxy.set_memory(mem).await?;
+        }
 
         let (cancel_ctx, cancel) = CancelContext::new().with_cancel();
         driver
@@ -372,7 +376,7 @@ impl ProxyTask {
                         tracing::warn!(proxy_id, "closed while some gpadls are still registered");
                         for gpadl_id in gpadls {
                             if let Err(e) = self.proxy.delete_gpadl(proxy_id, gpadl_id.0).await {
-                                if e.raw_os_error() == Some(ERROR_CANCELLED as i32) {
+                                if e.code() == HRESULT::from(ERROR_CANCELLED) {
                                     // No further IOs will succeed if one was cancelled. This can
                                     // happen here if we're in the process of shutting down.
                                     tracing::debug!("gpadl delete cancelled");

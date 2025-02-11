@@ -27,10 +27,11 @@ use vmbus_channel::simple::SimpleVmbusDevice;
 use vmbus_channel::RawAsyncChannel;
 use vmbus_ring::RingMem;
 use vmcore::save_restore::SavedStateRoot;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
-use zerocopy_helpers::FromBytesExt;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 #[derive(Debug, Error)]
 enum Error {
@@ -85,17 +86,19 @@ async fn recv_packet(reader: &mut (impl AsyncRecv + Unpin)) -> Result<Request, E
 
     let buf = &buf[..n];
     let (header, buf) =
-        protocol::MessageHeader::read_from_prefix_split(buf).ok_or(Error::BadPacket)?;
+        protocol::MessageHeader::read_from_prefix(buf).map_err(|_| Error::BadPacket)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
     let request = match header.message_type {
         protocol::SYNTHHID_PROTOCOL_REQUEST => {
-            let message =
-                protocol::MessageProtocolRequest::read_from_prefix(buf).ok_or(Error::BadPacket)?;
+            let message = protocol::MessageProtocolRequest::read_from_prefix(buf)
+                .map_err(|_| Error::BadPacket)?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             Request::ProtocolRequest(message.version)
         }
         protocol::SYNTHHID_INIT_DEVICE_INFO_ACK => {
             // We don't need the message contents, but we do still want to ensure it's valid.
-            let _message =
-                protocol::MessageDeviceInfoAck::read_from_prefix(buf).ok_or(Error::BadPacket)?;
+            let _message = protocol::MessageDeviceInfoAck::read_from_prefix(buf)
+                .map_err(|_| Error::BadPacket)?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             Request::DeviceInfoAck
         }
         typ => return Err(Error::UnknownMessageType(typ)),
@@ -103,7 +106,7 @@ async fn recv_packet(reader: &mut (impl AsyncRecv + Unpin)) -> Result<Request, E
     Ok(request)
 }
 
-async fn send_packet<T: AsBytes>(
+async fn send_packet<T: IntoBytes + Immutable + KnownLayout>(
     writer: &mut (impl AsyncSend + Unpin),
     typ: u32,
     size: u32,
@@ -359,7 +362,7 @@ async fn post_mouse_packet(
     channel: &mut (impl AsyncSend + Unpin),
 ) -> Result<(), Error> {
     let mut scrolled = protocol::ScrollType::NoChange;
-    let mut mouse_packet: protocol::MousePacket = FromZeroes::new_zeroed();
+    let mut mouse_packet: protocol::MousePacket = FromZeros::new_zeroed();
     mouse_packet.x = mouse_data.x;
     mouse_packet.y = mouse_data.y;
 
@@ -424,13 +427,15 @@ mod tests {
             return None;
         }
         let packet = &packet[..n];
-        let (header, rest) = protocol::MessageHeader::read_from_prefix_split(packet).unwrap();
+        let (header, rest) = protocol::MessageHeader::read_from_prefix(packet).unwrap(); // TODO: zerocopy: unwrap (https://github.com/microsoft/openvmm/issues/759)
         Some(match header.message_type {
             protocol::SYNTHHID_PROTOCOL_RESPONSE => {
-                Packet::ProtocolResponse(FromBytes::read_from_prefix(rest).unwrap())
+                Packet::ProtocolResponse(FromBytes::read_from_prefix(rest).unwrap().0)
+                // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             }
             protocol::SYNTHHID_INIT_DEVICE_INFO => {
-                Packet::DeviceInfo(FromBytes::read_from_prefix(rest).unwrap())
+                Packet::DeviceInfo(FromBytes::read_from_prefix(rest).unwrap().0)
+                // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             }
             _ => panic!("unknown packet type {}", header.message_type),
         })

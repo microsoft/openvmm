@@ -51,6 +51,14 @@ features = [
     "winsock2",
 ]
 
+[target.'cfg(windows)'.dependencies.windows]
+workspace = true
+features = [
+    "Wdk_Foundation", 
+    "Win32_Foundation",
+    "Win32_Security"
+]
+
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 

@@ -13,6 +13,5 @@ tdx_guest_device.workspace = true
 static_assertions.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

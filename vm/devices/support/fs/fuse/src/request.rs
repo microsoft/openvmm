@@ -6,8 +6,10 @@ mod macros;
 
 use crate::protocol::*;
 use std::io;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // Define an enum for all operations and their arguments.
 fuse_operations! {
@@ -180,9 +182,9 @@ pub trait RequestReader: io::Read {
     }
 
     /// Read a struct of type `T`.
-    fn read_type<T: AsBytes + FromBytes>(&mut self) -> lx::Result<T> {
+    fn read_type<T: IntoBytes + FromBytes + Immutable + KnownLayout>(&mut self) -> lx::Result<T> {
         let mut value: T = T::new_zeroed();
-        self.read_exact(value.as_bytes_mut())?;
+        self.read_exact(value.as_mut_bytes())?;
         Ok(value)
     }
 

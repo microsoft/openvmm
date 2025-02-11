@@ -5,11 +5,11 @@
 
 #[doc(hidden)]
 pub mod test_macro_support {
-    use super::RunTest;
+    use super::TestCase;
     pub use linkme;
 
     #[linkme::distributed_slice]
-    pub static TESTS: [fn() -> (&'static str, Vec<Box<dyn RunTest>>)] = [..];
+    pub static TESTS: [fn() -> (&'static str, Vec<TestCase>)];
 }
 
 use crate::tracing::try_init_tracing;
@@ -17,21 +17,21 @@ use crate::PetriLogSource;
 use crate::TestArtifactRequirements;
 use crate::TestArtifacts;
 use anyhow::Context as _;
+use petri_artifacts_core::ArtifactResolver;
+use std::path::Path;
 use test_macro_support::TESTS;
 
 /// Defines a single test from a value that implements [`RunTest`].
 #[macro_export]
 macro_rules! test {
     ($f:ident, $req:expr) => {
-        $crate::multitest!(vec![Box::new($crate::SimpleTest::new(
-            stringify!($f),
-            $req,
-            $f
-        ))]);
+        $crate::multitest!(vec![
+            $crate::SimpleTest::new(stringify!($f), $req, $f).into()
+        ]);
     };
 }
 
-/// Defines a set of tests from a [`Vec<Box<dyn RunTest>>`].
+/// Defines a set of tests from a [`TestCase`].
 #[macro_export]
 macro_rules! multitest {
     ($tests:expr) => {
@@ -41,16 +41,32 @@ macro_rules! multitest {
             #[expect(unsafe_code)]
             #[linkme::distributed_slice($crate::test_macro_support::TESTS)]
             #[linkme(crate = linkme)]
-            static TEST: fn() -> (&'static str, Vec<Box<dyn $crate::RunTest>>) =
+            static TEST: fn() -> (&'static str, Vec<$crate::TestCase>) =
                 || (module_path!(), $tests);
         };
     };
 }
 
-/// A single test.
+/// A single test case.
+pub struct TestCase(Box<dyn DynRunTest>);
+
+impl TestCase {
+    /// Creates a new test case from a value that implements [`RunTest`].
+    pub fn new(test: impl 'static + RunTest) -> Self {
+        Self(Box::new(test))
+    }
+}
+
+impl<T: 'static + RunTest> From<T> for TestCase {
+    fn from(test: T) -> Self {
+        Self::new(test)
+    }
+}
+
+/// A single test, with module name.
 struct Test {
     module: &'static str,
-    test: Box<dyn RunTest>,
+    test: TestCase,
 }
 
 impl Test {
@@ -66,17 +82,17 @@ impl Test {
     fn name(&self) -> String {
         // Strip the crate name from the module path, for consistency with libtest.
         match self.module.split_once("::") {
-            Some((_crate_name, rest)) => format!("{}::{}", rest, self.test.leaf_name()),
-            None => self.test.leaf_name().to_owned(),
+            Some((_crate_name, rest)) => format!("{}::{}", rest, self.test.0.leaf_name()),
+            None => self.test.0.leaf_name().to_owned(),
         }
     }
 
     /// Returns the artifact requirements for the test.
     fn requirements(&self) -> TestArtifactRequirements {
+        let mut requirements = self.test.0.requirements();
         // All tests require the log directory.
-        self.test
-            .requirements()
-            .require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY)
+        requirements.require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
+        requirements
     }
 
     fn run(
@@ -86,14 +102,16 @@ impl Test {
         let name = self.name();
         let artifacts =
             resolve(&name, self.requirements()).context("failed to resolve artifacts")?;
-        let logger =
-            try_init_tracing(artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY))
-                .context("failed to initialize tracing")?;
-        self.test.run(PetriTestParams {
-            test_name: &name,
-            artifacts: &artifacts,
-            logger: &logger,
-        })
+        let output_dir = artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
+        let logger = try_init_tracing(output_dir).context("failed to initialize tracing")?;
+        self.test.0.run(
+            PetriTestParams {
+                test_name: &name,
+                logger: &logger,
+                output_dir,
+            },
+            &artifacts,
+        )
     }
 
     /// Returns a libtest-mimic trial to run the test.
@@ -111,66 +129,96 @@ impl Test {
 ///
 /// Register it to be run with [`test!`] or [`multitest!`].
 pub trait RunTest: Send {
+    /// The type of artifacts required by the test.
+    type Artifacts;
+
     /// The leaf name of the test.
     ///
     /// To produce the full test name, this will be prefixed with the module
     /// name where the test is defined.
     fn leaf_name(&self) -> &str;
     /// Returns the artifacts required by the test.
-    fn requirements(&self) -> TestArtifactRequirements;
+    fn resolve(&self, resolver: &ArtifactResolver<'_>) -> Self::Artifacts;
     /// Runs the test, which has been assigned `name`, with the given
     /// `artifacts`.
-    fn run(&self, params: PetriTestParams<'_>) -> anyhow::Result<()>;
+    fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()>;
+}
+
+trait DynRunTest: Send {
+    fn leaf_name(&self) -> &str;
+    fn requirements(&self) -> TestArtifactRequirements;
+    fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()>;
+}
+
+impl<T: RunTest> DynRunTest for T {
+    fn leaf_name(&self) -> &str {
+        self.leaf_name()
+    }
+
+    fn requirements(&self) -> TestArtifactRequirements {
+        let mut requirements = TestArtifactRequirements::new();
+        self.resolve(&ArtifactResolver::collector(&mut requirements));
+        requirements
+    }
+
+    fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()> {
+        let artifacts = self.resolve(&ArtifactResolver::resolver(artifacts));
+        self.run(params, artifacts)
+    }
 }
 
 /// Parameters passed to a [`RunTest`] when it is run.
 pub struct PetriTestParams<'a> {
     /// The name of the running test.
     pub test_name: &'a str,
-    /// The artifacts available to the test.
-    pub artifacts: &'a TestArtifacts,
     /// The logger for the test.
     pub logger: &'a PetriLogSource,
+    /// The test output directory.
+    pub output_dir: &'a Path,
 }
 
-/// A test defined by a fixed set of requirements and a run function.
-pub struct SimpleTest<F> {
+/// A test defined by an artifact resolver function and a run function.
+pub struct SimpleTest<A, F> {
     leaf_name: &'static str,
-    requirements: TestArtifactRequirements,
+    resolve: A,
     run: F,
 }
 
-impl<F, E> SimpleTest<F>
+impl<A, AR, F, E> SimpleTest<A, F>
 where
-    F: 'static + Send + Fn(PetriTestParams<'_>) -> Result<(), E>,
+    A: 'static + Send + Fn(&ArtifactResolver<'_>) -> AR,
+    F: 'static + Send + Fn(PetriTestParams<'_>, AR) -> Result<(), E>,
     E: Into<anyhow::Error>,
 {
-    /// Returns a new test with the given `leaf_name`, `requirements`, and `run`
+    /// Returns a new test with the given `leaf_name`, `resolve`, and `run`
     /// functions.
-    pub fn new(leaf_name: &'static str, requirements: TestArtifactRequirements, run: F) -> Self {
+    pub fn new(leaf_name: &'static str, resolve: A, run: F) -> Self {
         SimpleTest {
             leaf_name,
-            requirements,
+            resolve,
             run,
         }
     }
 }
 
-impl<F, E> RunTest for SimpleTest<F>
+impl<A, AR, F, E> RunTest for SimpleTest<A, F>
 where
-    F: 'static + Send + Fn(PetriTestParams<'_>) -> Result<(), E>,
+    A: 'static + Send + Fn(&ArtifactResolver<'_>) -> AR,
+    F: 'static + Send + Fn(PetriTestParams<'_>, AR) -> Result<(), E>,
     E: Into<anyhow::Error>,
 {
+    type Artifacts = AR;
+
     fn leaf_name(&self) -> &str {
         self.leaf_name
     }
 
-    fn requirements(&self) -> TestArtifactRequirements {
-        self.requirements.clone()
+    fn resolve(&self, resolver: &ArtifactResolver<'_>) -> Self::Artifacts {
+        (self.resolve)(resolver)
     }
 
-    fn run(&self, params: PetriTestParams<'_>) -> anyhow::Result<()> {
-        (self.run)(params).map_err(Into::into)
+    fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()> {
+        (self.run)(params, artifacts).map_err(Into::into)
     }
 }
 

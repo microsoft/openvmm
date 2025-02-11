@@ -30,8 +30,8 @@ use std::task::Poll;
 use std::task::Waker;
 use thiserror::Error;
 use tracing_helpers::ErrorValueExt;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 const MAX_CMD_BUFFER_BYTES: usize = 64 * 1024;
 
@@ -1084,7 +1084,7 @@ impl HardDrive {
             total_sectors_48_bit: self.geometry.total_sectors.into(),
             default_sector_size_config: 0x4000, // describes the sector size related info. Reflect the underlying device sector size and logical:physical ratio
             logical_block_alignment: 0x4000, // describes alignment of logical blocks within physical block
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         self.command_buffer.buffer[..protocol::IDENTIFY_DEVICE_BYTES].atomic_write_obj(&features);

@@ -159,8 +159,13 @@ impl ProcessorRunner<'_, Tdx> {
         &mut self.tdx_vp_state_mut().flags
     }
 
+    /// Gets a reference to the TDX VP entry flags.
+    fn tdx_vp_entry_flags(&self) -> &TdxVmFlags {
+        &self.tdx_vp_context().entry_rcx
+    }
+
     /// Gets a mutable reference to the TDX VP entry flags.
-    pub fn tdx_vp_entry_flags_mut(&mut self) -> &mut TdxVmFlags {
+    fn tdx_vp_entry_flags_mut(&mut self) -> &mut TdxVmFlags {
         &mut self.tdx_vp_context_mut().entry_rcx
     }
 
@@ -198,6 +203,8 @@ impl ProcessorRunner<'_, Tdx> {
         regs.msr_sfmask = *msr_sfmask;
         regs.msr_xss = *msr_xss;
         regs.msr_tsc_aux = *msr_tsc_aux;
+
+        regs.vp_entry_flags = *self.tdx_vp_entry_flags();
     }
 
     /// Writes the private registers from the given [`TdxPrivateRegs`] to the
@@ -215,6 +222,7 @@ impl ProcessorRunner<'_, Tdx> {
             msr_sfmask,
             msr_xss,
             msr_tsc_aux,
+            vp_entry_flags,
         } = regs;
 
         let enter_guest_state = self.tdx_enter_guest_state_mut();
@@ -231,6 +239,8 @@ impl ProcessorRunner<'_, Tdx> {
         vp_state.msr_sfmask = *msr_sfmask;
         vp_state.msr_xss = *msr_xss;
         vp_state.msr_tsc_aux = *msr_tsc_aux;
+
+        *self.tdx_vp_entry_flags_mut() = *vp_entry_flags;
     }
 
     fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
@@ -450,12 +460,15 @@ pub struct TdxPrivateRegs {
     pub msr_sfmask: u64,
     pub msr_xss: u64,
     pub msr_tsc_aux: u64,
+    // VP Entry flags
+    #[inspect(with = "|x| inspect::AsHex(x.into_bits())")]
+    pub vp_entry_flags: TdxVmFlags,
 }
 
 impl TdxPrivateRegs {
     /// Creates a new register set with the given values.
     /// Other values are initialized to zero.
-    pub fn new(rflags: u64, rip: u64) -> Self {
+    pub fn new(rflags: u64, rip: u64, vtl: GuestVtl) -> Self {
         Self {
             rflags,
             rip,
@@ -468,6 +481,13 @@ impl TdxPrivateRegs {
             msr_sfmask: 0,
             msr_xss: 0,
             msr_tsc_aux: 0,
+            // We initialize with a TLB flush pending so that save/restore/reset
+            // operations (not supported yet, but maybe someday) will start with
+            // a clear TLB. During regular boots this won't matter, as the TLB
+            // will already be empty.
+            vp_entry_flags: TdxVmFlags::new()
+                .with_vm_index(vtl as u8 + 1)
+                .with_invd_translations(x86defs::tdx::TDX_VP_ENTER_INVD_INVEPT),
         }
     }
 }

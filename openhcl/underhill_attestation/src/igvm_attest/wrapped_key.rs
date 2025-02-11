@@ -76,8 +76,8 @@ pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, W
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zerocopy::AsBytes;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
 
     const KEY_REFERENCE: &str = r#"{
     "key_info": {

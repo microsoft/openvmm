@@ -54,6 +54,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Once;
 use std::time::Duration;
 use widestring::U16CString;
+use widestring::Utf16Str;
 use winapi::shared::ntdef;
 use winapi::shared::ntdef::NTSTATUS;
 use winapi::shared::ntstatus;
@@ -631,6 +632,22 @@ impl AsUnicodeStringRef for UnicodeStringRef<'_> {
     }
 }
 
+impl AsRef<windows::Win32::Foundation::UNICODE_STRING> for UnicodeStringRef<'_> {
+    fn as_ref(&self) -> &windows::Win32::Foundation::UNICODE_STRING {
+        // SAFETY: These are different definitions of the same type, so the memory layout is the
+        // same.
+        unsafe { std::mem::transmute(&self.0) }
+    }
+}
+
+impl<'a> TryFrom<&'a Utf16Str> for UnicodeStringRef<'a> {
+    type Error = StringTooLong;
+
+    fn try_from(value: &'a Utf16Str) -> std::result::Result<Self, Self::Error> {
+        UnicodeStringRef::new(value.as_slice()).ok_or(StringTooLong)
+    }
+}
+
 /// Associates an ANSI_STRING with the lifetime of the buffer.
 #[repr(transparent)]
 pub struct AnsiStringRef<'a>(ANSI_STRING, PhantomData<&'a [u8]>);
@@ -771,6 +788,14 @@ impl<'a> ObjectAttributes<'a> {
     /// Returns the OBJECT_ATTRIBUTES pointer for passing to an NT syscall.
     pub fn as_ptr(&self) -> *mut ntdef::OBJECT_ATTRIBUTES {
         std::ptr::from_ref(&self.attributes).cast_mut()
+    }
+}
+
+impl AsRef<windows::Wdk::Foundation::OBJECT_ATTRIBUTES> for ObjectAttributes<'_> {
+    fn as_ref(&self) -> &windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
+        // SAFETY: These are different definitions of the same type, so the memory layout is the
+        // same.
+        unsafe { std::mem::transmute(&self.attributes) }
     }
 }
 

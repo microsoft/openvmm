@@ -12,12 +12,13 @@ pub use objects::*;
 pub use ops::*;
 pub use resources::*;
 use x86defs::apic::APIC_BASE_ADDRESS;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DescriptionHeader {
     pub signature: u32,
     _length: u32,

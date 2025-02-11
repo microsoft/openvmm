@@ -16,7 +16,6 @@ parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(windows)'.dependencies]
 pal.workspace = true
 

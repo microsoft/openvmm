@@ -39,9 +39,9 @@ use user_driver::memory::MemoryBlock;
 use user_driver::DeviceBacking;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// An NVMe driver.
 ///
@@ -342,7 +342,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                         .into(),
                     ..admin_cmd(spec::AdminOpcode::IDENTIFY)
                 },
-                Arc::get_mut(identify).unwrap().as_bytes_mut(),
+                Arc::get_mut(identify).unwrap().as_mut_bytes(),
             )
             .await
             .context("failed to identify controller")?;
@@ -521,7 +521,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 //     s.namespaces.push(ns.save()?);
                 // }
                 Ok(NvmeDriverSavedState {
-                    identify_ctrl: spec::IdentifyController::read_from(
+                    identify_ctrl: spec::IdentifyController::read_from_bytes(
                         self.identify.as_ref().unwrap().as_bytes(),
                     )
                     .unwrap(),
@@ -574,8 +574,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             })),
             admin: None, // Updated below.
             identify: Some(Arc::new(
-                spec::IdentifyController::read_from(saved_state.identify_ctrl.as_bytes())
-                    .ok_or(RestoreError::InvalidData)?,
+                spec::IdentifyController::read_from_bytes(saved_state.identify_ctrl.as_bytes())
+                    .map_err(|_| RestoreError::InvalidData)?, // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             )),
             driver: driver.clone(),
             io_issuers,
@@ -711,7 +711,7 @@ async fn handle_asynchronous_events(
                                 .into(),
                             ..admin_cmd(spec::AdminOpcode::GET_LOG_PAGE)
                         },
-                        list.as_bytes_mut(),
+                        list.as_mut_bytes(),
                     )
                     .await
                     .context("failed to query changed namespace list")?;

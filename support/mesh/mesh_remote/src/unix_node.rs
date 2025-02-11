@@ -66,9 +66,9 @@ use std::sync::Arc;
 use thiserror::Error;
 use tracing::instrument;
 use unicycle::FuturesUnordered;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// If true, use a SOCK_SEQPACKET socket. Otherwise, use a SOCK_STREAM socket.
 ///
@@ -468,7 +468,7 @@ fn serialize_event(event: OutgoingEvent<'_>) -> io::Result<(Vec<u8>, Vec<OsResou
 fn serialize_large_event(event: OutgoingEvent<'_>) -> io::Result<(Vec<u8>, Vec<OsResource>)> {
     let packet = protocol::PacketHeader {
         packet_type: protocol::PacketType::LARGE_EVENT,
-        ..FromZeroes::new_zeroed()
+        ..FromZeros::new_zeroed()
     }
     .as_bytes()
     .to_vec();
@@ -631,7 +631,7 @@ async fn run_receive(
                 packet: protocol::ReleaseFds {
                     header: protocol::PacketHeader {
                         packet_type: protocol::PacketType::RELEASE_FDS,
-                        ..FromZeroes::new_zeroed()
+                        ..FromZeros::new_zeroed()
                     },
                     count: fds.len() as u64,
                 }
@@ -642,7 +642,9 @@ async fn run_receive(
         }
 
         let buf = &buf[..len];
-        let header = protocol::PacketHeader::read_from_prefix(buf).ok_or(ReceiveError::NoHeader)?;
+        let header = protocol::PacketHeader::read_from_prefix(buf)
+            .map_err(|_| ReceiveError::NoHeader)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         match header.packet_type {
             protocol::PacketType::EVENT => {
                 local_node.event(remote_id, &buf[size_of_val(&header)..], &mut fds);
@@ -650,7 +652,8 @@ async fn run_receive(
             }
             protocol::PacketType::RELEASE_FDS => {
                 let release_fds = protocol::ReleaseFds::read_from_prefix(buf)
-                    .ok_or(ReceiveError::BadReleaseFds)?;
+                    .map_err(|_| ReceiveError::BadReleaseFds)?
+                    .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 let _ = send.unbounded_send(SenderCommand::ReleaseFds {
                     count: release_fds.count as usize,
                 });

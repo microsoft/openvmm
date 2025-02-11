@@ -18,9 +18,11 @@ use guestmem::MemoryWrite;
 use scsi::AdditionalSenseCode;
 use scsi::ScsiOp;
 use scsi_core::Request;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 fn from_scsi_reservation_type(
     scsi_type: scsi::ReservationType,
@@ -163,7 +165,7 @@ impl SimpleScsiDisk {
         allocation_length: usize,
     ) -> Result<usize, ScsiError> {
         #[repr(C)]
-        #[derive(AsBytes, FromBytes, FromZeroes)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         struct Output {
             header: PriReservationListHeader,
             descriptor: PriReservationDescriptor,
@@ -198,7 +200,7 @@ impl SimpleScsiDisk {
                         .find_map(|d| d.holds_reservation.then_some(d.key))
                         .unwrap_or(0)
                         .into(),
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 },
             };
             has_reservation.as_bytes()
@@ -254,7 +256,7 @@ impl SimpleScsiDisk {
                 ),
                 relative_target_port_identifier: controller.controller_id.into(),
                 additional_descriptor_length: (controller.host_id.len() as u32).into(),
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             };
 
             data.extend(header.as_bytes());
@@ -266,7 +268,7 @@ impl SimpleScsiDisk {
             additional_length: ((data.len() - size_of::<PriFullStatusListHeader>()) as u32).into(),
         };
 
-        header.write_to_prefix(data.as_mut_slice());
+        header.write_to_prefix(data.as_mut_slice()).unwrap(); // PANIC: Infallable since data extended to fit header above.
 
         // Copy as much as we can
         let tx = std::cmp::min(allocation_length, data.len());
@@ -283,7 +285,9 @@ impl SimpleScsiDisk {
         external_data: &RequestBuffers<'_>,
         request: &Request,
     ) -> Result<usize, ScsiError> {
-        let cdb = scsi::PersistentReserveIn::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::PersistentReserveIn::read_from_prefix(&request.cdb[..])
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let allocation_length = cdb.allocation_length.get() as usize;
         if allocation_length > external_data.len() {
             tracelimit::error_ratelimited!(
@@ -337,7 +341,9 @@ impl SimpleScsiDisk {
         external_data: &RequestBuffers<'_>,
         request: &Request,
     ) -> Result<usize, ScsiError> {
-        let cdb = scsi::PersistentReserveOut::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::PersistentReserveOut::read_from_prefix(&request.cdb[..])
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let service_action = cdb.service_action.service_action();
         const EXPECT_PARAMETER_LIST_LENGTH: usize = size_of::<scsi::ProParameterList>();
 

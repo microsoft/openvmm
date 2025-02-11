@@ -8,9 +8,10 @@ use open_enum::open_enum;
 use scsi_defs::srb::SrbStatusAndFlags;
 use scsi_defs::ScsiStatus;
 use std::fmt::Debug;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 pub const SCSI_INTERFACE_ID: Guid = Guid::from_static_str("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f");
 
@@ -21,7 +22,7 @@ pub const IDE_ACCELERATOR_INTERFACE_ID: Guid =
 /// this to determine the IDE device the channel is for. Newer drivers and Linux
 /// just look at instance ID.
 #[repr(C)]
-#[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct OfferProperties {
     pub reserved: u16,
     pub path_id: u8,
@@ -44,7 +45,7 @@ pub const VERSION_BLUE: u16 = version(6, 0);
 pub const VERSION_THRESHOLD: u16 = version(6, 2);
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub enum NtStatus: u32 {
         SUCCESS = 0x0000_0000,
@@ -66,7 +67,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Packet {
     // Requested operation type
@@ -78,7 +79,7 @@ pub struct Packet {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub enum Operation: u32 {
         COMPLETE_IO = 1,
@@ -103,7 +104,7 @@ pub const MAX_DATA_BUFFER_LENGTH_WITH_PADDING: usize = 0x14;
 pub const VMSCSI_SENSE_BUFFER_SIZE: usize = 0x14;
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ScsiRequest {
     pub length: u16,
@@ -140,7 +141,7 @@ pub const SCSI_REQUEST_LEN_MAX: usize = SCSI_REQUEST_LEN_V2;
 const _: () = assert!(SCSI_REQUEST_LEN_MAX == size_of::<ScsiRequest>());
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ChannelProperties {
     pub reserved: u32,
     pub maximum_sub_channel_count: u16,
@@ -154,7 +155,7 @@ pub struct ChannelProperties {
 pub const STORAGE_CHANNEL_SUPPORTS_MULTI_CHANNEL: u32 = 0x1;
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ProtocolVersion {
     // Major (MSB) and minor (LSB) version numbers.
     pub major_minor: u16,
@@ -162,13 +163,13 @@ pub struct ProtocolVersion {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ClientProperties {
     flags: u32, // AsyncNotifyCapable
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NotificationPacket {
     pub lun: u8,
     pub target: u8,

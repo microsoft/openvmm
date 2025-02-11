@@ -6,8 +6,6 @@
 use anyhow::Context;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use disk_backend_resources::LayeredDiskHandle;
-use gdma_resources::GdmaDeviceHandle;
-use gdma_resources::VportDefinition;
 use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::VpciDeviceConfig;
@@ -16,10 +14,10 @@ use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use petri::openvmm::PetriVmConfigOpenVmm;
-use petri::openvmm::PetriVmOpenVmm;
 use petri::pipette::cmd;
 use petri::pipette::PipetteClient;
 use petri::OpenHclServicingFlags;
+use petri::ResolvedArtifact;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
@@ -48,52 +46,11 @@ async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-/// Boot an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay. This should expose a nic to VTL0 via
-/// vmbus.
-async fn boot_openhcl_linux_mana_nic(
-    config: PetriVmConfigOpenVmm,
-) -> Result<(PetriVmOpenVmm, PipetteClient), anyhow::Error> {
-    const MANA_INSTANCE: Guid = Guid::from_static_str("27b553e8-8b39-411b-a55f-839971a7884f");
-
-    let (vm, agent) = config
-        .with_vmbus_redirect()
-        .with_custom_config(|c| {
-            c.vpci_devices.push(VpciDeviceConfig {
-                vtl: DeviceVtl::Vtl2,
-                instance_id: MANA_INSTANCE,
-                resource: GdmaDeviceHandle {
-                    vports: vec![VportDefinition {
-                        mac_address: [0x00, 0x15, 0x5D, 0x12, 0x12, 0x12].into(),
-                        endpoint: net_backend_resources::consomme::ConsommeHandle { cidr: None }
-                            .into_resource(),
-                    }],
-                }
-                .into_resource(),
-            });
-        })
-        .with_custom_vtl2_settings(|v| {
-            v.dynamic
-                .as_mut()
-                .unwrap()
-                .nic_devices
-                .push(vtl2_settings_proto::NicDeviceLegacy {
-                    instance_id: MANA_INSTANCE.to_string(),
-                    subordinate_instance_id: None,
-                    max_sub_channels: None,
-                })
-        })
-        .run()
-        .await?;
-
-    Ok((vm, agent))
-}
-
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
 /// the MANA emulator), and vmbus relay.
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn mana_nic(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    let (vm, agent) = boot_openhcl_linux_mana_nic(config).await?;
+    let (vm, agent) = config.with_vmbus_redirect().with_nic().run().await?;
 
     validate_mana_nic(&agent).await?;
 
@@ -108,10 +65,12 @@ async fn mana_nic(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
 /// the shared pool dma path.
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn mana_nic_shared_pool(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    let (vm, agent) = boot_openhcl_linux_mana_nic(
-        config.with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1"),
-    )
-    .await?;
+    let (vm, agent) = config
+        .with_vmbus_redirect()
+        .with_nic()
+        .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
+        .run()
+        .await?;
 
     validate_mana_nic(&agent).await?;
 
@@ -124,17 +83,22 @@ async fn mana_nic_shared_pool(config: PetriVmConfigOpenVmm) -> Result<(), anyhow
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
 /// the MANA emulator), and vmbus relay. Perform servicing and validate that the
 /// nic is still functional.
-#[openvmm_test(openhcl_linux_direct_x64)]
-async fn mana_nic_servicing(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    let (mut vm, agent) = boot_openhcl_linux_mana_nic(config).await?;
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing(
+    config: PetriVmConfigOpenVmm,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = config
+        .with_vmbus_redirect()
+        .with_nic()
+        .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
+        .run()
+        .await?;
 
     validate_mana_nic(&agent).await?;
 
-    vm.restart_openhcl(
-        LATEST_LINUX_DIRECT_TEST_X64,
-        OpenHclServicingFlags::default(),
-    )
-    .await?;
+    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
+        .await?;
 
     validate_mana_nic(&agent).await?;
 

@@ -6,7 +6,7 @@ macro_rules! vmbus_message_type {
     (pub enum $enum_name:ident, $open_enum_name:ident { $( $num:literal $name:ident $rest:tt, )* }) => {
         open_enum! {
             /// Represents the message type value that identifies a vmbus protocol message.
-            #[derive(AsBytes, FromBytes, FromZeroes)]
+            #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
             pub enum $open_enum_name: u32 {
                 $($name = $num,)*
             }
@@ -31,22 +31,22 @@ macro_rules! vmbus_message_enum {
             /// Use `None` for the version to only parse messages that are accepted in a
             /// disconnected state.
             pub fn parse(data: &'a [u8], version: Option<VersionInfo>) -> Result<Self, ParseError> {
-                use zerocopy_helpers::FromBytesExt as _;
-
                 let (version, features) = if let Some(version) = version {
                     (Some(version.version), version.feature_flags)
                 } else {
                     (None, FeatureFlags::new())
                 };
 
-                let (header, data) = MessageHeader::read_from_prefix_split(data).ok_or(ParseError::MessageTooSmall(None))?;
+                // TODO: zerocopy: use Result returned by `read_from_prefix` in the returned `MessageTooSmall` error. (https://github.com/microsoft/openvmm/issues/759)
+                let (header, data) = MessageHeader::read_from_prefix(data).map_err(|_| ParseError::MessageTooSmall(None))?;
 
                 let message = match header.message_type {
                     $(
                         $($open_enum_name::$name
                             if vmbus_message_enum!(@create_conditions $type version features data $min_version $($condition_name:$condition_value)*) =>
                         {
-                            let (message, remaining) = $type::read_from_prefix_split(data).ok_or(ParseError::MessageTooSmall(Some(header.message_type)))?;
+                            // TODO: zerocopy: use Result returned by `read_from_prefix` in the returned `MessageTooSmall` error. (https://github.com/microsoft/openvmm/issues/759)
+                            let (message, remaining) = $type::read_from_prefix(data).map_err(|_| ParseError::MessageTooSmall(Some(header.message_type)))?;
 
                             Self::$type(message, remaining)
                         })*

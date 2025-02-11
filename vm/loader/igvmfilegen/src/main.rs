@@ -41,8 +41,8 @@ use std::path::PathBuf;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
 use underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 #[derive(Parser)]
 #[clap(name = "igvmfilegen", about = "Tool to generate IGVM files")]
@@ -92,7 +92,8 @@ fn main() -> anyhow::Result<()> {
         Options::Dump { file_path } => {
             let image = fs_err::read(file_path).context("reading input file")?;
             let fixed_header = IGVM_FIXED_HEADER::read_from_prefix(image.as_bytes())
-                .expect("Invalid fixed header");
+                .expect("Invalid fixed header")
+                .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
             let igvm_data = IgvmFile::new_from_binary(&image, None).expect("should be valid");
             println!("Total file size: {} bytes\n", fixed_header.total_file_size);

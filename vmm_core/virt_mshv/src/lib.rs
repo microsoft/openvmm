@@ -76,7 +76,7 @@ use vmcore::interrupt::Interrupt;
 use vmcore::synic::GuestEventPort;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 #[derive(Debug)]
 pub struct LinuxMshv;

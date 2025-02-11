@@ -17,9 +17,11 @@ pub mod xsave;
 
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 pub const X64_CR0_PE: u64 = 0x0000000000000001; // protection enable
 pub const X64_CR0_MP: u64 = 0x0000000000000002; // math present
@@ -313,7 +315,7 @@ impl<'a> arbitrary::Arbitrary<'a> for RFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IdtEntry64 {
     pub offset_low: u16,
     pub selector: u16,
@@ -324,7 +326,7 @@ pub struct IdtEntry64 {
 }
 
 #[bitfield(u16)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IdtAttributes {
     #[bits(3)]
     pub ist: u8,
@@ -339,7 +341,7 @@ pub struct IdtAttributes {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, AsBytes, FromBytes, FromZeroes)]
+#[derive(Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdtEntry {
     pub limit_low: u16,
     pub base_low: u16,
@@ -350,7 +352,7 @@ pub struct GdtEntry {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, AsBytes, FromBytes, FromZeroes)]
+#[derive(Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct LargeGdtEntry {
     pub limit_low: u16,
     pub base_low: u16,
@@ -366,7 +368,7 @@ impl LargeGdtEntry {
     /// Get the large GDT entry as two smaller GDT entries, for building a GDT.
     pub fn get_gdt_entries(&self) -> [GdtEntry; 2] {
         let mut entries = [GdtEntry::new_zeroed(); 2];
-        entries.as_bytes_mut().copy_from_slice(self.as_bytes());
+        entries.as_mut_bytes().copy_from_slice(self.as_bytes());
         entries
     }
 }
@@ -408,7 +410,7 @@ pub struct PageFaultErrorCode {
 pub const X64_LARGE_PAGE_SIZE: u64 = 0x200000;
 
 #[bitfield(u64)]
-#[derive(PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Pte {
     pub present: bool,
     pub read_write: bool,
@@ -445,7 +447,7 @@ impl Pte {
 }
 
 #[bitfield(u64)]
-#[derive(PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct LargePde {
     pub present: bool,
     pub read_write: bool,
@@ -469,7 +471,7 @@ pub struct LargePde {
 }
 
 #[bitfield(u64)]
-#[derive(PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct X86xMcgStatusRegister {
     pub ripv: bool, // Restart IP is valid
     pub eipv: bool, // Error IP is valid

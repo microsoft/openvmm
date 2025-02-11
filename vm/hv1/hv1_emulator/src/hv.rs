@@ -9,6 +9,7 @@ use super::synic::GlobalSynic;
 use super::synic::ProcessorSynic;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use hv1_structs::VtlArray;
 use hvdef::HvRegisterVpAssistPage;
 use hvdef::HvVpVtlControl;
 use hvdef::HvVtlEntryReason;
@@ -22,9 +23,8 @@ use std::sync::Arc;
 use virt::x86::MsrError;
 use vm_topology::processor::VpIndex;
 use vmcore::reference_time_source::ReferenceTimeSource;
-use vtl_array::VtlArray;
 use x86defs::cpuid::Vendor;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 /// The partition-wide hypervisor state.
 #[derive(Inspect)]
@@ -244,7 +244,7 @@ impl ProcessorVtlHv {
                             as u64;
                         let reference_page = hvdef::HvReferenceTscPage {
                             tsc_scale,
-                            ..FromZeroes::new_zeroed()
+                            ..FromZeros::new_zeroed()
                         };
                         if let Err(err) = gm.write_plain(gpa, &reference_page) {
                             tracelimit::warn_ratelimited!(

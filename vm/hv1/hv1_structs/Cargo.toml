@@ -2,12 +2,15 @@
 # Licensed under the MIT License.
 
 [package]
-name = "zerocopy_helpers"
+name = "hv1_structs"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-zerocopy.workspace = true
+hvdef.workspace = true
+inspect.workspace = true
+
+bitvec.workspace = true
 
 [lints]
 workspace = true

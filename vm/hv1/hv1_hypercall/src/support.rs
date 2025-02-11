@@ -14,8 +14,10 @@ use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PAGE_SIZE_USIZE;
 use std::marker::PhantomData;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::Ref;
 
 /// A hypercall definition.
@@ -107,18 +109,6 @@ impl From<HypercallParseError> for HvError {
 pub trait AsHandler<H> {
     /// Gets the inner handler.
     fn as_handler(&mut self) -> &mut H;
-}
-
-impl<H> AsHandler<H> for H {
-    fn as_handler(&mut self) -> &mut H {
-        self
-    }
-}
-
-impl<H> AsHandler<H> for &mut H {
-    fn as_handler(&mut self) -> &mut H {
-        self
-    }
 }
 
 impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
@@ -273,7 +263,7 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
                 HypercallParameters {
                     control,
                     input: &input.as_bytes()[..input_len],
-                    output: &mut output.as_bytes_mut()[..output_len],
+                    output: &mut output.as_mut_bytes()[..output_len],
                 },
             );
 
@@ -313,8 +303,8 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
             check_buffer(self.handler.input_gpa(), input_len)?;
             check_buffer(self.handler.output_gpa(), output_len)?;
 
-            let input = &mut input_buffer.0.as_bytes_mut()[..input_len];
-            let output = &mut output_buffer.0.as_bytes_mut()[..output_len];
+            let input = &mut input_buffer.0.as_mut_bytes()[..input_len];
+            let output = &mut output_buffer.0.as_mut_bytes()[..output_len];
 
             // FUTURE: consider copying only the header and entries after
             // `rep_start` for rep hypercalls.
@@ -477,14 +467,14 @@ pub struct SimpleHypercall<In, Out, const CODE: u16>(PhantomData<(In, Out)>);
 
 impl<In, Out, const CODE: u16> SimpleHypercall<In, Out, CODE>
 where
-    In: AsBytes + FromBytes,
-    Out: AsBytes + FromBytes,
+    In: IntoBytes + FromBytes + Immutable + KnownLayout,
+    Out: IntoBytes + FromBytes + Immutable + KnownLayout,
 {
     /// Parses the hypercall parameters to input and output types.
     pub fn parse(params: HypercallParameters<'_>) -> (&In, &mut Out) {
         (
-            FromBytes::ref_from_prefix(params.input).unwrap(),
-            FromBytes::mut_from_prefix(params.output).unwrap(),
+            FromBytes::ref_from_prefix(params.input).unwrap().0, // TODO: zerocopy: ref-from-prefix: use-rest-of-range, err (https://github.com/microsoft/openvmm/issues/759)
+            FromBytes::mut_from_prefix(params.output).unwrap().0, // TODO: zerocopy: mut-from-prefix: use-rest-of-range, err (https://github.com/microsoft/openvmm/issues/759)
         )
     }
 
@@ -518,16 +508,16 @@ pub struct VariableHypercall<In, Out, const CODE: u16>(PhantomData<(In, Out)>);
 
 impl<In, Out, const CODE: u16> VariableHypercall<In, Out, CODE>
 where
-    In: AsBytes + FromBytes,
-    Out: AsBytes + FromBytes,
+    In: IntoBytes + FromBytes + Immutable + KnownLayout,
+    Out: IntoBytes + FromBytes + Immutable + KnownLayout,
 {
     /// Parses the hypercall parameters to input and output types.
     pub fn parse(params: HypercallParameters<'_>) -> (&In, &[u64], &mut Out) {
-        let (input, rest) = Ref::<_, In>::new_from_prefix(params.input).unwrap();
+        let (input, rest) = Ref::<_, In>::from_prefix(params.input).unwrap();
         (
-            input.into_ref(),
-            u64::slice_from(rest).unwrap(),
-            Out::mut_from_prefix(params.output).unwrap(),
+            Ref::into_ref(input),
+            <[u64]>::ref_from_bytes(rest).unwrap(), //TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
+            Out::mut_from_prefix(params.output).unwrap().0, //TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
         )
     }
 
@@ -567,25 +557,32 @@ pub type HvRepResult = Result<(), (HvError, usize)>;
 
 impl<Hdr, In, Out, const CODE: u16> RepHypercall<Hdr, In, Out, CODE>
 where
-    Hdr: AsBytes + FromBytes,
-    In: AsBytes + FromBytes,
-    Out: AsBytes + FromBytes,
+    Hdr: IntoBytes + FromBytes + Immutable + KnownLayout,
+    In: IntoBytes + FromBytes + Immutable + KnownLayout,
+    Out: IntoBytes + FromBytes + Immutable + KnownLayout,
 {
     /// Parses the hypercall parameters to input and output types.
     pub fn parse(params: HypercallParameters<'_>) -> (&Hdr, &[In], &mut [Out]) {
-        let (header, rest) = Ref::<_, Hdr>::new_from_prefix(params.input).unwrap();
+        let (header, rest) = Ref::<_, Hdr>::from_prefix(params.input).unwrap();
         let input = if size_of::<In>() == 0 {
             &[]
         } else {
-            &In::slice_from(rest).unwrap()[params.control.rep_start()..]
+            // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
+            &<[In]>::ref_from_bytes(rest).unwrap()[params.control.rep_start()..]
         };
         let output = if size_of::<Out>() == 0 {
             &mut []
         } else {
-            &mut Out::mut_slice_from(params.output).unwrap()[params.control.rep_start()..]
+            // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
+            &mut <[Out]>::mut_from_prefix_with_elems(
+                params.output,
+                params.output.len() / size_of::<Out>(),
+            )
+            .unwrap()
+            .0[params.control.rep_start()..]
         };
 
-        (header.into_ref(), input, output)
+        (Ref::into_ref(header), input, output)
     }
 
     pub fn run(
@@ -623,26 +620,33 @@ pub struct VariableRepHypercall<Hdr, In, Out, const CODE: u16>(PhantomData<(Hdr,
 
 impl<Hdr, In, Out, const CODE: u16> VariableRepHypercall<Hdr, In, Out, CODE>
 where
-    Hdr: AsBytes + FromBytes,
-    In: AsBytes + FromBytes,
-    Out: AsBytes + FromBytes,
+    Hdr: IntoBytes + FromBytes + Immutable + KnownLayout,
+    In: IntoBytes + FromBytes + Immutable + KnownLayout,
+    Out: IntoBytes + FromBytes + Immutable + KnownLayout,
 {
     /// Parses the hypercall parameters to input and output types.
     pub fn parse(params: HypercallParameters<'_>) -> (&Hdr, &[u64], &[In], &mut [Out]) {
-        let (header, rest) = Ref::<_, Hdr>::new_from_prefix(params.input).unwrap();
+        let (header, rest) = Ref::<_, Hdr>::from_prefix(params.input).unwrap();
         let (var_header, rest) =
-            u64::slice_from_prefix(rest, params.control.variable_header_size()).unwrap();
+            <[u64]>::ref_from_prefix_with_elems(rest, params.control.variable_header_size())
+                .unwrap();
         let input = if size_of::<In>() == 0 {
             &[]
         } else {
-            &In::slice_from(rest).unwrap()[params.control.rep_start()..]
+            &<[In]>::ref_from_bytes(rest).unwrap()[params.control.rep_start()..]
         };
         let output = if size_of::<Out>() == 0 {
             &mut []
         } else {
-            &mut Out::mut_slice_from(params.output).unwrap()[params.control.rep_start()..]
+            // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
+            &mut <[Out]>::mut_from_prefix_with_elems(
+                params.output,
+                params.output.len() / size_of::<Out>(),
+            )
+            .unwrap()
+            .0[params.control.rep_start()..]
         };
-        (header.into_ref(), var_header, input, output)
+        (Ref::into_ref(header), var_header, input, output)
     }
 
     pub fn run(
@@ -682,7 +686,7 @@ pub struct VtlHypercall<const CODE: u16>(());
 
 impl<const CODE: u16> VtlHypercall<CODE> {
     pub fn parse(params: HypercallParameters<'_>) -> (u64, Control) {
-        (u64::read_from(params.input).unwrap(), params.control)
+        (u64::read_from_bytes(params.input).unwrap(), params.control)
     }
 
     pub fn run(params: HypercallParameters<'_>, f: impl FnOnce(u64, Control)) -> HypercallOutput {

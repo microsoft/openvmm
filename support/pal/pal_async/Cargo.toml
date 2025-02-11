@@ -30,7 +30,6 @@ socket2 = { workspace = true, features = ["all"] }
 tempfile = { workspace = true, optional = true }
 unicycle.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true, features = ["extra_traits"] }
 

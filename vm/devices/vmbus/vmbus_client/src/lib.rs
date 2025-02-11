@@ -41,7 +41,9 @@ use vmbus_core::MonitorPageGpas;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::TaggedStream;
 use vmbus_core::VersionInfo;
-use zerocopy::AsBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const SINT: u8 = 2;
 const VTL: u8 = 0;
@@ -510,13 +512,16 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             let request = rpc.input();
 
             tracing::debug!(version = ?version, ?feature_flags, "VmBus client connecting");
-            let target_info = protocol::TargetInfo::new(SINT, VTL, feature_flags);
+            let target_info = protocol::TargetInfo::new()
+                .with_sint(SINT)
+                .with_vtl(VTL)
+                .with_feature_flags(feature_flags.into());
             let monitor_page = request.monitor_page.unwrap_or_default();
             let msg = protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: version as u32,
                     target_message_vp: request.target_message_vp,
-                    interrupt_page_or_target_info: *target_info.as_u64(),
+                    interrupt_page_or_target_info: target_info.into(),
                     parent_to_child_monitor_page_gpa: monitor_page.parent_to_child,
                     child_to_parent_monitor_page_gpa: monitor_page.child_to_parent,
                 },
@@ -1356,11 +1361,16 @@ struct ClientTaskInner {
 }
 
 impl ClientTaskInner {
-    fn send<T: AsBytes + protocol::VmbusMessage + std::fmt::Debug>(&self, msg: &T) {
+    fn send<T: IntoBytes + protocol::VmbusMessage + std::fmt::Debug + Immutable + KnownLayout>(
+        &self,
+        msg: &T,
+    ) {
         send_message(self.synic.as_ref(), msg, &[])
     }
 
-    fn send_with_data<T: AsBytes + protocol::VmbusMessage + std::fmt::Debug>(
+    fn send_with_data<
+        T: IntoBytes + protocol::VmbusMessage + std::fmt::Debug + Immutable + KnownLayout,
+    >(
         &self,
         msg: &T,
         data: &[u8],
@@ -1373,7 +1383,9 @@ impl ClientTaskInner {
     }
 }
 
-fn send_message<T: AsBytes + protocol::VmbusMessage + std::fmt::Debug>(
+fn send_message<
+    T: IntoBytes + protocol::VmbusMessage + std::fmt::Debug + Immutable + KnownLayout,
+>(
     synic: &dyn SynicClient,
     msg: &T,
     data: &[u8],
@@ -1399,13 +1411,15 @@ mod tests {
     use vmbus_core::protocol::MessageType;
     use vmbus_core::protocol::OfferFlags;
     use vmbus_core::protocol::UserDefinedData;
-    use zerocopy::AsBytes;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     const VMBUS_TEST_CLIENT_ID: Guid =
         Guid::from_static_str("e6e6e6e6-e6e6-e6e6-e6e6-e6e6e6e6e6e6");
 
-    fn in_msg<T: AsBytes>(message_type: MessageType, t: T) -> Vec<u8> {
+    fn in_msg<T: IntoBytes + Immutable + KnownLayout>(message_type: MessageType, t: T) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(&message_type.0.to_ne_bytes());
         data.extend_from_slice(&0u32.to_ne_bytes());
@@ -1587,12 +1601,15 @@ mod tests {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
-                    interrupt_page_or_target_info: *TargetInfo::new(2, 0, FeatureFlags::all())
-                        .as_u64(),
+                    interrupt_page_or_target_info: TargetInfo::new()
+                        .with_sint(2)
+                        .with_vtl(0)
+                        .with_feature_flags(FeatureFlags::all().into())
+                        .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             })
         );
     }
@@ -1611,12 +1628,15 @@ mod tests {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
-                    interrupt_page_or_target_info: *TargetInfo::new(2, 0, FeatureFlags::all())
-                        .as_u64(),
+                    interrupt_page_or_target_info: TargetInfo::new()
+                        .with_sint(2)
+                        .with_vtl(0)
+                        .with_feature_flags(FeatureFlags::all().into())
+                        .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             })
         );
 
@@ -1653,12 +1673,15 @@ mod tests {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
-                    interrupt_page_or_target_info: *TargetInfo::new(2, 0, FeatureFlags::all())
-                        .as_u64(),
+                    interrupt_page_or_target_info: TargetInfo::new()
+                        .with_sint(2)
+                        .with_vtl(0)
+                        .with_feature_flags(FeatureFlags::all().into())
+                        .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             })
         );
 
@@ -1704,8 +1727,11 @@ mod tests {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
-                    interrupt_page_or_target_info: *TargetInfo::new(2, 0, FeatureFlags::all())
-                        .as_u64(),
+                    interrupt_page_or_target_info: TargetInfo::new()
+                        .with_sint(2)
+                        .with_vtl(0)
+                        .with_feature_flags(FeatureFlags::all().into())
+                        .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
@@ -1728,12 +1754,15 @@ mod tests {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
-                    interrupt_page_or_target_info: *TargetInfo::new(2, 0, FeatureFlags::all())
-                        .as_u64(),
+                    interrupt_page_or_target_info: TargetInfo::new()
+                        .with_sint(2)
+                        .with_vtl(0)
+                        .with_feature_flags(FeatureFlags::all().into())
+                        .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             })
         );
 
@@ -1752,7 +1781,11 @@ mod tests {
             OutgoingMessage::new(&protocol::InitiateContact {
                 version_requested: Version::Iron as u32,
                 target_message_vp: 0,
-                interrupt_page_or_target_info: *TargetInfo::new(2, 0, FeatureFlags::new()).as_u64(),
+                interrupt_page_or_target_info: TargetInfo::new()
+                    .with_sint(2)
+                    .with_vtl(0)
+                    .with_feature_flags(FeatureFlags::new().into())
+                    .into(),
                 parent_to_child_monitor_page_gpa: 0,
                 child_to_parent_monitor_page_gpa: 0,
             })

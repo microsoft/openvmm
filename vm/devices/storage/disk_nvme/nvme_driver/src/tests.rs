@@ -20,7 +20,6 @@ use std::sync::Arc;
 use test_with_tracing::test;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
-use user_driver::emulated::EmulatedDmaAllocator;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::DeviceBacking;
@@ -28,7 +27,7 @@ use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 #[async_test]
 async fn test_nvme_driver_direct_dma(driver: DefaultDriver) {
@@ -52,7 +51,7 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
     const CPU_COUNT: u32 = 64;
 
     let base_len = 64 << 20;
-    let payload_len = 4 << 30;
+    let payload_len = 4 << 20;
     let mem = DeviceSharedMemory::new(base_len, payload_len);
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -86,7 +85,7 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
     const CPU_COUNT: u32 = 64;
 
     let base_len = 64 << 20;
-    let payload_len = 4 << 30;
+    let payload_len = 4 << 20;
     let mem = DeviceSharedMemory::new(base_len, payload_len);
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -118,7 +117,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     const CPU_COUNT: u32 = 64;
 
     let base_len = 64 << 20;
-    let payload_len = 4 << 30;
+    let payload_len = 4 << 20;
     let mem = DeviceSharedMemory::new(base_len, payload_len);
     let payload_mem = mem
         .guest_memory()
@@ -293,7 +292,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     // Enable the controller for keep-alive test.
     let mut dword = 0u32;
     // Read Register::CC.
-    new_nvme_ctrl.read_bar0(0x14, dword.as_bytes_mut()).unwrap();
+    new_nvme_ctrl.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
     // Set CC.EN.
     dword |= 1;
     new_nvme_ctrl.write_bar0(0x14, dword.as_bytes()).unwrap();
@@ -345,7 +344,6 @@ impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
 /// Implementation of DeviceBacking trait for NvmeTestEmulatedDevice
 impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestEmulatedDevice<T> {
     type Registers = NvmeTestMapping<T>;
-    type DmaAllocator = EmulatedDmaAllocator;
 
     fn id(&self) -> &str {
         self.device.id()

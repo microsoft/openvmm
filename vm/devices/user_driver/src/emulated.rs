@@ -12,7 +12,6 @@ use crate::memory::PAGE_SIZE;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use crate::DmaClient;
-use crate::HostDmaAllocator;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
@@ -271,18 +270,6 @@ pub struct EmulatedDmaAllocator {
     shared_mem: DeviceSharedMemory,
 }
 
-impl HostDmaAllocator for EmulatedDmaAllocator {
-    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
-        let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);
-        memory.as_slice().atomic_fill(0);
-        Ok(memory)
-    }
-
-    fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
-        anyhow::bail!("restore is not supported for emulated DMA")
-    }
-}
-
 impl DmaClient for EmulatedDmaAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
         let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);
@@ -295,23 +282,8 @@ impl DmaClient for EmulatedDmaAllocator {
     }
 }
 
-#[cfg(target_os = "linux")]
-#[cfg(feature = "vfio")]
-impl crate::vfio::VfioDmaBuffer for EmulatedDmaAllocator {
-    fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
-        Ok(MemoryBlock::new(
-            self.shared_mem.alloc(len).context("out of memory")?,
-        ))
-    }
-
-    fn restore_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
-        anyhow::bail!("restore is not supported for emulated DMA")
-    }
-}
-
 impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedDevice<T> {
     type Registers = Mapping<T>;
-    type DmaAllocator = EmulatedDmaAllocator;
 
     fn id(&self) -> &str {
         "emulated"

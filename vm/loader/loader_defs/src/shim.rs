@@ -4,15 +4,16 @@
 //! Loader definitions for the openhcl boot loader (`openhcl_boot`).
 
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Shim parameters set by the loader at IGVM build time. These contain shim
 /// base relative offsets and sizes instead of absolute addresses. Sizes are in
 /// bytes.
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ShimParamsRaw {
     /// The offset to the Linux kernel entry point.
     pub kernel_entry_offset: i64,
@@ -56,7 +57,7 @@ pub struct ShimParamsRaw {
 
 open_enum! {
     /// Possible isolation types supported by the shim.
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum SupportedIsolationType: u32 {
         // Starting from 1 for consistency with None usually being 0, but
         // the IGVM file for None and Vbs will likely be the same, so None will

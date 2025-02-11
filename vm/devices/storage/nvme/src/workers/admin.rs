@@ -49,9 +49,9 @@ use thiserror::Error;
 use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 const IOSQES: u8 = 6;
 const IOCQES: u8 = 4;
@@ -559,10 +559,10 @@ impl AdminHandler {
         let cdw10: spec::Cdw10Identify = command.cdw10.into();
         // All identify results are 4096 bytes.
         let mut buf = [0u64; 512];
-        let buf = buf.as_bytes_mut();
+        let buf = buf.as_mut_bytes();
         match spec::Cns(cdw10.cns()) {
             spec::Cns::CONTROLLER => {
-                let id = spec::IdentifyController::mut_from_prefix(buf).unwrap();
+                let id = spec::IdentifyController::mut_from_prefix(buf).unwrap().0; // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 *id = self.identify_controller();
 
                 write!(
@@ -576,7 +576,7 @@ impl AdminHandler {
                 if command.nsid >= 0xfffffffe {
                     return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
                 }
-                let nsids = u32::mut_slice_from(buf).unwrap();
+                let nsids = <[u32]>::mut_from_bytes(buf).unwrap();
                 for (ns, nsid) in self
                     .namespaces
                     .keys()
@@ -642,7 +642,7 @@ impl AdminHandler {
                 .with_broadcast_flush_behavior(spec::BroadcastFlushBehavior::NOT_SUPPORTED.0),
             cntrltype: spec::ControllerType::IO_CONTROLLER,
             oacs,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         }
     }
 

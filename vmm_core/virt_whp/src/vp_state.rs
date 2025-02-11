@@ -11,7 +11,7 @@ use hvdef::HvRegisterValue;
 use hvdef::Vtl;
 use virt::state::HvRegisterState;
 use whp::abi::WHV_REGISTER_VALUE;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 pub struct WhpVpStateAccess<'a, 'b> {
     run: &'a mut WhpProcessor<'b>,
@@ -75,8 +75,8 @@ mod x86 {
     use virt::state::StateElement;
     use virt::x86::vp;
     use virt::x86::vp::AccessVpState;
-    use zerocopy::AsBytes;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
 
     impl AccessVpState for WhpVpStateAccess<'_, '_> {
         type Error = Error;
@@ -251,7 +251,7 @@ mod x86 {
                         .whp(self.vtl)
                         .get_state(
                             whp::abi::WHvVirtualProcessorStateTypeSynicTimerState,
-                            state.as_bytes_mut(),
+                            state.as_mut_bytes(),
                         )
                         .for_op("get synic timer state")?;
                     Ok(vp::SynicTimers::from_hv(state))

@@ -12,7 +12,7 @@ use openhcl_attestation_protocol::vmgs;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
 use openssl_kdf::kdf::Kbkdf;
 use thiserror::Error;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 pub(crate) enum HardwareDerivedKeysError {
@@ -249,8 +249,8 @@ mod tests {
         let output = result.unwrap();
 
         let result = HardwareKeyProtector::read_from_prefix(output.as_bytes());
-        assert!(result.is_some());
-        let hardware_key_protector = result.unwrap();
+        assert!(result.is_ok());
+        let hardware_key_protector = result.unwrap().0;
 
         let result = hardware_key_protector.unseal_key(&hardware_derived_keys);
         assert!(result.is_ok());

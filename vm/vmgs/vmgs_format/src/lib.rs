@@ -12,9 +12,10 @@ use core::ops::IndexMut;
 use inspect::Inspect;
 use open_enum::open_enum;
 use static_assertions::const_assert;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// The suggested default capacity of a VMGS disk in bytes, 4MB.
 ///
@@ -73,7 +74,7 @@ pub type VmgsAuthTag = [u8; VMGS_AUTHENTICATION_TAG_SIZE];
 pub type VmgsDatastoreKey = [u8; VMGS_ENCRYPTION_KEY_SIZE];
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VmgsFileEntry {
     // V2 fields
     pub offset: u32,
@@ -104,7 +105,7 @@ impl IndexMut<FileId> for [VmgsFileEntry] {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VmgsExtendedFileEntry {
     pub attributes: FileAttribute,
     pub encryption_key: VmgsDatastoreKey,
@@ -129,7 +130,7 @@ impl IndexMut<FileId> for [VmgsExtendedFileEntry] {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[cfg_attr(feature = "inspect", derive(Inspect))]
 pub struct VmgsEncryptionKey {
     pub nonce: VmgsNonce,
@@ -141,7 +142,7 @@ pub struct VmgsEncryptionKey {
 const_assert!(size_of::<VmgsEncryptionKey>() == 64);
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VmgsHeader {
     // V1 compatible fields
     pub signature: u64,
@@ -164,7 +165,7 @@ pub struct VmgsHeader {
 const_assert!(size_of::<VmgsHeader>() == 168);
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes, Debug)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
 pub struct VmgsFileTable {
     pub entries: [VmgsFileEntry; VMGS_FILE_COUNT],
 }
@@ -175,7 +176,7 @@ pub const VMGS_FILE_TABLE_BLOCK_SIZE: u32 =
     size_of::<VmgsFileTable>() as u32 / VMGS_BYTES_PER_BLOCK;
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VmgsExtendedFileTable {
     pub entries: [VmgsExtendedFileEntry; VMGS_FILE_COUNT],
 }
@@ -188,7 +189,7 @@ pub const VMGS_EXTENDED_FILE_TABLE_BLOCK_SIZE: u32 =
 /// File attribute for VMGS files
 #[cfg_attr(feature = "inspect", derive(Inspect))]
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
 pub struct FileAttribute {
     pub encrypted: bool,
     pub authenticated: bool,
@@ -200,7 +201,7 @@ open_enum! {
     /// Encryption algorithm used to encrypt VMGS file
     #[cfg_attr(feature = "inspect", derive(Inspect))]
     #[cfg_attr(feature = "inspect", inspect(debug))]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum EncryptionAlgorithm: u16 {
         /// No encryption algorithm
         NONE = 0,

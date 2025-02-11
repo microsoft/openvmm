@@ -9,9 +9,11 @@
 
 use self::packed_nums::*;
 use guid::Guid;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 #[allow(non_camel_case_types)]
 mod packed_nums {
@@ -20,7 +22,7 @@ mod packed_nums {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VhdFooter {
     pub cookie: u64_be,
     pub features: u32_be,
@@ -61,7 +63,7 @@ impl VhdFooter {
             original_size: size.into(),
             current_size: size.into(),
             disk_type: Self::DISK_TYPE_FIXED.into(),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         footer.unique_id = guid;

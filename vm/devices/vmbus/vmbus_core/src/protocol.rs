@@ -7,7 +7,6 @@ use hvdef::Vtl;
 use inspect::Inspect;
 use mesh::payload::Protobuf;
 use open_enum::open_enum;
-use static_assertions::const_assert_eq;
 use std::mem::size_of;
 use std::ops::BitAnd;
 use std::ops::BitAndAssign;
@@ -15,9 +14,11 @@ use std::ops::BitOr;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::Unalign;
 
 #[macro_use]
@@ -125,7 +126,7 @@ pub trait VmbusMessage: Sized {
 
 /// The header of a vmbus message.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct MessageHeader {
     message_type: MessageType,
     padding: u32,
@@ -146,7 +147,7 @@ impl MessageHeader {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout, PartialEq, Eq)]
 pub struct FeatureFlags {
     /// Feature which allows the guest to specify an event flag and connection ID when opening
     /// a channel. If not used, the event flag defaults to the channel ID and the connection ID
@@ -219,9 +220,10 @@ impl BitOr for FeatureFlags {
     Ord,
     PartialOrd,
     Hash,
-    AsBytes,
+    IntoBytes,
     FromBytes,
-    FromZeroes,
+    Immutable,
+    KnownLayout,
     Protobuf,
 )]
 #[mesh(package = "vmbus")]
@@ -238,9 +240,10 @@ pub struct GpadlId(pub u32);
     Ord,
     PartialOrd,
     Hash,
-    AsBytes,
+    IntoBytes,
     FromBytes,
-    FromZeroes,
+    Immutable,
+    KnownLayout,
     Protobuf,
 )]
 #[inspect(transparent)]
@@ -256,7 +259,7 @@ impl ConnectionId {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct InitiateContact {
     pub version_requested: u32,
     pub target_message_vp: u32,
@@ -268,7 +271,7 @@ pub struct InitiateContact {
 /// Initiate contact message used with `FeatureFlags::CLIENT_ID` when the feature is supported
 /// (Copper and above).
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct InitiateContact2 {
     pub initiate_contact: InitiateContact,
     pub client_id: Guid,
@@ -278,42 +281,18 @@ impl From<InitiateContact> for InitiateContact2 {
     fn from(value: InitiateContact) -> Self {
         Self {
             initiate_contact: value,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         }
     }
 }
 
 /// Helper struct to interpret the `InitiateContact::interrupt_page_or_target_info` field.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[bitfield(u64)]
 pub struct TargetInfo {
     pub sint: u8,
     pub vtl: u8,
-    pub _padding: [u8; 2],
+    pub _padding: u16,
     pub feature_flags: u32,
-}
-
-const_assert_eq!(size_of::<u64>(), size_of::<TargetInfo>());
-
-impl TargetInfo {
-    pub fn new(sint: u8, vtl: u8, feature_flags: FeatureFlags) -> Self {
-        Self {
-            sint,
-            vtl,
-            _padding: [0; 2],
-            feature_flags: feature_flags.into(),
-        }
-    }
-
-    /// Interprets a 64 bit value as the `TargetInfo` struct.
-    pub fn from_u64(value: &u64) -> &Self {
-        Self::ref_from_prefix(value.as_bytes()).unwrap()
-    }
-
-    /// Represents the `TargetInfo` struct as a 64 bit number.
-    pub fn as_u64(&self) -> &u64 {
-        u64::ref_from_prefix(self.as_bytes()).unwrap()
-    }
 }
 
 pub const fn make_version(major: u16, minor: u16) -> u32 {
@@ -338,7 +317,7 @@ pub enum Version {
 
 open_enum! {
     /// Possible values for the `VersionResponse::connection_state` field.
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum ConnectionState: u8 {
         SUCCESSFUL = 0,
         FAILED_LOW_RESOURCES = 1,
@@ -347,7 +326,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct VersionResponse {
     pub version_supported: u8,
     pub connection_state: ConnectionState,
@@ -360,7 +339,7 @@ pub struct VersionResponse {
 ///      above and the version is supported. For unsupported versions, the original `VersionResponse`
 ///      is always sent.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct VersionResponse2 {
     pub version_response: VersionResponse,
     pub supported_features: u32,
@@ -370,13 +349,25 @@ impl From<VersionResponse> for VersionResponse2 {
     fn from(value: VersionResponse) -> Self {
         Self {
             version_response: value,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         }
     }
 }
 
 /// User-defined data provided by a device as part of an offer or open request.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes, Protobuf, Inspect)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    IntoBytes,
+    FromBytes,
+    Immutable,
+    KnownLayout,
+    Protobuf,
+    Inspect,
+)]
 #[repr(C, align(4))]
 #[mesh(transparent)]
 #[inspect(transparent)]
@@ -384,22 +375,28 @@ pub struct UserDefinedData([u8; 120]);
 
 impl UserDefinedData {
     pub fn as_pipe_params(&self) -> &PipeUserDefinedParameters {
-        PipeUserDefinedParameters::ref_from(&self.0[0..size_of::<PipeUserDefinedParameters>()])
-            .expect("from bytes should not fail")
+        PipeUserDefinedParameters::ref_from_bytes(
+            &self.0[0..size_of::<PipeUserDefinedParameters>()],
+        )
+        .expect("from bytes should not fail")
     }
 
     pub fn as_pipe_params_mut(&mut self) -> &mut PipeUserDefinedParameters {
-        PipeUserDefinedParameters::mut_from(&mut self.0[0..size_of::<PipeUserDefinedParameters>()])
-            .expect("from bytes should not fail")
+        PipeUserDefinedParameters::mut_from_bytes(
+            &mut self.0[0..size_of::<PipeUserDefinedParameters>()],
+        )
+        .expect("from bytes should not fail")
     }
 
     pub fn as_hvsock_params(&self) -> &HvsockUserDefinedParameters {
-        HvsockUserDefinedParameters::ref_from(&self.0[0..size_of::<HvsockUserDefinedParameters>()])
-            .expect("from bytes should not fail")
+        HvsockUserDefinedParameters::ref_from_bytes(
+            &self.0[0..size_of::<HvsockUserDefinedParameters>()],
+        )
+        .expect("from bytes should not fail")
     }
 
     pub fn as_hvsock_params_mut(&mut self) -> &mut HvsockUserDefinedParameters {
-        HvsockUserDefinedParameters::mut_from(
+        HvsockUserDefinedParameters::mut_from_bytes(
             &mut self.0[0..size_of::<HvsockUserDefinedParameters>()],
         )
         .expect("from bytes should not fail")
@@ -439,7 +436,9 @@ impl Default for UserDefinedData {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Inspect, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(
+    Copy, Clone, Debug, Inspect, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout,
+)]
 pub struct OfferChannel {
     pub interface_id: Guid,
     pub instance_id: Guid,
@@ -459,7 +458,7 @@ pub struct OfferChannel {
 }
 
 #[bitfield(u16)]
-#[derive(AsBytes, FromBytes, FromZeroes, PartialEq, Eq, Protobuf)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout, PartialEq, Eq, Protobuf)]
 #[mesh(transparent)]
 pub struct OfferFlags {
     pub enumerate_device_interface: bool, // 0x1
@@ -480,7 +479,7 @@ pub struct OfferFlags {
 
 open_enum! {
     /// Possible values for the `PipeUserDefinedParameters::pipe_type` field.
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum PipeType: u32 {
         BYTE = 0,
         MESSAGE = 4,
@@ -489,13 +488,13 @@ open_enum! {
 
 /// First 4 bytes of user_defined for named pipe offers.
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct PipeUserDefinedParameters {
     pub pipe_type: PipeType,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct HvsockUserDefinedParameters {
     pub pipe_params: PipeUserDefinedParameters,
     pub is_for_guest_accept: u8,
@@ -522,7 +521,7 @@ impl HvsockUserDefinedParameters {
 
 open_enum! {
     /// Possible values for the `PipeUserDefinedParameters::pipe_type` field.
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum HvsockParametersVersion: u32 {
         PRE_RS5 = 0,
         RS5 = 1,
@@ -530,13 +529,13 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct RescindChannelOffer {
     pub channel_id: ChannelId,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct GpadlHeader {
     pub channel_id: ChannelId,
     pub gpadl_id: GpadlId,
@@ -550,7 +549,7 @@ impl GpadlHeader {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct GpadlBody {
     pub rsvd: u32,
     pub gpadl_id: GpadlId,
@@ -562,7 +561,7 @@ impl GpadlBody {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Eq, PartialEq, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct GpadlCreated {
     pub channel_id: ChannelId,
     pub gpadl_id: GpadlId,
@@ -573,7 +572,7 @@ pub struct GpadlCreated {
 pub const VP_INDEX_DISABLE_INTERRUPT: u32 = u32::MAX;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct OpenChannel {
     pub channel_id: ChannelId,
     pub open_id: u32,
@@ -584,7 +583,7 @@ pub struct OpenChannel {
 }
 
 #[bitfield(u16)]
-#[derive(AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout, PartialEq, Eq)]
 pub struct OpenChannelFlags {
     /// Indicates the host-to-guest interrupt for this channel should be sent to the redirected
     /// VTL and SINT. This has no effect if the server is not using redirection.
@@ -597,7 +596,7 @@ pub struct OpenChannelFlags {
 /// Open channel message used if `FeatureFlags::GUEST_SPECIFIED_SIGNAL_PARAMETERS` or
 /// `FeatureFlags::CHANNEL_INTERRUPT_REDIRECTION` is supported.
 #[repr(C)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct OpenChannel2 {
     pub open_channel: OpenChannel,
 
@@ -613,13 +612,13 @@ impl From<OpenChannel> for OpenChannel2 {
     fn from(value: OpenChannel) -> Self {
         Self {
             open_channel: value,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         }
     }
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq, Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct OpenResult {
     pub channel_id: ChannelId,
     pub open_id: u32,
@@ -627,32 +626,32 @@ pub struct OpenResult {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct CloseChannel {
     pub channel_id: ChannelId,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct RelIdReleased {
     pub channel_id: ChannelId,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct GpadlTeardown {
     pub channel_id: ChannelId,
     pub gpadl_id: GpadlId,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct GpadlTorndown {
     pub gpadl_id: GpadlId,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct OpenReservedChannel {
     pub channel_id: ChannelId,
     pub target_vp: u32,
@@ -662,7 +661,7 @@ pub struct OpenReservedChannel {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct CloseReservedChannel {
     pub channel_id: ChannelId,
     pub target_vp: u32,
@@ -670,20 +669,20 @@ pub struct CloseReservedChannel {
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq, Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct CloseReservedChannelResponse {
     pub channel_id: ChannelId,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct TlConnectRequest {
     pub endpoint_id: Guid,
     pub service_id: Guid,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct TlConnectRequest2 {
     pub base: TlConnectRequest,
     pub silo_id: Guid,
@@ -693,13 +692,13 @@ impl From<TlConnectRequest> for TlConnectRequest2 {
     fn from(value: TlConnectRequest) -> Self {
         Self {
             base: value,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         }
     }
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct TlConnectResult {
     pub endpoint_id: Guid,
     pub service_id: Guid,
@@ -707,28 +706,28 @@ pub struct TlConnectResult {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct ModifyChannel {
     pub channel_id: ChannelId,
     pub target_vp: u32,
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq, Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct ModifyChannelResponse {
     pub channel_id: ChannelId,
     pub status: i32,
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq, Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct ModifyConnection {
     pub parent_to_child_monitor_page_gpa: u64,
     pub child_to_parent_monitor_page_gpa: u64,
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq, Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct ModifyConnectionResponse {
     pub connection_state: ConnectionState,
 }
@@ -737,17 +736,17 @@ pub struct ModifyConnectionResponse {
 // to allow for consistent use of the VmbusMessage trait for all messages.
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct RequestOffers {}
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct Unload {}
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct UnloadComplete {}
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct AllOffersDelivered {}

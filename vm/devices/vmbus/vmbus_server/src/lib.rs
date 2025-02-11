@@ -29,6 +29,7 @@ use channels::OpenParams;
 use channels::RestoreError;
 pub use channels::Update;
 use futures::channel::mpsc;
+use futures::channel::mpsc::SendError;
 use futures::future::OptionFuture;
 use futures::stream::SelectAll;
 use futures::FutureExt;
@@ -52,6 +53,8 @@ use std::future;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::ready;
+use std::task::Poll;
 use unicycle::FuturesUnordered;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
@@ -569,7 +572,7 @@ impl VmbusServer {
         driver: &(impl pal_async::driver::SpawnDriver + Clone),
         handle: ProxyHandle,
     ) -> std::io::Result<ProxyIntegration> {
-        ProxyIntegration::start(driver, handle, self.control(), &self.control.mem).await
+        ProxyIntegration::start(driver, handle, self.control(), Some(&self.control.mem)).await
     }
 
     /// Returns an object that can be used to offer channels.
@@ -1791,16 +1794,40 @@ pub(crate) struct MessageSender {
     multiclient: bool,
 }
 
+impl MessageSender {
+    fn poll_handle_message(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        msg: &[u8],
+        trusted: bool,
+    ) -> Poll<Result<(), SendError>> {
+        let mut send = self.send.clone();
+        ready!(send.poll_ready(cx))?;
+        send.start_send(SynicMessage {
+            data: msg.to_vec(),
+            multiclient: self.multiclient,
+            trusted,
+        })?;
+
+        Poll::Ready(Ok(()))
+    }
+}
+
 impl MessagePort for MessageSender {
-    fn handle_message(&self, data: &[u8], trusted: bool) -> bool {
-        self.send
-            .clone()
-            .try_send(SynicMessage {
-                data: data.to_vec(),
-                multiclient: self.multiclient,
-                trusted,
-            })
-            .is_ok()
+    fn poll_handle_message(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        msg: &[u8],
+        trusted: bool,
+    ) -> Poll<()> {
+        if let Err(err) = ready!(self.poll_handle_message(cx, msg, trusted)) {
+            tracelimit::error_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                "failed to send message"
+            );
+        }
+
+        Poll::Ready(())
     }
 }
 
@@ -1822,6 +1849,7 @@ impl ParentBus for VmbusServerControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::task::noop_waker_ref;
     use pal_async::async_test;
     use parking_lot::Mutex;
     use protocol::UserDefinedData;
@@ -1829,8 +1857,11 @@ mod tests {
     use vmbus_core::protocol::ChannelId;
     use vmbus_core::protocol::VmbusMessage;
     use vmcore::synic::SynicPortAccess;
-    use zerocopy::AsBytes;
     use zerocopy::FromBytes;
+
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     struct MockSynicInner {
         message_port: Option<Arc<dyn MessagePort>>,
@@ -1849,21 +1880,31 @@ mod tests {
             }
         }
 
-        fn send_message(&self, msg: impl VmbusMessage + AsBytes) {
+        fn send_message(&self, msg: impl VmbusMessage + IntoBytes + Immutable + KnownLayout) {
             self.send_message_core(OutgoingMessage::new(&msg), false);
         }
 
-        fn send_message_trusted(&self, msg: impl VmbusMessage + AsBytes) {
+        fn send_message_trusted(
+            &self,
+            msg: impl VmbusMessage + IntoBytes + Immutable + KnownLayout,
+        ) {
             self.send_message_core(OutgoingMessage::new(&msg), true);
         }
 
         fn send_message_core(&self, msg: OutgoingMessage, trusted: bool) {
-            self.inner
-                .lock()
-                .message_port
-                .as_ref()
-                .unwrap()
-                .handle_message(msg.data(), trusted);
+            assert_eq!(
+                self.inner
+                    .lock()
+                    .message_port
+                    .as_ref()
+                    .unwrap()
+                    .poll_handle_message(
+                        &mut std::task::Context::from_waker(noop_waker_ref()),
+                        msg.data(),
+                        trusted,
+                    ),
+                Poll::Ready(())
+            );
         }
     }
 
@@ -2102,17 +2143,17 @@ mod tests {
 
         async fn expect_response(&mut self, expected: protocol::MessageType) {
             let data = self.message_recv.next().await.unwrap();
-            let header = protocol::MessageHeader::read_from_prefix(&data).unwrap();
-
+            let header = protocol::MessageHeader::read_from_prefix(&data).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             assert_eq!(expected, header.message_type())
         }
 
-        async fn get_response<T: VmbusMessage + FromBytes>(&mut self) -> T {
-            use zerocopy_helpers::FromBytesExt;
+        async fn get_response<T: VmbusMessage + FromBytes + Immutable + KnownLayout>(
+            &mut self,
+        ) -> T {
             let data = self.message_recv.next().await.unwrap();
-            let (header, message) = protocol::MessageHeader::read_from_prefix_split(&data).unwrap();
+            let (header, message) = protocol::MessageHeader::read_from_prefix(&data).unwrap(); // TODO: zerocopy: unwrap (https://github.com/microsoft/openvmm/issues/759)
             assert_eq!(T::MESSAGE_TYPE, header.message_type());
-            T::read_from_prefix(message).unwrap()
+            T::read_from_prefix(message).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn initiate_contact(
@@ -2127,8 +2168,11 @@ mod tests {
                     target_message_vp: 0,
                     child_to_parent_monitor_page_gpa: 0,
                     parent_to_child_monitor_page_gpa: 0,
-                    interrupt_page_or_target_info: *protocol::TargetInfo::new(2, 0, feature_flags)
-                        .as_u64(),
+                    interrupt_page_or_target_info: protocol::TargetInfo::new()
+                        .with_sint(2)
+                        .with_vtl(0)
+                        .with_feature_flags(feature_flags.into())
+                        .into(),
                 }),
                 trusted,
             );

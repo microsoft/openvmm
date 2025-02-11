@@ -18,7 +18,7 @@ use scsidisk::SimpleScsiDisk;
 use std::sync::Arc;
 use vmbus_async::queue::Queue;
 use vmbus_channel::connected_async_channels;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 pub struct PerfTester {
     _worker: TestWorker,

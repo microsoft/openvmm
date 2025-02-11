@@ -7,20 +7,17 @@
 //! access to pages that were previously protected.
 
 #![warn(missing_docs)]
-#[cfg(feature = "vfio")]
+
 mod device_dma;
 
-#[cfg(feature = "vfio")]
 pub use device_dma::LowerVtlDmaBuffer;
 
 use anyhow::Context;
 use anyhow::Result;
 use inspect::Inspect;
 use std::sync::Arc;
-#[cfg(all(feature = "vfio", target_os = "linux"))]
 use user_driver::memory::MemoryBlock;
-#[cfg(all(feature = "vfio", target_os = "linux"))]
-use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DmaClient;
 use virt::VtlMemoryProtection;
 
 /// A guard that will restore [`hvdef::HV_MAP_GPA_PERMISSIONS_NONE`] permissions
@@ -76,17 +73,15 @@ impl Drop for PagesAccessibleToLowerVtl {
     }
 }
 
-/// A [`VfioDmaBuffer`] wrapper that will lower the VTL permissions of the page
+/// A [`DmaClient`] wrapper that will lower the VTL permissions of the page
 /// on the allocated memory block.
-#[cfg(all(feature = "vfio", target_os = "linux"))]
-pub struct LowerVtlMemorySpawner<T: VfioDmaBuffer> {
+pub struct LowerVtlMemorySpawner<T: DmaClient> {
     spawner: T,
     vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
 }
 
-#[cfg(all(feature = "vfio", target_os = "linux"))]
-impl<T: VfioDmaBuffer> LowerVtlMemorySpawner<T> {
-    /// Create a new wrapped [`VfioDmaBuffer`] spawner that will lower the VTL
+impl<T: DmaClient> LowerVtlMemorySpawner<T> {
+    /// Create a new wrapped [`DmaClient`] spawner that will lower the VTL
     /// permissions of the returned [`MemoryBlock`].
     pub fn new(spawner: T, vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>) -> Self {
         Self {
@@ -96,10 +91,9 @@ impl<T: VfioDmaBuffer> LowerVtlMemorySpawner<T> {
     }
 }
 
-#[cfg(all(feature = "vfio", target_os = "linux"))]
-impl<T: VfioDmaBuffer> VfioDmaBuffer for LowerVtlMemorySpawner<T> {
-    fn create_dma_buffer(&self, len: usize) -> Result<MemoryBlock> {
-        let mem = self.spawner.create_dma_buffer(len)?;
+impl<T: DmaClient> DmaClient for LowerVtlMemorySpawner<T> {
+    fn allocate_dma_buffer(&self, len: usize) -> Result<MemoryBlock> {
+        let mem = self.spawner.allocate_dma_buffer(len)?;
         let vtl_guard =
             PagesAccessibleToLowerVtl::new_from_pages(self.vtl_protect.clone(), mem.pfns())
                 .context("failed to lower VTL permissions on memory block")?;
@@ -110,7 +104,7 @@ impl<T: VfioDmaBuffer> VfioDmaBuffer for LowerVtlMemorySpawner<T> {
         }))
     }
 
-    fn restore_dma_buffer(&self, _len: usize, _base_pfn: u64) -> Result<MemoryBlock> {
+    fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> Result<MemoryBlock> {
         anyhow::bail!("restore is not supported for LowerVtlMemorySpawner")
     }
 }

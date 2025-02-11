@@ -30,12 +30,12 @@ pub enum AkCertError {
 pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
     const HEADER_SIZE: usize = size_of::<IgvmAttestAkCertResponseHeader>();
 
-    let Some(header) = IgvmAttestAkCertResponseHeader::read_from_prefix(response) else {
-        Err(AkCertError::SizeTooSmall {
+    let header = IgvmAttestAkCertResponseHeader::read_from_prefix(response)
+        .map_err(|_| AkCertError::SizeTooSmall {
             size: response.len(),
             minimum_size: HEADER_SIZE,
-        })?
-    };
+        })? // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+        .0;
 
     let size = header.data_size as usize;
     if size > response.len() {
@@ -106,8 +106,8 @@ mod tests {
         const HEADER_SIZE: usize = size_of::<IgvmAttestAkCertResponseHeader>();
 
         let result = IgvmAttestAkCertResponseHeader::read_from_prefix(&VALID_RESPONSE);
-        assert!(result.is_some());
-        let header = result.unwrap();
+        assert!(result.is_ok());
+        let header = result.unwrap().0;
 
         let result = parse_response(&VALID_RESPONSE);
         assert!(result.is_ok());
@@ -132,8 +132,8 @@ mod tests {
         const HEADER_SIZE: usize = size_of::<IgvmAttestAkCertResponseHeader>();
 
         let result = IgvmAttestAkCertResponseHeader::read_from_prefix(&VALID_RESPONSE);
-        assert!(result.is_some());
-        let header = result.unwrap();
+        assert!(result.is_ok());
+        let header = result.unwrap().0;
 
         let result = parse_response(&VALID_RESPONSE);
         assert!(result.is_ok());

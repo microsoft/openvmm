@@ -27,10 +27,10 @@ use uefi_nvram_storage::NextVariable;
 use uefi_nvram_storage::NvramStorage;
 use uefi_nvram_storage::NvramStorageError;
 use uefi_nvram_storage::EFI_TIME;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
-use zerocopy_helpers::FromBytesExt;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const EFI_MAX_VARIABLE_NAME_SIZE: usize = 2 * 1024;
 const EFI_MAX_VARIABLE_DATA_SIZE: usize = 32 * 1024;
@@ -46,14 +46,14 @@ mod format {
     use static_assertions::const_assert_eq;
 
     open_enum! {
-        #[derive(AsBytes, FromBytes, FromZeroes)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub enum NvramHeaderType: u32 {
             VARIABLE = 0,
         }
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct NvramHeader {
         pub header_type: NvramHeaderType,
         pub length: u32, // Total length of the variable, in bytes. Includes the header.
@@ -62,7 +62,7 @@ mod format {
     const_assert_eq!(8, size_of::<NvramHeader>());
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct NvramVariable {
         pub header: NvramHeader, // Set to type NvramVariable
         pub attributes: u32,
@@ -168,7 +168,8 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         self.in_memory.clear();
         self.nvram_buf = nvram_buf;
         let mut buf = self.nvram_buf.as_slice();
-        while let Some(header) = format::NvramHeader::read_from_prefix(buf) {
+        // TODO: zerocopy: error propagation (https://github.com/microsoft/openvmm/issues/759)
+        while let Ok((header, _)) = format::NvramHeader::read_from_prefix(buf) {
             if buf.len() < header.length as usize {
                 return Err(NvramStorageError::Load(
                     format!(
@@ -199,14 +200,10 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             // corresponds to a VARIABLE entry
 
             let (var_header, var_name, var_data) = {
-                let (var_header, var_length_data) = {
-                    match format::NvramVariable::read_from_prefix_split(entry_buf) {
-                        Some(t) => t,
-                        None => {
-                            return Err(NvramStorageError::Load("variable entry too short".into()))
-                        }
-                    }
-                };
+                let (var_header, var_length_data) =
+                    // TODO: zerocopy: error propagation (https://github.com/microsoft/openvmm/issues/759)
+                    // TODO: zerocopy: manual fix - review carefully! (https://github.com/microsoft/openvmm/issues/759)
+                    format::NvramVariable::read_from_prefix(entry_buf).map_err(|_| NvramStorageError::Load("variable entry too short".into()))?;
 
                 if var_length_data.len()
                     != var_header.name_bytes as usize + var_header.data_bytes as usize

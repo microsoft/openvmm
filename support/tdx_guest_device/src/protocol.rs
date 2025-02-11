@@ -3,9 +3,10 @@
 
 //! The module includes the definitions of data structures according to TDX specification.
 
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Ioctl type defined by Linux.
 pub const TDX_CMD_GET_REPORT0_IOC_TYPE: u8 = b'T';
@@ -28,7 +29,7 @@ pub struct TdxReportReq {
 /// Report structure.
 /// See `TDREPORT_STRUCT` in Table 3.29, "Intel TDX Module v1.5 ABI specification", March 2024.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TdReport {
     /// An instance of [`ReportMac`]
     pub report_mac_struct: ReportMac,
@@ -44,7 +45,7 @@ static_assertions::const_assert_eq!(TDX_REPORT_SIZE, size_of::<TdReport>());
 
 /// See `REPORTMACSTRUCT` in Table 3.31, "Intel TDX Module v1.5 ABI specification", March 2024.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReportMac {
     /// Type header structure
     pub report_type: ReportType,
@@ -66,7 +67,7 @@ pub struct ReportMac {
 
 /// See `REPORTTYPE` in Table 3.32, "Intel TDX Module v1.5 ABI specification", March 2024.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReportType {
     /// TEE type
     /// 0x00: SGX
@@ -86,7 +87,7 @@ pub struct ReportType {
 
 /// See `TEE_TCB_INFO` in Table 3.29, "Intel TDX Module v1.5 ABI specification", March 2024.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TeeTcbInfo {
     /// Indicates which fields are valid.
     /// Set to 0x301ff.
@@ -109,7 +110,7 @@ pub struct TeeTcbInfo {
 
 /// See `TEE_TCB_SVN` in Section 3.9.4, "Intel TDX Module v1.5 ABI specification", March 2024.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TeeTcbSvn {
     /// TDX module minor SVN
     pub tdx_module_svn_minor: u8,
@@ -123,7 +124,7 @@ pub struct TeeTcbSvn {
 
 /// See `TDINFO_STRUCT` in Table 3.33, "Intel TDX Module v1.5 ABI specification", March 2024.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TdInfo {
     /// An instance of [`TdInfoBase`]
     pub td_info_base: TdInfoBase,
@@ -136,7 +137,7 @@ pub type Rtmr = [u8; 48];
 
 /// See `TDINFO_BASE` in Table 3.34, "Intel TDX Module v1.5 ABI specification", March 2024.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TdInfoBase {
     /// TD's attributes
     pub attributes: [u8; 8],

@@ -7,7 +7,7 @@ pub mod vm;
 use vmsocket::VmAddress;
 use vmsocket::VmSocket;
 
-use crate::disk_image::build_agent_image;
+use crate::disk_image::AgentImage;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::Firmware;
 use crate::IsolationType;
@@ -21,8 +21,8 @@ use pal_async::timer::PolledTimer;
 use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
-use petri_artifacts_core::AsArtifactHandle;
-use petri_artifacts_core::TestArtifacts;
+use petri_artifacts_core::ArtifactResolver;
+use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
 use std::fs;
 use std::io::Write;
@@ -46,13 +46,11 @@ pub struct PetriVmConfigHyperV {
     // virtual machine as SCSI (Gen2) or IDE (Gen1) drives.
     vhd_paths: Vec<Vec<PathBuf>>,
     secure_boot_template: Option<powershell::HyperVSecureBootTemplate>,
-    openhcl_igvm: Option<PathBuf>,
+    openhcl_igvm: Option<ResolvedArtifact>,
 
-    // Petri test dependency artifacts
-    artifacts: TestArtifacts,
     driver: DefaultDriver,
+    agent_image: AgentImage,
 
-    arch: MachineArch,
     os_flavor: OsFlavor,
 
     // Folder to store temporary data for this test
@@ -105,72 +103,80 @@ impl PetriVm for PetriVmHyperV {
     }
 }
 
+/// Artifacts needed to create a [`PetriVmConfigHyperV`].
+pub struct PetriVmArtifactsHyperV {
+    agent_image: AgentImage,
+    firmware: Firmware,
+}
+
+impl PetriVmArtifactsHyperV {
+    /// Resolves the artifacts needed to instantiate a [`PetriVmConfigHyperV`].
+    pub fn new(resolver: &ArtifactResolver<'_>, firmware: Firmware, arch: MachineArch) -> Self {
+        Self {
+            agent_image: AgentImage::new(resolver, arch, firmware.os_flavor()),
+            firmware,
+        }
+    }
+}
+
 impl PetriVmConfigHyperV {
     /// Create a new Hyper-V petri VM config
     pub fn new(
         params: &PetriTestParams<'_>,
-        firmware: Firmware,
-        arch: MachineArch,
+        artifacts: PetriVmArtifactsHyperV,
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
+        let PetriVmArtifactsHyperV {
+            agent_image,
+            firmware,
+        } = artifacts;
         let temp_dir = tempfile::tempdir()?;
 
-        let (guest_state_isolation_type, generation, guest_artifact, igvm_artifact) = match &firmware {
-            Firmware::LinuxDirect | Firmware::OpenhclLinuxDirect => {
-                todo!("linux direct not supported on hyper-v")
-            }
-            Firmware::Pcat { guest } => (
-                powershell::HyperVGuestStateIsolationType::Disabled,
-                powershell::HyperVGeneration::One,
-                guest.artifact(),
-                None,
-            ),
-            Firmware::Uefi { guest } => (
-                powershell::HyperVGuestStateIsolationType::Disabled,
-                powershell::HyperVGeneration::Two,
-                guest.artifact(),
-                None,
-            ),
-            Firmware::OpenhclUefi {
-                guest,
-                isolation,
-                vtl2_nvme_boot: _, // TODO
-            } => (
-                match isolation {
-                    Some(IsolationType::Vbs) => powershell::HyperVGuestStateIsolationType::Vbs,
-                    Some(IsolationType::Snp) => powershell::HyperVGuestStateIsolationType::Snp,
-                    Some(IsolationType::Tdx) => powershell::HyperVGuestStateIsolationType::Tdx,
-                    None => powershell::HyperVGuestStateIsolationType::TrustedLaunch,
-                },
-                powershell::HyperVGeneration::Two,
-                guest.artifact(),
-                Some(match (arch, isolation) {
-                    (MachineArch::X86_64, None) => {
-                        petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64
-                            .erase()
-                    }
-                    (MachineArch::X86_64, Some(_)) => {
-                        petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_CVM_X64.erase()
-                    }
-                    (MachineArch::Aarch64, None) => {
-                        petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64
-                            .erase()
-                    }
-                    _ => anyhow::bail!("unsupported arch/isolation combination"),
-                }),
-            ),
-            // TODO: OpenHCL PCAT
-        };
+        let (guest_state_isolation_type, generation, guest_artifact, igvm_artifact) =
+            match &firmware {
+                Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => {
+                    todo!("linux direct not supported on hyper-v")
+                }
+                Firmware::Pcat { guest, .. } => (
+                    powershell::HyperVGuestStateIsolationType::Disabled,
+                    powershell::HyperVGeneration::One,
+                    guest.artifact(),
+                    None,
+                ),
+                Firmware::Uefi { guest, .. } => (
+                    powershell::HyperVGuestStateIsolationType::Disabled,
+                    powershell::HyperVGeneration::Two,
+                    guest.artifact(),
+                    None,
+                ),
+                Firmware::OpenhclUefi {
+                    guest,
+                    isolation,
+                    igvm_path,
+                    vtl2_nvme_boot: _, // TODO
+                } => (
+                    match isolation {
+                        Some(IsolationType::Vbs) => powershell::HyperVGuestStateIsolationType::Vbs,
+                        Some(IsolationType::Snp) => powershell::HyperVGuestStateIsolationType::Snp,
+                        Some(IsolationType::Tdx) => powershell::HyperVGuestStateIsolationType::Tdx,
+                        None => powershell::HyperVGuestStateIsolationType::TrustedLaunch,
+                    },
+                    powershell::HyperVGeneration::Two,
+                    guest.artifact(),
+                    Some(igvm_path),
+                ),
+                // TODO: OpenHCL PCAT
+            };
 
-        let reference_disk_path = params.artifacts.get(guest_artifact);
-        let openhcl_igvm = igvm_artifact.map(|a| params.artifacts.get(a).to_owned());
+        let reference_disk_path = guest_artifact;
+        let openhcl_igvm = igvm_artifact.cloned();
 
         Ok(PetriVmConfigHyperV {
             name: params.test_name.to_owned(),
             generation,
             guest_state_isolation_type,
             memory: 0x1_0000_0000,
-            vhd_paths: vec![vec![reference_disk_path.to_owned()]],
+            vhd_paths: vec![vec![reference_disk_path.clone().into()]],
             secure_boot_template: matches!(generation, powershell::HyperVGeneration::Two)
                 .then_some(match firmware.os_flavor() {
                     OsFlavor::Windows => powershell::HyperVSecureBootTemplate::MicrosoftWindows,
@@ -182,9 +188,8 @@ impl PetriVmConfigHyperV {
                     }
                 }),
             openhcl_igvm,
-            artifacts: params.artifacts.clone(),
+            agent_image,
             driver: driver.clone(),
-            arch,
             os_flavor: firmware.os_flavor(),
             temp_dir,
         })
@@ -221,7 +226,7 @@ impl PetriVmConfigHyperV {
 
         if let Some(igvm_file) = &self.openhcl_igvm {
             // TODO: only increase VTL2 memory on debug builds
-            vm.set_openhcl_firmware(igvm_file, true)?;
+            vm.set_openhcl_firmware(igvm_file.as_ref(), true)?;
         }
 
         if let Some(secure_boot_template) = self.secure_boot_template {
@@ -253,7 +258,9 @@ impl PetriVmConfigHyperV {
             // Construct the agent disk.
             let agent_disk_path = self.temp_dir.path().join("cidata.vhd");
             {
-                let agent_disk = build_agent_image(self.arch, self.os_flavor, &self.artifacts)
+                let agent_disk = self
+                    .agent_image
+                    .build()
                     .context("failed to build agent image")?;
                 disk_vhd1::Vhd1Disk::make_fixed(agent_disk.as_file())
                     .context("failed to make vhd for agent image")?;

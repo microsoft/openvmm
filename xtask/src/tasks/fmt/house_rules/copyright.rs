@@ -17,24 +17,46 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
         .and_then(|e| e.to_str())
         .unwrap_or_default();
 
-    if !matches!(ext, "rs" | "c" | "proto" | "toml" | "ts" | "js") {
+    if !matches!(
+        ext,
+        "rs" | "c" | "proto" | "toml" | "ts" | "js" | "py" | "ps1" | "config"
+    ) {
         return Ok(());
     }
 
     let f = BufReader::new(File::open(path)?);
     let mut lines = f.lines();
-    let first_line = lines.next().unwrap_or(Ok(String::new()))?;
-    let second_line = lines.next().unwrap_or(Ok(String::new()))?;
-    let third_line = lines.next().unwrap_or(Ok(String::new()))?;
+    let (script_interpreter_line, blank_after_script_interpreter_line, first_content_line) = {
+        let line = lines.next().unwrap_or(Ok(String::new()))?;
+        // Besides the "py", "ps1, "toml", and "config" files, only for Rust,
+        // `#!` is in the first set of the grammar. That's why we need to check
+        // the extension for not being "rs".
+        // Someone may decide to put a script interpreter line (aka "shebang")
+        // in a .config or a .toml file, and mark the file as executable. While
+        // that's not common, we choose not to constrain creativity.
+        if line.starts_with("#!") && ext != "rs" {
+            let script_interpreter_line = line;
+            let after_script_interpreter_line = lines.next().unwrap_or(Ok(String::new()))?;
+            (
+                Some(script_interpreter_line),
+                Some(after_script_interpreter_line.is_empty()),
+                lines.next().unwrap_or(Ok(String::new()))?,
+            )
+        } else {
+            (None, None, line)
+        }
+    };
+    let second_content_line = lines.next().unwrap_or(Ok(String::new()))?;
+    let third_content_line = lines.next().unwrap_or(Ok(String::new()))?;
 
     // Preserve any files which are copyright, but not by Microsoft.
-    if first_line.contains("Copyright") && !first_line.contains("Microsoft") {
+    if first_content_line.contains("Copyright") && !first_content_line.contains("Microsoft") {
         return Ok(());
     }
 
-    let mut missing_banner =
-        !first_line.contains(HEADER_MIT_FIRST) || !second_line.contains(HEADER_MIT_SECOND);
-    let mut missing_blank_line = !third_line.is_empty();
+    let mut missing_banner = !first_content_line.contains(HEADER_MIT_FIRST)
+        || !second_content_line.contains(HEADER_MIT_SECOND);
+    let mut missing_blank_line = !third_content_line.is_empty();
 
     // TEMP: until we have more robust infrastructure for distinct
     // microsoft-internal checks, include this "escape hatch" for preserving
@@ -44,8 +66,9 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
     let is_msft_internal = std::env::var("XTASK_FMT_COPYRIGHT_ALLOW_MISSING_MIT").is_ok();
     if is_msft_internal {
         // support both new and existing copyright banner styles
-        missing_banner = !(first_line.contains("Copyright") && first_line.contains("Microsoft"));
-        missing_blank_line = !second_line.is_empty();
+        missing_banner =
+            !(first_content_line.contains("Copyright") && first_content_line.contains("Microsoft"));
+        missing_blank_line = !second_content_line.is_empty();
     }
 
     if fix {
@@ -64,10 +87,19 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
             let mut f = BufReader::new(File::open(path)?);
             let mut f_fixed = File::create(path_fix)?;
 
+            if let Some(script_interpreter_line) = script_interpreter_line {
+                writeln!(f_fixed, "{script_interpreter_line}")?;
+            }
+            if let Some(blank_after_script_interpreter_line) = blank_after_script_interpreter_line {
+                if !blank_after_script_interpreter_line {
+                    writeln!(f_fixed)?;
+                }
+            }
+
             if missing_banner {
                 let prefix = match ext {
                     "rs" | "c" | "proto" | "ts" | "js" => "//",
-                    "toml" => "#",
+                    "toml" | "py" | "ps1" | "config" => "#",
                     _ => unreachable!(),
                 };
 
@@ -101,17 +133,33 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
         }
     }
 
-    let msg = match (missing_banner, missing_blank_line) {
-        (true, true) => "missing copyright & license header + subsequent blank line",
-        (true, false) => "missing copyright & license header",
-        (false, true) => "missing blank line after copyright & license header",
-        (false, false) => return Ok(()),
-    };
+    // Consider using an enum if there more than three,
+    // or the errors need to be compared.
+    let mut missing = vec![];
+    if missing_banner {
+        missing.push("the copyright & license header");
+    }
+    if missing_blank_line {
+        missing.push("a blank line after the copyright & license header");
+    }
+    if let Some(blank_after_script_interpreter_line) = blank_after_script_interpreter_line {
+        if !blank_after_script_interpreter_line {
+            missing.push("a blank line after the script interpreter line");
+        }
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
 
     if fix {
-        log::info!("fixed {} in {}", msg, path.display());
+        log::info!(
+            "applied fixes for missing {:?} in {}",
+            missing,
+            path.display()
+        );
         Ok(())
     } else {
-        Err(anyhow!("{} in {}", msg, path.display()))
+        Err(anyhow!("missing {:?} in {}", missing, path.display()))
     }
 }

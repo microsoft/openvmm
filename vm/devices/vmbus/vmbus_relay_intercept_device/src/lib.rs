@@ -33,7 +33,7 @@ use task_control::StopTask;
 use task_control::TaskControl;
 use tracing::Instrument;
 use user_driver::memory::MemoryBlock;
-use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DmaClient;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::ChannelClosed;
@@ -60,7 +60,7 @@ use vmcore::notify::PolledNotify;
 use vmcore::save_restore::NoSavedState;
 use vmcore::save_restore::SavedStateBlob;
 use vmcore::save_restore::SavedStateRoot;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 pub enum OfferResponse {
     Ignore,
@@ -149,7 +149,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceWrapper<T> {
     /// Create a new instance.
     pub fn new(
         driver: impl SpawnDriver + Clone,
-        dma_alloc: Arc<dyn VfioDmaBuffer>,
+        dma_alloc: Arc<dyn DmaClient>,
         synic: Arc<dyn vmbus_client::SynicClient>,
         device: T,
     ) -> Result<Self> {
@@ -235,7 +235,7 @@ struct SimpleVmbusClientDeviceTask<T: SimpleVmbusClientDeviceAsync> {
     synic: Arc<dyn vmbus_client::SynicClient>,
     saved_state: Option<T::SavedState>,
     spawner: Arc<dyn SpawnDriver>,
-    dma_alloc: Arc<dyn VfioDmaBuffer>,
+    dma_alloc: Arc<dyn DmaClient>,
 }
 
 impl<T: SimpleVmbusClientDeviceAsync> AsyncRun<SimpleVmbusClientDeviceTaskState>
@@ -269,7 +269,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         device: T,
         synic: Arc<dyn vmbus_client::SynicClient>,
         spawner: Arc<dyn SpawnDriver>,
-        dma_alloc: Arc<dyn VfioDmaBuffer>,
+        dma_alloc: Arc<dyn DmaClient>,
     ) -> Self {
         Self {
             device: TaskControl::new(RelayDeviceTask(device)),
@@ -446,7 +446,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
 
         let mem = self
             .dma_alloc
-            .create_dma_buffer(page_count * PAGE_SIZE)
+            .allocate_dma_buffer(page_count * PAGE_SIZE)
             .context("allocating memory for vmbus rings")?;
         state.vtl_pages = Some(mem.clone());
         let buf: Vec<_> = [mem.len() as u64]

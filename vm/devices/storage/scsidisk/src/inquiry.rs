@@ -11,23 +11,25 @@ use guid::Guid;
 use scsi::AdditionalSenseCode;
 use scsi_buffers::RequestBuffers;
 use scsi_core::Request;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 type U16BE = zerocopy::byteorder::U16<zerocopy::byteorder::BigEndian>;
 type U32BE = zerocopy::byteorder::U32<zerocopy::byteorder::BigEndian>;
 type U64BE = zerocopy::byteorder::U64<zerocopy::byteorder::BigEndian>;
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct VhdmpVpdWindowsBlockDeviceRodLimitsEcopDescriptorHeader {
     pub ecop_descriptor_type: U16BE,
     pub ecop_descriptor_length: U16BE,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct VhdmpVpdWindowsBlockDeviceRodLimitsEcopDescriptor {
     pub header: VhdmpVpdWindowsBlockDeviceRodLimitsEcopDescriptorHeader,
     pub microsoft_signature: u8,                  // 0x4D --> 'M'
@@ -81,7 +83,7 @@ pub const INQUIRY_DATA_TEMPLATE: scsi::InquiryData = scsi::InquiryData {
 ///
 /// Assumes that allocation_length is already validated to be at least
 /// `size_of::<scsi::VpdPageHeader>()`.
-fn write_vpd_page<T: ?Sized + AsBytes>(
+fn write_vpd_page<T: ?Sized + IntoBytes + Immutable + KnownLayout>(
     external_data: &RequestBuffers<'_>,
     allocation_length: usize,
     page_code: u8,
@@ -169,7 +171,7 @@ impl SimpleScsiDisk {
         allocation_length: usize,
     ) -> Result<usize, ScsiError> {
         #[repr(C)]
-        #[derive(AsBytes)]
+        #[derive(IntoBytes, Immutable, KnownLayout)]
         struct Ids {
             t10_id: scsi::VpdT10Id,
             // NAA ID page - need this for compliance
@@ -252,7 +254,7 @@ impl SimpleScsiDisk {
             optimal_unmap_granularity: optimal_unmap_granularity.into(),
             unmap_granularity_alignment: [0x80, 0x00, 0x00, 0x00], // UGAValid = 1
             max_write_same_length: max_write_same_length.into(),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         tracing::debug!(
@@ -277,7 +279,7 @@ impl SimpleScsiDisk {
     ) -> Result<usize, ScsiError> {
         let page = scsi::VpdBlockDeviceCharacteristicsPage {
             medium_rotation_rate: self.scsi_parameters.medium_rotation_rate.into(),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         write_vpd_page(
@@ -467,7 +469,9 @@ impl SimpleScsiDisk {
         request: &Request,
         sector_count: u64,
     ) -> Result<usize, ScsiError> {
-        let cdb = scsi::CdbInquiry::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::CdbInquiry::read_from_prefix(&request.cdb[..])
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         let allocation_length = cdb.allocation_length.get() as usize;
         if external_data.len() < allocation_length {

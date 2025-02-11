@@ -12,8 +12,8 @@ use x86defs::cpuid::Vendor;
 use x86defs::RFlags;
 use x86emu::Gp;
 use x86emu::Segment;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 /// Implements [`EmulatorSupport`] with some features for deliberately
 /// failing vtl permissions checks and checking the resulting injected
@@ -229,7 +229,7 @@ fn validate_vtl_access_event(
     expected_vtl: Vtl,
 ) {
     let event =
-        hvdef::HvX64PendingEventMemoryIntercept::read_from(pending_event.as_bytes()).unwrap();
+        hvdef::HvX64PendingEventMemoryIntercept::read_from_bytes(pending_event.as_bytes()).unwrap();
 
     assert!(event.event_header.event_pending());
 

@@ -15,9 +15,10 @@ use bitfield_struct::bitfield;
 use hvdef::hypercall::HvInputVtl;
 use hvdef::HV_MESSAGE_SIZE;
 use libc::c_void;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default)]
@@ -43,7 +44,7 @@ pub const HV_VP_ASSIST_PAGE_SIGNAL_EVENT_COUNT: usize = 16;
 pub const HV_VP_ASSIST_PAGE_ACTION_TYPE_SIGNAL_EVENT: u64 = 1;
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct hv_vp_assist_page_signal_event {
     pub action_type: u64,
     pub vp: u32,
@@ -71,7 +72,7 @@ pub struct hcl_pfn_range_t {
     pub last_pfn: u64,
 }
 
-#[derive(FromBytes, FromZeroes, AsBytes)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct hcl_cpu_context_x64 {
     pub gps: [u64; 16],
@@ -81,7 +82,7 @@ pub struct hcl_cpu_context_x64 {
 
 const _: () = assert!(size_of::<hcl_cpu_context_x64>() == 1024);
 
-#[derive(FromBytes, FromZeroes, AsBytes)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 // NOTE: x18 is managed by the hypervisor. It is assumed here be available
 // for easier offset arithmetic.
@@ -115,7 +116,7 @@ pub const VTL_RETURN_ACTION_SIZE: usize = 256;
 
 /// Kernel IPI offloading flags
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct hcl_intr_offload_flags {
     /// Enable the base level of kernel offloading support. Requires vAPIC to be enabled.
     /// HLT and Idle are accelerated by the kernel. When halted, an interrupt may be injected
@@ -224,7 +225,7 @@ pub struct EnterModes {
 /// ioctl exit. See the TDX ABI specification for output operands for
 /// TDG.VP.ENTER.
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct tdx_tdg_vp_enter_exit_info {
     pub rax: u64,
     pub rcx: u64,
@@ -240,7 +241,7 @@ pub struct tdx_tdg_vp_enter_exit_info {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct tdx_vp_state_flags {
     /// Issue a cache flush for a WBINVD before calling VP.ENTER.
     pub wbinvd: bool,
@@ -252,7 +253,7 @@ pub struct tdx_vp_state_flags {
 
 /// Additional VP state that is save/restored across TDG.VP.ENTER.
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct tdx_vp_state {
     pub msr_kernel_gs_base: u64,
     pub msr_star: u64,
@@ -265,7 +266,7 @@ pub struct tdx_vp_state {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct tdx_vp_context {
     pub exit_info: tdx_tdg_vp_enter_exit_info,
     pub pad1: [u8; 48],

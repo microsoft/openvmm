@@ -32,10 +32,10 @@ use winapi::um::fileapi::WriteFile;
 use winapi::um::ioapiset::CancelIo;
 use winapi::um::synchapi::WaitForSingleObject;
 use winapi::um::winbase::INFINITE;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
-use zerocopy_helpers::FromBytesExt;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const MINIMUM_FRAME_SIZE: usize = 60;
 pub const FRAME_SIZE: usize = 1514;
@@ -65,7 +65,7 @@ struct QueueState {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct DioNicPacketHeader {
     len: u32,
     next: u32,
@@ -227,7 +227,7 @@ impl DioQueue {
 
         let (buf_index, offset) = self.state.in_next_full;
         let buf = &self.state.in_buf[buf_index][offset..];
-        let (header, data) = DioNicPacketHeader::read_from_prefix_split(buf).unwrap();
+        let (header, data) = DioNicPacketHeader::read_from_prefix(buf).unwrap(); // TODO: zerocopy: unwrap (https://github.com/microsoft/openvmm/issues/759)
         let len = header.len as usize;
         let r = f(&data[..len]);
         if header.next != 0 {
