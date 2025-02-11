@@ -343,10 +343,9 @@ impl QueuePair {
     #[cfg(test)]
     pub(crate) async fn verify_restore(&self, saved_state: &QueuePairSavedState, saved_mem: MemoryBlock) {
         // Entire memory region is checked below. No need for the the handler to check it again.
-        // Send an RPC request to QueueHandler thread to verify the restore status.
         let _ = self.issuer.send.call(Req::Verify, saved_state.handler_data.clone()).await;
 
-        // cancel and issuers params are runtime parameters so we don't check underlying values.
+        // `cancel` and `issuers` params are runtime parameters so we don't check underlying values.
         let mut saved_mem_data: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
         let mut self_mem_data: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
 

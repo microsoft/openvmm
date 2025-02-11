@@ -694,9 +694,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Given an input of the saved state from which the driver was constructed and the underlying
     /// memory, this validates the current driver.
-    // TODO: [expand-verify-restore-functionality] move this function to take a reference to the
-    // SavedState for versatility of use (That way it doesn't take ownership of the saved state
-    // from the unit tests)
     #[cfg(test)]
     pub(crate) async fn verify_restore(&mut self, saved_state: &NvmeDriverSavedState, mem: MemoryBlock) {
         if let Some(task) = self.task.as_mut() {

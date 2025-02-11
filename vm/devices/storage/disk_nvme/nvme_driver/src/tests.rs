@@ -312,11 +312,6 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 
 
     // ===== VERIFY RESTORE =====
-    // TODO: [nvme-keepalive-testing] We should be be byte-by-byte coplying this memory before
-    // passing it in. Reserving this for when we swap out the back end to use actual memory instead
-    // of emulated memory.
-    // TODO: [nvme-keepalive-testing] Do not need to use "allocate dma buffer" once we have actual
-    // memory backing
     let host_allocator = EmulatedDmaAllocator::new(mem.clone());
     let verify_mem = DmaClient::attach_dma_buffer(&host_allocator, base_len, 0).unwrap();
     
