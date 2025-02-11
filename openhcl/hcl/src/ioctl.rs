@@ -3154,7 +3154,7 @@ impl Hcl {
         entry: hvdef::hypercall::InterruptEntry,
         vector: u32,
         multicast: bool,
-        target_processors: &ProcessorSet<'_>,
+        target_processors: ProcessorSet<'_>,
     ) -> Result<(), HvError> {
         let header = hvdef::hypercall::RetargetDeviceInterrupt {
             partition_id: HV_PARTITION_ID_SELF,
@@ -3171,7 +3171,7 @@ impl Hcl {
                 mask_or_format: hvdef::hypercall::HV_GENERIC_SET_SPARSE_4K,
             },
         };
-        let target_processors = target_processors.as_generic_set().collect::<Vec<_>>();
+        let processor_set = Vec::from_iter(target_processors.as_generic_set());
 
         // SAFETY: The input header and slice are the correct types for this hypercall.
         //         The hypercall output is validated right after the hypercall is issued.
@@ -3180,7 +3180,7 @@ impl Hcl {
                 .hvcall_var(
                     HypercallCode::HvCallRetargetDeviceInterrupt,
                     &header,
-                    target_processors.as_bytes(),
+                    processor_set.as_bytes(),
                     &mut (),
                 )
                 .expect("submitting hypercall should not fail")

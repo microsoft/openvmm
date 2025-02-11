@@ -719,7 +719,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         data: u32,
         vector: u32,
         multicast: bool,
-        target_processors: &ProcessorSet<'_>,
+        target_processors: ProcessorSet<'_>,
     ) -> HvResult<()> {
         // Before dispatching retarget_device_interrupt, add the device vector
         // to partition global device vector table and issue `proxy_irr_blocked`
@@ -748,7 +748,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
 
     pub fn hcvm_validate_flush_inputs(
         &mut self,
-        processor_set: &ProcessorSet<'_>,
+        processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
         allow_extended_ranges: bool,
     ) -> HvResult<()> {
@@ -826,7 +826,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::RetargetDeviceInterrup
             data,
             vector,
             multicast,
-            &target_processors,
+            target_processors,
         );
         let virtual_result = self.retarget_virtual_interrupt(
             device_id,
@@ -834,7 +834,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::RetargetDeviceInterrup
             data,
             vector,
             multicast,
-            &target_processors,
+            target_processors,
         );
         hv_result.or(virtual_result)
     }

@@ -3387,7 +3387,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
         flags: HvFlushFlags,
         gva_ranges: &[HvGvaRange],
     ) -> HvRepResult {
-        self.hcvm_validate_flush_inputs(&processor_set, flags, true)
+        self.hcvm_validate_flush_inputs(processor_set, flags, true)
             .map_err(|e| (e, 0))?;
 
         let vtl = self.intercepted_vtl;
@@ -3409,10 +3409,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
         }
 
         // Send flush IPIs to the specified VPs.
-        self.wake_processors_for_tlb_flush(
-            vtl,
-            (!flags.all_processors()).then_some(&processor_set),
-        );
+        self.wake_processors_for_tlb_flush(vtl, (!flags.all_processors()).then_some(processor_set));
 
         // Mark that this VP needs to wait for all TLB locks to be released before returning.
         self.vp.set_wait_for_tlb_locks(vtl);
@@ -3445,7 +3442,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
         processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
     ) -> hvdef::HvResult<()> {
-        self.hcvm_validate_flush_inputs(&processor_set, flags, false)?;
+        self.hcvm_validate_flush_inputs(processor_set, flags, false)?;
         let vtl = self.intercepted_vtl;
 
         {
@@ -3460,10 +3457,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
         }
 
         // Send flush IPIs to the specified VPs.
-        self.wake_processors_for_tlb_flush(
-            vtl,
-            (!flags.all_processors()).then_some(&processor_set),
-        );
+        self.wake_processors_for_tlb_flush(vtl, (!flags.all_processors()).then_some(processor_set));
 
         // Mark that this VP needs to wait for all TLB locks to be released before returning.
         self.vp.set_wait_for_tlb_locks(vtl);
@@ -3502,13 +3496,13 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
     fn wake_processors_for_tlb_flush(
         &mut self,
         target_vtl: GuestVtl,
-        processor_set: Option<&ProcessorSet<'_>>,
+        processor_set: Option<ProcessorSet<'_>>,
     ) {
         match processor_set {
             Some(processors) => {
                 self.wake_processors_for_tlb_flush_inner(
                     target_vtl,
-                    processors.into_iter().map(|x| x as usize),
+                    processors.iter().map(|x| x as usize),
                 );
             }
             None => {

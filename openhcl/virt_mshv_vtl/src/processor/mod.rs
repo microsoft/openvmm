@@ -1325,9 +1325,9 @@ impl<T: CpuIo, B: Backing> UhHypercallHandler<'_, '_, T, B> {
         data: u32,
         vector: u32,
         multicast: bool,
-        target_processors: &ProcessorSet<'_>,
+        target_processors: ProcessorSet<'_>,
     ) -> hvdef::HvResult<()> {
-        let target_processors = target_processors.into_iter().collect::<Vec<_>>();
+        let target_processors = Vec::from_iter(target_processors);
         let vpci_params = vmcore::vpci_msi::VpciInterruptParameters {
             vector,
             multicast,

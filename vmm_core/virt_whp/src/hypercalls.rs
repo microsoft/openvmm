@@ -908,7 +908,7 @@ mod x86 {
             data: u32,
             params: HvInterruptParameters<'_>,
         ) -> HvResult<()> {
-            let target_processors = params.target_processors.into_iter().collect::<Vec<_>>();
+            let target_processors = Vec::from_iter(params.target_processors);
             let vpci_params = VpciInterruptParameters {
                 vector: params.vector,
                 multicast: params.multicast,
