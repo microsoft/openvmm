@@ -82,6 +82,7 @@ use pal_uring::IdleControl;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use processor::BackingSharedParams;
+use processor::LapicState;
 use processor::SidecarExitReason;
 use sidecar_client::NewSidecarClientError;
 use std::ops::RangeInclusive;
@@ -97,6 +98,8 @@ use std::task::Waker;
 use thiserror::Error;
 use virt::irqcon::IoApicRouting;
 use virt::irqcon::MsiRequest;
+use virt::state::StateElement;
+use virt::vp::MpState;
 use virt::x86::apic_software_device::ApicSoftwareDevices;
 use virt::CpuidLeafSet;
 use virt::IsolationType;
@@ -207,16 +210,10 @@ struct UhPartitionInner {
     crash_notification_send: mesh::Sender<VtlCrash>,
     monitor_page: MonitorPage,
     software_devices: Option<ApicSoftwareDevices>,
-    /// The emulated local APIC set. This is only present for
-    /// hardware-isolated VMs.
-    lapic: Option<VtlArray<LocalApicSet, 2>>,
     #[inspect(skip)]
     vmtime: VmTimeSource,
     isolation: IsolationType,
     hide_isolation: bool,
-    /// The emulated hypervisor state. This is only present for
-    /// hardware-isolated VMs.
-    hv: Option<GlobalHv>,
     /// The synic state used for untrusted SINTs, that is, the SINTs for which
     /// the guest thinks it is interacting directly with the untrusted
     /// hypervisor via an architecture-specific interface.
@@ -280,6 +277,16 @@ impl BackingShared {
             _ => unreachable!(),
         })
     }
+
+    fn cvm_state(&self) -> Option<&UhCvmPartitionState> {
+        match self {
+            BackingShared::Hypervisor => None,
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Snp(s) => Some(&s.cvm),
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Tdx(s) => Some(&s.cvm),
+        }
+    }
 }
 
 #[derive(InspectMut, Copy, Clone)]
@@ -335,16 +342,38 @@ pub struct UhCvmVpState {
     /// Hypervisor enlightenment emulator state.
     hv: VtlArray<ProcessorVtlHv, 2>,
     /// LAPIC state.
-    lapics: VtlArray<processor::LapicState, 2>,
+    lapics: VtlArray<LapicState, 2>,
 }
 
 #[cfg(guest_arch = "x86_64")]
 impl UhCvmVpState {
     /// Creates a new CVM VP state.
-    pub fn new(
-        hv: VtlArray<ProcessorVtlHv, 2>,
-        lapics: VtlArray<processor::LapicState, 2>,
+    pub(crate) fn new(
+        cvm_partition: &UhCvmPartitionState,
+        inner: &UhPartitionInner,
+        vp_info: &TargetVpInfo,
     ) -> Self {
+        let apic_base = virt::vp::Apic::at_reset(&inner.caps, vp_info).apic_base;
+        let lapics = VtlArray::from_fn(|vtl| {
+            let apic_set = &cvm_partition.lapic[vtl];
+            let mut lapic = apic_set.add_apic(vp_info);
+            // Initialize APIC base to match the reset VM state.
+            lapic.set_apic_base(apic_base).unwrap();
+            // Only the VTL 0 non-BSP LAPICs should be in the WaitForSipi state.
+            let activity = if vtl == Vtl::Vtl0 && !vp_info.base.is_bsp() {
+                MpState::WaitForSipi
+            } else {
+                MpState::Running
+            };
+            LapicState::new(lapic, activity)
+        });
+
+        let hv = VtlArray::from_fn(|vtl| {
+            cvm_partition
+                .hv
+                .add_vp(inner.gm[vtl].clone(), vp_info.base.vp_index, vtl)
+        });
+
         Self {
             vtls_tlb_waiting: VtlArray::new(false),
             exit_vtl: GuestVtl::Vtl0,
@@ -368,6 +397,10 @@ pub struct UhCvmPartitionState {
     #[inspect(with = "inspect::iter_by_index")]
     vps: Vec<UhCvmVpInner>,
     shared_memory: GuestMemory,
+    /// The emulated local APIC set.
+    lapic: VtlArray<LocalApicSet, 2>,
+    /// The emulated hypervisor state.
+    hv: GlobalHv,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -765,8 +798,8 @@ impl virt::X86Partition for UhPartition {
 
     fn pulse_lint(&self, vp_index: VpIndex, vtl: Vtl, lint: u8) {
         let vtl = GuestVtl::try_from(vtl).expect("higher vtl not configured");
-        if let Some(apic) = &self.inner.lapic {
-            apic[vtl].lint(vp_index, lint.into(), |vp_index| {
+        if let Some(apic) = &self.inner.lapic(vtl) {
+            apic.lint(vp_index, lint.into(), |vp_index| {
                 self.inner
                     .vp(vp_index)
                     .unwrap()
@@ -786,6 +819,14 @@ impl virt::X86Partition for UhPartition {
 impl UhPartitionInner {
     fn vp(&self, index: VpIndex) -> Option<&'_ UhVpInner> {
         self.vps.get(index.index() as usize)
+    }
+
+    fn lapic(&self, vtl: GuestVtl) -> Option<&LocalApicSet> {
+        self.backing_shared.cvm_state().map(|x| &x.lapic[vtl])
+    }
+
+    fn hv(&self) -> Option<&GlobalHv> {
+        self.backing_shared.cvm_state().map(|x| &x.hv)
     }
 
     /// For requester VP to issue `proxy_irr_blocked` update to other VPs
@@ -962,7 +1003,7 @@ impl UhPartitionInner {
         vtl: GuestVtl,
     ) -> impl '_ + hv1_emulator::RequestInterrupt {
         move |vector, auto_eoi| {
-            self.lapic.as_ref().unwrap()[vtl].synic_interrupt(
+            self.lapic(vtl).unwrap().synic_interrupt(
                 vp_index,
                 vector as u8,
                 auto_eoi,
@@ -1013,7 +1054,7 @@ impl vmcore::synic::GuestEventPort for UhEventPort {
                 return;
             };
             tracing::trace!(vp = vp.index(), sint, flag, "signal_event");
-            if let Some(hv) = partition.hv.as_ref() {
+            if let Some(hv) = partition.hv() {
                 match hv.synic[vtl].signal_event(
                     &partition.gm[vtl],
                     vp,
@@ -1133,9 +1174,9 @@ impl pci_core::msi::MsiInterruptTarget for UhInterruptTarget {
 
 impl UhPartitionInner {
     fn request_msi(&self, vtl: GuestVtl, request: MsiRequest) {
-        if let Some(lapic) = &self.lapic {
+        if let Some(lapic) = self.lapic(vtl) {
             tracing::trace!(?request, "interrupt");
-            lapic[vtl].request_interrupt(request.address, request.data, |vp_index| {
+            lapic.request_interrupt(request.address, request.data, |vp_index| {
                 self.vp(vp_index).unwrap().wake(vtl, WakeReason::INTCON)
             });
         } else {
@@ -1585,46 +1626,6 @@ impl<'a> UhProtoPartition<'a> {
         #[cfg(guest_arch = "x86_64")]
         let cpuid = Mutex::new(cpuid);
 
-        #[cfg(guest_arch = "x86_64")]
-        let lapic = is_hardware_isolated.then(|| {
-            VtlArray::from_fn(|_| {
-                LocalApicSet::builder()
-                    .x2apic_capable(caps.x2apic)
-                    .hyperv_enlightenments(true)
-                    .build()
-            })
-        });
-
-        #[cfg(guest_arch = "aarch64")]
-        let hv = None;
-
-        // If we're emulating the APIC, then we also must emulate the hypervisor
-        // enlightenments, since the hypervisor can't support enlightenments
-        // without also providing an APIC.
-        //
-        // Additionally, TDX provides hardware APIC emulation but we still need
-        // to emulate the hypervisor enlightenments.
-        #[cfg(guest_arch = "x86_64")]
-        let hv = if lapic.is_some() {
-            let tsc_frequency = get_tsc_frequency(isolation)?;
-
-            let ref_time = Box::new(TscReferenceTimeSource::new(tsc_frequency));
-            Some(GlobalHv::new(hv1_emulator::hv::GlobalHvParams {
-                max_vp_count: params.topology.vp_count(),
-                vendor: caps.vendor,
-                tsc_frequency,
-                ref_time,
-                hypercall_page_protectors: VtlArray::from_fn(|vtl| {
-                    late_params.isolated_memory_protector.as_ref().map(|p| {
-                        p.clone()
-                            .hypercall_overlay_protector(vtl.try_into().expect("no vtl 2"))
-                    })
-                }),
-            }))
-        } else {
-            None
-        };
-
         let untrusted_synic = if params.handle_synic {
             if matches!(isolation, IsolationType::Tdx) {
                 // Create a second synic to fully manage the untrusted SINTs
@@ -1657,7 +1658,7 @@ impl<'a> UhProtoPartition<'a> {
 
         #[cfg(guest_arch = "x86_64")]
         let cvm_state = cvm_cpuid
-            .map(|cpuid| Self::construct_cvm_state(&params, &late_params, cpuid))
+            .map(|cpuid| Self::construct_cvm_state(&params, &late_params, &caps, cpuid))
             .transpose()?;
         #[cfg(guest_arch = "aarch64")]
         let cvm_state = None;
@@ -1678,11 +1679,9 @@ impl<'a> UhProtoPartition<'a> {
             monitor_page: MonitorPage::new(),
             software_devices,
             lower_vtl_memory_layout: params.lower_vtl_memory_layout.clone(),
-            lapic,
             vmtime: late_params.vmtime.clone(),
             isolation,
             hide_isolation: params.hide_isolation,
-            hv,
             untrusted_synic,
             guest_vsm: RwLock::new(vsm_state),
             isolated_memory_protector: late_params.isolated_memory_protector.clone(),
@@ -1737,7 +1736,7 @@ impl UhPartition {
         // If Underhill is emulating the hypervisor interfaces, get this value
         // from the emulator. This happens when running under hardware isolation
         // or when configured for testing.
-        let id = if let Some(hv) = self.inner.hv.as_ref() {
+        let id = if let Some(hv) = self.inner.hv() {
             hv.guest_os_id(Vtl::Vtl0)
         } else {
             // Ask the hypervisor for this value.
@@ -1842,6 +1841,7 @@ impl UhProtoPartition<'_> {
     fn construct_cvm_state(
         params: &UhPartitionNewParams<'_>,
         late_params: &UhLateParams<'_>,
+        caps: &PartitionCapabilities,
         cpuid: cvm_cpuid::CpuidResults,
     ) -> Result<UhCvmPartitionState, Error> {
         let vp_count = params.topology.vp_count() as usize;
@@ -1853,6 +1853,36 @@ impl UhProtoPartition<'_> {
             .collect();
         let tlb_locked_vps =
             VtlArray::from_fn(|_| BitVec::repeat(false, vp_count).into_boxed_bitslice());
+
+        let lapic = VtlArray::from_fn(|_| {
+            LocalApicSet::builder()
+                .x2apic_capable(caps.x2apic)
+                .hyperv_enlightenments(true)
+                .build()
+        });
+
+        let tsc_frequency = get_tsc_frequency(params.isolation)?;
+        let ref_time = Box::new(TscReferenceTimeSource::new(tsc_frequency));
+
+        // If we're emulating the APIC, then we also must emulate the hypervisor
+        // enlightenments, since the hypervisor can't support enlightenments
+        // without also providing an APIC.
+        //
+        // Additionally, TDX provides hardware APIC emulation but we still need
+        // to emulate the hypervisor enlightenments.
+        let hv = GlobalHv::new(hv1_emulator::hv::GlobalHvParams {
+            max_vp_count: params.topology.vp_count(),
+            vendor: caps.vendor,
+            tsc_frequency,
+            ref_time,
+            hypercall_page_protectors: VtlArray::from_fn(|vtl| {
+                late_params.isolated_memory_protector.as_ref().map(|p| {
+                    p.clone()
+                        .hypercall_overlay_protector(vtl.try_into().expect("no vtl 2"))
+                })
+            }),
+        });
+
         Ok(UhCvmPartitionState {
             cpuid,
             tlb_locked_vps,
@@ -1861,6 +1891,8 @@ impl UhProtoPartition<'_> {
                 .shared_memory
                 .clone()
                 .ok_or(Error::MissingSharedMemory)?,
+            lapic,
+            hv,
         })
     }
 }

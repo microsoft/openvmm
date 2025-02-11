@@ -16,7 +16,6 @@ cfg_if::cfg_if! {
 
         use crate::VtlCrash;
         use hvdef::HvX64RegisterName;
-        use virt::state::StateElement;
         use virt::vp::AccessVpState;
         use virt::vp::MpState;
         use virt::x86::MsrError;
@@ -158,6 +157,17 @@ pub struct LapicState {
     nmi_pending: bool,
 }
 
+#[cfg(guest_arch = "x86_64")]
+impl LapicState {
+    pub fn new(lapic: LocalApic, activity: MpState) -> Self {
+        Self {
+            lapic,
+            activity,
+            nmi_pending: false,
+        }
+    }
+}
+
 mod private {
     use super::vp_state;
     use super::UhRunVpError;
@@ -169,7 +179,6 @@ mod private {
     use hcl::ioctl::ProcessorRunner;
     use hv1_emulator::hv::ProcessorVtlHv;
     use hv1_emulator::synic::ProcessorSynic;
-    use hv1_structs::VtlArray;
     use inspect::InspectMut;
     use std::future::Future;
     use virt::io::CpuIo;
@@ -180,9 +189,6 @@ mod private {
 
     pub struct BackingParams<'a, 'b, T: BackingPrivate> {
         pub(crate) partition: &'a UhPartitionInner,
-        #[cfg(guest_arch = "x86_64")]
-        pub(crate) lapics: Option<VtlArray<super::LapicState, 2>>,
-        pub(crate) hv: Option<VtlArray<ProcessorVtlHv, 2>>,
         pub(crate) vp_info: &'a TargetVpInfo,
         pub(crate) runner: &'a mut ProcessorRunner<'b, T::HclBacking>,
     }
@@ -778,46 +784,11 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             .runner(inner.cpu_index, idle_control.is_none())
             .unwrap();
 
-        #[cfg(guest_arch = "x86_64")]
-        let lapics = partition.lapic.as_ref().map(|arr| {
-            let mut lapics = arr.each_ref().map(|apic_set| apic_set.add_apic(&vp_info));
-            // Initialize APIC base to match the reset VM state.
-            let apic_base = virt::vp::Apic::at_reset(&partition.caps, &vp_info).apic_base;
-            lapics
-                .each_mut()
-                .map(|lapic| lapic.set_apic_base(apic_base).unwrap());
-            // Only the VTL 0 non-BSP LAPICs should be in the WaitForSipi state.
-            let mut first_vtl = true;
-            lapics.map(|lapic| {
-                let activity = if first_vtl && !vp_info.base.is_bsp() {
-                    MpState::WaitForSipi
-                } else {
-                    MpState::Running
-                };
-                let state = LapicState {
-                    lapic,
-                    activity,
-                    nmi_pending: false,
-                };
-                first_vtl = false;
-                state
-            })
-        });
-
-        let hv = partition.hv.as_ref().map(|hv| {
-            VtlArray::from_fn(|vtl| {
-                hv.add_vp(partition.gm[vtl].clone(), vp_info.base.vp_index, vtl)
-            })
-        });
-
         let backing_shared = T::shared(&partition.backing_shared);
 
         let backing = T::new(
             private::BackingParams {
                 partition,
-                #[cfg(guest_arch = "x86_64")]
-                lapics,
-                hv,
                 vp_info: &vp_info,
                 runner: &mut runner,
             },

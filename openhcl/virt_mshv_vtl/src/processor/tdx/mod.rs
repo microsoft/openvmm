@@ -540,7 +540,7 @@ impl HardwareIsolatedBacking for TdxBacked {
 /// Partition-wide shared data for TDX VPs.
 #[derive(Inspect)]
 pub struct TdxBackedShared {
-    cvm: UhCvmPartitionState,
+    pub(crate) cvm: UhCvmPartitionState,
     flush_state: VtlArray<RwLock<TdxPartitionFlushState>, 2>,
     #[inspect(iter_by_index)]
     active_vtl: Vec<AtomicU8>,
@@ -573,7 +573,7 @@ impl BackingPrivate for TdxBacked {
 
     fn new(
         params: super::private::BackingParams<'_, '_, Self>,
-        _shared: &TdxBackedShared,
+        shared: &TdxBackedShared,
     ) -> Result<Self, crate::Error> {
         // TODO TDX: TDX shares the vp context page for xmm registers only. It
         // should probably move to its own page.
@@ -760,7 +760,7 @@ impl BackingPrivate for TdxBacked {
             untrusted_synic,
             eoi_exit_bitmap: [0; 4],
             flush_page,
-            cvm: UhCvmVpState::new(params.hv.unwrap(), params.lapics.unwrap()),
+            cvm: UhCvmVpState::new(&shared.cvm, params.partition, params.vp_info),
         })
     }
 
