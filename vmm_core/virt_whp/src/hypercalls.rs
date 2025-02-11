@@ -906,12 +906,13 @@ mod x86 {
             device_id: u64,
             address: u64,
             data: u32,
-            params: &HvInterruptParameters<'_>,
+            params: HvInterruptParameters<'_>,
         ) -> HvResult<()> {
+            let target_processors = params.target_processors.into_iter().collect::<Vec<_>>();
             let vpci_params = VpciInterruptParameters {
                 vector: params.vector,
                 multicast: params.multicast,
-                target_processors: params.target_processors,
+                target_processors: &target_processors,
             };
 
             match self.vp.current_vtlp().software_devices.retarget_interrupt(
