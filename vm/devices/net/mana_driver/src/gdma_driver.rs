@@ -85,9 +85,12 @@ use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
 
 const HWC_WARNING_TIME_IN_MS: u32 = 3000;
+const HWC_WARNING_INCREASE_IN_MS: u32 = 1000;
 const HWC_TIMEOUT_DEFAULT_IN_MS: u32 = 10000;
 const HWC_TIMEOUT_FOR_SHUTDOWN_IN_MS: u32 = 100;
 const HWC_POLL_TIMEOUT_IN_MS: u64 = 10000;
+const HWC_INTERRUPT_POLL_WAIT_MIN_MS: u32 = 20;
+const HWC_INTERRUPT_POLL_WAIT_MAX_MS: u32 = 500;
 
 #[derive(Inspect)]
 struct Bar0<T: Inspect> {
@@ -203,6 +206,15 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
             tracing::error!("DESTROY_HWC failed: {}", header.status());
         }
     }
+}
+
+struct EqeWaitResult {
+    eqe_found: bool,
+    elapsed: u128,
+    eq_arm_count: u32,
+    interrupt_wait_count: u32,
+    interrupt_count: u32,
+    last_wait_result: anyhow::Result<()>,
 }
 
 impl<T: DeviceBacking> GdmaDriver<T> {
@@ -466,7 +478,12 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(this)
     }
 
-    async fn report_hwc_timeout(&mut self, last_cmd_failed: bool, ms_elapsed_for_interrupt: u32) {
+    async fn report_hwc_timeout(
+        &mut self,
+        last_cmd_failed: bool,
+        interrupt_loss: bool,
+        ms_elapsed: u32,
+    ) {
         // Perform initial check for ownership, failing without wait if device
         // is not present or owns shmem region
         let data = self
@@ -510,7 +527,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         );
         self.bar0.mem.write_u32(
             self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 24,
-            ((last_cmd_failed as u32) << 24) | (ms_elapsed_for_interrupt & 0xFFFFFF),
+            ((last_cmd_failed as u32) << 24)
+                | ((interrupt_loss as u32) << 25)
+                | (ms_elapsed & 0xFFFFFF),
         );
 
         // Format and write header information in final 32-bit range, flipping
@@ -757,10 +776,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
     }
 
     pub fn process_all_eqs(&mut self) -> bool {
-        let mut eq_found = false;
+        let mut eqe_found = false;
         while let Some(eqe) = self.eq.pop() {
             self.eq_armed = false;
-            eq_found = true;
+            eqe_found = true;
             match eqe.params.event_type() {
                 GDMA_EQE_COMPLETION => self.cq_armed = false,
                 GDMA_EQE_TEST_EVENT => self.test_events += 1,
@@ -796,7 +815,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             self.eq.arm();
             self.eq_armed = true;
         }
-        eq_found
+        eqe_found
     }
 
     async fn wait_for_hwc_interrupt(
@@ -816,56 +835,116 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(())
     }
 
-    async fn process_eqs_or_wait(&mut self) -> anyhow::Result<()> {
+    async fn process_eqs_or_wait_with_retry(&mut self) -> EqeWaitResult {
+        let mut eqe_wait_result = EqeWaitResult {
+            eqe_found: false,
+            elapsed: 0,
+            eq_arm_count: 0,
+            interrupt_wait_count: 0,
+            interrupt_count: 0,
+            last_wait_result: Ok(()),
+        };
         loop {
-            if self.process_all_eqs() {
-                return Ok(());
-            }
-
+            // Arm the EQ if it is not already armed.
             if !self.eq_armed {
-                tracing::trace!("arming eq");
+                eqe_wait_result.eq_arm_count += 1;
                 self.eq.arm();
                 self.eq_armed = true;
                 // Check if the event arrived while arming.
                 if self.process_all_eqs() {
                     // Remove any pending interrupt events.
                     let _ = self.interrupts[0].as_mut().unwrap().wait().now_or_never();
-                    return Ok(());
+                    eqe_wait_result.eqe_found = true;
+                    eqe_wait_result.last_wait_result = Ok(()); // Reset last_wait_result.
+                    break eqe_wait_result;
                 }
             }
-            tracing::trace!("waiting for eq interrupt");
+
+            // Wait for an interrupt.
+            eqe_wait_result.interrupt_wait_count += 1;
+            let ms_wait = (HWC_INTERRUPT_POLL_WAIT_MIN_MS
+                * 2u32.pow(eqe_wait_result.interrupt_wait_count - 1))
+            .min(HWC_INTERRUPT_POLL_WAIT_MAX_MS)
+            .min(self.hwc_timeout_in_ms - eqe_wait_result.elapsed as u32);
             let before_wait = std::time::Instant::now();
-            let wait_result = Self::wait_for_hwc_interrupt(
+            eqe_wait_result.last_wait_result = Self::wait_for_hwc_interrupt(
                 self.interrupts[0].as_mut().unwrap(),
                 Some(&mut self.hwc_failure),
-                self.hwc_timeout_in_ms,
+                ms_wait,
             )
             .await;
-
-            let wait_failed = wait_result.is_err();
-            let elapsed: u128 = before_wait.elapsed().as_millis();
-            if wait_failed || elapsed > self.hwc_warning_time_in_ms as u128 {
-                tracing::warn!(
-                    wait_failed,
-                    elapsed,
-                    self.hwc_warning_time_in_ms,
-                    "hwc {}",
-                    match wait_failed {
-                        true => "timeout",
-                        false => "delay warning",
-                    }
-                );
-                self.report_hwc_timeout(wait_failed, elapsed as u32).await;
-                if !wait_failed {
-                    // Increase warning threshold after each warning occurrence
-                    self.hwc_warning_time_in_ms += HWC_WARNING_TIME_IN_MS;
-                }
+            eqe_wait_result.elapsed += before_wait.elapsed().as_millis();
+            if eqe_wait_result.last_wait_result.is_ok() {
+                eqe_wait_result.interrupt_count += 1;
             }
 
-            if wait_failed {
-                return wait_result;
+            // Poll for EQ events.
+            if self.process_all_eqs() {
+                eqe_wait_result.eqe_found = true;
+                break eqe_wait_result;
+            }
+
+            // Exit with no eqe found if timeout occurs.
+            if eqe_wait_result.elapsed >= self.hwc_timeout_in_ms as u128 {
+                eqe_wait_result.eqe_found = false;
+                break eqe_wait_result;
             }
         }
+    }
+
+    async fn process_eqs_or_wait(&mut self) -> anyhow::Result<()> {
+        let eqe_wait_result = self.process_eqs_or_wait_with_retry().await;
+        let wait_failed = !eqe_wait_result.eqe_found;
+        let interrupt_loss = eqe_wait_result.interrupt_wait_count != 0
+            && eqe_wait_result.interrupt_count == 0
+            && !wait_failed;
+        if wait_failed
+            || eqe_wait_result.elapsed > self.hwc_warning_time_in_ms as u128
+            || interrupt_loss
+        {
+            tracing::warn!(
+                wait_failed,
+                wait_ms = eqe_wait_result.elapsed,
+                int_loss = interrupt_loss,
+                int_count = eqe_wait_result.interrupt_count,
+                int_waits = eqe_wait_result.interrupt_wait_count,
+                arm_count = eqe_wait_result.eq_arm_count,
+                warn_ms = self.hwc_warning_time_in_ms,
+                "hwc {}",
+                match (wait_failed, interrupt_loss) {
+                    (true, _) => "timeout waiting for response",
+                    (_, true) =>
+                        "response received with interrupt wait attempted but no interrupt received",
+                    _ => "response received with delay",
+                }
+            );
+            self.report_hwc_timeout(wait_failed, interrupt_loss, eqe_wait_result.elapsed as u32)
+                .await;
+            if !wait_failed && eqe_wait_result.elapsed > self.hwc_warning_time_in_ms as u128 {
+                // Increase warning threshold after each delay warning occurrence.
+                self.hwc_warning_time_in_ms += HWC_WARNING_INCREASE_IN_MS;
+            }
+        } else if eqe_wait_result.interrupt_wait_count != 0 || eqe_wait_result.eq_arm_count != 0 {
+            tracing::trace!(
+                wait_ms = eqe_wait_result.elapsed,
+                int_count = eqe_wait_result.interrupt_count,
+                int_waits = eqe_wait_result.interrupt_wait_count,
+                arm_count = eqe_wait_result.eq_arm_count,
+                "found HWC response EQE after arm or wait",
+            );
+        }
+        if wait_failed {
+            self.hwc_failure = true;
+            if eqe_wait_result.last_wait_result.is_err() {
+                return eqe_wait_result.last_wait_result;
+            } else {
+                return Err(anyhow::anyhow!(
+                    "MANA request timed out. No EQE found for HWC response."
+                ));
+            }
+        }
+        self.hwc_failure = false;
+        Ok(())
     }
 
     async fn wait_cq(&mut self) -> anyhow::Result<Cqe> {
