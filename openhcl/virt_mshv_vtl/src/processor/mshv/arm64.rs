@@ -87,7 +87,6 @@ impl BackingPrivate for HypervisorBackedArm64 {
         vp::Registers::at_reset(&params.partition.caps, params.vp_info);
         // TODO: reset the registers in the CPU context.
         let _ = params.runner;
-        assert!(params.hv.is_none());
         Ok(Self {
             deliverability_notifications: Default::default(),
             next_deliverability_notifications: Default::default(),

@@ -18,14 +18,17 @@ cfg_if::cfg_if!(
         pub use processor::tdx::shared_pages_required_per_cpu as tdx_shared_pages_required_per_cpu;
         pub use processor::tdx::TdxBacked;
         pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
+        use bitvec::prelude::BitArray;
+        use bitvec::prelude::Lsb0;
         use devmsr::MsrDevice;
         use hv1_emulator::hv::ProcessorVtlHv;
+        use processor::LapicState;
         use processor::snp::SnpBackedShared;
         use processor::tdx::TdxBackedShared;
         use std::arch::x86_64::CpuidResult;
         use virt::CpuidLeaf;
-        use bitvec::prelude::BitArray;
-        use bitvec::prelude::Lsb0;
+        use virt::state::StateElement;
+        use virt::vp::MpState;
         /// Bitarray type for representing IRR bits in a x86-64 APIC
         /// Each bit represent the 256 possible vectors.
         type IrrBitmap = BitArray<[u32; 8], Lsb0>;
@@ -82,7 +85,6 @@ use pal_uring::IdleControl;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use processor::BackingSharedParams;
-use processor::LapicState;
 use processor::SidecarExitReason;
 use sidecar_client::NewSidecarClientError;
 use std::ops::RangeInclusive;
@@ -98,8 +100,6 @@ use std::task::Waker;
 use thiserror::Error;
 use virt::irqcon::IoApicRouting;
 use virt::irqcon::MsiRequest;
-use virt::state::StateElement;
-use virt::vp::MpState;
 use virt::x86::apic_software_device::ApicSoftwareDevices;
 use virt::CpuidLeafSet;
 use virt::IsolationType;
@@ -383,10 +383,10 @@ impl UhCvmVpState {
     }
 }
 
-#[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
 /// Partition-wide state for CVMs.
 pub struct UhCvmPartitionState {
+    #[cfg(guest_arch = "x86_64")]
     #[inspect(skip)]
     cpuid: cvm_cpuid::CpuidResults,
     /// VPs that have locked their TLB.
@@ -403,14 +403,12 @@ pub struct UhCvmPartitionState {
     hv: GlobalHv,
 }
 
-#[cfg(guest_arch = "x86_64")]
 impl UhCvmPartitionState {
     fn vp_inner(&self, vp_index: u32) -> &UhCvmVpInner {
         &self.vps[vp_index as usize]
     }
 }
 
-#[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
 /// Per-vp state for CVMs.
 pub struct UhCvmVpInner {
@@ -419,11 +417,6 @@ pub struct UhCvmVpInner {
     /// Whether VTL 1 has been enabled on the vp
     vtl1_enabled: Mutex<bool>,
 }
-
-/// Partition-wide state for CVMs.
-#[cfg(guest_arch = "aarch64")]
-#[derive(Inspect)]
-pub enum UhCvmPartitionState {}
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 #[derive(Inspect)]
@@ -1585,8 +1578,7 @@ impl<'a> UhProtoPartition<'a> {
         let software_devices = None;
 
         #[cfg(guest_arch = "aarch64")]
-        let (lapic, caps, cpuid) = (
-            None,
+        let (caps, cpuid) = (
             virt::aarch64::Aarch64PartitionCapabilities {},
             Mutex::new(CpuidLeafSet::new(Vec::new())),
         );
