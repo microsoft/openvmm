@@ -144,6 +144,7 @@ impl IoQueue {
         self.queue.verify_restore(saved_state.queue_data, mem);
 
         // TODO: [expand-verify-restore-functionality] What is the iv in the IoQueue vs msix in the IoQueueSavedState
+        assert_eq!(saved_state.msix, self.iv as u32);
         assert_eq!(saved_state.cpu, self.cpu);
     }
 }
@@ -728,17 +729,13 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         assert_eq!(saved_state.device_id, self.device_id);
 
-        // TODO: [expand-verify-restore-functionality]
-        // self.identify.verify_restore(saved_state.identify_ctrl)?;
+        if let Some(identify) = &self.identify {
+            assert_eq!(saved_state.identify_ctrl.as_bytes(), identify.as_bytes());
+        } else {
+            panic!("idenitfy value cannot be None after restore");
+        }
 
         // TODO: [expand-verify-restore-functionality] Namespace save is currently not supported.
-        // if saved_state.namespaces.len() != self.namespaces.len() {
-        //     return Err(format!("number of namespaces after restore is incorrect. Expected: {} Actual: {}", saved_state.namespaces.len(), self.namespaces.len()));
-        // }
-
-        // for i in 0..saved_state.namespaces.len() {
-        //     self.namespaces[i].verify_restore(saved_state.namespaces[i])?;
-        // }
         
         assert!(self.nvme_keepalive);
     }
