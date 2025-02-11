@@ -71,16 +71,6 @@ impl MutableHvState {
             tsc_sequence: 0,
         }
     }
-
-    fn reset(&mut self) {
-        if let Some(p) = self.hypercall_protector.as_mut() {
-            p.disable_overlay();
-        }
-        self.hypercall = hvdef::hypercall::MsrHypercallContents::new();
-        self.guest_os_id = hvdef::hypercall::HvGuestOsId::new();
-        self.reference_tsc = hvdef::HvRegisterReferenceTsc::new();
-        self.tsc_sequence = 0;
-    }
 }
 
 /// Parameters used when constructing a [`GlobalHv`].
@@ -131,14 +121,6 @@ impl GlobalHv {
         }
     }
 
-    /// Resets the global (but not per-processor) state.
-    pub fn reset(&self) {
-        for state in self.vtl_mutable_state.iter() {
-            state.lock().reset();
-        }
-        // There is no global synic state to reset, since the synic is per-VP.
-    }
-
     /// The current guest_os_id value.
     pub fn guest_os_id(&self, vtl: hvdef::Vtl) -> hvdef::hypercall::HvGuestOsId {
         self.vtl_mutable_state[vtl].lock().guest_os_id
@@ -163,21 +145,6 @@ impl ProcessorVtlHv {
     /// The current reference time.
     pub fn ref_time_now(&self) -> u64 {
         self.partition_state.ref_time.now_100ns()
-    }
-
-    /// Resets the processor's state.
-    pub fn reset(&mut self) {
-        let Self {
-            vp_index: _,
-            partition_state: _,
-            vtl_state: _,
-            guest_memory: _,
-            synic,
-            vp_assist_page,
-        } = self;
-
-        synic.reset();
-        *vp_assist_page = Default::default();
     }
 
     /// Emulates an MSR write for an HV#1 synthetic MSR.
