@@ -81,7 +81,7 @@ impl Device {
         if params.multicast && params.target_processors.len() > 1 {
             flags |= whp::abi::WHvVpciInterruptTargetFlagMulticast;
         }
-        let target_processors = params.target_processors.into_iter().collect::<Vec<_>>();
+        let target_processors = Vec::from_iter(params.target_processors);
         let target = VpciInterruptTarget::new(params.vector, flags, &target_processors);
         self.device()
             .retarget_interrupt(address, data, &target)

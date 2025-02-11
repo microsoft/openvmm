@@ -2358,8 +2358,9 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
         processor_set: &ProcessorSet<'_>,
         flags: HvFlushFlags,
     ) {
-        let only_self = processor_set.len() == 1
-            && processor_set.into_iter().next() == Some(self.vp.vp_index().index());
+        let only_self = [self.vp.vp_index().index()]
+            .into_iter()
+            .eq(processor_set.iter());
         if only_self && flags.non_global_mappings_only() {
             self.vp.runner.vmsa_mut(self.intercepted_vtl).set_pcpu_id(0);
         } else {

@@ -3171,26 +3171,7 @@ impl Hcl {
                 mask_or_format: hvdef::hypercall::HV_GENERIC_SET_SPARSE_4K,
             },
         };
-
-        // The processor set is initialized with only the banks field, set to 0.
-        let mut processor_set = vec![0u64; 1];
-        let mut last_bank = None;
-        let mut last_processor = None;
-        for processor in target_processors {
-            if let Some(last_processor) = last_processor {
-                assert!(processor > last_processor);
-            }
-
-            let bank = processor as usize / 64;
-            let bit = processor as usize % 64;
-            if Some(bank) != last_bank {
-                processor_set.push(0);
-                processor_set[0] |= 1 << bank;
-                last_bank = Some(bank);
-            }
-            *processor_set.last_mut().unwrap() |= 1 << bit;
-            last_processor = Some(processor);
-        }
+        let target_processors = target_processors.as_generic_set().collect::<Vec<_>>();
 
         // SAFETY: The input header and slice are the correct types for this hypercall.
         //         The hypercall output is validated right after the hypercall is issued.
@@ -3199,7 +3180,7 @@ impl Hcl {
                 .hvcall_var(
                     HypercallCode::HvCallRetargetDeviceInterrupt,
                     &header,
-                    processor_set.as_bytes(),
+                    target_processors.as_bytes(),
                     &mut (),
                 )
                 .expect("submitting hypercall should not fail")

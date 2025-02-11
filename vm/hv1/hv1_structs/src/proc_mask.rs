@@ -4,13 +4,14 @@
 //! Structures for working with processor masks.
 
 /// A set of processor IDs, stored as a sparse array of 64-bit masks.
-#[derive(Clone)]
+#[derive(Copy, Clone)]
 pub struct ProcessorSet<'a> {
     valid_masks: u64,
     masks: &'a [u64],
 }
 
 impl<'a> ProcessorSet<'a> {
+    /// Attempts to create a ProcessorSet from a HV_GENERIC_SET_SPARSE_4K format HV_GENERIC_SET.
     pub fn from_generic_set(format: u64, rest: &'a [u64]) -> Option<Self> {
         if format != hvdef::hypercall::HV_GENERIC_SET_SPARSE_4K {
             return None;
@@ -21,6 +22,7 @@ impl<'a> ProcessorSet<'a> {
         Self::from_processor_masks(valid_masks, masks)
     }
 
+    /// Attempts to create a ProcessorSet from a set of processor masks.
     pub fn from_processor_masks(valid_masks: u64, masks: &'a [u64]) -> Option<Self> {
         let mask_count = valid_masks.count_ones();
         if masks.len() != mask_count as usize {
@@ -29,78 +31,69 @@ impl<'a> ProcessorSet<'a> {
         Some(Self { valid_masks, masks })
     }
 
-    /// Returns the set as a raw HV_GENERIC_SET_SPARSE_4K, suitable for use in a hypercall.
-    pub fn as_raw(&self) -> Vec<u64> {
-        let mut raw = Vec::with_capacity(1 + self.masks.len());
-        raw.push(self.valid_masks);
-        raw.extend_from_slice(self.masks);
-        raw
+    /// Returns the set as an iterator of u64s, suitable for collecting and
+    /// using as raw HV_GENERIC_SET_SPARSE_4K in a hypercall.
+    pub fn as_generic_set(&self) -> impl Iterator<Item = u64> + use<'_> {
+        std::iter::once(self.valid_masks).chain(self.masks.iter().copied())
     }
 
+    /// Returns true if the set is empty.
     pub fn is_empty(&self) -> bool {
-        self.valid_masks == 0 || self.masks.iter().all(|x| *x == 0)
+        self.valid_masks == 0 || self.count() == 0
     }
 
-    pub fn len(&self) -> usize {
+    /// Returns the number of processors in the set.
+    pub fn count(&self) -> usize {
         self.masks.iter().map(|x| x.count_ones() as usize).sum()
+    }
+
+    /// Returns an iterator over the processor IDs in the set.
+    pub fn iter(&self) -> ProcessorSetIter<'a> {
+        self.into_iter()
     }
 }
 
-impl<'a> IntoIterator for &'a ProcessorSet<'a> {
+impl<'a> IntoIterator for ProcessorSet<'a> {
     type Item = u32;
     type IntoIter = ProcessorSetIter<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
         ProcessorSetIter {
-            len: self.len(),
-            set: self,
-            valid_mask_bit: 0,
-            mask_idx: 0,
-            mask_bit: 0,
+            bit: 0,
+            mask: 0,
+            remaining_valid: self.valid_masks,
+            masks: self.masks,
         }
     }
 }
 
+/// An iterator over the processor IDs in a ProcessorSet.
 pub struct ProcessorSetIter<'a> {
-    set: &'a ProcessorSet<'a>,
-    valid_mask_bit: usize,
-    mask_idx: usize,
-    mask_bit: usize,
-    len: usize,
+    bit: u32,
+    mask: u64,
+    remaining_valid: u64,
+    masks: &'a [u64],
 }
 
 impl Iterator for ProcessorSetIter<'_> {
     type Item = u32;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.valid_mask_bit < 64 {
-            if self.set.valid_masks & (1 << self.valid_mask_bit) == 0 {
-                self.valid_mask_bit += 1;
-                continue;
-            }
-            let mask = self.set.masks[self.mask_idx];
-            while self.mask_bit < 64 {
-                if mask & (1 << self.mask_bit) == 0 {
-                    self.mask_bit += 1;
-                    continue;
-                }
-                let processor_id = (self.valid_mask_bit * 64 + self.mask_bit) as u32;
-                self.mask_bit += 1;
-                return Some(processor_id);
-            }
-            self.mask_bit = 0;
-            self.mask_idx += 1;
-            self.valid_mask_bit += 1;
+    fn next(&mut self) -> Option<u32> {
+        while self.mask == 0 {
+            self.mask = *self.masks.first()?;
+            self.masks = &self.masks[1..];
+            self.bit = self.remaining_valid.trailing_zeros();
+            self.remaining_valid &= !(1 << self.bit);
         }
-        None
+        let proc = self.mask.trailing_zeros();
+        self.mask &= !(1 << proc);
+        Some(self.bit * 64 + proc)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.len, Some(self.len))
+        (self.masks.len(), None)
     }
 }
-
-impl ExactSizeIterator for ProcessorSetIter<'_> {}
 
 impl std::iter::FusedIterator for ProcessorSetIter<'_> {}
 
@@ -112,7 +105,7 @@ mod test {
     // Values taken from the Hypervisor Functional Specification
     fn test_processor_set() {
         let set = ProcessorSet::from_processor_masks(0x5, &[0x21, 0x4]).unwrap();
-        assert_eq!(set.len(), 3);
+        assert_eq!(set.count(), 3);
 
         let mut iter = set.into_iter();
         assert_eq!(iter.next(), Some(0));
