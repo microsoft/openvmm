@@ -15,10 +15,10 @@ use ::windows::Win32::Security as W32Sec;
 use ::windows::Win32::Storage::FileSystem as W32Fs;
 use ::windows::Win32::System::SystemServices as W32Ss;
 use ::windows::Win32::System::Threading;
+use headervec::HeaderVec;
 use ntapi::ntioapi;
 use ntapi::ntrtl::RtlIsDosDeviceName_U;
 use pal::windows;
-use pal::HeaderVec;
 use std::ffi;
 use std::mem;
 use std::os::windows::prelude::*;
@@ -242,7 +242,7 @@ pub fn check_security(file: &OwnedHandle, desired_access: u32) -> lx::Result<u32
     // NtQuerySecurityObject returns a SECURITY_DESCRIPTOR in self-relative form, so allocate a buffer
     // with the SECURITY_DESCRIPTOR at the head and a byte buffer at the end. We don't actually use
     // the rest of the bytes, but we need to allocate the buffer to pass to NtQuerySecurityObject.
-    let mut sd = HeaderVec::<Security::SECURITY_DESCRIPTOR, [u8; 1]>::with_capacity(
+    let mut sd = HeaderVec::<Security::SECURITY_DESCRIPTOR, u8, 1>::with_capacity(
         Security::SECURITY_DESCRIPTOR::default(),
         initial_size - size_of::<Security::SECURITY_DESCRIPTOR>(),
     );
@@ -277,7 +277,7 @@ pub fn check_security(file: &OwnedHandle, desired_access: u32) -> lx::Result<u32
 
     // SAFETY: The tail elements are guaranteed to be initialized.
     unsafe {
-        sd.set_len(length_needed as usize - size_of::<Security::SECURITY_DESCRIPTOR>());
+        sd.set_tail_len(length_needed as usize - size_of::<Security::SECURITY_DESCRIPTOR>());
     }
     let client_token = get_token_for_access_check()?;
     let generic_mapping = W32Sec::GENERIC_MAPPING {
@@ -1092,7 +1092,7 @@ pub fn create_link(
         ..Default::default()
     };
 
-    impl FileInformationClass for HeaderVec<FILE_LINK_INFORMATION, [u16; 1]> {
+    impl FileInformationClass for HeaderVec<FILE_LINK_INFORMATION, u16, 1> {
         fn file_information_class(&self) -> FileSystem::FILE_INFORMATION_CLASS {
             FileSystem::FileLinkInformation
         }
@@ -1109,8 +1109,8 @@ pub fn create_link(
     }
 
     let mut buffer =
-        HeaderVec::<FILE_LINK_INFORMATION, [u16; 1]>::with_capacity(link, new_path.len());
-    buffer.extend_from_slice(new_path.as_slice());
+        HeaderVec::<FILE_LINK_INFORMATION, u16, 1>::with_capacity(link, new_path.len());
+    buffer.extend_tail_from_slice(new_path.as_slice());
 
     set_information_file(handle, &buffer)?;
 
@@ -1187,7 +1187,7 @@ pub fn rename(
     #[repr(transparent)]
     struct FILE_RENAME_INFORMATION_EX(FILE_RENAME_INFORMATION);
 
-    impl FileInformationClass for HeaderVec<FILE_RENAME_INFORMATION, [u16; 1]> {
+    impl FileInformationClass for HeaderVec<FILE_RENAME_INFORMATION, u16, 1> {
         fn file_information_class(&self) -> FileSystem::FILE_INFORMATION_CLASS {
             FileSystem::FileRenameInformation
         }
@@ -1203,7 +1203,7 @@ pub fn rename(
         }
     }
 
-    impl FileInformationClass for HeaderVec<FILE_RENAME_INFORMATION_EX, [u16; 1]> {
+    impl FileInformationClass for HeaderVec<FILE_RENAME_INFORMATION_EX, u16, 1> {
         fn file_information_class(&self) -> FileSystem::FILE_INFORMATION_CLASS {
             FileSystem::FileRenameInformationEx
         }
@@ -1241,16 +1241,16 @@ pub fn rename(
     // FILE_RENAME_INFORMATION_EX to pass the correct FileInformationClass to
     // set_information_file
     if flags.posix_semantics() {
-        let mut buffer = HeaderVec::<FILE_RENAME_INFORMATION_EX, [u16; 1]>::with_capacity(
+        let mut buffer = HeaderVec::<FILE_RENAME_INFORMATION_EX, u16, 1>::with_capacity(
             FILE_RENAME_INFORMATION_EX(info),
             target_name.len(),
         );
-        buffer.extend_from_slice(target_name.as_slice());
+        buffer.extend_tail_from_slice(target_name.as_slice());
         set_information_file(current, &buffer)
     } else {
         let mut buffer =
-            HeaderVec::<FILE_RENAME_INFORMATION, [u16; 1]>::with_capacity(info, target_name.len());
-        buffer.extend_from_slice(target_name.as_slice());
+            HeaderVec::<FILE_RENAME_INFORMATION, u16, 1>::with_capacity(info, target_name.len());
+        buffer.extend_tail_from_slice(target_name.as_slice());
         set_information_file(current, &buffer)
     }
 }

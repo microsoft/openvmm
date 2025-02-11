@@ -93,7 +93,7 @@ pub fn open_afd() -> std::io::Result<File> {
 /// `len` bytes.
 pub unsafe fn poll(
     handle: RawHandle,
-    poll_info: &mut PollInfo,
+    poll_info: *mut PollInfo,
     len: usize,
     overlapped: *mut OVERLAPPED,
 ) -> bool {
@@ -102,9 +102,9 @@ pub unsafe fn poll(
         DeviceIoControl(
             handle,
             IOCTL_AFD_POLL,
-            std::ptr::from_mut::<PollInfo>(poll_info).cast::<std::ffi::c_void>(),
+            poll_info.cast::<std::ffi::c_void>(),
             len as u32,
-            std::ptr::from_mut::<PollInfo>(poll_info).cast::<std::ffi::c_void>(),
+            poll_info.cast::<std::ffi::c_void>(),
             len as u32,
             &mut returned,
             overlapped,

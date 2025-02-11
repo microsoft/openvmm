@@ -22,6 +22,7 @@ libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 bitfield-struct.workspace = true
+headervec.workspace = true
 ntapi.workspace = true
 parking_lot.workspace = true
 static_assertions.workspace = true
@@ -47,14 +48,14 @@ features = [
 
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true
-features = [ 
+features = [
     "Wdk_Foundation",
     "Wdk_Storage_FileSystem",
     "Wdk_System_SystemServices",
     "Wdk_System_Threading",
-    "Win32_Foundation", 
-    "Win32_Security", 
-    "Win32_Storage_FileSystem", 
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Ioctl",
     "Win32_System_Kernel",

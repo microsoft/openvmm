@@ -2691,6 +2691,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "headervec"
+version = "0.0.0"
+
+[[package]]
 name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3688,6 +3692,7 @@ name = "lxutil"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct",
+ "headervec",
  "libc",
  "lx",
  "ntapi",
@@ -4928,6 +4933,7 @@ dependencies = [
  "caps",
  "fs-err",
  "getrandom",
+ "headervec",
  "landlock",
  "libc",
  "ntapi",
@@ -4951,6 +4957,7 @@ dependencies = [
  "cfg-if",
  "futures",
  "getrandom",
+ "headervec",
  "libc",
  "loan_cell",
  "once_cell",
