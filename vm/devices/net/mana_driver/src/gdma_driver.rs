@@ -90,7 +90,8 @@ const HWC_WARNING_INCREASE_IN_MS: u32 = 1000;
 const HWC_TIMEOUT_DEFAULT_IN_MS: u32 = 10000;
 const HWC_TIMEOUT_FOR_SHUTDOWN_IN_MS: u32 = 100;
 const HWC_POLL_TIMEOUT_IN_MS: u64 = 10000;
-const HWC_INTERRUPT_POLL_WAIT_IN_MS: u32 = 500;
+const HWC_INTERRUPT_POLL_WAIT_MIN_MS: u32 = 20;
+const HWC_INTERRUPT_POLL_WAIT_MAX_MS: u32 = 500;
 
 #[derive(Inspect)]
 struct Bar0<T: Inspect> {
@@ -888,11 +889,15 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
             // Wait for an interrupt.
             eqe_wait_result.interrupt_wait_count += 1;
+            let ms_wait = (HWC_INTERRUPT_POLL_WAIT_MIN_MS
+                * 2u32.pow(eqe_wait_result.interrupt_wait_count - 1))
+            .min(HWC_INTERRUPT_POLL_WAIT_MAX_MS)
+            .min(self.hwc_timeout_in_ms - eqe_wait_result.elapsed as u32);
             let before_wait = std::time::Instant::now();
             eqe_wait_result.last_wait_result = Self::wait_for_hwc_interrupt(
                 self.interrupts[0].as_mut().unwrap(),
                 Some(&mut self.hwc_failure),
-                HWC_INTERRUPT_POLL_WAIT_IN_MS,
+                ms_wait,
             )
             .await;
             eqe_wait_result.elapsed += before_wait.elapsed().as_millis();
