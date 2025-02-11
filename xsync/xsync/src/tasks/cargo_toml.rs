@@ -31,7 +31,7 @@ impl Cmd for CargoToml {
         let overlay_cargo_toml =
             fs_err::read_to_string(ctx.overlay_workspace.join("Cargo.xsync.toml"))?;
         let mut overlay_cargo_toml = cargo_toml::Manifest::<
-            self::custom_meta::CargoOverlayMetadata,
+            super::custom_meta::CargoOverlayMetadata,
         >::from_slice_with_metadata(
             overlay_cargo_toml.as_bytes()
         )?;
@@ -58,10 +58,11 @@ impl Cmd for CargoToml {
         // handle simple inherited Cargo.toml fields
         //
         {
-            let self::custom_meta::Inherit {
+            let super::custom_meta::Inherit {
                 profile,
                 patch,
-                workspace: self::custom_meta::InheritWorkspace { lints, package },
+                workspace: super::custom_meta::InheritWorkspace { lints, package },
+                rust_toolchain: _,
             } = meta.inherit;
 
             if profile {
@@ -86,7 +87,7 @@ impl Cmd for CargoToml {
                     .as_mut()
                     .unwrap())
                 .clone_from(
-                    &base_cargo_toml
+                    base_cargo_toml
                         .workspace
                         .as_ref()
                         .unwrap()
@@ -155,33 +156,5 @@ impl Cmd for CargoToml {
         }
 
         Ok(())
-    }
-}
-
-mod custom_meta {
-    use serde::Deserialize;
-    use serde::Serialize;
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct CargoOverlayMetadata {
-        pub xsync: Xsync,
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct Xsync {
-        pub inherit: Inherit,
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct Inherit {
-        pub profile: bool,
-        pub patch: bool,
-        pub workspace: InheritWorkspace,
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct InheritWorkspace {
-        pub lints: bool,
-        pub package: bool,
     }
 }
