@@ -269,20 +269,6 @@ impl GlobalSynic {
 }
 
 impl ProcessorSynic {
-    /// Resets the synic state back to its initial state.
-    pub fn reset(&mut self) {
-        let Self {
-            sints,
-            timers,
-            shared,
-            vina,
-        } = self;
-        *sints = SintState::AT_RESET;
-        *timers = array::from_fn(|_| Timer::default());
-        *shared.write() = SharedProcessorState::AT_RESET;
-        *vina = HvRegisterVsmVina::new();
-    }
-
     /// Returns the event flags page register.
     pub fn siefp(&self) -> u64 {
         self.sints.siefp.into()
