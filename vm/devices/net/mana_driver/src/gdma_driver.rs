@@ -953,10 +953,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             }
         } else if eqe_wait_result.interrupt_wait_count != 0 || eqe_wait_result.eq_arm_count != 0 {
             tracing::trace!(
-                eqe_wait_result.elapsed,
-                eqe_wait_result.interrupt_count,
-                eqe_wait_result.interrupt_wait_count,
-                eqe_wait_result.eq_arm_count,
+                wait_ms = eqe_wait_result.elapsed,
+                int_count = eqe_wait_result.interrupt_count,
+                int_waits = eqe_wait_result.interrupt_wait_count,
+                arm_count = eqe_wait_result.eq_arm_count,
                 "found HWC response EQE after arm or wait",
             );
         }
