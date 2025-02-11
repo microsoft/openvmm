@@ -166,7 +166,7 @@ impl PendingCommands {
 
     /// Given the saved state, verifies the state of the PendingCommands to match the saved state
     #[cfg(test)]
-    pub(crate) fn verify_restore(&self, saved_state: PendingCommandsSavedState) {
+    pub(crate) fn verify_restore(&self, saved_state: &PendingCommandsSavedState) {
         // TODO: [expand-verify-restore-functionality] cid_key_bits are currently unused during restore. 
         assert_eq!(saved_state.commands.len(), self.commands.len());
 
@@ -341,10 +341,10 @@ impl QueuePair {
     /// Given the saved state of a queue pair, this verifies the constructed queue pair.
     /// Input memory block should already be constructed from the offsets.
     #[cfg(test)]
-    pub(crate) async fn verify_restore(&self, saved_state: QueuePairSavedState, saved_mem: MemoryBlock) {
+    pub(crate) async fn verify_restore(&self, saved_state: &QueuePairSavedState, saved_mem: MemoryBlock) {
         // Entire memory region is checked below. No need for the the handler to check it again.
         // Send an RPC request to QueueHandler thread to verify the restore status.
-        let _ = self.issuer.send.call(Req::Verify, saved_state.handler_data).await;
+        let _ = self.issuer.send.call(Req::Verify, saved_state.handler_data.clone()).await;
 
         // cancel and issuers params are runtime parameters so we don't check underlying values.
         let mut saved_mem_data: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
@@ -715,9 +715,9 @@ impl QueueHandler {
                     Req::Verify(verify_state) => {
                         let saved_state = verify_state.input();
                         
-                        self.sq.verify_restore(saved_state.sq_state.clone());
-                        self.cq.verify_restore(saved_state.cq_state.clone());
-                        self.commands.verify_restore(saved_state.pending_cmds.clone());
+                        self.sq.verify_restore(&saved_state.sq_state);
+                        self.cq.verify_restore(&saved_state.cq_state);
+                        self.commands.verify_restore(&saved_state.pending_cmds);
                     }
                 },
                 Event::Completion(completion) => {

@@ -110,7 +110,7 @@ impl SubmissionQueue {
     /// Given the saved state, checks the state of the submission queue. Does not verify memory.
     // TODO: Can this be an associated function instead?
     #[cfg(test)]
-    pub(crate) fn verify_restore(&self, saved_state: SubmissionQueueSavedState) {
+    pub(crate) fn verify_restore(&self, saved_state: &SubmissionQueueSavedState) {
         assert_eq!(saved_state.sqid, self.sqid);
         assert_eq!(saved_state.head, self.head);
         assert_eq!(saved_state.tail, self.tail);
@@ -215,7 +215,7 @@ impl CompletionQueue {
 
     /// Given the saved state, checks the state of the completion queue. Does not verify memory.
     #[cfg(test)]
-    pub(crate) fn verify_restore(&self, saved_state: CompletionQueueSavedState) {
+    pub(crate) fn verify_restore(&self, saved_state: &CompletionQueueSavedState) {
         assert_eq!(saved_state.cqid, self.cqid);
         assert_eq!(saved_state.head, self.head);
         assert_eq!(saved_state.committed_head, self.committed_head);

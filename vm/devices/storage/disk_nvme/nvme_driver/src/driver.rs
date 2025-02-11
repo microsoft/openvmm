@@ -140,10 +140,9 @@ impl IoQueue {
     }
 
     #[cfg(test)]
-    pub(crate) async fn verify_restore(&self, saved_state: IoQueueSavedState, mem: MemoryBlock) {
-        self.queue.verify_restore(saved_state.queue_data, mem);
+    pub(crate) async fn verify_restore(&self, saved_state: &IoQueueSavedState, mem: MemoryBlock) {
+        self.queue.verify_restore(&saved_state.queue_data, mem);
 
-        // TODO: [expand-verify-restore-functionality] What is the iv in the IoQueue vs msix in the IoQueueSavedState
         assert_eq!(saved_state.msix, self.iv as u32);
         assert_eq!(saved_state.cpu, self.cpu);
     }
@@ -699,18 +698,18 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     // SavedState for versatility of use (That way it doesn't take ownership of the saved state
     // from the unit tests)
     #[cfg(test)]
-    pub(crate) async fn verify_restore(&mut self, saved_state: NvmeDriverSavedState, mem: MemoryBlock) {
+    pub(crate) async fn verify_restore(&mut self, saved_state: &NvmeDriverSavedState, mem: MemoryBlock) {
         if let Some(task) = self.task.as_mut() {
             task.stop().await;
             let worker = task.task();
             
             // Verify Admin Queue
-            // TODO: [expand-verify-restore-functionality] Currrently providing base_pfn value in u64, this might panic
-            match (saved_state.worker_data.admin, &worker.admin) {
+            match (&saved_state.worker_data.admin, &worker.admin) {
                 (None, None) => (),
                 (Some(admin_saved_state), Some(admin)) => {
+                    // TODO: [expand-verify-restore-functionality] Currrently providing base_pfn value in u64, this might panic
                     let admin_saved_mem = mem.subblock(admin_saved_state.base_pfn.try_into().unwrap(), admin_saved_state.mem_len);
-                    admin.verify_restore(admin_saved_state, admin_saved_mem).await;
+                    admin.verify_restore(&admin_saved_state, admin_saved_mem).await;
                 },
                 _ => panic!("admin queue states do not match"),
             };
@@ -720,7 +719,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             for index in 0..saved_state.worker_data.io.len() {
                 let io_saved_state = saved_state.worker_data.io[index].clone();
                 let io_saved_mem = mem.subblock(io_saved_state.queue_data.base_pfn.try_into().unwrap(), io_saved_state.queue_data.mem_len);
-                worker.io[index].verify_restore(io_saved_state, io_saved_mem);
+                worker.io[index].verify_restore(&io_saved_state, io_saved_mem);
             }
             task.start();
         } else {
@@ -736,7 +735,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         }
 
         // TODO: [expand-verify-restore-functionality] Namespace save is currently not supported.
-        
         assert!(self.nvme_keepalive);
     }
 }

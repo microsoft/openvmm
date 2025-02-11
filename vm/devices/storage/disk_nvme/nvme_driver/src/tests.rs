@@ -321,7 +321,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     let verify_mem = DmaClient::attach_dma_buffer(&host_allocator, base_len, 0).unwrap();
     
     // Verify restore functions will panic if verification failed.
-    new_nvme_driver.verify_restore(saved_state, verify_mem).await;
+    new_nvme_driver.verify_restore(&saved_state, verify_mem).await;
 }
 
 #[derive(Inspect)]
