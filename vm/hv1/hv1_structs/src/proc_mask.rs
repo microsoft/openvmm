@@ -89,10 +89,6 @@ impl Iterator for ProcessorSetIter<'_> {
         self.mask &= !(1 << proc);
         Some(self.bit * 64 + proc)
     }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.masks.len(), None)
-    }
 }
 
 impl std::iter::FusedIterator for ProcessorSetIter<'_> {}
