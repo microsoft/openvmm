@@ -525,7 +525,7 @@ impl SendMessage {
     /// The returned slice can be used to fill the message with data before
     /// marking the data as initialized using [`Self::set_len].
     pub fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<u8>] {
-        self.buf.spare_capacity_mut()
+        self.buf.spare_tail_capacity_mut()
     }
 
     /// Updates the initialized byte length of the message.

@@ -34,6 +34,44 @@ pub struct HeaderSlice<T, U: ?Sized> {
     pub tail: U,
 }
 
+impl<T, U> HeaderSlice<T, [U]> {
+    fn ptr_from_raw_parts(ptr: *const T, len: usize) -> *const Self {
+        // Create a [T] (the inner type doesn't actually matter) with `len`
+        // elements, then cast it to a HeaderSlice<T, [U]>. The cast via `as`
+        // preserves the element count.
+        //
+        // FUTURE: use [`core::ptr::from_raw_parts`] once it is stable.
+        core::ptr::slice_from_raw_parts(ptr, len) as *const Self
+    }
+
+    fn ptr_from_raw_parts_mut(ptr: *mut T, len: usize) -> *mut Self {
+        // Create a [T] (the inner type doesn't actually matter) with `len`
+        // elements, then cast it to a HeaderSlice<T, [U]>. The cast via `as`
+        // preserves the element count.
+        //
+        // FUTURE: use [`core::ptr::from_raw_parts_mut`] once it is stable.
+        core::ptr::slice_from_raw_parts_mut(ptr, len) as *mut Self
+    }
+
+    /// # Safety
+    /// The caller must ensure that `ptr` points to a `T` followed by `len`
+    /// elements of `U`, valid for lifetime `'a`.
+    unsafe fn from_raw_parts<'a>(ptr: *const T, len: usize) -> &'a Self {
+        // SAFETY: the caller ensures that the resulting pointer is valid for
+        // lifetime `'a`.
+        unsafe { &*Self::ptr_from_raw_parts(ptr, len) }
+    }
+
+    /// # Safety
+    /// The caller must ensure that `ptr` points to a `T` followed by `len`
+    /// elements of `U`, valid for lifetime `'a`.
+    unsafe fn from_raw_parts_mut<'a>(ptr: *mut T, len: usize) -> &'a mut Self {
+        // SAFETY: the caller ensures that the resulting pointer is valid for
+        // lifetime `'a`.
+        unsafe { &mut *Self::ptr_from_raw_parts_mut(ptr, len) }
+    }
+}
+
 #[derive(Debug)]
 enum Data<T, U, const N: usize> {
     Fixed(HeaderSlice<T, [MaybeUninit<U>; N]>),
@@ -44,41 +82,46 @@ impl<T, U, const N: usize> Data<T, U, N> {
     /// SAFETY: the caller must ensure that the first `len` elements have been
     /// initialized.
     unsafe fn valid(&self, len: usize) -> &HeaderSlice<T, [U]> {
-        // Create a [U], then cast it to a HeaderSlice<T, [U]>. The cast via
-        // `as` preserves the element count.
-        let data =
-            core::ptr::slice_from_raw_parts(core::ptr::from_ref(self.storage()).cast::<U>(), len)
-                as *const HeaderSlice<T, [U]>;
         // SAFETY: the caller has ensured that the first `len` elements have been
         // initialized.
-        unsafe { &*data }
+        unsafe { HeaderSlice::from_raw_parts(core::ptr::from_ref(self.storage()).cast(), len) }
     }
 
     /// SAFETY: the caller must ensure that the first `len` elements have been
     /// initialized.
     unsafe fn valid_mut(&mut self, len: usize) -> &mut HeaderSlice<T, [U]> {
-        // Create a [U], then cast it to a HeaderSlice<T, [U]>. The cast via
-        // `as` preserves the element count.
-        let data = core::ptr::slice_from_raw_parts_mut(
-            core::ptr::from_mut(self.storage_mut()).cast::<U>(),
-            len,
-        ) as *mut HeaderSlice<T, [U]>;
         // SAFETY: the caller has ensured that the first `len` elements have been
         // initialized.
-        unsafe { &mut *data }
+        unsafe {
+            HeaderSlice::from_raw_parts_mut(core::ptr::from_mut(self.storage_mut()).cast(), len)
+        }
     }
 
     fn storage(&self) -> &HeaderSlice<T, [MaybeUninit<U>]> {
-        match self {
+        let p: &HeaderSlice<T, [MaybeUninit<U>]> = match self {
             Data::Fixed(p) => p,
             Data::Alloc(p) => p,
+        };
+        if size_of::<U>() == 0 {
+            // SAFETY: the tail element is a ZST so its slice is valid for any
+            // length.
+            unsafe { HeaderSlice::from_raw_parts(&raw const p.head, usize::MAX) }
+        } else {
+            p
         }
     }
 
     fn storage_mut(&mut self) -> &mut HeaderSlice<T, [MaybeUninit<U>]> {
-        match self {
+        let p: &mut HeaderSlice<T, [MaybeUninit<U>]> = match self {
             Data::Fixed(p) => p,
             Data::Alloc(p) => p,
+        };
+        if size_of::<U>() == 0 {
+            // SAFETY: the tail element is a ZST so its slice is valid for any
+            // length.
+            unsafe { HeaderSlice::from_raw_parts_mut(&raw mut p.head, usize::MAX) }
+        } else {
+            p
         }
     }
 }
@@ -102,10 +145,10 @@ impl<T, U, const N: usize> Data<T, U, N> {
 /// #[derive(Copy, Clone)]
 /// struct Header { x: u32 }
 /// let mut v = HeaderVec::<Header, u8, 10>::new(Header{ x: 1234 });
-/// v.push(5);
-/// v.push(6);
-/// assert_eq!(v.x, 1234);
-/// assert_eq!(&v[..], &[5, 6]);
+/// v.push_tail(5);
+/// v.push_tail(6);
+/// assert_eq!(v.head.x, 1234);
+/// assert_eq!(&v.tail, &[5, 6]);
 /// ```
 #[derive(Debug)]
 pub struct HeaderVec<T, U, const N: usize> {
@@ -166,14 +209,13 @@ impl<T: Copy, U: Copy, const N: usize> HeaderVec<T, U, N> {
         unsafe {
             alloc.cast::<T>().write(self.data.storage_mut().head);
         }
-        // Convert the slice to the DST.
+        // Build the fat pointer to the DST.
         let alloc =
-            core::ptr::slice_from_raw_parts_mut(alloc.cast::<MaybeUninit<U>>().as_ptr(), cap)
-                as *mut HeaderSlice<T, [MaybeUninit<U>]>;
+            HeaderSlice::<T, [MaybeUninit<U>]>::ptr_from_raw_parts_mut(alloc.as_ptr().cast(), cap);
         // SAFETY: `head` has been initialized and `tail` is `MaybeUninit`.
         // `alloc` was allocated with the same layout `Box::new` would use.
         let mut alloc = unsafe { Box::from_raw(alloc) };
-        // Copy the tail.
+        // Copy the initialized portion of the tail.
         alloc.tail[..self.len].copy_from_slice(&self.data.storage_mut().tail[..self.len]);
         self.data = Data::Alloc(alloc);
     }
@@ -181,6 +223,7 @@ impl<T: Copy, U: Copy, const N: usize> HeaderVec<T, U, N> {
     fn extend_tail(&mut self, n: usize) -> &mut [MaybeUninit<U>] {
         let cap = self.tail_capacity();
         if cap - self.len < n {
+            assert!(size_of::<U>() > 0, "ZST tail slice overflow");
             // Double the current capacity to ensure a geometric progression
             // (avoiding O(n^2) allocations).
             let new_cap = cmp::max(
@@ -193,7 +236,7 @@ impl<T: Copy, U: Copy, const N: usize> HeaderVec<T, U, N> {
     }
 
     /// Reserves capacity for at least `n` additional tail elements.
-    pub fn reserve(&mut self, n: usize) {
+    pub fn reserve_tail(&mut self, n: usize) {
         self.extend_tail(n);
     }
 
@@ -202,7 +245,7 @@ impl<T: Copy, U: Copy, const N: usize> HeaderVec<T, U, N> {
     ///
     /// The returned slice can be used to fill the tail with data before marking
     /// the data as initialized using [`Self::set_len].
-    pub fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<U>] {
+    pub fn spare_tail_capacity_mut(&mut self) -> &mut [MaybeUninit<U>] {
         &mut self.data.storage_mut().tail[self.len..]
     }
 
@@ -308,42 +351,85 @@ impl<T: Copy, U: Copy, const N: usize> Extend<U> for HeaderVec<T, U, N> {
 #[cfg(test)]
 mod tests {
     use super::HeaderVec;
+    use alloc::vec::Vec;
     use core::fmt::Debug;
 
-    fn test<T: Copy + Eq + Debug, U: Copy, const N: usize>(head: T, vals: Vec<U>)
-    where
+    fn test<T: Copy + Eq + Debug, U: Copy, const N: usize>(
+        head: T,
+        vals: impl IntoIterator<Item = U>,
+    ) where
         U: Eq + Debug,
     {
-        let mut v: HeaderVec<T, U, N> = HeaderVec::new(head);
-        for i in vals.iter() {
-            v.push_tail(*i);
+        let vals = Vec::from_iter(vals);
+        // Push
+        {
+            let mut v: HeaderVec<T, U, N> = HeaderVec::new(head);
+            for &i in &vals {
+                v.push_tail(i);
+            }
+            assert_eq!(v.head, head);
+            assert_eq!(&v.tail, vals.as_slice());
         }
-        assert_eq!(v.head, head);
-        assert_eq!(&v.tail, vals.as_slice());
+        // Extend from slice
+        {
+            let mut v: HeaderVec<T, U, N> = HeaderVec::new(head);
+            v.extend_tail_from_slice(&vals);
+            assert_eq!(v.head, head);
+            assert_eq!(&v.tail, vals.as_slice());
+        }
+        // Extend
+        {
+            let mut v: HeaderVec<T, U, N> = HeaderVec::new(head);
+            v.extend(vals.iter().copied());
+            assert_eq!(v.head, head);
+            assert_eq!(&v.tail, vals.as_slice());
+        }
+        // Reserve + set_len
+        {
+            let mut v: HeaderVec<T, U, N> = HeaderVec::new(head);
+            v.reserve_tail(vals.len());
+            if size_of::<U>() > 0 {
+                assert_eq!(
+                    v.tail_capacity(),
+                    if size_of::<U>() > 0 {
+                        usize::MAX
+                    } else {
+                        vals.len()
+                    }
+                );
+            }
+            for (s, d) in vals.iter().copied().zip(v.spare_tail_capacity_mut()) {
+                d.write(s);
+            }
+            // SAFETY: all elements are initialized.
+            unsafe { v.set_tail_len(vals.len()) };
+            assert_eq!(v.head, head);
+            assert_eq!(&v.tail, vals.as_slice());
+        }
     }
 
     #[test]
     fn test_push() {
-        test::<u8, u32, 3>(0x10, (0..200).collect());
+        test::<u8, u32, 3>(0x10, 0..200);
     }
 
     #[test]
     fn test_zero_array() {
-        test::<u8, u32, 0>(0x10, (0..200).collect());
+        test::<u8, u32, 0>(0x10, 0..200);
     }
 
     #[test]
     fn test_zst_head() {
-        test::<(), u32, 3>((), (0..200).collect());
+        test::<(), u32, 3>((), 0..200);
     }
 
     #[test]
     fn test_zst_tail() {
-        test::<u8, (), 0>(0x10, (0..200).map(|_| ()).collect());
+        test::<u8, (), 0>(0x10, (0..200).map(|_| ()));
     }
 
     #[test]
     fn test_zst_both() {
-        test::<(), (), 0>((), (0..200).map(|_| ()).collect());
+        test::<(), (), 0>((), (0..200).map(|_| ()));
     }
 }
