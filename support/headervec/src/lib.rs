@@ -354,12 +354,10 @@ mod tests {
     use alloc::vec::Vec;
     use core::fmt::Debug;
 
-    fn test<T: Copy + Eq + Debug, U: Copy, const N: usize>(
+    fn test<T: Copy + Eq + Debug, U: Copy + Eq + Debug, const N: usize>(
         head: T,
         vals: impl IntoIterator<Item = U>,
-    ) where
-        U: Eq + Debug,
-    {
+    ) {
         let vals = Vec::from_iter(vals);
         // Push
         {

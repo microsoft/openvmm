@@ -269,7 +269,7 @@ pub fn check_security(file: &OwnedHandle, desired_access: u32) -> lx::Result<u32
     {
         if e.value() == Foundation::STATUS_BUFFER_TOO_SMALL.0 {
             LX_UTIL_FS_SECURITY_DESCRIPTOR_SIZE.store(length_needed as usize, Ordering::Relaxed);
-            sd.reserve(length_needed as usize);
+            sd.reserve_tail(length_needed as usize);
         } else {
             return Err(e);
         }
