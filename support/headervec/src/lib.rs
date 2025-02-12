@@ -244,7 +244,7 @@ impl<T: Copy, U: Copy, const N: usize> HeaderVec<T, U, N> {
     /// `MaybeUninit<U>`.
     ///
     /// The returned slice can be used to fill the tail with data before marking
-    /// the data as initialized using [`Self::set_len].
+    /// the data as initialized using [`Self::set_tail_len`].
     pub fn spare_tail_capacity_mut(&mut self) -> &mut [MaybeUninit<U>] {
         &mut self.data.storage_mut().tail[self.len..]
     }
