@@ -389,7 +389,7 @@ mod tests {
             if size_of::<U>() > 0 {
                 assert_eq!(
                     v.tail_capacity(),
-                    if size_of::<U>() > 0 {
+                    if size_of::<U>() == 0 {
                         usize::MAX
                     } else {
                         vals.len()
