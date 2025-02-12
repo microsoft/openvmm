@@ -991,6 +991,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cvmutil"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "getrandom",
+ "inspect",
+ "ms-tpm-20-ref",
+ "sha2",
+ "tpm",
+ "tpm_resources",
+ "tracing",
+ "tracing-subscriber",
+ "tracing_helpers",
+]
+
+[[package]]
 name = "debug_ptr"
 version = "0.0.0"
 

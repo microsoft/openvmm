@@ -1871,6 +1871,39 @@ pub fn ek_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
     Ok(in_public)
 }
 
+/// Returns the public template for SRK.
+/// TODO: review the properties.
+pub fn srk_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
+    let symmetric = TpmtSymDefObject::new(AlgIdEnum::AES.into(), Some(128), Some(AlgIdEnum::CFB.into()));
+
+    //let scheme = TpmtRsaScheme::new(AlgIdEnum::RSA.into(), Some(AlgIdEnum::SHA256.into()));
+    // Define the RSA scheme as TPM2_ALG_NULL for general use
+    let scheme = TpmtRsaScheme::new(AlgIdEnum::NULL.into(), None);
+
+    let rsa_params = TpmsRsaParams::new(symmetric, scheme, crate::RSA_2K_MODULUS_BITS, 0);
+
+    let object_attributes = TpmaObjectBits::new()
+        .with_fixed_tpm(true)
+        .with_fixed_parent(true)
+        .with_sensitive_data_origin(true)
+        .with_user_with_auth(true)
+        .with_no_da(true)
+        .with_restricted(true)
+        .with_decrypt(true);
+
+    let in_public = TpmtPublic::new(
+        AlgIdEnum::RSA.into(),
+        AlgIdEnum::SHA256.into(),
+        object_attributes,
+        &[],
+        rsa_params,
+        &[0u8; crate::RSA_2K_MODULUS_SIZE],
+    )
+    .map_err(TpmHelperUtilityError::InvalidInputParameter)?;
+
+    Ok(in_public)
+}
+
 /// Helper function for converting `Tpm2bPublic` to `TpmRsa2kPublic`.
 fn export_rsa_public(public: &Tpm2bPublic) -> Result<TpmRsa2kPublic, TpmHelperUtilityError> {
     if public.public_area.parameters.exponent.get() != 0 {
@@ -1897,7 +1930,7 @@ fn export_rsa_public(public: &Tpm2bPublic) -> Result<TpmRsa2kPublic, TpmHelperUt
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::TPM_AZURE_AIK_HANDLE;
     use crate::TPM_NV_INDEX_AIK_CERT;
@@ -1950,7 +1983,7 @@ mod tests {
         }
     }
 
-    fn create_tpm_engine_helper() -> TpmEngineHelper {
+    pub fn create_tpm_engine_helper() -> TpmEngineHelper {
         let result = MsTpm20RefPlatform::initialize(
             Box::new(TestPlatformCallbacks {
                 blob: vec![],

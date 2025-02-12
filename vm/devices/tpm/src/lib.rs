@@ -16,8 +16,8 @@ pub mod ak_cert;
 pub mod logger;
 mod recover;
 pub mod resolver;
-mod tpm20proto;
-mod tpm_helper;
+pub mod tpm20proto;
+pub mod tpm_helper;
 
 use self::io_port_interface::PpiOperation;
 use self::io_port_interface::TpmIoCommand;
@@ -86,7 +86,7 @@ const RSA_2K_MODULUS_BITS: u16 = 2048;
 const RSA_2K_MODULUS_SIZE: usize = (RSA_2K_MODULUS_BITS / 8) as usize;
 const RSA_2K_EXPONENT_SIZE: usize = 3;
 
-const TPM_RSA_SRK_HANDLE: ReservedHandle = ReservedHandle::new(TPM20_HT_PERSISTENT, 0x01);
+pub const TPM_RSA_SRK_HANDLE: ReservedHandle = ReservedHandle::new(TPM20_HT_PERSISTENT, 0x01);
 const TPM_AZURE_AIK_HANDLE: ReservedHandle = ReservedHandle::new(TPM20_HT_PERSISTENT, 0x03);
 const TPM_GUEST_SECRET_HANDLE: ReservedHandle = ReservedHandle::new(TPM20_HT_PERSISTENT, 0x04);
 

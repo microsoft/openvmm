@@ -1,0 +1,24 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "cvmutil"
+edition = "2021"
+rust-version.workspace = true
+
+[features]
+
+[dependencies]
+ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
+inspect.workspace = true
+getrandom.workspace = true
+tracing.workspace = true
+tracing_helpers.workspace = true
+tracing-subscriber.workspace = true
+tpm = { workspace = true, features = ["tpm"] }
+tpm_resources.workspace = true
+clap = { workspace = true, features = ["derive"] }
+sha2.workspace = true
+
+[lints]
+workspace = true
