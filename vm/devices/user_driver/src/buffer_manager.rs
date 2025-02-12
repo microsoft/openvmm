@@ -32,7 +32,7 @@ impl BufferBlock {
 
 pub struct BufferManager {
     free_list: Vec<BufferBlock>,
-    allocated: Vec<BufferBlock>,
+    allocated_list: Vec<BufferBlock>,
     next_id: u64,
     signature: u64,
 }
@@ -49,7 +49,7 @@ impl BufferManager {
         }];
         Self {
             free_list,
-            allocated: Vec::new(),
+            allocated_list: Vec::new(),
             next_id: 1,
             signature,
         }
@@ -69,8 +69,8 @@ impl BufferManager {
                 signature: self.signature,
             };
 
-            self.allocated.push(allocated_block);
-            self.allocated.sort_by_key(|b| b.offset);
+            self.allocated_list.push(allocated_block);
+            self.allocated_list.sort_by_key(|b| b.offset);
 
             if block.size > size {
                 self.free_list.insert(
@@ -95,8 +95,8 @@ impl BufferManager {
             panic!("Attempted to free a buffer from a different allocator");
         }
 
-        if let Some(pos) = self.allocated.iter().position(|&b| b.id == buffer.id) {
-            let freed_block = self.allocated.remove(pos);
+        if let Some(pos) = self.allocated_list.iter().position(|&b| b.id == buffer.id) {
+            let freed_block = self.allocated_list.remove(pos);
             self.insert_into_free_list(freed_block);
         }
     }
@@ -150,7 +150,7 @@ mod tests {
         let allocator = BufferManager::new(1024);
         assert_eq!(allocator.free_list.len(), 1);
         assert_eq!(allocator.free_list[0].size, 1024);
-        assert_eq!(allocator.allocated.len(), 0);
+        assert_eq!(allocator.allocated_list.len(), 0);
     }
 
     #[test]
@@ -175,7 +175,7 @@ mod tests {
         assert!(result.is_some());
         let buffer = result.unwrap();
         assert_eq!(buffer.offset, 0);
-        assert_eq!(allocator.allocated.len(), 1);
+        assert_eq!(allocator.allocated_list.len(), 1);
         assert_eq!(allocator.free_list.len(), 1);
         assert_eq!(allocator.free_list[0].offset, 256);
         assert_eq!(allocator.free_list[0].size, 768);
