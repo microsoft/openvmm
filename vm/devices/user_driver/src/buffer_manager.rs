@@ -20,6 +20,16 @@ pub struct BufferBlock {
     signature: u64, // Unique allocator signature
 }
 
+impl BufferBlock {
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+}
+
 pub struct BufferManager {
     free_list: Vec<BufferBlock>,
     allocated: Vec<BufferBlock>,
