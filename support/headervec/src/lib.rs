@@ -179,7 +179,7 @@ impl<T: Copy, U: Copy, const N: usize> HeaderVec<T, U, N> {
     /// elements, but with a dynamically allocated capacity for `cap` elements.
     pub fn with_capacity(head: T, cap: usize) -> Self {
         let mut vec = Self::new(head);
-        if cap > N {
+        if cap > vec.tail_capacity() {
             vec.realloc(cap);
         }
         vec
@@ -232,7 +232,7 @@ impl<T: Copy, U: Copy, const N: usize> HeaderVec<T, U, N> {
             );
             self.realloc(new_cap);
         }
-        &mut self.data.storage_mut().tail[self.len..self.len + n]
+        &mut self.spare_tail_capacity_mut()[..n]
     }
 
     /// Reserves capacity for at least `n` additional tail elements.
@@ -261,11 +261,9 @@ impl<T: Copy, U: Copy, const N: usize> HeaderVec<T, U, N> {
 
     /// Extends the tail elements from the given slice.
     pub fn extend_tail_from_slice(&mut self, other: &[U]) {
-        if size_of::<U>() > 0 && !other.is_empty() {
-            // SAFETY: `[MaybeUninit<U>]` and `[U]` have the same layout.
-            let other = unsafe { core::mem::transmute::<&[U], &[MaybeUninit<U>]>(other) };
-            self.extend_tail(other.len()).copy_from_slice(other);
-        }
+        // SAFETY: `[MaybeUninit<U>]` and `[U]` have the same layout.
+        let other = unsafe { core::mem::transmute::<&[U], &[MaybeUninit<U>]>(other) };
+        self.extend_tail(other.len()).copy_from_slice(other);
         self.len += other.len();
     }
 
@@ -429,5 +427,13 @@ mod tests {
     #[test]
     fn test_zst_both() {
         test::<(), (), 0>((), (0..200).map(|_| ()));
+    }
+
+    #[test]
+    #[should_panic(expected = "ZST tail slice overflow")]
+    fn test_zst_overflow() {
+        let mut v: HeaderVec<u8, (), 0> = HeaderVec::new(0);
+        v.push_tail(());
+        v.extend_tail_from_slice(&[(); usize::MAX]);
     }
 }
