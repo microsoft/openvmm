@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
@@ -8,7 +10,7 @@
 // single-threaded contexts or when external synchronization is required, as it does not protect its
 // state from concurrent access.
 
-use rand::Rng;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Clone, Copy)]
 pub struct BufferBlock {
@@ -27,7 +29,8 @@ pub struct BufferManager {
 
 impl BufferManager {
     pub fn new(size: usize) -> Self {
-        let signature = rand::thread_rng().gen_range(0..u64::MAX);
+        let mut signature: u64 = 0;
+        getrandom::getrandom(signature.as_mut_bytes()).expect("crng failure");
         let free_list = vec![BufferBlock {
             id: 0,
             offset: 0,
@@ -127,7 +130,6 @@ impl BufferManager {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -233,7 +235,7 @@ mod tests {
     fn test_merge_blocks_after_out_of_order_free() {
         let mut allocator = BufferManager::new(1024);
 
-        let buffer1= allocator.malloc(256).unwrap();
+        let buffer1 = allocator.malloc(256).unwrap();
         let buffer2 = allocator.malloc(256).unwrap();
         let buffer3 = allocator.malloc(512).unwrap();
 

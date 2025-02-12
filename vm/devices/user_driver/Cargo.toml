@@ -22,7 +22,7 @@ safeatomic.workspace = true
 uevent.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
-rand = "0.8"
+getrandom.workspace = true
 
 anyhow.workspace = true
 parking_lot.workspace = true
