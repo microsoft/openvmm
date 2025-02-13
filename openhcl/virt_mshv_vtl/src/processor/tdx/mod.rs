@@ -36,6 +36,7 @@ use hv1_structs::VtlArray;
 use hvdef::hypercall::HvFlushFlags;
 use hvdef::hypercall::HvGvaRange;
 use hvdef::HvError;
+use hvdef::HvRegisterValue;
 use hvdef::HvSynicSimpSiefp;
 use hvdef::HvX64PendingExceptionEvent;
 use hvdef::HvX64RegisterName;
@@ -503,12 +504,35 @@ impl HardwareIsolatedBacking for TdxBacked {
     }
 
     fn switch_vtl_state(
-        _this: &mut UhProcessor<'_, Self>,
-        _source_vtl: GuestVtl,
-        _target_vtl: GuestVtl,
+        this: &mut UhProcessor<'_, Self>,
+        source_vtl: GuestVtl,
+        target_vtl: GuestVtl,
     ) {
-        // TODO TDX GUEST VSM
-        todo!()
+        // The GPs, Fxsave, and CR2 are saved in the shared kernel state. No copying needed.
+        let regs = [
+            HvX64RegisterName::Dr0,
+            HvX64RegisterName::Dr1,
+            HvX64RegisterName::Dr2,
+            HvX64RegisterName::Dr3,
+            HvX64RegisterName::Xfem,
+        ];
+        let mut values = [HvRegisterValue::from(0u64); 5];
+        this.runner
+            .get_vp_registers(source_vtl, &regs, &mut values)
+            .unwrap();
+        this.runner
+            .set_vp_registers(target_vtl, regs.into_iter().zip(values))
+            .unwrap();
+
+        if this.partition.hcl.dr6_shared() {
+            let dr6 = this
+                .runner
+                .get_vp_register(source_vtl, HvX64RegisterName::Dr6)
+                .unwrap();
+            this.runner
+                .set_vp_register(target_vtl, HvX64RegisterName::Dr6, dr6)
+                .unwrap();
+        }
     }
 
     fn translation_registers(
