@@ -373,7 +373,7 @@ pub struct UhCvmPartitionState {
 #[cfg(guest_arch = "x86_64")]
 impl UhCvmPartitionState {
     fn vp_inner(&self, vp_index: u32) -> &UhCvmVpInner {
-        self.vps.get(vp_index as usize).unwrap()
+        &self.vps[vp_index as usize]
     }
 }
 
