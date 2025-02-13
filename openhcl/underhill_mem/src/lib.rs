@@ -375,8 +375,8 @@ struct HypercallOverlay {
     permissions: GpaVtlPermissions,
 }
 
-// TODO CVM GUEST VSM: This needs to go away, but resolving the layering with
-// hv1_emulator is complicated.
+// TODO CVM GUEST VSM: This type needs to go away, and proper functionality needs
+// to be added here, but resolving the layering with hv1_emulator is complicated.
 struct NoOpTlbFlushLockAccess;
 impl TlbFlushLockAccess for NoOpTlbFlushLockAccess {
     fn flush(&mut self, _vtl: GuestVtl) {}
