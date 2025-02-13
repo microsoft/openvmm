@@ -2837,10 +2837,10 @@ impl Hcl {
             IsolationType::Snp => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available()),
-            // TODO TDX: Figure out what these values should be.
             IsolationType::Tdx => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
-                .with_intercept_page_available(caps.intercept_page_available()),
+                .with_intercept_page_available(caps.intercept_page_available())
+                .with_dr6_shared(self.dr6_shared()),
         };
         Ok(caps)
     }
