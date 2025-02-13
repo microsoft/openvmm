@@ -205,7 +205,7 @@ struct UhPartitionInner {
     lower_vtl_memory_layout: MemoryLayout,
     gm: VtlArray<GuestMemory, 2>,
     shared_memory: Option<GuestMemory>,
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     #[inspect(skip)]
     crash_notification_send: mesh::Sender<VtlCrash>,
     monitor_page: MonitorPage,
@@ -224,10 +224,10 @@ struct UhPartitionInner {
     guest_vsm: RwLock<GuestVsmState>,
     #[inspect(skip)]
     isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     #[inspect(skip)]
     shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     #[inspect(skip)]
     private_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
     #[inspect(with = "inspect::AtomicMut")]
@@ -403,6 +403,7 @@ pub struct UhCvmPartitionState {
     hv: GlobalHv,
 }
 
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 impl UhCvmPartitionState {
     fn vp_inner(&self, vp_index: u32) -> &UhCvmVpInner {
         &self.vps[vp_index as usize]
@@ -418,7 +419,7 @@ pub struct UhCvmVpInner {
     vtl1_enabled: Mutex<bool>,
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 #[derive(Inspect)]
 #[inspect(tag = "guest vsm state")]
 /// Partition-wide state for guest vsm. Only applies to CVMs.
@@ -429,7 +430,7 @@ enum GuestVsmState {
 }
 
 impl GuestVsmState {
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn get_vbs_isolated(&self) -> Option<&VbsIsolatedVtl1State> {
         match self {
             GuestVsmState::Enabled {
@@ -440,7 +441,7 @@ impl GuestVsmState {
         }
     }
 
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn get_vbs_isolated_mut(&mut self) -> Option<&mut VbsIsolatedVtl1State> {
         match self {
             GuestVsmState::Enabled {
@@ -451,7 +452,7 @@ impl GuestVsmState {
         }
     }
 
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn get_hardware_cvm_mut(&mut self) -> Option<&mut HardwareCvmVtl1State> {
         match self {
             GuestVsmState::Enabled {
@@ -462,7 +463,7 @@ impl GuestVsmState {
         }
     }
 
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn get_hardware_cvm(&self) -> Option<&HardwareCvmVtl1State> {
         match self {
             GuestVsmState::Enabled {
@@ -473,7 +474,7 @@ impl GuestVsmState {
     }
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 #[derive(Clone, Copy, Inspect)]
 #[inspect(external_tag)]
 enum GuestVsmVtl1State {
@@ -481,7 +482,6 @@ enum GuestVsmVtl1State {
     VbsIsolated { state: VbsIsolatedVtl1State },
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 #[derive(Clone, Copy, Default, Inspect)]
 struct VbsIsolatedVtl1State {
     #[inspect(with = "|flags| flags.map(|f| inspect::AsHex(u32::from(f)))")]
@@ -489,7 +489,6 @@ struct VbsIsolatedVtl1State {
     enable_vtl_protection: bool,
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 #[derive(Clone, Copy, Default, Inspect)]
 struct HardwareCvmVtl1State {
     /// Whether VTL 1 has been enabled on any vp
@@ -504,12 +503,12 @@ struct HardwareCvmVtl1State {
     pub shadow_supervisor_stack_enabled: bool,
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 struct TscReferenceTimeSource {
     tsc_scale: u64,
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 impl TscReferenceTimeSource {
     fn new(tsc_frequency: u64) -> Self {
         TscReferenceTimeSource {
@@ -643,7 +642,6 @@ struct UhVpInner {
     #[inspect(skip)]
     vp_info: TargetVpInfo,
     cpu_index: u32,
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
     hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<hvdef::hypercall::InitialVpContextX64>>>, 2>,
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
@@ -884,7 +882,7 @@ impl UhPartitionInner {
     }
 
     // TODO VBS GUEST VSM: enable for aarch64
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn vsm_status(&self) -> Result<HvRegisterVsmPartitionStatus, hcl::ioctl::Error> {
         // TODO: It might be possible to cache VsmPartitionStatus.
         let reg = self.hcl.get_vp_register(
