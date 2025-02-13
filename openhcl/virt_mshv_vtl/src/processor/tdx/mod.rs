@@ -3032,8 +3032,9 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         })
     }
 
-    fn set_xss(&mut self, _value: &vp::Xss) -> Result<(), Self::Error> {
-        Err(vp_state::Error::Unimplemented("xss"))
+    fn set_xss(&mut self, value: &vp::Xss) -> Result<(), Self::Error> {
+        self.vp.backing.vtls[self.vtl].private_regs.msr_xss = value.value;
+        Ok(())
     }
 
     fn mtrrs(&mut self) -> Result<vp::Mtrrs, Self::Error> {
@@ -3204,11 +3205,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
     }
 
     fn tsc_aux(&mut self) -> Result<vp::TscAux, Self::Error> {
-        Err(vp_state::Error::Unimplemented("tsc_aux"))
+        Ok(vp::TscAux {
+            value: self.vp.backing.vtls[self.vtl].private_regs.msr_tsc_aux,
+        })
     }
 
-    fn set_tsc_aux(&mut self, _value: &vp::TscAux) -> Result<(), Self::Error> {
-        Err(vp_state::Error::Unimplemented("tsc_aux"))
+    fn set_tsc_aux(&mut self, value: &vp::TscAux) -> Result<(), Self::Error> {
+        self.vp.backing.vtls[self.vtl].private_regs.msr_tsc_aux = value.value;
+        Ok(())
     }
 
     fn cet(&mut self) -> Result<vp::Cet, Self::Error> {
