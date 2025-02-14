@@ -21,7 +21,6 @@ use pal_async::DefaultDriver;
 use rustyline_printer::Printer;
 use std::fmt::Display;
 use std::path::PathBuf;
-use std::sync::Arc;
 use vm::Vm;
 
 #[derive(Parser)]
@@ -209,7 +208,6 @@ pub async fn main(driver: DefaultDriver) -> anyhow::Result<()> {
     };
 
     let (send, mut recv) = mesh::channel();
-    let send = Arc::new(send);
 
     rl.set_helper(Some(completions::OpenvmmRustylineEditor {
         req: send.clone(),

@@ -32,7 +32,7 @@ use thiserror::Error;
 /// A listener for Linux udev events.
 pub struct UeventListener {
     _task: Task<()>,
-    send: mesh::MpscSender<TaskRequest>,
+    send: mesh::Sender<TaskRequest>,
 }
 
 /// An error from [`UeventListener::new`].
@@ -282,7 +282,7 @@ impl Uevent<'_> {
 #[derive(Debug)]
 pub struct CallbackHandle {
     id: u64,
-    send: mesh::MpscSender<TaskRequest>,
+    send: mesh::Sender<TaskRequest>,
 }
 
 impl Drop for CallbackHandle {
@@ -299,7 +299,7 @@ enum TaskRequest {
 struct ListenerTask {
     socket: PolledSocket<Socket>,
     callbacks: Vec<Filter>,
-    recv: mesh::MpscReceiver<TaskRequest>,
+    recv: mesh::Receiver<TaskRequest>,
     next_id: u64,
 }
 

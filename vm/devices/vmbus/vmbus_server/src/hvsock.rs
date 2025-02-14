@@ -39,7 +39,7 @@ use vmbus_core::HvsockConnectResult;
 
 pub struct HvsockRelay {
     inner: Arc<RelayInner>,
-    host_send: Arc<mesh::Sender<RelayRequest>>,
+    host_send: mesh::Sender<RelayRequest>,
     _relay_task: Task<()>,
     _listener_task: Option<Task<()>>,
 }
@@ -69,14 +69,13 @@ impl HvsockRelay {
         });
 
         let worker = HvsockRelayWorker {
-            guest_send: Arc::new(guest.response_send),
+            guest_send: guest.response_send,
             inner: inner.clone(),
             tasks: Default::default(),
             hybrid_vsock_path,
         };
 
         let (host_send, host_recv) = mesh::channel();
-        let host_send = Arc::new(host_send);
 
         let _listener_task = if let Some(listener) = hybrid_vsock_listener {
             let listener = PolledSocket::new(inner.driver.as_ref(), listener)?;
@@ -145,7 +144,7 @@ impl HvsockRelay {
 
 struct ListenerWorker {
     inner: Arc<RelayInner>,
-    host_send: Arc<mesh::Sender<RelayRequest>>,
+    host_send: mesh::Sender<RelayRequest>,
 }
 
 impl ListenerWorker {
@@ -291,7 +290,7 @@ async fn read_hybrid_vsock_connect(
 }
 
 struct PendingConnection {
-    send: Arc<mesh::Sender<HvsockConnectResult>>,
+    send: mesh::Sender<HvsockConnectResult>,
     request: HvsockConnectRequest,
 }
 
@@ -323,7 +322,7 @@ fn vsock_port(service_id: &Guid) -> Option<u32> {
 }
 
 struct HvsockRelayWorker {
-    guest_send: Arc<mesh::Sender<HvsockConnectResult>>,
+    guest_send: mesh::Sender<HvsockConnectResult>,
     tasks: FuturesUnordered<Task<()>>,
     inner: Arc<RelayInner>,
     hybrid_vsock_path: Option<PathBuf>,

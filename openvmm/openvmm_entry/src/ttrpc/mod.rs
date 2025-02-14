@@ -486,7 +486,7 @@ impl VmService {
             },
             #[cfg(windows)]
             kernel_vmnics: vec![],
-            input: mesh::MpscReceiver::new(),
+            input: mesh::Receiver::new(),
             framebuffer: None,
             vga_firmware: None,
             vtl2_gfx: false,

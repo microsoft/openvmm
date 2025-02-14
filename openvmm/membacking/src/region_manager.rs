@@ -36,7 +36,7 @@ impl Inspect for RegionManager {
 /// Provides access to the region manager.
 #[derive(Debug, MeshPayload, Clone)]
 pub struct RegionManagerClient {
-    req_send: mesh::MpscSender<RegionRequest>,
+    req_send: mesh::Sender<RegionRequest>,
 }
 
 struct Region {
@@ -182,7 +182,7 @@ impl RegionManagerTask {
         }
     }
 
-    async fn run(&mut self, req_recv: &mut mesh::MpscReceiver<RegionRequest>) {
+    async fn run(&mut self, req_recv: &mut mesh::Receiver<RegionRequest>) {
         while let Some(req) = req_recv.next().await {
             match req {
                 RegionRequest::AddMapping(rpc) => {
@@ -559,7 +559,7 @@ impl RegionManagerClient {
 #[must_use]
 pub struct RegionHandle {
     id: Option<RegionId>,
-    req_send: mesh::MpscSender<RegionRequest>,
+    req_send: mesh::Sender<RegionRequest>,
 }
 
 impl RegionHandle {

@@ -315,7 +315,7 @@ pub struct UnderhillRemoteConsoleCfg {
     pub synth_keyboard: bool,
     pub synth_mouse: bool,
     pub synth_video: bool,
-    pub input: mesh::MpscReceiver<InputData>,
+    pub input: mesh::Receiver<InputData>,
     pub framebuffer: Option<framebuffer::Framebuffer>,
 }
 
@@ -427,7 +427,7 @@ impl Worker for UnderhillVmWorker {
                     synth_keyboard: false,
                     synth_mouse: false,
                     synth_video: false,
-                    input: mesh::MpscReceiver::new(),
+                    input: mesh::Receiver::new(),
                     framebuffer: None,
                 },
                 debugger_rpc: None,
@@ -2863,7 +2863,7 @@ async fn new_underhill_vm(
     if let Some(framebuffer) = remote_console_cfg.framebuffer {
         resolver.add_resolver(FramebufferRemoteControl {
             get: get_client.clone(),
-            format_send: Arc::new(framebuffer.format_send()),
+            format_send: framebuffer.format_send(),
         });
 
         vmbus_device_handles.push(

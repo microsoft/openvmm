@@ -1283,7 +1283,7 @@ fn vm_config_from_command_line(
         },
         #[cfg(windows)]
         kernel_vmnics,
-        input: mesh::MpscReceiver::new(),
+        input: mesh::Receiver::new(),
         framebuffer,
         vga_firmware,
         vtl2_gfx: opt.vtl2_gfx,
@@ -1959,7 +1959,6 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
 
     // spin up the VM
     let (vm_rpc, rpc_recv) = mesh::channel();
-    let vm_rpc = Arc::new(vm_rpc);
     let (notify_send, notify_recv) = mesh::channel();
     let mut vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
@@ -2831,7 +2830,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
 
 struct DiagDialer {
     driver: DefaultDriver,
-    vm_rpc: Arc<mesh::Sender<VmRpc>>,
+    vm_rpc: mesh::Sender<VmRpc>,
     openhcl_vtl: DeviceVtl,
 }
 

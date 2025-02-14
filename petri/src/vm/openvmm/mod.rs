@@ -29,7 +29,7 @@ use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use hvlite_defs::config::Config;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
-use mesh::MpscReceiver;
+use mesh::Receiver;
 use mesh::Sender;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
@@ -40,7 +40,6 @@ use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tempfile::TempPath;
 use unix_socket::UnixListener;
 use vtl2_settings_proto::Vtl2Settings;
@@ -135,10 +134,10 @@ impl PetriVmConfig for PetriVmConfigOpenVmm {
 /// Various channels and resources used to interact with the VM while it is running.
 struct PetriVmResourcesOpenVmm {
     serial_tasks: Vec<Task<anyhow::Result<()>>>,
-    firmware_event_recv: MpscReceiver<FirmwareEvent>,
+    firmware_event_recv: Receiver<FirmwareEvent>,
     shutdown_ic_send: Sender<ShutdownRpc>,
     expected_boot_event: Option<FirmwareEvent>,
-    ged_send: Option<Arc<Sender<get_resources::ged::GuestEmulationRequest>>>,
+    ged_send: Option<Sender<get_resources::ged::GuestEmulationRequest>>,
     pipette_listener: PolledSocket<UnixListener>,
     vtl2_pipette_listener: Option<PolledSocket<UnixListener>>,
     openhcl_diag_handler: Option<OpenHclDiagHandler>,

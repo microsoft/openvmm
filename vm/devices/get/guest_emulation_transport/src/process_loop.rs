@@ -549,7 +549,7 @@ mod inspect_helpers {
 struct HostRequestPipeAccess {
     response_message_recv_mutex: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
     response_message_recv: Option<mesh::Receiver<Vec<u8>>>,
-    request_message_send: Arc<mesh::Sender<WriteRequest>>,
+    request_message_send: mesh::Sender<WriteRequest>,
 }
 
 impl Drop for HostRequestPipeAccess {
@@ -563,7 +563,7 @@ struct PipeChannels {
     response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
     // This is None when a `HostRequestPipeAccess` has ownership for an IgvmAttest request.
     igvm_attest_response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
-    message_send: Arc<mesh::Sender<WriteRequest>>,
+    message_send: mesh::Sender<WriteRequest>,
 }
 
 enum WriteRequest {
@@ -574,7 +574,7 @@ enum WriteRequest {
 impl HostRequestPipeAccess {
     fn new(
         response_message_recv_mutex: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
-        request_message_send: Arc<mesh::Sender<WriteRequest>>,
+        request_message_send: mesh::Sender<WriteRequest>,
     ) -> Self {
         let response_message_recv = response_message_recv_mutex.lock().take().unwrap();
         Self {
@@ -672,7 +672,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 igvm_attest_response_message_recv: Arc::new(Mutex::new(Some(
                     igvm_attest_read_recv,
                 ))),
-                message_send: Arc::new(write_send),
+                message_send: write_send,
             },
             read_send,
             write_recv,

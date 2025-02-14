@@ -89,7 +89,7 @@ pub enum ConnectError {
 
 #[derive(Clone)]
 pub struct VmbusClientAccess {
-    client_request_send: Arc<mesh::Sender<ClientRequest>>,
+    client_request_send: mesh::Sender<ClientRequest>,
 }
 
 impl VmbusClient {
@@ -127,7 +127,7 @@ impl VmbusClient {
 
         Self {
             access: VmbusClientAccess {
-                client_request_send: Arc::new(client_request_send),
+                client_request_send,
             },
             task_send,
             _thread: thread,

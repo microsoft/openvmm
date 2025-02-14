@@ -211,7 +211,7 @@ pub struct Manifest {
     chipset: BaseChipsetManifest,
     #[cfg(windows)]
     kernel_vmnics: Vec<hvlite_defs::config::KernelVmNicConfig>,
-    input: mesh::MpscReceiver<InputData>,
+    input: mesh::Receiver<InputData>,
     framebuffer: Option<framebuffer::Framebuffer>,
     vga_firmware: Option<RomFileLocation>,
     vtl2_gfx: bool,
@@ -226,7 +226,7 @@ pub struct Manifest {
     vmgs_disk: Option<Resource<DiskHandleKind>>,
     secure_boot_enabled: bool,
     custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
-    firmware_event_send: Option<mesh::MpscSender<get_resources::ged::FirmwareEvent>>,
+    firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
     debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     chipset_devices: Vec<ChipsetDeviceHandle>,
@@ -530,7 +530,7 @@ struct LoadedVmInner {
     /// ((device, function), interrupt)
     #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
     pci_legacy_interrupts: Vec<((u8, Option<u8>), u32)>,
-    firmware_event_send: Option<mesh::MpscSender<get_resources::ged::FirmwareEvent>>,
+    firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
 
     load_mode: LoadMode,
     igvm_file: Option<IgvmFile>,

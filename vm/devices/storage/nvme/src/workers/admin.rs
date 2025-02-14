@@ -92,7 +92,7 @@ pub struct AdminState {
     #[inspect(with = "|x| inspect::iter_by_index(x).map_key(|x| x + 1)")]
     io_cqs: Vec<Option<IoCq>>,
     #[inspect(skip)]
-    sq_delete_response: mesh::MpscReceiver<u16>,
+    sq_delete_response: mesh::Receiver<u16>,
     #[inspect(with = "Option::is_some")]
     shadow_db_evt_gpa_base: Option<ShadowDoorbell>,
     #[inspect(iter_by_index)]
