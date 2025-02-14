@@ -111,7 +111,7 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
                 if script_interpreter_line.is_none() && first_content_line.starts_with('\u{feff}') {
                     write!(f_fixed, "\u{feff}")?;
                     // Skip the BOM.
-                    f.read(&mut [0; 3])?;
+                    f.read_exact(&mut [0; 3])?;
                 }
 
                 writeln!(f_fixed, "{} {}", prefix, HEADER_MIT_FIRST)?;
