@@ -235,6 +235,7 @@ impl Cmd for CargoLock {
                 std::process::Command::new("cargo")
                     .arg("update")
                     .arg("--workspace")
+                    .arg("--offline")
                     .current_dir(&ctx.overlay_workspace)
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
