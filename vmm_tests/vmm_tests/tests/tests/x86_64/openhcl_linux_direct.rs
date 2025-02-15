@@ -112,7 +112,7 @@ async fn mana_nic_servicing(
 /// vmbus relay. This should expose a disk to VTL0 via vmbus.
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn storvsp(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    const NVME_INSTANCE: Guid = Guid::from_static_str("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
     let vtl2_lun = 5;
     let vtl0_scsi_lun = 0;
     let vtl0_nvme_lun = 1;
@@ -399,8 +399,8 @@ async fn openhcl_linux_storvsp_dvd(config: PetriVmConfigOpenVmm) -> Result<(), a
 /// Test an OpenHCL Linux Stripe VM with two SCSI disk assigned to VTL2 via NVMe Emulator
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn openhcl_linux_stripe_storvsp(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    const NVME_INSTANCE_1: Guid = Guid::from_static_str("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
-    const NVME_INSTANCE_2: Guid = Guid::from_static_str("06a97a09-d5ad-4689-b638-9419d7346a68");
+    const NVME_INSTANCE_1: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+    const NVME_INSTANCE_2: Guid = guid::guid!("06a97a09-d5ad-4689-b638-9419d7346a68");
     let vtl0_nvme_lun = 0;
     let vtl2_nsid = 1;
     let nvme_disk_sectors: u64 = 0x10000;

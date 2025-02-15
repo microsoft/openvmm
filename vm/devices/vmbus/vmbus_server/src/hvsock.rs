@@ -311,7 +311,7 @@ impl Drop for PendingConnection {
 
 // This GUID is an embedding of the AF_VSOCK port into an
 // AF_HYPERV service ID.
-static VSOCK_TEMPLATE: Guid = Guid::from_static_str("00000000-facb-11e6-bd58-64006a7986d3");
+static VSOCK_TEMPLATE: Guid = guid::guid!("00000000-facb-11e6-bd58-64006a7986d3");
 
 fn vsock_port(service_id: &Guid) -> Option<u32> {
     let stripped_id = Guid {

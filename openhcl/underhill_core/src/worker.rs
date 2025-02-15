@@ -1815,7 +1815,7 @@ async fn new_underhill_vm(
     if env_cfg.mcr {
         use crate::dispatch::vtl2_settings_worker::UhVpciDeviceConfig;
         tracing::info!("Instantiating The MCR Device");
-        const MCR_INSTANCE_ID: Guid = Guid::from_static_str("07effd8f-7501-426c-a947-d8345f39113d");
+        const MCR_INSTANCE_ID: Guid = guid::guid!("07effd8f-7501-426c-a947-d8345f39113d");
 
         let res = UhVpciDeviceConfig {
             instance_id: MCR_INSTANCE_ID,

@@ -18,8 +18,8 @@ use guid::Guid;
 
 /// MsvmPkg: `gEfiVmbusChannelDevicePathGuid`
 pub const VM_HW_VENDOR_VMBUS_GUID: Guid =
-    Guid::from_static_str("9b17e5a2-0891-42dd-b653-80b5c22809ba");
+    guid::guid!("9b17e5a2-0891-42dd-b653-80b5c22809ba");
 
 /// MsvmPkg: `gSyntheticStorageClassGuid`
 pub const VM_DISK_VMBUS_CHILD_GUID: Guid =
-    Guid::from_static_str("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f");
+    guid::guid!("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f");

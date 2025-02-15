@@ -194,7 +194,7 @@ mod test {
         assert_eq!(guid_sample.field1, 123);
         assert_eq!(
             guid_sample.field2.expect("field2 set"),
-            Guid::from_static_str("12345678-9abc-def0-1234-56789abcdef0")
+            guid::guid!("12345678-9abc-def0-1234-56789abcdef0")
         );
 
         let json = r#"

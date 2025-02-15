@@ -46,14 +46,14 @@ use vtl2_settings_proto::Vtl2Settings;
 
 /// The instance guid used for all of our SCSI drives.
 pub(crate) const SCSI_INSTANCE: Guid =
-    Guid::from_static_str("27b553e8-8b39-411b-a55f-839971a7884f");
+    guid::guid!("27b553e8-8b39-411b-a55f-839971a7884f");
 
 /// The instance guid for the NVMe controller automatically added for boot media.
 pub(crate) const BOOT_NVME_INSTANCE: Guid =
-    Guid::from_static_str("92bc8346-718b-449a-8751-edbf3dcd27e4");
+    guid::guid!("92bc8346-718b-449a-8751-edbf3dcd27e4");
 
 /// The instance guid for the MANA nic automatically added when specifying `PetriVmConfigOpenVmm::with_nic`
-const MANA_INSTANCE: Guid = Guid::from_static_str("f9641cf4-d915-4743-a7d8-efa75db7b85a");
+const MANA_INSTANCE: Guid = guid::guid!("f9641cf4-d915-4743-a7d8-efa75db7b85a");
 
 /// The namespace ID for the NVMe controller automatically added for boot media.
 pub(crate) const BOOT_NVME_NSID: u32 = 37;

@@ -442,19 +442,19 @@ impl Channel {
         // that has all of these defined, but for now just redefine the most
         // common ones here. Add more as needed.
 
-        const SHUTDOWN_IC: Guid = Guid::from_static_str("0e0b6031-5213-4934-818b-38d90ced39db");
-        const KVP_IC: Guid = Guid::from_static_str("a9a0f4e7-5a45-4d96-b827-8a841e8c03e6");
-        const VSS_IC: Guid = Guid::from_static_str("35fa2e29-ea23-4236-96ae-3a6ebacba440");
-        const TIMESYNC_IC: Guid = Guid::from_static_str("9527e630-d0ae-497b-adce-e80ab0175caf");
-        const HEARTBEAT_IC: Guid = Guid::from_static_str("57164f39-9115-4e78-ab55-382f3bd5422d");
-        const RDV_IC: Guid = Guid::from_static_str("276aacf4-ac15-426c-98dd-7521ad3f01fe");
+        const SHUTDOWN_IC: Guid = guid::guid!("0e0b6031-5213-4934-818b-38d90ced39db");
+        const KVP_IC: Guid = guid::guid!("a9a0f4e7-5a45-4d96-b827-8a841e8c03e6");
+        const VSS_IC: Guid = guid::guid!("35fa2e29-ea23-4236-96ae-3a6ebacba440");
+        const TIMESYNC_IC: Guid = guid::guid!("9527e630-d0ae-497b-adce-e80ab0175caf");
+        const HEARTBEAT_IC: Guid = guid::guid!("57164f39-9115-4e78-ab55-382f3bd5422d");
+        const RDV_IC: Guid = guid::guid!("276aacf4-ac15-426c-98dd-7521ad3f01fe");
 
         const INHERITED_ACTIVATION: Guid =
-            Guid::from_static_str("3375baf4-9e15-4b30-b765-67acb10d607b");
+            guid::guid!("3375baf4-9e15-4b30-b765-67acb10d607b");
 
-        const NET: Guid = Guid::from_static_str("f8615163-df3e-46c5-913f-f2d2f965ed0e");
-        const SCSI: Guid = Guid::from_static_str("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f");
-        const VPCI: Guid = Guid::from_static_str("44c4f61d-4444-4400-9d52-802e27ede19f");
+        const NET: Guid = guid::guid!("f8615163-df3e-46c5-913f-f2d2f965ed0e");
+        const SCSI: Guid = guid::guid!("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f");
+        const VPCI: Guid = guid::guid!("44c4f61d-4444-4400-9d52-802e27ede19f");
 
         match self.offer.interface_id {
             SHUTDOWN_IC => "shutdown_ic",
@@ -1417,7 +1417,7 @@ mod tests {
     use zerocopy::KnownLayout;
 
     const VMBUS_TEST_CLIENT_ID: Guid =
-        Guid::from_static_str("e6e6e6e6-e6e6-e6e6-e6e6-e6e6e6e6e6e6");
+        guid::guid!("e6e6e6e6-e6e6-e6e6-e6e6-e6e6e6e6e6e6");
 
     fn in_msg<T: IntoBytes + Immutable + KnownLayout>(message_type: MessageType, t: T) -> Vec<u8> {
         let mut data = Vec::new();

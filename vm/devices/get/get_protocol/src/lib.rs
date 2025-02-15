@@ -31,15 +31,15 @@ const_assert!(MAX_MESSAGE_SIZE >= MAX_HEADER_SIZE + MAX_PAYLOAD_SIZE);
 
 /// {455C0F1B-D51B-40B1-BEAC-87377FE6E041}
 pub const GUEST_EMULATION_DEVICE_ID: Guid =
-    Guid::from_static_str("455c0f1b-d51b-40b1-beac-87377fe6e041");
+    guid::guid!("455c0f1b-d51b-40b1-beac-87377fe6e041");
 
 /// {8DEDD1AA-9056-49E4-BFD6-1BF90DC38EF0}
 pub const GUEST_EMULATION_INTERFACE_TYPE: Guid =
-    Guid::from_static_str("8dedd1aa-9056-49e4-bfd6-1bf90dc38ef0");
+    guid::guid!("8dedd1aa-9056-49e4-bfd6-1bf90dc38ef0");
 
 /// {D3E4454D-62AF-44EC-B851-3170915E5F56}
 pub const GUEST_EMULATION_INTERFACE_INSTANCE: Guid =
-    Guid::from_static_str("d3e4454d-62af-44ec-b851-3170915e5f56");
+    guid::guid!("d3e4454d-62af-44ec-b851-3170915e5f56");
 
 /// Make protocol version
 const fn make_version(major: u16, minor: u16) -> u32 {
@@ -1541,7 +1541,7 @@ impl ModifyVtl2SettingsCompleteNotification {
 }
 
 pub const GET_LOG_INTERFACE_GUID: Guid =
-    Guid::from_static_str("AA5DE534-D149-487A-9053-05972BA20A7C");
+    guid::guid!("AA5DE534-D149-487A-9053-05972BA20A7C");
 
 open_enum! {
     #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]

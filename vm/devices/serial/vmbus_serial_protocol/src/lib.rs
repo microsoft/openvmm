@@ -20,27 +20,27 @@ pub const MAX_MESSAGE_SIZE: usize = 512;
 
 // {8b60ccf6-709f-4c11-90b5-229c959a9e6a}
 /// VMBUS Interface Type GUID
-pub const UART_INTERFACE_TYPE: Guid = Guid::from_static_str("8b60ccf6-709f-4c11-90b5-229c959a9e6a");
+pub const UART_INTERFACE_TYPE: Guid = guid::guid!("8b60ccf6-709f-4c11-90b5-229c959a9e6a");
 
 // {700df40e-b947-4776-b839-d1b0a35af034}
 /// VMBUS Instance GUID for COM1
 pub const UART_INTERFACE_INSTANCE_COM1: Guid =
-    Guid::from_static_str("700df40e-b947-4776-b839-d1b0a35af034");
+    guid::guid!("700df40e-b947-4776-b839-d1b0a35af034");
 
 // {7e55f4b8-af84-4e98-9f1a-8e8d0bde3744}
 /// VMBUS Instance GUID for COM2
 pub const UART_INTERFACE_INSTANCE_COM2: Guid =
-    Guid::from_static_str("7e55f4b8-af84-4e98-9f1a-8e8d0bde3744");
+    guid::guid!("7e55f4b8-af84-4e98-9f1a-8e8d0bde3744");
 
 // {3f158fa1-b0aa-45e9-ba54-9fc73f6c59ec}
 /// VMBUS Instance GUID for COM3
 pub const UART_INTERFACE_INSTANCE_COM3: Guid =
-    Guid::from_static_str("3f158fa1-b0aa-45e9-ba54-9fc73f6c59ec");
+    guid::guid!("3f158fa1-b0aa-45e9-ba54-9fc73f6c59ec");
 
 // {8688a06f-9b53-48ce-b408-7581626228c5}
 /// VMBUS Instance GUID for COM4
 pub const UART_INTERFACE_INSTANCE_COM4: Guid =
-    Guid::from_static_str("8688a06f-9b53-48ce-b408-7581626228c5");
+    guid::guid!("8688a06f-9b53-48ce-b408-7581626228c5");
 
 const fn make_version(major: u16, minor: u16) -> u32 {
     (minor as u32) | ((major as u32) << 16)

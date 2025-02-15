@@ -135,7 +135,7 @@ impl PetriVmConfigOpenVmm {
     /// is expected to not succeed, but pipette functionality is still desired.
     pub async fn run_with_lazy_pipette(mut self) -> anyhow::Result<PetriVmOpenVmm> {
         const CIDATA_SCSI_INSTANCE: Guid =
-            Guid::from_static_str("766e96f8-2ceb-437e-afe3-a93169e48a7b");
+            guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7b");
 
         // Construct the agent disk.
         let agent_disk = self
@@ -192,7 +192,7 @@ impl PetriVmConfigOpenVmm {
         if self.firmware.is_openhcl() {
             // Add a second pipette disk for VTL 2
             const UH_CIDATA_SCSI_INSTANCE: Guid =
-                Guid::from_static_str("766e96f8-2ceb-437e-afe3-a93169e48a7c");
+                guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7c");
 
             let uh_agent_disk = self
                 .resources
