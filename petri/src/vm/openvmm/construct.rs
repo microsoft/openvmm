@@ -33,6 +33,8 @@ use futures::io::BufReader;
 use futures::AsyncBufReadExt;
 use futures::AsyncRead;
 use futures::AsyncReadExt;
+use futures::StreamExt;
+use get_resources::crash::GuestCrashDeviceHandle;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use hvlite_defs::config::Config;
@@ -50,7 +52,6 @@ use hvlite_defs::config::Vtl2Config;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
-use hvlite_helpers::crash_dump::spawn_dump_handler;
 use hvlite_helpers::disk::open_disk_type;
 use hvlite_pcat_locator::RomFileLocation;
 use hyperv_ic_resources::shutdown::ShutdownIcHandle;
@@ -63,7 +64,6 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::MachineArch;
-use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PIPETTE_VSOCK_PORT;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
@@ -102,14 +102,13 @@ impl PetriVmConfigOpenVmm {
             agent_image,
             openhcl_agent_image,
             openvmm_path,
-            openhcl_dump_directory,
         } = artifacts;
 
         let setup = PetriVmConfigSetupCore {
             arch,
             firmware: &firmware,
             driver,
-            openhcl_dump_directory: &openhcl_dump_directory,
+            logger: params.logger,
         };
 
         let mut chipset = VmManifestBuilder::new(
@@ -395,7 +394,7 @@ struct PetriVmConfigSetupCore<'a> {
     arch: MachineArch,
     firmware: &'a Firmware,
     driver: &'a DefaultDriver,
-    openhcl_dump_directory: &'a ResolvedArtifact,
+    logger: &'a PetriLogSource,
 }
 
 struct SerialData {
@@ -818,12 +817,7 @@ impl PetriVmConfigSetupCore<'_> {
 
         let gel = get_resources::gel::GuestEmulationLogHandle.into_resource();
 
-        let (crash, task) = spawn_dump_handler(
-            self.driver,
-            self.openhcl_dump_directory.clone().into(),
-            None,
-        );
-        task.detach();
+        let crash = spawn_dump_handler(self.driver, self.logger).into_resource();
 
         devices.extend([
             Device::Vmbus(DeviceVtl::Vtl2, crash),
@@ -914,4 +908,40 @@ impl PetriVmConfigSetupCore<'_> {
             }
         }
     }
+}
+
+fn spawn_dump_handler(driver: &DefaultDriver, logger: &PetriLogSource) -> GuestCrashDeviceHandle {
+    let (send, mut recv) = mesh::channel();
+    let handle = GuestCrashDeviceHandle {
+        request_dump: send,
+        max_dump_size: 256 * 1024 * 1024,
+    };
+    driver
+        .spawn("openhcl-dump-handler", {
+            let logger = logger.clone();
+            let driver = driver.clone();
+            async move {
+                while let Some(rpc) = recv.next().await {
+                    rpc.handle_failable_sync(|done| {
+                        let (file, path) = logger.create_attachment("openhcl.core")?.into_parts();
+                        driver
+                            .spawn("crash-waiter", async move {
+                                let filename = path.file_name().unwrap().to_str().unwrap();
+                                if done.await.is_ok() {
+                                    tracing::warn!(filename, "openhcl crash dump complete");
+                                } else {
+                                    tracing::error!(
+                                        filename,
+                                        "openhcl crash dump incomplete, may be corrupted"
+                                    );
+                                }
+                            })
+                            .detach();
+                        anyhow::Ok(file)
+                    })
+                }
+            }
+        })
+        .detach();
+    handle
 }

@@ -67,7 +67,6 @@ pub struct PetriVmArtifactsOpenVmm {
     agent_image: AgentImage,
     openhcl_agent_image: Option<AgentImage>,
     openvmm_path: ResolvedArtifact,
-    openhcl_dump_directory: ResolvedArtifact,
 }
 
 impl PetriVmArtifactsOpenVmm {
@@ -86,9 +85,6 @@ impl PetriVmArtifactsOpenVmm {
             openhcl_agent_image,
             openvmm_path: resolver
                 .require(petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE)
-                .erase(),
-            openhcl_dump_directory: resolver
-                .require(petri_artifacts_vmm_test::artifacts::OPENHCL_DUMP_DIRECTORY)
                 .erase(),
         }
     }

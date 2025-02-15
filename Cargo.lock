@@ -5236,7 +5236,6 @@ dependencies = [
  "petri_artifacts_common",
  "petri_artifacts_core",
  "petri_artifacts_vmm_test",
- "tempfile",
  "vmm_test_images",
 ]
 
