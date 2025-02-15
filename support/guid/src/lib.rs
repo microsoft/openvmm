@@ -70,7 +70,7 @@ macro_rules! result_helper {
 macro_rules! guid {
     ($x:expr) => {
         const { $crate::Guid::from_static_str($x) }
-    }
+    };
 }
 
 impl Guid {
@@ -312,6 +312,7 @@ mod windows {
 
 #[cfg(test)]
 mod tests {
+    use super::guid;
     use super::Guid;
 
     #[test]
@@ -347,10 +348,9 @@ mod tests {
         );
 
         // Test GUID parsing at compile time.
-        const TEST_GUID: Guid = guid::guid!("cf127acc-c960-41e4-9b1e-513e8a89147d");
+        const TEST_GUID: Guid = guid!("cf127acc-c960-41e4-9b1e-513e8a89147d");
         assert_eq!(guid, TEST_GUID);
-        const TEST_BRACED_GUID: Guid =
-            guid::guid!("{cf127acc-c960-41e4-9b1e-513e8a89147d}");
+        const TEST_BRACED_GUID: Guid = guid!("{cf127acc-c960-41e4-9b1e-513e8a89147d}");
         assert_eq!(guid, TEST_BRACED_GUID);
     }
 }

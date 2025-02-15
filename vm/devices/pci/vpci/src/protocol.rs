@@ -68,8 +68,7 @@ open_enum! {
     }
 }
 
-pub const GUID_VPCI_VSP_CHANNEL_TYPE: Guid =
-    guid::guid!("44C4F61D-4444-4400-9D52-802E27EDE19F");
+pub const GUID_VPCI_VSP_CHANNEL_TYPE: Guid = guid::guid!("44C4F61D-4444-4400-9D52-802E27EDE19F");
 
 open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]

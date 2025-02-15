@@ -134,8 +134,7 @@ impl PetriVmConfigOpenVmm {
     /// for it to connect. This is useful for tests where the first boot attempt
     /// is expected to not succeed, but pipette functionality is still desired.
     pub async fn run_with_lazy_pipette(mut self) -> anyhow::Result<PetriVmOpenVmm> {
-        const CIDATA_SCSI_INSTANCE: Guid =
-            guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7b");
+        const CIDATA_SCSI_INSTANCE: Guid = guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7b");
 
         // Construct the agent disk.
         let agent_disk = self

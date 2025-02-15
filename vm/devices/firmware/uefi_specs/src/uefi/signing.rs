@@ -45,8 +45,7 @@ pub struct WIN_CERTIFICATE_UEFI_GUID {
 }
 
 /// UEFI spec 32.2.4 - WIN_CERTIFICATE_UEFI_GUID
-pub const EFI_CERT_TYPE_PKCS7_GUID: Guid =
-    guid::guid!("4aafd29d-68df-49ee-8aa9-347d375665a7");
+pub const EFI_CERT_TYPE_PKCS7_GUID: Guid = guid::guid!("4aafd29d-68df-49ee-8aa9-347d375665a7");
 
 // UEFI spec 32.2.4 - WIN_CERTIFICATE
 

@@ -449,8 +449,7 @@ impl Channel {
         const HEARTBEAT_IC: Guid = guid::guid!("57164f39-9115-4e78-ab55-382f3bd5422d");
         const RDV_IC: Guid = guid::guid!("276aacf4-ac15-426c-98dd-7521ad3f01fe");
 
-        const INHERITED_ACTIVATION: Guid =
-            guid::guid!("3375baf4-9e15-4b30-b765-67acb10d607b");
+        const INHERITED_ACTIVATION: Guid = guid::guid!("3375baf4-9e15-4b30-b765-67acb10d607b");
 
         const NET: Guid = guid::guid!("f8615163-df3e-46c5-913f-f2d2f965ed0e");
         const SCSI: Guid = guid::guid!("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f");
@@ -1416,8 +1415,7 @@ mod tests {
     use zerocopy::IntoBytes;
     use zerocopy::KnownLayout;
 
-    const VMBUS_TEST_CLIENT_ID: Guid =
-        guid::guid!("e6e6e6e6-e6e6-e6e6-e6e6-e6e6e6e6e6e6");
+    const VMBUS_TEST_CLIENT_ID: Guid = guid::guid!("e6e6e6e6-e6e6-e6e6-e6e6-e6e6e6e6e6e6");
 
     fn in_msg<T: IntoBytes + Immutable + KnownLayout>(message_type: MessageType, t: T) -> Vec<u8> {
         let mut data = Vec::new();

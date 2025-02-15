@@ -583,8 +583,7 @@ fn vm_config_from_command_line(
         getrandom::getrandom(&mut mac_address[3..]).expect("rng failure");
 
         // Pick a fixed instance ID based on the index.
-        const BASE_INSTANCE_ID: Guid =
-            guid::guid!("00000000-435d-11ee-9f59-00155d5016fc");
+        const BASE_INSTANCE_ID: Guid = guid::guid!("00000000-435d-11ee-9f59-00155d5016fc");
         let instance_id = Guid {
             data1: index as u32,
             ..BASE_INSTANCE_ID
