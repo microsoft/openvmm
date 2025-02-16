@@ -131,7 +131,7 @@ impl Test {
             let err = if let Some(msg) = msg {
                 anyhow::anyhow!("test panicked: {msg}")
             } else {
-                anyhow::anyhow!("test panicked")
+                anyhow::anyhow!("test panicked (unknown payload type)")
             };
             Err(err)
         });
