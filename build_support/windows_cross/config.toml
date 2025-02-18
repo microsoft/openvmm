@@ -1,0 +1,26 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# Configure cargo to build Windows binaries from WSL using the LLVM toolchain and
+# the libraries and include files from your Visual Studio installation.
+#
+# Use this via `cargo build --target x86_64-pc-windows-msvc --config build_support/windows_cross/config.toml`.
+#
+# Alternatively, to set this globally for your user, copy the `windows_cross`
+# directory into your home directory and copy the contents of this file into
+# your `~/.cargo/config.toml`.
+
+[env]
+CC_aarch64_pc_windows_msvc = { value = "windows_cross/aarch64-clang-cl", relative = true }
+AR_aarch64_pc_windows_msvc = { value = "windows_cross/aarch64-llvm-lib", relative = true }
+RC_aarch64_pc_windows_msvc = { value = "windows_cross/aarch64-llvm-rc", relative = true }
+DLLTOOL_aarch64_pc_windows_msvc = { value = "windows_cross/aarch64-llvm-dlltool", relative = true }
+CC_x86_64_pc_windows_msvc = { value = "windows_cross/x86_64-clang-cl", relative = true }
+AR_x86_64_pc_windows_msvc = { value = "windows_cross/x86_64-llvm-lib", relative = true }
+RC_x86_64_pc_windows_msvc = { value = "windows_cross/x86_64-llvm-rc", relative = true }
+DLLTOOL_x86_64_pc_windows_msvc = { value = "windows_cross/x86_64-llvm-dlltool", relative = true }
+
+[target.x86_64-pc-windows-msvc]
+linker = "windows_cross/x86_64-lld-link"
+[target.aarch64-pc-windows-msvc]
+linker = "windows_cross/aarch64-lld-link"
