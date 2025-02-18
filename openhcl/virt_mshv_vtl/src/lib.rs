@@ -1171,7 +1171,7 @@ impl IoApicRouting for UhPartitionInner {
 
 /// Configure the [`hvdef::HvRegisterVsmPartitionConfig`] register with the
 /// values used by underhill.
-fn set_vtl2_vsm_partition_config(hcl: &mut Hcl) -> Result<(), Error> {
+fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
     // Read available capabilities to determine what to enable.
     let caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
     let hardware_isolated = hcl.isolation().is_hardware_isolated();
@@ -1182,7 +1182,7 @@ fn set_vtl2_vsm_partition_config(hcl: &mut Hcl) -> Result<(), Error> {
         .with_enable_vtl_protection(!hardware_isolated)
         .with_zero_memory_on_reset(!hardware_isolated)
         .with_intercept_cpuid_unimplemented(!hardware_isolated)
-        .with_intercept_page(true)
+        .with_intercept_page(caps.intercept_page_available())
         .with_intercept_unrecoverable_exception(true)
         .with_intercept_not_present(caps.intercept_not_present_available() && !isolated)
         .with_intercept_acceptance(isolated)
@@ -1371,6 +1371,8 @@ impl<'a> UhProtoPartition<'a> {
 
         hcl.set_allowed_hypercalls(allowed_hypercalls.as_slice());
 
+        set_vtl2_vsm_partition_config(&hcl)?;
+
         #[cfg(guest_arch = "x86_64")]
         let cvm_cpuid = match params.isolation {
             IsolationType::Snp => Some(
@@ -1496,8 +1498,6 @@ impl<'a> UhProtoPartition<'a> {
             }
             hcl.set_snp_register_bitmap(bitmap);
         }
-
-        set_vtl2_vsm_partition_config(&mut hcl)?;
 
         // Do per-VP HCL initialization.
         hcl.add_vps(params.topology.vp_count())
