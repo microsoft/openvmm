@@ -514,25 +514,16 @@ impl HardwareIsolatedBacking for TdxBacked {
             HvX64RegisterName::Dr1,
             HvX64RegisterName::Dr2,
             HvX64RegisterName::Dr3,
+            HvX64RegisterName::Dr6,
             HvX64RegisterName::Xfem,
         ];
-        let mut values = [HvRegisterValue::from(0u64); 5];
+        let mut values = regs.map(|_| HvRegisterValue::from(0u64));
         this.runner
             .get_vp_registers(source_vtl, &regs, &mut values)
             .unwrap();
         this.runner
             .set_vp_registers(target_vtl, regs.into_iter().zip(values))
             .unwrap();
-
-        if this.partition.hcl.dr6_shared() {
-            let dr6 = this
-                .runner
-                .get_vp_register(source_vtl, HvX64RegisterName::Dr6)
-                .unwrap();
-            this.runner
-                .set_vp_register(target_vtl, HvX64RegisterName::Dr6, dr6)
-                .unwrap();
-        }
     }
 
     fn translation_registers(
