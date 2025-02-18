@@ -504,26 +504,12 @@ impl HardwareIsolatedBacking for TdxBacked {
     }
 
     fn switch_vtl_state(
-        this: &mut UhProcessor<'_, Self>,
-        source_vtl: GuestVtl,
-        target_vtl: GuestVtl,
+        _this: &mut UhProcessor<'_, Self>,
+        _source_vtl: GuestVtl,
+        _target_vtl: GuestVtl,
     ) {
         // The GPs, Fxsave, and CR2 are saved in the shared kernel state. No copying needed.
-        let regs = [
-            HvX64RegisterName::Dr0,
-            HvX64RegisterName::Dr1,
-            HvX64RegisterName::Dr2,
-            HvX64RegisterName::Dr3,
-            HvX64RegisterName::Dr6,
-            HvX64RegisterName::Xfem,
-        ];
-        let mut values = regs.map(|_| HvRegisterValue::from(0u64));
-        this.runner
-            .get_vp_registers(source_vtl, &regs, &mut values)
-            .unwrap();
-        this.runner
-            .set_vp_registers(target_vtl, regs.into_iter().zip(values))
-            .unwrap();
+        // Debug registers and XFEM are shared architecturally. No copying needed.
     }
 
     fn translation_registers(
