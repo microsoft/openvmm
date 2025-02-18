@@ -93,7 +93,7 @@ pub mod save_restore {
                     .iter()
                     .map(|slot| {
                         let slot = slot.resolve(&state.device_ids);
-                        let inner_state = match &slot.state {
+                        let inner_state = match slot.state {
                             ResolvedSlotState::Free => InnerSlotState::Free,
                             ResolvedSlotState::Allocated { device_id, tag } => {
                                 InnerSlotState::Allocated {
