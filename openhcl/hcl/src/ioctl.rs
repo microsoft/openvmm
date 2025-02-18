@@ -2842,6 +2842,8 @@ impl Hcl {
                 .with_dr6_shared(true),
         };
 
+        assert_eq!(caps.dr6_shared(), self.dr6_shared());
+
         Ok(caps)
     }
 
