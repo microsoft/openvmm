@@ -49,12 +49,12 @@ impl PoolSource for HclMapper {
         self.gpa_bias
     }
 
-    fn mapping_file_offset(&self, address: u64) -> usize {
+    fn file_offset(&self, address: u64) -> u64 {
         address.wrapping_add(if self.is_shared {
             MshvVtlLow::SHARED_MEMORY_FLAG
         } else {
             0
-        }) as usize
+        })
     }
 
     fn mappable(&self) -> sparse_mmap::MappableRef<'_> {

@@ -424,7 +424,7 @@ pub trait PoolSource: Inspect + Send + Sync {
     fn address_bias(&self) -> u64;
     /// Translates a physical address into the file offset to use when mapping
     /// the page.
-    fn mapping_file_offset(&self, address: u64) -> usize;
+    fn file_offset(&self, address: u64) -> u64;
     /// Returns the OS object to map pages from.
     fn mappable(&self) -> MappableRef<'_>;
 }
@@ -457,8 +457,8 @@ impl PoolSource for TestMapper {
         0
     }
 
-    fn mapping_file_offset(&self, address: u64) -> usize {
-        address as usize
+    fn file_offset(&self, address: u64) -> u64 {
+        address
     }
 
     fn mappable(&self) -> MappableRef<'_> {
@@ -491,44 +491,45 @@ impl PagePool {
     /// Returns a new page pool managing the address ranges in `ranges`,
     /// using `source` to access the memory.
     pub fn new<T: PoolSource + 'static>(ranges: &[MemoryRange], source: T) -> anyhow::Result<Self> {
-        Self::new_internal(ranges, source)
+        Self::new_internal(ranges, Box::new(source))
     }
 
-    fn new_internal<T: PoolSource + 'static>(
-        memory: &[MemoryRange],
-        source: T,
-    ) -> anyhow::Result<Self> {
+    fn new_internal(memory: &[MemoryRange], source: Box<dyn PoolSource>) -> anyhow::Result<Self> {
         // TODO: Allow callers to specify the vnode, but today we discard this
         // information. In the future we may keep ranges with vnode in order to
         // allow per-node allocations.
 
-        let mut i = 0;
+        let mut mapping_offset = 0;
         let pages = memory
             .iter()
             .map(|range| {
                 let slot = Slot {
                     base_pfn: range.start() / PAGE_SIZE,
                     size_pages: range.len() / PAGE_SIZE,
-                    mapping_offset: i,
+                    mapping_offset,
                     state: SlotState::Free,
                 };
-                i += range.len() as usize;
+                mapping_offset += range.len() as usize;
                 slot
             })
             .collect();
 
+        let total_len = mapping_offset;
+
         // Create a contiguous mapping of the memory ranges.
-        let mapping = SparseMapping::new(i).context("failed to reserve VA")?;
+        let mapping = SparseMapping::new(total_len).context("failed to reserve VA")?;
         let mappable = source.mappable();
-        let mut i = 0;
+        let mut mapping_offset = 0;
         for range in memory {
-            let file_offset = range.start();
+            let file_offset = source.file_offset(range.start());
             let len = range.len() as usize;
             mapping
-                .map_file(i, len, mappable, file_offset, true)
+                .map_file(mapping_offset, len, mappable, file_offset, true)
                 .context("failed to map range")?;
-            i += len;
+            mapping_offset += len;
         }
+
+        assert_eq!(mapping_offset, total_len);
 
         Ok(Self {
             inner: Arc::new(PagePoolInner {
@@ -537,7 +538,7 @@ impl PagePool {
                     device_ids: Vec::new(),
                 }),
                 pfn_bias: source.address_bias() / PAGE_SIZE,
-                source: Box::new(source),
+                source,
                 mapping,
             }),
             ranges: memory.to_vec(),
@@ -874,8 +875,8 @@ mod test {
             self.bias.wrapping_add(self.mapper.address_bias())
         }
 
-        fn mapping_file_offset(&self, address: u64) -> usize {
-            self.mapper.mapping_file_offset(address)
+        fn file_offset(&self, address: u64) -> u64 {
+            self.mapper.file_offset(address)
         }
 
         fn mappable(&self) -> MappableRef<'_> {
