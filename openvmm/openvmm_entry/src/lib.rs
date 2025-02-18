@@ -5,6 +5,7 @@
 //! for the worker process.
 
 mod cli_args;
+mod crash_dump;
 mod meshworker;
 mod serial_io;
 mod storage_builder;
@@ -28,6 +29,7 @@ use cli_args::NicConfigCli;
 use cli_args::SerialConfigCli;
 use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
+use crash_dump::spawn_dump_handler;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use disk_backend_resources::layer::SqliteAutoCacheDiskLayerHandle;
@@ -68,7 +70,6 @@ use hvlite_defs::rpc::PulseSaveRestoreError;
 use hvlite_defs::rpc::VmRpc;
 use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_defs::worker::VM_WORKER;
-use hvlite_helpers::crash_dump::spawn_dump_handler;
 use hvlite_helpers::disk::open_disk_type;
 use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
