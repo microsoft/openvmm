@@ -70,10 +70,8 @@ def sdk_paths(arch):
     versions = os.listdir(f'{roots}/Lib')
     versions.sort()
     version = versions[-1]
-    lib = [f'{roots}/Lib/{version}/ucrt/{arch}',
-           f'{roots}/Lib/{version}/um/{arch}']
-    include = [f'{roots}/Include/{version}/ucrt',
-               f'{roots}/Include/{version}/um']
+    lib = [f'{roots}/Lib/{version}/{dir}/{arch}' for dir in ['ucrt', 'um']]
+    include = [f'{roots}/Include/{version}/{dir}' for dir in ['ucrt', 'um', 'shared', 'cppwinrt', 'winrt']]
     return {'lib': lib, 'include': include}
 
 
