@@ -8,14 +8,13 @@ rust-version.workspace = true
 
 [dependencies]
 user_driver.workspace = true
-hvdef.workspace = true
 sparse_mmap.workspace = true
 vmcore.workspace = true
 memory_range = { workspace = true, features = [ "inspect", "mesh" ] }
-vm_topology = { workspace = true, features = [ "inspect", "mesh" ] }
 
 inspect.workspace = true
 mesh.workspace = true
+safeatomic.workspace = true
 
 parking_lot.workspace = true
 thiserror.workspace = true

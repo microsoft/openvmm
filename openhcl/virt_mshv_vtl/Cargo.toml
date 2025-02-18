@@ -37,6 +37,7 @@ mesh.workspace = true
 pal_async.workspace = true
 pal_uring.workspace = true
 pal.workspace = true
+safeatomic.workspace = true
 tracelimit.workspace = true
 
 anyhow.workspace = true

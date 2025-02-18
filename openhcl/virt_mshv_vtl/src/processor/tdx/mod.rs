@@ -696,7 +696,7 @@ impl BackingPrivate for TdxBacked {
             .private_vis_pages_pool
             .as_ref()
             .expect("private pool exists for cvm")
-            .alloc_with_mapping(1.try_into().unwrap(), "tdx_tlb_flush".into())
+            .alloc(1.try_into().unwrap(), "tdx_tlb_flush".into())
             .expect("not out of memory");
 
         let untrusted_synic = params

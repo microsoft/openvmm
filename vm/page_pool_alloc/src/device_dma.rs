@@ -9,15 +9,14 @@
 #![expect(unsafe_code)]
 
 use crate::PagePoolHandle;
+use crate::PAGE_SIZE;
 use user_driver::memory::MappedDmaTarget;
 
 /// Page pool memory representing a DMA buffer useable by devices.
 pub struct PagePoolDmaBuffer {
-    pub(crate) mapping: sparse_mmap::SparseMapping,
     // Holds allocation until dropped.
-    pub(crate) _alloc: PagePoolHandle,
+    pub(crate) alloc: PagePoolHandle,
     pub(crate) pfns: Vec<u64>,
-    pub(crate) pfn_bias: u64,
 }
 
 /// SAFETY: This struct keeps both the shared memory region which the sparse
@@ -25,11 +24,16 @@ pub struct PagePoolDmaBuffer {
 /// satisfying the trait.
 unsafe impl MappedDmaTarget for PagePoolDmaBuffer {
     fn base(&self) -> *const u8 {
-        self.mapping.as_ptr() as *const u8
+        self.alloc
+            .inner
+            .mapping
+            .as_ptr()
+            .wrapping_byte_add(self.alloc.mapping_offset)
+            .cast()
     }
 
     fn len(&self) -> usize {
-        self.mapping.len()
+        (self.alloc.size_pages * PAGE_SIZE) as usize
     }
 
     fn pfns(&self) -> &[u64] {
@@ -37,6 +41,6 @@ unsafe impl MappedDmaTarget for PagePoolDmaBuffer {
     }
 
     fn pfn_bias(&self) -> u64 {
-        self.pfn_bias
+        self.alloc.inner.pfn_bias
     }
 }

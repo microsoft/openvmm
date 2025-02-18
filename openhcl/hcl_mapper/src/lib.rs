@@ -9,62 +9,55 @@
 
 use anyhow::Context;
 use hcl::ioctl::MshvVtlLow;
-use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
-use inspect::Response;
-use page_pool_alloc::Mapper;
-use page_pool_alloc::PoolType;
-use sparse_mmap::SparseMapping;
+use page_pool_alloc::PoolSource;
+use std::os::fd::AsFd;
 
 /// A mapper that uses [`MshvVtlLow`] to map pages.
 #[derive(Inspect)]
-#[inspect(extra = "HclMapper::inspect_extra")]
 pub struct HclMapper {
     #[inspect(skip)]
     fd: MshvVtlLow,
+    gpa_bias: u64,
+    is_shared: bool,
 }
 
 impl HclMapper {
-    /// Creates a new [`HclMapper`].
-    pub fn new() -> Result<Self, anyhow::Error> {
-        let fd = MshvVtlLow::new().context("failed to open gpa fd")?;
-        Ok(Self { fd })
+    /// Creates an instance for mapping shared memory, with shared memory
+    /// appearing to the guest starting at `vtom`.
+    pub fn new_shared(vtom: u64) -> anyhow::Result<Self> {
+        Self::new_inner(vtom, true)
     }
 
-    fn inspect_extra(&self, resp: &mut Response<'_>) {
-        resp.field("type", "hcl_mapper");
+    /// Creates an instance for mapping private memory.
+    pub fn new_private() -> anyhow::Result<Self> {
+        Self::new_inner(0, false)
+    }
+
+    fn new_inner(gpa_bias: u64, is_shared: bool) -> anyhow::Result<Self> {
+        let fd = MshvVtlLow::new().context("failed to open gpa fd")?;
+        Ok(Self {
+            fd,
+            gpa_bias,
+            is_shared,
+        })
     }
 }
 
-impl Mapper for HclMapper {
-    fn map(
-        &self,
-        base_pfn: u64,
-        size_pages: u64,
-        pool_type: PoolType,
-    ) -> Result<SparseMapping, anyhow::Error> {
-        let len = (size_pages * HV_PAGE_SIZE) as usize;
-        let mapping = SparseMapping::new(len).context("failed to create mapping")?;
-        let gpa = base_pfn * HV_PAGE_SIZE;
+impl PoolSource for HclMapper {
+    fn address_bias(&self) -> u64 {
+        self.gpa_bias
+    }
 
-        // When the pool references shared memory, on hardware isolated
-        // platforms the file_offset must have the shared bit set as these
-        // are decrypted pages. Setting this bit is okay on non-hardware
-        // isolated platforms, as it does nothing.
-        let file_offset = match pool_type {
-            PoolType::Private => gpa,
-            PoolType::Shared => {
-                tracing::trace!("setting MshvVtlLow::SHARED_MEMORY_FLAG");
-                gpa | MshvVtlLow::SHARED_MEMORY_FLAG
-            }
-        };
+    fn mapping_file_offset(&self, address: u64) -> usize {
+        address.wrapping_add(if self.is_shared {
+            MshvVtlLow::SHARED_MEMORY_FLAG
+        } else {
+            0
+        }) as usize
+    }
 
-        tracing::trace!(gpa, file_offset, len, "mapping allocation");
-
-        mapping
-            .map_file(0, len, self.fd.get(), file_offset, true)
-            .context("unable to map allocation")?;
-
-        Ok(mapping)
+    fn mappable(&self) -> sparse_mmap::MappableRef<'_> {
+        self.fd.get().as_fd()
     }
 }

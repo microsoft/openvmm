@@ -2683,11 +2683,9 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "hcl",
- "hvdef",
  "inspect",
  "page_pool_alloc",
  "sparse_mmap",
- "tracing",
 ]
 
 [[package]]
@@ -4905,16 +4903,15 @@ name = "page_pool_alloc"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "hvdef",
  "inspect",
  "memory_range",
  "mesh",
  "parking_lot",
+ "safeatomic",
  "sparse_mmap",
  "thiserror 2.0.0",
  "tracing",
  "user_driver",
- "vm_topology",
  "vmcore",
 ]
 
@@ -7650,6 +7647,7 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "safe_intrinsics",
+ "safeatomic",
  "sidecar_client",
  "thiserror 2.0.0",
  "tracelimit",

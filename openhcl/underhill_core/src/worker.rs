@@ -1510,13 +1510,15 @@ async fn new_underhill_vm(
     let mut shared_vis_pages_pool = if shared_pool_size != 0 {
         use vmcore::save_restore::SaveRestore;
 
-        let mut pool = PagePool::new_shared_visibility_pool(
-            &shared_pool,
-            measured_vtl2_info
-                .vtom_offset_bit
-                .map(|bit| 1 << bit)
-                .unwrap_or(0),
-            HclMapper::new().context("failed to create hcl mapper")?,
+        let mut pool = PagePool::new(
+            &shared_pool.iter().map(|r| r.range).collect::<Vec<_>>(),
+            HclMapper::new_shared(
+                measured_vtl2_info
+                    .vtom_offset_bit
+                    .map(|bit| 1 << bit)
+                    .unwrap_or(0),
+            )
+            .context("failed to create hcl mapper")?,
         )
         .context("failed to create shared vis page pool")?;
 
@@ -1543,9 +1545,9 @@ async fn new_underhill_vm(
         use vmcore::save_restore::SaveRestore;
 
         let ranges = runtime_params.private_pool_ranges();
-        let mut pool = PagePool::new_private_pool(
-            ranges,
-            HclMapper::new().context("failed to create hcl mapper")?,
+        let mut pool = PagePool::new(
+            &ranges.iter().map(|r| r.range).collect::<Vec<_>>(),
+            HclMapper::new_private().context("failed to create hcl mapper")?,
         )
         .context("failed to create private pool")?;
 
