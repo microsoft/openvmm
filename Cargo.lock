@@ -2691,6 +2691,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "headervec"
+version = "0.0.0"
+
+[[package]]
 name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2803,6 +2807,7 @@ name = "hv1_hypercall"
 version = "0.0.0"
 dependencies = [
  "guestmem",
+ "hv1_structs",
  "hvdef",
  "open_enum",
  "sparse_mmap",
@@ -3687,15 +3692,19 @@ dependencies = [
 name = "lxutil"
 version = "0.0.0"
 dependencies = [
+ "bitfield-struct",
+ "headervec",
  "libc",
  "lx",
  "ntapi",
  "pal",
  "parking_lot",
+ "static_assertions",
  "tempfile",
  "tracing",
  "widestring",
  "winapi",
+ "windows",
  "zerocopy 0.8.14",
 ]
 
@@ -4925,6 +4934,7 @@ dependencies = [
  "caps",
  "fs-err",
  "getrandom",
+ "headervec",
  "landlock",
  "libc",
  "ntapi",
@@ -4948,6 +4958,7 @@ dependencies = [
  "cfg-if",
  "futures",
  "getrandom",
+ "headervec",
  "libc",
  "loan_cell",
  "once_cell",

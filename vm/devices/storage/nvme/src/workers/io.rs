@@ -35,7 +35,7 @@ pub struct IoHandler {
     mem: GuestMemory,
     sqid: u16,
     #[inspect(skip)]
-    admin_response: mesh::MpscSender<u16>,
+    admin_response: mesh::Sender<u16>,
 }
 
 #[derive(Inspect)]
@@ -133,7 +133,7 @@ enum HandlerError {
 }
 
 impl IoHandler {
-    pub fn new(mem: GuestMemory, sqid: u16, admin_response: mesh::MpscSender<u16>) -> Self {
+    pub fn new(mem: GuestMemory, sqid: u16, admin_response: mesh::Sender<u16>) -> Self {
         Self {
             mem,
             sqid,

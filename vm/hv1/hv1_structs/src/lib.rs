@@ -3,6 +3,10 @@
 
 //! Data structures that may be useful when working with hv1_hypercall.
 
+#![warn(missing_docs)]
+
+mod proc_mask;
 mod vtl_array;
 
+pub use proc_mask::*;
 pub use vtl_array::*;

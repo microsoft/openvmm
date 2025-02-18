@@ -608,7 +608,7 @@ struct ServerTask {
     running: bool,
     server: channels::Server,
     task_recv: mesh::Receiver<VmbusRequest>,
-    offer_recv: mesh::MpscReceiver<OfferRequest>,
+    offer_recv: mesh::Receiver<OfferRequest>,
     message_recv: mpsc::Receiver<SynicMessage>,
     server_request_recv: SelectAll<TaggedStream<OfferId, mesh::Receiver<ChannelServerRequest>>>,
     inner: ServerTaskInner,
@@ -1721,7 +1721,7 @@ impl ServerTaskInner {
 pub struct VmbusServerControl {
     mem: GuestMemory,
     private_mem: Option<GuestMemory>,
-    send: mesh::MpscSender<OfferRequest>,
+    send: mesh::Sender<OfferRequest>,
     use_event: bool,
     force_confidential_external_memory: bool,
 }

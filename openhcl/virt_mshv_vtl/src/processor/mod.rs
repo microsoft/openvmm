@@ -42,6 +42,7 @@ use hcl::ioctl;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_hypercall::HvRepResult;
+use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::HvError;
@@ -252,6 +253,8 @@ mod private {
 
         fn untrusted_synic(&self) -> Option<&ProcessorSynic>;
         fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
+
+        fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool;
     }
 }
 
@@ -343,7 +346,6 @@ impl UhVpInner {
             waker: Default::default(),
             cpu_index,
             vp_info,
-            hcvm_vtl1_enabled: Mutex::new(false),
             hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
             sidecar_exit_reason: Default::default(),
         }
@@ -758,16 +760,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
     fn vtl_inspectable(&self, vtl: Vtl) -> bool {
         match vtl {
             Vtl::Vtl0 => true,
-            Vtl::Vtl1 => {
-                if self.partition.isolation.is_hardware_isolated() {
-                    *self.inner.hcvm_vtl1_enabled.lock()
-                } else {
-                    // TODO: when there's support for returning VTL 1 registers,
-                    // use the VsmVpStatus register to query the hypervisor for
-                    // whether VTL 1 is enabled on the vp (this can be cached).
-                    false
-                }
-            }
+            Vtl::Vtl1 => T::vtl1_inspectable(self),
             Vtl::Vtl2 => false,
         }
     }
@@ -1324,12 +1317,13 @@ impl<T: CpuIo, B: Backing> UhHypercallHandler<'_, '_, T, B> {
         data: u32,
         vector: u32,
         multicast: bool,
-        target_processors: &[u32],
+        target_processors: ProcessorSet<'_>,
     ) -> hvdef::HvResult<()> {
+        let target_processors = Vec::from_iter(target_processors);
         let vpci_params = vmcore::vpci_msi::VpciInterruptParameters {
             vector,
             multicast,
-            target_processors,
+            target_processors: &target_processors,
         };
 
         self.vp

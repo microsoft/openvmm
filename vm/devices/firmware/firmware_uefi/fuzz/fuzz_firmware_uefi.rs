@@ -157,7 +157,7 @@ fn test_signature_lists() -> Vec<u8> {
     buf
 }
 
-const VALID_OWNER: Guid = Guid::from_static_str("77fa9abd-0359-4d32-bd60-28f4e78f784b");
+const VALID_OWNER: Guid = guid::guid!("77fa9abd-0359-4d32-bd60-28f4e78f784b");
 
 fn test_valid_signature_lists() -> Vec<u8> {
     let lists = vec![

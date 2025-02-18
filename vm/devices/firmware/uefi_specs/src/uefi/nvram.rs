@@ -154,11 +154,9 @@ pub mod signature_list {
         // UINT8 SignatureData[…];
     }
 
-    pub const EFI_CERT_SHA256_GUID: Guid =
-        Guid::from_static_str("c1c41626-504c-4092-aca9-41f936934328");
+    pub const EFI_CERT_SHA256_GUID: Guid = guid::guid!("c1c41626-504c-4092-aca9-41f936934328");
 
-    pub const EFI_CERT_X509_GUID: Guid =
-        Guid::from_static_str("a5c059a1-94e4-4aa7-87b5-ab155c2bf072");
+    pub const EFI_CERT_X509_GUID: Guid = guid::guid!("a5c059a1-94e4-4aa7-87b5-ab155c2bf072");
 }
 
 /// Check if the specified variable is a secure boot policy variable, as
@@ -189,12 +187,11 @@ pub mod vars {
     use guid::Guid;
 
     /// UEFI spec 3.3 - Globally Defined Variables
-    pub const EFI_GLOBAL_VARIABLE: Guid =
-        Guid::from_static_str("8BE4DF61-93CA-11D2-AA0D-00E098032B8C");
+    pub const EFI_GLOBAL_VARIABLE: Guid = guid::guid!("8BE4DF61-93CA-11D2-AA0D-00E098032B8C");
 
     /// UEFI spec 32.6.1 - UEFI Image Variable GUID & Variable Name
     pub const IMAGE_SECURITY_DATABASE_GUID: Guid =
-        Guid::from_static_str("d719b2cb-3d3a-4596-a3bc-dad00e67656f");
+        guid::guid!("d719b2cb-3d3a-4596-a3bc-dad00e67656f");
 
     defn_nvram_var!(SECURE_BOOT = (EFI_GLOBAL_VARIABLE, "SecureBoot"));
     defn_nvram_var!(SETUP_MODE = (EFI_GLOBAL_VARIABLE, "SetupMode"));

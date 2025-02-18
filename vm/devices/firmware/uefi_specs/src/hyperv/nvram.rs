@@ -143,14 +143,12 @@ pub struct NvramSignalRuntimeCommand {
 pub mod vars {
     use guid::Guid;
 
-    const SECURE_BOOT_ENABLE_GUID: Guid =
-        Guid::from_static_str("f0a30bc7-af08-4556-99c4-001009c93a44");
+    const SECURE_BOOT_ENABLE_GUID: Guid = guid::guid!("f0a30bc7-af08-4556-99c4-001009c93a44");
 
     pub const MSFT_SECURE_BOOT_PRODUCTION_GUID: Guid =
-        Guid::from_static_str("77fa9abd-0359-4d32-bd60-28f4e78f784b");
+        guid::guid!("77fa9abd-0359-4d32-bd60-28f4e78f784b");
 
-    const EFI_HYPERV_PRIVATE_GUID: Guid =
-        Guid::from_static_str("610b9e98-c6f6-47f8-8b47-2d2da0d52a91");
+    const EFI_HYPERV_PRIVATE_GUID: Guid = guid::guid!("610b9e98-c6f6-47f8-8b47-2d2da0d52a91");
 
     defn_nvram_var!(SECURE_BOOT_ENABLE = (SECURE_BOOT_ENABLE_GUID, "SecureBootEnable"));
     defn_nvram_var!(CURRENT_POLICY = (MSFT_SECURE_BOOT_PRODUCTION_GUID, "CurrentPolicy"));

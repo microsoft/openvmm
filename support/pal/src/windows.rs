@@ -528,6 +528,11 @@ impl UnicodeString {
         let buffer = NonNull::new(self.0.Buffer).unwrap_or_else(NonNull::dangling);
         unsafe { std::slice::from_raw_parts(buffer.as_ptr(), self.0.Length as usize / 2) }
     }
+
+    pub fn as_mut_slice(&mut self) -> &mut [u16] {
+        let buffer = NonNull::new(self.0.Buffer).unwrap_or_else(NonNull::dangling);
+        unsafe { std::slice::from_raw_parts_mut(buffer.as_ptr(), self.0.Length as usize / 2) }
+    }
 }
 
 impl Drop for UnicodeString {

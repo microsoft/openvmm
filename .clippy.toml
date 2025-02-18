@@ -30,7 +30,3 @@ disallowed-methods = [
 ]
 
 avoid-breaking-exported-api = false
-
-# These will become the default in a future version of Rust.
-accept-comment-above-statement = true
-accept-comment-above-attributes = true

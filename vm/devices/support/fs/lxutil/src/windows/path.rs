@@ -8,6 +8,9 @@ use std::str;
 // The utf-8 sequence for code point 0xf000
 const ESCAPE_CHAR_BASE: [u8; 3] = [0xef, 0x80, 0x80];
 
+const PATH_ESCAPE_MIN: u16 = 0xf000;
+const PATH_ESCAPE_MAX: u16 = 0xf0ff;
+
 // Convert a Unix-style path to a Windows one.
 pub fn path_from_lx(path: &[u8]) -> lx::Result<Cow<'_, Path>> {
     let (escaped_len, has_sep) = escape_path_len(path);
@@ -72,6 +75,29 @@ fn escape_path_len(path: &[u8]) -> (usize, bool) {
 fn char_needs_escape(c: u8) -> bool {
     let index = c as usize;
     index < NTFS_LEGAL_ANSI_CHARACTERS.len() && !NTFS_LEGAL_ANSI_CHARACTERS[index]
+}
+
+// Check if a character needs to be unescaped.
+fn char_needs_unescape(c: u16) -> bool {
+    // Not all characters within the range correspond to escaped characters,
+    // so  make sure that the original character needed to be escaped.
+    (PATH_ESCAPE_MIN..=PATH_ESCAPE_MAX).contains(&c)
+        && char_needs_escape((c - PATH_ESCAPE_MIN) as u8)
+}
+
+// Unescape a path.
+pub fn unescape_path(path: &[u16]) -> lx::Result<String> {
+    char::decode_utf16(path.iter().map(|c| {
+        if char_needs_unescape(*c) {
+            *c - PATH_ESCAPE_MIN
+        } else if (*c) == '\\' as u16 {
+            '/' as u16
+        } else {
+            *c
+        }
+    }))
+    .map(|c| c.map_err(|_| lx::Error::EIO))
+    .collect()
 }
 
 // List indicating which characters are legal in NTFS. This was adapted from
@@ -208,3 +234,23 @@ const NTFS_LEGAL_ANSI_CHARACTERS: [bool; 128] = [
     true,  // 0x7E ~
     true,  // 0x7F 
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pal::windows::UnicodeString;
+
+    #[test]
+    fn unescape() {
+        let mut path1: UnicodeString = "test".try_into().unwrap();
+        let mut path2: UnicodeString = "foo\u{f03a}bar".try_into().unwrap();
+        let mut path3: UnicodeString = "foo\\bar".try_into().unwrap();
+
+        let new_path1 = unescape_path(path1.as_mut_slice()).unwrap();
+        let new_path2 = unescape_path(path2.as_mut_slice()).unwrap();
+        let new_path3 = unescape_path(path3.as_mut_slice()).unwrap();
+        assert_eq!(new_path1, "test");
+        assert_eq!(new_path2, "foo:bar");
+        assert_eq!(new_path3, "foo/bar");
+    }
+}

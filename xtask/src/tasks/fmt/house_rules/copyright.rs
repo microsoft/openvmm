@@ -5,6 +5,7 @@ use anyhow::anyhow;
 use fs_err::File;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 
@@ -19,7 +20,7 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
 
     if !matches!(
         ext,
-        "rs" | "c" | "proto" | "toml" | "ts" | "js" | "py" | "ps1" | "config"
+        "rs" | "c" | "proto" | "toml" | "ts" | "js" | "py" | "ps1"
     ) {
         return Ok(());
     }
@@ -57,6 +58,7 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
     let mut missing_banner = !first_content_line.contains(HEADER_MIT_FIRST)
         || !second_content_line.contains(HEADER_MIT_SECOND);
     let mut missing_blank_line = !third_content_line.is_empty();
+    let mut header_lines = 2;
 
     // TEMP: until we have more robust infrastructure for distinct
     // microsoft-internal checks, include this "escape hatch" for preserving
@@ -64,11 +66,12 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
     // repo. This uses a job-specific env var, instead of being properly plumbed
     // through via `clap`, to make it easier to remove in the future.
     let is_msft_internal = std::env::var("XTASK_FMT_COPYRIGHT_ALLOW_MISSING_MIT").is_ok();
-    if is_msft_internal {
+    if is_msft_internal && missing_banner {
         // support both new and existing copyright banner styles
         missing_banner =
             !(first_content_line.contains("Copyright") && first_content_line.contains("Microsoft"));
         missing_blank_line = !second_content_line.is_empty();
+        header_lines = 1;
     }
 
     if fix {
@@ -87,8 +90,9 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
             let mut f = BufReader::new(File::open(path)?);
             let mut f_fixed = File::create(path_fix)?;
 
-            if let Some(script_interpreter_line) = script_interpreter_line {
+            if let Some(script_interpreter_line) = &script_interpreter_line {
                 writeln!(f_fixed, "{script_interpreter_line}")?;
+                f.read_line(&mut String::new())?;
             }
             if let Some(blank_after_script_interpreter_line) = blank_after_script_interpreter_line {
                 if !blank_after_script_interpreter_line {
@@ -103,13 +107,21 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
                     _ => unreachable!(),
                 };
 
+                // Preserve the UTF-8 BOM if it exists.
+                if script_interpreter_line.is_none() && first_content_line.starts_with('\u{feff}') {
+                    write!(f_fixed, "\u{feff}")?;
+                    // Skip the BOM.
+                    f.read_exact(&mut [0; 3])?;
+                }
+
                 writeln!(f_fixed, "{} {}", prefix, HEADER_MIT_FIRST)?;
-                writeln!(f_fixed, "{} {}", prefix, HEADER_MIT_SECOND)?;
+                if !is_msft_internal {
+                    writeln!(f_fixed, "{} {}", prefix, HEADER_MIT_SECOND)?;
+                }
 
                 writeln!(f_fixed)?; // also add that missing blank line
             } else if missing_blank_line {
                 // copy the valid header from the current file
-                let header_lines = if is_msft_internal { 1 } else { 2 };
                 for _ in 0..header_lines {
                     let mut s = String::new();
                     f.read_line(&mut s)?;

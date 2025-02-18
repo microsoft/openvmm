@@ -315,7 +315,7 @@ pub struct UnderhillRemoteConsoleCfg {
     pub synth_keyboard: bool,
     pub synth_mouse: bool,
     pub synth_video: bool,
-    pub input: mesh::MpscReceiver<InputData>,
+    pub input: mesh::Receiver<InputData>,
     pub framebuffer: Option<framebuffer::Framebuffer>,
 }
 
@@ -427,7 +427,7 @@ impl Worker for UnderhillVmWorker {
                     synth_keyboard: false,
                     synth_mouse: false,
                     synth_video: false,
-                    input: mesh::MpscReceiver::new(),
+                    input: mesh::Receiver::new(),
                     framebuffer: None,
                 },
                 debugger_rpc: None,
@@ -1815,7 +1815,7 @@ async fn new_underhill_vm(
     if env_cfg.mcr {
         use crate::dispatch::vtl2_settings_worker::UhVpciDeviceConfig;
         tracing::info!("Instantiating The MCR Device");
-        const MCR_INSTANCE_ID: Guid = Guid::from_static_str("07effd8f-7501-426c-a947-d8345f39113d");
+        const MCR_INSTANCE_ID: Guid = guid::guid!("07effd8f-7501-426c-a947-d8345f39113d");
 
         let res = UhVpciDeviceConfig {
             instance_id: MCR_INSTANCE_ID,
@@ -2863,7 +2863,7 @@ async fn new_underhill_vm(
     if let Some(framebuffer) = remote_console_cfg.framebuffer {
         resolver.add_resolver(FramebufferRemoteControl {
             get: get_client.clone(),
-            format_send: Arc::new(framebuffer.format_send()),
+            format_send: framebuffer.format_send(),
         });
 
         vmbus_device_handles.push(

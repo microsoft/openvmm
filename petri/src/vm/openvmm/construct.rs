@@ -73,7 +73,6 @@ use serial_socket::net::OpenSocketSerialConfig;
 use sparse_mmap::alloc_shared_memory;
 use std::fmt::Write as _;
 use std::path::PathBuf;
-use std::sync::Arc;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
@@ -170,7 +169,6 @@ impl PetriVmConfigOpenVmm {
                     framebuffer.is_some(),
                 )?;
                 let (vtl2_vsock_listener, vtl2_vsock_path) = make_vsock_listener()?;
-                let ged_send = Arc::new(ged_send);
                 (
                     Some(Vtl2Config {
                         vtl0_alias_map: false, // TODO: enable when OpenVMM supports it for DMA
@@ -326,7 +324,7 @@ impl PetriVmConfigOpenVmm {
             // Disabled for VMM tests by default
             #[cfg(windows)]
             kernel_vmnics: vec![],
-            input: mesh::MpscReceiver::new(),
+            input: mesh::Receiver::new(),
             vtl2_gfx: false,
             virtio_console_pci: false,
             virtio_serial: None,
@@ -793,7 +791,7 @@ impl PetriVmConfigSetupCore<'_> {
         &self,
         serial: &mut [Option<Resource<SerialBackendHandle>>],
         devices: &mut impl Extend<Device>,
-        firmware_event_send: &mesh::MpscSender<FirmwareEvent>,
+        firmware_event_send: &mesh::Sender<FirmwareEvent>,
         framebuffer: bool,
     ) -> anyhow::Result<(
         get_resources::ged::GuestEmulationDeviceHandle,

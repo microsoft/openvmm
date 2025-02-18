@@ -37,7 +37,7 @@ impl From<RpcError<vmgs::Error>> for VmgsClientError {
 /// Client to interact with a backend-agnostic VMGS instance.
 #[derive(Clone)]
 pub struct VmgsClient {
-    pub(crate) control: mesh_channel::MpscSender<VmgsBrokerRpc>,
+    pub(crate) control: mesh_channel::Sender<VmgsBrokerRpc>,
 }
 
 impl Inspect for VmgsClient {

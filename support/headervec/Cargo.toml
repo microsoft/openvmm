@@ -1,0 +1,12 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "headervec"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -23,7 +23,6 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::collections::hash_map;
 use std::collections::HashMap;
-use std::sync::Arc;
 use thiserror::Error;
 use tracing::Instrument;
 use user_driver::vfio::VfioDevice;
@@ -113,9 +112,7 @@ impl NvmeManager {
         });
         Self {
             task,
-            client: NvmeManagerClient {
-                sender: Arc::new(send),
-            },
+            client: NvmeManagerClient { sender: send },
             save_restore_supported,
         }
     }
@@ -177,7 +174,7 @@ enum Request {
 
 #[derive(Debug, Clone)]
 pub struct NvmeManagerClient {
-    sender: Arc<mesh::Sender<Request>>,
+    sender: mesh::Sender<Request>,
 }
 
 impl NvmeManagerClient {

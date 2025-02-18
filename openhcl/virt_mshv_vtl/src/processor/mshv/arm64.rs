@@ -229,6 +229,12 @@ impl BackingPrivate for HypervisorBackedArm64 {
     ) -> Result<(), UhRunVpError> {
         unimplemented!()
     }
+
+    fn vtl1_inspectable(_this: &UhProcessor<'_, Self>) -> bool {
+        // TODO: Use the VsmVpStatus register to query the hypervisor for
+        // whether VTL 1 is enabled on the vp (this can be cached).
+        false
+    }
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {
@@ -731,7 +737,7 @@ impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt
         device_id: u64,
         address: u64,
         data: u32,
-        params: &hv1_hypercall::HvInterruptParameters<'_>,
+        params: hv1_hypercall::HvInterruptParameters<'_>,
     ) -> hvdef::HvResult<()> {
         self.retarget_virtual_interrupt(
             device_id,
