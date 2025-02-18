@@ -2748,13 +2748,13 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
             hv1_hypercall::HvExtQueryCapabilities,
             // TODO TDX: copied from SNP, enable individually as needed.
             // hv1_hypercall::HvGetVpRegisters,
-            // hv1_hypercall::HvSetVpRegisters,
+            hv1_hypercall::HvSetVpRegisters,
             // hv1_hypercall::HvEnablePartitionVtl,
             // hv1_hypercall::HvX64EnableVpVtl,
             // hv1_hypercall::HvVtlCall,
             // hv1_hypercall::HvVtlReturn,
-            // hv1_hypercall::HvModifyVtlProtectionMask,
-            // hv1_hypercall::HvX64TranslateVirtualAddress,
+            hv1_hypercall::HvModifyVtlProtectionMask,
+            hv1_hypercall::HvX64TranslateVirtualAddress,
         ]
     );
 
