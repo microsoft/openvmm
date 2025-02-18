@@ -34,6 +34,7 @@ pub mod save_restore {
     use super::Slot;
     use super::SlotState;
     use super::PAGE_SIZE;
+    use crate::ResolvedSlotState;
     use memory_range::MemoryRange;
     use mesh::payload::Protobuf;
     use vmcore::save_restore::SaveRestore;
@@ -91,17 +92,22 @@ pub mod save_restore {
                     .slots
                     .iter()
                     .map(|slot| {
+                        let slot = slot.resolve(&state.device_ids);
                         let inner_state = match &slot.state {
-                            SlotState::Free => InnerSlotState::Free,
-                            SlotState::Allocated { device_id, tag } => InnerSlotState::Allocated {
-                                device_id: state.device_ids[*device_id].name().to_string(),
-                                tag: tag.clone(),
-                            },
-                            SlotState::Leaked { device_id, tag } => InnerSlotState::Leaked {
-                                device_id: device_id.clone(),
-                                tag: tag.clone(),
-                            },
-                            SlotState::AllocatedPendingRestore { .. } => {
+                            ResolvedSlotState::Free => InnerSlotState::Free,
+                            ResolvedSlotState::Allocated { device_id, tag } => {
+                                InnerSlotState::Allocated {
+                                    device_id: device_id.to_string(),
+                                    tag: tag.to_string(),
+                                }
+                            }
+                            ResolvedSlotState::Leaked { device_id, tag } => {
+                                InnerSlotState::Leaked {
+                                    device_id: device_id.to_string(),
+                                    tag: tag.to_string(),
+                                }
+                            }
+                            ResolvedSlotState::AllocatedPendingRestore { .. } => {
                                 panic!("should not save allocated pending restore")
                             }
                         };
