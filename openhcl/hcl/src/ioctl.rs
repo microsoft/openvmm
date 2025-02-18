@@ -2839,10 +2839,8 @@ impl Hcl {
             IsolationType::Tdx => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available())
-                .with_dr6_shared(caps.dr6_shared()),
+                .with_dr6_shared(true),
         };
-
-        assert_eq!(self.dr6_shared, caps.dr6_shared());
 
         Ok(caps)
     }
