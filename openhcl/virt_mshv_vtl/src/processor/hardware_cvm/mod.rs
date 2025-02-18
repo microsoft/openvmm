@@ -319,7 +319,9 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             )
             .into()),
             HvX64RegisterName::VsmCapabilities => Ok(u64::from(
-                hvdef::HvRegisterVsmCapabilities::new().with_deny_lower_vtl_startup(true),
+                hvdef::HvRegisterVsmCapabilities::new()
+                    .with_deny_lower_vtl_startup(true)
+                    .with_dr6_shared(self.vp.partition.hcl.dr6_shared()),
             )
             .into()),
             HvX64RegisterName::VsmVpSecureConfigVtl0 => {
