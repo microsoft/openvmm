@@ -74,7 +74,7 @@ const REQUIRED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
     .with_guest_specified_signal_parameters(true)
     .with_modify_connection(true);
 
-const VMBUS_RELAY_CLIENT_ID: Guid = Guid::from_static_str("ceb1cd55-6a3b-41c5-9473-4dd30624c3d8");
+const VMBUS_RELAY_CLIENT_ID: Guid = guid::guid!("ceb1cd55-6a3b-41c5-9473-4dd30624c3d8");
 
 /// Represents a relay between a vmbus server on the host, and the vmbus server running in
 /// Underhill, allowing offers from the host and offers from Underhill to be mixed.

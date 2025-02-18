@@ -649,7 +649,7 @@ mod tests {
     use vmcore::vm_task::VmTaskDriverSource;
 
     async fn must_recv_in_timeout<T: 'static + Send>(
-        recv: &mut mesh::MpscReceiver<T>,
+        recv: &mut mesh::Receiver<T>,
         timeout: Duration,
     ) -> T {
         mesh::CancelContext::new()

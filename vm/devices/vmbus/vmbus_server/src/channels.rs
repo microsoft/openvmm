@@ -3835,7 +3835,7 @@ mod tests {
                         parent_to_child_monitor_page_gpa: 0,
                         child_to_parent_monitor_page_gpa: 0,
                     },
-                    client_id: Guid::from_static_str("e6e6e6e6-e6e6-e6e6-e6e6-e6e6e6e6e6e6"),
+                    client_id: guid::guid!("e6e6e6e6-e6e6-e6e6-e6e6-e6e6e6e6e6e6"),
                 },
             ))
             .unwrap();

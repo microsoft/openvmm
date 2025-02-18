@@ -943,30 +943,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
     #[cfg(guest_arch = "x86_64")]
     fn write_msr(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
-        if msr & 0xf0000000 == 0x40000000 {
-            if let Some(hv) = self.backing.hv_mut(vtl).as_mut() {
-                // If updated is Synic MSR, then check if its proxy or previous was proxy
-                // in either case, we need to update the `proxy_irr_blocked`
-                let mut irr_filter_update = false;
-                if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
-                    let sint_curr =
-                        HvSynicSint::from(hv.synic.sint((msr - hvdef::HV_X64_MSR_SINT0) as u8));
-                    let sint_new = HvSynicSint::from(value);
-                    if sint_curr.proxy() || sint_new.proxy() {
-                        irr_filter_update = true;
-                    }
-                }
-                let r = hv.msr_write(msr, value);
-                if !matches!(r, Err(MsrError::Unknown)) {
-                    // Check if proxy filter update was required (in case of SINT writes)
-                    if irr_filter_update {
-                        self.update_proxy_irr_filter(vtl);
-                    }
-                    return r;
-                }
-            }
-        }
-
         match msr {
             hvdef::HV_X64_MSR_GUEST_CRASH_CTL => {
                 self.crash_control = hvdef::GuestCrashCtl::from(value);
@@ -1332,44 +1308,6 @@ impl<T: CpuIo, B: Backing> UhHypercallHandler<'_, '_, T, B> {
             .as_ref()
             .expect("should exist if this intercept is registered or this is a CVM")
             .retarget_interrupt(device_id, address, data, &vpci_params)
-    }
-}
-
-impl<T: CpuIo, B: Backing> hv1_hypercall::ModifySparseGpaPageHostVisibility
-    for UhHypercallHandler<'_, '_, T, B>
-{
-    fn modify_gpa_visibility(
-        &mut self,
-        partition_id: u64,
-        visibility: HostVisibilityType,
-        gpa_pages: &[u64],
-    ) -> HvRepResult {
-        if partition_id != hvdef::HV_PARTITION_ID_SELF {
-            return Err((HvError::AccessDenied, 0));
-        }
-
-        tracing::debug!(
-            ?visibility,
-            pages = gpa_pages.len(),
-            "modify_gpa_visibility"
-        );
-
-        if self.vp.partition.hide_isolation {
-            return Err((HvError::AccessDenied, 0));
-        }
-
-        let shared = match visibility {
-            HostVisibilityType::PRIVATE => false,
-            HostVisibilityType::SHARED => true,
-            _ => return Err((HvError::InvalidParameter, 0)),
-        };
-
-        self.vp
-            .partition
-            .isolated_memory_protector
-            .as_ref()
-            .ok_or((HvError::AccessDenied, 0))?
-            .change_host_visibility(shared, gpa_pages)
     }
 }
 

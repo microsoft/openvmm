@@ -536,7 +536,7 @@ impl VmTimeKeeper {
 /// in sync with each other.
 #[derive(MeshPayload, Clone, Debug)]
 pub struct VmTimeSourceBuilder {
-    new_send: mesh::MpscSender<NewKeeperRequest>,
+    new_send: mesh::Sender<NewKeeperRequest>,
 }
 
 /// Error returned by [`VmTimeSourceBuilder::build`] when the time keeper has
@@ -590,7 +590,7 @@ struct PrimaryKeeper {
     #[inspect(skip)]
     req_recv: mesh::Receiver<KeeperRequest>,
     #[inspect(skip)]
-    new_recv: mesh::MpscReceiver<NewKeeperRequest>,
+    new_recv: mesh::Receiver<NewKeeperRequest>,
     #[inspect(skip)]
     keepers: Vec<(u64, mesh::Sender<KeeperRequest>)>,
     #[inspect(skip)]

@@ -42,6 +42,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use virt::IsolationType;
 use virt_mshv_vtl::ProtectIsolatedMemory;
+use virt_mshv_vtl::TlbFlushLockAccess;
 use vm_topology::memory::MemoryLayout;
 use x86defs::snp::SevRmpAdjust;
 use x86defs::tdx::GpaVmAttributes;
@@ -265,7 +266,7 @@ impl MemoryAcceptor {
 
     /// Apply the initial protections on lower-vtl memory.
     ///
-    ///  After initialization, the default protections should be applied.
+    /// After initialization, the default protections should be applied.
     pub fn apply_initial_lower_vtl_protections(
         &self,
         range: MemoryRange,
@@ -337,7 +338,6 @@ impl MemoryAcceptor {
                         permissions: rmpadjust,
                         vtl: vtl.into(),
                     })
-                // TODO SNP: Flush TLB
             }
             GpaVtlPermissions::Tdx((attributes, mask)) => {
                 // For TDX VMs, the permissions apply to the specified VTL.
@@ -375,13 +375,24 @@ struct HypercallOverlay {
     permissions: GpaVtlPermissions,
 }
 
+// TODO CVM GUEST VSM: This type needs to go away, and proper functionality needs
+// to be added here, but resolving the layering with hv1_emulator is complicated.
+struct NoOpTlbFlushLockAccess;
+impl TlbFlushLockAccess for NoOpTlbFlushLockAccess {
+    fn flush(&mut self, _vtl: GuestVtl) {}
+    fn flush_entire(&mut self) {}
+    fn set_wait_for_tlb_locks(&mut self, _vtl: GuestVtl) {}
+}
+
 impl VtlProtectHypercallOverlay for HypercallOverlayProtector {
     fn change_overlay(&self, gpn: u64) {
-        self.protector.change_hypercall_overlay(self.vtl, gpn)
+        self.protector
+            .change_hypercall_overlay(self.vtl, gpn, &mut NoOpTlbFlushLockAccess)
     }
 
     fn disable_overlay(&self) {
-        self.protector.disable_hypercall_overlay(self.vtl)
+        self.protector
+            .disable_hypercall_overlay(self.vtl, &mut NoOpTlbFlushLockAccess)
     }
 }
 
@@ -471,7 +482,12 @@ impl HardwareIsolatedMemoryProtector {
 }
 
 impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
-    fn change_host_visibility(&self, shared: bool, gpns: &[u64]) -> Result<(), (HvError, usize)> {
+    fn change_host_visibility(
+        &self,
+        shared: bool,
+        gpns: &[u64],
+        tlb_access: &mut dyn TlbFlushLockAccess,
+    ) -> Result<(), (HvError, usize)> {
         // Validate the ranges are RAM.
         for &gpn in gpns {
             if !self
@@ -531,7 +547,13 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             clear_bitmap.update_bitmap(range, false);
         }
 
-        // TODO SNP: flush concurrent accessors and TLB.
+        // TODO SNP: flush concurrent accessors.
+        if let IsolationType::Snp = self.acceptor.isolation {
+            // We need to ensure that the guest TLB has been fully flushed since
+            // the unaccept operation is not guaranteed to do so in hardware,
+            // and the hypervisor is also not trusted with TLB hygiene.
+            tlb_access.flush_entire();
+        }
 
         // TODO SNP: check list of locks, roll back bitmap changes if there was one.
 
@@ -646,6 +668,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         &self,
         vtl: GuestVtl,
         vtl_protections: HvMapGpaFlags,
+        tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), HvError> {
         // Prevent visibility changes while VTL protections are being
         // applied.
@@ -693,6 +716,10 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         self.apply_protections_with_overlay_handling(vtl, &ranges, vtl_protections)
             .expect("applying vtl protections should succeed");
 
+        // Invalidate the entire VTL 0 TLB to ensure that the new permissions
+        // are observed.
+        tlb_access.flush(GuestVtl::Vtl0);
+
         Ok(())
     }
 
@@ -701,6 +728,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         vtl: GuestVtl,
         gpns: &[u64],
         protections: HvMapGpaFlags,
+        tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), (HvError, usize)> {
         // Validate the ranges are RAM.
         for &gpn in gpns {
@@ -737,7 +765,13 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         self.apply_protections_with_overlay_handling(vtl, &ranges, protections)
             .expect("applying vtl protections should succeed");
 
-        // TODO CVM GUEST VSM: flush TLB and wait for the tlb lock
+        // Since page protections were modified, we must invalidate the entire
+        // VTL 0 TLB to ensure that the new permissions are observed, and wait for
+        // other CPUs to release all guest mappings before declaring that the VTL
+        // protection change has completed.
+        tlb_access.flush(GuestVtl::Vtl0);
+        tlb_access.set_wait_for_tlb_locks(vtl);
+
         Ok(())
     }
 
@@ -751,7 +785,12 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         })
     }
 
-    fn change_hypercall_overlay(&self, vtl: GuestVtl, gpn: u64) {
+    fn change_hypercall_overlay(
+        &self,
+        vtl: GuestVtl,
+        gpn: u64,
+        tlb_access: &mut dyn TlbFlushLockAccess,
+    ) {
         // Should already have written contents to the page via the guest
         // memory object, confirming that this is a guest page
         assert!(self
@@ -806,14 +845,15 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             .apply_protections_from_flags(
                 MemoryRange::new(gpn * HV_PAGE_SIZE..(gpn + 1) * HV_PAGE_SIZE),
                 vtl,
-                HV_MAP_GPA_PERMISSIONS_ALL,
+                HV_MAP_GPA_PERMISSIONS_ALL.with_writable(false),
             )
             .expect("applying vtl protections should succeed");
 
-        // TODO CVM GUEST VSM: flush TLB
+        // Flush the guest TLB to ensure that the new permissions are observed.
+        tlb_access.flush(vtl);
     }
 
-    fn disable_hypercall_overlay(&self, vtl: GuestVtl) {
+    fn disable_hypercall_overlay(&self, vtl: GuestVtl, tlb_access: &mut dyn TlbFlushLockAccess) {
         let _lock = self.inner.lock();
 
         let mut overlay = self.hypercall_overlay[vtl].lock();
@@ -825,7 +865,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         *overlay = None;
 
-        // TODO CVM GUEST VSM: flush TLB
+        tlb_access.flush(vtl);
     }
 
     fn set_vtl1_protections_enabled(&self) {

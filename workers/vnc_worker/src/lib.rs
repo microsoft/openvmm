@@ -242,7 +242,7 @@ impl<T: Listener> inspect::Inspect for Server<T> {
 }
 
 struct VncInput {
-    send: mesh::MpscSender<InputData>,
+    send: mesh::Sender<InputData>,
 }
 
 impl vnc::Input for VncInput {

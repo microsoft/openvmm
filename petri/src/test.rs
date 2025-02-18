@@ -18,6 +18,8 @@ use crate::TestArtifactRequirements;
 use crate::TestArtifacts;
 use anyhow::Context as _;
 use petri_artifacts_core::ArtifactResolver;
+use std::panic::catch_unwind;
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use test_macro_support::TESTS;
 
@@ -104,14 +106,52 @@ impl Test {
             resolve(&name, self.requirements()).context("failed to resolve artifacts")?;
         let output_dir = artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
         let logger = try_init_tracing(output_dir).context("failed to initialize tracing")?;
-        self.test.0.run(
-            PetriTestParams {
-                test_name: &name,
-                logger: &logger,
-                output_dir,
-            },
-            &artifacts,
-        )
+
+        // Catch test panics in order to cleanly log the panic result. Without
+        // this, `libtest_mimic` will report the panic to stdout and fail the
+        // test, but the details won't end up in our per-test JSON log.
+        let r = catch_unwind(AssertUnwindSafe(|| {
+            self.test.0.run(
+                PetriTestParams {
+                    test_name: &name,
+                    logger: &logger,
+                    output_dir,
+                },
+                &artifacts,
+            )
+        }));
+        let r = r.unwrap_or_else(|err| {
+            // The error from `catch_unwind` is almost always either a
+            // `&str` or a `String`, since that's what `panic!` produces.
+            let msg = err
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| err.downcast_ref::<String>().map(|x| x.as_str()));
+
+            let err = if let Some(msg) = msg {
+                anyhow::anyhow!("test panicked: {msg}")
+            } else {
+                anyhow::anyhow!("test panicked (unknown payload type)")
+            };
+            Err(err)
+        });
+        let result_path = match &r {
+            Ok(()) => {
+                tracing::info!("test passed");
+                "petri.passed"
+            }
+            Err(err) => {
+                tracing::error!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "test failed"
+                );
+                "petri.failed"
+            }
+        };
+        // Write a file to the output directory to indicate whether the test
+        // passed, for easy scanning via tools.
+        fs_err::write(output_dir.join(result_path), &name).unwrap();
+        r
     }
 
     /// Returns a libtest-mimic trial to run the test.
@@ -168,6 +208,7 @@ impl<T: RunTest> DynRunTest for T {
 }
 
 /// Parameters passed to a [`RunTest`] when it is run.
+#[non_exhaustive]
 pub struct PetriTestParams<'a> {
     /// The name of the running test.
     pub test_name: &'a str,

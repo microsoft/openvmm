@@ -63,6 +63,16 @@ macro_rules! result_helper {
     };
 }
 
+/// Creates a new GUID from a string, parsing the GUID at compile time.
+/// "{00000000-0000-0000-0000-000000000000}" and
+/// "00000000-0000-0000-0000-000000000000".
+#[macro_export]
+macro_rules! guid {
+    ($x:expr) => {
+        const { $crate::Guid::from_static_str($x) }
+    };
+}
+
 impl Guid {
     /// Return a new randomly-generated Version 4 UUID
     pub fn new_random() -> Self {
@@ -76,15 +86,11 @@ impl Guid {
         guid
     }
 
-    /// Creates a new GUID from a string, panicking if the input is invalid. Accepted formats are
-    /// "{00000000-0000-0000-0000-000000000000}" and "00000000-0000-0000-0000-000000000000".
+    /// Used by [`guid`] macro.
     ///
-    /// # Note
-    ///
-    /// This is a const function, intended to initialize GUID constants at compile time.
-    /// While it can be used at runtime, it will panic if the input is invalid. For initializing
-    /// non-constants, `from_str` should be used instead.
-    pub const fn from_static_str(value: &'static str) -> Guid {
+    /// FUTURE: rename once all callers are updated to use the macro.
+    #[doc(hidden)]
+    pub const fn from_static_str(value: &str) -> Guid {
         // Unwrap and expect are not supported in const fn.
         match Self::parse(value.as_bytes()) {
             Ok(guid) => guid,
@@ -136,7 +142,7 @@ impl Guid {
     }
 
     /// The all-zero GUID.
-    pub const ZERO: Self = Self::from_static_str("00000000-0000-0000-0000-000000000000");
+    pub const ZERO: Self = guid!("00000000-0000-0000-0000-000000000000");
 
     /// Returns true if this is the all-zero GUID.
     pub fn is_zero(&self) -> bool {
@@ -306,6 +312,7 @@ mod windows {
 
 #[cfg(test)]
 mod tests {
+    use super::guid;
     use super::Guid;
 
     #[test]
@@ -341,10 +348,9 @@ mod tests {
         );
 
         // Test GUID parsing at compile time.
-        const TEST_GUID: Guid = Guid::from_static_str("cf127acc-c960-41e4-9b1e-513e8a89147d");
+        const TEST_GUID: Guid = guid!("cf127acc-c960-41e4-9b1e-513e8a89147d");
         assert_eq!(guid, TEST_GUID);
-        const TEST_BRACED_GUID: Guid =
-            Guid::from_static_str("{cf127acc-c960-41e4-9b1e-513e8a89147d}");
+        const TEST_BRACED_GUID: Guid = guid!("{cf127acc-c960-41e4-9b1e-513e8a89147d}");
         assert_eq!(guid, TEST_BRACED_GUID);
     }
 }

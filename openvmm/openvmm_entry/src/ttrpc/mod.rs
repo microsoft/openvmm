@@ -486,7 +486,7 @@ impl VmService {
             },
             #[cfg(windows)]
             kernel_vmnics: vec![],
-            input: mesh::MpscReceiver::new(),
+            input: mesh::Receiver::new(),
             framebuffer: None,
             vga_firmware: None,
             vtl2_gfx: false,
@@ -519,7 +519,7 @@ impl VmService {
                 config.vmbus_devices.push((
                     DeviceVtl::Vtl0,
                     ScsiControllerHandle {
-                        instance_id: Guid::from_static_str("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f"),
+                        instance_id: guid::guid!("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f"),
                         max_sub_channel_count: 0,
                         devices,
                         io_queue_depth: None,

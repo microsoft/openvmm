@@ -162,9 +162,9 @@ pub mod shutdown {
     use zerocopy::KnownLayout;
 
     /// The unique vmbus interface ID of the shutdown IC.
-    pub const INTERFACE_ID: Guid = Guid::from_static_str("0e0b6031-5213-4934-818b-38d90ced39db");
+    pub const INTERFACE_ID: Guid = guid::guid!("0e0b6031-5213-4934-818b-38d90ced39db");
     /// The unique vmbus instance ID of the shutdown IC.
-    pub const INSTANCE_ID: Guid = Guid::from_static_str("b6650ff7-33bc-4840-8048-e0676786f393");
+    pub const INSTANCE_ID: Guid = guid::guid!("b6650ff7-33bc-4840-8048-e0676786f393");
 
     /// Supported framework versions.
     pub const FRAMEWORK_VERSIONS: &[Version] = &[Version::new(1, 0), Version::new(3, 0)];
