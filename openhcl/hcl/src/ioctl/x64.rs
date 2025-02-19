@@ -49,6 +49,7 @@ pub enum RegisterPageVtlError {
 /// Runner backing for non-hardware-isolated X64 partitions.
 pub struct MshvX64<'a> {
     reg_page: Option<MaybeSidecar<'a, HvX64RegisterPage>>,
+    // TODO: This should store a ref with lifetimes.
     cpu_context: NonNull<hcl_cpu_context_x64>,
 }
 
