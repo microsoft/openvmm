@@ -7373,6 +7373,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "event-listener",
  "fs-err",
  "futures",
  "futures-concurrency",

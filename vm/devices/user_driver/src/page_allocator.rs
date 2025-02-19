@@ -6,18 +6,18 @@
 //! This is used for temporary allocations of per-queue DMA buffers, mainly for
 //! PRP lists.
 
+use crate::memory::MemoryBlock;
+use crate::memory::PAGE_SIZE;
+use crate::memory::PAGE_SIZE64;
 use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
 use parking_lot::Mutex;
 use std::sync::atomic::AtomicU8;
-use user_driver::memory::MemoryBlock;
-use user_driver::memory::PAGE_SIZE;
-use user_driver::memory::PAGE_SIZE64;
 
 #[derive(Inspect)]
-pub(crate) struct PageAllocator {
+pub struct PageAllocator {
     #[inspect(flatten)]
     core: Mutex<PageAllocatorCore>,
     #[inspect(skip)]
