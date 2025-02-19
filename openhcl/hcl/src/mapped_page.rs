@@ -11,7 +11,9 @@ pub(crate) struct MappedPage<T>(NonNull<UnsafeCell<T>>);
 
 impl<T> MappedPage<T> {
     pub fn new(fd: &File, pg_off: i64) -> io::Result<Self> {
-        assert!(size_of::<T>() <= 4096);
+        // Make sure any T we're using can fit in any size page.
+        const _: () = assert!(size_of::<T>() <= 4096);
+
         // SAFETY: calling mmap as documented to create a new mapping.
         let ptr = unsafe {
             let page_size = libc::sysconf(libc::_SC_PAGESIZE);
