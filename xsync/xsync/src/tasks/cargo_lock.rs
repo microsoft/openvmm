@@ -232,15 +232,22 @@ impl Cmd for CargoLock {
                 )?;
                 let out = std::path::absolute(out)?;
 
-                std::process::Command::new("cargo")
+                let cargo_update = |offline: bool| std::process::Command::new("cargo")
                     .arg("update")
                     .arg("--workspace")
-                    .arg("--offline")
-                    .current_dir(&ctx.overlay_workspace)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()?
-                    .wait()?;
+                    .arg("--quiet")
+                    .args(offline.then_some("--offline"))
+                    .stderr(if offline { std::process::Stdio::null() } else { std::process::Stdio::inherit() })
+                    .current_dir(&ctx.overlay_workspace).status();
+
+                if !cargo_update(true)?.success() {
+                    // Try again without `--offline` in case the registry index
+                    // needs to be updated.
+                    let status = cargo_update(false)?;
+                    if !status.success() {
+                        anyhow::bail!("cargo update failed with status: {}", status);
+                    }
+                }
 
                 if ctx.check {
                     let new_lock = fs_err::read_to_string(&out)?;
