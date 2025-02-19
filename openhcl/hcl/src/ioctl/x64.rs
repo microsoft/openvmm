@@ -53,6 +53,7 @@ pub struct MshvX64<'a> {
 }
 
 enum MaybeSidecar<'a, T> {
+    // TODO: This should store a ref with lifetimes to the SidecarVp.
     Sidecar(NonNull<T>),
     Mapped(&'a MappedPage<T>),
 }
@@ -202,7 +203,6 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
         } else {
             Self {
                 reg_page: reg_page.as_ref().map(MaybeSidecar::Mapped),
-                // TODO: This should store a ref with lifetimes.
                 cpu_context: NonNull::new(
                     // SAFETY: The run page is guaranteed to be mapped and valid.
                     unsafe { std::ptr::addr_of_mut!((*vp.run.as_ptr()).context) }.cast(),
