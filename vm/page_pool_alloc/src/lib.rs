@@ -718,7 +718,7 @@ impl PagePoolAllocator {
             let free_slot = if slot.size_pages > size_pages {
                 Some(Slot {
                     base_pfn: slot.base_pfn + size_pages,
-                    mapping_offset: slot.mapping_offset + size_pages as usize,
+                    mapping_offset: slot.mapping_offset + (size_pages * PAGE_SIZE) as usize,
                     size_pages: slot.size_pages - size_pages,
                     state: SlotState::Free,
                 })
@@ -731,6 +731,7 @@ impl PagePoolAllocator {
 
         let base_pfn = allocation_slot.base_pfn;
         let mapping_offset = allocation_slot.mapping_offset;
+        assert_eq!(mapping_offset % PAGE_SIZE as usize, 0);
 
         // Commit state to the pool.
         inner.slots.push(allocation_slot);
@@ -765,10 +766,11 @@ impl PagePoolAllocator {
     ) -> Result<PagePoolHandle, Error> {
         let size_pages = size_pages.get();
         let mut inner = self.inner.state.lock();
-        let index = inner
+        let inner = &mut *inner;
+        let slot = inner
             .slots
-            .iter()
-            .position(|slot| {
+            .iter_mut()
+            .find(|slot| {
                 if let SlotState::AllocatedPendingRestore { device_id, tag: _ } = &slot.state {
                     device_id == inner.device_ids[self.device_id].name()
                         && slot.base_pfn == base_pfn
@@ -779,13 +781,14 @@ impl PagePoolAllocator {
             })
             .ok_or(Error::NoMatchingAllocation)?;
 
-        inner.slots[index].state.restore_allocated(self.device_id);
+        slot.state.restore_allocated(self.device_id);
+        assert_eq!(slot.mapping_offset % PAGE_SIZE as usize, 0);
 
         Ok(PagePoolHandle {
             inner: self.inner.clone(),
             base_pfn,
             size_pages,
-            mapping_offset: inner.slots[index].mapping_offset,
+            mapping_offset: slot.mapping_offset,
         })
     }
 }
