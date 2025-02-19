@@ -68,8 +68,8 @@ macro_rules! result_helper {
 /// "00000000-0000-0000-0000-000000000000".
 #[macro_export]
 macro_rules! guid {
-    ($x:expr) => {
-        const { $crate::Guid::from_static_str($x) }
+    ($x:expr $(,)?) => {
+        const { $crate::Guid::from_str_private($x) }
     };
 }
 
@@ -86,11 +86,9 @@ impl Guid {
         guid
     }
 
-    /// Used by [`guid`] macro.
-    ///
-    /// FUTURE: rename once all callers are updated to use the macro.
+    /// Do not use. Use the [`guid`] macro instead.
     #[doc(hidden)]
-    pub const fn from_static_str(value: &str) -> Guid {
+    pub const fn from_str_private(value: &str) -> Guid {
         // Unwrap and expect are not supported in const fn.
         match Self::parse(value.as_bytes()) {
             Ok(guid) => guid,
@@ -100,7 +98,7 @@ impl Guid {
         }
     }
 
-    /// Helper used by `from_static_str`, `from_str`, and `TryFrom<&[u8]>`.
+    /// Helper used by `from_str_private`, `from_str`, and `TryFrom<&[u8]>`.
     const fn parse(value: &[u8]) -> Result<Self, ParseError> {
         // Slicing is not possible in const fn, so use an index offset.
         let offset = if value.len() == 38 {
