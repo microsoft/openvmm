@@ -39,7 +39,7 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
 ) -> Result<(), UhRunVpError> {
     // Check for interrupt requests from the host and kernel offload.
     if vtl == GuestVtl::Vtl0 {
-        if let Some(irr) = apic_backing.vp().runner.proxy_irr() {
+        if let Some(irr) = apic_backing.vp().runner.proxy_irr_vtl0() {
             // We can't put the interrupts directly into offload (where supported) because we might need
             // to clear the tmr state. This can happen if a vector was previously used for a level
             // triggered interrupt, and is now being used for an edge-triggered interrupt.

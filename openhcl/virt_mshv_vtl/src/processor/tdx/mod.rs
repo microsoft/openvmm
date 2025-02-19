@@ -683,7 +683,7 @@ impl BackingPrivate for TdxBacked {
             .partition
             .shared_vis_pages_pool
             .as_ref()
-            .expect("must have shared vis pool when using SNP")
+            .ok_or(crate::Error::MissingSharedMemory)?
             .alloc(
                 NonZeroU64::new(shared_pages_required_per_cpu()).expect("is nonzero"),
                 format!("direct overlay vp {}", params.vp_info.base.vp_index.index()),
@@ -696,9 +696,9 @@ impl BackingPrivate for TdxBacked {
             .partition
             .private_vis_pages_pool
             .as_ref()
-            .expect("private pool exists for cvm")
+            .ok_or(crate::Error::MissingPrivateMemory)?
             .alloc(1.try_into().unwrap(), "tdx_tlb_flush".into())
-            .expect("not out of memory");
+            .map_err(crate::Error::AllocateTlbFlushPage)?;
 
         let untrusted_synic = params
             .partition
@@ -849,7 +849,7 @@ impl BackingPrivate for TdxBacked {
             // We only offload VTL 0 today.
             assert_eq!(vtl, GuestVtl::Vtl0);
             tracing::info!("disabling APIC offload due to auto EOI");
-            let page = zerocopy::transmute_mut!(this.runner.tdx_apic_page_mut());
+            let page = this.runner.tdx_apic_page_mut_vtl0();
             let (irr, isr) = pull_apic_offload(page);
 
             this.backing.cvm.lapics[vtl]
@@ -963,8 +963,7 @@ impl UhProcessor<'_, TdxBacked> {
             let r: Result<(), OffloadNotSupported> = self.backing.cvm.lapics[vtl]
                 .lapic
                 .push_to_offload(|irr, isr, tmr| {
-                    let apic_page: &mut ApicPage =
-                        zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut());
+                    let apic_page = self.runner.tdx_apic_page_mut_vtl0();
 
                     for (((irr, page_irr), isr), page_isr) in irr
                         .iter()
@@ -1002,8 +1001,8 @@ impl UhProcessor<'_, TdxBacked> {
                             // must know if that interrupt was previously level-triggered. Otherwise,
                             // the EOI will be incorrectly treated as level-triggered. We keep a copy
                             // of the tmr in the kernel so it knows when this scenario occurs.
-                            self.runner.proxy_irr_exit_mut()[i * 2] = tmr as u32;
-                            self.runner.proxy_irr_exit_mut()[i * 2 + 1] = (tmr >> 32) as u32;
+                            self.runner.proxy_irr_exit_mut_vtl0()[i * 2] = tmr as u32;
+                            self.runner.proxy_irr_exit_mut_vtl0()[i * 2 + 1] = (tmr >> 32) as u32;
                         }
                     }
                 });
@@ -1015,7 +1014,7 @@ impl UhProcessor<'_, TdxBacked> {
             }
 
             if update_rvi {
-                let page: &mut ApicPage = zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut());
+                let page = self.runner.tdx_apic_page_mut_vtl0();
                 let rvi = top_vector(&page.irr);
                 self.backing.vtls[vtl].private_regs.rvi = rvi;
             }
@@ -1051,8 +1050,8 @@ impl UhProcessor<'_, TdxBacked> {
     ) -> R {
         let offloaded = self.backing.cvm.lapics[vtl].lapic.is_offloaded();
         if offloaded {
-            let (irr, isr) =
-                pull_apic_offload(zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut()));
+            assert_eq!(vtl, GuestVtl::Vtl0);
+            let (irr, isr) = pull_apic_offload(self.runner.tdx_apic_page_mut_vtl0());
             self.backing.cvm.lapics[vtl]
                 .lapic
                 .disable_offload(&irr, &isr);
@@ -1156,7 +1155,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
         }
 
         let priority = vector >> 4;
-        let apic: &ApicPage = zerocopy::transmute_ref!(self.vp.runner.tdx_apic_page());
+        let apic = self.vp.runner.tdx_apic_page(vtl);
         if (apic.tpr.value as u8 >> 4) >= priority {
             self.tpr_threshold = priority;
             return Ok(());
@@ -1548,7 +1547,7 @@ impl UhProcessor<'_, TdxBacked> {
                     .access(&mut TdxApicClient {
                         partition: self.partition,
                         vmtime: &self.vmtime,
-                        apic_page: zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut()),
+                        apic_page: self.runner.tdx_apic_page_mut(intercepted_vtl),
                         dev,
                         vtl: intercepted_vtl,
                     })
@@ -1601,7 +1600,7 @@ impl UhProcessor<'_, TdxBacked> {
                     .access(&mut TdxApicClient {
                         partition: self.partition,
                         vmtime: &self.vmtime,
-                        apic_page: zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut()),
+                        apic_page: self.runner.tdx_apic_page_mut(intercepted_vtl),
                         dev,
                         vtl: intercepted_vtl,
                     })
@@ -2415,7 +2414,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
                 partition: self.vp.partition,
                 dev: self.devices,
                 vmtime: &self.vp.vmtime,
-                apic_page: zerocopy::transmute_mut!(self.vp.runner.tdx_apic_page_mut()),
+                apic_page: self.vp.runner.tdx_apic_page_mut(self.vtl),
                 vtl: self.vtl,
             })
             .mmio_read(address, data);
@@ -2428,7 +2427,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
                 partition: self.vp.partition,
                 dev: self.devices,
                 vmtime: &self.vp.vmtime,
-                apic_page: zerocopy::transmute_mut!(self.vp.runner.tdx_apic_page_mut()),
+                apic_page: self.vp.runner.tdx_apic_page_mut(self.vtl),
                 vtl: self.vtl,
             })
             .mmio_write(address, data);
@@ -2664,6 +2663,7 @@ impl<T: CpuIo> ApicClient for TdxApicClient<'_, T> {
     }
 
     fn pull_offload(&mut self) -> ([u32; 8], [u32; 8]) {
+        assert_eq!(self.vtl, GuestVtl::Vtl0);
         pull_apic_offload(self.apic_page)
     }
 }

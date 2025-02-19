@@ -2645,6 +2645,7 @@ dependencies = [
  "memory_range",
  "nix 0.26.4",
  "open_enum",
+ "page_pool_alloc",
  "pal",
  "parking_lot",
  "safe_intrinsics",

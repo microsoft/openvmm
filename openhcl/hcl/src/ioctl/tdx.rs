@@ -17,6 +17,7 @@ use crate::GuestVtl;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use memory_range::MemoryRange;
+use page_pool_alloc::PagePoolHandle;
 use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
@@ -41,7 +42,8 @@ use x86defs::vmx::VmcsField;
 
 /// Runner backing for TDX partitions.
 pub struct Tdx<'a> {
-    apic_page: &'a UnsafeCell<ApicPage>,
+    vtl0_apic_page: &'a UnsafeCell<ApicPage>,
+    vtl1_apic_page: &'a PagePoolHandle,
 }
 
 impl MshvVtl {
@@ -119,18 +121,42 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         &self.tdx_vp_context().exit_info
     }
 
-    /// Gets a reference to the tdx APIC page.
-    pub fn tdx_apic_page(&self) -> &ApicPage {
+    /// Gets a reference to the tdx APIC page for VTL 0.
+    pub fn tdx_apic_page_vtl0(&self) -> &ApicPage {
         // SAFETY: the APIC page will not be concurrently accessed by the processor
         // while this VP is in VTL2.
-        unsafe { &*self.state.apic_page.get() }
+        unsafe { &*self.state.vtl0_apic_page.get() }
     }
 
-    /// Gets a mutable reference to the tdx APIC page.
-    pub fn tdx_apic_page_mut(&mut self) -> &mut ApicPage {
+    /// Gets a mutable reference to the tdx APIC page for VTL 0.
+    pub fn tdx_apic_page_mut_vtl0(&mut self) -> &mut ApicPage {
         // SAFETY: the APIC page will not be concurrently accessed by the processor
         // while this VP is in VTL2.
-        unsafe { &mut *self.state.apic_page.get() }
+        unsafe { &mut *self.state.vtl0_apic_page.get() }
+    }
+
+    /// Gets a reference to the tdx APIC page for the given VTL.
+    pub fn tdx_apic_page(&self, vtl: GuestVtl) -> &ApicPage {
+        match vtl {
+            GuestVtl::Vtl0 => self.tdx_apic_page_vtl0(),
+            // SAFETY: the APIC page will not be concurrently accessed by the processor
+            // while this VP is in VTL2.
+            GuestVtl::Vtl1 => unsafe {
+                &*self.state.vtl1_apic_page.mapping().unwrap().as_ptr().cast()
+            },
+        }
+    }
+
+    /// Gets a mutable reference to the tdx APIC page for the given VTL.
+    pub fn tdx_apic_page_mut(&mut self, vtl: GuestVtl) -> &mut ApicPage {
+        match vtl {
+            GuestVtl::Vtl0 => self.tdx_apic_page_mut_vtl0(),
+            // SAFETY: the APIC page will not be concurrently accessed by the processor
+            // while this VP is in VTL2.
+            GuestVtl::Vtl1 => unsafe {
+                &mut *self.state.vtl1_apic_page.mapping().unwrap().as_ptr().cast()
+            },
+        }
     }
 
     /// Gets a reference to TDX VP specific state.
@@ -413,11 +439,16 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
 impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
     fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
-        let super::BackingState::Tdx { apic_page } = &vp.backing else {
+        let super::BackingState::Tdx {
+            vtl0_apic_page,
+            vtl1_apic_page,
+        } = &vp.backing
+        else {
             return Err(NoRunner::MismatchedIsolation);
         };
         Ok(Self {
-            apic_page: apic_page.as_ref(),
+            vtl0_apic_page: vtl0_apic_page.as_ref(),
+            vtl1_apic_page,
         })
     }
 

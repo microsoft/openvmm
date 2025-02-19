@@ -278,7 +278,7 @@ impl BackingPrivate for SnpBacked {
             .partition
             .shared_vis_pages_pool
             .as_ref()
-            .expect("must have shared vis pool when using SNP")
+            .ok_or(Error::MissingSharedMemory)?
             .alloc(
                 NonZeroU64::new(shared_pages_required_per_cpu()).expect("is nonzero"),
                 format!("direct overlay vp {}", params.vp_info.base.vp_index.index()),

@@ -166,6 +166,10 @@ pub enum Error {
     InvalidDebugConfiguration,
     #[error("missing shared memory for an isolated partition")]
     MissingSharedMemory,
+    #[error("missing private memory for an isolated partition")]
+    MissingPrivateMemory,
+    #[error("failed to allocate TLB flush page")]
+    AllocateTlbFlushPage(#[source] page_pool_alloc::Error),
 }
 
 /// Error revoking guest VSM.
@@ -1556,8 +1560,11 @@ impl<'a> UhProtoPartition<'a> {
         }
 
         // Do per-VP HCL initialization.
-        hcl.add_vps(params.topology.vp_count())
-            .map_err(Error::Hcl)?;
+        hcl.add_vps(
+            params.topology.vp_count(),
+            late_params.private_vis_pages_pool.as_ref(),
+        )
+        .map_err(Error::Hcl)?;
 
         let vps: Vec<_> = params
             .topology
