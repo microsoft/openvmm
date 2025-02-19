@@ -8326,6 +8326,7 @@ dependencies = [
  "async-trait",
  "futures",
  "futures-concurrency",
+ "getrandom",
  "guestmem",
  "guid",
  "hvdef",

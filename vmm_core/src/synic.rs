@@ -238,9 +238,11 @@ struct DirectGuestMessagePort {
 }
 
 impl GuestMessagePort for DirectGuestMessagePort {
-    fn post_message(&mut self, typ: u32, payload: &[u8]) {
+    fn poll_post_message(&mut self, _cx: &mut Context<'_>, typ: u32, payload: &[u8]) -> Poll<()> {
         self.partition
-            .post_message(self.vtl, self.vp, self.sint, typ, payload)
+            .post_message(self.vtl, self.vp, self.sint, typ, payload);
+
+        Poll::Ready(())
     }
 
     fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
