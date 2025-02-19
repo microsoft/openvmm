@@ -17,6 +17,7 @@ use self::deferred::DeferredActionSlots;
 use self::deferred::DeferredActions;
 use self::ioctls::*;
 use crate::ioctl::deferred::DeferredAction;
+use crate::mapped_page::MappedPage;
 use crate::protocol;
 use crate::protocol::hcl_intr_offload_flags;
 use crate::protocol::hcl_run;
@@ -27,6 +28,7 @@ use crate::protocol::HCL_VMSA_PAGE_OFFSET;
 use crate::protocol::MSHV_APIC_PAGE_OFFSET;
 use crate::GuestVtl;
 use hv1_structs::ProcessorSet;
+use hv1_structs::VtlArray;
 use hvdef::hypercall::AssertVirtualInterrupt;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvGpaRange;
@@ -1523,53 +1525,6 @@ impl Hcl {
     }
 }
 
-struct MappedPage<T>(NonNull<T>);
-
-impl<T> MappedPage<T> {
-    fn new(fd: &File, pg_off: i64) -> io::Result<Self> {
-        // SAFETY: calling mmap as documented to create a new mapping.
-        let ptr = unsafe {
-            let page_size = libc::sysconf(libc::_SC_PAGESIZE);
-            libc::mmap(
-                std::ptr::null_mut(),
-                page_size as usize,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED,
-                fd.as_raw_fd(),
-                pg_off * page_size,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
-        }
-
-        Ok(Self(NonNull::new(ptr).unwrap().cast()))
-    }
-}
-
-impl<T> Debug for MappedPage<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("MappedPage").field(&self.0).finish()
-    }
-}
-
-impl<T> Drop for MappedPage<T> {
-    fn drop(&mut self) {
-        // SAFETY: unmapping memory mapped at construction.
-        unsafe {
-            libc::munmap(
-                self.0.as_ptr().cast(),
-                libc::sysconf(libc::_SC_PAGESIZE) as usize,
-            );
-        }
-    }
-}
-
-// SAFETY: this is just a pointer value.
-unsafe impl<T> Send for MappedPage<T> {}
-// SAFETY: see above comment
-unsafe impl<T> Sync for MappedPage<T> {}
-
 #[derive(Debug)]
 struct HclVp {
     state: Mutex<VpState>,
@@ -1583,8 +1538,7 @@ enum BackingState {
         reg_page: Option<MappedPage<HvX64RegisterPage>>,
     },
     Snp {
-        vmsa: MappedPage<SevVmsa>,
-        vmsa_vtl1: MappedPage<SevVmsa>,
+        vmsa: VtlArray<MappedPage<SevVmsa>, 2>,
     },
     // TODO GUEST_VSM: vtl 1 vp state
     Tdx {
@@ -1610,7 +1564,7 @@ impl HclVp {
             MappedPage::new(fd, vp as i64).map_err(|e| Error::MmapVp(e, None))?;
         // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
         // so we know we have exclusive access. Initializing to block all vectors by default
-        let proxy_irr_blocked = unsafe { &mut *addr_of_mut!((*run.0.as_ptr()).proxy_irr_blocked) };
+        let proxy_irr_blocked = unsafe { &mut *addr_of_mut!((*run.as_ptr()).proxy_irr_blocked) };
         proxy_irr_blocked.fill(0xFFFFFFFF);
 
         let backing = match isolation_type {
@@ -1624,12 +1578,15 @@ impl HclVp {
                     None
                 },
             },
-            IsolationType::Snp => BackingState::Snp {
-                vmsa: MappedPage::new(fd, HCL_VMSA_PAGE_OFFSET | vp as i64)
-                    .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
-                vmsa_vtl1: MappedPage::new(fd, HCL_VMSA_GUEST_VSM_PAGE_OFFSET | vp as i64)
-                    .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl1)))?,
-            },
+            IsolationType::Snp => {
+                let vmsa_vtl0 = MappedPage::new(fd, HCL_VMSA_PAGE_OFFSET | vp as i64)
+                    .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?;
+                let vmsa_vtl1 = MappedPage::new(fd, HCL_VMSA_GUEST_VSM_PAGE_OFFSET | vp as i64)
+                    .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl1)))?;
+                BackingState::Snp {
+                    vmsa: [vmsa_vtl0, vmsa_vtl1].into(),
+                }
+            }
             IsolationType::Tdx => BackingState::Tdx {
                 apic_page: MappedPage::new(fd, MSHV_APIC_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
@@ -1650,7 +1607,7 @@ pub struct ProcessorRunner<'a, T> {
     vp: &'a HclVp,
     sidecar: Option<SidecarVp<'a>>,
     _no_send: PhantomData<*const u8>, // prevent Send/Sync
-    run: NonNull<hcl_run>,
+    run: &'a MappedPage<hcl_run>,
     intercept_message: NonNull<HvMessage>,
     state: T,
 }
@@ -1670,9 +1627,9 @@ pub enum NoRunner {
 }
 
 /// An isolation-type-specific backing for a processor runner.
-pub trait Backing: BackingPrivate {}
+pub trait Backing<'a>: BackingPrivate<'a> {}
 
-impl<T: BackingPrivate> Backing for T {}
+impl<'a, T: BackingPrivate<'a>> Backing<'a> for T {}
 
 mod private {
     use super::Error;
@@ -1684,8 +1641,8 @@ mod private {
     use hvdef::HvRegisterValue;
     use sidecar_client::SidecarVp;
 
-    pub trait BackingPrivate: Sized {
-        fn new(vp: &HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner>;
+    pub trait BackingPrivate<'a>: Sized {
+        fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner>;
 
         fn try_set_reg(
             runner: &mut ProcessorRunner<'_, Self>,
@@ -1728,7 +1685,7 @@ impl<T> ProcessorRunner<'_, T> {
     }
 }
 
-impl<'a, T: Backing> ProcessorRunner<'a, T> {
+impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     // Registers that are shared between VTLs need to be handled by the kernel
     // as they may require special handling there. set_reg and get_reg will
     // handle these registers using a dedicated ioctl, instead of the general-
@@ -1978,7 +1935,7 @@ impl<'a, T: Backing> ProcessorRunner<'a, T> {
     }
 }
 
-impl<T: Backing> ProcessorRunner<'_, T> {
+impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     fn get_vp_registers_inner<R: Copy + Into<HvRegisterName>>(
         &mut self,
         vtl: GuestVtl,
@@ -2150,7 +2107,7 @@ impl<T: Backing> ProcessorRunner<'_, T> {
         // SAFETY: self.run is mapped, and the target_vtl field can only be
         // mutated or accessed by this object and only before the kernel is
         // invoked during `run`
-        unsafe { self.run.as_mut().target_vtl = vtl.into() }
+        unsafe { (*self.run.as_ptr()).target_vtl = vtl.into() }
     }
 }
 
@@ -2299,11 +2256,11 @@ impl Hcl {
     }
 
     /// Create a VP runner for the given partition.
-    pub fn runner<T: Backing>(
-        &self,
+    pub fn runner<'a, T: Backing<'a>>(
+        &'a self,
         vp_index: u32,
         use_sidecar: bool,
-    ) -> Result<ProcessorRunner<'_, T>, NoRunner> {
+    ) -> Result<ProcessorRunner<'a, T>, NoRunner> {
         let vp = &self.vps[vp_index as usize];
 
         let sidecar = if use_sidecar {
@@ -2335,7 +2292,7 @@ impl Hcl {
         let intercept_message = sidecar.as_ref().map_or(
             // SAFETY: The run page is guaranteed to be mapped and valid.
             // While the exit message might not be filled in yet we're only computing its address.
-            unsafe { std::ptr::addr_of!((*vp.run.0.as_ptr()).exit_message) }.cast(),
+            unsafe { std::ptr::addr_of!((*vp.run.as_ptr()).exit_message) }.cast(),
             |s| s.intercept_message(),
         );
 
@@ -2344,7 +2301,7 @@ impl Hcl {
         Ok(ProcessorRunner {
             hcl: self,
             vp,
-            run: vp.run.0,
+            run: &vp.run,
             intercept_message,
             _no_send: PhantomData,
             state,

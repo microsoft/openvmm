@@ -4,10 +4,10 @@
 //! Support routines for deferred actions.
 
 use super::Hcl;
+use super::MappedPage;
 use crate::protocol;
 use crate::protocol::hcl_run;
 use std::ptr::addr_of_mut;
-use std::ptr::NonNull;
 use zerocopy::IntoBytes;
 
 #[derive(Debug, Default)]
@@ -33,7 +33,7 @@ impl DeferredActions {
 
     /// Copies the queued actions to the slots in the run page. Issues any
     /// immediately that won't fit in the run page.
-    pub fn copy_to_slots(&mut self, slots: &mut DeferredActionSlots, hcl: &Hcl) {
+    pub fn copy_to_slots(&mut self, slots: &mut DeferredActionSlots<'_>, hcl: &Hcl) {
         for action in self.actions.drain(..) {
             if !action.post(slots) {
                 action.run(hcl);
@@ -67,7 +67,7 @@ impl DeferredAction {
     }
 
     /// Post the action to the HCL.
-    fn post(&self, slots: &mut DeferredActionSlots) -> bool {
+    fn post(&self, slots: &mut DeferredActionSlots<'_>) -> bool {
         match *self {
             DeferredAction::SignalEvent { vp, sint, flag } => slots.push(
                 protocol::hv_vp_assist_page_signal_event {
@@ -84,13 +84,13 @@ impl DeferredAction {
 }
 
 /// A reference to the HCL run data structure's deferred action slots.
-pub struct DeferredActionSlots(NonNull<hcl_run>);
+pub struct DeferredActionSlots<'a>(&'a MappedPage<hcl_run>);
 
-impl DeferredActionSlots {
+impl<'a> DeferredActionSlots<'a> {
     /// # Safety
     /// The caller must ensure that the return action fields in `run` remain
     /// valid and unaliased for the lifetime of this object.
-    pub unsafe fn new(run: NonNull<hcl_run>) -> Self {
+    pub unsafe fn new(run: &'a MappedPage<hcl_run>) -> Self {
         Self(run)
     }
 

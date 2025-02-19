@@ -125,7 +125,7 @@ impl UhProcessor<'_, TdxBacked> {
         target_vtl: GuestVtl,
         partition_flush_state: &TdxPartitionFlushState,
         gva_list_count: &mut Wrapping<usize>,
-        runner: &mut ProcessorRunner<'_, Tdx>,
+        runner: &mut ProcessorRunner<'_, Tdx<'_>>,
         flush_page: &page_pool_alloc::PagePoolHandle,
     ) -> bool {
         // Check quickly to see whether any new addresses are in the list.

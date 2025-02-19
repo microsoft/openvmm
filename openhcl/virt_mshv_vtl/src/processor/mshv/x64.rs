@@ -119,7 +119,7 @@ pub struct MshvEmulationCache {
 }
 
 impl BackingPrivate for HypervisorBackedX86 {
-    type HclBacking = MshvX64;
+    type HclBacking<'mshv> = MshvX64;
     type Shared = ();
     type EmulationCache = MshvEmulationCache;
 

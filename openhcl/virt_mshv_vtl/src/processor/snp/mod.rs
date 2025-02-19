@@ -262,7 +262,7 @@ impl SnpBackedShared {
 }
 
 impl BackingPrivate for SnpBacked {
-    type HclBacking = hcl::ioctl::snp::Snp;
+    type HclBacking<'snp> = hcl::ioctl::snp::Snp<'snp>;
     type Shared = SnpBackedShared;
     type EmulationCache = ();
 

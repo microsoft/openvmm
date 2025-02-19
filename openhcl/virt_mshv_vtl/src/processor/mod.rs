@@ -111,7 +111,7 @@ pub struct UhProcessor<'a, T: Backing> {
     // that don't access backing-specific state are more likely to be folded
     // together by the compiler.
     #[inspect(skip)]
-    runner: ProcessorRunner<'a, T::HclBacking>,
+    runner: ProcessorRunner<'a, T::HclBacking<'a>>,
     #[inspect(mut)]
     backing: T,
 }
@@ -191,11 +191,11 @@ mod private {
     pub struct BackingParams<'a, 'b, T: BackingPrivate> {
         pub(crate) partition: &'a UhPartitionInner,
         pub(crate) vp_info: &'a TargetVpInfo,
-        pub(crate) runner: &'a mut ProcessorRunner<'b, T::HclBacking>,
+        pub(crate) runner: &'a mut ProcessorRunner<'b, T::HclBacking<'b>>,
     }
 
     pub trait BackingPrivate: 'static + Sized + InspectMut + Sized {
-        type HclBacking: hcl::ioctl::Backing;
+        type HclBacking<'b>: hcl::ioctl::Backing<'b>;
         type EmulationCache;
         type Shared;
 

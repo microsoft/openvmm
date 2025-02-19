@@ -271,10 +271,10 @@ impl VirtualRegister {
     /// Write a new value to the virtual register. This updates host owned bits
     /// in the shadowed value, and updates guest owned bits in the physical
     /// register in the vmcs.
-    fn write(
+    fn write<'a>(
         &mut self,
         value: u64,
-        runner: &mut ProcessorRunner<'_, Tdx>,
+        runner: &mut ProcessorRunner<'a, Tdx<'a>>,
     ) -> Result<(), VirtualRegisterError> {
         tracing::trace!(?self.register, value, "write virtual register");
 
@@ -311,7 +311,7 @@ impl VirtualRegister {
         Ok(())
     }
 
-    fn read(&self, runner: &ProcessorRunner<'_, Tdx>) -> u64 {
+    fn read(&self, runner: &ProcessorRunner<'_, Tdx<'_>>) -> u64 {
         let physical_reg = runner.read_vmcs64(self.vtl, self.register.physical_vmcs_field());
 
         // Get the bits owned by the host from the shadow and the bits owned by the
@@ -562,7 +562,7 @@ impl TdxBackedShared {
 }
 
 impl BackingPrivate for TdxBacked {
-    type HclBacking = Tdx;
+    type HclBacking<'tdx> = Tdx<'tdx>;
     type Shared = TdxBackedShared;
     type EmulationCache = TdxEmulationCache;
 

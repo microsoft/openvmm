@@ -45,7 +45,7 @@ impl ProcessorRunner<'_, MshvArm64> {
     }
 }
 
-impl super::BackingPrivate for MshvArm64 {
+impl super::BackingPrivate<'_> for MshvArm64 {
     fn new(vp: &HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
         let super::BackingState::Mshv { reg_page: _ } = &vp.backing else {

@@ -169,7 +169,7 @@ impl ProcessorRunner<'_, MshvX64> {
     }
 }
 
-impl BackingPrivate for MshvX64 {
+impl BackingPrivate<'_> for MshvX64 {
     fn new(vp: &HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
         let BackingState::Mshv { reg_page } = &vp.backing else {
             return Err(NoRunner::MismatchedIsolation);
@@ -186,10 +186,11 @@ impl BackingPrivate for MshvX64 {
             }
         } else {
             Self {
-                reg_page: reg_page.as_ref().map(|p| p.0),
+                // TODO: These should store refs with lifetimes.
+                reg_page: reg_page.as_ref().map(|p| NonNull::new(p.as_ptr())).unwrap(),
                 cpu_context: NonNull::new(
                     // SAFETY: The run page is guaranteed to be mapped and valid.
-                    unsafe { std::ptr::addr_of_mut!((*vp.run.0.as_ptr()).context) }.cast(),
+                    unsafe { std::ptr::addr_of_mut!((*vp.run.as_ptr()).context) }.cast(),
                 )
                 .unwrap(),
             }
