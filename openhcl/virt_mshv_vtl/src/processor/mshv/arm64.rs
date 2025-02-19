@@ -75,7 +75,7 @@ struct ProcessorStatsArm64 {
 }
 
 impl BackingPrivate for HypervisorBackedArm64 {
-    type HclBacking = MshvArm64;
+    type HclBacking<'mshv> = MshvArm64;
     type EmulationCache = UhCpuStateCache;
     type Shared = ();
 
