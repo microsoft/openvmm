@@ -10,7 +10,6 @@ use super::mshv_pvalidate;
 use super::mshv_rmpadjust;
 use super::mshv_rmpquery;
 use super::HclVp;
-use super::MappedPage;
 use super::MshvVtl;
 use super::NoRunner;
 use super::ProcessorRunner;
@@ -22,6 +21,7 @@ use hvdef::HvRegisterValue;
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
 use sidecar_client::SidecarVp;
+use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
 use thiserror::Error;
 use x86defs::snp::SevRmpAdjust;
@@ -29,7 +29,7 @@ use x86defs::snp::SevVmsa;
 
 /// Runner backing for SNP partitions.
 pub struct Snp<'a> {
-    vmsa: &'a VtlArray<MappedPage<SevVmsa>, 2>,
+    vmsa: VtlArray<&'a UnsafeCell<SevVmsa>, 2>,
 }
 
 /// Error returned by failing SNP operations.
@@ -179,7 +179,9 @@ impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
             return Err(NoRunner::MismatchedIsolation);
         };
 
-        Ok(Self { vmsa })
+        Ok(Self {
+            vmsa: vmsa.each_ref().map(|mp| mp.as_ref()),
+        })
     }
 
     fn try_set_reg(
@@ -209,7 +211,7 @@ impl ProcessorRunner<'_, Snp<'_>> {
     pub fn vmsa(&self, vtl: GuestVtl) -> VmsaWrapper<'_, &SevVmsa> {
         // SAFETY: the VMSA will not be concurrently accessed by the processor
         // while this VP is in VTL2.
-        let vmsa = unsafe { &*self.state.vmsa[vtl].as_ptr() };
+        let vmsa = unsafe { &*self.state.vmsa[vtl].get() };
 
         VmsaWrapper::new(vmsa, &self.hcl.snp_register_bitmap)
     }
@@ -218,7 +220,7 @@ impl ProcessorRunner<'_, Snp<'_>> {
     pub fn vmsa_mut(&mut self, vtl: GuestVtl) -> VmsaWrapper<'_, &mut SevVmsa> {
         // SAFETY: the VMSA will not be concurrently accessed by the processor
         // while this VP is in VTL2.
-        let vmsa = unsafe { &mut *self.state.vmsa[vtl].as_ptr() };
+        let vmsa = unsafe { &mut *self.state.vmsa[vtl].get() };
 
         VmsaWrapper::new(vmsa, &self.hcl.snp_register_bitmap)
     }
@@ -231,7 +233,7 @@ impl ProcessorRunner<'_, Snp<'_>> {
             .map(|vmsa| {
                 // SAFETY: the VMSA will not be concurrently accessed by the processor
                 // while this VP is in VTL2.
-                let vmsa = unsafe { &mut *vmsa.as_ptr() };
+                let vmsa = unsafe { &mut *vmsa.get() };
 
                 VmsaWrapper::new(vmsa, &self.hcl.snp_register_bitmap)
             })

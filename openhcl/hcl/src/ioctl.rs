@@ -66,6 +66,7 @@ use sidecar_client::SidecarClient;
 use sidecar_client::SidecarRun;
 use sidecar_client::SidecarVp;
 use std::cell::RefCell;
+use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io;
@@ -81,6 +82,7 @@ use std::sync::Once;
 use thiserror::Error;
 use x86defs::snp::SevVmsa;
 use x86defs::tdx::TdCallResultCode;
+use x86defs::vmx::ApicPage;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -1542,7 +1544,7 @@ enum BackingState {
     },
     // TODO GUEST_VSM: vtl 1 vp state
     Tdx {
-        apic_page: MappedPage<[u32; 1024]>,
+        apic_page: MappedPage<ApicPage>,
     },
 }
 
@@ -1563,8 +1565,9 @@ impl HclVp {
         let run: MappedPage<hcl_run> =
             MappedPage::new(fd, vp as i64).map_err(|e| Error::MmapVp(e, None))?;
         // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
-        // so we know we have exclusive access. Initializing to block all vectors by default
+        // so we know we have exclusive access.
         let proxy_irr_blocked = unsafe { &mut *addr_of_mut!((*run.as_ptr()).proxy_irr_blocked) };
+        // Initializing to block all vectors by default.
         proxy_irr_blocked.fill(0xFFFFFFFF);
 
         let backing = match isolation_type {
@@ -1607,7 +1610,7 @@ pub struct ProcessorRunner<'a, T> {
     vp: &'a HclVp,
     sidecar: Option<SidecarVp<'a>>,
     _no_send: PhantomData<*const u8>, // prevent Send/Sync
-    run: &'a MappedPage<hcl_run>,
+    run: &'a UnsafeCell<hcl_run>,
     intercept_message: NonNull<HvMessage>,
     state: T,
 }
@@ -1797,7 +1800,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         if !self.is_sidecar() {
             // SAFETY: self.run is mapped, and the cancel field is atomically
             // accessed by everyone.
-            let cancel = unsafe { &*addr_of!((*self.run.as_ptr()).cancel).cast::<AtomicU32>() };
+            let cancel = unsafe { &*addr_of!((*self.run.get()).cancel).cast::<AtomicU32>() };
             cancel.store(0, Ordering::SeqCst);
         }
     }
@@ -1807,7 +1810,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     pub fn set_halted(&mut self, halted: bool) {
         // SAFETY: the `flags` field of the run page will not be concurrently
         // updated.
-        let flags = unsafe { &mut *addr_of_mut!((*self.run.as_ptr()).flags) };
+        let flags = unsafe { &mut *addr_of_mut!((*self.run.get()).flags) };
         if halted {
             *flags |= protocol::MSHV_VTL_RUN_FLAG_HALTED
         } else {
@@ -1821,9 +1824,8 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         // are concurrently updated by the kernel on multiple processors. They
         // are accessed atomically everywhere.
         unsafe {
-            let scan_proxy_irr =
-                &*(addr_of!((*self.run.as_ptr()).scan_proxy_irr).cast::<AtomicU8>());
-            let proxy_irr = &*(addr_of!((*self.run.as_ptr()).proxy_irr).cast::<[AtomicU32; 8]>());
+            let scan_proxy_irr = &*(addr_of!((*self.run.get()).scan_proxy_irr).cast::<AtomicU8>());
+            let proxy_irr = &*(addr_of!((*self.run.get()).proxy_irr).cast::<[AtomicU32; 8]>());
             if scan_proxy_irr.load(Ordering::Acquire) == 0 {
                 return None;
             }
@@ -1844,7 +1846,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         // SAFETY: `proxy_irr_blocked` is accessed by current VP only, but could
         // be concurrently accessed by kernel too, hence accessing as Atomic
         let proxy_irr_blocked = unsafe {
-            &mut *(addr_of_mut!((*self.run.as_ptr()).proxy_irr_blocked).cast::<[AtomicU32; 8]>())
+            &mut *(addr_of_mut!((*self.run.get()).proxy_irr_blocked).cast::<[AtomicU32; 8]>())
         };
 
         // `irr_filter` bitmap has bits set for all allowed vectors (i.e. SINT and device interrupts)
@@ -1862,13 +1864,13 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     /// will be left on the proxy_irr field.
     pub fn proxy_irr_exit_mut(&mut self) -> &mut [u32; 8] {
         // SAFETY: The `proxy_irr_exit` field of the run page will not be concurrently updated.
-        unsafe { &mut (*self.run.as_ptr()).proxy_irr_exit }
+        unsafe { &mut (*self.run.get()).proxy_irr_exit }
     }
 
     /// Gets the current offload_flags from the run page.
     pub fn offload_flags_mut(&mut self) -> &mut hcl_intr_offload_flags {
         // SAFETY: The `offload_flags` field of the run page will not be concurrently updated.
-        unsafe { &mut (*self.run.as_ptr()).offload_flags }
+        unsafe { &mut (*self.run.get()).offload_flags }
     }
 
     /// Runs the VP via the sidecar kernel.
@@ -1918,7 +1920,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         } else {
             // SAFETY: self.run is mapped, and the mode field can only be mutated or accessed by
             // this object (or the kernel while `run` is called).
-            Some(unsafe { &mut *addr_of_mut!((*self.run.as_ptr()).mode) })
+            Some(unsafe { &mut *addr_of_mut!((*self.run.get()).mode) })
         }
     }
 
@@ -2107,7 +2109,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         // SAFETY: self.run is mapped, and the target_vtl field can only be
         // mutated or accessed by this object and only before the kernel is
         // invoked during `run`
-        unsafe { (*self.run.as_ptr()).target_vtl = vtl.into() }
+        unsafe { (*self.run.get()).target_vtl = vtl.into() }
     }
 }
 
@@ -2301,7 +2303,7 @@ impl Hcl {
         Ok(ProcessorRunner {
             hcl: self,
             vp,
-            run: &vp.run,
+            run: vp.run.as_ref(),
             intercept_message,
             _no_send: PhantomData,
             state,

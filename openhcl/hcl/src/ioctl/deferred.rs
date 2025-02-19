@@ -4,9 +4,9 @@
 //! Support routines for deferred actions.
 
 use super::Hcl;
-use super::MappedPage;
 use crate::protocol;
 use crate::protocol::hcl_run;
+use std::cell::UnsafeCell;
 use std::ptr::addr_of_mut;
 use zerocopy::IntoBytes;
 
@@ -84,13 +84,13 @@ impl DeferredAction {
 }
 
 /// A reference to the HCL run data structure's deferred action slots.
-pub struct DeferredActionSlots<'a>(&'a MappedPage<hcl_run>);
+pub struct DeferredActionSlots<'a>(&'a UnsafeCell<hcl_run>);
 
 impl<'a> DeferredActionSlots<'a> {
     /// # Safety
     /// The caller must ensure that the return action fields in `run` remain
     /// valid and unaliased for the lifetime of this object.
-    pub unsafe fn new(run: &'a MappedPage<hcl_run>) -> Self {
+    pub unsafe fn new(run: &'a UnsafeCell<hcl_run>) -> Self {
         Self(run)
     }
 
@@ -99,8 +99,8 @@ impl<'a> DeferredActionSlots<'a> {
         // SAFETY: this thread is the only one concurrently accessing the
         // action-related portions of the run structure.
         unsafe {
-            used = &mut *addr_of_mut!((*self.0.as_ptr()).vtl_ret_action_size);
-            buffer = &mut *addr_of_mut!((*self.0.as_ptr()).vtl_ret_actions);
+            used = &mut *addr_of_mut!((*self.0.get()).vtl_ret_action_size);
+            buffer = &mut *addr_of_mut!((*self.0.get()).vtl_ret_actions);
         }
         let offset = *used as usize;
         if let Some(buffer) = buffer.get_mut(offset..offset + action.len()) {

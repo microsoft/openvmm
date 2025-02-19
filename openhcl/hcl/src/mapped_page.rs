@@ -1,15 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use std::cell::UnsafeCell;
 use std::fs::File;
 use std::io;
 use std::os::fd::AsRawFd;
 use std::ptr::NonNull;
 
-pub(crate) struct MappedPage<T>(NonNull<T>);
+pub(crate) struct MappedPage<T>(NonNull<UnsafeCell<T>>);
 
 impl<T> MappedPage<T> {
     pub fn new(fd: &File, pg_off: i64) -> io::Result<Self> {
+        assert!(size_of::<T>() <= 4096);
         // SAFETY: calling mmap as documented to create a new mapping.
         let ptr = unsafe {
             let page_size = libc::sysconf(libc::_SC_PAGESIZE);
@@ -30,7 +32,13 @@ impl<T> MappedPage<T> {
     }
 
     pub fn as_ptr(&self) -> *mut T {
-        self.0.as_ptr()
+        UnsafeCell::raw_get(self.0.as_ptr())
+    }
+
+    pub fn as_ref(&self) -> &UnsafeCell<T> {
+        // SAFETY: The pointer is valid and mapped for the lifetime of the struct,
+        // it will only every point to a T, and UnsafeCell allows interior mutability.
+        unsafe { self.0.as_ref() }
     }
 }
 

@@ -34,14 +34,14 @@ impl ProcessorRunner<'_, MshvArm64> {
     pub fn cpu_context(&self) -> &hcl_cpu_context_aarch64 {
         // SAFETY: the cpu context will not be concurrently accessed by the
         // hypervisor while this VP is in VTL2.
-        unsafe { &*addr_of!((*self.run.as_ptr()).context).cast() }
+        unsafe { &*addr_of!((*self.run.get()).context).cast() }
     }
 
     /// Returns a mutable reference to the current VTL's CPU context.
     pub fn cpu_context_mut(&mut self) -> &mut hcl_cpu_context_aarch64 {
         // SAFETY: the cpu context will not be concurrently accessed by the
         // hypervisor while this VP is in VTL2.
-        unsafe { &mut *addr_of_mut!((*self.run.as_ptr()).context).cast() }
+        unsafe { &mut *addr_of_mut!((*self.run.get()).context).cast() }
     }
 }
 
