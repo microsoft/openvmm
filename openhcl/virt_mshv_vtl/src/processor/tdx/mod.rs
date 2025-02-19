@@ -1568,7 +1568,7 @@ impl UhProcessor<'_, TdxBacked> {
                 let value = match result {
                     Ok(v) => Some(v),
                     Err(MsrError::Unknown) => {
-                        tracelimit::error_ratelimited!(msr, "unknown tdx cvm msr read");
+                        tracelimit::warn_ratelimited!(msr, "unknown tdx vm msr read");
                         Some(0)
                     }
                     Err(MsrError::InvalidAccess) => None,
@@ -1613,7 +1613,7 @@ impl UhProcessor<'_, TdxBacked> {
                 let inject_gp = match result {
                     Ok(()) => false,
                     Err(MsrError::Unknown) => {
-                        tracelimit::error_ratelimited!(msr, value, "unknown tdx cvm msr write");
+                        tracelimit::warn_ratelimited!(msr, value, "unknown tdx vm msr write");
                         false
                     }
                     Err(MsrError::InvalidAccess) => true,
