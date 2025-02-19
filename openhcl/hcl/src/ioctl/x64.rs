@@ -12,6 +12,7 @@ use super::NoRunner;
 use super::ProcessorRunner;
 use super::TranslateGvaToGpaError;
 use super::TranslateResult;
+use crate::mapped_page::MappedPage;
 use crate::protocol::hcl_cpu_context_x64;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
@@ -46,16 +47,30 @@ pub enum RegisterPageVtlError {
 }
 
 /// Runner backing for non-hardware-isolated X64 partitions.
-pub struct MshvX64 {
-    reg_page: Option<NonNull<HvX64RegisterPage>>,
+pub struct MshvX64<'a> {
+    reg_page: Option<MaybeSidecar<'a, HvX64RegisterPage>>,
     cpu_context: NonNull<hcl_cpu_context_x64>,
 }
 
-impl ProcessorRunner<'_, MshvX64> {
+enum MaybeSidecar<'a, T> {
+    Sidecar(NonNull<T>),
+    Mapped(&'a MappedPage<T>),
+}
+
+impl<T> MaybeSidecar<'_, T> {
+    fn as_ptr(&self) -> *mut T {
+        match self {
+            Self::Sidecar(ptr) => ptr.as_ptr(),
+            Self::Mapped(page) => page.as_ptr(),
+        }
+    }
+}
+
+impl ProcessorRunner<'_, MshvX64<'_>> {
     fn reg_page(&self) -> Option<&HvX64RegisterPage> {
         // SAFETY: the register page will not be concurrently accessed by the
         // hypervisor while this VP is in VTL2.
-        let reg_page = unsafe { &*self.state.reg_page?.as_ptr() };
+        let reg_page = unsafe { &*self.state.reg_page.as_ref()?.as_ptr() };
         if reg_page.is_valid != 0 {
             Some(reg_page)
         } else {
@@ -67,7 +82,7 @@ impl ProcessorRunner<'_, MshvX64> {
         // SAFETY: the register page will not be concurrently accessed by the
         // hypervisor while this VP is in VTL2.
 
-        let reg_page = unsafe { &mut *self.state.reg_page?.as_ptr() };
+        let reg_page = unsafe { &mut *self.state.reg_page.as_ref()?.as_ptr() };
         if reg_page.is_valid != 0 {
             Some(reg_page)
         } else {
@@ -91,14 +106,14 @@ impl ProcessorRunner<'_, MshvX64> {
     pub fn cpu_context(&self) -> &hcl_cpu_context_x64 {
         // SAFETY: the cpu context will not be concurrently accessed by the
         // kernel while this VP is in user mode.
-        unsafe { self.state.cpu_context.as_ref() }
+        unsafe { &*self.state.cpu_context.as_ptr() }
     }
 
     /// Returns a mutable reference to the current VTL's CPU context.
     pub fn cpu_context_mut(&mut self) -> &mut hcl_cpu_context_x64 {
         // SAFETY: the cpu context will not be concurrently accessed by the
         // kernel while this VP is in user mode.
-        unsafe { self.state.cpu_context.as_mut() }
+        unsafe { &mut *self.state.cpu_context.as_ptr() }
     }
 
     /// Translate the following gva to a gpa page in the context of the current
@@ -169,8 +184,8 @@ impl ProcessorRunner<'_, MshvX64> {
     }
 }
 
-impl BackingPrivate<'_> for MshvX64 {
-    fn new(vp: &HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
+impl<'a> BackingPrivate<'a> for MshvX64<'a> {
+    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
         let BackingState::Mshv { reg_page } = &vp.backing else {
             return Err(NoRunner::MismatchedIsolation);
         };
@@ -181,13 +196,13 @@ impl BackingPrivate<'_> for MshvX64 {
             Self {
                 reg_page: reg_page
                     .is_some()
-                    .then(|| NonNull::new(sidecar.register_page()).unwrap()),
+                    .then(|| MaybeSidecar::Sidecar(NonNull::new(sidecar.register_page()).unwrap())),
                 cpu_context: NonNull::new(sidecar.cpu_context().cast()).unwrap(),
             }
         } else {
             Self {
-                // TODO: These should store refs with lifetimes.
-                reg_page: reg_page.as_ref().map(|p| NonNull::new(p.as_ptr())).unwrap(),
+                reg_page: reg_page.as_ref().map(MaybeSidecar::Mapped),
+                // TODO: This should store a ref with lifetimes.
                 cpu_context: NonNull::new(
                     // SAFETY: The run page is guaranteed to be mapped and valid.
                     unsafe { std::ptr::addr_of_mut!((*vp.run.as_ptr()).context) }.cast(),
