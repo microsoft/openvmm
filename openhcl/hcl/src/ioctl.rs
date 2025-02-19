@@ -1645,7 +1645,7 @@ mod private {
     use sidecar_client::SidecarVp;
 
     pub trait BackingPrivate<'a>: Sized {
-        fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner>;
+        fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>) -> Result<Self, NoRunner>;
 
         fn try_set_reg(
             runner: &mut ProcessorRunner<'_, Self>,

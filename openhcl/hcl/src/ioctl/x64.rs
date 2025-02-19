@@ -12,7 +12,6 @@ use super::NoRunner;
 use super::ProcessorRunner;
 use super::TranslateGvaToGpaError;
 use super::TranslateResult;
-use crate::mapped_page::MappedPage;
 use crate::protocol::hcl_cpu_context_x64;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
@@ -22,6 +21,7 @@ use hvdef::HypercallCode;
 use hvdef::HV_PARTITION_ID_SELF;
 use hvdef::HV_VP_INDEX_SELF;
 use sidecar_client::SidecarVp;
+use std::marker::PhantomData;
 use std::ptr::NonNull;
 use zerocopy::FromZeros;
 
@@ -48,31 +48,16 @@ pub enum RegisterPageVtlError {
 
 /// Runner backing for non-hardware-isolated X64 partitions.
 pub struct MshvX64<'a> {
-    reg_page: Option<MaybeSidecar<'a, HvX64RegisterPage>>,
-    // TODO: This should store a ref with lifetimes.
+    reg_page: Option<NonNull<HvX64RegisterPage>>,
     cpu_context: NonNull<hcl_cpu_context_x64>,
-}
-
-enum MaybeSidecar<'a, T> {
-    // TODO: This should store a ref with lifetimes to the SidecarVp.
-    Sidecar(NonNull<T>),
-    Mapped(&'a MappedPage<T>),
-}
-
-impl<T> MaybeSidecar<'_, T> {
-    fn as_ptr(&self) -> *mut T {
-        match self {
-            Self::Sidecar(ptr) => ptr.as_ptr(),
-            Self::Mapped(page) => page.as_ptr(),
-        }
-    }
+    source: PhantomData<&'a ()>,
 }
 
 impl ProcessorRunner<'_, MshvX64<'_>> {
     fn reg_page(&self) -> Option<&HvX64RegisterPage> {
         // SAFETY: the register page will not be concurrently accessed by the
         // hypervisor while this VP is in VTL2.
-        let reg_page = unsafe { &*self.state.reg_page.as_ref()?.as_ptr() };
+        let reg_page = unsafe { self.state.reg_page?.as_ref() };
         if reg_page.is_valid != 0 {
             Some(reg_page)
         } else {
@@ -84,7 +69,7 @@ impl ProcessorRunner<'_, MshvX64<'_>> {
         // SAFETY: the register page will not be concurrently accessed by the
         // hypervisor while this VP is in VTL2.
 
-        let reg_page = unsafe { &mut *self.state.reg_page.as_ref()?.as_ptr() };
+        let reg_page = unsafe { self.state.reg_page?.as_mut() };
         if reg_page.is_valid != 0 {
             Some(reg_page)
         } else {
@@ -108,14 +93,14 @@ impl ProcessorRunner<'_, MshvX64<'_>> {
     pub fn cpu_context(&self) -> &hcl_cpu_context_x64 {
         // SAFETY: the cpu context will not be concurrently accessed by the
         // kernel while this VP is in user mode.
-        unsafe { &*self.state.cpu_context.as_ptr() }
+        unsafe { self.state.cpu_context.as_ref() }
     }
 
     /// Returns a mutable reference to the current VTL's CPU context.
     pub fn cpu_context_mut(&mut self) -> &mut hcl_cpu_context_x64 {
         // SAFETY: the cpu context will not be concurrently accessed by the
         // kernel while this VP is in user mode.
-        unsafe { &mut *self.state.cpu_context.as_ptr() }
+        unsafe { self.state.cpu_context.as_mut() }
     }
 
     /// Translate the following gva to a gpa page in the context of the current
@@ -187,7 +172,7 @@ impl ProcessorRunner<'_, MshvX64<'_>> {
 }
 
 impl<'a> BackingPrivate<'a> for MshvX64<'a> {
-    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
+    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>) -> Result<Self, NoRunner> {
         let BackingState::Mshv { reg_page } = &vp.backing else {
             return Err(NoRunner::MismatchedIsolation);
         };
@@ -198,17 +183,19 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
             Self {
                 reg_page: reg_page
                     .is_some()
-                    .then(|| MaybeSidecar::Sidecar(NonNull::new(sidecar.register_page()).unwrap())),
+                    .then(|| NonNull::new(sidecar.register_page()).unwrap()),
                 cpu_context: NonNull::new(sidecar.cpu_context().cast()).unwrap(),
+                source: PhantomData,
             }
         } else {
             Self {
-                reg_page: reg_page.as_ref().map(MaybeSidecar::Mapped),
+                reg_page: reg_page.as_ref().map(|x| NonNull::new(x.as_ptr()).unwrap()),
                 cpu_context: NonNull::new(
                     // SAFETY: The run page is guaranteed to be mapped and valid.
                     unsafe { std::ptr::addr_of_mut!((*vp.run.as_ptr()).context) }.cast(),
                 )
                 .unwrap(),
+                source: PhantomData,
             }
         };
         Ok(this)
