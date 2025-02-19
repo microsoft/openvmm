@@ -36,7 +36,6 @@ use hv1_structs::VtlArray;
 use hvdef::hypercall::HvFlushFlags;
 use hvdef::hypercall::HvGvaRange;
 use hvdef::HvError;
-use hvdef::HvRegisterValue;
 use hvdef::HvSynicSimpSiefp;
 use hvdef::HvX64PendingExceptionEvent;
 use hvdef::HvX64RegisterName;
