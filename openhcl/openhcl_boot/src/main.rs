@@ -589,6 +589,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         boot_logger_init(p.isolation_type, typ);
         log!("openhcl_boot: early debugging enabled");
     }
+    let mut report_boot_log = static_options.report_boot_log;
 
     let can_trust_host =
         p.isolation_type == IsolationType::None || static_options.confidential_debug;
@@ -643,6 +644,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
             // if it wasn't otherwise requested.
             boot_logger_init(p.isolation_type, LoggerType::Serial);
         }
+
+        report_boot_log |= dynamic_options.report_boot_log;
     }
 
     log!("openhcl_boot: entered shim_main");
@@ -765,6 +768,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         &cmdline,
         sidecar.as_ref(),
         boot_times,
+        report_boot_log,
     )
     .unwrap();
 
@@ -956,6 +960,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            false,
         )
         .unwrap();
     }
@@ -1029,6 +1034,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            false,
         )
         .unwrap();
 
@@ -1057,6 +1063,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            false,
         )
         .unwrap();
 
