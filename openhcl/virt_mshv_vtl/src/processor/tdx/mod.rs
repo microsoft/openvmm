@@ -904,9 +904,6 @@ impl BackingPrivate for TdxBacked {
     fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool {
         this.hcvm_vtl1_inspectable()
     }
-    // fn set_exit_vtl(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
-    //     this.backing.cvm_state_mut().exit_vtl = vtl;
-    // }
 }
 
 impl UhProcessor<'_, TdxBacked> {

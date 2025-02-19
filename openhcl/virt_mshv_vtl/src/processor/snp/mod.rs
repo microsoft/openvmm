@@ -514,9 +514,6 @@ impl BackingPrivate for SnpBacked {
     fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool {
         this.hcvm_vtl1_inspectable()
     }
-    // fn set_exit_vtl(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
-    //     this.backing.cvm_state_mut().exit_vtl = vtl;
-    // }
 }
 
 fn virt_seg_to_snp(val: SegmentRegister) -> SevSelector {
@@ -2198,39 +2195,6 @@ impl<T: CpuIo> hv1_hypercall::EnablePartitionVtl for UhHypercallHandler<'_, '_, 
         flags: hvdef::hypercall::EnablePartitionVtlFlags,
     ) -> hvdef::HvResult<()> {
         self.hcvm_enable_partition_vtl(partition_id, target_vtl, flags)
-    }
-}
-
-impl<T: CpuIo> hv1_hypercall::EnableVpVtl<hvdef::hypercall::InitialVpContextX64>
-    for UhHypercallHandler<'_, '_, T, SnpBacked>
-{
-    fn enable_vp_vtl(
-        &mut self,
-        partition_id: u64,
-        vp_index: u32,
-        vtl: Vtl,
-        vp_context: &hvdef::hypercall::InitialVpContextX64,
-    ) -> hvdef::HvResult<()> {
-        self.hcvm_enable_vp_vtl(partition_id, vp_index, vtl, vp_context)
-    }
-}
-
-impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt for UhHypercallHandler<'_, '_, T, SnpBacked> {
-    fn retarget_interrupt(
-        &mut self,
-        device_id: u64,
-        address: u64,
-        data: u32,
-        params: &hv1_hypercall::HvInterruptParameters<'_>,
-    ) -> hvdef::HvResult<()> {
-        self.hcvm_retarget_interrupt(
-            device_id,
-            address,
-            data,
-            params.vector,
-            params.multicast,
-            params.target_processors,
-        )
     }
 }
 

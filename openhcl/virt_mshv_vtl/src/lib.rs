@@ -346,8 +346,6 @@ pub struct UhCvmVpState {
     hv: VtlArray<ProcessorVtlHv, 2>,
     /// LAPIC state.
     lapics: VtlArray<LapicState, 2>,
-    vtl1_enabled: Mutex<bool>,
-    vp_started: bool,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -384,8 +382,6 @@ impl UhCvmVpState {
             exit_vtl: GuestVtl::Vtl0,
             hv,
             lapics,
-            vtl1_enabled: Mutex::new(false),
-            vp_started: false,
         }
     }
 }
@@ -424,6 +420,8 @@ pub struct UhCvmVpInner {
     tlb_lock_info: VtlArray<TlbLockInfo, 2>,
     /// Whether VTL 1 has been enabled on the vp
     vtl1_enabled: Mutex<bool>,
+    /// Whether the VP has been started via the StartVp hypercall.
+    started: AtomicBool,
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -499,7 +497,7 @@ struct VbsIsolatedVtl1State {
 #[derive(Clone, Copy, Default, Inspect)]
 struct HardwareCvmVtl1State {
     /// Whether VTL 1 has been enabled on any vp
-    enabled_on_vp_count: u32,
+    enabled_on_any_vp: bool,
     /// Whether guest memory should be zeroed before it resets.
     zero_memory_on_reset: bool,
     /// Whether a vp can be started or reset by a lower vtl.
@@ -1872,9 +1870,10 @@ impl UhProtoPartition<'_> {
     ) -> Result<UhCvmPartitionState, Error> {
         let vp_count = params.topology.vp_count() as usize;
         let vps = (0..vp_count)
-            .map(|_vp_index| UhCvmVpInner {
+            .map(|vp_index| UhCvmVpInner {
                 tlb_lock_info: VtlArray::from_fn(|_| TlbLockInfo::new(vp_count)),
                 vtl1_enabled: Mutex::new(false),
+                started: AtomicBool::new(vp_index == 0),
             })
             .collect();
         let tlb_locked_vps =
