@@ -517,7 +517,6 @@ impl Issuer {
             .expect("pool cap is >= 1 page");
 
         mem.write(data);
-        //let prp = mem.prp();
         assert_eq!(
             mem.page_count(),
             1,
@@ -542,7 +541,6 @@ impl Issuer {
             .await
             .expect("pool cap is sufficient");
 
-        //let prp = mem.prp();
         assert_eq!(
             mem.page_count(),
             1,
