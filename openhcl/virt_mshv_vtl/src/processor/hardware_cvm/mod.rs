@@ -1276,7 +1276,7 @@ where
                 .clone(),
             tlb_access: DelayedTlbFlushAccess { vtl: None },
         };
-        let r = hv.msr_write(msr, value, &mut access);
+        let r = hv.msr_write(msr, value, Some(&mut access));
         if let Some(vtl) = access.tlb_access.vtl {
             self.flush(vtl);
         }

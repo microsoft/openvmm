@@ -70,8 +70,10 @@ impl MutableHvState {
         }
     }
 
-    fn reset(&mut self, overlay_access: &mut dyn VtlProtectHypercallOverlay) {
-        overlay_access.disable_overlay();
+    fn reset(&mut self, overlay_access: &mut Option<&mut dyn VtlProtectHypercallOverlay>) {
+        if let Some(overlay_access) = overlay_access {
+            overlay_access.disable_overlay();
+        }
         self.hypercall = hvdef::hypercall::MsrHypercallContents::new();
         self.guest_os_id = hvdef::hypercall::HvGuestOsId::new();
         self.reference_tsc = hvdef::HvRegisterReferenceTsc::new();
@@ -119,9 +121,9 @@ impl GlobalHv {
     }
 
     /// Resets the global (but not per-processor) state.
-    pub fn reset(&self, overlay_access: &mut dyn VtlProtectHypercallOverlay) {
+    pub fn reset(&self, mut overlay_access: Option<&mut dyn VtlProtectHypercallOverlay>) {
         for state in self.vtl_mutable_state.iter() {
-            state.lock().reset(overlay_access);
+            state.lock().reset(&mut overlay_access);
         }
         // There is no global synic state to reset, since the synic is per-VP.
     }
@@ -208,7 +210,7 @@ impl ProcessorVtlHv {
         &mut self,
         n: u32,
         v: u64,
-        overlay_access: &mut dyn VtlProtectHypercallOverlay,
+        overlay_access: Option<&mut dyn VtlProtectHypercallOverlay>,
     ) -> Result<(), MsrError> {
         match n {
             hvdef::HV_X64_MSR_GUEST_OS_ID => {
@@ -236,9 +238,13 @@ impl ProcessorVtlHv {
                         return Err(MsrError::InvalidAccess);
                     }
 
-                    overlay_access.change_overlay(hc.gpn());
+                    if let Some(overlay_access) = overlay_access {
+                        overlay_access.change_overlay(hc.gpn());
+                    }
                 } else if !hc.enable() {
-                    overlay_access.disable_overlay();
+                    if let Some(overlay_access) = overlay_access {
+                        overlay_access.disable_overlay();
+                    }
                 }
                 mutable.hypercall = hc;
             }
