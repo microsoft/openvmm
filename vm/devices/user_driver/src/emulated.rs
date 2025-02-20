@@ -163,10 +163,6 @@ impl DeviceSharedMemory {
     pub fn new(size: usize, extra: usize) -> Self {
         assert_eq!(size % PAGE_SIZE, 0);
         assert_eq!(extra % PAGE_SIZE, 0);
-        // let _real_mem_backing = RealBacking {
-        //     mem: Arc::new(TestMapper::new(size + extra)),
-        //     allow_dma: false,
-        // };
         let mem_backing = Backing {
             mem: Arc::new(AlignedHeapMemory::new(size + extra)),
             allow_dma: false,
