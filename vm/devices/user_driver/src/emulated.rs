@@ -224,6 +224,21 @@ impl DeviceSharedMemory {
             state: self.state.clone(),
         })
     }
+
+    // TODO: [nvme-keepalive-testing] 
+    // This is only a stop-gap until we can swap out the back end of nvme tests to use real memory
+    pub fn alloc_specific(&self, len: usize, base_pfn: u64) -> Option<DmaBuffer>{
+        assert!(len % PAGE_SIZE == 0);
+        let count = len / PAGE_SIZE;
+        let start_page = base_pfn as usize;
+
+        let pages = (start_page..start_page + count).map(|p| p as u64).collect();
+        Some(DmaBuffer {
+            mem: self.mem.clone(),
+            pfns: pages,
+            state: self.state.clone(),
+        })
+    }
 }
 
 pub struct DmaBuffer {
