@@ -1274,8 +1274,14 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             // avoid a deadlock with the host. The host can always DoS the
             // guest, so this is not an attack vector.
             let host_backed_up = !self.inner.outgoing.is_empty();
-            let flush_messages =
-                OptionFuture::from(host_backed_up.then(|| self.inner.outgoing.flush_messages()));
+            let flush_messages = async {
+                if host_backed_up {
+                    self.inner.outgoing.flush_messages().await;
+                } else {
+                    // Allow other futures to run.
+                    std::future::pending().await
+                }
+            };
 
             let mut client_request_recv = OptionFuture::from(
                 (self.running && !host_backed_up).then(|| self.client_request_recv.next()),
