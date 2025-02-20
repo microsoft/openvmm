@@ -52,8 +52,6 @@ struct GlobalHvState {
 struct MutableHvState {
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
     hypercall: hvdef::hypercall::MsrHypercallContents,
-    #[inspect(skip)]
-    hypercall_protector: Option<Box<dyn VtlProtectHypercallOverlay>>,
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
     guest_os_id: hvdef::hypercall::HvGuestOsId,
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
@@ -62,10 +60,9 @@ struct MutableHvState {
 }
 
 impl MutableHvState {
-    fn new(protector: Option<Box<dyn VtlProtectHypercallOverlay>>) -> Self {
+    fn new() -> Self {
         Self {
             hypercall: hvdef::hypercall::MsrHypercallContents::new(),
-            hypercall_protector: protector,
 
             guest_os_id: hvdef::hypercall::HvGuestOsId::new(),
             reference_tsc: hvdef::HvRegisterReferenceTsc::new(),
@@ -73,10 +70,8 @@ impl MutableHvState {
         }
     }
 
-    fn reset(&mut self, tlb_access: &mut dyn TlbFlushAccess) {
-        if let Some(p) = self.hypercall_protector.as_mut() {
-            p.disable_overlay(tlb_access);
-        }
+    fn reset(&mut self, overlay_access: &mut dyn VtlProtectHypercallOverlay) {
+        overlay_access.disable_overlay();
         self.hypercall = hvdef::hypercall::MsrHypercallContents::new();
         self.guest_os_id = hvdef::hypercall::HvGuestOsId::new();
         self.reference_tsc = hvdef::HvRegisterReferenceTsc::new();
@@ -94,8 +89,6 @@ pub struct GlobalHvParams {
     pub tsc_frequency: u64,
     /// The reference time system to use.
     pub ref_time: Box<dyn ReferenceTimeSource>,
-    /// Manages VTL protections on the VTL0 hypercall overlay page
-    pub hypercall_page_protectors: VtlArray<Option<Box<dyn VtlProtectHypercallOverlay>>, 2>,
 }
 
 impl GlobalHv {
@@ -108,9 +101,7 @@ impl GlobalHv {
                 is_ref_time_backed_by_tsc: params.ref_time.is_backed_by_tsc(),
                 ref_time: params.ref_time,
             }),
-            vtl_mutable_state: params
-                .hypercall_page_protectors
-                .map(|protector| Arc::new(Mutex::new(MutableHvState::new(protector)))),
+            vtl_mutable_state: VtlArray::from_fn(|_| Arc::new(Mutex::new(MutableHvState::new()))),
             synic: VtlArray::from_fn(|_| GlobalSynic::new(params.max_vp_count)),
         }
     }
@@ -128,9 +119,9 @@ impl GlobalHv {
     }
 
     /// Resets the global (but not per-processor) state.
-    pub fn reset(&self, tlb_access: &mut dyn TlbFlushAccess) {
+    pub fn reset(&self, overlay_access: &mut dyn VtlProtectHypercallOverlay) {
         for state in self.vtl_mutable_state.iter() {
-            state.lock().reset(tlb_access);
+            state.lock().reset(overlay_access);
         }
         // There is no global synic state to reset, since the synic is per-VP.
     }
@@ -217,7 +208,7 @@ impl ProcessorVtlHv {
         &mut self,
         n: u32,
         v: u64,
-        tlb_access: &mut dyn TlbFlushAccess,
+        overlay_access: &mut dyn VtlProtectHypercallOverlay,
     ) -> Result<(), MsrError> {
         match n {
             hvdef::HV_X64_MSR_GUEST_OS_ID => {
@@ -245,13 +236,9 @@ impl ProcessorVtlHv {
                         return Err(MsrError::InvalidAccess);
                     }
 
-                    if let Some(p) = mutable.hypercall_protector.as_mut() {
-                        p.change_overlay(hc.gpn(), tlb_access);
-                    }
+                    overlay_access.change_overlay(hc.gpn());
                 } else if !hc.enable() {
-                    if let Some(p) = mutable.hypercall_protector.as_mut() {
-                        p.disable_overlay(tlb_access);
-                    }
+                    overlay_access.disable_overlay();
                 }
                 mutable.hypercall = hc;
             }
@@ -543,15 +530,9 @@ const INTEL_HYPERCALL_PAGE: HypercallPage = hypercall_page(false);
 
 /// A trait for managing the hypercall code page overlay, including its location
 /// and vtl protections.
-pub trait VtlProtectHypercallOverlay: Send + Sync {
+pub trait VtlProtectHypercallOverlay {
     /// Change the location of the overlay.
-    fn change_overlay(&self, gpn: u64, tlb_access: &mut dyn TlbFlushAccess);
+    fn change_overlay(&mut self, gpn: u64);
     /// Disable the overlay.
-    fn disable_overlay(&self, tlb_access: &mut dyn TlbFlushAccess);
-}
-
-/// Trait for access to TLB flush machinery.
-pub trait TlbFlushAccess {
-    /// Flush the entire TLB for all VPs for the given VTL.
-    fn flush(&mut self, vtl: Vtl);
+    fn disable_overlay(&mut self);
 }
