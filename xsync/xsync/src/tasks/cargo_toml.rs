@@ -6,6 +6,7 @@ use anyhow::Context;
 use cargo_toml::PackageTemplate;
 use clap::Parser;
 use clap::Subcommand;
+use std::str::FromStr;
 
 #[derive(Subcommand)]
 pub enum Command {
@@ -98,8 +99,46 @@ impl Cmd for CargoToml {
             }
 
             if lints {
+                // Duplicate the lints section of Cargo.toml (which includes both
+                // rustc and clippy lints), and .clippy.toml (which includes additional)
+                // clippy configuration.
                 (cargo_toml.workspace.as_mut().unwrap().lints)
                     .clone_from(&base_cargo_toml.workspace.as_ref().unwrap().lints);
+
+                let out = std::path::absolute(ctx.overlay_workspace.join(".clippy.toml"))?;
+                let base_clippy_toml =
+                    fs_err::read_to_string(ctx.base_workspace.join(".clippy.toml"));
+
+                // Ensure that the .clippy.toml in the overlay matches that of the base repo exactly.
+                // This is a policy decision, and is open to changing in the future.
+                match base_clippy_toml {
+                    Ok(base_clippy_toml) => {
+                        log::info!("base .clippy.toml found, regenerating overlay .clippy.toml",);
+                        let mut base_clippy_toml =
+                            toml_edit::Document::from_str(&base_clippy_toml)?;
+                        base_clippy_toml.fmt();
+                        let generated_clippy_toml = format!(
+                            "{}{}",
+                            super::GENERATED_HEADER.trim_start(),
+                            &base_clippy_toml.to_string()
+                        );
+                        log::debug!("{generated_clippy_toml}");
+                        fs_err::write(out, generated_clippy_toml.as_bytes())?;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        log::info!(
+                            "base .clippy.toml not found, removing overlay .clippy.toml if present"
+                        );
+                        match fs_err::remove_file(out) {
+                            Ok(_) => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(e) => Err(e).context("failed to remove overlay .clippy.toml")?,
+                        }
+                    }
+                    Err(e) => {
+                        Err(e).context("failed to read base .clippy.toml")?;
+                    }
+                }
             }
         }
 
