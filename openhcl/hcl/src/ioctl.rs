@@ -74,7 +74,6 @@ use std::marker::PhantomData;
 use std::os::unix::prelude::*;
 use std::ptr::addr_of;
 use std::ptr::addr_of_mut;
-use std::ptr::NonNull;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
@@ -1611,7 +1610,7 @@ pub struct ProcessorRunner<'a, T> {
     sidecar: Option<SidecarVp<'a>>,
     _no_send: PhantomData<*const u8>, // prevent Send/Sync
     run: &'a UnsafeCell<hcl_run>,
-    intercept_message: NonNull<HvMessage>,
+    intercept_message: &'a UnsafeCell<HvMessage>,
     state: T,
 }
 
@@ -1928,7 +1927,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     pub fn exit_message(&self) -> &HvMessage {
         // SAFETY: the exit message will not be concurrently accessed by the
         // kernel while this VP is in VTL2.
-        unsafe { self.intercept_message.as_ref() }
+        unsafe { &*self.intercept_message.get() }
     }
 
     /// Returns whether this is a sidecar VP.
@@ -2291,14 +2290,14 @@ impl Hcl {
             });
         }
 
-        let intercept_message = sidecar.as_ref().map_or(
-            // SAFETY: The run page is guaranteed to be mapped and valid.
-            // While the exit message might not be filled in yet we're only computing its address.
-            unsafe { std::ptr::addr_of!((*vp.run.as_ptr()).exit_message) }.cast(),
-            |s| s.intercept_message(),
-        );
-
-        let intercept_message = NonNull::new(intercept_message.cast_mut()).unwrap();
+        // SAFETY: The run page is guaranteed to be mapped and valid.
+        // While the exit message might not be filled in yet we're only computing its address.
+        let intercept_message = unsafe {
+            &*sidecar.as_ref().map_or(
+                std::ptr::addr_of!((*vp.run.as_ptr()).exit_message).cast(),
+                |s| s.intercept_message().cast(),
+            )
+        };
 
         Ok(ProcessorRunner {
             hcl: self,
