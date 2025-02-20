@@ -13,6 +13,7 @@ use hv1_structs::VtlArray;
 use hvdef::HvRegisterVpAssistPage;
 use hvdef::HvVpVtlControl;
 use hvdef::HvVtlEntryReason;
+use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HV_REFERENCE_TSC_SEQUENCE_INVALID;
@@ -74,7 +75,7 @@ impl MutableHvState {
 
     fn reset(&mut self) {
         if let Some(p) = self.hypercall_protector.as_mut() {
-            p.disable_overlay();
+            p.disable_overlay(todo!());
         }
         self.hypercall = hvdef::hypercall::MsrHypercallContents::new();
         self.guest_os_id = hvdef::hypercall::HvGuestOsId::new();
@@ -115,12 +116,7 @@ impl GlobalHv {
     }
 
     /// Adds a virtual processor to the vtl.
-    pub fn add_vp(
-        &self,
-        guest_memory: GuestMemory,
-        vp_index: VpIndex,
-        vtl: hvdef::Vtl,
-    ) -> ProcessorVtlHv {
+    pub fn add_vp(&self, guest_memory: GuestMemory, vp_index: VpIndex, vtl: Vtl) -> ProcessorVtlHv {
         ProcessorVtlHv {
             vp_index,
             partition_state: self.partition_state.clone(),
@@ -140,7 +136,7 @@ impl GlobalHv {
     }
 
     /// The current guest_os_id value.
-    pub fn guest_os_id(&self, vtl: hvdef::Vtl) -> hvdef::hypercall::HvGuestOsId {
+    pub fn guest_os_id(&self, vtl: Vtl) -> hvdef::hypercall::HvGuestOsId {
         self.vtl_mutable_state[vtl].lock().guest_os_id
     }
 }
@@ -180,11 +176,52 @@ impl ProcessorVtlHv {
         *vp_assist_page = Default::default();
     }
 
+    /// Emulates an MSR write for the guest OS ID MSR.
+    pub fn msr_write_guest_os_id(&mut self, v: u64) {
+        self.vtl_state.lock().guest_os_id = v.into();
+    }
+
+    /// Emulates an MSR write for the VP assist page MSR.
+    pub fn msr_write_vp_assist_page(&mut self, v: u64) -> Result<(), MsrError> {
+        if v & !u64::from(
+            HvRegisterVpAssistPage::new()
+                .with_enabled(true)
+                .with_gpa_page_number(!0 >> 12),
+        ) != 0
+        {
+            return Err(MsrError::InvalidAccess);
+        }
+        let vp_assist_page = HvRegisterVpAssistPage::from(v);
+
+        // Clear the target page if it is being enabled or moved.
+        if vp_assist_page.enabled()
+            && (!self.vp_assist_page.enabled()
+                || vp_assist_page.gpa_page_number() != self.vp_assist_page.gpa_page_number())
+        {
+            let gpa = vp_assist_page.gpa_page_number() * HV_PAGE_SIZE;
+            if let Err(err) = self.guest_memory.fill_at(gpa, 0, HV_PAGE_SIZE_USIZE) {
+                tracelimit::warn_ratelimited!(
+                    gpa,
+                    error = &err as &dyn std::error::Error,
+                    "failed to clear vp assist page"
+                );
+                return Err(MsrError::InvalidAccess);
+            }
+        }
+        self.vp_assist_page = vp_assist_page;
+        Ok(())
+    }
+
     /// Emulates an MSR write for an HV#1 synthetic MSR.
-    pub fn msr_write(&mut self, n: u32, v: u64) -> Result<(), MsrError> {
+    pub fn msr_write(
+        &mut self,
+        n: u32,
+        v: u64,
+        tlb_access: &mut dyn TlbFlushAccess,
+    ) -> Result<(), MsrError> {
         match n {
             hvdef::HV_X64_MSR_GUEST_OS_ID => {
-                self.vtl_state.lock().guest_os_id = v.into();
+                self.msr_write_guest_os_id(v);
             }
             hvdef::HV_X64_MSR_HYPERCALL => {
                 let mut mutable = self.vtl_state.lock();
@@ -209,11 +246,11 @@ impl ProcessorVtlHv {
                     }
 
                     if let Some(p) = mutable.hypercall_protector.as_mut() {
-                        p.change_overlay(hc.gpn());
+                        p.change_overlay(hc.gpn(), tlb_access);
                     }
                 } else if !hc.enable() {
                     if let Some(p) = mutable.hypercall_protector.as_mut() {
-                        p.disable_overlay();
+                        p.disable_overlay(tlb_access);
                     }
                 }
                 mutable.hypercall = hc;
@@ -272,35 +309,7 @@ impl ProcessorVtlHv {
                 mutable.reference_tsc = v;
             }
             hvdef::HV_X64_MSR_TSC_FREQUENCY => return Err(MsrError::InvalidAccess),
-            hvdef::HV_X64_MSR_VP_ASSIST_PAGE => {
-                if v & !u64::from(
-                    HvRegisterVpAssistPage::new()
-                        .with_enabled(true)
-                        .with_gpa_page_number(!0 >> 12),
-                ) != 0
-                {
-                    return Err(MsrError::InvalidAccess);
-                }
-                let vp_assist_page = HvRegisterVpAssistPage::from(v);
-
-                // Clear the target page if it is being enabled or moved.
-                if vp_assist_page.enabled()
-                    && (!self.vp_assist_page.enabled()
-                        || vp_assist_page.gpa_page_number()
-                            != self.vp_assist_page.gpa_page_number())
-                {
-                    let gpa = vp_assist_page.gpa_page_number() * HV_PAGE_SIZE;
-                    if let Err(err) = self.guest_memory.fill_at(gpa, 0, HV_PAGE_SIZE_USIZE) {
-                        tracelimit::warn_ratelimited!(
-                            gpa,
-                            error = &err as &dyn std::error::Error,
-                            "failed to clear vp assist page"
-                        );
-                        return Err(MsrError::InvalidAccess);
-                    }
-                }
-                self.vp_assist_page = vp_assist_page;
-            }
+            hvdef::HV_X64_MSR_VP_ASSIST_PAGE => self.msr_write_vp_assist_page(v)?,
             msr @ hvdef::HV_X64_MSR_SCONTROL..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
                 self.synic.write_msr(&self.guest_memory, msr, v)?
             }
@@ -536,7 +545,13 @@ const INTEL_HYPERCALL_PAGE: HypercallPage = hypercall_page(false);
 /// and vtl protections.
 pub trait VtlProtectHypercallOverlay: Send + Sync {
     /// Change the location of the overlay.
-    fn change_overlay(&self, gpn: u64);
+    fn change_overlay(&self, gpn: u64, tlb_access: &mut dyn TlbFlushAccess);
     /// Disable the overlay.
-    fn disable_overlay(&self);
+    fn disable_overlay(&self, tlb_access: &mut dyn TlbFlushAccess);
+}
+
+/// Trait for access to TLB flush machinery.
+pub trait TlbFlushAccess {
+    /// Flush the entire TLB for all VPs for the given VTL.
+    fn flush(&mut self, vtl: Vtl);
 }

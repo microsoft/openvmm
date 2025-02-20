@@ -579,7 +579,7 @@ where
                 HvRegisterVsmVpSecureVtlConfig::from(reg.value.as_u64()),
             ),
             HvX64RegisterName::VpAssistPage => self.vp.backing.cvm_state_mut().hv[vtl]
-                .msr_write(hvdef::HV_X64_MSR_VP_ASSIST_PAGE, reg.value.as_u64())
+                .msr_write_vp_assist_page(reg.value.as_u64())
                 .map_err(|_| HvError::InvalidRegisterValue),
             virt_msr @ (HvX64RegisterName::Star
             | HvX64RegisterName::Cstar
@@ -1199,6 +1199,17 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
     }
 }
 
+struct DelayedTlbFlushAccess {
+    vtl: Option<Vtl>,
+}
+
+impl hv1_emulator::hv::TlbFlushAccess for DelayedTlbFlushAccess {
+    fn flush(&mut self, vtl: Vtl) {
+        assert!(self.vtl.is_none());
+        self.vtl = Some(vtl);
+    }
+}
+
 impl<B: HardwareIsolatedBacking> UhProcessor<'_, B>
 where
     Self: TlbFlushLockAccess,
@@ -1220,7 +1231,18 @@ where
                 irr_filter_update = true;
             }
         }
-        let r = hv.msr_write(msr, value);
+
+        // Perform this delay dance with the TLB flush to avoid a double borrow.
+        // We need the whole UhProcessor to perform a flush, but the hv emulator
+        // is inside the UhProcessor.
+        let mut delayed_tlb = DelayedTlbFlushAccess { vtl: None };
+        let r = hv.msr_write(msr, value, &mut delayed_tlb);
+        if let Some(vtl) = delayed_tlb.vtl {
+            // VTL 2 should never need a TLB flush, but the emulator has no
+            // concept of GuestVtl. Should be safe to unwrap.
+            self.flush(vtl.try_into().unwrap());
+        }
+
         if !matches!(r, Err(MsrError::Unknown)) {
             // Check if proxy filter update was required (in case of SINT writes)
             if irr_filter_update {

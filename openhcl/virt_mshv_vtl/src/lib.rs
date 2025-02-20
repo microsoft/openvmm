@@ -1335,11 +1335,15 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         &self,
         vtl: GuestVtl,
         gpn: u64,
-        tlb_access: &mut dyn TlbFlushLockAccess,
+        tlb_access: &mut dyn hv1_emulator::hv::TlbFlushAccess,
     );
 
     /// Disables the overlay for the hypercall code page for a target VTL.
-    fn disable_hypercall_overlay(&self, vtl: GuestVtl, tlb_access: &mut dyn TlbFlushLockAccess);
+    fn disable_hypercall_overlay(
+        &self,
+        vtl: GuestVtl,
+        tlb_access: &mut dyn hv1_emulator::hv::TlbFlushAccess,
+    );
 
     /// Alerts the memory protector that vtl 1 is ready to set vtl protections
     /// on lower-vtl memory, and that these protections should be enforced.

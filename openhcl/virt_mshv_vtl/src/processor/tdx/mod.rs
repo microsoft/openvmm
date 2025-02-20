@@ -2013,8 +2013,8 @@ impl UhProcessor<'_, TdxBacked> {
         intercepted_vtl: GuestVtl,
     ) -> Result<(), MsrError> {
         match msr {
-            msr @ hvdef::HV_X64_MSR_GUEST_OS_ID => {
-                self.backing.cvm.hv[intercepted_vtl].msr_write(msr, value)?
+            hvdef::HV_X64_MSR_GUEST_OS_ID => {
+                self.backing.cvm.hv[intercepted_vtl].msr_write_guest_os_id(value)
             }
             _ => {
                 // If we get here we must have an untrusted synic, as otherwise

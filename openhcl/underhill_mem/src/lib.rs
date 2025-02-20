@@ -23,6 +23,7 @@ use hcl::ioctl::Mshv;
 use hcl::ioctl::MshvHvcall;
 use hcl::ioctl::MshvVtl;
 use hcl::GuestVtl;
+use hv1_emulator::hv::TlbFlushAccess;
 use hv1_emulator::hv::VtlProtectHypercallOverlay;
 use hv1_structs::VtlArray;
 use hvdef::hypercall::AcceptMemoryType;
@@ -375,24 +376,15 @@ struct HypercallOverlay {
     permissions: GpaVtlPermissions,
 }
 
-// TODO CVM GUEST VSM: This type needs to go away, and proper functionality needs
-// to be added here, but resolving the layering with hv1_emulator is complicated.
-struct NoOpTlbFlushLockAccess;
-impl TlbFlushLockAccess for NoOpTlbFlushLockAccess {
-    fn flush(&mut self, _vtl: GuestVtl) {}
-    fn flush_entire(&mut self) {}
-    fn set_wait_for_tlb_locks(&mut self, _vtl: GuestVtl) {}
-}
-
 impl VtlProtectHypercallOverlay for HypercallOverlayProtector {
-    fn change_overlay(&self, gpn: u64) {
+    fn change_overlay(&self, gpn: u64, tlb_access: &mut dyn TlbFlushAccess) {
         self.protector
-            .change_hypercall_overlay(self.vtl, gpn, &mut NoOpTlbFlushLockAccess)
+            .change_hypercall_overlay(self.vtl, gpn, tlb_access)
     }
 
-    fn disable_overlay(&self) {
+    fn disable_overlay(&self, tlb_access: &mut dyn TlbFlushAccess) {
         self.protector
-            .disable_hypercall_overlay(self.vtl, &mut NoOpTlbFlushLockAccess)
+            .disable_hypercall_overlay(self.vtl, tlb_access)
     }
 }
 
@@ -789,7 +781,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         &self,
         vtl: GuestVtl,
         gpn: u64,
-        tlb_access: &mut dyn TlbFlushLockAccess,
+        tlb_access: &mut dyn TlbFlushAccess,
     ) {
         // Should already have written contents to the page via the guest
         // memory object, confirming that this is a guest page
@@ -850,10 +842,10 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             .expect("applying vtl protections should succeed");
 
         // Flush the guest TLB to ensure that the new permissions are observed.
-        tlb_access.flush(vtl);
+        tlb_access.flush(vtl.into());
     }
 
-    fn disable_hypercall_overlay(&self, vtl: GuestVtl, tlb_access: &mut dyn TlbFlushLockAccess) {
+    fn disable_hypercall_overlay(&self, vtl: GuestVtl, tlb_access: &mut dyn TlbFlushAccess) {
         let _lock = self.inner.lock();
 
         let mut overlay = self.hypercall_overlay[vtl].lock();
@@ -865,7 +857,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         *overlay = None;
 
-        tlb_access.flush(vtl);
+        tlb_access.flush(vtl.into());
     }
 
     fn set_vtl1_protections_enabled(&self) {
