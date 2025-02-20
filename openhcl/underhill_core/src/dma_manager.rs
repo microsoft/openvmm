@@ -20,8 +20,9 @@ pub mod save_restore {
     use super::GlobalDmaManager;
     use mesh::payload::Protobuf;
     use page_pool_alloc::save_restore::PagePoolState;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;
-    use vmcore::save_restore::SavedStateRoot;
 
     /// The saved state for [`GlobalDmaManager`].
     #[derive(Protobuf)]
@@ -36,15 +37,71 @@ pub mod save_restore {
     impl SaveRestore for GlobalDmaManager {
         type SavedState = GlobalDmaManagerState;
 
-        fn save(&mut self) -> Result<Self::SavedState, vmcore::save_restore::SaveError> {
-            todo!()
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            let shared_pool = self
+                .shared_pool
+                .as_mut()
+                .map(SaveRestore::save)
+                .transpose()
+                .map_err(|e| {
+                    SaveError::ChildError("shared pool save failed".into(), Box::new(e))
+                })?;
+
+            let private_pool = self
+                .private_pool
+                .as_mut()
+                .map(SaveRestore::save)
+                .transpose()
+                .map_err(|e| {
+                    SaveError::ChildError("private pool save failed".into(), Box::new(e))
+                })?;
+
+            Ok(GlobalDmaManagerState {
+                shared_pool,
+                private_pool,
+            })
         }
 
-        fn restore(
-            &mut self,
-            state: Self::SavedState,
-        ) -> Result<(), vmcore::save_restore::RestoreError> {
-            todo!()
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            match (state.shared_pool, self.shared_pool.as_mut()) {
+                (None, None) => {}
+                (Some(_), None) => {
+                    return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                        "saved state for shared pool but no shared pool"
+                    )))
+                }
+                (None, Some(_)) => {
+                    // BUGBUG Is this right?
+                    // It's possible that previously we did not have a shared
+                    // pool, so there may not be any state to restore.
+                }
+                (Some(state), Some(pool)) => {
+                    pool.restore(state).map_err(|e| {
+                        RestoreError::ChildError("shared pool restore failed".into(), Box::new(e))
+                    })?;
+                }
+            }
+
+            match (state.private_pool, self.private_pool.as_mut()) {
+                (None, None) => {}
+                (Some(_), None) => {
+                    return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                        "saved state for private pool but no private pool"
+                    )))
+                }
+                (None, Some(_)) => {
+                    // BUGBUG Is this right?
+                    // It's possible that previously we did not have a private
+                    // pool, so there may not be any state to restore.
+                }
+                (Some(state), Some(pool)) => {
+                    pool.restore(state).map_err(|e| {
+                        RestoreError::ChildError("private pool restore failed".into(), Box::new(e))
+                    })?;
+                }
+            }
+
+            Ok(())
         }
     }
 }
@@ -151,6 +208,25 @@ impl GlobalDmaManager {
         DmaClientSpawner {
             inner: self.inner.clone(),
         }
+    }
+
+    /// Validate restore for the global DMA manager.
+    pub fn validate_restore(&self) -> anyhow::Result<()> {
+        // Finilize restore for any available pools. Do not allow leaking any
+        // allocations.
+        if let Some(shared_pool) = &self.shared_pool {
+            shared_pool
+                .validate_restore(false)
+                .context("failed to validate restore for shared pool")?
+        }
+
+        if let Some(private_pool) = &self.private_pool {
+            private_pool
+                .validate_restore(false)
+                .context("failed to validate restore for private pool")?
+        }
+
+        Ok(())
     }
 }
 
